@@ -1,0 +1,209 @@
+/**
+ * Checkpoint unit tests
+ */
+
+import * as fs from 'fs';
+import * as path from 'path';
+import {
+  createCheckpoint,
+  restoreCheckpoint,
+  listCheckpoints,
+  cleanupCheckpoints,
+  shouldCreateMultiFileCheckpoint,
+  CHECKPOINT_TTL_MS,
+} from '../src/core/checkpoint';
+import { getProjectCheckpointsDir } from '../src/services/config-dir';
+
+const TEST_PROJECT = `/tmp/openhorse-checkpoint-test-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+describe('checkpoint', () => {
+  beforeEach(() => {
+    if (fs.existsSync(TEST_PROJECT)) {
+      fs.rmSync(TEST_PROJECT, { recursive: true, force: true });
+    }
+    fs.mkdirSync(TEST_PROJECT, { recursive: true });
+    const checkpointDir = getProjectCheckpointsDir(TEST_PROJECT);
+    if (fs.existsSync(checkpointDir)) {
+      fs.rmSync(checkpointDir, { recursive: true, force: true });
+    }
+  });
+
+  afterEach(() => {
+    const checkpointDir = getProjectCheckpointsDir(TEST_PROJECT);
+    if (fs.existsSync(TEST_PROJECT)) {
+      fs.rmSync(TEST_PROJECT, { recursive: true, force: true });
+    }
+    // Also clean up the checkpoint directory under ~/.orion-code
+    if (fs.existsSync(checkpointDir)) {
+      fs.rmSync(checkpointDir, { recursive: true, force: true });
+    }
+  });
+
+  test('CHECKPOINT_TTL_MS is 7 days', () => {
+    expect(CHECKPOINT_TTL_MS).toBe(7 * 24 * 60 * 60 * 1000);
+  });
+
+  test('createCheckpoint saves file content', () => {
+    const filePath = path.join(TEST_PROJECT, 'test.txt');
+    fs.writeFileSync(filePath, 'Hello, checkpoint!', 'utf8');
+
+    const cp = createCheckpoint(TEST_PROJECT, 'turn-1', [filePath]);
+
+    expect(cp).not.toBeNull();
+    expect(cp!.turnId).toBe('turn-1');
+    expect(cp!.files).toHaveLength(1);
+    expect(cp!.files[0].path).toBe('test.txt');
+    expect(cp!.files[0].sizeBytes).toBe(Buffer.byteLength('Hello, checkpoint!', 'utf8'));
+  });
+
+  test('createCheckpoint returns null for empty project path', () => {
+    expect(createCheckpoint('', 'turn-1', ['/tmp/file.txt'])).toBeNull();
+  });
+
+  test('createCheckpoint returns null for empty file list', () => {
+    expect(createCheckpoint(TEST_PROJECT, 'turn-1', [])).toBeNull();
+  });
+
+  test('createCheckpoint records non-existent files for deletion on restore', () => {
+    const cp = createCheckpoint(TEST_PROJECT, 'turn-2', [
+      path.join(TEST_PROJECT, 'nonexistent.txt'),
+    ]);
+
+    expect(cp).not.toBeNull();
+    expect(cp!.files).toEqual([
+      expect.objectContaining({
+        path: 'nonexistent.txt',
+        existed: false,
+        sizeBytes: 0,
+      }),
+    ]);
+  });
+
+  test('createCheckpoint is idempotent — second call returns null', () => {
+    const filePath = path.join(TEST_PROJECT, 'test.txt');
+    fs.writeFileSync(filePath, 'content', 'utf8');
+
+    expect(createCheckpoint(TEST_PROJECT, 'turn-1', [filePath])).not.toBeNull();
+    expect(createCheckpoint(TEST_PROJECT, 'turn-1', [filePath])).toBeNull();
+  });
+
+  test('restoreCheckpoint restores file content', () => {
+    const filePath = path.join(TEST_PROJECT, 'restore.txt');
+    fs.writeFileSync(filePath, 'original', 'utf8');
+
+    createCheckpoint(TEST_PROJECT, 'turn-1', [filePath]);
+
+    // Modify the file
+    fs.writeFileSync(filePath, 'modified', 'utf8');
+    expect(fs.readFileSync(filePath, 'utf8')).toBe('modified');
+
+    // Restore
+    const result = restoreCheckpoint(TEST_PROJECT, 'turn-1');
+    expect(result.error).toBeUndefined();
+    expect(result.restored).toHaveLength(1);
+    expect(result.restored[0]).toBe('restore.txt');
+    expect(fs.readFileSync(filePath, 'utf8')).toBe('original');
+  });
+
+  test('restoreCheckpoint deletes files that did not exist when checkpoint was created', () => {
+    const filePath = path.join(TEST_PROJECT, 'new-file.txt');
+    createCheckpoint(TEST_PROJECT, 'turn-new-file', [filePath]);
+
+    fs.writeFileSync(filePath, 'created after checkpoint', 'utf8');
+    expect(fs.existsSync(filePath)).toBe(true);
+
+    const result = restoreCheckpoint(TEST_PROJECT, 'turn-new-file');
+    expect(result.error).toBeUndefined();
+    expect(result.restored).toEqual(['new-file.txt']);
+    expect(fs.existsSync(filePath)).toBe(false);
+  });
+
+  test('restoreCheckpoint rejects checkpoint metadata paths outside the project', () => {
+    const checkpointDir = path.join(getProjectCheckpointsDir(TEST_PROJECT), 'evil-turn');
+    fs.mkdirSync(checkpointDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(checkpointDir, '.checkpoint.json'),
+      JSON.stringify({
+        turnId: 'evil-turn',
+        createdAt: Date.now(),
+        files: [{
+          path: '../outside.txt',
+          content: '',
+          sizeBytes: 0,
+        }],
+      }),
+      'utf8',
+    );
+
+    const outside = path.join(TEST_PROJECT, '..', 'outside.txt');
+    if (fs.existsSync(outside)) fs.rmSync(outside, { force: true });
+
+    const result = restoreCheckpoint(TEST_PROJECT, 'evil-turn');
+    expect(result.error).toContain('Invalid checkpoint path');
+    expect(fs.existsSync(outside)).toBe(false);
+  });
+
+  test('restoreCheckpoint returns error for non-existent checkpoint', () => {
+    const result = restoreCheckpoint(TEST_PROJECT, 'nonexistent');
+    expect(result.error).toContain('No checkpoint found');
+    expect(result.restored).toHaveLength(0);
+  });
+
+  test('listCheckpoints returns sorted checkpoints', () => {
+    const file1 = path.join(TEST_PROJECT, 'a.txt');
+    const file2 = path.join(TEST_PROJECT, 'b.txt');
+    fs.writeFileSync(file1, 'a', 'utf8');
+    fs.writeFileSync(file2, 'b', 'utf8');
+
+    createCheckpoint(TEST_PROJECT, 'turn-1', [file1]);
+    // Ensure different createdAt
+    const start = Date.now();
+    while (Date.now() === start) { /* spin */ }
+    createCheckpoint(TEST_PROJECT, 'turn-2', [file2]);
+
+    const checkpoints = listCheckpoints(TEST_PROJECT);
+    expect(checkpoints).toHaveLength(2);
+    // Sorted by createdAt descending
+    expect(checkpoints[0].createdAt).toBeGreaterThanOrEqual(checkpoints[1].createdAt);
+  });
+
+  test('cleanupCheckpoints removes old checkpoints', () => {
+    const filePath = path.join(TEST_PROJECT, 'old.txt');
+    fs.writeFileSync(filePath, 'old', 'utf8');
+    createCheckpoint(TEST_PROJECT, 'old-turn', [filePath]);
+
+    // Find and age the checkpoint metadata
+    const cpDir = getProjectCheckpointsDir(TEST_PROJECT);
+    const oldMetaPath = path.join(cpDir, 'old-turn', '.checkpoint.json');
+
+    expect(fs.existsSync(oldMetaPath)).toBe(true);
+    const oldTime = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000); // 8 days ago
+    fs.utimesSync(oldMetaPath, oldTime, oldTime);
+
+    cleanupCheckpoints(TEST_PROJECT);
+    const remaining = listCheckpoints(TEST_PROJECT);
+    expect(remaining).toHaveLength(0);
+  });
+
+  test('cleanupCheckpoints keeps recent checkpoints', () => {
+    const filePath = path.join(TEST_PROJECT, 'recent.txt');
+    fs.writeFileSync(filePath, 'recent', 'utf8');
+    createCheckpoint(TEST_PROJECT, 'recent-turn', [filePath]);
+
+    cleanupCheckpoints(TEST_PROJECT);
+    const remaining = listCheckpoints(TEST_PROJECT);
+    expect(remaining).toHaveLength(1);
+  });
+
+  test('shouldCreateMultiFileCheckpoint returns true when changed file count meets threshold', () => {
+    expect(shouldCreateMultiFileCheckpoint(5)).toBe(true);
+    expect(shouldCreateMultiFileCheckpoint(10)).toBe(true);
+    expect(shouldCreateMultiFileCheckpoint(7, 3)).toBe(true);
+  });
+
+  test('shouldCreateMultiFileCheckpoint returns false when changed file count is below threshold', () => {
+    expect(shouldCreateMultiFileCheckpoint(4)).toBe(false);
+    expect(shouldCreateMultiFileCheckpoint(1, 5)).toBe(false);
+    expect(shouldCreateMultiFileCheckpoint(0)).toBe(false);
+  });
+});
