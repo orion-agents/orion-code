@@ -1,6 +1,6 @@
 {
   "name": "orion-code",
-  "version": "0.2.27",
+  "version": "0.1.0",
   "description": "Orion Code - goal-driven coding agent for the terminal.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
