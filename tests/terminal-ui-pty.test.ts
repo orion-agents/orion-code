@@ -10,7 +10,7 @@ function findPython(): string | null {
   return null;
 }
 
-describe('Default terminal agent flow PTY smoke', () => {
+describe('Explicit terminal agent flow PTY smoke', () => {
   const python = findPython();
   const smokeScript = join(__dirname, '..', 'scripts', 'terminal-ui-pty-smoke.py');
   const maybeIt = python && existsSync(smokeScript) && process.platform !== 'win32' ? it : it.skip;

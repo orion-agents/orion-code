@@ -6,7 +6,7 @@
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18.0-green.svg)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/typescript-5.0-blue.svg)](https://www.typescriptlang.org)
-[![npm](https://img.shields.io/npm/v/orion-code.svg)](https://www.npmjs.com/package/orion-code)
+[![npm](https://img.shields.io/npm/v/%40orion-agents%2Forion-code.svg)](https://www.npmjs.com/package/@orion-agents/orion-code)
 
 ---
 
@@ -62,7 +62,7 @@
 
 ```bash
 # 克隆
-git clone https://github.com/Linux2010/orion-code.git
+git clone https://github.com/orion-agents/orion-code.git
 cd orion-code
 
 # 安装依赖

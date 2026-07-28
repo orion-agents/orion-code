@@ -36,7 +36,7 @@ Orion Code is a terminal-based coding agent. It wraps LLM APIs in a harness of s
 
 ```bash
 # Install globally
-npm install -g orion-code
+npm install -g @orion-agents/orion-code
 
 # Or from source
 git clone https://github.com/orion-agents/orion-code.git
@@ -49,10 +49,10 @@ export ORION_CODE_API_KEY=your-api-key
 # Start
 orion
 
-# TUI renderer (recommended)
+# TUI renderer (default)
 orion --ui tui
 
-# Stable terminal renderer
+# Stable terminal fallback
 orion --ui terminal
 
 # Diagnostics
@@ -68,6 +68,31 @@ orion commit
 orion -p "review the current git diff"
 echo "summarize this project" | orion --print
 ```
+
+### TUI startup banner
+
+The default TUI displays a portable sky-blue pixel banner: a compact landscape
+rectangle with a line-drawn Orion constellation on the left and a full,
+centered `OC` mark on the right, beside `ORION CODE | 猎户座`. The mark uses
+three pixel densities and cyan depth levels for a finely layered appearance. It
+works in Apple Terminal and automatically becomes a compact text banner in
+narrow terminals.
+
+```bash
+# Default portable pixel banner
+ORION_TUI_IMAGE=off orion
+
+# Opt into a PNG in compatible terminals
+ORION_TUI_IMAGE=auto orion
+ORION_TUI_IMAGE=kitty orion
+ORION_TUI_IMAGE=iterm2 orion
+
+# Override the bundled PNG
+ORION_TUI_ICON=/absolute/path/to/icon.png orion
+```
+
+Apple Terminal does not support either inline image protocol, so both protocol
+requests safely fall back to the pixel banner instead of emitting image data.
 
 ## Key Features
 

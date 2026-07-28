@@ -836,7 +836,7 @@ export class TerminalEventSink implements UiEventSink {
 export function renderTerminalBanner(runtime: OpenHorseUiRuntime): string {
   const width = Math.max(2, terminalContentWidth(88));
   const line = '─'.repeat(Math.max(0, width - 2));
-  const firstLine = ` ${ACCENT.bold('ORION CODE')} ${DIM(`v${runtime.version}`)} ${DIM('stable terminal UI')}`;
+  const firstLine = ` ${ACCENT.bold('ORION CODE | 猎户座')} ${DIM(`v${runtime.version}`)} ${DIM('stable terminal UI')}`;
   const projectPrefix = ` ${DIM('Model')} ${ACCENT(runtime.config.model)}  ${DIM('Project')} `;
   const project = truncateTerminalText(
     runtime.cwd,

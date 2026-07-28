@@ -413,7 +413,7 @@ describe('runtime/UI renderer parity contract', () => {
     const tuiCaps = resolveUiRendererCapabilities(undefined, 'tui');
     const terminalCaps = resolveUiRendererCapabilities(undefined, 'terminal');
 
-    // TUI must have the same interactive capabilities as the default terminal renderer
+    // TUI must have the same interactive capabilities as the stable terminal renderer
     expect(tuiCaps).toEqual(terminalCaps);
     expect(tuiCaps.structuredPickers).toBe(true);
     expect(tuiCaps.inlineProgress).toBe(true);

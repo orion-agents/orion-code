@@ -91,14 +91,29 @@ describe('tui transcript layout', () => {
       finalized: true,
     }, { width: 24 });
 
-    expect(rows.length).toBeGreaterThan(1);
-    expect(rowText(rows[0]).startsWith(' › **literal**')).toBe(true);
+    expect(rows.length).toBeGreaterThan(3);
+    expect(rowText(rows[0])).toBe('');
+    expect(rowText(rows[rows.length - 1])).toBe('');
+    const messageRows = rows.slice(1, -1);
+    expect(rowText(messageRows[0]).startsWith(' › **literal**')).toBe(true);
     expect(allText(rows)).toContain('**literal**');
-    for (const row of rows) {
+    for (const row of messageRows) {
       expect(stringWidth(rowText(row))).toBe(24);
       expect(row.length).toBeGreaterThan(0);
       expect(row.every(span => span.style.background !== undefined)).toBe(true);
     }
+  });
+
+  it('adds one blank row before and after user content', () => {
+    const rows = layoutTranscriptEntry(
+      { role: 'user', content: 'separate me from the agent' },
+      { width: 40 },
+    );
+
+    expect(rows).toHaveLength(3);
+    expect(rowText(rows[0])).toBe('');
+    expect(rowText(rows[1])).toContain('separate me from the agent');
+    expect(rowText(rows[2])).toBe('');
   });
 
   it.each([

@@ -10,12 +10,12 @@ function findPython(): string | null {
   return null;
 }
 
-describe('Explicit renderer-owned TUI PTY smoke', () => {
+describe('Default renderer-owned TUI PTY smoke', () => {
   const python = findPython();
   const smokeScript = join(__dirname, '..', 'scripts', 'tui-ui-pty-smoke.py');
   const maybeIt = python && existsSync(smokeScript) && process.platform !== 'win32' ? it : it.skip;
 
-  maybeIt('keeps the prompt, CJK input, Backspace, and terminal restoration stable with --ui tui', () => {
+  maybeIt('keeps the prompt, CJK input, Backspace, and terminal restoration stable by default', () => {
     const result = spawnSync(python as string, [smokeScript], {
       cwd: join(__dirname, '..'),
       encoding: 'utf8',
