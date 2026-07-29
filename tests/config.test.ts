@@ -9,6 +9,7 @@ import {
   isInteractiveUIRenderer,
   isSupportedUIRenderer,
   resolveUIRenderer,
+  DEFAULT_UI_RENDERER,
   SUPPORTED_UI_RENDERERS,
 } from '../src/services/config';
 import { delimiter } from 'path';
@@ -67,7 +68,7 @@ describe('loadConfig', () => {
     expect(config.logLevel).toBe('info');
     expect(config.apiKey).toBe('');
     expect(config.toolConfirmation).toBe('allow');
-    expect(config.ui).toEqual({ renderer: 'terminal', confirmations: 'config' });
+    expect(config.ui).toEqual({ renderer: 'tui', confirmations: 'config' });
   });
 
   test('overrides take priority', () => {
@@ -140,7 +141,7 @@ describe('loadConfig', () => {
     expect(config.model).toBe('env-model');
     expect(config.fallbackModel).toBe('env-fallback');
     expect(config.toolConfirmation).toBe('ask');
-    expect(config.ui).toEqual({ renderer: 'terminal', confirmations: 'interactive' });
+    expect(config.ui).toEqual({ renderer: 'tui', confirmations: 'interactive' });
     expect(config.webSearch).toEqual({
       apiKey: 'sk-websearch-env',
       provider: 'tavily',
@@ -192,8 +193,8 @@ describe('loadConfig', () => {
     expect(config.model).toBe('glm-5');
     expect(config.fallbackModel).toBe('qwen-plus');
     expect(config.toolConfirmation).toBe('deny');
-    // openhorse.json no longer controls renderer; terminal is the product default.
-    expect(config.ui).toEqual({ renderer: 'terminal', confirmations: 'interactive' });
+    // orion.json no longer controls renderer; TUI is the product default.
+    expect(config.ui).toEqual({ renderer: 'tui', confirmations: 'interactive' });
     expect(config.webSearch?.endpoint).toBe('https://dashscope.example/mcp');
     expect(config.webSearch?.apiKey).toBe('sk-websearch-global');
     expect(config.webSearch?.toolName).toBe('web_search');
@@ -248,7 +249,7 @@ describe('loadConfig', () => {
     expect(config.ui).toEqual({ renderer: 'tui', confirmations: 'config' });
   });
 
-  test('ignores env renderer so npm run start stays on the stable terminal UI', () => {
+  test('ignores env renderer so npm run start stays on the default TUI', () => {
     jest.spyOn(require('../src/services/global-config'), 'loadGlobalConfig').mockReturnValue({
       defaultModel: 'gpt-4o',
     });
@@ -257,7 +258,7 @@ describe('loadConfig', () => {
     process.env.ORION_CODE_UI_RENDERER = 'ink';
 
     const config = loadConfig();
-    expect(config.ui).toEqual({ renderer: 'terminal', confirmations: 'config' });
+    expect(config.ui).toEqual({ renderer: 'tui', confirmations: 'config' });
   });
 
   test('ignores invalid tool confirmation values', () => {
@@ -272,12 +273,13 @@ describe('loadConfig', () => {
 
     const config = loadConfig();
     expect(config.toolConfirmation).toBe('allow');
-    expect(config.ui).toEqual({ renderer: 'terminal', confirmations: 'config' });
+    expect(config.ui).toEqual({ renderer: 'tui', confirmations: 'config' });
   });
 });
 
 describe('UI renderer helpers', () => {
   test('defines terminal as stable, tui as recommended beta, ink as deprecated beta', () => {
+    expect(DEFAULT_UI_RENDERER).toBe('tui');
     expect(SUPPORTED_UI_RENDERERS).toEqual(['terminal', 'tui', 'ink']);
     expect(resolveUIRenderer('stable')).toBe('terminal');
     expect(resolveUIRenderer('terminal')).toBe('terminal');
@@ -349,7 +351,7 @@ describe('getConfigSummary', () => {
     expect(summary.model).toBe('gpt-4o');
     expect(summary.fallback).toBe('claude-sonnet-4-6');
     expect(summary.toolConfirmation).toBe('allow');
-    expect(summary.ui).toBe('terminal/config');
+    expect(summary.ui).toBe('tui/config');
     expect(summary.webSearch).toBe('(default)');
   });
 });

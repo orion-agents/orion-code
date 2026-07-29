@@ -173,7 +173,7 @@ describe('terminal UI renderer adapter', () => {
     const runtime = makeRuntime();
     const banner = stripAnsi(renderTerminalBanner(runtime));
 
-    expect(banner).toContain('ORION CODE');
+    expect(banner).toContain('ORION CODE | 猎户座');
     expect(banner).toContain('vtest');
     expect(banner).toContain('stable terminal UI');
     expect(banner).toContain('Model test-model');

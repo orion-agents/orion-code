@@ -26,8 +26,10 @@ describe('tui-ui layout', () => {
     const frame = renderTuiUiFrame(state, { width: 32, height: 10 });
     const rows = renderFrameRows(frame);
 
-    expect(rows[0]).toContain('› 你好');
-    expect(rows[1]).toContain('收到');
+    expect(rows[0].trim()).toBe('');
+    expect(rows[1]).toContain('› 你好');
+    expect(rows[2].trim()).toBe('');
+    expect(rows[3]).toContain('收到');
     expect(rows[6]).toContain('ready');
     expect(rows[6]).toContain('model=glm-5');
     expect(rows[7]).toBe('┌──────────────────────────────┐');
@@ -48,11 +50,13 @@ describe('tui-ui layout', () => {
     const frame = renderTuiUiFrame(state, { width: 40, height: 10 });
     const rows = renderFrameRows(frame);
 
-    expect(rows[0]).toContain('› question');
-    expect(frame.rows[0].slice(0, 40).every(cell => cell.style.background)).toBe(true);
-    expect(rows[1]).toContain('Heading');
-    expect(rows[1]).not.toContain('# Heading');
-    expect(frame.rows[1].some(cell => cell.char === 'H' && cell.style.bold)).toBe(true);
+    expect(rows[0].trim()).toBe('');
+    expect(rows[1]).toContain('› question');
+    expect(frame.rows[1].slice(0, 40).every(cell => cell.style.background)).toBe(true);
+    expect(rows[2].trim()).toBe('');
+    expect(rows[3]).toContain('Heading');
+    expect(rows[3]).not.toContain('# Heading');
+    expect(frame.rows[3].some(cell => cell.char === 'H' && cell.style.bold)).toBe(true);
   });
 
   it('shows session picker overlay in the frame without mutating transcript state', () => {

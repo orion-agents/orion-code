@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PTY smoke test for the default scrollback terminal UI.
+"""PTY smoke test for the explicit stable scrollback terminal UI.
 
 The product default intentionally avoids alternate-screen/full-frame rendering.
 It uses a small raw editor so Orion Code can restore in-progress CJK input while
@@ -427,13 +427,13 @@ def spawn_orion(repo: Path, base_url: str, config_dir: str, rows: int = 24, cols
             "ORION_CODE_MODEL": "mock-terminal",
             "ORION_CODE_TOOL_CONFIRMATION": "allow",
             # Renderer selection is command-line only. Stale .env values must
-            # not pull the default startup path into a raw-mode renderer.
+            # not override the explicit stable-terminal selection.
             "ORION_CODE_UI": "ink",
             "ORION_CODE_UI_RENDERER": "ink",
         }
     )
     process = subprocess.Popen(
-        ["npm", "run", "start"],
+        ["npm", "run", "start", "--", "--ui", "terminal"],
         cwd=repo,
         stdin=slave,
         stdout=slave,
@@ -461,7 +461,7 @@ def stop_process(process: subprocess.Popen[bytes], master: int | None) -> None:
 def main() -> int:
     # === Manual Validation Steps for Long Session with Chinese IME ===
     # 1. Launch the terminal UI in a real terminal (not PTY smoke):
-    #      npm run start
+    #      npm run start -- --ui terminal
     # 2. Type a long CJK sentence via IME (e.g. "这是一个需要长时间编辑的复杂中文句子")
     #    and verify the raw editor correctly renders combining characters.
     # 3. Mid-edit, submit the prompt. While the assistant streams output, type
@@ -520,9 +520,9 @@ def main() -> int:
 
         plain = strip_ansi(b"".join(output).decode("utf-8", errors="replace"))
         if "context harness coding agent" in plain or "│ ›" in plain:
-            raise AssertionError("Default terminal UI entered a full-frame renderer")
+            raise AssertionError("Explicit terminal UI entered a full-frame renderer")
         if b"\x1b[?1049h" in b"".join(output):
-            raise AssertionError("Default terminal UI entered alternate screen")
+            raise AssertionError("Explicit terminal UI entered alternate screen")
 
         os.write(master, "开源小？事收到".encode("utf-8"))
         wait_for(master, output, "开源小？事收到", timeout=5)

@@ -10,7 +10,14 @@ import { init, type OrionCodeRuntime } from './init';
 import { LLMService } from './services/llm';
 import { ProviderResilienceCoordinator } from './services/provider-resilience';
 import { ModelCoordinator } from './runtime/model-coordinator';
-import { loadConfig, isConfigured, resolveUIRenderer, SUPPORTED_UI_RENDERERS, type UIRenderer } from './services/config';
+import {
+  DEFAULT_UI_RENDERER,
+  loadConfig,
+  isConfigured,
+  resolveUIRenderer,
+  SUPPORTED_UI_RENDERERS,
+  type UIRenderer,
+} from './services/config';
 import { ensureConfigDir } from './services/config-dir';
 import { recordFirstStartTime, incrementSessionCount } from './services/global-config';
 import { appendUsageRecord } from './services/usage-state';
@@ -54,7 +61,7 @@ function showCliHelp(): void {
   console.log(DIM('  Orion Code - goal-driven coding agent for the terminal.'));
   console.log();
   console.log(ACCENT('Usage:'));
-  console.log('  orion             Start the stable native terminal UI');
+  console.log('  orion             Start the default TUI renderer');
   console.log('  orion doctor      Run local diagnostics and exit');
   console.log('  orion diff        Summarize current git workspace changes');
   console.log('  orion commit      Create a read-only commit plan and suggested message');
@@ -62,7 +69,7 @@ function showCliHelp(): void {
   console.log('  orion --help      Show this help message');
   console.log('  orion --version   Show version');
   console.log('  orion --ui terminal  Start the stable native terminal UI explicitly');
-  console.log('  orion --ui tui    Start the recommended beta TUI renderer');
+  console.log('  orion --ui tui    Start the default TUI renderer explicitly');
   console.log('  orion --ui ink    Start the deprecated Ink/React UI');
   console.log();
   console.log(ACCENT('Options:'));
@@ -72,7 +79,7 @@ function showCliHelp(): void {
   console.log(`  --ui <mode>    UI renderer: ${SUPPORTED_UI_RENDERERS.join(', ')}`);
   console.log('  --output-format <text|json>  Print-mode output format');
   console.log();
-  console.log(DIM('terminal is the stable default. tui is recommended beta; ink is deprecated beta; print is experimental.'));
+  console.log(DIM('tui is the default. terminal is the stable fallback; ink is deprecated beta; print is experimental.'));
   console.log();
 }
 
@@ -84,7 +91,7 @@ interface CliOptions {
 }
 
 function parseCliOptions(args: string[]): CliOptions {
-  let uiRenderer: UIRenderer = 'terminal';
+  let uiRenderer: UIRenderer = DEFAULT_UI_RENDERER;
   let printMode = false;
   let outputFormat: PrintOutputFormat = 'text';
   const promptArgs: string[] = [];

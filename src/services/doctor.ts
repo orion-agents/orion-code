@@ -406,7 +406,7 @@ export function collectDoctorReport(ctx: DoctorContext): DoctorReport {
       label: 'Permissions',
       summary: `toolConfirmation=${ctx.config.toolConfirmation}, ui=${ctx.config.ui?.renderer}/${ctx.config.ui?.confirmations}`,
       detail: ctx.config.toolConfirmation === 'ask'
-        ? `Interactive tool confirmation is routed through the shared runtime permission protocol.${isDeprecatedUIRenderer(ctx.config.ui?.renderer) ? ' This renderer is deprecated; consider switching to --ui tui.' : isRecommendedBetaUIRenderer(ctx.config.ui?.renderer) ? ' TUI is the recommended beta renderer; terminal remains the stable default.' : ''}`
+        ? `Interactive tool confirmation is routed through the shared runtime permission protocol.${isDeprecatedUIRenderer(ctx.config.ui?.renderer) ? ' This renderer is deprecated; consider switching to --ui tui.' : isRecommendedBetaUIRenderer(ctx.config.ui?.renderer) ? ' TUI is the product default; terminal remains the stable fallback.' : ''}`
         : undefined,
     },
     {

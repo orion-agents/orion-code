@@ -1,6 +1,6 @@
 {
-  "name": "orion-code",
-  "version": "0.2.27",
+  "name": "@orion-agents/orion-code",
+  "version": "0.1.0",
   "description": "Orion Code - goal-driven coding agent for the terminal.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -10,6 +10,7 @@
   "files": [
     "dist/",
     "bin/",
+    "assets/",
     "LICENSE",
     "README.md"
   ],
@@ -41,11 +42,14 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Linux2010/orion-code.git"
+    "url": "git+https://github.com/orion-agents/orion-code.git"
   },
-  "homepage": "https://github.com/Linux2010/orion-code#readme",
+  "homepage": "https://github.com/orion-agents/orion-code#readme",
   "bugs": {
-    "url": "https://github.com/Linux2010/orion-code/issues"
+    "url": "https://github.com/orion-agents/orion-code/issues"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
     "@clack/prompts": "^0.7.0",

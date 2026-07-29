@@ -15,6 +15,12 @@ import { InlineTerminalSurface } from './inline-surface';
 import { FileToolDetailRepository } from '../runtime/tool-detail-repository';
 import { TranscriptInspectorSurface } from './transcript-inspector-surface';
 import { spawn } from 'child_process';
+import {
+  detectTerminalImageProtocol,
+  readTuiIcon,
+  renderTuiStartupBanner,
+  resolveTuiIconPath,
+} from './terminal-image';
 
 const DISABLE_BRACKETED_PASTE = '\x1b[?2004l';
 const SHOW_CURSOR = '\x1b[?25h';
@@ -24,6 +30,8 @@ const EXIT_ALTERNATE_SCREEN = '\x1b[?1049l';
 export interface TuiLaunchOptions {
   input?: NodeJS.ReadStream;
   output?: NodeJS.WriteStream;
+  /** Inject terminal environment for protocol detection and deterministic tests. */
+  env?: NodeJS.ProcessEnv;
 }
 
 export async function launchTuiUI(
@@ -32,6 +40,7 @@ export async function launchTuiUI(
 ): Promise<void> {
   const input = options.input ?? process.stdin;
   const output = options.output ?? process.stdout;
+  const env = options.env ?? process.env;
 
   if (input.isTTY === false || output.isTTY === false) {
     throw new Error('TUI renderer requires a TTY input and output');
@@ -40,7 +49,6 @@ export async function launchTuiUI(
   let runner!: TuiRunner;
   let controller!: AgentRuntimeController;
   let surface!: InlineTerminalSurface;
-  let systemId: string | null = null;
   let stopping = false;
   let settled = false;
   let resolveLaunch: (() => void) | null = null;
@@ -325,13 +333,6 @@ export async function launchTuiUI(
   };
 
   const submit = (rawInput: string): void => {
-    // Finalize the initial system message so it can be committed to scrollback
-    // and the commit boundary can advance past it.
-    if (systemId !== null) {
-      runner.events.finalize(systemId);
-      systemId = null; // Only finalize once.
-    }
-
     const selectedInput = consumeSessionPickerSelection(rawInput);
     const runtimeInput: AgentRuntimeInput =
       typeof selectedInput === 'string'
@@ -406,6 +407,24 @@ export async function launchTuiUI(
   try {
     // Primary-screen inline surface: no alternate screen (1049).
     const { width, height } = dimensions();
+    const protocol = detectTerminalImageProtocol({
+      env,
+      isTTY: true,
+    });
+    const image = readTuiIcon(resolveTuiIconPath(env));
+    const startupSnapshot = runtime.store.getSnapshot();
+    output.write(
+      renderTuiStartupBanner({
+        cwd: runtime.cwd,
+        version: runtime.version,
+        model: startupSnapshot.currentModel || runtime.config.model,
+        terminalWidth: width,
+        protocol,
+        image,
+        suppressColor:
+          Object.prototype.hasOwnProperty.call(env, 'NO_COLOR') || env.FORCE_COLOR === '0',
+      })
+    );
     surface = new InlineTerminalSurface({ output });
     const inspectorSurface = new TranscriptInspectorSurface(output);
     // Mount enters the same serialized queue as subsequent paints. Start it
@@ -472,14 +491,6 @@ export async function launchTuiUI(
       useRuntimeToolPermissions: true,
       runningStatus: () => dispatchStatusSnapshot('running'),
       readyStatus: () => dispatchStatusSnapshot('ready'),
-    });
-    // The initial system message stays live (not finalized) so it's visible
-    // in the live region rather than scrolling off into shell scrollback.
-    // It's finalized when the user submits their first input.
-    systemId = runner.events.append({
-      role: 'system',
-      content: `ORION CODE v${runtime.version}\nProject ${runtime.cwd}\n/ commands   @ files   ? shortcuts   Ctrl+O tools   Ctrl+C twice exits`,
-      live: true,
     });
     runner.events.setStatus(statusSnapshotString(runtime));
     dispatchStatusSnapshot('ready');

@@ -526,13 +526,13 @@ def spawn_orion(repo: Path, base_url: str, config_dir: str, rows: int = 24, cols
             "ORION_CODE_API_KEY": "sk-orion-code-tui-pty",
             "ORION_CODE_API_BASE_URL": base_url,
             "ORION_CODE_MODEL": "mock-tui-stream",
-            # Stale renderer env values must not override the explicit CLI selection.
+            # Stale renderer env values must not override the product default.
             "ORION_CODE_UI": "terminal",
             "ORION_CODE_UI_RENDERER": "terminal",
         }
     )
     process = subprocess.Popen(
-        ["npm", "run", "start", "--", "--ui", "tui"],
+        ["npm", "run", "start"],
         cwd=repo,
         stdin=slave,
         stdout=slave,
@@ -622,7 +622,7 @@ def main() -> int:
         )
 
     try:
-        wait_for(master, output, "ORION CODE v", timeout=20)
+        wait_for(master, output, "ORION CODE | 猎户座", timeout=20)
         wait_for(master, output, "/ commands", timeout=20)
         # v0.2.21: primary-screen inline surface - NO alternate screen.
         if b"\x1b[?1049h" in b"".join(output):

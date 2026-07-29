@@ -72,7 +72,7 @@ describe('/status context diagnostics', () => {
 
     expect(result.success).toBe(true);
     expect(rendered).toContain('Context:');
-    expect(rendered).toContain('Renderer   terminal stable');
+    expect(rendered).toContain('Renderer   tui beta');
     expect(rendered).toContain('pickers, inline-progress, clean-meta, assistant-spacing, quiet-abort');
     expect(rendered).toContain('Project rules 2 files');
     expect(rendered).toContain('AGENTS.md');

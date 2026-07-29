@@ -109,7 +109,10 @@ export function layoutTranscriptEntry(
     }
   }
 
-  return rows.map(row => normalizeOutputRow(row, width));
+  const spacedRows = entry.role === 'user' && !isToolEntry(entry)
+    ? [[], ...rows, []]
+    : rows;
+  return spacedRows.map(row => normalizeOutputRow(row, width));
 }
 
 /** Paint one styled transcript row into a frame using terminal cell widths. */

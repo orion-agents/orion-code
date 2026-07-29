@@ -7,8 +7,8 @@
  *   3. ORION_CODE_* environment variables
  *   4. Agent internal defaults
  *
- * UI renderer is intentionally not read from orion.json or env. The stable
- * native terminal UI is the default; --ui tui is the recommended beta renderer;
+ * UI renderer is intentionally not read from orion.json or env. TUI is the
+ * product default; --ui terminal selects the stable native terminal fallback;
  * --ui ink is deprecated and will be removed in a future release.
  */
 
@@ -61,6 +61,7 @@ export type {
 
 export const STABLE_UI_RENDERER: UIRenderer = 'terminal';
 export const RECOMMENDED_BETA_UI_RENDERER: UIRenderer = 'tui';
+export const DEFAULT_UI_RENDERER: UIRenderer = RECOMMENDED_BETA_UI_RENDERER;
 export const DEPRECATED_BETA_UI_RENDERERS = ['ink'] as const satisfies readonly UIRenderer[];
 export const BETA_UI_RENDERERS = [RECOMMENDED_BETA_UI_RENDERER, ...DEPRECATED_BETA_UI_RENDERERS] as const satisfies readonly UIRenderer[];
 export const SUPPORTED_UI_RENDERERS = [STABLE_UI_RENDERER, ...BETA_UI_RENDERERS] as const satisfies readonly UIRenderer[];
@@ -103,7 +104,7 @@ const INTERNAL_DEFAULTS = {
   logLevel: 'info',
   toolConfirmation: 'allow' as ToolConfirmationPolicy,
   ui: {
-    renderer: 'terminal' as UIRenderer,
+    renderer: DEFAULT_UI_RENDERER,
     confirmations: 'config' as UIConfirmationMode,
   },
 } as const;
