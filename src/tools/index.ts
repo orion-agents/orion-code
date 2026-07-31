@@ -51,8 +51,8 @@ import { lspTools } from './lsp';
 import { GOAL_TOOLS } from '../runtime/goals/tools';
 import { assessCommandSecurity, isReadOnlyCommand } from './bash_security';
 
-const BATCH_READ_ALLOWED_TOOLS = new Set(['git_status', 'list_files', 'glob', 'grep', 'read_file']);
-const BATCH_READ_MAX_STEPS = 8;
+export const BATCH_READ_ALLOWED_TOOLS = new Set(['git_status', 'list_files', 'glob', 'grep', 'read_file']);
+export const BATCH_READ_MAX_STEPS = 8;
 const BATCH_READ_STEP_OUTPUT_MAX_BYTES = 1600;
 
 function compactOneLine(text: string, maxLength: number): string {

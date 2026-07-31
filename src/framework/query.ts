@@ -36,6 +36,7 @@ import {
 import { estimateMessagesTokens } from '../utils/token-estimate';
 import { parseToolResultEnvelope, serializeToolResult } from './tool-serializer';
 import { createContextUsageSnapshot, type ContextUsageSnapshot } from '../services/model-context';
+import { BATCH_READ_ALLOWED_TOOLS } from '../tools';
 
 export const DEFAULT_MAX_MODEL_VISIBLE_TOOL_RESULT_BYTES = 4096;
 
@@ -654,6 +655,7 @@ export type QueryEvent =
     }
   | { type: 'strategy_exhausted'; suggestion: string }
   | { type: 'message'; role: 'assistant'; content: string }
+  | { type: 'warning'; message: string }
   | {
       type: 'complete';
       content: string;
@@ -829,6 +831,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
 
   const openaiTools = toOpenAITools(tools) as unknown as Tool[];
   let turn = 0;
+  let consecutiveCompletionGateBlocks = 0;
   const stats = createLoopStats();
   let pendingCompact: QueryCompactCommit | undefined;
   let loopBudget = resolveLoopBudget(params.loopBudget);
@@ -837,13 +840,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
     512,
     params.maxModelVisibleToolResultBytes ?? DEFAULT_MAX_MODEL_VISIBLE_TOOL_RESULT_BYTES
   );
-  const fragmentedReadOnlyTools = new Set([
-    'read_file',
-    'glob',
-    'grep',
-    'list_files',
-    'git_status',
-  ]);
+  const fragmentedReadOnlyTools = new Set(BATCH_READ_ALLOWED_TOOLS);
 
   // 无限循环，依赖安全机制停止
   while (true) {
@@ -928,6 +925,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
       predictedTokens,
       autoCompact.hasProviderCalibration(llm.getModel()) ? 'provider_adjusted' : 'estimated'
     );
+    const preCompactObjective = harness?.getCapsule()?.contract?.objective;
     const preCompacted = await autoCompact.checkPredictiveAndCompact(messages, predictedTokens);
     if (preCompacted !== messages) {
       stats.compactTrigger = 'pre_turn';
@@ -939,6 +937,13 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
             tools: tools.map(tool => ({ name: tool.name, description: tool.description })),
           })
         : messages;
+      const postCompactObjective = harness?.getCapsule()?.contract?.objective;
+      if (preCompactObjective && postCompactObjective && preCompactObjective !== postCompactObjective) {
+        yield {
+          type: 'warning',
+          message: 'Harness objective may have shifted during compact. Verify current task alignment.',
+        };
+      }
       requestEstimatedTokens = estimateMessagesTokens(requestMessages);
       const compactedTokens = autoCompact.adjustTokenEstimate(
         requestEstimatedTokens,
@@ -1257,10 +1262,28 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
     // No tool calls — done, unless the harness requires one more pass.
     const completionGate = harness?.beforeComplete();
     if (completionGate && !completionGate.canComplete) {
+      consecutiveCompletionGateBlocks++;
+      if (consecutiveCompletionGateBlocks >= 2) {
+        const missing = completionGate.missing?.length
+          ? completionGate.missing.join('; ')
+          : 'required verification evidence is missing';
+        yield attachCompactCommit(
+          {
+            type: 'complete',
+            content: `Completion gate stopped this turn: ${missing}\nRun the required verification, then continue.`,
+            model: response.model || llm.getModel(),
+            stats: cloneLoopStats(stats, 'completion_gate'),
+          },
+          pendingCompact,
+          messages
+        );
+        return;
+      }
       messages.push(harness!.asCompletionBlockedMessage(completionGate));
       stats.finishReason = 'completion_gate';
       continue;
     }
+    consecutiveCompletionGateBlocks = 0;
 
     yield { type: 'message', role: 'assistant', content: response.content };
 

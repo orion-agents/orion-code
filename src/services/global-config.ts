@@ -30,7 +30,7 @@ export interface ProjectConfig {
 /** How to handle tool permission checks that request interactive confirmation. */
 export type ToolConfirmationPolicy = 'ask' | 'allow' | 'deny';
 
-/** Runtime-only UI renderer selection. TUI is default; Terminal is the stable fallback; Ink is deprecated beta. */
+/** Runtime-only UI renderer selection. TUI is the product default; Terminal is the technical fallback; Ink is deprecated (removed in v0.2.0). */
 export type UIRenderer = 'terminal' | 'tui' | 'ink';
 
 /** How UI permission prompts should be handled. */

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""PTY smoke test for the explicit stable scrollback terminal UI.
+"""PTY smoke test for the explicit technical scrollback terminal UI.
 
-The product default intentionally avoids alternate-screen/full-frame rendering.
-It uses a small raw editor so Orion Code can restore in-progress CJK input while
-assistant output streams, without putting prompt frames into shell scrollback.
+This diagnostics and compatibility renderer avoids alternate-screen/full-frame
+rendering. It uses a small raw editor so Orion Code can restore in-progress CJK
+input while assistant output streams, without putting prompt frames into shell
+scrollback.
 """
 
 from __future__ import annotations
@@ -514,7 +515,7 @@ def main() -> int:
         return "\n".join(model.lines())
 
     try:
-        wait_for(master, output, "stable terminal UI", timeout=20)
+        wait_for(master, output, "technical terminal UI", timeout=20)
         wait_for(master, output, "Ready. Terminal editor supports", timeout=20)
         wait_for(master, output, "[new] ›", timeout=20)
 

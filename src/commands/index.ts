@@ -22,7 +22,7 @@ import {
 import type { Task } from '../core/agent';
 import { TaskManager, CreateTaskOptions } from '../services/task-manager';
 import { AgentRunner } from '../services/agent-runner';
-import { isBetaUIRenderer, isConfigured } from '../services/config';
+import { isConfigured } from '../services/config';
 import { createSpinner, toolLine } from '../ui/box';
 import { createStreamRenderer, type StreamMarkdownRenderer } from '../ui/stream-markdown';
 import { hideProgress, showToolProgress } from '../ui/progress';
@@ -58,7 +58,6 @@ import {
   type SessionTraceEvent,
 } from '../services/session-storage';
 import { loadSessionIndex, searchSessions } from '../services/session-index';
-import { GoalCoordinator } from '../runtime/goals/coordinator';
 import { getAutoCompact } from '../services/compact/auto-compact';
 import { CompactCoordinator } from '../services/compact/coordinator';
 import { createContextHarness } from '../harness';
@@ -153,10 +152,10 @@ function formatRendererStatus(ctx: CommandContext): string {
   });
   const status = snapshot.renderer.status === 'deprecated'
     ? WARN('deprecated')
-    : snapshot.renderer.status === 'beta' || isBetaUIRenderer(snapshot.renderer.name)
-      ? WARN('beta')
-      : snapshot.renderer.status === 'stable'
-        ? SUCCESS('stable')
+    : snapshot.renderer.status === 'product'
+      ? SUCCESS('product')
+      : snapshot.renderer.status === 'technical'
+        ? DIM('technical')
         : snapshot.renderer.status === 'non-interactive'
           ? DIM('non-interactive')
         : DIM('custom');
@@ -313,6 +312,10 @@ function isAbortError(error: unknown, abortSignal?: AbortSignal): boolean {
   return false;
 }
 
+function hasCommandFlag(args: string, flag: string): boolean {
+  return args.trim().split(/\s+/u).includes(flag);
+}
+
 // ============================================================================
 // 工具参数摘要
 // ============================================================================
@@ -324,12 +327,12 @@ function isAbortError(error: unknown, abortSignal?: AbortSignal): boolean {
 
 let taskManager: TaskManager | null = null;
 
-function showHelp(): CommandResult {
+function showHelp(ctx: CommandContext): CommandResult {
   console.log();
   console.log(HEADER('Commands:'));
   console.log();
 
-  const visible = getVisibleCommands();
+  const visible = getVisibleCommands(ctx.uiRenderer);
   for (const category of CATEGORY_ORDER) {
     const items = visible.filter(cmd => commandCategory(cmd) === category);
     if (items.length === 0) continue;
@@ -338,8 +341,16 @@ function showHelp(): CommandResult {
     for (const cmd of items) {
       const aliases = cmd.aliases ? ` (${cmd.aliases.join(', ')})` : '';
       const params = cmd.argumentHint || cmd.params?.map(p => `<${p.name}>`).join(' ') || '';
+      const lifecycle = cmd.deprecated
+        ? ` deprecated since ${cmd.deprecated.since}${cmd.deprecated.replacement ? `; use ${cmd.deprecated.replacement}` : ''}`
+        : '';
+      const risk = cmd.risk === 'destructive' ? ' destructive' : '';
+      const availability = cmd.availability?.(ctx);
+      const unavailable = availability && !availability.available
+        ? ` unavailable: ${availability.reason ?? 'requirements not met'}`
+        : '';
       console.log(`  ${ACCENT(`/${cmd.name}`)}${aliases} ${DIM(params)}`);
-      console.log(`    ${DIM(cmd.description)}`);
+      console.log(`    ${DIM(`${cmd.description}${lifecycle}${risk}${unavailable}`)}`);
     }
     console.log();
   }
@@ -2086,9 +2097,10 @@ async function handleExit(ctx: CommandContext): Promise<CommandResult> {
     endSession(ctx.sessionId);
   }
 
+  ctx.requestShutdown?.('user request');
   await ctx.runtime.shutdown();
-  console.log(SUCCESS('Goodbye! 🐴'));
-  process.exit(0);
+  console.log(SUCCESS('Goodbye.'));
+  return { success: true };
 }
 
 function handleCost(ctx: CommandContext): CommandResult {
@@ -2321,17 +2333,37 @@ function handleDoctor(ctx: CommandContext): CommandResult {
 function handleStorage(_ctx: CommandContext, args: string): CommandResult {
   const trimmed = args.trim();
   const [action = 'doctor'] = trimmed.split(/\s+/);
+  const confirmed = hasCommandFlag(trimmed, '--yes');
 
   if (action === 'cleanup') {
-    const dryRun = /\b--dry-run\b/.test(trimmed);
+    const dryRun = hasCommandFlag(trimmed, '--dry-run') || !confirmed;
     const result = cleanupStorage({ dryRun });
     console.log();
     console.log(formatStorageCleanupResult(result));
+    if (!confirmed) {
+      console.log(DIM('Preview only. Run /storage cleanup --yes to apply these deletions.'));
+    }
     console.log();
     return { success: true };
   }
 
   if (action === 'repair') {
+    if (!confirmed) {
+      const report = collectStorageReport();
+      const repairable = report.issues.filter(issue =>
+        issue.kind === 'missing-project-metadata' || issue.kind === 'invalid-project-metadata'
+      );
+      console.log();
+      console.log(HEADER('Orion Code Storage Repair Preview'));
+      console.log(DIM('─'.repeat(40)));
+      console.log(`  Repairable metadata entries ${ACCENT(String(repairable.length))}`);
+      for (const issue of repairable.slice(0, 12)) {
+        console.log(`  ${DIM('•')} ${DIM(issue.path ?? issue.projectKey ?? issue.kind)}`);
+      }
+      console.log(DIM('  Preview only. Run /storage repair --yes to apply metadata changes.'));
+      console.log();
+      return { success: true };
+    }
     const result = repairProjectMetadata();
     console.log();
     console.log(HEADER('Orion Code Storage Repair'));
@@ -2351,7 +2383,7 @@ function handleStorage(_ctx: CommandContext, args: string): CommandResult {
   if (action !== 'doctor' && action !== 'status') {
     return {
       success: false,
-      error: 'Usage: /storage [doctor|status|repair|cleanup --dry-run]',
+      error: 'Usage: /storage [doctor|status|repair [--yes]|cleanup [--dry-run|--yes]]',
     };
   }
 
@@ -2360,75 +2392,6 @@ function handleStorage(_ctx: CommandContext, args: string): CommandResult {
   console.log(formatStorageReport(report));
   console.log();
   return { success: true };
-}
-
-function handleTarget(ctx: CommandContext, args: string): CommandResult {
-  const trimmed = args.trim();
-  // GoalCoordinator needs projectPath + sessionId — derive from context
-  const projectPath = ctx.cwd ?? process.cwd();
-  const sessionId = ctx.sessionId ?? 'default';
-  const coordinator = new GoalCoordinator(projectPath, sessionId);
-
-  // /target (no args) — show current goal
-  if (!trimmed) {
-    const snap = coordinator.snapshot();
-    if (!snap) {
-      console.log(chalk.gray('No goal is currently set. Use /target <objective> to create one.'));
-      return { success: true };
-    }
-    console.log(chalk.bold('Goal: ') + snap.objective);
-    console.log(chalk.gray(`Status: ${snap.status}  |  Continuations: ${snap.continuationCount}`));
-    console.log(chalk.gray(`Tokens: ${snap.tokensUsed}  |  Time: ${snap.timeUsedMs}ms`));
-    return { success: true };
-  }
-
-  // Sub-commands
-  const subCommand = trimmed.split(/\s+/)[0].toLowerCase();
-  const rest = trimmed.slice(subCommand.length).trim();
-
-  switch (subCommand) {
-    case 'pause': {
-      const ok = coordinator.pause();
-      console.log(ok ? chalk.yellow('Goal paused.') : chalk.red('Cannot pause.'));
-      return { success: ok };
-    }
-    case 'resume': {
-      const ok = coordinator.resume();
-      console.log(ok ? chalk.green('Goal resumed.') : chalk.red('Cannot resume.'));
-      return { success: ok };
-    }
-    case 'clear': {
-      const ok = coordinator.clear();
-      console.log(ok ? chalk.gray('Goal cleared.') : chalk.gray('No goal to clear.'));
-      return { success: ok };
-    }
-    case 'status': {
-      const snap = coordinator.snapshot();
-      if (!snap) { console.log(chalk.gray('No goal set.')); return { success: true }; }
-      console.log(chalk.bold(`Status: ${snap.status}`));
-      console.log(`Objective: ${snap.objective}`);
-      console.log(`Continuations: ${snap.continuationCount}  |  Tokens: ${snap.tokensUsed}`);
-      return { success: true };
-    }
-    case 'edit': {
-      if (!rest) { console.log(chalk.red('Usage: /target edit <new objective text>')); return { success: false }; }
-      const ok = coordinator.edit(rest);
-      console.log(ok ? chalk.green('Goal objective updated.') : chalk.red('Cannot edit.'));
-      return { success: ok };
-    }
-    case 'replace': {
-      if (!rest) { console.log(chalk.red('Usage: /target replace <new objective text>')); return { success: false }; }
-      const ok = coordinator.replace(rest);
-      console.log(ok ? chalk.green('Goal replaced.') : chalk.red('Cannot replace.'));
-      return { success: ok };
-    }
-    default: {
-      // Treat as new objective
-      const result = coordinator.create(trimmed);
-      console.log(result.ok ? chalk.green('Goal created: ') + trimmed : chalk.red(result.error ?? 'Failed'));
-      return { success: result.ok };
-    }
-  }
 }
 
 function handleDiff(ctx: CommandContext, args: string): CommandResult {
@@ -2505,19 +2468,30 @@ function handleTodos(ctx: CommandContext): CommandResult {
   return { success: true };
 }
 
-function handleClearHistory(ctx: CommandContext): CommandResult {
+function handleContextClear(ctx: CommandContext, args: string): CommandResult {
   const history = ctx.store.getSnapshot().conversationHistory;
 
   if (history.length === 0) {
-    console.log(DIM('Conversation history is already empty'));
+    console.log(DIM('Current in-memory model context is already empty.'));
     console.log();
     return { success: true };
   }
 
+  if (!hasCommandFlag(args, '--yes')) {
+    return {
+      success: false,
+      error: [
+        `This will clear ${history.length} message(s) from the current in-memory model context.`,
+        'Saved session history will not be deleted and can still be restored with /resume.',
+        'Run /context-clear --yes to continue.',
+      ].join('\n'),
+    };
+  }
+
   ctx.store.resetConversation();
   resetToolState();
-  console.log(SUCCESS(`✔ Cleared ${history.length} messages from conversation history`));
-  console.log(DIM('  Configuration and system state preserved'));
+  console.log(SUCCESS(`✔ Cleared ${history.length} messages from current model context`));
+  console.log(DIM('  Saved session history, configuration, and system state were preserved.'));
   console.log();
   return { success: true };
 }
@@ -3221,21 +3195,18 @@ const COMMANDS: SlashCommand[] = [
   // Coding workflows
   {
     name: 'target',
+    aliases: ['goal'],
     description: 'Create, view, pause, resume, or clear a persistent goal target',
-    argumentHint: '[objective | pause | resume | clear | status | edit <text>]',
+    argumentHint: '[objective | pause | resume | clear --yes | status | edit <text> | budget <tokens>]',
     category: 'workflow',
     priority: 3,
     type: 'builtin',
-    execute: (ctx, args) => handleTarget(ctx, args),
-  },
-  {
-    name: 'goal',
-    description: 'Alias for /target — manage a persistent goal target',
-    argumentHint: '[objective | pause | resume | clear | status | edit <text>]',
-    category: 'workflow',
-    priority: 2,
-    type: 'builtin',
-    execute: (ctx, args) => handleTarget(ctx, args),
+    execution: 'builtin',
+    risk: 'state-write',
+    execute: () => ({
+      success: false,
+      error: '/target must be routed through the shared AgentRuntimeController.',
+    }),
   },
   {
     name: 'diff',
@@ -3244,6 +3215,8 @@ const COMMANDS: SlashCommand[] = [
     category: 'workflow',
     priority: 5,
     type: 'builtin',
+    execution: 'builtin',
+    risk: 'read-only',
     execute: (ctx, args) => handleDiff(ctx, args),
   },
   {
@@ -3253,6 +3226,8 @@ const COMMANDS: SlashCommand[] = [
     category: 'workflow',
     priority: 8,
     type: 'builtin',
+    execution: 'builtin',
+    risk: 'read-only',
     execute: (ctx, args) => handleCommitPlan(ctx, args),
   },
   {
@@ -3262,6 +3237,8 @@ const COMMANDS: SlashCommand[] = [
     category: 'workflow',
     priority: 10,
     type: 'chat',
+    execution: 'agent-workflow',
+    risk: 'read-only',
     execute: (_ctx, args) => continueAsSlashChat('review', args),
   },
   {
@@ -3272,6 +3249,8 @@ const COMMANDS: SlashCommand[] = [
     category: 'workflow',
     priority: 20,
     type: 'chat',
+    execution: 'agent-workflow',
+    risk: 'read-only',
     execute: (_ctx, args) => continueAsSlashChat('security', args),
   },
   {
@@ -3282,6 +3261,8 @@ const COMMANDS: SlashCommand[] = [
     category: 'workflow',
     priority: 30,
     type: 'chat',
+    execution: 'agent-workflow',
+    risk: 'state-write',
     execute: (_ctx, args) => continueAsSlashChat('test-gen', args),
   },
   {
@@ -3291,6 +3272,8 @@ const COMMANDS: SlashCommand[] = [
     category: 'workflow',
     priority: 40,
     type: 'builtin',
+    execution: 'builtin',
+    risk: 'read-only',
     execute: (ctx) => handleTodos(ctx),
   },
 
@@ -3302,6 +3285,8 @@ const COMMANDS: SlashCommand[] = [
     category: 'session',
     priority: 10,
     type: 'builtin',
+    execution: 'builtin',
+    risk: 'state-write',
     execute: (ctx, args) => handleResume(ctx, args),
   },
   {
@@ -3311,6 +3296,8 @@ const COMMANDS: SlashCommand[] = [
     category: 'session',
     priority: 20,
     type: 'builtin',
+    execution: 'builtin',
+    risk: 'read-only',
     execute: (ctx, args) => handleSessions(ctx, args),
   },
   {
@@ -3321,6 +3308,8 @@ const COMMANDS: SlashCommand[] = [
     category: 'session',
     priority: 30,
     type: 'builtin',
+    execution: 'builtin',
+    risk: 'state-write',
     execute: (ctx, args) => handleSessionRename(ctx, args),
   },
   {
@@ -3330,16 +3319,34 @@ const COMMANDS: SlashCommand[] = [
     category: 'session',
     priority: 40,
     type: 'builtin',
+    execution: 'builtin',
+    risk: 'state-write',
     execute: (ctx, args) => handleCompact(ctx, args),
+  },
+  {
+    name: 'context-clear',
+    description: 'Clear current in-memory model context; preserve saved session history',
+    argumentHint: '--yes',
+    category: 'session',
+    priority: 50,
+    type: 'builtin',
+    execution: 'builtin',
+    risk: 'destructive',
+    execute: (ctx, args) => handleContextClear(ctx, args),
   },
   {
     name: 'clear-history',
     aliases: ['reset'],
-    description: 'Clear conversation history (keep config)',
-    category: 'session',
+    description: 'Deprecated alias for clearing only the current in-memory model context',
+    argumentHint: '--yes',
+    category: 'legacy',
     priority: 50,
     type: 'builtin',
-    execute: (ctx) => handleClearHistory(ctx),
+    isHidden: true,
+    execution: 'builtin',
+    risk: 'destructive',
+    deprecated: { since: 'v0.1.1', replacement: '/context-clear', removeIn: 'v0.3.0' },
+    execute: (ctx, args) => handleContextClear(ctx, args),
   },
 
   // Harness, memory, and skills
@@ -3350,6 +3357,8 @@ const COMMANDS: SlashCommand[] = [
     category: 'context',
     priority: 10,
     type: 'builtin',
+    execution: 'builtin',
+    risk: 'read-only',
     execute: (ctx, args) => showHarness(ctx, args),
   },
   {
@@ -3358,6 +3367,8 @@ const COMMANDS: SlashCommand[] = [
     category: 'context',
     priority: 20,
     type: 'builtin',
+    execution: 'builtin',
+    risk: 'read-only',
     execute: (ctx) => handleSkills(ctx),
   },
   {
@@ -3368,6 +3379,8 @@ const COMMANDS: SlashCommand[] = [
     category: 'context',
     priority: 21,
     type: 'chat',
+    execution: 'agent-workflow',
+    risk: 'state-write',
     execute: (ctx, args) => handleSkill(ctx, args),
   },
   {
@@ -3377,6 +3390,8 @@ const COMMANDS: SlashCommand[] = [
     category: 'context',
     priority: 30,
     type: 'builtin',
+    execution: 'builtin',
+    risk: 'state-write',
     execute: (ctx, args) => handleMemory(ctx, args),
   },
 
@@ -3388,6 +3403,8 @@ const COMMANDS: SlashCommand[] = [
     category: 'tools',
     priority: 10,
     type: 'builtin',
+    execution: 'builtin',
+    risk: 'read-only',
     execute: (ctx) => handleTools(ctx),
   },
   {
@@ -3396,6 +3413,8 @@ const COMMANDS: SlashCommand[] = [
     category: 'tools',
     priority: 15,
     type: 'builtin',
+    execution: 'builtin',
+    risk: 'read-only',
     execute: (ctx) => handleEditPreview(ctx),
   },
   {
@@ -3404,6 +3423,8 @@ const COMMANDS: SlashCommand[] = [
     category: 'tools',
     priority: 20,
     type: 'builtin',
+    execution: 'builtin',
+    risk: 'read-only',
     execute: (ctx) => handleMcp(ctx),
   },
   {
@@ -3412,6 +3433,8 @@ const COMMANDS: SlashCommand[] = [
     category: 'tools',
     priority: 30,
     type: 'builtin',
+    execution: 'builtin',
+    risk: 'read-only',
     execute: (ctx) => showSafety(ctx),
   },
 
@@ -3423,6 +3446,8 @@ const COMMANDS: SlashCommand[] = [
     category: 'model',
     priority: 10,
     type: 'builtin',
+    execution: 'builtin',
+    risk: 'state-write',
     execute: (ctx, args) => handleModel(ctx, args),
   },
   {
@@ -3433,6 +3458,8 @@ const COMMANDS: SlashCommand[] = [
     category: 'model',
     priority: 20,
     type: 'builtin',
+    execution: 'builtin',
+    risk: 'state-write',
     execute: (ctx, args) => handleMode(ctx, args),
   },
   {
@@ -3441,6 +3468,8 @@ const COMMANDS: SlashCommand[] = [
     category: 'model',
     priority: 30,
     type: 'builtin',
+    execution: 'builtin',
+    risk: 'read-only',
     execute: (ctx) => showConfig(ctx),
   },
 
@@ -3452,7 +3481,9 @@ const COMMANDS: SlashCommand[] = [
     category: 'system',
     priority: 10,
     type: 'builtin',
-    execute: () => showHelp(),
+    execution: 'builtin',
+    risk: 'read-only',
+    execute: ctx => showHelp(ctx),
   },
   {
     name: 'status',
@@ -3461,18 +3492,46 @@ const COMMANDS: SlashCommand[] = [
     category: 'system',
     priority: 20,
     type: 'builtin',
+    execution: 'builtin',
+    risk: 'read-only',
     execute: (ctx) => showStatus(ctx),
   },
   {
     name: 'clear',
-    description: 'Clear the terminal screen',
+    description: 'Clear the current view without deleting session data',
     category: 'system',
     priority: 30,
     type: 'builtin',
-    execute: () => {
-      process.stdout.write('\x1Bc');
+    execution: 'renderer-local',
+    risk: 'read-only',
+    rendererScope: ['tui', 'terminal'],
+    execute: ctx => {
+      ctx.clearView?.();
       return { success: true };
     },
+  },
+  {
+    name: 'tool-output',
+    description: 'Set the TUI tool output presentation mode',
+    argumentHint: '[adaptive|collapsed|full]',
+    category: 'system',
+    priority: 32,
+    type: 'builtin',
+    execution: 'renderer-local',
+    risk: 'read-only',
+    rendererScope: ['tui'],
+    execute: () => ({ success: true }),
+  },
+  {
+    name: 'redraw',
+    description: 'Redraw the TUI-owned live region',
+    category: 'system',
+    priority: 34,
+    type: 'builtin',
+    execution: 'renderer-local',
+    risk: 'read-only',
+    rendererScope: ['tui'],
+    execute: () => ({ success: true }),
   },
   {
     name: 'exit',
@@ -3481,6 +3540,8 @@ const COMMANDS: SlashCommand[] = [
     category: 'system',
     priority: 40,
     type: 'builtin',
+    execution: 'builtin',
+    risk: 'state-write',
     execute: (ctx) => handleExit(ctx),
   },
 
@@ -3492,15 +3553,19 @@ const COMMANDS: SlashCommand[] = [
     category: 'diagnostics',
     priority: 5,
     type: 'builtin',
+    execution: 'builtin',
+    risk: 'read-only',
     execute: (ctx) => handleDoctor(ctx),
   },
   {
     name: 'storage',
     description: 'Inspect, repair, or clean Orion Code storage layout',
-    argumentHint: '[doctor|repair|cleanup --dry-run]',
+    argumentHint: '[doctor|repair [--yes]|cleanup [--dry-run|--yes]]',
     category: 'diagnostics',
     priority: 8,
     type: 'builtin',
+    execution: 'builtin',
+    risk: 'destructive',
     execute: (ctx, args) => handleStorage(ctx, args),
   },
   {
@@ -3510,6 +3575,8 @@ const COMMANDS: SlashCommand[] = [
     category: 'diagnostics',
     priority: 10,
     type: 'builtin',
+    execution: 'builtin',
+    risk: 'read-only',
     execute: (ctx) => handleUsage(ctx),
   },
   {
@@ -3519,6 +3586,8 @@ const COMMANDS: SlashCommand[] = [
     category: 'diagnostics',
     priority: 12,
     type: 'builtin',
+    execution: 'builtin',
+    risk: 'read-only',
     execute: (ctx) => handleLoopStats(ctx),
   },
   {
@@ -3528,6 +3597,8 @@ const COMMANDS: SlashCommand[] = [
     category: 'diagnostics',
     priority: 14,
     type: 'builtin',
+    execution: 'builtin',
+    risk: 'read-only',
     execute: (ctx, args) => handleTrace(ctx, args),
   },
   {
@@ -3537,6 +3608,8 @@ const COMMANDS: SlashCommand[] = [
     category: 'diagnostics',
     priority: 15,
     type: 'builtin',
+    execution: 'builtin',
+    risk: 'read-only',
     execute: (ctx, args) => handleLastTool(ctx, args),
   },
   {
@@ -3547,6 +3620,8 @@ const COMMANDS: SlashCommand[] = [
     category: 'diagnostics',
     priority: 16,
     type: 'builtin',
+    execution: 'builtin',
+    risk: 'read-only',
     execute: (ctx, args) => handleArtifacts(ctx, args),
   },
   {
@@ -3557,6 +3632,8 @@ const COMMANDS: SlashCommand[] = [
     category: 'diagnostics',
     priority: 18,
     type: 'builtin',
+    execution: 'builtin',
+    risk: 'destructive',
     execute: (ctx, args) => handleCheckpoint(ctx, args),
   },
   {
@@ -3565,6 +3642,9 @@ const COMMANDS: SlashCommand[] = [
     category: 'diagnostics',
     priority: 20,
     type: 'builtin',
+    execution: 'builtin',
+    risk: 'read-only',
+    deprecated: { since: 'v0.1.1', replacement: '/usage', removeIn: 'v0.3.0' },
     execute: (ctx) => handleCost(ctx),
   },
   {
@@ -3573,19 +3653,24 @@ const COMMANDS: SlashCommand[] = [
     category: 'diagnostics',
     priority: 30,
     type: 'builtin',
+    execution: 'builtin',
+    risk: 'read-only',
+    isHidden: true,
     execute: (ctx) => showAgents(ctx),
   },
   {
     name: 'migrate',
     description: 'Migrate data from OpenHorse to Orion Code',
-    argumentHint: 'openhorse [--dry-run] [--include-env] [--include-project-files]',
+    argumentHint: 'openhorse [--dry-run | --yes] [--include-env] [--include-project-files]',
     category: 'diagnostics',
     priority: 32,
     type: 'builtin',
+    execution: 'builtin',
+    risk: 'destructive',
     execute: (ctx, args) => handleMigrateCommand(ctx, args),
   },
 
-  // Legacy commands kept executable for compatibility, but not shown in Ink help/palette.
+  // Legacy commands kept executable for compatibility, but not shown in help/palette.
   {
     name: 'task',
     description: 'Submit or list tasks',
@@ -3593,6 +3678,9 @@ const COMMANDS: SlashCommand[] = [
     category: 'legacy',
     type: 'builtin',
     isHidden: true,
+    execution: 'builtin',
+    risk: 'state-write',
+    deprecated: { since: 'v0.1.1', replacement: '/target', removeIn: 'v0.3.0' },
     execute: (ctx, args) => handleTask(ctx, args),
   },
   {
@@ -3602,6 +3690,9 @@ const COMMANDS: SlashCommand[] = [
     category: 'legacy',
     type: 'builtin',
     isHidden: true,
+    execution: 'agent-workflow',
+    risk: 'state-write',
+    deprecated: { since: 'v0.1.1', replacement: '/target', removeIn: 'v0.3.0' },
     execute: (ctx, args) => handleRun(ctx, args),
   },
   {
@@ -3611,6 +3702,9 @@ const COMMANDS: SlashCommand[] = [
     category: 'legacy',
     type: 'chat',
     isHidden: true,
+    execution: 'agent-workflow',
+    risk: 'state-write',
+    deprecated: { since: 'v0.1.1', removeIn: 'v0.3.0' },
     execute: (ctx, args) => ({ success: true, continueAsChat: true, chatInput: args }),
   },
 ];
@@ -3623,8 +3717,13 @@ export function getCommands(): SlashCommand[] {
   return sortCommands(COMMANDS);
 }
 
-export function getVisibleCommands(): SlashCommand[] {
-  return sortCommands(COMMANDS.filter(command => !command.isHidden));
+export function getVisibleCommands(renderer?: CommandContext['uiRenderer']): SlashCommand[] {
+  return sortCommands(
+    COMMANDS.filter(command =>
+      !command.isHidden
+      && (!renderer || !command.rendererScope || command.rendererScope.includes(renderer))
+    )
+  );
 }
 
 export function findCommand(name: string): SlashCommand | undefined {

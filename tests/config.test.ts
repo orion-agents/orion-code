@@ -278,9 +278,9 @@ describe('loadConfig', () => {
 });
 
 describe('UI renderer helpers', () => {
-  test('defines terminal as stable, tui as recommended beta, ink as deprecated beta', () => {
+  test('defines tui as product, terminal as technical, ink as deprecated', () => {
     expect(DEFAULT_UI_RENDERER).toBe('tui');
-    expect(SUPPORTED_UI_RENDERERS).toEqual(['terminal', 'tui', 'ink']);
+    expect(SUPPORTED_UI_RENDERERS).toEqual(['tui', 'terminal', 'ink']);
     expect(resolveUIRenderer('stable')).toBe('terminal');
     expect(resolveUIRenderer('terminal')).toBe('terminal');
     expect(resolveUIRenderer('tui')).toBe('tui');

@@ -130,7 +130,7 @@ export function subtaskTimelineLabel(entry: SubtaskTimelineEntry): string {
   return `${arrow} subtask ${entry.role} ${entry.state}${tail}${dur}`;
 }
 
-export type UiRendererStatus = 'stable' | 'beta' | 'deprecated' | 'non-interactive' | 'custom';
+export type UiRendererStatus = 'product' | 'technical' | 'deprecated' | 'non-interactive' | 'custom';
 
 export interface StatusSnapshot {
   model?: string;
@@ -237,7 +237,7 @@ export interface SessionPickerItem {
 export interface CommandPickerItem {
   command: Pick<
     SlashCommand,
-    'name' | 'aliases' | 'description' | 'argumentHint' | 'category' | 'priority'
+    'name' | 'aliases' | 'description' | 'argumentHint' | 'category' | 'priority' | 'risk' | 'deprecated'
   >;
   name: string;
   value: string;
@@ -377,8 +377,8 @@ const COMMAND_CATEGORY_LABELS: Record<CommandCategory, string> = {
 };
 
 export function rendererStatus(renderer: unknown): UiRendererStatus {
-  if (renderer === 'terminal') return 'stable';
-  if (renderer === 'tui') return 'beta';
+  if (renderer === 'tui') return 'product';
+  if (renderer === 'terminal') return 'technical';
   if (renderer === 'ink') return 'deprecated';
   if (renderer === 'print') return 'non-interactive';
   return 'custom';
@@ -570,7 +570,7 @@ export function createCommandPickerState(input: {
   commands: Array<
     Pick<
       SlashCommand,
-      'name' | 'aliases' | 'description' | 'argumentHint' | 'category' | 'priority'
+      'name' | 'aliases' | 'description' | 'argumentHint' | 'category' | 'priority' | 'risk' | 'deprecated'
     >
   >;
   visibleStart?: number;
@@ -602,7 +602,14 @@ export function createCommandPickerState(input: {
       name: item.command.name,
       value: item.command.name,
       label: commandPickerLabel(item.command),
-      description: `${category}  ${item.command.description}`,
+      description: [
+        category,
+        item.command.description,
+        item.command.risk === 'destructive' ? 'destructive' : '',
+        item.command.deprecated
+          ? `deprecated${item.command.deprecated.replacement ? `; use ${item.command.deprecated.replacement}` : ''}`
+          : '',
+      ].filter(Boolean).join('  '),
       categoryLabel: category,
       aliases,
       matchRank: item.matchRank,

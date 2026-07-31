@@ -8,8 +8,8 @@
  *   4. Agent internal defaults
  *
  * UI renderer is intentionally not read from orion.json or env. TUI is the
- * product default; --ui terminal selects the stable native terminal fallback;
- * --ui ink is deprecated and will be removed in a future release.
+ * public product default; --ui terminal selects the technical diagnostics
+ * fallback; --ui ink is deprecated and will be removed in v0.2.0.
  */
 
 import {
@@ -59,12 +59,20 @@ export type {
   CostConfig,
 };
 
+export const PRODUCT_UI_RENDERER: UIRenderer = 'tui';
+export const TECHNICAL_UI_RENDERERS = ['terminal'] as const satisfies readonly UIRenderer[];
+export const DEPRECATED_UI_RENDERERS = ['ink'] as const satisfies readonly UIRenderer[];
+export const DEFAULT_UI_RENDERER: UIRenderer = PRODUCT_UI_RENDERER;
+export const SUPPORTED_UI_RENDERERS = [PRODUCT_UI_RENDERER, ...TECHNICAL_UI_RENDERERS, ...DEPRECATED_UI_RENDERERS] as const satisfies readonly UIRenderer[];
+
+/** @deprecated Legacy export only; TUI is the product renderer, not beta. */
+export const RECOMMENDED_BETA_UI_RENDERER: UIRenderer = PRODUCT_UI_RENDERER;
+/** @deprecated Legacy export only; terminal is the technical renderer. */
 export const STABLE_UI_RENDERER: UIRenderer = 'terminal';
-export const RECOMMENDED_BETA_UI_RENDERER: UIRenderer = 'tui';
-export const DEFAULT_UI_RENDERER: UIRenderer = RECOMMENDED_BETA_UI_RENDERER;
-export const DEPRECATED_BETA_UI_RENDERERS = ['ink'] as const satisfies readonly UIRenderer[];
-export const BETA_UI_RENDERERS = [RECOMMENDED_BETA_UI_RENDERER, ...DEPRECATED_BETA_UI_RENDERERS] as const satisfies readonly UIRenderer[];
-export const SUPPORTED_UI_RENDERERS = [STABLE_UI_RENDERER, ...BETA_UI_RENDERERS] as const satisfies readonly UIRenderer[];
+/** @deprecated Use DEPRECATED_UI_RENDERERS instead. */
+export const DEPRECATED_BETA_UI_RENDERERS = DEPRECATED_UI_RENDERERS;
+/** @deprecated Use PRODUCT_UI_RENDERER / TECHNICAL_UI_RENDERERS / DEPRECATED_UI_RENDERERS instead. */
+export const BETA_UI_RENDERERS = [PRODUCT_UI_RENDERER, ...DEPRECATED_UI_RENDERERS] as const satisfies readonly UIRenderer[];
 
 // ============================================================================
 // Types
@@ -128,16 +136,26 @@ export function isInteractiveUIRenderer(value: unknown): value is UIRenderer {
   return isSupportedUIRenderer(value);
 }
 
+export function isProductUIRenderer(value: unknown): boolean {
+  return value === PRODUCT_UI_RENDERER;
+}
+
+export function isTechnicalUIRenderer(value: unknown): boolean {
+  return typeof value === 'string' && (TECHNICAL_UI_RENDERERS as readonly string[]).includes(value);
+}
+
+export function isDeprecatedUIRenderer(value: unknown): boolean {
+  return typeof value === 'string' && (DEPRECATED_UI_RENDERERS as readonly string[]).includes(value);
+}
+
+/** @deprecated Use isProductUIRenderer / isTechnicalUIRenderer instead. */
 export function isBetaUIRenderer(value: unknown): value is typeof BETA_UI_RENDERERS[number] {
   return typeof value === 'string' && (BETA_UI_RENDERERS as readonly string[]).includes(value);
 }
 
+/** @deprecated Use isProductUIRenderer instead. */
 export function isRecommendedBetaUIRenderer(value: unknown): boolean {
   return value === RECOMMENDED_BETA_UI_RENDERER;
-}
-
-export function isDeprecatedUIRenderer(value: unknown): boolean {
-  return typeof value === 'string' && (DEPRECATED_BETA_UI_RENDERERS as readonly string[]).includes(value);
 }
 
 function normalizeUIConfirmationMode(value: unknown): UIConfirmationMode | undefined {

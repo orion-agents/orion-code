@@ -53,6 +53,7 @@ export type AgentRuntimeInput =
 
 export type AgentRuntimeSubmitResult =
   | { type: 'empty' }
+  | { type: 'command_handled' }
   | { type: 'exit_requested' }
   | { type: 'started' }
   | { type: 'revision_requested' }
@@ -88,7 +89,9 @@ export type AgentRuntimeEvent =
   | { type: 'trace_event_recorded'; event: RuntimeTraceEvent }
   | { type: 'harness_diagnostics_updated'; diagnostics: RuntimeHarnessDiagnostics }
   | { type: 'subtask_event'; event: RuntimeSubtaskEvent }
-  | { type: 'processing_changed'; processing: boolean };
+  | { type: 'processing_changed'; processing: boolean }
+  | { type: 'clear_view' }
+  | { type: 'shutdown_requested'; reason?: string };
 
 export interface AgentRuntimeEventSink {
   emit(event: AgentRuntimeEvent): string | void;
@@ -148,6 +151,12 @@ export function emitToUiEventSink(events: UiEventSink, event: AgentRuntimeEvent)
       return undefined;
     case 'processing_changed':
       events.setProcessing(event.processing);
+      return undefined;
+    case 'clear_view':
+      events.clearView?.();
+      return undefined;
+    case 'shutdown_requested':
+      events.shutdownRequested?.(event.reason);
       return undefined;
   }
 }
@@ -210,6 +219,12 @@ export function createUiEventSinkFromAgentRuntimeEvents(sink: AgentRuntimeEventS
     },
     setProcessing: processing => {
       sink.emit({ type: 'processing_changed', processing });
+    },
+    clearView: () => {
+      sink.emit({ type: 'clear_view' });
+    },
+    shutdownRequested: reason => {
+      sink.emit({ type: 'shutdown_requested', reason });
     },
   };
 }

@@ -1,6 +1,6 @@
 {
   "name": "@orion-agents/orion-code",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Orion Code - goal-driven coding agent for the terminal.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -20,6 +20,7 @@
     "cli": "ts-node src/cli.ts",
     "build": "tsc",
     "test": "jest",
+    "test:ink-compat": "ORION_RUN_DEPRECATED_INK_PTY=1 jest tests/ink-ui-pty.test.ts --runInBand",
     "lint": "eslint src/",
     "format": "prettier --write src/",
     "prepublishOnly": "npm run build && npm test -- --runInBand --testPathIgnorePatterns='session-consistency|ink-ui-pty'"

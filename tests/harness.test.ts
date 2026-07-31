@@ -128,6 +128,35 @@ describe('Context Harness', () => {
     expect(harness.getCapsule()?.verification.passed.length).toBe(1);
   });
 
+  test('completion gate ignores descriptive test labels without a verification action', () => {
+    const contract = createTaskContract('markdown render test', '/repo');
+
+    expect(
+      createContextHarness({
+        cwd: '/repo',
+        modelId: 'gpt-4o',
+        state: { contract, ledger: [], updatedAt: Date.now() },
+        config: { completionGate: 'block' },
+      }).beforeComplete()
+    ).toMatchObject({ canComplete: true, missing: [] });
+  });
+
+  test('completion gate requires evidence for explicit verification instructions', () => {
+    const contract = createTaskContract('Please run npm test and ensure the tests pass', '/repo');
+
+    expect(
+      createContextHarness({
+        cwd: '/repo',
+        modelId: 'gpt-4o',
+        state: { contract, ledger: [], updatedAt: Date.now() },
+        config: { completionGate: 'block' },
+      }).beforeComplete()
+    ).toMatchObject({
+      canComplete: false,
+      missing: ['Required verification has not passed yet.'],
+    });
+  });
+
   test('auto compact preserves context capsule', async () => {
     const harness = createContextHarness({ cwd: '/repo', modelId: 'gpt-4o' });
     harness.updateContractFromUserInput('完成 Context Harness，必须保留 open todos');

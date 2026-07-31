@@ -72,7 +72,7 @@ describe('/status context diagnostics', () => {
 
     expect(result.success).toBe(true);
     expect(rendered).toContain('Context:');
-    expect(rendered).toContain('Renderer   tui beta');
+    expect(rendered).toContain('Renderer   tui product');
     expect(rendered).toContain('pickers, inline-progress, clean-meta, assistant-spacing, quiet-abort');
     expect(rendered).toContain('Project rules 2 files');
     expect(rendered).toContain('AGENTS.md');
@@ -150,7 +150,7 @@ describe('/status context diagnostics', () => {
 
     expect(result.success).toBe(true);
     expect(rendered).toContain('Renderer   print non-interactive');
-    expect(rendered).not.toContain('Renderer   terminal stable text-pickers');
+    expect(rendered).not.toContain('Renderer   terminal technical text-pickers');
   });
 
   it('renders /model list from shared model picker state', async () => {

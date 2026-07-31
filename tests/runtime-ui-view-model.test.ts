@@ -720,9 +720,9 @@ describe('runtime UI view model', () => {
   });
 
   it('creates renderer-neutral status snapshots with capability labels', () => {
-    expect(rendererStatus('terminal')).toBe('stable');
+    expect(rendererStatus('tui')).toBe('product');
+    expect(rendererStatus('terminal')).toBe('technical');
     expect(rendererStatus('ink')).toBe('deprecated');
-    expect(rendererStatus('tui')).toBe('beta');
     expect(rendererStatus('print')).toBe('non-interactive');
     expect(rendererStatus('third-party')).toBe('custom');
 
@@ -738,7 +738,7 @@ describe('runtime UI view model', () => {
       runningState: 'ready',
       renderer: {
         name: 'terminal',
-        status: 'stable',
+        status: 'technical',
         capabilityLabels: [
           'pickers',
           'inline-progress',

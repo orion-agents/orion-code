@@ -9,7 +9,7 @@ import {
   getProjectMemoryDir,
   getProjectSessionsDir,
 } from './config-dir';
-import { isDeprecatedUIRenderer, isRecommendedBetaUIRenderer, isConfigured, type OpenHorseCLIConfig } from './config';
+import { isDeprecatedUIRenderer, isProductUIRenderer, isConfigured, type OpenHorseCLIConfig } from './config';
 import { getMcpConfigPath, mcpManager } from '../tools/mcp';
 import { getRuntimeTools } from '../tools';
 import { loadProjectInstructionFiles } from './project-instructions';
@@ -406,7 +406,7 @@ export function collectDoctorReport(ctx: DoctorContext): DoctorReport {
       label: 'Permissions',
       summary: `toolConfirmation=${ctx.config.toolConfirmation}, ui=${ctx.config.ui?.renderer}/${ctx.config.ui?.confirmations}`,
       detail: ctx.config.toolConfirmation === 'ask'
-        ? `Interactive tool confirmation is routed through the shared runtime permission protocol.${isDeprecatedUIRenderer(ctx.config.ui?.renderer) ? ' This renderer is deprecated; consider switching to --ui tui.' : isRecommendedBetaUIRenderer(ctx.config.ui?.renderer) ? ' TUI is the product default; terminal remains the stable fallback.' : ''}`
+        ? `Interactive tool confirmation is routed through the shared runtime permission protocol.${isDeprecatedUIRenderer(ctx.config.ui?.renderer) ? ' This renderer is deprecated; consider switching to --ui tui.' : isProductUIRenderer(ctx.config.ui?.renderer) ? ' TUI is the product default.' : ''}`
         : undefined,
     },
     {
