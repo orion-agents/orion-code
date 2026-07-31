@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { join } from 'path';
 import { randomUUID } from 'crypto';
 import { getProjectSessionsDir } from '../services/config-dir';
-import type { SessionGoalV1, GoalStatus } from '../runtime/goals/types';
+import type { SessionGoalV1, GoalStatus, GoalContract } from '../runtime/goals/types';
 
 // ============================================================================
 // Sidecar path
@@ -114,7 +114,12 @@ export function deleteGoal(projectPath: string, sessionId: string): GoalStorageR
   }
 }
 
-export function createGoal(projectPath: string, sessionId: string, objective: string): GoalStorageResult<SessionGoalV1> {
+export function createGoal(
+  projectPath: string,
+  sessionId: string,
+  objective: string,
+  contract?: GoalContract,
+): GoalStorageResult<SessionGoalV1> {
   const now = Date.now();
   const goal: SessionGoalV1 = {
     version: 1,
@@ -130,6 +135,10 @@ export function createGoal(projectPath: string, sessionId: string, objective: st
     activeSince: now,
     continuationCount: 0,
     noProgressCount: 0,
+    // v0.1.2: persist contract if provided. Omitted for pre-v0.1.2 callers,
+    // in which case the coordinator normalizes a minimal pending contract at
+    // load time (additive, never rewrites history).
+    ...(contract ? { contract } : {}),
   };
 
   const result = saveGoal(projectPath, sessionId, goal);

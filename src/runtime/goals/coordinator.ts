@@ -12,6 +12,7 @@ import {
   type GoalStatus,
   type AgentTurnOutcome,
   type AgentTurnRequest,
+  type GoalContract,
   GOAL_INVARIANTS,
   GOAL_TERMINAL_STATES,
   GOAL_USER_RECOVERABLE_STATES,
@@ -24,6 +25,46 @@ import {
 } from '../../services/goal-storage';
 import { accumulateTurn, isBudgetExceeded } from './accounting';
 import { auditCompletion, auditBlocked, blockerFingerprint, blockersMatch } from './completion-audit';
+
+/**
+ * Build a minimal pending contract from an objective string. Used at creation
+ * and at load time to normalize v0.1.1 sidecars (which have no contract).
+ *
+ * The primary criterion is `source=derived` with a stable id so repeated
+ * normalizations of the same goal produce the same id (no churn on reload).
+ * User-supplied criteria (`source=user`) are added via a separate path.
+ */
+function minimalContract(objective: string, now: number): GoalContract {
+  return {
+    originalObjective: objective,
+    objectiveRevision: 0,
+    constraints: [],
+    successCriteria: [
+      {
+        id: 'criterion:primary',
+        statement: objective,
+        source: 'derived',
+        status: 'pending',
+        // A derived primary criterion accepts test/build/file/runtime evidence;
+        // model natural language is never an accepted kind.
+        requiredEvidenceKinds: ['test', 'build', 'file', 'runtime'],
+        evidenceRefs: [],
+      },
+    ],
+    planSnapshot: {
+      revision: 0,
+      phase: 'initial',
+      steps: [],
+      updatedAt: now,
+    },
+  };
+}
+
+/** Ensure a loaded goal carries a contract; normalize v0.1.1 sidecars. */
+function ensureContract(goal: SessionGoalV1): SessionGoalV1 {
+  if (goal.contract) return goal;
+  return { ...goal, contract: minimalContract(goal.objective, goal.updatedAt || goal.createdAt) };
+}
 
 export interface GoalCoordinatorState {
   goal: SessionGoalV1 | null;
@@ -76,7 +117,10 @@ export class GoalCoordinator {
   load(): boolean {
     const result = loadGoal(this.projectPath, this.sessionId);
     if (result.ok) {
-      this.state.goal = result.value;
+      // v0.1.2: normalize v0.1.1 sidecars (no contract) into a minimal pending
+      // contract. This is in-memory only; it does not rewrite the sidecar
+      // until the next real state update.
+      this.state.goal = ensureContract(result.value);
       this.state.generation = 0;
       this.state.continuationDeferred = false;
       return true;
@@ -95,7 +139,9 @@ export class GoalCoordinator {
       return { ok: false, error: `Objective too long (max ${GOAL_INVARIANTS.maxObjectiveChars} chars).` };
     }
 
-    const result = persistGoal(this.projectPath, this.sessionId, objective);
+    const now = Date.now();
+    const contract = minimalContract(objective.trim(), now);
+    const result = persistGoal(this.projectPath, this.sessionId, objective, contract);
     if (!result.ok) return { ok: false, error: result.message };
 
     this.state.goal = result.value;
@@ -138,10 +184,18 @@ export class GoalCoordinator {
   edit(objective: string): boolean {
     if (!this.state.goal) return false;
     if (!objective.trim()) return false;
+    const g = this.state.goal;
+    // v0.1.2: preserve originalObjective; record an objective revision on the
+    // contract so steering can never silently rewrite the root goal. The
+    // top-level `objective` reflects the current wording.
+    const contract: GoalContract = g.contract
+      ? { ...g.contract, originalObjective: g.contract.originalObjective, objectiveRevision: g.contract.objectiveRevision + 1 }
+      : minimalContract(g.objective, g.updatedAt);
     this.state.goal = {
-      ...this.state.goal,
+      ...g,
       objective: objective.trim(),
-      revision: this.state.goal.revision + 1,
+      contract,
+      revision: g.revision + 1,
       updatedAt: Date.now(),
     };
     this.persist();
@@ -150,8 +204,11 @@ export class GoalCoordinator {
 
   replace(objective: string): boolean {
     if (!objective.trim()) return false;
-    // Create new goal, old generation invalidated.
-    const result = persistGoal(this.projectPath, this.sessionId, objective);
+    // Create new goal with fresh goalId and fresh contract; old generation
+    // invalidated. Does not reuse the old goal's completion state.
+    const now = Date.now();
+    const contract = minimalContract(objective.trim(), now);
+    const result = persistGoal(this.projectPath, this.sessionId, objective, contract);
     if (!result.ok) return false;
     this.state.goal = result.value;
     this.state.generation += 1;
@@ -236,9 +293,11 @@ export class GoalCoordinator {
       if (outcome.pendingTerminalRequest.requestedStatus === 'complete') {
         const audit = auditCompletion({
           objective: updated.objective,
-          // v0.2.26: use actual evidence from the turn outcome.
-          evidenceRefs: (outcome as any).evidenceRefs ?? [],
-          verificationSummary: (outcome as any).verificationSummary ?? outcome.finishReason,
+          // v0.1.2: use actual evidence captured during the turn (typed on
+          // AgentTurnOutcome). The controller populates these from real
+          // tool/runtime results; empty until Phase 3 wires capture.
+          evidenceRefs: outcome.evidenceRefs ?? [],
+          verificationSummary: outcome.verificationSummary ?? outcome.finishReason,
         });
         updated.completionAudit = audit;
         if (audit.passed) {

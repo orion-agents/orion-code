@@ -66,6 +66,89 @@ export interface GoalStopReason {
 }
 
 // ============================================================================
+// v0.1.2 - Goal Contract, criteria, plan, evidence
+// (additive to SessionGoalV1; v0.1.1 sidecars load without these and are
+// normalized at load time into a minimal pending contract.)
+// ============================================================================
+
+export type GoalEvidenceKind =
+  | 'test'
+  | 'build'
+  | 'lint'
+  | 'file'
+  | 'runtime'
+  | 'external'
+  | 'user';
+
+export type GoalCriterionStatus = 'pending' | 'passed' | 'failed' | 'stale';
+
+export interface GoalCriterion {
+  id: string;
+  statement: string;
+  source: 'user' | 'derived';
+  status: GoalCriterionStatus;
+  requiredEvidenceKinds: GoalEvidenceKind[];
+  evidenceRefs: string[];
+}
+
+export interface GoalConstraint {
+  id: string;
+  statement: string;
+  source: 'user' | 'derived';
+}
+
+export interface GoalPlanStep {
+  id: string;
+  description: string;
+  done: boolean;
+}
+
+export interface GoalPlanSnapshot {
+  revision: number;
+  phase: string;
+  steps: GoalPlanStep[];
+  nextAction?: string;
+  updatedAt: number;
+}
+
+/**
+ * Auditable contract layered on top of the objective string.
+ * - `originalObjective` is set at creation and never silently rewritten by
+ *   steering; `/target edit` bumps `objectiveRevision` and records the change.
+ * - `/target replace` creates a new goalId and a fresh contract.
+ * - User-supplied success criteria are `source=user` and cannot be weakened by
+ *   the agent; derived criteria are `source=derived`.
+ */
+export interface GoalContract {
+  originalObjective: string;
+  objectiveRevision: number;
+  constraints: GoalConstraint[];
+  successCriteria: GoalCriterion[];
+  planSnapshot?: GoalPlanSnapshot;
+}
+
+/**
+ * Runtime-managed evidence record. The model can only reference captured
+ * evidence by id; it cannot self-certify a `passed` result from natural
+ * language. Full ledger wiring lands in Phase 3; the type is defined here so
+ * the contract and audit can reference it.
+ */
+export interface GoalEvidenceRecord {
+  id: string;
+  goalId: string;
+  goalRevision: number;
+  turnId: string;
+  kind: GoalEvidenceKind;
+  subject: string;
+  result: 'passed' | 'failed' | 'inconclusive';
+  sourceRef: string;
+  capturedAt: number;
+  workspaceFingerprint?: string;
+  expiresAt?: number;
+  redacted: boolean;
+}
+
+// ============================================================================
 // Persistent sidecar
 // ============================================================================
 
@@ -93,6 +176,11 @@ export interface SessionGoalV1 {
   lastTurn?: GoalLastTurn;
   completionAudit?: GoalCompletionAudit;
   stopReason?: GoalStopReason;
+
+  // v0.1.2 additive: auditable contract with success criteria and plan.
+  // Optional so v0.1.1 sidecars load unchanged; coordinators normalize a
+  // missing contract into a minimal pending one at load time.
+  contract?: GoalContract;
 }
 
 // ============================================================================
@@ -165,6 +253,11 @@ export interface AgentTurnOutcome {
     requestedStatus: 'complete' | 'blocked';
     requestedAt: number;
   };
+  // v0.1.2: evidence captured during the turn. The controller populates these
+  // from real tool/runtime results so finalizeTurn's audit branch can run
+  // per-criterion instead of trusting model text.
+  evidenceRefs?: string[];
+  verificationSummary?: string;
 }
 
 // ============================================================================
@@ -224,6 +317,26 @@ export interface GoalAuditFailedEvent {
 export interface GoalRestoredEvent {
   type: 'goal_restored';
   goal: RuntimeGoalSnapshot;
+}
+
+export interface GoalCompletedEvent {
+  type: 'goal_completed';
+  goal: RuntimeGoalSnapshot;
+  audit: GoalCompletionAudit;
+}
+
+export interface GoalPlanUpdatedEvent {
+  type: 'goal_plan_updated';
+  goalId: string;
+  planRevision: number;
+  phase: string;
+  nextAction?: string;
+}
+
+export interface GoalEvidenceRecordedEvent {
+  type: 'goal_evidence_recorded';
+  goalId: string;
+  evidence: { id: string; kind: GoalEvidenceKind; result: 'passed' | 'failed' | 'inconclusive'; subject: string };
 }
 
 // ============================================================================
