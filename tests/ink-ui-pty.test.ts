@@ -13,7 +13,11 @@ function findPython(): string | null {
 describe('Ink UI PTY smoke', () => {
   const python = findPython();
   const smokeScript = join(__dirname, '..', 'scripts', 'ink-ui-pty-smoke.py');
-  const maybeIt = python && existsSync(smokeScript) && process.platform !== 'win32' ? it : it.skip;
+  const explicitlyEnabled = process.env.ORION_RUN_DEPRECATED_INK_PTY === '1';
+  const maybeIt =
+    explicitlyEnabled && python && existsSync(smokeScript) && process.platform !== 'win32'
+      ? it
+      : it.skip;
 
   maybeIt('keeps CJK input, streaming edits, tool ordering, slash palette, and cursor anchoring stable in a real pseudo terminal', () => {
     // PTY smoke can be sensitive to port reuse timing. Retry up to 3 times with

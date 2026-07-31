@@ -50,6 +50,10 @@ export interface CommandContext {
   writeOutput?: (text: string) => void;
   /** Write one line while preserving the live input frame, when supported by the UI. */
   writeLine?: (text?: string) => void;
+  /** Ask the active renderer to clear its viewport without deleting session data. */
+  clearView?: () => void;
+  /** Ask the active renderer to begin graceful shutdown. */
+  requestShutdown?: (reason?: string) => void;
   /** Active renderer adapter identity, including non-config renderers such as print mode. */
   uiRenderer?: CommandUiRenderer;
   /** Renderer adapter capabilities. Business commands should prefer these over renderer-name checks. */
@@ -118,6 +122,25 @@ export function getModeDisplayText(mode: PermissionMode): string {
   }
 }
 
+/** Command execution classification. */
+export type CommandExecution = 'builtin' | 'agent-workflow' | 'renderer-local';
+
+/** Command risk level used for safety metadata and permission routing. */
+export type CommandRisk = 'read-only' | 'state-write' | 'destructive';
+
+/** Conditional availability descriptor. */
+export interface CommandAvailability {
+  available: boolean;
+  reason?: string;
+}
+
+/** Deprecation metadata for commands that have a planned removal window. */
+export interface CommandDeprecation {
+  since: string;
+  replacement?: string;
+  removeIn?: string;
+}
+
 /** Slash 命令定义 */
 export interface SlashCommand {
   name: string;
@@ -134,5 +157,21 @@ export interface SlashCommand {
   type: CommandType;
   /** 是否隐藏（不显示在 help 中） */
   isHidden?: boolean;
+  /** Where the command logic lives. */
+  execution?: CommandExecution;
+  /** Renderers where this command is meaningful. Omit for all-renderer commands. */
+  rendererScope?: CommandUiRenderer[];
+  /** Safety classification. Commands without metadata default to 'state-write'. */
+  risk?: CommandRisk;
+  /** Dynamic availability check. Unavailable commands explain why in help/palette. */
+  availability?: (ctx: CommandContext) => CommandAvailability;
+  /** Deprecation lifecycle metadata. */
+  deprecated?: CommandDeprecation;
   execute(ctx: CommandContext, args: string): Promise<CommandResult> | CommandResult;
 }
+
+/** List of renderers that a command scope can apply to. */
+export const ALL_RENDERER_SCOPES: CommandUiRenderer[] = ['tui', 'terminal', 'ink', 'print'];
+
+/** Default risk when no explicit metadata is present on a command. */
+export const DEFAULT_COMMAND_RISK: CommandRisk = 'state-write';

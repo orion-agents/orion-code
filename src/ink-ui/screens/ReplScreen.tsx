@@ -61,7 +61,7 @@ type StaticTranscriptItem =
 export function visibleCommandItems(input: string): SelectListItem[] {
   return createCommandPickerState({
     input,
-    commands: getVisibleCommands(),
+    commands: getVisibleCommands('ink'),
     categoryLabel: getCommandCategoryLabel,
   }).visibleItems.map(item => ({
     value: item.value,
@@ -212,6 +212,9 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
       dispatchTranscript({ type: 'replace', entries });
     },
     clearTranscript: () => {
+      dispatchTranscript({ type: 'clear' });
+    },
+    clearView: () => {
       dispatchTranscript({ type: 'clear' });
     },
     setStatus: setStatusMessage,

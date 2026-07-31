@@ -38,6 +38,8 @@ import { collectWorkspaceDiff, formatWorkspaceDiff } from './services/workspace-
 import { createCommitPlan, formatCommitPlan } from './services/commit-plan';
 import type { OrionCodeUiRuntime } from './runtime/ui-events';
 import { CompactCoordinator } from './services/compact';
+import { handleMigrateCommand } from './migration/command';
+import type { CommandContext } from './commands/types';
 
 const BRAND = chalk.hex('#FF6B35');
 const ACCENT = chalk.hex('#00D4AA');
@@ -65,12 +67,13 @@ function showCliHelp(): void {
   console.log('  orion doctor      Run local diagnostics and exit');
   console.log('  orion diff        Summarize current git workspace changes');
   console.log('  orion commit      Create a read-only commit plan and suggested message');
+  console.log('  orion migrate openhorse  Preview OpenHorse migration; add --yes to execute');
   console.log('  orion -p "task"   Run an experimental non-interactive task');
   console.log('  orion --help      Show this help message');
   console.log('  orion --version   Show version');
-  console.log('  orion --ui terminal  Start the stable native terminal UI explicitly');
   console.log('  orion --ui tui    Start the default TUI renderer explicitly');
-  console.log('  orion --ui ink    Start the deprecated Ink/React UI');
+  console.log('  orion --ui terminal  Start the technical terminal UI for diagnostics');
+  console.log('  orion --ui ink    Start the deprecated Ink/React UI (removed in v0.2.0)');
   console.log();
   console.log(ACCENT('Options:'));
   console.log('  -h, --help     Show help');
@@ -79,7 +82,7 @@ function showCliHelp(): void {
   console.log(`  --ui <mode>    UI renderer: ${SUPPORTED_UI_RENDERERS.join(', ')}`);
   console.log('  --output-format <text|json>  Print-mode output format');
   console.log();
-  console.log(DIM('tui is the default. terminal is the stable fallback; ink is deprecated beta; print is experimental.'));
+  console.log(DIM('tui is the default product UI. terminal is the technical fallback; ink is deprecated (removed in v0.2.0); print is experimental.'));
   console.log();
 }
 
@@ -123,8 +126,8 @@ function parseCliOptions(args: string[]): CliOptions {
       }
 
       if (uiValue === 'legacy' || uiValue === 'v2') {
-        console.log(WARN(`Renderer "${uiValue}" was removed in v0.2.0; starting stable terminal UI instead.`));
-        uiRenderer = 'terminal';
+        console.log(WARN(`Renderer "${uiValue}" was removed in v0.2.0; starting the TUI product renderer instead.`));
+        uiRenderer = 'tui';
         continue;
       }
 
@@ -328,6 +331,13 @@ async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OrionCodeUiRunt
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
+  if (args[0] === 'migrate') {
+    const result = handleMigrateCommand(
+      { cwd: process.cwd() } as CommandContext,
+      args.slice(1).join(' ')
+    );
+    process.exit(result.success ? 0 : 1);
+  }
   if (args.includes('--help') || args.includes('-h')) {
     showCliHelp();
     process.exit(0);

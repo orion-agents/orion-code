@@ -44,7 +44,9 @@
 | **会话管理** | 会话持久化、历史恢复、摘要生成 |
 | **安全边界** | Bash 安全检查、审计日志、权限模式 |
 | **流式输出** | 实时 LLM 响应，Markdown 渲染 |
-| **Terminal UI** | 默认稳定 scrollback 终端 UI；Ink/TUI 仅作为显式 beta 实验 |
+| **TUI** | 默认且面向公众的主产品界面；支持 transcript、inspector、CJK 输入和工具输出 |
+| **terminal-ui** | 仅用于 runtime 验证、诊断、兼容性排查和必要回退的技术版本 |
+| **Ink** | 已废弃，不再承接新功能，计划在 v0.2.0 删除 |
 | **Print Mode** | 实验性 `-p/--print` 一次性入口，用于后续自动化/remote UI 验证 |
 | **状态栏** | 实时显示 Token 用量、成本、模型、上下文百分比 |
 | **精简配置** | 仅 4 个用户字段，其余由 Agent 内部管理 |
@@ -81,11 +83,16 @@ cp .env.example .env
 # 方式 3: ~/.orion-code/orion-code.json（推荐）
 # 首次运行时自动创建
 
-# 启动默认稳定 terminal UI
+# 启动默认公众产品 TUI
 npm start
 
-# 显式尝试 beta renderer
+# 显式启动 TUI
 npm start -- --ui tui
+
+# 技术诊断/兼容回退
+npm start -- --ui terminal
+
+# 已废弃的兼容 renderer（v0.2.0 删除）
 npm start -- --ui ink
 
 # 尝试早期实验性的非交互入口
@@ -97,8 +104,11 @@ npm start -- --print "review the current git diff"
 ```bash
 npm link
 # 任意目录运行
-orion-code
+orion
 ```
+
+公众体验、交互优化和新增工作流优先落在 TUI。`terminal-ui` 不作为与
+TUI 并行发展的公众产品；Ink 只保留迁移期兼容，不再增加产品能力。
 
 ---
 

@@ -1302,12 +1302,17 @@ export class AgentChatController {
     }
 
     if (parsed.name === 'clear') {
-      this.events.clearTranscript();
+      if (this.events.clearView) {
+        this.events.clearView();
+      } else {
+        this.events.clearTranscript();
+      }
       this.events.setStatus('View cleared. Conversation context is preserved.');
       return;
     }
 
     if (parsed.name === 'exit' || parsed.name === 'quit' || parsed.name === 'q') {
+      this.events.shutdownRequested?.('user request');
       await this.runtime.shutdown();
       return;
     }
@@ -1617,6 +1622,16 @@ export class AgentChatController {
         if (text?.trim()) {
           this.events.append({ role: 'system', content: text });
         }
+      },
+      clearView: () => {
+        if (this.events.clearView) {
+          this.events.clearView();
+        } else {
+          this.events.clearTranscript();
+        }
+      },
+      requestShutdown: reason => {
+        this.events.shutdownRequested?.(reason);
       },
       uiRenderer:
         this.controllerOptions.uiRenderer ?? this.runtime.config.ui?.renderer ?? 'terminal',
@@ -2154,6 +2169,14 @@ export class AgentChatController {
                 note: compactMiddle(event.suggestion, 240),
               });
             }
+            break;
+          case 'warning':
+            this.events.append({
+              role: 'status',
+              statusTone: 'warning',
+              title: 'harness',
+              content: event.message,
+            });
             break;
           case 'message':
             finalContent = event.content;

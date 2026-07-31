@@ -5,7 +5,7 @@
  * structured GoalControlInput for AgentRuntimeController to process.
  */
 
-import type { GoalControlAction, GoalControlInput } from '../runtime/goals/types';
+import type { GoalControlInput } from '../runtime/goals/types';
 import { GOAL_INVARIANTS } from '../runtime/goals/types';
 
 // ============================================================================
@@ -92,5 +92,5 @@ export function parseTargetCommand(rawInput: string): TargetParseResult {
  */
 export function isTargetCommand(input: string): boolean {
   const trimmed = input.trimStart();
-  return trimmed.startsWith('/target') || trimmed.startsWith('/goal');
+  return /^\/(?:target|goal)(?:\s|$)/.test(trimmed);
 }

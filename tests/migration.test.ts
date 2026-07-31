@@ -3,6 +3,7 @@
  */
 
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { migrateBrand, migrateProjectFiles } from '../src/migration/migrate';
@@ -221,5 +222,45 @@ describe('/migrate CLI command', () => {
     } finally {
       jest.restoreAllMocks();
     }
+  });
+
+  test('defaults to a dry run and requires --yes before writing', () => {
+    const migrateModule = require('../src/migration/migrate');
+    const migrateSpy = jest.spyOn(migrateModule, 'migrateBrand').mockReturnValue({
+      success: true,
+      manifest: {
+        warnings: [],
+        conflicts: [],
+        copiedFiles: 2,
+        sourceRoot: '/tmp/.openhorse',
+        targetRoot: '/tmp/.orion-code',
+        sourceSnapshot: { fileCount: 2, totalBytes: 128 },
+        renamedFiles: [],
+      },
+    });
+    const { handleMigrateCommand } = require('../src/migration/command');
+    jest.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    try {
+      expect(handleMigrateCommand({} as any, 'openhorse').success).toBe(true);
+      expect(migrateSpy).toHaveBeenLastCalledWith(expect.objectContaining({ dryRun: true }));
+
+      expect(handleMigrateCommand({} as any, 'openhorse --yes').success).toBe(true);
+      expect(migrateSpy).toHaveBeenLastCalledWith(expect.objectContaining({ dryRun: false }));
+    } finally {
+      jest.restoreAllMocks();
+    }
+  });
+
+  test('exposes migration as a direct pre-config CLI command', () => {
+    const output = execFileSync(
+      process.execPath,
+      ['-r', 'ts-node/register', 'src/cli.ts', 'migrate', '--help'],
+      { cwd: join(__dirname, '..'), encoding: 'utf-8' }
+    );
+
+    expect(output).toContain('orion migrate openhorse');
+    expect(output).toContain('--yes');
+    expect(output).toContain('preview-only');
   });
 });

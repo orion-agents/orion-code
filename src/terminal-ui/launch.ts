@@ -38,8 +38,6 @@ import type {
   ToolPermissionRequest,
   UiEventSink,
 } from '../runtime/ui-events';
-import { isTargetCommand, parseTargetCommand } from '../commands/target-command';
-import { GoalCoordinator } from '../runtime/goals/coordinator';
 
 const ACCENT = chalk.hex('#80E6E8');
 const DIM = chalk.hex('#567089');
@@ -250,44 +248,6 @@ export function formatTerminalStatusMessage(
   width = terminalContentWidth(120)
 ): string {
   return truncateTerminalText(message.replace(/\s+/g, ' ').trim(), Math.max(1, width));
-}
-
-// --- v0.2.24: /target command result formatting ---
-
-import type { GoalControlInput } from '../runtime/goals/types';
-
-function formatTargetCommandResult(input: GoalControlInput, coordinator?: GoalCoordinator): string {
-  switch (input.action) {
-    case 'show': {
-      const goal = coordinator?.goal;
-      if (goal) {
-        const status = goal.status;
-        const obj = goal.objective.length > 60 ? goal.objective.slice(0, 57) + '...' : goal.objective;
-        const turns = goal.continuationCount;
-        const tokens = goal.tokensUsed >= 1000 ? `${(goal.tokensUsed / 1000).toFixed(1)}K` : String(goal.tokensUsed);
-        return `Target: ${status} · ${obj} · ${turns} turns · ${tokens} tokens`;
-      }
-      return 'Target: no active goal. Use /target <objective> to create one.';
-    }
-    case 'create':
-      return `Goal created: ${input.payload?.objective ?? ''}`;
-    case 'pause':
-      return 'Goal paused. Use /target resume to continue.';
-    case 'resume':
-      return 'Goal resumed. Will continue when runtime is idle.';
-    case 'edit':
-      return `Goal updated: ${input.payload?.objective ?? ''}`;
-    case 'replace':
-      return `Goal replaced: ${input.payload?.objective ?? ''}`;
-    case 'clear':
-      return 'Goal cleared.';
-    case 'set_budget':
-      return input.payload?.tokenBudget
-        ? `Goal token budget set to ${input.payload.tokenBudget}.`
-        : 'Goal token budget removed.';
-    default:
-      return 'Target command processed.';
-  }
 }
 
 export function formatTerminalSessionRestored(event: RuntimeSessionRestoredEvent): string {
@@ -588,6 +548,10 @@ export class TerminalEventSink implements UiEventSink {
     this.writer.write(`${DIM('View marker reset. Terminal scrollback is preserved.')}\n`);
   }
 
+  clearView(): void {
+    this.clearTranscript();
+  }
+
   setStatus(message: string): void {
     if (!shouldShowStatus(message)) return;
     if (message === this.lastStatusMessage) return;
@@ -626,7 +590,7 @@ export class TerminalEventSink implements UiEventSink {
   }
 
   setProcessing(_processing: boolean): void {
-    // The stable terminal UI is append-only, so there is no live spinner state.
+    // The technical terminal UI is append-only, so there is no live spinner state.
   }
 
   consumePendingSelection(input: string): string | AgentRuntimeInput | null {
@@ -836,7 +800,7 @@ export class TerminalEventSink implements UiEventSink {
 export function renderTerminalBanner(runtime: OpenHorseUiRuntime): string {
   const width = Math.max(2, terminalContentWidth(88));
   const line = '─'.repeat(Math.max(0, width - 2));
-  const firstLine = ` ${ACCENT.bold('ORION CODE | 猎户座')} ${DIM(`v${runtime.version}`)} ${DIM('stable terminal UI')}`;
+  const firstLine = ` ${ACCENT.bold('ORION CODE | 猎户座')} ${DIM(`v${runtime.version}`)} ${DIM('technical terminal UI')}`;
   const projectPrefix = ` ${DIM('Model')} ${ACCENT(runtime.config.model)}  ${DIM('Project')} `;
   const project = truncateTerminalText(
     runtime.cwd,
@@ -1202,10 +1166,6 @@ export async function launchTerminalUI(runtime: OpenHorseUiRuntime): Promise<voi
     },
   };
 
-  // v0.2.24: initialize goal coordinator for /target mode.
-  const goalCoordinator = new GoalCoordinator(runtime.cwd, runtime.getSession()?.id ?? 'new');
-  goalCoordinator.load();
-
   agentController = new AgentRuntimeController({
     runtime,
     eventSink,
@@ -1223,7 +1183,6 @@ export async function launchTerminalUI(runtime: OpenHorseUiRuntime): Promise<voi
       events.append({ role: 'error', content: message });
     },
   });
-  agentController.setGoalCoordinator(goalCoordinator);
   const prompt = (): void => {
     if (stopping) return;
     editor.setPrompt(composer.prompt(promptText(runtime)));
@@ -1267,24 +1226,6 @@ export async function launchTerminalUI(runtime: OpenHorseUiRuntime): Promise<voi
         return;
       }
 
-      // v0.2.26: allow /target pause/status/resume even during active turn.
-      if (isTargetCommand(answer)) {
-        const parsed = parseTargetCommand(answer);
-        if (parsed.ok && (parsed.input.action === 'pause' || parsed.input.action === 'show' || parsed.input.action === 'resume' || parsed.input.action === 'set_budget' || parsed.input.action === 'clear')) {
-          // For pause/resume, interrupt the current turn first.
-          if (parsed.input.action === 'pause' || parsed.input.action === 'resume') {
-            agentController.handle({ type: 'interrupt', source: 'keyboard' } as AgentRuntimeInput);
-          }
-          events.append({
-            role: 'system',
-            content: formatTargetCommandResult(parsed.input, goalCoordinator),
-          });
-          agentController.handle(parsed.input as unknown as AgentRuntimeInput);
-          prompt();
-          return;
-        }
-      }
-
       const result = agentController.handle({ type: 'submit', text: answer, source: 'composer' });
       if (result.type === 'exit_requested') {
         void stop();
@@ -1318,41 +1259,6 @@ export async function launchTerminalUI(runtime: OpenHorseUiRuntime): Promise<voi
     input ??= answer;
 
     if (!composer.isActive()) {
-      // v0.2.24: intercept /target and /goal commands.
-      if (isTargetCommand(input)) {
-        const parsed = parseTargetCommand(input);
-        if (parsed.ok) {
-          events.append({
-            role: 'system',
-            content: formatTargetCommandResult(parsed.input, goalCoordinator),
-          });
-          // Route to controller for goal lifecycle.
-          if (parsed.input.action !== 'show') {
-            agentController.handle(parsed.input as unknown as AgentRuntimeInput);
-          }
-          // v0.2.26: auto-start the first turn when a goal is created or resumed.
-          if (
-            (parsed.input.action === 'create' || parsed.input.action === 'resume') &&
-            goalCoordinator?.isActive
-          ) {
-            const req = goalCoordinator.buildContinuationRequest();
-            if (req) {
-              agentController.handle({
-                type: 'submit',
-                text: req.goal?.continuationIndex
-                  ? `[goal continuation #${req.goal.continuationIndex}]`
-                  : 'Continue pursuing the goal.',
-                source: 'programmatic',
-              } as AgentRuntimeInput);
-            }
-          }
-        } else {
-          events.append({ role: 'error', content: parsed.error });
-        }
-        prompt();
-        return;
-      }
-
       const edit = parseEditInput(input);
       if (edit.isEdit) {
         editor.stop();

@@ -243,4 +243,8 @@ export interface UiEventSink {
   /** Subagent lifecycle event (queued/running/completed/...). Renderer-independent. */
   subtaskEvent?: (event: RuntimeSubtaskEvent) => void;
   setProcessing: (processing: boolean) => void;
+  /** v0.1.1: request the renderer to clear its viewport without affecting session state. */
+  clearView?: () => void;
+  /** v0.1.1: request graceful shutdown with an optional reason string. */
+  shutdownRequested?: (reason?: string) => void;
 }

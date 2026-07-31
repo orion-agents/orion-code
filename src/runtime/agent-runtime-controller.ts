@@ -1,5 +1,5 @@
 import { parseInput } from '../commands/parser';
-import { isTargetCommand } from '../commands/target-command';
+import { isTargetCommand, parseTargetCommand } from '../commands/target-command';
 import type {
   AgentRuntimeEventSink,
   AgentRuntimeInput,
@@ -102,10 +102,12 @@ export class AgentRuntimeController {
   private nextPermissionRequestId = 1;
   /** v0.2.24: optional goal coordinator for /target mode. */
   private goalCoordinator: import('./goals/coordinator').GoalCoordinator | null = null;
+  private goalCoordinatorSessionId: string | null = null;
 
   /** v0.2.24: set the goal coordinator for /target mode. */
   setGoalCoordinator(coord: import('./goals/coordinator').GoalCoordinator): void {
     this.goalCoordinator = coord;
+    this.goalCoordinatorSessionId = '*';
     // Wire goal tools to the coordinator so model can call get_goal/create_goal/update_goal.
     const { setGoalToolCoordinator } = require('./goals/tools') as typeof import('./goals/tools');
     setGoalToolCoordinator(coord);
@@ -128,6 +130,134 @@ export class AgentRuntimeController {
 
   hasActiveTurn(): boolean {
     return this.turnController.hasActiveTurn();
+  }
+
+  /** v0.1.1: shared /target command handling for all renderers. */
+  handleTargetInput(rawInput: string): {
+    handled: boolean;
+    statusText?: string;
+    runtimeResult: AgentRuntimeSubmitResult;
+  } {
+    const parsed = parseTargetCommand(rawInput);
+    if (!parsed.ok) {
+      this.emitAppend({
+        role: 'error',
+        title: 'target',
+        content: parsed.error,
+        errorLayer: 'runtime',
+      });
+      return { handled: true, statusText: parsed.error, runtimeResult: { type: 'command_handled' } };
+    }
+    const input = parsed.input;
+    const coord = this.ensureGoalCoordinator(input.action !== 'show');
+
+    if (!coord) {
+      const statusText = 'Target unavailable: no active session.';
+      this.emitAppend({ role: 'error', title: 'target', content: statusText, errorLayer: 'session' });
+      return { handled: true, statusText, runtimeResult: { type: 'command_handled' } };
+    }
+
+    if (
+      this.turnController.hasActiveTurn()
+      && !['pause', 'show', 'clear'].includes(input.action)
+    ) {
+      const statusText =
+        'Target command ignored while the agent is running. Use /target pause or interrupt first.';
+      this.emitStatus(statusText);
+      return { handled: true, statusText, runtimeResult: { type: 'command_ignored' } };
+    }
+
+    let success = true;
+    let error: string | undefined;
+    switch (input.action) {
+      case 'show':
+        break;
+      case 'create': {
+        const result = coord.create(input.payload?.objective ?? '');
+        success = result.ok;
+        if (!result.ok) error = result.error;
+        break;
+      }
+      case 'pause':
+        success = coord.pause();
+        if (success && this.turnController.hasActiveTurn()) {
+          this.turnController.interruptActiveTurn();
+        }
+        if (!success) error = 'Target is not active.';
+        break;
+      case 'resume':
+        success = coord.resume();
+        if (!success) error = 'Target cannot be resumed from its current state.';
+        break;
+      case 'edit':
+        success = coord.edit(input.payload?.objective ?? '');
+        if (!success) error = 'Target objective could not be updated.';
+        break;
+      case 'replace':
+        success = coord.replace(input.payload?.objective ?? '');
+        if (!success) error = 'Target could not be replaced.';
+        break;
+      case 'set_budget':
+        success = coord.setBudget(input.payload?.tokenBudget ?? null);
+        if (!success) error = 'Create or resume a target before setting a budget.';
+        break;
+      case 'clear':
+        if (!input.payload?.confirmed) {
+          success = false;
+          error = 'Clearing a target requires confirmation: /target clear --yes';
+        } else {
+          success = coord.clear();
+          if (!success) error = 'No target exists to clear.';
+        }
+        break;
+    }
+
+    if (!success && error) {
+      this.emitAppend({ role: 'error', title: 'target', content: error, errorLayer: 'runtime' });
+    }
+
+    const statusText = this.formatTargetStatus(coord);
+    this.emitAppend({ role: 'system', title: 'target', content: statusText });
+
+    if (
+      success
+      && (input.action === 'create' || input.action === 'resume' || input.action === 'replace')
+      && coord.isActive
+    ) {
+      const req = coord.buildContinuationRequest();
+      if (req) {
+        const runtimeResult = this.submit(
+          req.goal?.continuationIndex
+            ? `[goal continuation #${req.goal.continuationIndex}]`
+            : 'Continue pursuing the goal.'
+        );
+        return { handled: true, statusText, runtimeResult };
+      }
+    }
+
+    return { handled: true, statusText, runtimeResult: { type: 'command_handled' } };
+  }
+
+  /** v0.1.1: shared /target intercept check for all renderers. */
+  canInterceptTargetCommand(input: string, duringActiveTurn: boolean): boolean {
+    if (!isTargetCommand(input)) return false;
+    const parsed = parseTargetCommand(input);
+    if (!parsed.ok) return true; // intercept to show error
+    // During active turn, only allow non-mutating actions.
+    if (duringActiveTurn) {
+      return ['pause', 'show', 'clear'].includes(parsed.input.action);
+    }
+    return true;
+  }
+
+  /** v0.1.1: emit clear_view event through the renderer protocol. */
+  emitClearView(): void {
+    this.eventSink.emit({ type: 'clear_view' });
+  }
+
+  /** v0.1.1: emit shutdown_requested event through the renderer protocol. */
+  emitShutdownRequested(reason?: string): void {
+    this.eventSink.emit({ type: 'shutdown_requested', reason });
   }
 
   setVerificationState(state: 'pending' | 'running' | 'passed' | 'failed' | 'gated'): void {
@@ -165,7 +295,19 @@ export class AgentRuntimeController {
     if (!submitted) return { type: 'empty' };
 
     if (isExitInput(submitted)) {
+      this.emitShutdownRequested('user request');
       return { type: 'exit_requested' };
+    }
+
+    if (isTargetCommand(submitted)) {
+      return this.handleTargetInput(submitted).runtimeResult;
+    }
+
+    const parsedInput = parseInput(submitted);
+    if (parsedInput.isCommand && parsedInput.name === 'clear') {
+      this.emitClearView();
+      this.emitStatus('View cleared. Conversation context is preserved.');
+      return { type: 'command_handled' };
     }
 
     if (this.turnController.hasActiveTurn()) {
@@ -435,6 +577,50 @@ export class AgentRuntimeController {
       default:
         return { type: 'empty' };
     }
+  }
+
+  private ensureGoalCoordinator(
+    ensureSession: boolean
+  ): import('./goals/coordinator').GoalCoordinator | null {
+    if (this.goalCoordinator && this.goalCoordinatorSessionId === '*') {
+      return this.goalCoordinator;
+    }
+
+    if (ensureSession) {
+      this.options.runtime.ensureSession();
+    }
+    const sessionId = this.options.runtime.getSession()?.id;
+    if (!sessionId) return this.goalCoordinator;
+    if (this.goalCoordinator && this.goalCoordinatorSessionId === sessionId) {
+      return this.goalCoordinator;
+    }
+
+    const { GoalCoordinator } = require('./goals/coordinator') as typeof import('./goals/coordinator');
+    const coord = new GoalCoordinator(this.options.runtime.cwd, sessionId);
+    coord.load();
+    this.goalCoordinator = coord;
+    this.goalCoordinatorSessionId = sessionId;
+
+    const { setGoalToolCoordinator } = require('./goals/tools') as typeof import('./goals/tools');
+    setGoalToolCoordinator(coord);
+    if ('setGoalCoordinator' in this.runner) {
+      (this.runner as AgentChatController).setGoalCoordinator(coord);
+    }
+    return coord;
+  }
+
+  private formatTargetStatus(
+    coord: import('./goals/coordinator').GoalCoordinator
+  ): string {
+    const goal = coord.goal;
+    if (!goal) {
+      return 'Target: no active goal. Use /target <objective> to create one.';
+    }
+    const objective =
+      goal.objective.length > 60 ? `${goal.objective.slice(0, 57)}...` : goal.objective;
+    const tokens =
+      goal.tokensUsed >= 1000 ? `${(goal.tokensUsed / 1000).toFixed(1)}K` : String(goal.tokensUsed);
+    return `Target: [${goal.status}] ${objective} | ${goal.continuationCount} turns | ${tokens} tokens`;
   }
 
   private recordPermissionDecision(requestId: string, approved: boolean): AgentRuntimeInputResult {

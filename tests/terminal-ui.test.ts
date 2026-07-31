@@ -175,7 +175,7 @@ describe('terminal UI renderer adapter', () => {
 
     expect(banner).toContain('ORION CODE | 猎户座');
     expect(banner).toContain('vtest');
-    expect(banner).toContain('stable terminal UI');
+    expect(banner).toContain('technical terminal UI');
     expect(banner).toContain('Model test-model');
     expect(banner).toContain('Project /tmp/openhorse-terminal-renderer');
     expect(banner).toContain('Session new');

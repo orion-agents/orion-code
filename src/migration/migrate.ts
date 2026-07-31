@@ -505,13 +505,16 @@ USAGE
   orion migrate openhorse [flags]
 
 FLAGS
-  --dry-run                  Preview migration without writing files
+  --dry-run                  Preview migration without writing files (default)
+  --yes                      Execute the migration after reviewing the preview
   --include-env              Also migrate ~/.openhorse.env → ~/.orion-code.env
   --include-project-files    Rename .openhorse/ → .orion-code/ in project dirs
 
 DESCRIPTION
   Copies ~/.openhorse → ~/.orion-code with filename and config-key
   transformations. The source directory is left unchanged.
+
+  Migration is preview-only unless --yes is provided.
 
   Migration covers:
   - openhorse.json → orion.json (with config key remapping)

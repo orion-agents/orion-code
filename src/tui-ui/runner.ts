@@ -1293,23 +1293,7 @@ function insertAtCursor(
 }
 
 function visibleTuiCommandItems(input: string): TuiPickerItem[] {
-  const query = input.startsWith('/')
-    ? input.slice(1).trim().split(/\s+/u, 1)[0].toLowerCase()
-    : '';
-  const local: TuiPickerItem[] = [
-    {
-      value: 'tool-output',
-      label: '/tool-output',
-      description: 'Set TUI tool output mode',
-    },
-    {
-      value: 'redraw',
-      label: '/redraw',
-      description: 'Redraw the TUI-owned live region',
-    },
-  ].filter(item => item.value.includes(query));
-  const localNames = new Set(local.map(item => item.value));
-  return [...local, ...visibleCommandItems(input).filter(item => !localNames.has(item.value))];
+  return visibleCommandItems(input);
 }
 
 function safeFileName(value: string): string {

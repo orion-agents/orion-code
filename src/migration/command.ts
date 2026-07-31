@@ -24,9 +24,11 @@ export function handleMigrateCommand(ctx: CommandContext, args: string = ''): Co
 
   const rest = trimmed.slice('openhorse'.length).trim();
   const flags = new Set(rest.split(/\s+/).filter(f => f.startsWith('--')));
+  const confirmed = flags.has('--yes');
+  const dryRun = flags.has('--dry-run') || !confirmed;
 
   const options = {
-    dryRun: flags.has('--dry-run'),
+    dryRun,
     includeEnv: flags.has('--include-env'),
     includeProjectFiles: flags.has('--include-project-files'),
   };
@@ -54,6 +56,9 @@ export function handleMigrateCommand(ctx: CommandContext, args: string = ''): Co
     console.log(`Source: ${result.manifest.sourceRoot}`);
     console.log(`Target: ${result.manifest.targetRoot}`);
     console.log(`Files: ${result.manifest.sourceSnapshot.fileCount} files, ${formatBytes(result.manifest.sourceSnapshot.totalBytes)}`);
+    if (!confirmed) {
+      console.log('No files were written. Run /migrate openhorse --yes to execute this exact migration.');
+    }
     if (result.manifest.renamedFiles.length > 0) {
       console.log('\nRenamed files:');
       for (const rf of result.manifest.renamedFiles) {

@@ -24,7 +24,7 @@ export function completeSlashCommand(line: string): [string[], string] {
   if (!match) return [[], line];
 
   const partial = match[1];
-  const commands = getVisibleCommands();
+  const commands = getVisibleCommands('terminal');
   const nameMatches = commands.filter(command => command.name.startsWith(partial));
   const aliasMatches = nameMatches.length > 0
     ? []

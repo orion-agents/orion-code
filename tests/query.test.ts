@@ -680,7 +680,7 @@ describe('query generator', () => {
     });
   });
 
-  test('does not promote the default budget for repeated model-only completion-gate loops', async () => {
+  test('stops repeated model-only completion-gate loops after one corrective retry', async () => {
     const llm = makeMockLLM([
       ...Array.from({ length: 24 }, (_, index) => ({
         content: `pass ${index}`,
@@ -715,19 +715,19 @@ describe('query generator', () => {
     }
 
     const complete = events[events.length - 1] as Extract<QueryEvent, { type: 'complete' }>;
-    expect(llm.chatStream).toHaveBeenCalledTimes(24);
+    expect(llm.chatStream).toHaveBeenCalledTimes(2);
     expect(complete).toMatchObject({
       type: 'complete',
       stats: {
-        finishReason: 'budget_exceeded',
-        budgetExceededReason: 'LLM request budget 24 reached',
-        llmRequests: 24,
+        finishReason: 'completion_gate',
+        llmRequests: 2,
         toolCalls: 0,
         loopBudgetSource: 'default',
         loopBudgetBaseProfile: 'default',
         loopBudgetMaxLlmRequests: 24,
       },
     });
+    expect(complete.content).toContain('Completion gate stopped this turn');
   });
 
   test('records fragmented single read-only turns and injects batch_read guidance', async () => {

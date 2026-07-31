@@ -635,6 +635,7 @@ export function createTuiUiEventSink(
     },
     subtaskEvent: event => dispatch({ type: 'subtaskEvent', event }),
     setProcessing: processing => dispatch({ type: 'setProcessing', processing }),
+    clearView: () => dispatch({ type: 'clearTranscript' }),
   };
 }
 

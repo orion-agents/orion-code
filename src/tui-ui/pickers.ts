@@ -20,7 +20,7 @@ export interface TuiFileQuery {
 export function visibleCommandItems(input: string): TuiPickerItem[] {
   return createCommandPickerState({
     input,
-    commands: getVisibleCommands(),
+    commands: getVisibleCommands('tui'),
     categoryLabel: getCommandCategoryLabel,
   }).visibleItems.map(item => ({
     value: item.value,

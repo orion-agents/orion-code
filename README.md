@@ -2,7 +2,7 @@
 
 > **Goal-driven coding agent for the terminal.**
 >
-> v0.1.0 — Initial release
+> v0.1.1 — TUI-first public release
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18.0-green.svg)](https://nodejs.org)
@@ -52,8 +52,11 @@ orion
 # TUI renderer (default)
 orion --ui tui
 
-# Stable terminal fallback
+# Technical terminal renderer for diagnostics and compatibility
 orion --ui terminal
+
+# Deprecated compatibility renderer; scheduled for removal in v0.2.0
+orion --ui ink
 
 # Diagnostics
 orion doctor
@@ -140,10 +143,11 @@ Configuration: `~/.orion-code/orion.json` | Priority: `CLI flags > config > env 
 | Command | Description |
 |---------|-------------|
 | `/help` | Show help |
+| `/target` (`/goal`) | Create or inspect a persistent multi-turn goal |
 | `/status` | System status |
 | `/model` | View or switch models |
 | `/config` | Show configuration |
-| `/cost` | Token usage and cost |
+| `/usage` | Token usage and cost |
 | `/compact` | Trigger context compact |
 | `/sessions` | List recent sessions |
 | `/resume` | Resume last session |
@@ -154,15 +158,26 @@ Configuration: `~/.orion-code/orion.json` | Priority: `CLI flags > config > env 
 | `/diff` | Workspace diff |
 | `/commit` | Commit plan |
 | `/clear` | Clear screen |
+| `/context-clear --yes` | Clear in-memory model context; preserve the saved session |
 | `/exit` | Exit |
+
+TUI is the public product interface and the default launch path. `terminal-ui`
+is maintained as a technical diagnostics/compatibility renderer, not a second
+public product. Ink is deprecated, receives no new product features, and is
+scheduled for removal in v0.2.0.
 
 ## Migration from OpenHorse
 
 ```bash
-orion migrate openhorse [--dry-run] [--include-env]
+# Preview only (default)
+orion migrate openhorse [--include-env]
+
+# Execute after reviewing the preview
+orion migrate openhorse --yes [--include-env]
 ```
 
-See [docs/mvp/v0.1.0.md](docs/mvp/v0.1.0.md) for full capability documentation.
+See the [v0.1.1 release notes](docs/mvp/v0.1.1.md) and
+[release-readiness report](docs/plan/v01.1-release-readiness.md).
 
 ## Development
 

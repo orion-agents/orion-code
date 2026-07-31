@@ -13,8 +13,9 @@ import type {
 type SinkMode = 'ui-events' | 'runtime-events';
 
 function createRuntime(): OpenHorseUiRuntime {
+  let session: ReturnType<OpenHorseUiRuntime['getSession']> = null;
   return {
-    cwd: '/tmp/openhorse-parity',
+    cwd: `/tmp/orion-parity-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     version: 'test',
     config: { model: 'test-model', ui: { renderer: 'terminal' } } as OpenHorseUiRuntime['config'],
     store: {
@@ -23,9 +24,14 @@ function createRuntime(): OpenHorseUiRuntime {
     llm: null,
     runtime: {} as OpenHorseUiRuntime['runtime'],
     isConfigured: true,
-    ensureSession: jest.fn(),
-    setSession: jest.fn(),
-    getSession: jest.fn(() => null),
+    ensureSession: jest.fn(() => {
+      session ??= { id: 'session-parity' } as NonNullable<typeof session>;
+      return session;
+    }),
+    setSession: jest.fn(nextSession => {
+      session = nextSession;
+    }),
+    getSession: jest.fn(() => session),
     shutdown: jest.fn(),
   };
 }
@@ -80,6 +86,10 @@ function normalizeEvent(event: AgentRuntimeEvent): string {
       return `replace:${event.entries.length}`;
     case 'transcript_clear':
       return 'clear';
+    case 'clear_view':
+      return 'clear_view';
+    case 'shutdown_requested':
+      return `shutdown_requested:${event.reason ?? ''}`;
   }
 }
 
@@ -127,6 +137,8 @@ function createRecordingController(mode: SinkMode): {
     traceEventRecorded: event => events.push(normalizeEvent({ type: 'trace_event_recorded', event })),
     harnessDiagnosticsUpdated: diagnostics => events.push(normalizeEvent({ type: 'harness_diagnostics_updated', diagnostics })),
     setProcessing: processing => events.push(normalizeEvent({ type: 'processing_changed', processing })),
+    clearView: () => events.push(normalizeEvent({ type: 'clear_view' })),
+    shutdownRequested: reason => events.push(normalizeEvent({ type: 'shutdown_requested', reason })),
   };
 
   return {
@@ -251,6 +263,53 @@ describe('runtime/UI renderer parity contract', () => {
       'processing:true',
       'processing:false',
     ]);
+  });
+
+  it('routes clear and shutdown system events through both adapters identically', () => {
+    const ui = createRecordingController('ui-events');
+    const runtime = createRecordingController('runtime-events');
+
+    expect(ui.controller.handle({ type: 'submit', text: '/clear', source: 'composer' }))
+      .toEqual({ type: 'command_handled' });
+    expect(runtime.controller.handle({ type: 'submit', text: '/clear', source: 'composer' }))
+      .toEqual({ type: 'command_handled' });
+    expect(ui.controller.handle({ type: 'submit', text: '/exit', source: 'composer' }))
+      .toEqual({ type: 'exit_requested' });
+    expect(runtime.controller.handle({ type: 'submit', text: '/exit', source: 'composer' }))
+      .toEqual({ type: 'exit_requested' });
+
+    expect(ui.events).toEqual(runtime.events);
+    expect(ui.events).toEqual([
+      'clear_view',
+      'status:View cleared. Conversation context is preserved.',
+      'shutdown_requested:user request',
+    ]);
+  });
+
+  it('routes /target through the shared controller for every renderer adapter', async () => {
+    const ui = createRecordingController('ui-events');
+    const runtime = createRecordingController('runtime-events');
+
+    expect(ui.controller.handle({
+      type: 'submit',
+      text: '/target verify renderer parity',
+      source: 'composer',
+    })).toEqual({ type: 'started' });
+    expect(runtime.controller.handle({
+      type: 'submit',
+      text: '/target verify renderer parity',
+      source: 'composer',
+    })).toEqual({ type: 'started' });
+
+    expect(ui.runner.calls.map(call => call.input)).toEqual(['[goal continuation #1]']);
+    expect(runtime.runner.calls.map(call => call.input)).toEqual(['[goal continuation #1]']);
+    expect(ui.events).toEqual(runtime.events);
+    expect(ui.events[0]).toContain('append:system:Target: [active] verify renderer parity');
+
+    ui.runner.calls[0].resolve();
+    runtime.runner.calls[0].resolve();
+    await ui.controller.stopActiveTurn();
+    await runtime.controller.stopActiveTurn();
   });
 
   it('adapts tool started and finished events identically across runtime and UI sinks', () => {
@@ -413,7 +472,7 @@ describe('runtime/UI renderer parity contract', () => {
     const tuiCaps = resolveUiRendererCapabilities(undefined, 'tui');
     const terminalCaps = resolveUiRendererCapabilities(undefined, 'terminal');
 
-    // TUI must have the same interactive capabilities as the stable terminal renderer
+    // TUI must have the same interactive capabilities as the technical terminal renderer
     expect(tuiCaps).toEqual(terminalCaps);
     expect(tuiCaps.structuredPickers).toBe(true);
     expect(tuiCaps.inlineProgress).toBe(true);
