@@ -4,9 +4,9 @@
 >
 > 维护范围：Orion Code CLI、Agent Runtime、TUI、terminal-ui、Print、工具与扩展协议
 >
-> 当前基线：`@orion-agents/orion-code@0.1.0`
+> 当前基线：`@orion-agents/orion-code@0.1.1`（v0.1.1 已发布并合并到 main）
 >
-> 最近更新：2026-07-29
+> 最近更新：2026-07-31
 
 ## 1. 项目使命
 
@@ -165,37 +165,72 @@ Orion Code 必须像一个可信赖的开发工具，而不是偶尔可用的演
 
 ## 6. 当前基线与主要缺口
 
-### 6.1 v0.1.0 已建立的基础
+### 6.1 已建立的基础
 
-- npm 公共包：`@orion-agents/orion-code@0.1.0`；
+**v0.1.0 基础：**
+
+- npm 公共包：`@orion-agents/orion-code`；
 - 全局命令：`orion`；
 - 默认且面向公众的 TUI、技术版 terminal-ui、实验性 Print/JSON、已废弃 Ink；
 - 工具编排、会话、记忆、MCP、Skill、多 Provider 和 Subagent 基础；
 - 项目级安全检查、配置诊断、构建与 Jest 测试体系；
 - Orion Code 品牌、启动 Banner 和 OpenHorse 迁移入口。
 
-### 6.2 当前必须优先关闭的缺口
+**v0.1.1 增量（已发布、已合并 main）：**
 
-- `/target` 与 `/goal` 在不同 renderer 中仍存在路由和状态机分叉；
-- 部分存储命令具有写入或删除能力，但确认协议不完整；
-- `/clear-history` 的名称、输出与持久化行为不一致；
-- 命令注册表、帮助、palette、completion 与静态文档尚未完全统一；
-- 旧 Task/Agent 命令仍可能被理解为当前主执行链；
-- 中英文 README、MVP 文档和实际默认 UI 存在口径漂移；
-- 对外文档、帮助和命令面板仍需统一表达 TUI 主产品、terminal-ui 技术版本和 Ink 废弃状态；
-- 完整目标状态、跨会话 continuation 和完成审计仍需成为统一产品能力；
+- UI 产品身份收敛：TUI=product、terminal=technical、Ink=deprecated，全用户面表面统一；
+- 命令契约：37 条命令具备 execution/risk/rendererScope/deprecated 元数据，registry 契约测试；
+- `/target`、`/goal` 路由收敛到 shared `AgentRuntimeController`，移除 renderer 私有 goal 分支；
+- 数据安全事件：`clear_view`、`shutdown_requested` 进入 `AgentRuntimeEvent` 协议；
+- Goal 骨架：`GoalCoordinator`、状态机、sidecar、completion-audit 函数、goal tools、`AgentTurnRequest` 类型均已存在（**但端到端未接通，见 6.3**）；
+- 发布可信度：build/lint/全量测试/tarball/registry install 证据链建立。
+
+### 6.2 缺口状态
+
+**v0.1.1 已关闭：**
+
+- `/target` 与 `/goal` 的 renderer 路由分叉（已收敛到 shared controller）；
+- `/clear-history` 名称、输出与持久化不一致（已 deprecate，指向 `/clear`）；
+- 命令注册表与静态文档未统一（已加 command contract + 契约测试）；
+- 旧 Task/Agent 命令被误以为主执行链（已隐藏 + deprecate）；
+- 中英文 README 与实际默认 UI 口径漂移（已收敛 TUI 主产品身份）；
+- 对外文档对 TUI/terminal-ui/Ink 的表达不一致（已统一 product/technical/deprecated）。
+
+**仍开放（v0.1.2 优先）：**
+
+- **完整目标状态、跨会话 continuation 和完成审计未形成端到端闭环**——这是当前最大的公开能力与实际行为差距，详见 6.3；
+- 部分存储/破坏性命令的 preview→confirm→execute 协议只有元数据与测试，运行时确认流程仍需验证；
+- 命令元数据已定义，但 help/palette/completion 尚未完全消费 risk/deprecated 元数据；
 - 原生依赖、Node 支持矩阵和 npm 安装警告需要持续治理。
 
-这些缺口由 [v0.1.1 命令可靠性与交互优化计划](../mvp/v0.1.1-plan.md) 先行处理。
+### 6.3 目标实现成熟度（现实状态层）
+
+本节区分"北极星声明"与"当前代码现实"，避免滞后声称。成熟度分四档：
+**stub**（类型/骨架存在但未接通）、**partial**（主路径可用但有断点）、**functional**（端到端可用但需加固）、**solid**（可发布、有证据、有回归）。
+
+| 目标 | 北极星声明 | 当前成熟度 | 关键差距 |
+|---|---|---|---|
+| G1 目标忠实度 | 持久化目标、跨回合继续、逐项证据关闭 | **stub** | continuation 降级为 marker 字符串；`update_goal complete/blocked` 只回文本、audit 不可达；completion audit 只查"任意 evidence + 非空摘要"，无 criterion 模型；resume 不重绑 coordinator |
+| G2 安全自主 | 统一风险元数据、破坏性预览确认、失败不被包装为成功 | **partial** | risk 元数据与 preview 测试已有；运行时确认流程、证据不可被模型文本伪造、stop reason 分层待补 |
+| G3 TUI 主产品、单一运行时 | 共享 runtime/命令/目标/事件 | **partial** | UI 身份与命令契约已收敛；goal events 仅类型定义、零发射，未接入 controller/view-model/renderer |
+| G4 终端原生体验 | CJK/scrollback/resume/Ctrl+C 稳定 | **partial** | banner/CJK/resize 有覆盖；PTY smoke 存在基础设施超时，需治理 |
+| G5 Provider 可替换 | Provider/Model 显式建模、错误可定位 | **partial** | 多 Provider 基础存在；usage/auth/network/rate-limit stop reason 分层与 fallback 语义待补 |
+| G6 本地优先、可恢复 | 数据可解释、迁移可恢复、清理不破坏源 | **partial** | sidecar 存在；resume 重绑、corrupt quarantine、跨 session coordinator 隔离待补 |
+
+**关键认知**：G1 是使命核心，但当前为 stub——目标系统对用户可见却未端到端工作。这是 Phase A（v0.1.x）"让公开能力与实际行为一致"必须关闭的差距，由 v0.1.2 承接。不得在 G1 仍为 stub 时声称"目标系统可用"。
+
 
 ## 7. 分阶段交付方向
 
-### 阶段 A — v0.1.x：可靠性与语义收敛
+### 阶段 A - v0.1.x：可靠性与语义收敛
 
 目标：让当前 CLI 的公开能力与真实行为一致。
 
-- 统一 command contract、目标路由和 renderer event；
-- 关闭存储、清理和上下文命令的安全缺口；
+阶段 A 跨两个版本，各自有明确归属，不得互相包装或提前透支：
+
+**v0.1.1（已完成、已发布）：命令契约与身份收敛**
+
+- 统一 command contract、目标命令路由和 renderer event 协议；
 - 收敛过时、重复和条件命令；
 - 将公开体验和新交互收敛到 TUI，固化 spacing、Banner、CJK、resume 和 PTY 回归；
 - 将 terminal-ui 收敛为技术参考与诊断回退，只维护关键兼容、runtime parity 和 smoke test；
@@ -203,20 +238,36 @@ Orion Code 必须像一个可信赖的开发工具，而不是偶尔可用的演
 - 统一 README、帮助、版本文档和包元数据；
 - 建立 clean install、tarball、真实 PATH 与发布证据链。
 
-退出条件：v0.1.1 计划中的 P0、Go 条件和发布门槛全部满足。
+**v0.1.2（进行中）：Goal 骨架端到端闭环**
 
-### 阶段 B — v0.2：完整的项目目标运行时
+- 让 v0.1.1 已存在但未接通的 Goal 骨架真正端到端工作（见 6.3 G1 差距）；
+- 结构化 continuation（取代 marker 字符串），不污染 transcript；
+- `update_goal complete|blocked` 两阶段提交，runtime audit 才能改变终态；
+- 逐 criterion 的 completion audit 与证据账本，模型文本不能自封通过；
+- session resume 重绑 GoalCoordinator，跨 session 隔离，restart 进入安全恢复态；
+- Goal events 接入 shared runtime、view-model 与 TUI/terminal-ui parity；
+- 精确 per-turn accounting、预算 preflight 与 stop reason 分层；
+- v0.1.1 sidecar 向后兼容读取、corrupt recovery 与回滚。
 
-目标：将“项目级目标”从命令功能提升为 Agent Runtime 的核心状态机。
+**范围约束**：v0.1.2 只做单 Session、单 Active Goal 的可靠性闭环，不提前承诺 v0.2 的多目标、跨 Session 调度或 unattended 后台执行。
 
-- GoalStatus、GoalAccounting、预算与阶段持久化；
-- 自动 continuation、暂停、恢复、替换和取消；
-- 目标、计划、todo、subagent task 与验证证据建立明确关系；
-- 完成审计和阻塞审计成为统一 runtime 协议；
-- session resume 后恢复目标语义，而不是只恢复聊天记录；
-- TUI、terminal-ui 与 Print/JSON 对目标事件保持等价。
+退出条件：v0.1.1 与 v0.1.2 的 P0、Go 条件和发布门槛全部满足；G1 由 stub 升至 functional--一个单 Session 目标能跨多轮、compact、restart/resume 恢复，并以逐项新鲜证据证明完成或精确阻塞。
 
-退出条件：一个非平凡仓库目标能够跨多轮、跨会话执行，并用当前证据证明完成或精确阻塞。
+### 阶段 B - v0.2：完整的项目目标运行时
+
+目标：将“项目级目标”从单 Session 能力提升为 Agent Runtime 的核心状态机，扩展到多目标与跨 Session 调度。
+
+v0.1.2 已关闭单 Session 单 Goal 闭环后，v0.2 承接扩展：
+
+- 多 Goal 并发、目标队列、优先级与 DAG 调度；
+- 跨 Session 目标恢复与调度，unattended background daemon；
+- Goal、计划、todo、subagent task 与 artifact 的完整关系图；
+- 通用阶段编排器与远程 worker；
+- 稳定的 completion/blocked runtime 协议在多目标下的一致性；
+- 团队策略、云同步与远程审计（基于同一 runtime）；
+- Ink、React、Yoga 的物理删除及相应破坏性 CLI 变更。
+
+退出条件：一个非平凡仓库目标能够跨多轮、跨会话执行，并用当前证据证明完成或精确阻塞；多客户端对同一 session、目标和权限状态产生一致结果。
 
 ### 阶段 C — v0.3+：共享协议与多客户端
 
@@ -335,7 +386,8 @@ Orion Code 必须像一个可信赖的开发工具，而不是偶尔可用的演
 ## 13. 关联文档
 
 - [Orion Code v0.1.0](../mvp/v0.1.0.md)
-- [v0.1.1 命令可靠性与交互优化计划](../mvp/v0.1.1-plan.md)
+- [v0.1.1 UI 身份、命令契约、Goal 门禁与数据安全](../mvp/v0.1.1-plan.md)（已完成、已发布）
+- v0.1.2 Goal 骨架端到端闭环（进行中；计划见 `docs/mvp/v0.1.2-plan.md`，范围以本目标 §7 阶段 A 为准）
 - [English README](../../README.md)
 - [简体中文 README](../../README.zh-CN.md)
 - [Repository Guidelines](../../AGENTS.md)
