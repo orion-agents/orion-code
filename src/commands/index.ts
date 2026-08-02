@@ -15,10 +15,7 @@ import {
   type CommandResult,
   type PermissionMode,
 } from './types';
-import {
-  createModelPickerState,
-  createStatusSnapshot,
-} from '../runtime/ui-view-model';
+import { createModelPickerState, createStatusSnapshot } from '../runtime/ui-view-model';
 import type { Task } from '../core/agent';
 import { TaskManager, CreateTaskOptions } from '../services/task-manager';
 import { AgentRunner } from '../services/agent-runner';
@@ -27,7 +24,14 @@ import { createSpinner, toolLine } from '../ui/box';
 import { createStreamRenderer, type StreamMarkdownRenderer } from '../ui/stream-markdown';
 import { hideProgress, showToolProgress } from '../ui/progress';
 import { formatBytes } from '../services/format';
-import { query, getSystemPrompt, resetToolState, getToolState, type LoopStats, type PromptContext } from '../framework';
+import {
+  query,
+  getSystemPrompt,
+  resetToolState,
+  getToolState,
+  type LoopStats,
+  type PromptContext,
+} from '../framework';
 import { executeTool, getRuntimeTools } from '../tools';
 import { mcpManager } from '../tools/mcp';
 import type { Message, StreamCallbacks } from '../services/llm';
@@ -73,10 +77,7 @@ import { buildReferencedFilesPrompt } from '../services/file-context';
 import { loadProjectInstructionFiles } from '../services/project-instructions';
 import { refreshProjectInstructions } from '../services/prompt-context';
 import { collectDoctorReport, formatDoctorReport, hasDoctorFailures } from '../services/doctor';
-import {
-  createContextUsageSnapshot,
-  resolveModelContext,
-} from '../services/model-context';
+import { createContextUsageSnapshot, resolveModelContext } from '../services/model-context';
 import { estimateMessagesTokens } from '../utils/token-estimate';
 import {
   getModelCatalogAliases,
@@ -90,10 +91,15 @@ import { findArtifact, listArtifacts, retrieveArtifact } from '../core/tool-arti
 import { listCheckpoints, restoreCheckpoint } from '../core/checkpoint';
 import {
   cleanupStorage,
+  collectProjectMetadataRepairPlan,
+  collectStorageCleanupPlan,
   collectStorageReport,
+  consumeStorageMaintenancePlan,
+  deserializeStorageMaintenancePlan,
   formatStorageCleanupResult,
   formatStorageReport,
   repairProjectMetadata,
+  serializeStorageMaintenancePlan,
 } from '../services/storage-maintenance';
 import { agentStepStatus, compactStatus, runningToolsStatus } from '../runtime/agent-status';
 import { resolveRuntimeLoopBudget } from '../runtime/loop-budget';
@@ -150,15 +156,16 @@ function formatRendererStatus(ctx: CommandContext): string {
     renderer: ctx.uiRenderer ?? ctx.config.ui?.renderer ?? 'terminal',
     capabilities: ctx.uiCapabilities,
   });
-  const status = snapshot.renderer.status === 'deprecated'
-    ? WARN('deprecated')
-    : snapshot.renderer.status === 'product'
-      ? SUCCESS('product')
-      : snapshot.renderer.status === 'technical'
-        ? DIM('technical')
-        : snapshot.renderer.status === 'non-interactive'
-          ? DIM('non-interactive')
-        : DIM('custom');
+  const status =
+    snapshot.renderer.status === 'deprecated'
+      ? WARN('deprecated')
+      : snapshot.renderer.status === 'product'
+        ? SUCCESS('product')
+        : snapshot.renderer.status === 'technical'
+          ? DIM('technical')
+          : snapshot.renderer.status === 'non-interactive'
+            ? DIM('non-interactive')
+            : DIM('custom');
 
   return `${BRAND(snapshot.renderer.name)} ${status} ${DIM(snapshot.renderer.capabilityLabels.join(', '))}`;
 }
@@ -209,11 +216,12 @@ function formatLoopStatsLines(stats: LoopStats, detail = false): string[] {
     lines.push(`Provider   ${retryParts.join(', ')}`);
   }
   if ((stats.providerFallbackCount ?? 0) > 0 || stats.providerUsingFallback) {
-    const fallbackPath = stats.providerFallbackFromModel && stats.providerFallbackToModel
-      ? `${stats.providerFallbackFromModel} -> ${stats.providerFallbackToModel}`
-      : stats.providerFinalModel
-        ? `final ${stats.providerFinalModel}`
-        : 'active';
+    const fallbackPath =
+      stats.providerFallbackFromModel && stats.providerFallbackToModel
+        ? `${stats.providerFallbackFromModel} -> ${stats.providerFallbackToModel}`
+        : stats.providerFinalModel
+          ? `final ${stats.providerFinalModel}`
+          : 'active';
     lines.push(`Fallback   ${fallbackPath}`);
   }
   if (typeof stats.verificationClaimAllowed === 'boolean') {
@@ -228,9 +236,9 @@ function formatLoopStatsLines(stats: LoopStats, detail = false): string[] {
     lines.push(`Verify     ${verificationParts.join(' ')}`);
   }
   if (
-    typeof stats.loopBudgetMaxLlmRequests === 'number'
-    || typeof stats.loopBudgetMaxToolCalls === 'number'
-    || typeof stats.loopBudgetMaxModelVisibleBytes === 'number'
+    typeof stats.loopBudgetMaxLlmRequests === 'number' ||
+    typeof stats.loopBudgetMaxToolCalls === 'number' ||
+    typeof stats.loopBudgetMaxModelVisibleBytes === 'number'
   ) {
     const caps = [
       typeof stats.loopBudgetMaxLlmRequests === 'number'
@@ -249,7 +257,9 @@ function formatLoopStatsLines(stats: LoopStats, detail = false): string[] {
     lines.push(`Budget cap ${caps.join(', ')} (${formatLoopBudgetSource(stats)})`);
   }
   if (stats.singleReadOnlyStreak > 0 || stats.batchReadSuggestionCount > 0) {
-    lines.push(`Read-only  streak ${stats.singleReadOnlyStreak}, batch_read hints ${stats.batchReadSuggestionCount}`);
+    lines.push(
+      `Read-only  streak ${stats.singleReadOnlyStreak}, batch_read hints ${stats.batchReadSuggestionCount}`
+    );
   }
 
   if (detail) {
@@ -296,7 +306,8 @@ export function getCommandCategoryLabel(category: CommandCategory | undefined): 
 
 export function sortCommands(commands: SlashCommand[]): SlashCommand[] {
   return [...commands].sort((a, b) => {
-    const categoryDelta = CATEGORY_ORDER.indexOf(commandCategory(a)) - CATEGORY_ORDER.indexOf(commandCategory(b));
+    const categoryDelta =
+      CATEGORY_ORDER.indexOf(commandCategory(a)) - CATEGORY_ORDER.indexOf(commandCategory(b));
     if (categoryDelta !== 0) return categoryDelta;
     const priorityDelta = (a.priority ?? 100) - (b.priority ?? 100);
     if (priorityDelta !== 0) return priorityDelta;
@@ -319,7 +330,6 @@ function hasCommandFlag(args: string, flag: string): boolean {
 // ============================================================================
 // 工具参数摘要
 // ============================================================================
-
 
 // ============================================================================
 // 命令实现
@@ -346,9 +356,10 @@ function showHelp(ctx: CommandContext): CommandResult {
         : '';
       const risk = cmd.risk === 'destructive' ? ' destructive' : '';
       const availability = cmd.availability?.(ctx);
-      const unavailable = availability && !availability.available
-        ? ` unavailable: ${availability.reason ?? 'requirements not met'}`
-        : '';
+      const unavailable =
+        availability && !availability.available
+          ? ` unavailable: ${availability.reason ?? 'requirements not met'}`
+          : '';
       console.log(`  ${ACCENT(`/${cmd.name}`)}${aliases} ${DIM(params)}`);
       console.log(`    ${DIM(`${cmd.description}${lifecycle}${risk}${unavailable}`)}`);
     }
@@ -375,12 +386,18 @@ function showStatus(ctx: CommandContext): CommandResult {
   const modelContext = resolveModelContext(modelId);
   const compactStats = getCommandAutoCompact(ctx, modelId).getStats();
   console.log(`  Model      ${BRAND(modelId)}`);
-  console.log(`  Context    ${DIM(`${formatTokenCount(modelContext.contextWindow)} tokens (${modelContext.source}${modelContext.source === 'fuzzy' ? `:${modelContext.matchedId}` : ''})`)}`);
-  console.log(`  Compact    ${compactStats.enabled ? SUCCESS('auto') : WARN('off')} ${DIM(`predict ${formatThreshold(compactStats.predictiveCompactThreshold)}, hard ${formatThreshold(compactStats.threshold)}, used ${compactStats.ctxPercent}%`)}`);
+  console.log(
+    `  Context    ${DIM(`${formatTokenCount(modelContext.contextWindow)} tokens (${modelContext.source}${modelContext.source === 'fuzzy' ? `:${modelContext.matchedId}` : ''})`)}`
+  );
+  console.log(
+    `  Compact    ${compactStats.enabled ? SUCCESS('auto') : WARN('off')} ${DIM(`predict ${formatThreshold(compactStats.predictiveCompactThreshold)}, hard ${formatThreshold(compactStats.threshold)}, used ${compactStats.ctxPercent}%`)}`
+  );
   console.log(`  Renderer   ${formatRendererStatus(ctx)}`);
   console.log();
   console.log(`  Agents     ${SUCCESS(brainStatus.agents.length)} registered`);
-  console.log(`  Tasks      ${brainStatus.pendingTasks} pending (${brainStatus.strategy} strategy)`);
+  console.log(
+    `  Tasks      ${brainStatus.pendingTasks} pending (${brainStatus.strategy} strategy)`
+  );
   console.log();
   console.log(`  Memory (inline):`);
   console.log(`    Working    ${memStatus.working} entries`);
@@ -397,16 +414,24 @@ function showStatus(ctx: CommandContext): CommandResult {
   const instructionFiles = loadProjectInstructionFiles(ctx.cwd);
   console.log();
   console.log(`  Context:`);
-  console.log(`    Project rules ${instructionFiles.length > 0 ? SUCCESS(`${instructionFiles.length} files`) : DIM('none')}`);
+  console.log(
+    `    Project rules ${instructionFiles.length > 0 ? SUCCESS(`${instructionFiles.length} files`) : DIM('none')}`
+  );
   for (const file of instructionFiles.slice(0, 8)) {
     console.log(`      ${DIM(file.path)}${file.truncated ? ` ${WARN('(truncated)')}` : ''}`);
   }
   if (instructionFiles.length > 8) {
     console.log(`      ${DIM(`... ${instructionFiles.length - 8} more`)}`);
   }
-  console.log(`    Prompt rules  ${snapshot.projectInstructionsContent ? SUCCESS(`${snapshot.projectInstructionsContent.length} chars`) : DIM('none')}`);
-  console.log(`    Project memory ${snapshot.memoryContent ? SUCCESS(`${snapshot.memoryContent.length} chars`) : DIM('none')}`);
-  console.log(`    Skills index   ${snapshot.skillsContent ? SUCCESS(`${snapshot.skillsContent.length} chars`) : DIM('none')}`);
+  console.log(
+    `    Prompt rules  ${snapshot.projectInstructionsContent ? SUCCESS(`${snapshot.projectInstructionsContent.length} chars`) : DIM('none')}`
+  );
+  console.log(
+    `    Project memory ${snapshot.memoryContent ? SUCCESS(`${snapshot.memoryContent.length} chars`) : DIM('none')}`
+  );
+  console.log(
+    `    Skills index   ${snapshot.skillsContent ? SUCCESS(`${snapshot.skillsContent.length} chars`) : DIM('none')}`
+  );
 
   if (snapshot.lastLoopStats) {
     const stats = snapshot.lastLoopStats;
@@ -429,7 +454,9 @@ function showStatus(ctx: CommandContext): CommandResult {
       console.log(`    Next       ${DIM(harnessState.capsule.nextAction)}`);
       const passed = harnessState.capsule.verification.passed.length;
       const failed = harnessState.capsule.verification.failed.length;
-      console.log(`    Verify     ${SUCCESS(`${passed} passed`)} / ${failed > 0 ? ERROR(`${failed} failed`) : DIM('0 failed')}`);
+      console.log(
+        `    Verify     ${SUCCESS(`${passed} passed`)} / ${failed > 0 ? ERROR(`${failed} failed`) : DIM('0 failed')}`
+      );
     }
   }
   console.log();
@@ -449,7 +476,11 @@ function handleLoopStats(ctx: CommandContext): CommandResult {
     console.log(`  ${line}`);
   }
   console.log();
-  console.log(DIM('Use this to spot excessive LLM requests, fragmented read-only tool calls, and local fast-path hits.'));
+  console.log(
+    DIM(
+      'Use this to spot excessive LLM requests, fragmented read-only tool calls, and local fast-path hits.'
+    )
+  );
   return { success: true };
 }
 
@@ -469,15 +500,18 @@ function formatTraceEventLine(event: SessionTraceEvent): string {
         event.providerLastRetryErrorType
           ? `last=${event.providerLastRetryErrorType}${event.providerLastRetryStatus ? `/${event.providerLastRetryStatus}` : ''}`
           : '',
-        event.providerRetryErrorTypes?.length ? `types=${event.providerRetryErrorTypes.join(',')}` : '',
+        event.providerRetryErrorTypes?.length
+          ? `types=${event.providerRetryErrorTypes.join(',')}`
+          : '',
         event.providerFinalModel ? `final=${event.providerFinalModel}` : '',
       ].filter(Boolean);
       return `${prefix} ${parts.join(' ')}`;
     }
     case 'provider_fallback': {
-      const path = event.providerFallbackFromModel && event.providerFallbackToModel
-        ? `${event.providerFallbackFromModel}->${event.providerFallbackToModel}`
-        : event.providerFinalModel ?? 'active';
+      const path =
+        event.providerFallbackFromModel && event.providerFallbackToModel
+          ? `${event.providerFallbackFromModel}->${event.providerFallbackToModel}`
+          : (event.providerFinalModel ?? 'active');
       const parts = [
         `count=${event.providerFallbackCount ?? 0}`,
         `path=${path}`,
@@ -509,9 +543,10 @@ function formatTraceEventLine(event: SessionTraceEvent): string {
       const files = event.checkpointFiles?.length
         ? ` files=${event.checkpointFiles.slice(0, 6).join(', ')}${event.checkpointFiles.length > 6 ? ', ...' : ''}`
         : '';
-      const targets = event.workspaceFiles?.length && !files
-        ? ` targets=${event.workspaceFiles.slice(0, 6).join(', ')}${event.workspaceFiles.length > 6 ? ', ...' : ''}`
-        : '';
+      const targets =
+        event.workspaceFiles?.length && !files
+          ? ` targets=${event.workspaceFiles.slice(0, 6).join(', ')}${event.workspaceFiles.length > 6 ? ', ...' : ''}`
+          : '';
       return `${prefix} id=${event.checkpointId ?? 'unknown'} saved=${event.checkpointFileCount ?? 0}${files}${targets}${event.note ? ` ${DIM(event.note)}` : ''}`;
     }
     case 'tool_call':
@@ -547,14 +582,15 @@ function formatTraceEventLine(event: SessionTraceEvent): string {
         `tools=${typeof event.toolCalls === 'number' ? event.toolCalls : 'unknown'}`,
       ];
       if (
-        event.loopBudgetSource
-        || typeof event.loopBudgetMaxLlmRequests === 'number'
-        || typeof event.loopBudgetMaxToolCalls === 'number'
-        || typeof event.loopBudgetMaxModelVisibleBytes === 'number'
+        event.loopBudgetSource ||
+        typeof event.loopBudgetMaxLlmRequests === 'number' ||
+        typeof event.loopBudgetMaxToolCalls === 'number' ||
+        typeof event.loopBudgetMaxModelVisibleBytes === 'number'
       ) {
-        const source = event.loopBudgetSource === 'config' && event.loopBudgetBaseProfile
-          ? `config/${event.loopBudgetBaseProfile}`
-          : event.loopBudgetSource ?? 'unknown';
+        const source =
+          event.loopBudgetSource === 'config' && event.loopBudgetBaseProfile
+            ? `config/${event.loopBudgetBaseProfile}`
+            : (event.loopBudgetSource ?? 'unknown');
         const caps = [
           typeof event.loopBudgetMaxLlmRequests === 'number'
             ? `${typeof event.llmRequests === 'number' ? event.llmRequests : '?'}/${event.loopBudgetMaxLlmRequests}llm`
@@ -573,7 +609,8 @@ function formatTraceEventLine(event: SessionTraceEvent): string {
         stats.push(`budgetProfile=${source}${caps.length ? `(${caps.join(',')})` : ''}`);
       }
       if (event.budgetExceededReason) stats.push(`budget=${event.budgetExceededReason}`);
-      if (event.continuationActions?.length) stats.push(`next=${event.continuationActions.join(',')}`);
+      if (event.continuationActions?.length)
+        stats.push(`next=${event.continuationActions.join(',')}`);
       if (event.continuationHint) stats.push(`hint=${event.continuationHint}`);
       if (event.localFastPathUsed) stats.push('fast-path=yes');
       return `${prefix} ${stats.join(' ')}`;
@@ -581,9 +618,12 @@ function formatTraceEventLine(event: SessionTraceEvent): string {
     case 'local_fast_path':
       return `${prefix} ${event.name ?? 'tool'}${event.argsSummary ? ` ${DIM(event.argsSummary)}` : ''}${event.argsArtifactId ? ` ${DIM(`args=/artifacts show ${event.argsArtifactId} --full${event.argsBytes ? ` (${formatBytes(event.argsBytes)})` : ''}`)}` : ''}${event.note ? ` ${DIM(event.note)}` : ''}`;
     case 'workspace_snapshot': {
-      const state = event.workspaceGitAvailable === false
-        ? WARN('not-git')
-        : event.workspaceDirty ? WARN('dirty') : SUCCESS('clean');
+      const state =
+        event.workspaceGitAvailable === false
+          ? WARN('not-git')
+          : event.workspaceDirty
+            ? WARN('dirty')
+            : SUCCESS('clean');
       const files = event.workspaceFiles?.length
         ? ` files=${event.workspaceFiles.slice(0, 6).join(', ')}${event.workspaceFiles.length > 6 ? ', ...' : ''}`
         : '';
@@ -602,11 +642,21 @@ function formatTraceEventLine(event: SessionTraceEvent): string {
         `resolved=${resolved.length}`,
       ];
       const details = [
-        added.length ? `new: ${added.slice(0, 6).join(', ')}${added.length > 6 ? ', ...' : ''}` : '',
-        changed.length ? `changed: ${changed.slice(0, 6).join(', ')}${changed.length > 6 ? ', ...' : ''}` : '',
-        modifiedPreExisting.length ? `pre-existing modified: ${modifiedPreExisting.slice(0, 6).join(', ')}${modifiedPreExisting.length > 6 ? ', ...' : ''}` : '',
-        resolved.length ? `resolved: ${resolved.slice(0, 6).join(', ')}${resolved.length > 6 ? ', ...' : ''}` : '',
-      ].filter(Boolean).join(' | ');
+        added.length
+          ? `new: ${added.slice(0, 6).join(', ')}${added.length > 6 ? ', ...' : ''}`
+          : '',
+        changed.length
+          ? `changed: ${changed.slice(0, 6).join(', ')}${changed.length > 6 ? ', ...' : ''}`
+          : '',
+        modifiedPreExisting.length
+          ? `pre-existing modified: ${modifiedPreExisting.slice(0, 6).join(', ')}${modifiedPreExisting.length > 6 ? ', ...' : ''}`
+          : '',
+        resolved.length
+          ? `resolved: ${resolved.slice(0, 6).join(', ')}${resolved.length > 6 ? ', ...' : ''}`
+          : '',
+      ]
+        .filter(Boolean)
+        .join(' | ');
       return `${prefix} ${parts.join(' ')}${details ? ` ${DIM(details)}` : ''}${event.note ? ` ${DIM(event.note)}` : ''}`;
     }
     case 'verification_profile': {
@@ -643,9 +693,10 @@ function formatTraceEventLine(event: SessionTraceEvent): string {
         `missing=${missing}`,
         `claimAllowed=${event.verificationClaimAllowed ? 'yes' : 'no'}`,
       ];
-      const missingPreview = missing > 0
-        ? ` missing: ${(event.verificationMissingCommands ?? []).slice(0, 4).join(' && ')}${missing > 4 ? ' && ...' : ''}`
-        : '';
+      const missingPreview =
+        missing > 0
+          ? ` missing: ${(event.verificationMissingCommands ?? []).slice(0, 4).join(' && ')}${missing > 4 ? ' && ...' : ''}`
+          : '';
       return `${prefix} ${parts.join(' ')}${missingPreview ? ` ${DIM(missingPreview)}` : ''}${event.note ? ` ${DIM(event.note)}` : ''}`;
     }
     case 'aborted':
@@ -689,7 +740,9 @@ function handleTrace(ctx: CommandContext, args: string = ''): CommandResult {
     console.log(`  ${formatTraceEventLine(event)}`);
   }
   console.log();
-  console.log(DIM('Trace stores metadata only; full transcript and tool output stay in session/artifacts.'));
+  console.log(
+    DIM('Trace stores metadata only; full transcript and tool output stay in session/artifacts.')
+  );
   return { success: true };
 }
 
@@ -703,13 +756,15 @@ function latestToolTrace(events: SessionTraceEvent[]): {
 
     const callId = event.callId;
     const result = event.type === 'tool_result' ? event : undefined;
-    const call = event.type === 'tool_call'
-      ? event
-      : callId
-        ? events.slice(0, index).reverse().find(candidate =>
-          candidate.type === 'tool_call' && candidate.callId === callId
-        )
-        : undefined;
+    const call =
+      event.type === 'tool_call'
+        ? event
+        : callId
+          ? events
+              .slice(0, index)
+              .reverse()
+              .find(candidate => candidate.type === 'tool_call' && candidate.callId === callId)
+          : undefined;
 
     return { call, result };
   }
@@ -717,7 +772,10 @@ function latestToolTrace(events: SessionTraceEvent[]): {
 }
 
 /** Find tool trace by 1-based sequence number across all tool events. */
-function toolTraceBySeq(events: SessionTraceEvent[], seq: number): {
+function toolTraceBySeq(
+  events: SessionTraceEvent[],
+  seq: number
+): {
   call?: SessionTraceEvent;
   result?: SessionTraceEvent;
 } | null {
@@ -744,7 +802,10 @@ function toolTraceBySeq(events: SessionTraceEvent[], seq: number): {
 }
 
 /** Find tool trace by callId prefix. */
-function toolTraceByCallId(events: SessionTraceEvent[], callIdPrefix: string): {
+function toolTraceByCallId(
+  events: SessionTraceEvent[],
+  callIdPrefix: string
+): {
   call?: SessionTraceEvent;
   result?: SessionTraceEvent;
 } | null {
@@ -769,7 +830,10 @@ function collectToolTracePairs(events: SessionTraceEvent[]): Array<{
   result?: SessionTraceEvent;
 }> {
   const pairs: Array<{ seq: number; call?: SessionTraceEvent; result?: SessionTraceEvent }> = [];
-  const seen = new Map<string, { seq: number; call?: SessionTraceEvent; result?: SessionTraceEvent }>();
+  const seen = new Map<
+    string,
+    { seq: number; call?: SessionTraceEvent; result?: SessionTraceEvent }
+  >();
   let counter = 0;
 
   for (const event of events) {
@@ -803,7 +867,7 @@ function printLastToolArtifactPreview(
   projectPath: string,
   label: string,
   artifactId: string | undefined,
-  full: boolean,
+  full: boolean
 ): void {
   if (!artifactId) return;
 
@@ -832,7 +896,9 @@ function printLastToolArtifactPreview(
     console.log(`  ${line}`);
   }
   if (shouldTruncate) {
-    console.log(`  ${DIM(`... preview truncated at ${formatBytes(maxPreviewBytes)}. Use /last-tool --full or /artifacts show ${artifact.id} --full.`)}`);
+    console.log(
+      `  ${DIM(`... preview truncated at ${formatBytes(maxPreviewBytes)}. Use /last-tool --full or /artifacts show ${artifact.id} --full.`)}`
+    );
   }
 }
 
@@ -888,12 +954,11 @@ function handleLastTool(ctx: CommandContext, args: string = ''): CommandResult {
     for (const pair of pairs.slice(-30)) {
       const source = pair.result ?? pair.call;
       const name = source?.name ?? 'tool';
-      const status = pair.result
-        ? (pair.result.success === false ? '✗' : '✓')
-        : '…';
-      const duration = typeof pair.result?.duration === 'number'
-        ? ` (${formatDurationMs(pair.result.duration)})`
-        : '';
+      const status = pair.result ? (pair.result.success === false ? '✗' : '✓') : '…';
+      const duration =
+        typeof pair.result?.duration === 'number'
+          ? ` (${formatDurationMs(pair.result.duration)})`
+          : '';
       const argsShort = (pair.call?.argsSummary ?? '').slice(0, 40);
       console.log(`  #${pair.seq} ${status} ${ACCENT(name)}${duration}  ${DIM(argsShort)}`);
     }
@@ -909,7 +974,11 @@ function handleLastTool(ctx: CommandContext, args: string = ''): CommandResult {
   const name = source?.name ?? 'tool';
   const inputLabel = lastToolInputLabel(name);
   const callId = source?.callId ?? call?.callId;
-  const status = result ? (result.success === false ? ERROR('error') : SUCCESS('ok')) : WARN('running');
+  const status = result
+    ? result.success === false
+      ? ERROR('error')
+      : SUCCESS('ok')
+    : WARN('running');
 
   // Resolve sequence number from the trace events
   let seqLabel = '';
@@ -917,7 +986,9 @@ function handleLastTool(ctx: CommandContext, args: string = ''): CommandResult {
     seqLabel = `#${parseInt(options.ref.replace('#', ''), 10)} `;
   } else if (result || call) {
     const allPairs = collectToolTracePairs(events);
-    const matchingPair = allPairs.find(p => p.call?.callId === callId || p.result?.callId === callId);
+    const matchingPair = allPairs.find(
+      p => p.call?.callId === callId || p.result?.callId === callId
+    );
     if (matchingPair) seqLabel = `#${matchingPair.seq} `;
   }
 
@@ -935,14 +1006,18 @@ function handleLastTool(ctx: CommandContext, args: string = ''): CommandResult {
     console.log(`  ${lastToolField(inputLabel)}${DIM(redactTraceText(argsSource.argsSummary))}`);
   }
   if (argsSource?.argsArtifactId) {
-    const size = typeof argsSource.argsBytes === 'number' ? ` (${formatBytes(argsSource.argsBytes)})` : '';
-    console.log(`  ${lastToolField(`${inputLabel} full`)}${DIM(`/artifacts show ${argsSource.argsArtifactId} --full${size}`)}`);
+    const size =
+      typeof argsSource.argsBytes === 'number' ? ` (${formatBytes(argsSource.argsBytes)})` : '';
+    console.log(
+      `  ${lastToolField(`${inputLabel} full`)}${DIM(`/artifacts show ${argsSource.argsArtifactId} --full${size}`)}`
+    );
   }
 
   if (typeof result?.outputBytes === 'number') {
-    const modelVisible = typeof result.modelVisibleBytes === 'number'
-      ? `, model-visible ${formatBytes(result.modelVisibleBytes)}`
-      : '';
+    const modelVisible =
+      typeof result.modelVisibleBytes === 'number'
+        ? `, model-visible ${formatBytes(result.modelVisibleBytes)}`
+        : '';
     console.log(`  Output      ${DIM(`${formatBytes(result.outputBytes)}${modelVisible}`)}`);
   }
   if (result?.artifactId) {
@@ -959,7 +1034,11 @@ function handleLastTool(ctx: CommandContext, args: string = ''): CommandResult {
   }
 
   console.log();
-  console.log(DIM('Use /last-tool --full for redacted full previews, --no-preview for metadata only, or /trace latest for the ordered turn timeline.'));
+  console.log(
+    DIM(
+      'Use /last-tool --full for redacted full previews, --no-preview for metadata only, or /trace latest for the ordered turn timeline.'
+    )
+  );
   return { success: true };
 }
 
@@ -967,7 +1046,12 @@ function formatDateTime(timestamp: number): string {
   return new Date(timestamp).toLocaleString();
 }
 
-function parseArtifactArgs(args: string): { action: 'list' | 'show'; ref?: string; full: boolean; limit: number } {
+function parseArtifactArgs(args: string): {
+  action: 'list' | 'show';
+  ref?: string;
+  full: boolean;
+  limit: number;
+} {
   const parts = args.trim().split(/\s+/).filter(Boolean);
   let full = false;
   let limit = 20;
@@ -1009,7 +1093,11 @@ function printArtifactPreview(content: string, full: boolean): void {
   const preview = Buffer.from(content, 'utf8').subarray(0, maxPreviewBytes).toString('utf8');
   console.log(preview);
   console.log();
-  console.log(DIM(`... preview truncated at ${formatBytes(maxPreviewBytes)}. Use /artifacts show <id> --full for full output.`));
+  console.log(
+    DIM(
+      `... preview truncated at ${formatBytes(maxPreviewBytes)}. Use /artifacts show <id> --full for full output.`
+    )
+  );
 }
 
 function formatArtifactPathForDisplay(artifactPath: string): string {
@@ -1029,7 +1117,9 @@ function handleArtifacts(ctx: CommandContext, args: string = ''): CommandResult 
     }
 
     for (const artifact of artifacts) {
-      console.log(`${ACCENT(artifact.id)} ${DIM(artifact.toolName)} ${formatBytes(artifact.outputBytes)}`);
+      console.log(
+        `${ACCENT(artifact.id)} ${DIM(artifact.toolName)} ${formatBytes(artifact.outputBytes)}`
+      );
       console.log(`  ${DIM(formatDateTime(artifact.modifiedAt))}`);
       console.log(`  ${DIM(formatArtifactPathForDisplay(artifact.path))}`);
     }
@@ -1058,7 +1148,11 @@ function handleArtifacts(ctx: CommandContext, args: string = ''): CommandResult 
   }
 
   console.log(HEADER(`Artifact ${artifact.id}`));
-  console.log(DIM(`Tool ${artifact.toolName}  Size ${formatBytes(artifact.outputBytes)}  Modified ${formatDateTime(artifact.modifiedAt)}`));
+  console.log(
+    DIM(
+      `Tool ${artifact.toolName}  Size ${formatBytes(artifact.outputBytes)}  Modified ${formatDateTime(artifact.modifiedAt)}`
+    )
+  );
   console.log(DIM(formatArtifactPathForDisplay(artifact.path)));
   console.log(DIM('─'.repeat(40)));
   printArtifactPreview(content, parsed.full);
@@ -1092,11 +1186,16 @@ function handleCheckpoint(ctx: CommandContext, args: string = ''): CommandResult
 
     for (const checkpoint of checkpoints.slice(0, 20)) {
       console.log(`${ACCENT(checkpoint.turnId)} ${DIM(formatDateTime(checkpoint.createdAt))}`);
-      const files = checkpoint.files.map(file => file.path).slice(0, 8).join(', ');
+      const files = checkpoint.files
+        .map(file => file.path)
+        .slice(0, 8)
+        .join(', ');
       console.log(`  ${DIM(`${checkpoint.files.length} file(s)${files ? `: ${files}` : ''}`)}`);
     }
     console.log();
-    console.log(DIM('Use /checkpoint restore <turn-id|prefix> to preview, then add --yes to restore.'));
+    console.log(
+      DIM('Use /checkpoint restore <turn-id|prefix> to preview, then add --yes to restore.')
+    );
     return { success: true };
   }
 
@@ -1114,9 +1213,9 @@ function handleCheckpoint(ctx: CommandContext, args: string = ''): CommandResult
 
   const { checkpoint, ambiguous } = findCheckpointByRef(ctx, ref);
   if (!checkpoint) {
-    console.log(ERROR(ambiguous
-      ? `Checkpoint prefix is ambiguous: ${ref}`
-      : `Checkpoint not found: ${ref}`));
+    console.log(
+      ERROR(ambiguous ? `Checkpoint prefix is ambiguous: ${ref}` : `Checkpoint not found: ${ref}`)
+    );
     console.log(DIM('Run /checkpoint to list available checkpoint ids.'));
     return { success: false };
   }
@@ -1139,7 +1238,9 @@ function handleCheckpoint(ctx: CommandContext, args: string = ''): CommandResult
     return { success: false, error: result.error };
   }
 
-  console.log(SUCCESS(`Restored ${result.restored.length} file(s) from checkpoint ${checkpoint.turnId}.`));
+  console.log(
+    SUCCESS(`Restored ${result.restored.length} file(s) from checkpoint ${checkpoint.turnId}.`)
+  );
   for (const file of result.restored.slice(0, 20)) {
     console.log(`  ${file}`);
   }
@@ -1190,7 +1291,9 @@ function showMemory(ctx: CommandContext): CommandResult {
   console.log();
   console.log(HEADER('  Inline MemorySystem:'));
   console.log(`    Working    ${memStatus.working} / ${ctx.runtime.config.memory.workingCapacity}`);
-  console.log(`    Short-term ${memStatus['short-term']} / ${ctx.runtime.config.memory.shortTermCapacity}`);
+  console.log(
+    `    Short-term ${memStatus['short-term']} / ${ctx.runtime.config.memory.shortTermCapacity}`
+  );
   console.log(`    Long-term  ${memStatus['long-term']} entries`);
 
   console.log();
@@ -1259,7 +1362,9 @@ function showSafety(ctx: CommandContext): CommandResult {
     console.log(`    ${WARN('⚠')} ${DIM(pattern)}`);
   }
   console.log();
-  console.log(`  Audit summary: ${summary.total} checks | ${SUCCESS(`${summary.passed} passed`)} | ${ERROR(`${summary.blocked} blocked`)}`);
+  console.log(
+    `  Audit summary: ${summary.total} checks | ${SUCCESS(`${summary.passed} passed`)} | ${ERROR(`${summary.blocked} blocked`)}`
+  );
   console.log();
   return { success: true };
 }
@@ -1318,7 +1423,9 @@ function showHarness(ctx: CommandContext, args: string = ''): CommandResult {
     const isRestored = session?.transcriptDisplayStartTime != null;
     const isCompactActive = Boolean(state.promptAssemblyStats);
     console.log(`    Root       ${ACCENT(state.rootObjective || contract?.objective || '(none)')}`);
-    console.log(`    Active     ${DIM(state.activeInstruction || contract?.userIntent || '(none)')}`);
+    console.log(
+      `    Active     ${DIM(state.activeInstruction || contract?.userIntent || '(none)')}`
+    );
     console.log(`    Source     ${isRestored ? WARN('restored session') : DIM('live turn')}`);
     if (isRestored && session) {
       const restoredTime = session.transcriptDisplayStartTime
@@ -1360,7 +1467,9 @@ function showHarness(ctx: CommandContext, args: string = ''): CommandResult {
     if (intents.length > 0) {
       for (const intent of intents) {
         const conf = intent.confidence != null ? ` (${Math.round(intent.confidence * 100)}%)` : '';
-        console.log(`    ${ACCENT(intent.kind)}${DIM(conf)} ${DIM(intent.summary?.slice(0, 50) || '')}`);
+        console.log(
+          `    ${ACCENT(intent.kind)}${DIM(conf)} ${DIM(intent.summary?.slice(0, 50) || '')}`
+        );
       }
     } else {
       console.log(DIM('    (no intents recorded)'));
@@ -1383,7 +1492,9 @@ function showHarness(ctx: CommandContext, args: string = ''): CommandResult {
       }
       const passed = capsule.verification?.passed?.length ?? 0;
       const failed = capsule.verification?.failed?.length ?? 0;
-      console.log(`    Verify      ${SUCCESS(`${passed} passed`)} / ${failed > 0 ? ERROR(`${failed} failed`) : DIM('0 failed')}`);
+      console.log(
+        `    Verify      ${SUCCESS(`${passed} passed`)} / ${failed > 0 ? ERROR(`${failed} failed`) : DIM('0 failed')}`
+      );
     } else {
       console.log(DIM('    (no capsule yet)'));
     }
@@ -1394,7 +1505,9 @@ function showHarness(ctx: CommandContext, args: string = ''): CommandResult {
     console.log(HEADER('  Prompt Assembly'));
     if (stats) {
       console.log(`    Model       ${ACCENT(stats.modelId)}`);
-      console.log(`    Budget      ${DIM(`${stats.estimatedTokens}/${stats.budgetTokens} tokens`)}`);
+      console.log(
+        `    Budget      ${DIM(`${stats.estimatedTokens}/${stats.budgetTokens} tokens`)}`
+      );
       console.log(`    Sections    ${DIM(stats.sections.join(', ') || 'none')}`);
       console.log(`    Ledger      ${DIM(`${state.ledger?.length ?? 0} entries`)}`);
       console.log(`    Evidence    ${DIM(`${state.evidenceIndex?.length ?? 0} records`)}`);
@@ -1402,7 +1515,9 @@ function showHarness(ctx: CommandContext, args: string = ''): CommandResult {
       console.log();
       console.log(HEADER('    Included Evidence'));
       for (const item of stats.includedEvidence.slice(0, 10)) {
-        console.log(`      ${ACCENT(item.id)} ${DIM(`[${item.kind}] score=${item.score} tokens=${item.tokens}`)}`);
+        console.log(
+          `      ${ACCENT(item.id)} ${DIM(`[${item.kind}] score=${item.score} tokens=${item.tokens}`)}`
+        );
         console.log(`        ${DIM(item.reason)}`);
       }
       if (stats.includedEvidence.length === 0) {
@@ -1412,7 +1527,9 @@ function showHarness(ctx: CommandContext, args: string = ''): CommandResult {
         console.log();
         console.log(HEADER('    Omitted Evidence'));
         for (const item of stats.omittedEvidence.slice(0, 8)) {
-          console.log(`      ${DIM(item.id)} ${DIM(`[${item.kind}] score=${item.score} tokens=${item.tokens}`)}`);
+          console.log(
+            `      ${DIM(item.id)} ${DIM(`[${item.kind}] score=${item.score} tokens=${item.tokens}`)}`
+          );
           console.log(`        ${DIM(item.reason)}`);
         }
       }
@@ -1427,9 +1544,15 @@ function showHarness(ctx: CommandContext, args: string = ''): CommandResult {
     ).getStats();
     const contextInfo = resolveModelContext(compactStats.modelId);
     console.log(`    Model       ${ACCENT(compactStats.modelId)}`);
-    console.log(`    Window      ${DIM(`${formatTokenCount(contextInfo.contextWindow)} tokens (${contextInfo.source}${contextInfo.source === 'fuzzy' ? `:${contextInfo.matchedId}` : ''})`)}`);
-    console.log(`    Thresholds  ${DIM(`predict ${formatThreshold(compactStats.predictiveCompactThreshold)}, hard ${formatThreshold(compactStats.threshold)}, prewarm ${formatThreshold(compactStats.preCompactThreshold)}`)}`);
-    console.log(`    Usage       ${DIM(`${compactStats.lastTokenCount} tokens, ${compactStats.ctxPercent}%`)}`);
+    console.log(
+      `    Window      ${DIM(`${formatTokenCount(contextInfo.contextWindow)} tokens (${contextInfo.source}${contextInfo.source === 'fuzzy' ? `:${contextInfo.matchedId}` : ''})`)}`
+    );
+    console.log(
+      `    Thresholds  ${DIM(`predict ${formatThreshold(compactStats.predictiveCompactThreshold)}, hard ${formatThreshold(compactStats.threshold)}, prewarm ${formatThreshold(compactStats.preCompactThreshold)}`)}`
+    );
+    console.log(
+      `    Usage       ${DIM(`${compactStats.lastTokenCount} tokens, ${compactStats.ctxPercent}%`)}`
+    );
     console.log(`    Armed       ${compactStats.preCompactArmed ? SUCCESS('yes') : DIM('no')}`);
     console.log(`    Last mode   ${DIM(compactStats.lastCompactMode ?? 'none')}`);
     console.log();
@@ -1440,8 +1563,12 @@ function showHarness(ctx: CommandContext, args: string = ''): CommandResult {
   console.log(HEADER('  Context State'));
   console.log(`    Version     ${ACCENT(String(state.version ?? 1))}`);
   console.log(`    Epoch       ${ACCENT(String(state.taskEpoch ?? 1))}`);
-  console.log(`    Objective   ${ACCENT(state.rootObjective ?? state.contract?.objective ?? '(none)')}`);
-  console.log(`    Active      ${DIM(state.activeInstruction ?? state.contract?.userIntent ?? '(none)')}`);
+  console.log(
+    `    Objective   ${ACCENT(state.rootObjective ?? state.contract?.objective ?? '(none)')}`
+  );
+  console.log(
+    `    Active      ${DIM(state.activeInstruction ?? state.contract?.userIntent ?? '(none)')}`
+  );
   console.log(`    Ledger      ${DIM(`${state.ledger.length} entries`)}`);
   console.log(`    Evidence    ${DIM(`${state.evidenceIndex?.length ?? 0} records`)}`);
   console.log(`    Turns       ${DIM(`${state.turnSummaries?.length ?? 0} summaries`)}`);
@@ -1452,7 +1579,9 @@ function showHarness(ctx: CommandContext, args: string = ''): CommandResult {
     console.log(`    Next        ${DIM(state.capsule.nextAction)}`);
     const passed = state.capsule.verification.passed.length;
     const failed = state.capsule.verification.failed.length;
-    console.log(`    Verify      ${SUCCESS(`${passed} passed`)} / ${failed > 0 ? ERROR(`${failed} failed`) : DIM('0 failed')}`);
+    console.log(
+      `    Verify      ${SUCCESS(`${passed} passed`)} / ${failed > 0 ? ERROR(`${failed} failed`) : DIM('0 failed')}`
+    );
   }
   if (state.diagnostics && state.diagnostics.length > 0) {
     console.log(`    Diagnostics ${WARN(state.diagnostics.slice(-2).join(' | '))}`);
@@ -1512,8 +1641,12 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
       if (contextInfo.maxOutputTokens) {
         console.log(`  Output   ${DIM(`${formatTokenCount(contextInfo.maxOutputTokens)} tokens`)}`);
       }
-      console.log(`  Source   ${DIM(`${contextInfo.source}${contextInfo.source === 'fuzzy' ? `:${contextInfo.matchedId}` : ''}`)}`);
-      console.log(`  Compact  ${compactStats.enabled ? SUCCESS('auto') : WARN('off')} ${DIM(`predict ${formatThreshold(compactStats.predictiveCompactThreshold)}, hard ${formatThreshold(compactStats.threshold)}`)}`);
+      console.log(
+        `  Source   ${DIM(`${contextInfo.source}${contextInfo.source === 'fuzzy' ? `:${contextInfo.matchedId}` : ''}`)}`
+      );
+      console.log(
+        `  Compact  ${compactStats.enabled ? SUCCESS('auto') : WARN('off')} ${DIM(`predict ${formatThreshold(compactStats.predictiveCompactThreshold)}, hard ${formatThreshold(compactStats.threshold)}`)}`
+      );
     } else {
       console.log(ERROR('LLM not initialized. Set ORION_CODE_API_KEY first.'));
     }
@@ -1584,7 +1717,11 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
   ctx.store.setState({ currentModel: resolvedModel });
   console.log(SUCCESS(`✔ Model changed to ${BRAND(resolvedModel)}`));
   const contextInfo = resolveModelContext(resolvedModel);
-  console.log(DIM(`  Context window ${formatTokenCount(contextInfo.contextWindow)} tokens (${contextInfo.source})`));
+  console.log(
+    DIM(
+      `  Context window ${formatTokenCount(contextInfo.contextWindow)} tokens (${contextInfo.source})`
+    )
+  );
   console.log();
   return { success: true };
 }
@@ -1592,7 +1729,12 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
 function normalizePermissionMode(raw: string): PermissionMode | null {
   const value = raw.trim().toLowerCase();
   if (!value) return null;
-  if (value === 'accept' || value === 'acceptedits' || value === 'accept-edits' || value === 'edit') {
+  if (
+    value === 'accept' ||
+    value === 'acceptedits' ||
+    value === 'accept-edits' ||
+    value === 'edit'
+  ) {
     return 'acceptEdits';
   }
   if (value === 'default' || value === 'ask') return 'default';
@@ -1609,7 +1751,9 @@ function handleMode(ctx: CommandContext, args: string): CommandResult {
     console.log();
     console.log(HEADER('Permission Mode'));
     console.log(DIM('─'.repeat(40)));
-    console.log(`  Current  ${ACCENT(current)} ${DIM(getModeDisplayText(current) || 'ask before sensitive actions')}`);
+    console.log(
+      `  Current  ${ACCENT(current)} ${DIM(getModeDisplayText(current) || 'ask before sensitive actions')}`
+    );
     console.log();
     console.log(`  ${ACCENT('/mode next')}           Cycle to the next mode`);
     console.log(`  ${ACCENT('/mode default')}        Ask before sensitive actions`);
@@ -1620,9 +1764,8 @@ function handleMode(ctx: CommandContext, args: string): CommandResult {
     return { success: true };
   }
 
-  const next = trimmed === 'next'
-    ? getNextPermissionMode(current)
-    : normalizePermissionMode(trimmed);
+  const next =
+    trimmed === 'next' ? getNextPermissionMode(current) : normalizePermissionMode(trimmed);
 
   if (!next || !PERMISSION_MODES.includes(next)) {
     return {
@@ -1663,11 +1806,16 @@ function handleTask(ctx: CommandContext, args: string): CommandResult {
     if (tasks.length > 0) {
       console.log();
       for (const t of tasks) {
-        const statusIcon = t.status === 'completed' ? SUCCESS('✓')
-          : t.status === 'failed' ? ERROR('✗')
-          : t.status === 'running' ? WARN('◌')
-          : t.status === 'cancelled' ? DIM('⊘')
-          : DIM('○');
+        const statusIcon =
+          t.status === 'completed'
+            ? SUCCESS('✓')
+            : t.status === 'failed'
+              ? ERROR('✗')
+              : t.status === 'running'
+                ? WARN('◌')
+                : t.status === 'cancelled'
+                  ? DIM('⊘')
+                  : DIM('○');
         console.log(`  ${statusIcon} ${ACCENT(t.name)} ${DIM(`(${t.id.slice(0, 8)})`)}`);
         console.log(`    ${DIM(`[${t.priority}]`)} ${t.description.slice(0, 60)}`);
       }
@@ -1742,7 +1890,11 @@ async function handleRun(ctx: CommandContext, args: string): Promise<CommandResu
       taskManager.complete(record.id, result);
       console.log(SUCCESS(`✓ Task completed in ${result.duration}ms`));
       if (result.tokenUsage) {
-        console.log(DIM(`  Tokens: ${result.tokenUsage.promptTokens} in / ${result.tokenUsage.completionTokens} out`));
+        console.log(
+          DIM(
+            `  Tokens: ${result.tokenUsage.promptTokens} in / ${result.tokenUsage.completionTokens} out`
+          )
+        );
       }
       if (result.data?.summary) {
         console.log();
@@ -1779,7 +1931,10 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
     return { success: false };
   }
 
-  const activeSession = ctx.getSession?.() ?? ctx.ensureSession?.() ?? (ctx.sessionId ? loadSessionMeta(ctx.sessionId) : null);
+  const activeSession =
+    ctx.getSession?.() ??
+    ctx.ensureSession?.() ??
+    (ctx.sessionId ? loadSessionMeta(ctx.sessionId) : null);
   const sessionId = activeSession?.id ?? ctx.sessionId;
   const runtimeTools = getRuntimeTools();
   const skillResolution = resolveSkillsForTurn({
@@ -1850,7 +2005,11 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
   let streamRenderer: StreamMarkdownRenderer | null = null;
 
   // Issue #32 #3.2: toolExecutor 支持 abortSignal
-  const toolExecutor = async (name: string, args: Record<string, unknown>, abortSignal?: AbortSignal) => {
+  const toolExecutor = async (
+    name: string,
+    args: Record<string, unknown>,
+    abortSignal?: AbortSignal
+  ) => {
     if (!skillResolution.tools.some(tool => tool.name === name)) {
       return JSON.stringify({
         success: false,
@@ -1899,7 +2058,10 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
   };
 
   try {
-    const messages: Message[] = [{ role: 'system', content: systemPrompt }, ...snapshot.conversationHistory];
+    const messages: Message[] = [
+      { role: 'system', content: systemPrompt },
+      ...snapshot.conversationHistory,
+    ];
 
     for await (const event of query({
       messages,
@@ -1962,15 +2124,23 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
           // Issue #22: 隐藏进度指示
           hideProgress();
           // 显示工具结果后，准备下一轮（不启动 spinner）
-          writeLine(event.summary || toolLine(event.name, event.args, event.success, event.duration));
+          writeLine(
+            event.summary || toolLine(event.name, event.args, event.success, event.duration)
+          );
           // 显示错误详情
           if (!event.success && event.error) {
             writeLine(ERROR(`    Error: ${event.error}`));
           }
           // Debug: 显示接收到的参数
           if (!event.success && Object.keys(event.args).length === 0) {
-            writeLine(WARN(`    ⚠ Tool received empty arguments - LLM may not be providing parameters correctly`));
-            writeLine(DIM(`    Try using /model qwen or /model gpt4o for better tool calling support`));
+            writeLine(
+              WARN(
+                `    ⚠ Tool received empty arguments - LLM may not be providing parameters correctly`
+              )
+            );
+            writeLine(
+              DIM(`    Try using /model qwen or /model gpt4o for better tool calling support`)
+            );
           }
           // Record tool result for session
           sessionMessagesToRecord.push({
@@ -2059,7 +2229,9 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
       const stats = [
         finalUsage ? `tokens: ${finalUsage.promptTokens}+${finalUsage.completionTokens}` : '',
         finalModel ? finalModel : '',
-      ].filter(Boolean).join('  ');
+      ]
+        .filter(Boolean)
+        .join('  ');
       if (stats) {
         writeLine(DIM(stats));
       }
@@ -2133,7 +2305,9 @@ function handleCost(ctx: CommandContext): CommandResult {
     console.log();
     console.log(HEADER('  By Model:'));
     for (const [model, data] of Object.entries(ledger.byModel)) {
-      console.log(`    ${BRAND(model.padEnd(20))} ${data.tokens} tokens, ${costTracker.formatCost(data.cost)}`);
+      console.log(
+        `    ${BRAND(model.padEnd(20))} ${data.tokens} tokens, ${costTracker.formatCost(data.cost)}`
+      );
     }
   }
 
@@ -2143,14 +2317,14 @@ function handleCost(ctx: CommandContext): CommandResult {
     const data = ledger.bySource[source];
     if (data.count === 0) continue;
     console.log(
-      `    ${source.padEnd(12)} ${data.count} requests, ${costTracker.formatCost(data.cost)}`,
+      `    ${source.padEnd(12)} ${data.count} requests, ${costTracker.formatCost(data.cost)}`
     );
   }
   if (state.baselineCost > 0 || state.baselineTokens > 0) {
     console.log(
       DIM(
-        `    legacy       ${state.baselineTokens.toLocaleString()} tokens, ${costTracker.formatCost(state.baselineCost)}`,
-      ),
+        `    legacy       ${state.baselineTokens.toLocaleString()} tokens, ${costTracker.formatCost(state.baselineCost)}`
+      )
     );
   }
   if (ledger.bySource.fallback.count > 0) {
@@ -2186,13 +2360,17 @@ function handleSkills(_ctx: CommandContext): CommandResult {
     if (summary.count === 0) {
       console.log();
       console.log(DIM('  No skills loaded.'));
-      console.log(DIM('  Place SKILL.md files in ~/.orion-code/skills/<name>/ or .orion-code/skills/<name>/'));
+      console.log(
+        DIM('  Place SKILL.md files in ~/.orion-code/skills/<name>/ or .orion-code/skills/<name>/')
+      );
       console.log();
       return { success: true };
     }
 
     console.log();
-    console.log(`  Total ${SUCCESS(summary.count)} skills (${WARN(summary.autoCount)} auto-trigger)`);
+    console.log(
+      `  Total ${SUCCESS(summary.count)} skills (${WARN(summary.autoCount)} auto-trigger)`
+    );
     console.log();
     for (const skill of registry.getAllSkills()) {
       const source = registry.getSource(skill.name);
@@ -2221,13 +2399,15 @@ function handleSkill(ctx: CommandContext, args: string): CommandResult {
   registry.initialize();
 
   if (!trimmed) {
-    const names = registry.getAllSkills().map(skill => skill.name).sort();
+    const names = registry
+      .getAllSkills()
+      .map(skill => skill.name)
+      .sort();
     return {
       success: false,
-      error: [
-        'Usage: /skill <name> <task>',
-        `Loaded skills: ${names.join(', ') || 'none'}`,
-      ].join('\n'),
+      error: ['Usage: /skill <name> <task>', `Loaded skills: ${names.join(', ') || 'none'}`].join(
+        '\n'
+      ),
     };
   }
 
@@ -2242,20 +2422,28 @@ function handleSkill(ctx: CommandContext, args: string): CommandResult {
     };
   }
 
-  const skill = referencedSkill || registry.getAllSkills()
-    .find(candidate => skillActivationNames(candidate)
-      .some(name => normalizeRequestedSkillName(name) === requestedName));
+  const skill =
+    referencedSkill ||
+    registry
+      .getAllSkills()
+      .find(candidate =>
+        skillActivationNames(candidate).some(
+          name => normalizeRequestedSkillName(name) === requestedName
+        )
+      );
 
   if (!skill) {
-    const suggestions = registry.getAllSkills()
+    const suggestions = registry
+      .getAllSkills()
       .map(candidate => candidate.name)
       .filter(name => name.includes(requestedName) || requestedName.includes(name))
       .slice(0, 5);
     return {
       success: false,
-      error: suggestions.length > 0
-        ? `Unknown skill: ${rawName}\nDid you mean: ${suggestions.join(', ')}?`
-        : `Unknown skill: ${rawName}`,
+      error:
+        suggestions.length > 0
+          ? `Unknown skill: ${rawName}\nDid you mean: ${suggestions.join(', ')}?`
+          : `Unknown skill: ${rawName}`,
     };
   }
 
@@ -2279,7 +2467,9 @@ function handleSkill(ctx: CommandContext, args: string): CommandResult {
         skillFile ? `SKILL.md ${skillFile}` : '',
         resourceRoot ? `Root     ${resourceRoot}` : '',
         `Use: /skill ${usageSelector} <task>`,
-      ].filter(Boolean).join('\n'),
+      ]
+        .filter(Boolean)
+        .join('\n'),
     };
   }
 
@@ -2331,59 +2521,119 @@ function handleDoctor(ctx: CommandContext): CommandResult {
 }
 
 function handleStorage(_ctx: CommandContext, args: string): CommandResult {
+  const usage =
+    '/storage [doctor|status|repair [--dry-run|--yes] [--plan=<token>]|cleanup [--dry-run|--yes] [--plan=<token>]]';
   const trimmed = args.trim();
-  const [action = 'doctor'] = trimmed.split(/\s+/);
-  const confirmed = hasCommandFlag(trimmed, '--yes');
+  const tokens = trimmed ? trimmed.split(/\s+/u) : [];
+  const action = tokens[0] ?? 'doctor';
+  const flags = tokens.slice(1);
+  const acceptsMutationFlags = action === 'cleanup' || action === 'repair';
+  const planFlags = flags.filter(flag => flag.startsWith('--plan='));
+  const invalidTokens = flags.filter(
+    flag =>
+      !acceptsMutationFlags ||
+      (flag !== '--dry-run' && flag !== '--yes' && !flag.startsWith('--plan=')) ||
+      (flag.startsWith('--plan=') && flag.length === '--plan='.length)
+  );
+  if (planFlags.length > 1) invalidTokens.push(...planFlags.slice(1));
+  if (invalidTokens.length > 0) {
+    return {
+      success: false,
+      error: `Unknown /storage option: ${invalidTokens.join(', ')}. Usage: ${usage}`,
+    };
+  }
+  const confirmed = flags.includes('--yes');
+  const explicitDryRun = flags.includes('--dry-run');
+  const planToken = planFlags[0]?.slice('--plan='.length);
+  const decodedPlan = planToken ? deserializeStorageMaintenancePlan(planToken) : undefined;
+  if (planToken && !decodedPlan) {
+    return { success: false, error: `Invalid or corrupted storage plan token. Usage: ${usage}` };
+  }
 
   if (action === 'cleanup') {
-    const dryRun = hasCommandFlag(trimmed, '--dry-run') || !confirmed;
-    const result = cleanupStorage({ dryRun });
+    if (decodedPlan && decodedPlan.kind !== 'cleanup') {
+      return { success: false, error: 'The supplied storage plan is not a cleanup plan.' };
+    }
+    const dryRun = explicitDryRun || !confirmed;
+    if (!dryRun && !decodedPlan) {
+      return {
+        success: false,
+        error: 'Cleanup requires the exact preview plan. Run /storage cleanup first.',
+      };
+    }
+    const consumedPlan =
+      !dryRun && planToken ? consumeStorageMaintenancePlan(planToken) : undefined;
+    if (!dryRun && (!consumedPlan || consumedPlan.kind !== 'cleanup')) {
+      return {
+        success: false,
+        error:
+          'The storage cleanup plan expired, was already used, or is not valid in this process.',
+      };
+    }
+    const plan = dryRun
+      ? decodedPlan?.kind === 'cleanup'
+        ? decodedPlan.plan
+        : collectStorageCleanupPlan()
+      : (consumedPlan as { kind: 'cleanup'; plan: ReturnType<typeof collectStorageCleanupPlan> })
+          .plan;
+    const result = cleanupStorage({ dryRun }, plan);
     console.log();
     console.log(formatStorageCleanupResult(result));
-    if (!confirmed) {
-      console.log(DIM('Preview only. Run /storage cleanup --yes to apply these deletions.'));
+    if (dryRun) {
+      const portablePlan = planToken ?? serializeStorageMaintenancePlan({ kind: 'cleanup', plan });
+      console.log(
+        DIM(`Preview only. Run /storage cleanup --plan=${portablePlan} --yes to apply this plan.`)
+      );
     }
     console.log();
     return { success: true };
   }
 
   if (action === 'repair') {
-    if (!confirmed) {
-      const report = collectStorageReport();
-      const repairable = report.issues.filter(issue =>
-        issue.kind === 'missing-project-metadata' || issue.kind === 'invalid-project-metadata'
-      );
+    if (decodedPlan && decodedPlan.kind !== 'repair') {
+      return { success: false, error: 'The supplied storage plan is not a repair plan.' };
+    }
+    const plan =
+      decodedPlan?.kind === 'repair' ? decodedPlan.plan : collectProjectMetadataRepairPlan();
+    if (explicitDryRun || !confirmed) {
       console.log();
       console.log(HEADER('Orion Code Storage Repair Preview'));
       console.log(DIM('─'.repeat(40)));
-      console.log(`  Repairable metadata entries ${ACCENT(String(repairable.length))}`);
-      for (const issue of repairable.slice(0, 12)) {
-        console.log(`  ${DIM('•')} ${DIM(issue.path ?? issue.projectKey ?? issue.kind)}`);
+      console.log(`  Repairable metadata entries ${ACCENT(String(plan.actions.length))}`);
+      for (const action of plan.actions.slice(0, 12)) {
+        console.log(`  ${DIM('•')} ${DIM(action.metadataPath)}`);
       }
-      console.log(DIM('  Preview only. Run /storage repair --yes to apply metadata changes.'));
+      const portablePlan = planToken ?? serializeStorageMaintenancePlan({ kind: 'repair', plan });
+      console.log(
+        DIM(
+          `  Preview only. Writable repair is disabled; /storage repair --plan=${portablePlan} --yes will fail closed.`
+        )
+      );
       console.log();
       return { success: true };
     }
-    const result = repairProjectMetadata();
-    console.log();
-    console.log(HEADER('Orion Code Storage Repair'));
-    console.log(DIM('─'.repeat(40)));
-    console.log(`  Repaired ${ACCENT(String(result.repaired.length))}`);
-    console.log(`  Skipped  ${DIM(String(result.skipped.length))}`);
-    for (const project of result.repaired.slice(0, 12)) {
-      console.log(`  ${SUCCESS('✓')} ${DIM(project)}`);
+    if (!decodedPlan) {
+      return {
+        success: false,
+        error: 'Repair requires the exact preview plan. Run /storage repair first.',
+      };
     }
-    if (result.repaired.length > 12) {
-      console.log(DIM(`  ... ${result.repaired.length - 12} more`));
+    const consumedPlan = planToken ? consumeStorageMaintenancePlan(planToken) : undefined;
+    if (!consumedPlan || consumedPlan.kind !== 'repair') {
+      return {
+        success: false,
+        error:
+          'The storage repair plan expired, was already used, or is not valid in this process.',
+      };
     }
-    console.log();
-    return { success: true };
+    const result = repairProjectMetadata(consumedPlan.plan);
+    return { success: false, error: result.blockedReason };
   }
 
   if (action !== 'doctor' && action !== 'status') {
     return {
       success: false,
-      error: 'Usage: /storage [doctor|status|repair [--yes]|cleanup [--dry-run|--yes]]',
+      error: `Usage: ${usage}`,
     };
   }
 
@@ -2415,9 +2665,8 @@ function handleCommitPlan(ctx: CommandContext, args: string): CommandResult {
 }
 
 function handleTools(ctx: CommandContext): CommandResult {
-  const tools = ctx.store.getSnapshot().tools.length > 0
-    ? ctx.store.getSnapshot().tools
-    : getRuntimeTools();
+  const tools =
+    ctx.store.getSnapshot().tools.length > 0 ? ctx.store.getSnapshot().tools : getRuntimeTools();
   const staticTools = tools.filter(tool => !tool.name.startsWith('mcp__'));
   const mcpTools = tools.filter(tool => tool.name.startsWith('mcp__'));
 
@@ -2456,9 +2705,12 @@ function handleTodos(ctx: CommandContext): CommandResult {
   }
 
   for (const todo of todos) {
-    const marker = todo.status === 'completed' ? SUCCESS('✓')
-      : todo.status === 'in_progress' ? WARN('›')
-      : DIM('○');
+    const marker =
+      todo.status === 'completed'
+        ? SUCCESS('✓')
+        : todo.status === 'in_progress'
+          ? WARN('›')
+          : DIM('○');
     console.log(`  ${marker} ${todo.content}`);
     if (todo.activeForm && todo.activeForm !== todo.content) {
       console.log(`    ${DIM(todo.activeForm)}`);
@@ -2517,7 +2769,9 @@ async function handleCompact(ctx: CommandContext, args: string): Promise<Command
   console.log();
 
   if (history.length <= threshold) {
-    console.log(DIM(`Conversation has ${history.length} messages, below compact threshold ${threshold}.`));
+    console.log(
+      DIM(`Conversation has ${history.length} messages, below compact threshold ${threshold}.`)
+    );
     console.log(DIM('Nothing compacted.'));
     console.log();
     return { success: true };
@@ -2526,13 +2780,15 @@ async function handleCompact(ctx: CommandContext, args: string): Promise<Command
   console.log(DIM(compactStatus()));
   try {
     const modelId = ctx.llm?.getModel() ?? ctx.store.getSnapshot().currentModel;
-    const coordinator = ctx.compactCoordinator ?? new CompactCoordinator({
-      modelId,
-      llm: ctx.llm,
-      outputReserveTokens: ctx.llm?.getMaxTokens?.(),
-      getContextCapsule: () => ctx.store.getSnapshot().harnessState?.capsule,
-      getHarnessState: () => ctx.store.getSnapshot().harnessState,
-    });
+    const coordinator =
+      ctx.compactCoordinator ??
+      new CompactCoordinator({
+        modelId,
+        llm: ctx.llm,
+        outputReserveTokens: ctx.llm?.getMaxTokens?.(),
+        getContextCapsule: () => ctx.store.getSnapshot().harnessState?.capsule,
+        getHarnessState: () => ctx.store.getSnapshot().harnessState,
+      });
     coordinator.configure({
       modelId,
       llm: ctx.llm,
@@ -2658,7 +2914,10 @@ function handleUsage(ctx: CommandContext): CommandResult {
 // Session 命令
 // ============================================================================
 
-function parseSessionScopeArgs(args: string, cwd: string): { allProjects: boolean; projectPath: string; query: string; last: boolean } {
+function parseSessionScopeArgs(
+  args: string,
+  cwd: string
+): { allProjects: boolean; projectPath: string; query: string; last: boolean } {
   const parts = args.trim().split(/\s+/).filter(Boolean);
   let allProjects = false;
   let last = false;
@@ -2699,7 +2958,10 @@ function truncateText(text: string, max: number): string {
   return text.length > max ? text.slice(0, max - 3) + '...' : text;
 }
 
-function printSessionRows(sessions: SessionMeta[], options: { showProject?: boolean; indexed?: boolean; showIndexSummary?: boolean } = {}): void {
+function printSessionRows(
+  sessions: SessionMeta[],
+  options: { showProject?: boolean; indexed?: boolean; showIndexSummary?: boolean } = {}
+): void {
   for (let i = 0; i < sessions.length; i++) {
     const session = sessions[i];
     const startTime = new Date(session.startTime).toLocaleString();
@@ -2713,13 +2975,22 @@ function printSessionRows(sessions: SessionMeta[], options: { showProject?: bool
 
     console.log(`${index}${status} ${BRAND(session.id.slice(0, 8))}${name} ${DIM(session.model)}`);
     console.log(`    ${truncateText(sessionTitle(session), 96)}`);
-    console.log(`    ${DIM(`Started: ${startTime}`)} ${DIM(`Updated: ${updatedTime}`)} ${DIM(`Duration: ${duration}`)}`);
-    console.log(`    ${DIM(`Messages: ${session.messageCount ?? 0}`)} ${DIM(`Size: ${formatBytes(session.historySizeBytes ?? 0)}`)} ${DIM(`Tokens: ${session.tokenCount}`)} ${DIM(`Cost: $${session.cost.toFixed(4)}`)}`);
+    console.log(
+      `    ${DIM(`Started: ${startTime}`)} ${DIM(`Updated: ${updatedTime}`)} ${DIM(`Duration: ${duration}`)}`
+    );
+    console.log(
+      `    ${DIM(`Messages: ${session.messageCount ?? 0}`)} ${DIM(`Size: ${formatBytes(session.historySizeBytes ?? 0)}`)} ${DIM(`Tokens: ${session.tokenCount}`)} ${DIM(`Cost: $${session.cost.toFixed(4)}`)}`
+    );
     if (options.showIndexSummary) {
       const indexSummary = loadSessionIndex(session.id, session.projectPath);
       if (indexSummary) {
-        const toolCount = Object.values(indexSummary.tools).reduce((total, count) => total + count, 0);
-        console.log(`    ${DIM(`Index: ${indexSummary.files.length} files, ${toolCount} tool calls, ${indexSummary.topics.length} topics`)}`);
+        const toolCount = Object.values(indexSummary.tools).reduce(
+          (total, count) => total + count,
+          0
+        );
+        console.log(
+          `    ${DIM(`Index: ${indexSummary.files.length} files, ${toolCount} tool calls, ${indexSummary.topics.length} topics`)}`
+        );
       } else {
         console.log(`    ${DIM('Index: not built')}`);
       }
@@ -2750,12 +3021,19 @@ function printSessionConflict(ref: string, matches: SessionMeta[]): void {
   console.log();
 }
 
-function printSessionPicker(sessions: SessionMeta[], options: { title: string; showProject?: boolean; moreCount?: number }): void {
+function printSessionPicker(
+  sessions: SessionMeta[],
+  options: { title: string; showProject?: boolean; moreCount?: number }
+): void {
   console.log(HEADER(options.title));
   console.log(DIM('─'.repeat(Math.min(process.stdout.columns || 80, 96))));
   printSessionRows(sessions, { indexed: true, showProject: options.showProject });
   if (options.moreCount && options.moreCount > 0) {
-    console.log(DIM(`... ${options.moreCount} more sessions. Use /sessions to list them, or /resume <session-id>.`));
+    console.log(
+      DIM(
+        `... ${options.moreCount} more sessions. Use /sessions to list them, or /resume <session-id>.`
+      )
+    );
   }
   console.log(DIM('Use /resume <number|session-id|name> or /resume --last.'));
 }
@@ -2766,13 +3044,14 @@ function handleSessions(ctx: CommandContext, args: string = ''): CommandResult {
 
   // If there's a search query, use the session index
   if (query && !query.startsWith('--')) {
-    const allSessions = scope.allProjects
-      ? listSessions()
-      : listProjectSessions(scope.projectPath);
-    const matchedIds = searchSessions(query, allSessions.map(session => ({
-      id: session.id,
-      projectPath: session.projectPath,
-    })));
+    const allSessions = scope.allProjects ? listSessions() : listProjectSessions(scope.projectPath);
+    const matchedIds = searchSessions(
+      query,
+      allSessions.map(session => ({
+        id: session.id,
+        projectPath: session.projectPath,
+      }))
+    );
 
     if (matchedIds.length === 0) {
       console.log();
@@ -2787,15 +3066,23 @@ function handleSessions(ctx: CommandContext, args: string = ''): CommandResult {
 
     // Rebuild session list in matched order
     const sessionMap = new Map(allSessions.map(s => [s.id, s]));
-    const matchedSessions = matchedIds.map(id => sessionMap.get(id)).filter(Boolean) as SessionMeta[];
+    const matchedSessions = matchedIds
+      .map(id => sessionMap.get(id))
+      .filter(Boolean) as SessionMeta[];
 
     console.log();
     console.log(HEADER(`Sessions (search: "${query}") — ${matchedSessions.length} matches`));
     console.log(DIM('─'.repeat(40)));
     console.log();
-    printSessionRows(matchedSessions, { indexed: true, showProject: scope.allProjects, showIndexSummary: true });
+    printSessionRows(matchedSessions, {
+      indexed: true,
+      showProject: scope.allProjects,
+      showIndexSummary: true,
+    });
     console.log();
-    console.log(DIM(`Searched ${allSessions.length} sessions, found ${matchedSessions.length} matches`));
+    console.log(
+      DIM(`Searched ${allSessions.length} sessions, found ${matchedSessions.length} matches`)
+    );
     console.log(DIM('Use /resume <number|session-id|name> to restore a session'));
     console.log();
     return { success: true };
@@ -2810,7 +3097,9 @@ function handleSessions(ctx: CommandContext, args: string = ''): CommandResult {
     : listProjectSessions(scope.projectPath, 10);
 
   if (sessions.length === 0) {
-    console.log(DIM(scope.allProjects ? '  No sessions found' : '  No sessions found for this project'));
+    console.log(
+      DIM(scope.allProjects ? '  No sessions found' : '  No sessions found for this project')
+    );
     console.log();
     return { success: true };
   }
@@ -2830,8 +3119,9 @@ function handleResume(ctx: CommandContext, args: string): CommandResult {
   const ui = commandUICapabilities(ctx);
   const scope = parseSessionScopeArgs(args, ctx.cwd);
   const sessionRef = scope.query;
-  const scopedSessions = (scope.allProjects ? listSessions() : listProjectSessions(scope.projectPath))
-    .filter(session => (session.messageCount ?? 0) > 0);
+  const scopedSessions = (
+    scope.allProjects ? listSessions() : listProjectSessions(scope.projectPath)
+  ).filter(session => (session.messageCount ?? 0) > 0);
 
   if (!sessionRef) {
     const lastSession = scopedSessions[0];
@@ -2876,7 +3166,9 @@ function handleResume(ctx: CommandContext, args: string): CommandResult {
   }
 
   // Resume specific session
-  const result = lookupSessionRef(sessionRef, scope.projectPath, { allProjects: scope.allProjects });
+  const result = lookupSessionRef(sessionRef, scope.projectPath, {
+    allProjects: scope.allProjects,
+  });
 
   if (result.status === 'ambiguous') {
     printSessionConflict(sessionRef, result.matches);
@@ -2885,7 +3177,13 @@ function handleResume(ctx: CommandContext, args: string): CommandResult {
 
   if (result.status === 'not_found') {
     console.log(ERROR(`Session not found: ${sessionRef}`));
-    console.log(DIM(scope.allProjects ? 'Use /sessions --all to list sessions' : 'Use /sessions to list project sessions, or /resume <id> --all'));
+    console.log(
+      DIM(
+        scope.allProjects
+          ? 'Use /sessions --all to list sessions'
+          : 'Use /sessions to list project sessions, or /resume <id> --all'
+      )
+    );
     console.log();
     return { success: false };
   }
@@ -2907,14 +3205,17 @@ function restoreSession(ctx: CommandContext, session: SessionMeta, isLast: boole
   const rawMessages = readSessionMessages(resumed.id);
   const checkpoint = loadSessionCompactCheckpoint(resumed.id);
   const resumeGeneratedAt = Date.now();
-  const summary = checkpoint?.summary.text ?? (history.length > 0 ? generateHistorySummary(history) : '');
+  const summary =
+    checkpoint?.summary.text ?? (history.length > 0 ? generateHistorySummary(history) : '');
   const summaryGeneratedAt = checkpoint?.summary.generatedAt ?? resumeGeneratedAt;
   const summarySource = checkpoint?.summary.source ?? 'resume_heuristic';
   const summaryCoveredMessages = checkpoint?.summary.sourceMessageCount ?? rawMessages.length;
   if (history.length > 0) {
     const eventSummary = checkpoint?.summary.text ?? generateRestoredSessionEventSummary(history);
     ctx.store.setState({ conversationHistory: history });
-    ctx.store.setState({ harnessState: loadSessionHarnessState(resumed.id) ?? resumed.harnessState });
+    ctx.store.setState({
+      harnessState: loadSessionHarnessState(resumed.id) ?? resumed.harnessState,
+    });
     resetToolState();
     ctx.sessionRestored?.({
       sessionId: resumed.id,
@@ -2998,7 +3299,9 @@ function handleSessionRename(ctx: CommandContext, args: string): CommandResult {
     return { success: false };
   }
 
-  const scopedSessions = scope.allProjects ? listSessions() : listProjectSessions(scope.projectPath);
+  const scopedSessions = scope.allProjects
+    ? listSessions()
+    : listProjectSessions(scope.projectPath);
   const pickerIndex = parsePickerIndex(ref, scopedSessions.length);
   let session: SessionMeta | null = pickerIndex !== null ? scopedSessions[pickerIndex] : null;
 
@@ -3010,7 +3313,13 @@ function handleSessionRename(ctx: CommandContext, args: string): CommandResult {
     }
     if (result.status === 'not_found') {
       console.log(ERROR(`Session not found: ${ref}`));
-      console.log(DIM(scope.allProjects ? 'Use /sessions --all to list sessions' : 'Use /sessions to list project sessions'));
+      console.log(
+        DIM(
+          scope.allProjects
+            ? 'Use /sessions --all to list sessions'
+            : 'Use /sessions to list project sessions'
+        )
+      );
       console.log();
       return { success: false };
     }
@@ -3032,7 +3341,11 @@ function handleSessionRename(ctx: CommandContext, args: string): CommandResult {
   console.log();
   console.log(SUCCESS(`✔ Renamed session ${renamed.id.slice(0, 8)} to "${newName}"`));
   if (duplicate) {
-    console.log(WARN(`  Name already exists on ${duplicate.id.slice(0, 8)}; /resume "${newName}" will be ambiguous.`));
+    console.log(
+      WARN(
+        `  Name already exists on ${duplicate.id.slice(0, 8)}; /resume "${newName}" will be ambiguous.`
+      )
+    );
   }
   console.log();
   return { success: true };
@@ -3043,18 +3356,30 @@ async function handleEditPreview(ctx: CommandContext): Promise<CommandResult> {
 
   if (!lastEdit) {
     console.log(ERROR('No previous edit_file call found for preview'));
-    console.log(DIM('Run an edit_file tool call first, then use /edit-preview to inspect the match candidates.'));
+    console.log(
+      DIM(
+        'Run an edit_file tool call first, then use /edit-preview to inspect the match candidates.'
+      )
+    );
     console.log();
     return { success: false };
   }
 
   const hasMetadata = Boolean(lastEdit.sessionId || lastEdit.turnId);
   if (!hasMetadata) {
-    console.log(WARN('Using legacy edit-preview state without session/turn tags. Running preview as best-effort.'));
+    console.log(
+      WARN(
+        'Using legacy edit-preview state without session/turn tags. Running preview as best-effort.'
+      )
+    );
   }
 
-  const staleBySession = Boolean(lastEdit.sessionId && ctx.sessionId && lastEdit.sessionId !== ctx.sessionId);
-  const staleByTurn = Boolean(lastEdit.turnId != null && ctx.turnId != null && String(lastEdit.turnId) !== String(ctx.turnId));
+  const staleBySession = Boolean(
+    lastEdit.sessionId && ctx.sessionId && lastEdit.sessionId !== ctx.sessionId
+  );
+  const staleByTurn = Boolean(
+    lastEdit.turnId != null && ctx.turnId != null && String(lastEdit.turnId) !== String(ctx.turnId)
+  );
   if (staleBySession || staleByTurn) {
     const mismatch = [];
     if (staleBySession) mismatch.push(`session ${lastEdit.sessionId} vs ${ctx.sessionId}`);
@@ -3066,24 +3391,38 @@ async function handleEditPreview(ctx: CommandContext): Promise<CommandResult> {
   }
 
   if (hasMetadata && !(ctx.sessionId || ctx.turnId)) {
-    console.log(WARN('Edit preview context is available, but current command context is missing session/turn metadata.'));
+    console.log(
+      WARN(
+        'Edit preview context is available, but current command context is missing session/turn metadata.'
+      )
+    );
     console.log(DIM('Preview is allowed, but stale checks cannot be fully validated.'));
   }
 
-  const rawResult = await executeTool('edit_file', {
-    ...lastEdit,
-    preview: true,
-  }, ctx.abortSignal, {
-    cwd: ctx.cwd,
-    config: {
-      name: ctx.config.name,
-      mode: ctx.config.mode,
+  const rawResult = await executeTool(
+    'edit_file',
+    {
+      ...lastEdit,
+      preview: true,
     },
-    sessionId: ctx.sessionId,
-    turnId: ctx.turnId,
-  });
+    ctx.abortSignal,
+    {
+      cwd: ctx.cwd,
+      config: {
+        name: ctx.config.name,
+        mode: ctx.config.mode,
+      },
+      sessionId: ctx.sessionId,
+      turnId: ctx.turnId,
+    }
+  );
 
-  let parsed: { success?: boolean; output?: string; error?: string; metadata?: { candidates?: unknown[] } };
+  let parsed: {
+    success?: boolean;
+    output?: string;
+    error?: string;
+    metadata?: { candidates?: unknown[] };
+  };
   try {
     parsed = JSON.parse(rawResult);
   } catch {
@@ -3108,7 +3447,14 @@ async function handleEditPreview(ctx: CommandContext): Promise<CommandResult> {
         path: lastEdit.path as string,
         newString: lastEdit.new_string as string,
         kind: (lastEdit.fuzzy_match ? 'fuzzy' : 'exact') as 'exact' | 'fuzzy',
-        candidates: parsed.metadata.candidates as Array<{ index: number; line: number; match: string; contextBefore: string; contextAfter: string; isReplaceAll: boolean }>,
+        candidates: parsed.metadata.candidates as Array<{
+          index: number;
+          line: number;
+          match: string;
+          contextBefore: string;
+          contextAfter: string;
+          isReplaceAll: boolean;
+        }>,
       },
     };
   }
@@ -3134,7 +3480,9 @@ function truncateRedactedSummary(text: string, maxLength: number): string {
 
 function generateHistorySummary(messages: Message[]): string {
   const userMsgs = messages.filter(m => m.role === 'user' && m.content);
-  const assistantMsgsWithTools = messages.filter(m => m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0);
+  const assistantMsgsWithTools = messages.filter(
+    m => m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0
+  );
 
   // Extract topics from first few user messages
   const topics = userMsgs.slice(0, 3).map(m => {
@@ -3142,8 +3490,8 @@ function generateHistorySummary(messages: Message[]): string {
   });
 
   // Extract tools used
-  const toolsUsed = assistantMsgsWithTools.flatMap(m =>
-    m.tool_calls?.map(tc => tc.function.name) || []
+  const toolsUsed = assistantMsgsWithTools.flatMap(
+    m => m.tool_calls?.map(tc => tc.function.name) || []
   );
   const uniqueTools = [...new Set(toolsUsed)];
 
@@ -3166,11 +3514,11 @@ function generateHistorySummary(messages: Message[]): string {
 }
 
 function generateRestoredSessionEventSummary(messages: Message[]): string | undefined {
-  const assistantMsgsWithTools = messages.filter(m =>
-    m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0
+  const assistantMsgsWithTools = messages.filter(
+    m => m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0
   );
-  const toolsUsed = assistantMsgsWithTools.flatMap(m =>
-    m.tool_calls?.map(tc => tc.function.name) || []
+  const toolsUsed = assistantMsgsWithTools.flatMap(
+    m => m.tool_calls?.map(tc => tc.function.name) || []
   );
   const uniqueTools = [...new Set(toolsUsed)].slice(0, 8);
 
@@ -3197,7 +3545,8 @@ const COMMANDS: SlashCommand[] = [
     name: 'target',
     aliases: ['goal'],
     description: 'Create, view, pause, resume, or clear a persistent goal target',
-    argumentHint: '[objective | pause | resume | clear --yes | status | edit <text> | budget <tokens>]',
+    argumentHint:
+      '[objective | pause | resume | clear --yes | status | edit <text> | replace <text> | confirm <criterion-id> | budget <tokens>]',
     category: 'workflow',
     priority: 3,
     type: 'builtin',
@@ -3274,7 +3623,7 @@ const COMMANDS: SlashCommand[] = [
     type: 'builtin',
     execution: 'builtin',
     risk: 'read-only',
-    execute: (ctx) => handleTodos(ctx),
+    execute: ctx => handleTodos(ctx),
   },
 
   // Sessions and context lifecycle
@@ -3369,7 +3718,7 @@ const COMMANDS: SlashCommand[] = [
     type: 'builtin',
     execution: 'builtin',
     risk: 'read-only',
-    execute: (ctx) => handleSkills(ctx),
+    execute: ctx => handleSkills(ctx),
   },
   {
     name: 'skill',
@@ -3405,7 +3754,7 @@ const COMMANDS: SlashCommand[] = [
     type: 'builtin',
     execution: 'builtin',
     risk: 'read-only',
-    execute: (ctx) => handleTools(ctx),
+    execute: ctx => handleTools(ctx),
   },
   {
     name: 'edit-preview',
@@ -3415,7 +3764,7 @@ const COMMANDS: SlashCommand[] = [
     type: 'builtin',
     execution: 'builtin',
     risk: 'read-only',
-    execute: (ctx) => handleEditPreview(ctx),
+    execute: ctx => handleEditPreview(ctx),
   },
   {
     name: 'mcp',
@@ -3425,7 +3774,7 @@ const COMMANDS: SlashCommand[] = [
     type: 'builtin',
     execution: 'builtin',
     risk: 'read-only',
-    execute: (ctx) => handleMcp(ctx),
+    execute: ctx => handleMcp(ctx),
   },
   {
     name: 'safety',
@@ -3435,7 +3784,7 @@ const COMMANDS: SlashCommand[] = [
     type: 'builtin',
     execution: 'builtin',
     risk: 'read-only',
-    execute: (ctx) => showSafety(ctx),
+    execute: ctx => showSafety(ctx),
   },
 
   // Model and runtime configuration
@@ -3470,7 +3819,7 @@ const COMMANDS: SlashCommand[] = [
     type: 'builtin',
     execution: 'builtin',
     risk: 'read-only',
-    execute: (ctx) => showConfig(ctx),
+    execute: ctx => showConfig(ctx),
   },
 
   // System commands
@@ -3494,7 +3843,7 @@ const COMMANDS: SlashCommand[] = [
     type: 'builtin',
     execution: 'builtin',
     risk: 'read-only',
-    execute: (ctx) => showStatus(ctx),
+    execute: ctx => showStatus(ctx),
   },
   {
     name: 'clear',
@@ -3542,7 +3891,7 @@ const COMMANDS: SlashCommand[] = [
     type: 'builtin',
     execution: 'builtin',
     risk: 'state-write',
-    execute: (ctx) => handleExit(ctx),
+    execute: ctx => handleExit(ctx),
   },
 
   // Diagnostics
@@ -3555,12 +3904,13 @@ const COMMANDS: SlashCommand[] = [
     type: 'builtin',
     execution: 'builtin',
     risk: 'read-only',
-    execute: (ctx) => handleDoctor(ctx),
+    execute: ctx => handleDoctor(ctx),
   },
   {
     name: 'storage',
     description: 'Inspect, repair, or clean Orion Code storage layout',
-    argumentHint: '[doctor|repair [--yes]|cleanup [--dry-run|--yes]]',
+    argumentHint:
+      '[doctor|repair [--dry-run|--yes] [--plan=<token>]|cleanup [--dry-run|--yes] [--plan=<token>]]',
     category: 'diagnostics',
     priority: 8,
     type: 'builtin',
@@ -3577,7 +3927,7 @@ const COMMANDS: SlashCommand[] = [
     type: 'builtin',
     execution: 'builtin',
     risk: 'read-only',
-    execute: (ctx) => handleUsage(ctx),
+    execute: ctx => handleUsage(ctx),
   },
   {
     name: 'loop-stats',
@@ -3588,7 +3938,7 @@ const COMMANDS: SlashCommand[] = [
     type: 'builtin',
     execution: 'builtin',
     risk: 'read-only',
-    execute: (ctx) => handleLoopStats(ctx),
+    execute: ctx => handleLoopStats(ctx),
   },
   {
     name: 'trace',
@@ -3645,7 +3995,7 @@ const COMMANDS: SlashCommand[] = [
     execution: 'builtin',
     risk: 'read-only',
     deprecated: { since: 'v0.1.1', replacement: '/usage', removeIn: 'v0.3.0' },
-    execute: (ctx) => handleCost(ctx),
+    execute: ctx => handleCost(ctx),
   },
   {
     name: 'agents',
@@ -3656,7 +4006,7 @@ const COMMANDS: SlashCommand[] = [
     execution: 'builtin',
     risk: 'read-only',
     isHidden: true,
-    execute: (ctx) => showAgents(ctx),
+    execute: ctx => showAgents(ctx),
   },
   {
     name: 'migrate',
@@ -3719,9 +4069,10 @@ export function getCommands(): SlashCommand[] {
 
 export function getVisibleCommands(renderer?: CommandContext['uiRenderer']): SlashCommand[] {
   return sortCommands(
-    COMMANDS.filter(command =>
-      !command.isHidden
-      && (!renderer || !command.rendererScope || command.rendererScope.includes(renderer))
+    COMMANDS.filter(
+      command =>
+        !command.isHidden &&
+        (!renderer || !command.rendererScope || command.rendererScope.includes(renderer))
     )
   );
 }

@@ -1,5 +1,5 @@
 /**
- * orion code — Model Registry v0.2.26
+ * orion code — Model Registry
  *
  * Provider + ModelProfile configuration types, validation, and registry.
  * Replaces the legacy 4-field config (apiKey/apiBaseUrl/defaultModel/fallbackModel).
@@ -119,7 +119,7 @@ export function isLegacyConfig(config: Record<string, unknown>): boolean {
 
 export function getLegacyMigrationHint(): string {
   return [
-    'v0.2.26 requires the new providers+models configuration format.',
+    'Legacy configuration detected; migrate to the providers+models format.',
     'Your orion.json uses the legacy 4-field format (apiKey/apiBaseUrl/defaultModel/fallbackModel).',
     '',
     'Migration example:',
@@ -142,7 +142,7 @@ export function getLegacyMigrationHint(): string {
     '  "defaultModel": "my-model"',
     '}',
     '',
-    'See docs/codex/v0.2.26-multi-model-configuration-plan.md for full details.',
+    'See README.md#configuration for current details.',
   ].join('\n');
 }
 
@@ -159,12 +159,43 @@ interface CatalogEntry {
 }
 
 const BUILTIN_CATALOG: Record<string, CatalogEntry> = {
-  'gpt-4o': { contextWindow: 128000, maxOutputTokens: 16384, temperatureMode: 'supported', cost: { input: 2.5, output: 10 } },
-  'gpt-4o-mini': { contextWindow: 128000, maxOutputTokens: 16384, temperatureMode: 'supported', cost: { input: 0.15, output: 0.6 } },
-  'claude-opus-4-8': { contextWindow: 200000, maxOutputTokens: 32768, reasoning: true, temperatureMode: 'supported', cost: { input: 15, output: 75 } },
-  'claude-sonnet-4-6': { contextWindow: 200000, maxOutputTokens: 16384, temperatureMode: 'supported', cost: { input: 3, output: 15 } },
-  'deepseek-chat': { contextWindow: 65536, maxOutputTokens: 8192, temperatureMode: 'supported', cost: { input: 0.14, output: 0.28 } },
-  'deepseek-coder': { contextWindow: 65536, maxOutputTokens: 8192, temperatureMode: 'supported', cost: { input: 0.14, output: 0.28 } },
+  'gpt-4o': {
+    contextWindow: 128000,
+    maxOutputTokens: 16384,
+    temperatureMode: 'supported',
+    cost: { input: 2.5, output: 10 },
+  },
+  'gpt-4o-mini': {
+    contextWindow: 128000,
+    maxOutputTokens: 16384,
+    temperatureMode: 'supported',
+    cost: { input: 0.15, output: 0.6 },
+  },
+  'claude-opus-4-8': {
+    contextWindow: 200000,
+    maxOutputTokens: 32768,
+    reasoning: true,
+    temperatureMode: 'supported',
+    cost: { input: 15, output: 75 },
+  },
+  'claude-sonnet-4-6': {
+    contextWindow: 200000,
+    maxOutputTokens: 16384,
+    temperatureMode: 'supported',
+    cost: { input: 3, output: 15 },
+  },
+  'deepseek-chat': {
+    contextWindow: 65536,
+    maxOutputTokens: 8192,
+    temperatureMode: 'supported',
+    cost: { input: 0.14, output: 0.28 },
+  },
+  'deepseek-coder': {
+    contextWindow: 65536,
+    maxOutputTokens: 8192,
+    temperatureMode: 'supported',
+    cost: { input: 0.14, output: 0.28 },
+  },
 };
 
 const DEFAULT_CONTEXT = 128000;
@@ -178,7 +209,7 @@ export function resolveModelProfile(
   profile: ModelProfile,
   provider: ProviderConfig,
   discoveryContext?: number,
-  discoveryOutput?: number,
+  discoveryOutput?: number
 ): ResolvedModelProfile {
   const catalog = BUILTIN_CATALOG[profile.model];
 
@@ -216,7 +247,12 @@ export function resolveModelProfile(
     outputSource = 'default';
   }
 
-  const fingerprint = computeFingerprint(profile, provider, resolvedContextWindow, resolvedMaxOutputTokens);
+  const fingerprint = computeFingerprint(
+    profile,
+    provider,
+    resolvedContextWindow,
+    resolvedMaxOutputTokens
+  );
 
   return {
     ...profile,
@@ -241,11 +277,20 @@ export function buildRegistry(config: ModelRegistryConfig): RegistryValidationRe
   }
 
   const providers = new Map<string, ProviderConfig>();
-  for (const p of (config.providers || [])) {
-    if (!p.id) { errors.push({ path: 'providers[].id', message: 'Provider id is required.' }); continue; }
-    if (!p.baseUrl) { errors.push({ path: `providers.${p.id}.baseUrl`, message: 'baseUrl is required.' }); }
-    if (!p.apiKey) { errors.push({ path: `providers.${p.id}.apiKey`, message: 'apiKey is required.' }); }
-    if (providers.has(p.id)) { errors.push({ path: `providers.${p.id}`, message: 'Duplicate provider id.' }); }
+  for (const p of config.providers || []) {
+    if (!p.id) {
+      errors.push({ path: 'providers[].id', message: 'Provider id is required.' });
+      continue;
+    }
+    if (!p.baseUrl) {
+      errors.push({ path: `providers.${p.id}.baseUrl`, message: 'baseUrl is required.' });
+    }
+    if (!p.apiKey) {
+      errors.push({ path: `providers.${p.id}.apiKey`, message: 'apiKey is required.' });
+    }
+    if (providers.has(p.id)) {
+      errors.push({ path: `providers.${p.id}`, message: 'Duplicate provider id.' });
+    }
     providers.set(p.id, p);
   }
 
@@ -258,26 +303,57 @@ export function buildRegistry(config: ModelRegistryConfig): RegistryValidationRe
   const aliasIndex = new Map<string, string>();
   const seenIds = new Set<string>();
 
-  for (const m of (config.models || [])) {
-    if (!m.id) { errors.push({ path: 'models[].id', message: 'Model profile id is required.' }); continue; }
-    if (seenIds.has(m.id)) { errors.push({ path: `models.${m.id}`, message: 'Duplicate model profile id.' }); continue; }
+  for (const m of config.models || []) {
+    if (!m.id) {
+      errors.push({ path: 'models[].id', message: 'Model profile id is required.' });
+      continue;
+    }
+    if (seenIds.has(m.id)) {
+      errors.push({ path: `models.${m.id}`, message: 'Duplicate model profile id.' });
+      continue;
+    }
     seenIds.add(m.id);
 
-    if (!m.provider) { errors.push({ path: `models.${m.id}.provider`, message: 'Provider is required.' }); continue; }
+    if (!m.provider) {
+      errors.push({ path: `models.${m.id}.provider`, message: 'Provider is required.' });
+      continue;
+    }
     const provider = providers.get(m.provider);
-    if (!provider) { errors.push({ path: `models.${m.id}.provider`, message: `Unknown provider: ${m.provider}` }); continue; }
+    if (!provider) {
+      errors.push({ path: `models.${m.id}.provider`, message: `Unknown provider: ${m.provider}` });
+      continue;
+    }
 
-    if (!m.model) { errors.push({ path: `models.${m.id}.model`, message: 'API model ID is required.' }); continue; }
+    if (!m.model) {
+      errors.push({ path: `models.${m.id}.model`, message: 'API model ID is required.' });
+      continue;
+    }
 
     // Validate context/output bounds
-    if (m.contextWindow !== undefined && (m.contextWindow <= 0 || !Number.isInteger(m.contextWindow))) {
+    if (
+      m.contextWindow !== undefined &&
+      (m.contextWindow <= 0 || !Number.isInteger(m.contextWindow))
+    ) {
       errors.push({ path: `models.${m.id}.contextWindow`, message: 'Must be a positive integer.' });
     }
-    if (m.maxOutputTokens !== undefined && (m.maxOutputTokens <= 0 || !Number.isInteger(m.maxOutputTokens))) {
-      errors.push({ path: `models.${m.id}.maxOutputTokens`, message: 'Must be a positive integer.' });
+    if (
+      m.maxOutputTokens !== undefined &&
+      (m.maxOutputTokens <= 0 || !Number.isInteger(m.maxOutputTokens))
+    ) {
+      errors.push({
+        path: `models.${m.id}.maxOutputTokens`,
+        message: 'Must be a positive integer.',
+      });
     }
-    if (m.maxOutputTokens !== undefined && m.contextWindow !== undefined && m.maxOutputTokens >= m.contextWindow) {
-      errors.push({ path: `models.${m.id}.maxOutputTokens`, message: 'maxOutputTokens must be less than contextWindow.' });
+    if (
+      m.maxOutputTokens !== undefined &&
+      m.contextWindow !== undefined &&
+      m.maxOutputTokens >= m.contextWindow
+    ) {
+      errors.push({
+        path: `models.${m.id}.maxOutputTokens`,
+        message: 'maxOutputTokens must be less than contextWindow.',
+      });
     }
 
     const resolved = resolveModelProfile(m, provider);
@@ -287,7 +363,10 @@ export function buildRegistry(config: ModelRegistryConfig): RegistryValidationRe
     if (m.aliases) {
       for (const alias of m.aliases) {
         if (aliasIndex.has(alias)) {
-          errors.push({ path: `models.${m.id}.aliases`, message: `Alias "${alias}" conflicts with existing mapping.` });
+          errors.push({
+            path: `models.${m.id}.aliases`,
+            message: `Alias "${alias}" conflicts with existing mapping.`,
+          });
         }
         aliasIndex.set(alias, m.id);
       }
@@ -305,7 +384,10 @@ export function buildRegistry(config: ModelRegistryConfig): RegistryValidationRe
   if (config.defaultModel) {
     defaultProfile = profiles.get(config.defaultModel) ?? null;
     if (!defaultProfile) {
-      errors.push({ path: 'defaultModel', message: `Default model "${config.defaultModel}" not found in profiles.` });
+      errors.push({
+        path: 'defaultModel',
+        message: `Default model "${config.defaultModel}" not found in profiles.`,
+      });
     }
   } else {
     // First enabled profile is the default
@@ -316,7 +398,10 @@ export function buildRegistry(config: ModelRegistryConfig): RegistryValidationRe
   if (config.fallbackModel) {
     fallbackProfile = profiles.get(config.fallbackModel) ?? null;
     if (!fallbackProfile) {
-      errors.push({ path: 'fallbackModel', message: `Fallback model "${config.fallbackModel}" not found in profiles.` });
+      errors.push({
+        path: 'fallbackModel',
+        message: `Fallback model "${config.fallbackModel}" not found in profiles.`,
+      });
     }
   }
 
@@ -348,7 +433,7 @@ function computeFingerprint(
   profile: ModelProfile,
   provider: ProviderConfig,
   context: number,
-  output: number,
+  output: number
 ): string {
   // Secret-free: only includes non-sensitive fields.
   const { createHash } = require('crypto');
@@ -370,7 +455,10 @@ function computeFingerprint(
 // Resolver helpers
 // ============================================================================
 
-export function lookupProfile(registry: ModelRegistry, selector: string): ResolvedModelProfile | null {
+export function lookupProfile(
+  registry: ModelRegistry,
+  selector: string
+): ResolvedModelProfile | null {
   // Exact ID match
   if (registry.profiles.has(selector)) return registry.profiles.get(selector)!;
   // Alias match

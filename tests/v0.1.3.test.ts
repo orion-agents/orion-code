@@ -9,7 +9,15 @@
 
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { existsSync, readdirSync, readFileSync, rmSync, mkdirSync, writeFileSync } from 'fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'fs';
 import {
   createSession,
   appendSessionMessage,
@@ -41,16 +49,14 @@ import { TOOLS, executeTool } from '../src/tools';
 // 测试环境设置
 // ============================================================================
 
-const TEST_DIR = join(tmpdir(), 'openhorse-v0.1.3-test');
-const PROJECT_A = join(TEST_DIR, 'project-a');
-const PROJECT_B = join(TEST_DIR, 'project-b');
+let TEST_DIR = '';
+let PROJECT_A = '';
+let PROJECT_B = '';
 
 function setupTestEnv() {
-  // Clean up
-  if (existsSync(TEST_DIR)) {
-    rmSync(TEST_DIR, { recursive: true, force: true });
-  }
-  mkdirSync(TEST_DIR, { recursive: true });
+  TEST_DIR = mkdtempSync(join(tmpdir(), 'orion-v0.1.3-test-'));
+  PROJECT_A = join(TEST_DIR, 'project-a');
+  PROJECT_B = join(TEST_DIR, 'project-b');
   mkdirSync(PROJECT_A, { recursive: true });
   mkdirSync(PROJECT_B, { recursive: true });
 }
@@ -59,6 +65,9 @@ function teardownTestEnv() {
   if (existsSync(TEST_DIR)) {
     rmSync(TEST_DIR, { recursive: true, force: true });
   }
+  TEST_DIR = '';
+  PROJECT_A = '';
+  PROJECT_B = '';
 }
 
 // ============================================================================
@@ -242,25 +251,32 @@ describe('Memory project dimension', () => {
     const memoryName = `shared-memory-${Date.now()}`;
     const legacyDir = getLegacyMemoryDir(PROJECT_A);
     mkdirSync(legacyDir, { recursive: true });
-    writeFileSync(join(legacyDir, `${memoryName}.md`), `---
+    writeFileSync(
+      join(legacyDir, `${memoryName}.md`),
+      `---
 name: ${memoryName}
 description: Legacy memory
 type: project
 ---
 
-Legacy content`, 'utf-8');
+Legacy content`,
+      'utf-8'
+    );
 
     let memories = loadAllMemories(PROJECT_A);
     expect(memories.find(m => m.name === memoryName)?.content).toBe('Legacy content');
 
-    saveMemory({
-      name: memoryName,
-      type: 'project',
-      description: 'Canonical memory',
-      content: 'Canonical content',
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    }, PROJECT_A);
+    saveMemory(
+      {
+        name: memoryName,
+        type: 'project',
+        description: 'Canonical memory',
+        content: 'Canonical content',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      },
+      PROJECT_A
+    );
 
     memories = loadAllMemories(PROJECT_A);
     const shared = memories.filter(m => m.name === memoryName);
@@ -272,22 +288,29 @@ Legacy content`, 'utf-8');
     const memoryName = `forget-memory-${Date.now()}`;
     const legacyDir = getLegacyMemoryDir(PROJECT_A);
     mkdirSync(legacyDir, { recursive: true });
-    writeFileSync(join(legacyDir, `${memoryName}.md`), `---
+    writeFileSync(
+      join(legacyDir, `${memoryName}.md`),
+      `---
 name: ${memoryName}
 description: Legacy memory
 type: project
 ---
 
-Legacy content`, 'utf-8');
+Legacy content`,
+      'utf-8'
+    );
 
-    saveMemory({
-      name: memoryName,
-      type: 'project',
-      description: 'Canonical memory',
-      content: 'Canonical content',
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    }, PROJECT_A);
+    saveMemory(
+      {
+        name: memoryName,
+        type: 'project',
+        description: 'Canonical memory',
+        content: 'Canonical content',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      },
+      PROJECT_A
+    );
 
     deleteMemory(memoryName, PROJECT_A);
 
@@ -299,13 +322,17 @@ Legacy content`, 'utf-8');
     const memoryName = `legacy-only-${Date.now()}`;
     const legacyDir = getLegacyMemoryDir(PROJECT_A);
     mkdirSync(legacyDir, { recursive: true });
-    writeFileSync(join(legacyDir, `${memoryName}.md`), `---
+    writeFileSync(
+      join(legacyDir, `${memoryName}.md`),
+      `---
 name: ${memoryName}
 description: Legacy only
 type: project
 ---
 
-Legacy only content`, 'utf-8');
+Legacy only content`,
+      'utf-8'
+    );
 
     deleteMemory(memoryName, PROJECT_A);
 
@@ -315,23 +342,29 @@ Legacy only content`, 'utf-8');
 
   test('searchMemories is project-scoped', () => {
     // Save memories with same keyword in different projects
-    saveMemory({
-      name: 'typescript-a',
-      type: 'project',
-      description: 'TS config for A',
-      content: 'Project A uses TypeScript',
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    }, PROJECT_A);
+    saveMemory(
+      {
+        name: 'typescript-a',
+        type: 'project',
+        description: 'TS config for A',
+        content: 'Project A uses TypeScript',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      },
+      PROJECT_A
+    );
 
-    saveMemory({
-      name: 'typescript-b',
-      type: 'project',
-      description: 'TS config for B',
-      content: 'Project B uses TypeScript too',
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    }, PROJECT_B);
+    saveMemory(
+      {
+        name: 'typescript-b',
+        type: 'project',
+        description: 'TS config for B',
+        content: 'Project B uses TypeScript too',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      },
+      PROJECT_B
+    );
 
     // Search for "typescript" in A
     const resultsA = searchMemories('typescript', PROJECT_A);

@@ -6,7 +6,7 @@
 >
 > 当前基线：`@orion-agents/orion-code@0.1.1`（v0.1.1 已发布并合并到 main）
 >
-> 最近更新：2026-07-31
+> 最近更新：2026-08-02
 
 ## 1. 项目使命
 
@@ -171,18 +171,20 @@ Orion Code 必须像一个可信赖的开发工具，而不是偶尔可用的演
 
 - npm 公共包：`@orion-agents/orion-code`；
 - 全局命令：`orion`；
-- 默认且面向公众的 TUI、技术版 terminal-ui、实验性 Print/JSON、已废弃 Ink；
+- TUI、terminal-ui、Print/JSON 与 Ink 的 renderer 基础；
 - 工具编排、会话、记忆、MCP、Skill、多 Provider 和 Subagent 基础；
 - 项目级安全检查、配置诊断、构建与 Jest 测试体系；
 - Orion Code 品牌、启动 Banner 和 OpenHorse 迁移入口。
 
 **v0.1.1 增量（已发布、已合并 main）：**
 
-- UI 产品身份收敛：TUI=product、terminal=technical、Ink=deprecated，全用户面表面统一；
+- UI 产品身份与默认路径收敛：TUI=product/default、terminal=technical、Ink=deprecated，全用户面表面统一；
 - 命令契约：37 条命令具备 execution/risk/rendererScope/deprecated 元数据，registry 契约测试；
 - `/target`、`/goal` 路由收敛到 shared `AgentRuntimeController`，移除 renderer 私有 goal 分支；
 - 数据安全事件：`clear_view`、`shutdown_requested` 进入 `AgentRuntimeEvent` 协议；
-- Goal 骨架：`GoalCoordinator`、状态机、sidecar、completion-audit 函数、goal tools、`AgentTurnRequest` 类型均已存在（**但端到端未接通，见 6.3**）；
+- Goal 骨架：`GoalCoordinator`、状态机、sidecar、completion-audit 函数、goal tools、`AgentTurnRequest` 类型均已存在；
+  v0.1.1 发布时端到端未接通，v0.1.2 当前 pre-commit candidate 已关闭主要实现缺口，但尚未形成
+  最终 merge artifact（见 6.3）；
 - 发布可信度：build/lint/全量测试/tarball/registry install 证据链建立。
 
 ### 6.2 缺口状态
@@ -196,29 +198,59 @@ Orion Code 必须像一个可信赖的开发工具，而不是偶尔可用的演
 - 中英文 README 与实际默认 UI 口径漂移（已收敛 TUI 主产品身份）；
 - 对外文档对 TUI/terminal-ui/Ink 的表达不一致（已统一 product/technical/deprecated）。
 
-**仍开放（v0.1.2 优先）：**
+**仍开放（v0.1.2 发布 Gate）：**
 
-- **完整目标状态、跨会话 continuation 和完成审计未形成端到端闭环**——这是当前最大的公开能力与实际行为差距，详见 6.3；
-- 部分存储/破坏性命令的 preview→confirm→execute 协议只有元数据与测试，运行时确认流程仍需验证；
+- **Goal 单 Session 闭环已有 pre-commit candidate，但尚未达到发布 GO**——
+  RC2～RC15 均为历史、被取代或主动失效的候选。RC15 在 clean 验证后被独立 CR 发现五项缺口并主动
+  失效：多目标外部完成聚合、Goal commit 后 cleanup 语义、并行 child scope 隔离、safe-integer fence
+  validation 和 stderr flush。RC16 修复这些问题后，又因 unversioned npm、per-package version、shared
+  PR/GitHub URL parser 与 Print shutdown rejection 边界被否决；RC17 继续修复后，仍因 legacy
+  multi-target npm/PR/release fail-open 和 PR Oxford-comma 解析缺口被否决。RC18 关闭这些缺口后，
+  后续对 Goal 存储、controller fail-closed、deletion fence 与 subagent scope 的审查又修改了
+  source/package input，因此 RC18 数据只作历史证据，不再代表当前候选。当前 pre-commit
+  candidate 保持 external assertion 调用绑定、subagent usage、Goal terminal persistence、
+  deletion fence 诊断、renderer 切换连续性与 Print 确定性终止；当前已有聚焦回归、
+  build/lint、Node 22 全量回归、预提交双 pack、clean-prefix install 与 identity-bound PTY 证据。
+  Node 20/24 当前完整矩阵、full-source coverage、可重放 evidence manifest 与最终 merge artifact 仍待从
+  最终提交重建，不沿用 RC18 测试计数、临时路径或包 hash。
+  `--ignore-scripts` 安装下 better-sqlite3 原生模块不可用是预期限制，不代替标准安装证据。
+  真实 macOS Terminal 因当前控制策略未验证，login-shell PATH 仍找不到
+  `orion`；最终 merge artifact、远端 PR/CI/GitHub Release、npm v0.1.2 和发布后安装仍待关闭；
+- **project metadata/storage cleanup 的本地安全 P0 实现保持关闭**——RC2/RC3/RC4/RC5
+  均保留为 historical invalidated 候选；
+  cleanup 路径只 atomic quarantine 并永久保留，不物理
+  `rm`、不误报 deleted；vector 绑定 DB identity、完整 canonical rows、safe integers 并在
+  `BEGIN IMMEDIATE` 内重验；plan token 为 256-bit process-local single-use，10 分钟过期；
+  Node/macOS 无 race-safe directory-relative write 时可写 metadata repair fail-closed 禁用，
+  preview 与 `/doctor` 保持只读；两轮独立对抗 CR 首轮发现 verify→rm 窗口与
+  bigint 边界，修复后第二轮 APPROVE；
+- quarantine recovery/purge lifecycle 以及 `projects/` 下空 quarantine 可能被再次
+  quarantine 的幂等性改进归属 P2，不阻断当前数据安全；
+- 高影响 Goal 的 preview→confirm→execute 运行时边界已有自动化验证，但其他存储/破坏性命令
+  仍按独立版本持续收敛；
 - 命令元数据已定义，但 help/palette/completion 尚未完全消费 risk/deprecated 元数据；
-- 原生依赖、Node 支持矩阵和 npm 安装警告需要持续治理。
+- Node 20 clean install 的安全审计已为 0；Ink/React/Yoga 原生与弃用依赖的物理移除由 v0.2 承接。
 
 ### 6.3 目标实现成熟度（现实状态层）
 
 本节区分"北极星声明"与"当前代码现实"，避免滞后声称。成熟度分四档：
 **stub**（类型/骨架存在但未接通）、**partial**（主路径可用但有断点）、**functional**（端到端可用但需加固）、**solid**（可发布、有证据、有回归）。
 
-| 目标 | 北极星声明 | 当前成熟度 | 关键差距 |
-|---|---|---|---|
-| G1 目标忠实度 | 持久化目标、跨回合继续、逐项证据关闭 | **stub** | continuation 降级为 marker 字符串；`update_goal complete/blocked` 只回文本、audit 不可达；completion audit 只查"任意 evidence + 非空摘要"，无 criterion 模型；resume 不重绑 coordinator |
-| G2 安全自主 | 统一风险元数据、破坏性预览确认、失败不被包装为成功 | **partial** | risk 元数据与 preview 测试已有；运行时确认流程、证据不可被模型文本伪造、stop reason 分层待补 |
-| G3 TUI 主产品、单一运行时 | 共享 runtime/命令/目标/事件 | **partial** | UI 身份与命令契约已收敛；goal events 仅类型定义、零发射，未接入 controller/view-model/renderer |
-| G4 终端原生体验 | CJK/scrollback/resume/Ctrl+C 稳定 | **partial** | banner/CJK/resize 有覆盖；PTY smoke 存在基础设施超时，需治理 |
-| G5 Provider 可替换 | Provider/Model 显式建模、错误可定位 | **partial** | 多 Provider 基础存在；usage/auth/network/rate-limit stop reason 分层与 fallback 语义待补 |
-| G6 本地优先、可恢复 | 数据可解释、迁移可恢复、清理不破坏源 | **partial** | sidecar 存在；resume 重绑、corrupt quarantine、跨 session coordinator 隔离待补 |
+| 目标                      | 北极星声明                                         | 当前成熟度               | 关键差距                                                                                                                                                  |
+| ------------------------- | -------------------------------------------------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| G1 目标忠实度             | 持久化目标、跨回合继续、逐项证据关闭               | **functional（加固中）** | typed continuation、turn-bound terminal request、criterion evidence audit、negative-ledger retention 与 safe resume 已接通并进入当前 pre-commit candidate |
+| G2 安全自主               | 统一风险元数据、破坏性预览确认、失败不被包装为成功 | **partial**              | storage-safety P0、SafetyChecker 动态策略隔离与 Git 精确 staging/index rollback 已进入当前候选；全命令高风险流程仍需按版本收敛                            |
+| G3 TUI 主产品、单一运行时 | 共享 runtime/命令/目标/事件                        | **functional（加固中）** | Goal events 由 shared controller 发射并投影到 TUI/terminal/Print；预提交安装包 PTY 已通过，真实 macOS Terminal 人工验收待关闭                             |
+| G4 终端原生体验           | CJK/scrollback/resume/Ctrl+C 稳定                  | **partial**              | banner/CJK/resize 及独立 PTY 已覆盖；真实 macOS Terminal 人工验收待完成                                                                                   |
+| G5 Provider 可替换        | Provider/Model 显式建模、错误可定位                | **partial**              | 多 Provider 基础与 quota/auth/network/rate-limit stop reason 分层已有；长期 provider 现场证据仍需累积                                                     |
+| G6 本地优先、可恢复       | 数据可解释、迁移可恢复、清理不破坏源               | **functional（加固中）** | cleanup 只 atomic quarantine，vector 事务内重验，unsafe writable repair 禁用；quarantine race 与隔离 registry rollback drill 已通过                       |
 
-**关键认知**：G1 是使命核心，但当前为 stub——目标系统对用户可见却未端到端工作。这是 Phase A（v0.1.x）"让公开能力与实际行为一致"必须关闭的差距，由 v0.1.2 承接。不得在 G1 仍为 stub 时声称"目标系统可用"。
-
+**关键认知**：G1 是使命核心。v0.1.2 已从 v0.1.1 的 stub 提升到 functional，RC2～RC18
+都是可追溯但已被后续修复取代、独立审查否决或主动失效的历史记录；当前只是
+pre-commit candidate，最终 source/coverage/package identity 必须从 merge commit 重建。
+在真实 Terminal、用户 login-shell PATH、最终 immutable artifact、远程
+CI/review/merge/tag/GitHub Release、npm actual publish 与 registry install 关闭前，
+仍不得声称“v0.1.2 已完成或已发布”。
 
 ## 7. 分阶段交付方向
 
@@ -285,16 +317,16 @@ v0.1.2 已关闭单 Session 单 Goal 闭环后，v0.2 承接扩展：
 
 以下指标作为版本和架构决策的共同验收标准：
 
-| 维度 | 成功条件 | 主要证据 |
-|---|---|---|
-| 目标连续性 | active 目标能跨回合、压缩和 session resume 保持语义 | 状态持久化测试、resume PTY、目标事件日志 |
-| 完成可信度 | 每个完成结论都逐项对应成功条件与当前证据 | completion audit、测试/文件/外部状态记录 |
-| 安全性 | 所有破坏性入口无确认时不产生副作用 | command contract、negative test、审计日志 |
-| Renderer 一致性 | 共享命令在 TUI/terminal-ui/Print 产生等价 runtime event | parity test、真实 PTY |
-| 安装可靠性 | 公共包可从干净环境安装并运行 | `npm pack`、registry install、`orion --version` |
-| 质量门槛 | 构建、lint、全量测试和聚焦回归全部通过 | CI/本地日志；覆盖率不低于仓库 70% 指南 |
-| 文档一致性 | README、帮助、配置示例和版本文档不互相矛盾 | registry 契约测试、文档审计 |
-| 可恢复性 | 中断、失败、迁移和清理都有明确恢复路径 | recovery test、迁移 hash、rollback 记录 |
+| 维度            | 成功条件                                                | 主要证据                                                                                  |
+| --------------- | ------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| 目标连续性      | active 目标能跨回合、压缩和 session resume 保持语义     | 状态持久化测试、resume PTY、目标事件日志                                                  |
+| 完成可信度      | 每个完成结论都逐项对应成功条件与当前证据                | completion audit、测试/文件/外部状态记录                                                  |
+| 安全性          | 所有破坏性入口无确认时不产生副作用                      | command contract、negative test、审计日志                                                 |
+| Renderer 一致性 | 共享命令在 TUI/terminal-ui/Print 产生等价 runtime event | parity test、真实 PTY                                                                     |
+| 安装可靠性      | 公共包可从干净环境安装并运行                            | `npm pack`、registry install、`orion --version`                                           |
+| 质量门槛        | 构建、lint、全量测试和聚焦回归全部通过                  | CI/本地日志；覆盖率不低于仓库 70% 指南；仅允许有 owner、期限和明确审批的分支覆盖率 waiver |
+| 文档一致性      | README、帮助、配置示例和版本文档不互相矛盾              | registry 契约测试、文档审计                                                               |
+| 可恢复性        | 中断、失败、迁移和清理都有明确恢复路径                  | recovery test、迁移 hash、rollback 记录                                                   |
 
 不得用总测试数量替代未覆盖的 PTY、破坏性动作、外部发布或真实安装验收。
 
@@ -350,17 +382,17 @@ v0.1.2 已关闭单 Session 单 Goal 闭环后，v0.2 承接扩展：
 
 ## 11. 主要风险与控制
 
-| 风险 | 控制方式 |
-|---|---|
-| 目标被回合式聊天稀释 | 持久化目标状态；每轮重新对齐成功条件 |
-| Renderer 行为分叉 | 单一 runtime、结构化事件、parity contract |
-| 高风险命令误操作 | 风险元数据、preview、精确目标、显式确认 |
-| Provider 配置误诊为代码错误 | 先验证 config、protocol、base URL 和直接请求 |
-| 文档声称超过实现 | 发布前文档审计；条件/实验/兼容状态显式标记 |
-| 终端图像输出乱码 | 能力探测、surface 预留、清理和 ANSI/text fallback |
-| 本地数据迁移损坏 | copy/verify/hash/atomic switch/rollback |
-| 测试总量掩盖关键缺口 | 单独记录 PTY、安全、安装和外部状态证据 |
-| 依赖与 Node 版本漂移 | 明确支持矩阵、干净安装、原生模块 smoke test |
+| 风险                        | 控制方式                                          |
+| --------------------------- | ------------------------------------------------- |
+| 目标被回合式聊天稀释        | 持久化目标状态；每轮重新对齐成功条件              |
+| Renderer 行为分叉           | 单一 runtime、结构化事件、parity contract         |
+| 高风险命令误操作            | 风险元数据、preview、精确目标、显式确认           |
+| Provider 配置误诊为代码错误 | 先验证 config、protocol、base URL 和直接请求      |
+| 文档声称超过实现            | 发布前文档审计；条件/实验/兼容状态显式标记        |
+| 终端图像输出乱码            | 能力探测、surface 预留、清理和 ANSI/text fallback |
+| 本地数据迁移损坏            | copy/verify/hash/atomic switch/rollback           |
+| 测试总量掩盖关键缺口        | 单独记录 PTY、安全、安装和外部状态证据            |
+| 依赖与 Node 版本漂移        | 明确支持矩阵、干净安装、原生模块 smoke test       |
 
 ## 12. 决策与文档维护
 

@@ -68,7 +68,7 @@ const DEFAULT_POLICY: SafetyPolicy = {
     'rm\\s+-rf\\s+/',
     'mkfs',
     'dd\\s+of=/dev',
-    ':\\(\\)\\s*\\{',   // fork bomb
+    ':\\(\\)\\s*\\{', // fork bomb
     'chmod\\s+777',
   ],
   dangerousPatterns: [
@@ -91,6 +91,18 @@ const DEFAULT_POLICY: SafetyPolicy = {
 
 const MAX_AUDIT_LOG_ENTRIES = 1000;
 
+function cloneSafetyPolicy(policy: SafetyPolicy): SafetyPolicy {
+  return {
+    ...policy,
+    allowed: [...policy.allowed],
+    blocked: [...policy.blocked],
+    dangerousPatterns: [...policy.dangerousPatterns],
+    allowedFileSystemOps: [...policy.allowedFileSystemOps],
+    blockedPaths: [...policy.blockedPaths],
+    allowedNetworkOps: [...policy.allowedNetworkOps],
+  };
+}
+
 // ============================================================================
 // SafetyChecker - 安全边界检查器
 // ============================================================================
@@ -103,7 +115,7 @@ export class SafetyChecker extends EventEmitter {
 
   constructor(policy: Partial<SafetyPolicy> = {}) {
     super();
-    this.policy = { ...DEFAULT_POLICY, ...policy };
+    this.policy = cloneSafetyPolicy({ ...DEFAULT_POLICY, ...policy });
     // Pre-compile regex patterns at construction time.
     // Invalid patterns fall back to a never-matching regex.
     this.compiledBlocked = this.policy.blocked.map(p => safeCompileRegex(p));
@@ -119,9 +131,7 @@ export class SafetyChecker extends EventEmitter {
     }
 
     // 1. 检查是否被直接禁止
-    const blockedMatch = this.compiledBlocked.find(re =>
-      re.test(action),
-    );
+    const blockedMatch = this.compiledBlocked.find(re => re.test(action));
     if (blockedMatch) {
       return this.record({
         passed: false,
@@ -133,9 +143,7 @@ export class SafetyChecker extends EventEmitter {
     }
 
     // 2. 检查危险模式
-    const dangerousMatch = this.compiledDangerous.find(re =>
-      re.test(action),
-    );
+    const dangerousMatch = this.compiledDangerous.find(re => re.test(action));
     if (dangerousMatch) {
       return this.record({
         passed: false,
@@ -149,7 +157,7 @@ export class SafetyChecker extends EventEmitter {
     // 3. 检查被禁止的路径
     if (context?.path) {
       const blockedPath = this.policy.blockedPaths.find(bp =>
-        (context.path as string).startsWith(bp),
+        (context.path as string).startsWith(bp)
       );
       if (blockedPath) {
         return this.record({
@@ -231,14 +239,20 @@ export class SafetyChecker extends EventEmitter {
    * 更新策略
    */
   updatePolicy(patch: Partial<SafetyPolicy>): void {
-    this.policy = { ...this.policy, ...patch };
+    const nextPolicy = cloneSafetyPolicy({ ...this.policy, ...patch });
+    const nextBlocked = nextPolicy.blocked.map(pattern => safeCompileRegex(pattern));
+    const nextDangerous = nextPolicy.dangerousPatterns.map(pattern => safeCompileRegex(pattern));
+
+    this.policy = nextPolicy;
+    this.compiledBlocked = nextBlocked;
+    this.compiledDangerous = nextDangerous;
   }
 
   /**
    * 获取当前策略
    */
   getPolicy(): SafetyPolicy {
-    return { ...this.policy };
+    return cloneSafetyPolicy(this.policy);
   }
 
   /**
@@ -253,7 +267,7 @@ export class SafetyChecker extends EventEmitter {
   private record(check: SafetyCheck & { action: string }): SafetyCheck {
     // Issue #32 #3.1: 添加 auditLog 上限
     if (this.auditLog.length >= MAX_AUDIT_LOG_ENTRIES) {
-      this.auditLog.shift();  // 移除最旧的条目
+      this.auditLog.shift(); // 移除最旧的条目
     }
 
     this.auditLog.push({

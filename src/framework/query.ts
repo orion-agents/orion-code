@@ -16,6 +16,7 @@ import type {
   StreamCallbacks,
   Tool,
 } from '../services/llm';
+import { ProviderRequestPreflightError } from '../services/llm';
 import type { ProviderErrorType } from '../services/provider-diagnostics';
 import type { OpenHorseTool, ToolContext } from './tool';
 import type { PermissionMode } from '../commands/types';
@@ -37,6 +38,7 @@ import { estimateMessagesTokens } from '../utils/token-estimate';
 import { parseToolResultEnvelope, serializeToolResult } from './tool-serializer';
 import { createContextUsageSnapshot, type ContextUsageSnapshot } from '../services/model-context';
 import { BATCH_READ_ALLOWED_TOOLS } from '../tools';
+import type { ToolExternalAssertion } from './external-assertion';
 
 export const DEFAULT_MAX_MODEL_VISIBLE_TOOL_RESULT_BYTES = 4096;
 
@@ -187,6 +189,11 @@ export interface LoopStats {
   providerFallbackToModel?: string;
   providerFinalModel?: string;
   providerUsingFallback?: boolean;
+  subagentPromptTokens?: number;
+  subagentCompletionTokens?: number;
+  subagentTotalTokens?: number;
+  /** False when observed usage is only a lower bound (for example, a failed child request). */
+  usageAccountingComplete?: boolean;
   continuationActions?: LoopContinuationAction[];
   continuationHint?: string;
   verificationProfile?: string;
@@ -204,12 +211,18 @@ export interface LoopStats {
 export class QueryLoopError extends Error {
   readonly originalError: unknown;
   readonly stats: LoopStats;
+  readonly aggregateUsage?: { promptTokens: number; completionTokens: number };
 
-  constructor(error: unknown, stats: LoopStats) {
+  constructor(
+    error: unknown,
+    stats: LoopStats,
+    aggregateUsage?: { promptTokens: number; completionTokens: number }
+  ) {
     super(error instanceof Error ? error.message : String(error));
     this.name = 'QueryLoopError';
     this.originalError = error;
     this.stats = stats;
+    this.aggregateUsage = aggregateUsage ? { ...aggregateUsage } : undefined;
   }
 }
 
@@ -647,6 +660,7 @@ export type QueryEvent =
       duration: number;
       success: boolean;
       artifactRef?: { id: string; outputBytes: number };
+      externalAssertion?: ToolExternalAssertion;
       error?: string;
       summary?: string;
       outputBytes?: number;
@@ -680,17 +694,19 @@ export interface QueryCompactCommit {
 function attachCompactCommit(
   event: Extract<QueryEvent, { type: 'complete' }>,
   compact: QueryCompactCommit | undefined,
-  messages: Message[]
+  messages: Message[],
+  usage?: { promptTokens: number; completionTokens: number }
 ): Extract<QueryEvent, { type: 'complete' }> {
+  const eventWithUsage = usage ? { ...event, usage: { ...usage } } : event;
   return compact
     ? {
-        ...event,
+        ...eventWithUsage,
         compact: {
           ...compact,
           modelHistory: messages.map(message => ({ ...message })),
         },
       }
-    : event;
+    : eventWithUsage;
 }
 
 // ============================================================================
@@ -834,6 +850,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
   let consecutiveCompletionGateBlocks = 0;
   const stats = createLoopStats();
   let pendingCompact: QueryCompactCommit | undefined;
+  let aggregateUsage: { promptTokens: number; completionTokens: number } | undefined;
   let loopBudget = resolveLoopBudget(params.loopBudget);
   applyLoopBudgetStats(stats, loopBudget);
   const maxModelVisibleToolResultBytes = Math.max(
@@ -848,7 +865,12 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
 
     // Check abort
     if (isAborted(abortSignal)) {
-      yield attachCompactCommit(cancelledCompleteEvent(llm, stats), pendingCompact, messages);
+      yield attachCompactCommit(
+        cancelledCompleteEvent(llm, stats),
+        pendingCompact,
+        messages,
+        aggregateUsage
+      );
       return;
     }
 
@@ -862,7 +884,8 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
           stats: cloneLoopStats(stats, 'max_turns'),
         },
         pendingCompact,
-        messages
+        messages,
+        aggregateUsage
       );
       return;
     }
@@ -880,7 +903,8 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
           `LLM request budget ${loopBudget.maxLlmRequestsPerUserTurn} reached`
         ),
         pendingCompact,
-        messages
+        messages,
+        aggregateUsage
       );
       return;
     }
@@ -897,13 +921,15 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
       llm,
       outputReserveTokens: llm.getMaxTokens?.(),
     });
-    const autoCompact = coordinator?.getAutomatic() ?? new AutoCompact({
-      modelId: llm.getModel(),
-      getContextCapsule: harness ? () => harness.getCapsule() : undefined,
-      getHarnessState: harness ? () => harness.toJSON() : undefined,
-      llm,
-      outputReserveTokens: llm.getMaxTokens?.(),
-    });
+    const autoCompact =
+      coordinator?.getAutomatic() ??
+      new AutoCompact({
+        modelId: llm.getModel(),
+        getContextCapsule: harness ? () => harness.getCapsule() : undefined,
+        getHarnessState: harness ? () => harness.toJSON() : undefined,
+        llm,
+        outputReserveTokens: llm.getMaxTokens?.(),
+      });
 
     // Stream the LLM response. Harness context is injected into a cloned
     // request payload so the durable conversation history stays clean.
@@ -914,10 +940,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
         })
       : messages;
     let requestEstimatedTokens = estimateMessagesTokens(requestMessages);
-    const predictedTokens = autoCompact.adjustTokenEstimate(
-      requestEstimatedTokens,
-      llm.getModel()
-    );
+    const predictedTokens = autoCompact.adjustTokenEstimate(requestEstimatedTokens, llm.getModel());
     const contextBeforePredictiveCompact = publishContextUsage(
       params,
       autoCompact,
@@ -938,10 +961,15 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
           })
         : messages;
       const postCompactObjective = harness?.getCapsule()?.contract?.objective;
-      if (preCompactObjective && postCompactObjective && preCompactObjective !== postCompactObjective) {
+      if (
+        preCompactObjective &&
+        postCompactObjective &&
+        preCompactObjective !== postCompactObjective
+      ) {
         yield {
           type: 'warning',
-          message: 'Harness objective may have shifted during compact. Verify current task alignment.',
+          message:
+            'Harness objective may have shifted during compact. Verify current task alignment.',
         };
       }
       requestEstimatedTokens = estimateMessagesTokens(requestMessages);
@@ -997,7 +1025,12 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
     }
 
     if (isAborted(abortSignal)) {
-      yield attachCompactCommit(cancelledCompleteEvent(llm, stats), pendingCompact, messages);
+      yield attachCompactCommit(
+        cancelledCompleteEvent(llm, stats),
+        pendingCompact,
+        messages,
+        aggregateUsage
+      );
       return;
     }
 
@@ -1017,7 +1050,17 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
       }
     } catch (error) {
       applyLlmRequestDiagnostics(stats, getLlmRequestDiagnostics(llm));
-      throw new QueryLoopError(error, cloneLoopStats(stats, 'failed'));
+      if (error instanceof ProviderRequestPreflightError) {
+        stats.llmRequests = Math.max(0, stats.llmRequests - 1);
+        yield attachCompactCommit(
+          budgetExceededEvent(llm, stats, error.message),
+          pendingCompact,
+          messages,
+          aggregateUsage
+        );
+        return;
+      }
+      throw new QueryLoopError(error, cloneLoopStats(stats, 'failed'), aggregateUsage);
     }
 
     // Account every successful model request. Tool-calling turns are billable
@@ -1028,9 +1071,20 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
         requestKind: 'agent',
       });
     }
+    if (response.usage) {
+      aggregateUsage = {
+        promptTokens: (aggregateUsage?.promptTokens ?? 0) + response.usage.promptTokens,
+        completionTokens: (aggregateUsage?.completionTokens ?? 0) + response.usage.completionTokens,
+      };
+    }
 
     if (isAborted(abortSignal)) {
-      yield attachCompactCommit(cancelledCompleteEvent(llm, stats), pendingCompact, messages);
+      yield attachCompactCommit(
+        cancelledCompleteEvent(llm, stats),
+        pendingCompact,
+        messages,
+        aggregateUsage
+      );
       return;
     }
 
@@ -1045,7 +1099,8 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
             `tool call budget ${loopBudget.maxToolCallsPerUserTurn} would be exceeded by ${toolCalls.length} requested tools`
           ),
           pendingCompact,
-          messages
+          messages,
+          aggregateUsage
         );
         return;
       }
@@ -1120,7 +1175,12 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
         maxParallelToolCalls,
       })) {
         if (isAborted(abortSignal)) {
-          yield attachCompactCommit(cancelledCompleteEvent(llm, stats), pendingCompact, messages);
+          yield attachCompactCommit(
+            cancelledCompleteEvent(llm, stats),
+            pendingCompact,
+            messages,
+            aggregateUsage
+          );
           return;
         }
 
@@ -1195,6 +1255,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
           duration: executed.duration,
           success: executed.success,
           artifactRef: executed.artifactRef,
+          externalAssertion: executed.externalAssertion,
           error: executed.error,
           summary: executed.summary,
           outputBytes: executed.outputBytes,
@@ -1218,7 +1279,8 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
               executed.permissionDecision.source
             ),
             pendingCompact,
-            messages
+            messages,
+            aggregateUsage
           );
           return;
         }
@@ -1275,7 +1337,8 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
             stats: cloneLoopStats(stats, 'completion_gate'),
           },
           pendingCompact,
-          messages
+          messages,
+          aggregateUsage
         );
         return;
       }
@@ -1358,7 +1421,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
     yield {
       type: 'complete',
       content: response.content,
-      usage: response.usage,
+      usage: aggregateUsage,
       model: response.model,
       stats: cloneLoopStats(stats, 'completed'),
       compact: pendingCompact

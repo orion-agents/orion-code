@@ -64,6 +64,19 @@ describe('/target command parsing', () => {
       if (result.ok) expect(result.input.action).toBe('resume');
     });
 
+    it('parses explicit user criterion confirmation', () => {
+      const result = parseTargetCommand('/target confirm criterion:manual');
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.input.action).toBe('confirm');
+        expect(result.input.payload?.criterionId).toBe('criterion:manual');
+      }
+    });
+
+    it('rejects malformed user criterion confirmation', () => {
+      expect(parseTargetCommand('/target confirm criterion:manual extra').ok).toBe(false);
+    });
+
     it('edit', () => {
       const result = parseTargetCommand('/target edit new objective text');
       expect(result.ok).toBe(true);

@@ -6,6 +6,7 @@
  */
 
 import type { ToolResult } from '../framework/tool';
+import { isToolExternalAssertion } from './external-assertion';
 
 export const TOOL_RESULT_SCHEMA_VERSION = 1;
 
@@ -21,6 +22,7 @@ export function serializeToolResult(result: ToolResult): string {
     summary: result.summary,
     outputBytes: result.outputBytes,
     artifactRef: result.artifactRef,
+    externalAssertion: result.externalAssertion,
     metadata: result.metadata,
   });
 }
@@ -43,8 +45,17 @@ export function parseToolResultEnvelope(raw: string): ToolResult & { schemaVersi
         error: typeof parsed.error === 'string' ? parsed.error : undefined,
         summary: typeof parsed.summary === 'string' ? parsed.summary : undefined,
         outputBytes: typeof parsed.outputBytes === 'number' ? parsed.outputBytes : undefined,
-        artifactRef: typeof parsed.artifactRef === 'object' ? parsed.artifactRef as { id: string; outputBytes: number } : undefined,
-        metadata: typeof parsed.metadata === 'object' ? parsed.metadata as Record<string, unknown> : undefined,
+        artifactRef:
+          typeof parsed.artifactRef === 'object'
+            ? (parsed.artifactRef as { id: string; outputBytes: number })
+            : undefined,
+        externalAssertion: isToolExternalAssertion(parsed.externalAssertion)
+          ? parsed.externalAssertion
+          : undefined,
+        metadata:
+          typeof parsed.metadata === 'object'
+            ? (parsed.metadata as Record<string, unknown>)
+            : undefined,
       };
     }
 
@@ -54,8 +65,17 @@ export function parseToolResultEnvelope(raw: string): ToolResult & { schemaVersi
       output: typeof parsed.output === 'string' ? parsed.output : raw,
       error: typeof parsed.error === 'string' ? parsed.error : undefined,
       summary: typeof parsed.summary === 'string' ? parsed.summary : undefined,
-      outputBytes: typeof parsed.outputBytes === 'number' ? parsed.outputBytes : Buffer.byteLength(raw, 'utf8'),
-      artifactRef: typeof parsed.artifactRef === 'object' ? parsed.artifactRef as { id: string; outputBytes: number } : undefined,
+      outputBytes:
+        typeof parsed.outputBytes === 'number'
+          ? parsed.outputBytes
+          : Buffer.byteLength(raw, 'utf8'),
+      artifactRef:
+        typeof parsed.artifactRef === 'object'
+          ? (parsed.artifactRef as { id: string; outputBytes: number })
+          : undefined,
+      externalAssertion: isToolExternalAssertion(parsed.externalAssertion)
+        ? parsed.externalAssertion
+        : undefined,
     };
   } catch {
     // Non-JSON output — wrap as success

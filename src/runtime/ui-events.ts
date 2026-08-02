@@ -6,13 +6,31 @@ import type { CompactCoordinator } from '../services/compact';
 import type { OpenHorseCLIConfig } from '../services/config';
 import type { SessionMeta, SessionTraceEvent } from '../services/session-storage';
 import type { RuntimeSubtaskEvent } from './subagents/types';
+import type { GoalRuntimeEvent } from './goals/types';
+import type { ToolExternalAssertion } from '../framework/external-assertion';
 
 /** Re-export so the runtime event protocol can reference subtask events. */
 export type { RuntimeSubtaskEvent } from './subagents/types';
 
-export type TranscriptRole = 'user' | 'assistant' | 'tool' | 'system' | 'command' | 'error' | 'status';
+export type TranscriptRole =
+  | 'user'
+  | 'assistant'
+  | 'tool'
+  | 'system'
+  | 'command'
+  | 'error'
+  | 'status';
 
-export type ErrorLayer = 'renderer' | 'runtime' | 'provider' | 'tool' | 'session' | 'memory' | 'mcp' | 'skills' | 'unknown';
+export type ErrorLayer =
+  | 'renderer'
+  | 'runtime'
+  | 'provider'
+  | 'tool'
+  | 'session'
+  | 'memory'
+  | 'mcp'
+  | 'skills'
+  | 'unknown';
 
 export interface StructuredToolActivity {
   state: 'queued' | 'running' | 'success' | 'error' | 'skipped' | 'requested';
@@ -106,25 +124,29 @@ export function resolveUiRendererCapabilities(
   capabilities?: UiRendererCapabilities,
   renderer?: unknown
 ): ResolvedUiRendererCapabilities {
-  const defaults = renderer == null || isInteractiveRendererName(renderer)
-    ? INTERACTIVE_RENDERER_CAPABILITIES
-    : NON_INTERACTIVE_RENDERER_CAPABILITIES;
+  const defaults =
+    renderer == null || isInteractiveRendererName(renderer)
+      ? INTERACTIVE_RENDERER_CAPABILITIES
+      : NON_INTERACTIVE_RENDERER_CAPABILITIES;
 
   return {
     structuredPickers: capabilities?.structuredPickers ?? defaults.structuredPickers,
     inlineProgress: capabilities?.inlineProgress ?? defaults.inlineProgress,
-    suppressLegacyTokenMeta: capabilities?.suppressLegacyTokenMeta ?? defaults.suppressLegacyTokenMeta,
+    suppressLegacyTokenMeta:
+      capabilities?.suppressLegacyTokenMeta ?? defaults.suppressLegacyTokenMeta,
     extraAssistantSpacing: capabilities?.extraAssistantSpacing ?? defaults.extraAssistantSpacing,
     suppressAbortNotice: capabilities?.suppressAbortNotice ?? defaults.suppressAbortNotice,
   };
 }
 
 function isInteractiveRendererName(renderer: unknown): boolean {
-  return renderer === 'terminal'
-    || renderer === 'tui'
-    || renderer === 'ink'
-    || renderer === 'legacy'
-    || renderer === 'v2';
+  return (
+    renderer === 'terminal' ||
+    renderer === 'tui' ||
+    renderer === 'ink' ||
+    renderer === 'legacy' ||
+    renderer === 'v2'
+  );
 }
 
 export interface ToolPermissionRequest {
@@ -156,6 +178,8 @@ export interface RuntimeToolFinishedEvent {
   error?: string;
   outputBytes?: number;
   artifactRef?: { id: string; outputBytes: number };
+  /** Runtime-produced external assertion; never inferred from display text. */
+  externalAssertion?: ToolExternalAssertion;
   /** Monotonic tool invocation sequence across the session (1-based). */
   sequence: number;
   batchCount?: number;
@@ -242,6 +266,8 @@ export interface UiEventSink {
   harnessDiagnosticsUpdated?: (diagnostics: RuntimeHarnessDiagnostics) => void;
   /** Subagent lifecycle event (queued/running/completed/...). Renderer-independent. */
   subtaskEvent?: (event: RuntimeSubtaskEvent) => void;
+  /** Shared Goal lifecycle event; renderers only project this event. */
+  goalEvent?: (event: GoalRuntimeEvent) => void;
   setProcessing: (processing: boolean) => void;
   /** v0.1.1: request the renderer to clear its viewport without affecting session state. */
   clearView?: () => void;

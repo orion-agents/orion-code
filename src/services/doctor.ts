@@ -9,7 +9,12 @@ import {
   getProjectMemoryDir,
   getProjectSessionsDir,
 } from './config-dir';
-import { isDeprecatedUIRenderer, isProductUIRenderer, isConfigured, type OpenHorseCLIConfig } from './config';
+import {
+  isDeprecatedUIRenderer,
+  isProductUIRenderer,
+  isConfigured,
+  type OpenHorseCLIConfig,
+} from './config';
 import { getMcpConfigPath, mcpManager } from '../tools/mcp';
 import { getRuntimeTools } from '../tools';
 import { loadProjectInstructionFiles } from './project-instructions';
@@ -94,7 +99,10 @@ function summarizeMcpStatus(): DoctorCheck {
   const disconnected = status.filter(server => !server.connected && !server.dead).length;
   const tools = status.reduce((sum, server) => sum + server.toolCount, 0);
   const detail = status
-    .map(server => `${server.name}: ${server.dead ? 'dead' : server.connected ? 'connected' : 'disconnected'} (${server.toolCount} tools)`)
+    .map(
+      server =>
+        `${server.name}: ${server.dead ? 'dead' : server.connected ? 'connected' : 'disconnected'} (${server.toolCount} tools)`
+    )
     .join('\n');
 
   return {
@@ -122,12 +130,11 @@ function summarizeAutoCompact(ctx: DoctorContext): DoctorCheck {
       outputReserveTokens: ctx.llm?.getMaxTokens?.(),
     });
   }
-  const stats = (
-    ctx.compactCoordinator?.getAutomatic() ?? getAutoCompact({ modelId })
-  ).getStats();
-  const sourceText = modelContext.source === 'fuzzy'
-    ? `${modelContext.source}:${modelContext.matchedId}`
-    : modelContext.source;
+  const stats = (ctx.compactCoordinator?.getAutomatic() ?? getAutoCompact({ modelId })).getStats();
+  const sourceText =
+    modelContext.source === 'fuzzy'
+      ? `${modelContext.source}:${modelContext.matchedId}`
+      : modelContext.source;
 
   return {
     id: 'auto-compact',
@@ -162,7 +169,9 @@ function summarizeSkills(): DoctorCheck {
       summary.duplicates.length > duplicateLines.length
         ? `... ${summary.duplicates.length - duplicateLines.length} more duplicate skill diagnostics`
         : '',
-    ].filter(Boolean).join('\n');
+    ]
+      .filter(Boolean)
+      .join('\n');
     return {
       id: 'skills',
       status: summary.count > 0 ? (summary.duplicateCount > 0 ? 'warn' : 'ok') : 'warn',
@@ -191,10 +200,13 @@ function summarizeProjectInstructions(ctx: DoctorContext): DoctorCheck {
     id: 'project-instructions',
     status: files.length > 0 ? 'ok' : 'warn',
     label: 'Project Rules',
-    summary: files.length > 0
-      ? `${files.length} files, ${promptChars} prompt chars`
-      : 'No AGENTS.md / CLAUDE.md / .orion-code instructions found',
-    detail: files.map(file => `${file.path}${file.truncated ? ' (truncated)' : ''}`).join('\n') || undefined,
+    summary:
+      files.length > 0
+        ? `${files.length} files, ${promptChars} prompt chars`
+        : 'No AGENTS.md / CLAUDE.md / .orion-code instructions found',
+    detail:
+      files.map(file => `${file.path}${file.truncated ? ' (truncated)' : ''}`).join('\n') ||
+      undefined,
   };
 }
 
@@ -208,9 +220,145 @@ function summarizeSessions(ctx: DoctorContext, projectPath: string): DoctorCheck
     summary: active
       ? `Active ${active.id.slice(0, 8)}, ${sessions.length} recent project sessions`
       : `${sessions.length} recent project sessions, no active session`,
-    detail: sessions.slice(0, 5).map(session =>
-      `${session.id.slice(0, 8)} ${session.name || session.taskSummary || '(untitled)'} ${session.messageCount ?? 0} msgs`
-    ).join('\n') || undefined,
+    detail:
+      sessions
+        .slice(0, 5)
+        .map(
+          session =>
+            `${session.id.slice(0, 8)} ${session.name || session.taskSummary || '(untitled)'} ${session.messageCount ?? 0} msgs`
+        )
+        .join('\n') || undefined,
+  };
+}
+
+function summarizeGoalSidecars(projectPath: string): DoctorCheck {
+  const sessionsDir = getProjectSessionsDir(projectPath);
+  if (!existsSync(sessionsDir)) {
+    return {
+      id: 'goal-sidecars',
+      status: 'ok',
+      label: 'Goal Sidecars',
+      summary: 'No Goal sidecars',
+      detail: 'Read-only check; no files changed.',
+    };
+  }
+
+  const sessions = new Map(listProjectSessions(projectPath).map(session => [session.id, session]));
+  const entries = readdirSync(sessionsDir);
+  const goalFiles = entries.filter(entry => entry.endsWith('.goal.json'));
+  const deletionFenceFiles = entries.filter(entry => entry.endsWith('.goal.json.deleted'));
+  const staleTemps = entries.filter(entry => entry.includes('.goal.json.tmp-'));
+  let corrupt = 0;
+  let orphan = 0;
+  let mismatched = 0;
+  let validDeletionFences = 0;
+  let invalidDeletionFences = 0;
+  let liveFenceCollisions = 0;
+  const detail: string[] = [];
+
+  for (const entry of deletionFenceFiles) {
+    const sessionId = entry.slice(0, -'.goal.json.deleted'.length);
+    const hasLiveSidecar = entries.includes(`${sessionId}.goal.json`);
+    if (hasLiveSidecar) liveFenceCollisions++;
+
+    try {
+      const parsed = JSON.parse(readFileSync(join(sessionsDir, entry), 'utf8')) as Record<
+        string,
+        unknown
+      >;
+      const valid =
+        parsed.sessionId === sessionId &&
+        typeof parsed.goalId === 'string' &&
+        parsed.goalId.trim().length > 0 &&
+        typeof parsed.revision === 'number' &&
+        Number.isSafeInteger(parsed.revision) &&
+        parsed.revision >= 0;
+      if (valid) {
+        validDeletionFences++;
+        detail.push(`deletion fence=${entry}${hasLiveSidecar ? ' (live/fence collision)' : ''}`);
+      } else {
+        invalidDeletionFences++;
+        detail.push(
+          `invalid deletion fence=${entry}${hasLiveSidecar ? ' (live/fence collision)' : ''}`
+        );
+      }
+    } catch {
+      invalidDeletionFences++;
+      detail.push(
+        `invalid deletion fence=${entry}${hasLiveSidecar ? ' (live/fence collision)' : ''}`
+      );
+    }
+  }
+
+  for (const entry of goalFiles) {
+    const sessionId = entry.slice(0, -'.goal.json'.length);
+    const session = sessions.get(sessionId);
+    if (!session) {
+      orphan++;
+      detail.push(`orphan=${entry}`);
+    }
+    try {
+      const parsed = JSON.parse(readFileSync(join(sessionsDir, entry), 'utf8')) as Record<
+        string,
+        unknown
+      >;
+      const valid =
+        parsed.version === 1 &&
+        typeof parsed.goalId === 'string' &&
+        parsed.goalId.length > 0 &&
+        parsed.sessionId === sessionId &&
+        typeof parsed.objective === 'string' &&
+        parsed.objective.trim().length > 0 &&
+        typeof parsed.revision === 'number';
+      if (!valid) {
+        corrupt++;
+        detail.push(`corrupt=${entry}`);
+      } else if (session?.activeGoalId && session.activeGoalId !== parsed.goalId) {
+        mismatched++;
+        detail.push(`metadata mismatch=${entry}`);
+      }
+    } catch {
+      corrupt++;
+      detail.push(`corrupt=${entry}`);
+    }
+  }
+
+  for (const entry of staleTemps.slice(0, 10)) detail.push(`stale temp=${entry}`);
+  const warnings =
+    corrupt +
+    orphan +
+    mismatched +
+    staleTemps.length +
+    validDeletionFences +
+    invalidDeletionFences +
+    liveFenceCollisions;
+  const safetyDetail: string[] = [];
+  if (deletionFenceFiles.length > 0) {
+    safetyDetail.push(
+      'Rollback safety: Goal writes with v0.1.1 are NO-GO while any deletion fence exists; v0.1.1 does not understand deletion fences. Inspect and reconcile with a fence-aware Orion build before rollback.'
+    );
+  }
+  if (invalidDeletionFences > 0) {
+    safetyDetail.push(
+      'Recovery: invalid deletion fences require manual inspection with a fence-aware Orion build; do not delete or rewrite them automatically.'
+    );
+  }
+  if (liveFenceCollisions > 0) {
+    safetyDetail.push(
+      'Recovery: a live Goal sidecar and deletion fence coexist for the same session; treat this as possible stale-writer resurrection and do not choose either file automatically.'
+    );
+  }
+  if (warnings > 0) {
+    detail.push('Recovery: inspect the listed files; /doctor never deletes or rewrites Goal data.');
+  } else {
+    detail.push('Read-only check; no files changed.');
+  }
+  return {
+    id: 'goal-sidecars',
+    status: warnings > 0 ? 'warn' : 'ok',
+    label: 'Goal Sidecars',
+    summary: `${goalFiles.length} sidecars, ${corrupt} corrupt, ${orphan} orphan, ${mismatched} metadata mismatch, ${deletionFenceFiles.length} deletion fence (${validDeletionFences} valid, ${invalidDeletionFences} invalid), ${liveFenceCollisions} live/fence collision, ${staleTemps.length} stale temp`,
+    detail: [...safetyDetail, ...detail].slice(0, 25).join('\n'),
   };
 }
 
@@ -222,10 +370,10 @@ function summarizeHarness(ctx: DoctorContext): DoctorCheck {
     id: 'harness',
     status: objective || harnessState?.capsule ? 'ok' : 'warn',
     label: 'Harness',
-    summary: objective
-      ? `epoch ${epoch ?? 0}: ${objective}`
-      : 'No active objective captured yet',
-    detail: harnessState?.capsule?.nextAction ? `Next: ${harnessState.capsule.nextAction}` : undefined,
+    summary: objective ? `epoch ${epoch ?? 0}: ${objective}` : 'No active objective captured yet',
+    detail: harnessState?.capsule?.nextAction
+      ? `Next: ${harnessState.capsule.nextAction}`
+      : undefined,
   };
 }
 
@@ -237,7 +385,11 @@ function summarizeArtifacts(projectPath: string): DoctorCheck {
   const entries = readdirSync(artifactDir);
   let totalBytes = 0;
   for (const entry of entries) {
-    try { totalBytes += statSync(join(artifactDir, entry)).size; } catch { /* skip */ }
+    try {
+      totalBytes += statSync(join(artifactDir, entry)).size;
+    } catch {
+      /* skip */
+    }
   }
   const status = entries.length > 100 || totalBytes > 50_000_000 ? 'warn' : 'ok';
   return {
@@ -306,8 +458,14 @@ function summarizeStorageLayout(projectPath: string): DoctorCheck {
   const legacyCheckpointStats = dirStats(legacyCheckpoints);
   const invalidHarness = countInvalidHarnessSidecars(projectPath);
 
-  const hasLegacy = legacyMemoryStats.files > 0 || legacyArtifactStats.files > 0 || legacyCheckpointStats.files > 0;
-  const largeStorage = artifactStats.bytes + legacyArtifactStats.bytes + checkpointStats.bytes + legacyCheckpointStats.bytes > 100_000_000;
+  const hasLegacy =
+    legacyMemoryStats.files > 0 || legacyArtifactStats.files > 0 || legacyCheckpointStats.files > 0;
+  const largeStorage =
+    artifactStats.bytes +
+      legacyArtifactStats.bytes +
+      checkpointStats.bytes +
+      legacyCheckpointStats.bytes >
+    100_000_000;
   const status: DoctorStatus = invalidHarness > 0 || hasLegacy || largeStorage ? 'warn' : 'ok';
 
   return {
@@ -317,13 +475,21 @@ function summarizeStorageLayout(projectPath: string): DoctorCheck {
     summary: `${canonicalMemoryStats.files} memory, ${artifactStats.files + legacyArtifactStats.files} artifacts, ${checkpointStats.files + legacyCheckpointStats.files} checkpoint files`,
     detail: [
       `memory=${canonicalMemory}`,
-      legacyMemoryStats.files > 0 ? `legacy memory=${legacyMemory} (${legacyMemoryStats.files} files)` : '',
+      legacyMemoryStats.files > 0
+        ? `legacy memory=${legacyMemory} (${legacyMemoryStats.files} files)`
+        : '',
       `artifacts=${artifactStats.files} files ${(artifactStats.bytes / 1024).toFixed(0)}KB`,
-      legacyArtifactStats.files > 0 ? `legacy artifacts=${legacyArtifactStats.files} files ${(legacyArtifactStats.bytes / 1024).toFixed(0)}KB` : '',
+      legacyArtifactStats.files > 0
+        ? `legacy artifacts=${legacyArtifactStats.files} files ${(legacyArtifactStats.bytes / 1024).toFixed(0)}KB`
+        : '',
       `checkpoints=${checkpointStats.files} files ${(checkpointStats.bytes / 1024).toFixed(0)}KB`,
-      legacyCheckpointStats.files > 0 ? `legacy checkpoints=${legacyCheckpointStats.files} files ${(legacyCheckpointStats.bytes / 1024).toFixed(0)}KB` : '',
+      legacyCheckpointStats.files > 0
+        ? `legacy checkpoints=${legacyCheckpointStats.files} files ${(legacyCheckpointStats.bytes / 1024).toFixed(0)}KB`
+        : '',
       invalidHarness > 0 ? `invalid harness sidecars=${invalidHarness}` : '',
-    ].filter(Boolean).join('\n'),
+    ]
+      .filter(Boolean)
+      .join('\n'),
   };
 }
 
@@ -335,14 +501,21 @@ function summarizePromptCache(ctx: DoctorContext): DoctorCheck {
     id: 'prompt-cache',
     status: hasCacheMarked ? 'ok' : 'warn',
     label: 'Prompt Cache',
-    summary: hasCacheMarked ? 'Static system prefix marked for caching' : 'No cache-marked messages yet (starts on first turn)',
+    summary: hasCacheMarked
+      ? 'Static system prefix marked for caching'
+      : 'No cache-marked messages yet (starts on first turn)',
   };
 }
 
 function summarizeWarningDedup(): DoctorCheck {
   const state = getWarningState();
   if (state.size === 0) {
-    return { id: 'warn-dedup', status: 'ok', label: 'Warning Dedup', summary: 'No warnings recorded' };
+    return {
+      id: 'warn-dedup',
+      status: 'ok',
+      label: 'Warning Dedup',
+      summary: 'No warnings recorded',
+    };
   }
   let suppressed = 0;
   for (const [, wc] of state) {
@@ -354,7 +527,10 @@ function summarizeWarningDedup(): DoctorCheck {
     status,
     label: 'Warning Dedup',
     summary: `${state.size} unique warnings, ${suppressed} duplicates suppressed`,
-    detail: suppressed > 0 ? [...state.values()].map(wc => `[x${wc.count}] ${wc.message}`).join('\n') : undefined,
+    detail:
+      suppressed > 0
+        ? [...state.values()].map(wc => `[x${wc.count}] ${wc.message}`).join('\n')
+        : undefined,
   };
 }
 
@@ -405,9 +581,10 @@ export function collectDoctorReport(ctx: DoctorContext): DoctorReport {
       status: 'ok',
       label: 'Permissions',
       summary: `toolConfirmation=${ctx.config.toolConfirmation}, ui=${ctx.config.ui?.renderer}/${ctx.config.ui?.confirmations}`,
-      detail: ctx.config.toolConfirmation === 'ask'
-        ? `Interactive tool confirmation is routed through the shared runtime permission protocol.${isDeprecatedUIRenderer(ctx.config.ui?.renderer) ? ' This renderer is deprecated; consider switching to --ui tui.' : isProductUIRenderer(ctx.config.ui?.renderer) ? ' TUI is the product default.' : ''}`
-        : undefined,
+      detail:
+        ctx.config.toolConfirmation === 'ask'
+          ? `Interactive tool confirmation is routed through the shared runtime permission protocol.${isDeprecatedUIRenderer(ctx.config.ui?.renderer) ? ' This renderer is deprecated; consider switching to --ui tui.' : isProductUIRenderer(ctx.config.ui?.renderer) ? ' TUI is the product default.' : ''}`
+          : undefined,
     },
     {
       id: 'tools',
@@ -419,6 +596,7 @@ export function collectDoctorReport(ctx: DoctorContext): DoctorReport {
     summarizeSkills(),
     summarizeProjectInstructions(ctx),
     summarizeSessions(ctx, projectPath),
+    summarizeGoalSidecars(projectPath),
     summarizeHarness(ctx),
     summarizeArtifacts(projectPath),
     summarizeStorageLayout(projectPath),
@@ -426,7 +604,11 @@ export function collectDoctorReport(ctx: DoctorContext): DoctorReport {
     summarizeWarningDedup(),
     {
       id: 'context-size',
-      status: snapshot.projectInstructionsContent.length > 120_000 || snapshot.skillsContent.length > 120_000 ? 'warn' : 'ok',
+      status:
+        snapshot.projectInstructionsContent.length > 120_000 ||
+        snapshot.skillsContent.length > 120_000
+          ? 'warn'
+          : 'ok',
       label: 'Context Size',
       summary: `project rules ${snapshot.projectInstructionsContent.length} chars, skills index ${snapshot.skillsContent.length} chars, memory ${snapshot.memoryContent.length} chars`,
     },

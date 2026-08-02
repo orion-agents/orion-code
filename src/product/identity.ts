@@ -11,8 +11,8 @@ export interface ProductIdentity {
   readonly productId: 'orion-code';
   readonly displayName: 'Orion Code';
   readonly cliName: 'orion';
-  readonly npmPackage: 'orion-code';
-  readonly repository: 'Linux2010/orion-code';
+  readonly npmPackage: '@orion-agents/orion-code';
+  readonly repository: 'orion-agents/orion-code';
   readonly configDirName: '.orion-code';
   readonly configFileName: 'orion.json';
   readonly envFileName: '.orion-code.env';
@@ -27,8 +27,8 @@ const IDENTITY: ProductIdentity = {
   productId: 'orion-code',
   displayName: 'Orion Code',
   cliName: 'orion',
-  npmPackage: 'orion-code',
-  repository: 'Linux2010/orion-code',
+  npmPackage: '@orion-agents/orion-code',
+  repository: 'orion-agents/orion-code',
   configDirName: '.orion-code',
   configFileName: 'orion.json',
   envFileName: '.orion-code.env',
@@ -55,7 +55,10 @@ export const CONFIG_DIR_NAME: ProductIdentity['configDirName'] = IDENTITY.config
 export const CONFIG_FILE_NAME: ProductIdentity['configFileName'] = IDENTITY.configFileName;
 export const ENV_FILE_NAME: ProductIdentity['envFileName'] = IDENTITY.envFileName;
 export const ENV_PREFIX: ProductIdentity['envPrefix'] = IDENTITY.envPrefix;
-export const USER_INSTRUCTIONS_FILE: ProductIdentity['userInstructionsFile'] = IDENTITY.userInstructionsFile;
-export const LOCAL_INSTRUCTIONS_FILE: ProductIdentity['localInstructionsFile'] = IDENTITY.localInstructionsFile;
-export const PROJECT_CONFIG_DIR_NAME: ProductIdentity['projectConfigDirName'] = IDENTITY.projectConfigDirName;
+export const USER_INSTRUCTIONS_FILE: ProductIdentity['userInstructionsFile'] =
+  IDENTITY.userInstructionsFile;
+export const LOCAL_INSTRUCTIONS_FILE: ProductIdentity['localInstructionsFile'] =
+  IDENTITY.localInstructionsFile;
+export const PROJECT_CONFIG_DIR_NAME: ProductIdentity['projectConfigDirName'] =
+  IDENTITY.projectConfigDirName;
 export const MCP_CLIENT_NAME: ProductIdentity['mcpClientName'] = IDENTITY.mcpClientName;

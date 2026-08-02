@@ -1,6 +1,10 @@
 import { runSubtask } from '../src/runtime/subagents/runner';
 import type { ExecuteChildQuery, ChildToolSet } from '../src/runtime/subagents/runner';
-import type { SubtaskPacket, SubtaskUsage } from '../src/runtime/subagents/types';
+import {
+  SubtaskExecutionError,
+  type SubtaskPacket,
+  type SubtaskUsage,
+} from '../src/runtime/subagents/types';
 
 const TOOL_SET: ChildToolSet = {
   tools: [],
@@ -13,9 +17,18 @@ const PACKET: SubtaskPacket = {
   reason: 'independent',
 };
 
-const USAGE: SubtaskUsage = { modelRequests: 2, toolCalls: 3, promptTokens: 80, completionTokens: 40, durationMs: 1500 };
+const USAGE: SubtaskUsage = {
+  modelRequests: 2,
+  toolCalls: 3,
+  promptTokens: 80,
+  completionTokens: 40,
+  durationMs: 1500,
+};
 
-function deps(executeQuery: ExecuteChildQuery, overrides: { timeoutMs?: number; parentAbortSignal?: AbortSignal } = {}) {
+function deps(
+  executeQuery: ExecuteChildQuery,
+  overrides: { timeoutMs?: number; parentAbortSignal?: AbortSignal } = {}
+) {
   return {
     cwd: '/tmp/project',
     toolSet: TOOL_SET,
@@ -28,7 +41,10 @@ function deps(executeQuery: ExecuteChildQuery, overrides: { timeoutMs?: number; 
 describe('subagent runner', () => {
   it('returns a completed result for well-formed JSON output', async () => {
     const executeQuery: ExecuteChildQuery = async () => ({
-      content: JSON.stringify({ summary: 'Found 2 handlers', findings: [{ title: 'f', evidence: 'e' }] }),
+      content: JSON.stringify({
+        summary: 'Found 2 handlers',
+        findings: [{ title: 'f', evidence: 'e' }],
+      }),
       usage: USAGE,
     });
     const { result } = await runSubtask(PACKET, deps(executeQuery), 'task-1');
@@ -38,7 +54,10 @@ describe('subagent runner', () => {
   });
 
   it('marks non-JSON output as failed', async () => {
-    const executeQuery: ExecuteChildQuery = async () => ({ content: 'I could not parse anything', usage: USAGE });
+    const executeQuery: ExecuteChildQuery = async () => ({
+      content: 'I could not parse anything',
+      usage: USAGE,
+    });
     const { result } = await runSubtask(PACKET, deps(executeQuery), 'task-1');
     expect(result.status).toBe('failed');
     expect(result.risks).toContain('child returned non-JSON output');
@@ -46,7 +65,7 @@ describe('subagent runner', () => {
 
   it('times out and returns timed_out status', async () => {
     const executeQuery: ExecuteChildQuery = async (_m, _t, abortSignal) => {
-      return new Promise((resolve) => {
+      return new Promise(resolve => {
         const onAbort = () => resolve({ content: 'partial', usage: USAGE });
         if (abortSignal.aborted) return onAbort();
         abortSignal.addEventListener('abort', onAbort, { once: true });
@@ -70,7 +89,7 @@ describe('subagent runner', () => {
     const { result, parentCancelled } = await runSubtask(
       PACKET,
       deps(executeQuery, { timeoutMs: 30_000, parentAbortSignal: parent.signal }),
-      'task-1',
+      'task-1'
     );
     expect(result.status).toBe('cancelled');
     expect(parentCancelled).toBe(true);
@@ -83,6 +102,30 @@ describe('subagent runner', () => {
     const { result } = await runSubtask(PACKET, deps(executeQuery), 'task-1');
     expect(result.status).toBe('failed');
     expect(result.summary).toMatch(/provider 500/);
+    expect(result.usage.usageComplete).toBe(false);
+  });
+
+  it('retains partial usage carried by a failed child query', async () => {
+    const executeQuery: ExecuteChildQuery = async () => {
+      throw new SubtaskExecutionError('provider failed after usage', {
+        modelRequests: 1,
+        toolCalls: 2,
+        promptTokens: 9,
+        completionTokens: 4,
+        durationMs: 25,
+        usageComplete: false,
+      });
+    };
+    const { result } = await runSubtask(PACKET, deps(executeQuery), 'task-partial-usage');
+
+    expect(result.status).toBe('failed');
+    expect(result.usage).toMatchObject({
+      modelRequests: 1,
+      toolCalls: 2,
+      promptTokens: 9,
+      completionTokens: 4,
+      usageComplete: false,
+    });
   });
 
   it('immediately cancels if parent signal is already aborted', async () => {
@@ -96,7 +139,7 @@ describe('subagent runner', () => {
     const { result, parentCancelled } = await runSubtask(
       PACKET,
       deps(executeQuery, { parentAbortSignal: parent.signal }),
-      'task-1',
+      'task-1'
     );
     expect(result.status).toBe('cancelled');
     expect(parentCancelled).toBe(true);
@@ -121,7 +164,10 @@ describe('subagent runner', () => {
       return new Promise(resolve => {
         const onAbort = () => {
           // Resolve late, simulating a query that finished after abort.
-          setTimeout(() => resolve({ content: JSON.stringify({ summary: 'late' }), usage: USAGE }), 30);
+          setTimeout(
+            () => resolve({ content: JSON.stringify({ summary: 'late' }), usage: USAGE }),
+            30
+          );
         };
         if (abortSignal.aborted) return onAbort();
         abortSignal.addEventListener('abort', onAbort, { once: true });
@@ -131,7 +177,7 @@ describe('subagent runner', () => {
     const { result, parentCancelled } = await runSubtask(
       PACKET,
       deps(executeQuery, { timeoutMs: 30_000, parentAbortSignal: parent.signal }),
-      'task-1',
+      'task-1'
     );
     expect(result.status).toBe('cancelled');
     expect(parentCancelled).toBe(true);
@@ -152,7 +198,7 @@ describe('subagent runner', () => {
     const { result } = await runSubtask(
       PACKET,
       deps(executeQuery, { timeoutMs: 30_000, parentAbortSignal: parent.signal }),
-      'task-1',
+      'task-1'
     );
     expect(result.status).toBe('cancelled');
   }, 10_000);
@@ -198,7 +244,10 @@ describe('subagent runner', () => {
         const onAbort = () => {
           // Side effect that "would have" run late.
           sideEffectRan = true;
-          setTimeout(() => resolve({ content: JSON.stringify({ summary: 'x' }), usage: USAGE }), 30);
+          setTimeout(
+            () => resolve({ content: JSON.stringify({ summary: 'x' }), usage: USAGE }),
+            30
+          );
         };
         if (abortSignal.aborted) return onAbort();
         abortSignal.addEventListener('abort', onAbort, { once: true });
@@ -208,7 +257,7 @@ describe('subagent runner', () => {
     const { result, parentCancelled } = await runSubtask(
       PACKET,
       deps(executeQuery, { timeoutMs: 30_000, parentAbortSignal: parent.signal }),
-      'task-1',
+      'task-1'
     );
     expect(result.status).toBe('cancelled');
     expect(parentCancelled).toBe(true);

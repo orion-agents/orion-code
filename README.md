@@ -2,10 +2,10 @@
 
 > **Goal-driven coding agent for the terminal.**
 >
-> v0.1.1 — TUI-first public release
+> v0.1.2 — Goal continuity and evidence audit
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Node.js](https://img.shields.io/badge/node-%3E%3D18.0-green.svg)](https://nodejs.org)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D20.0-green.svg)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/typescript-5.0-blue.svg)](https://www.typescriptlang.org)
 
 ---
@@ -18,29 +18,30 @@
 
 Orion Code is a terminal-based coding agent. It wraps LLM APIs in a harness of safety checks, tool orchestration, session management, and context awareness.
 
-| Dimension | Description |
-|-----------|-------------|
+| Dimension         | Description                                            |
+| ----------------- | ------------------------------------------------------ |
 | **Agent Harness** | Safety boundaries, task constraints, result validation |
-| **Tool Calling** | LLM autonomously invokes tools to complete tasks |
-| **Memory System** | Layered memory with semantic search |
-| **MCP Protocol** | Connect external MCP servers for tool extension |
+| **Tool Calling**  | LLM autonomously invokes tools to complete tasks       |
+| **Memory System** | Layered memory with semantic search                    |
+| **MCP Protocol**  | Connect external MCP servers for tool extension        |
 
 ## Quick Start
 
 ### Requirements
 
-- Node.js >= 18.0
+- Node.js >= 20.0
 - npm >= 9.0
 
 ### Install & Run
 
 ```bash
-# Install globally
-npm install -g @orion-agents/orion-code
+# Install the v0.1.2 release:
+npm install -g @orion-agents/orion-code@0.1.2
 
-# Or from source
-git clone https://github.com/orion-agents/orion-code.git
-cd orion-code && npm install && npm run build
+# Or run from a checked-out source tree:
+npm ci
+npm run build
+npm start
 
 # Configure API key
 export ORION_CODE_API_KEY=your-api-key
@@ -67,7 +68,7 @@ orion diff
 # Commit plan
 orion commit
 
-# Non-interactive print mode
+# Experimental non-interactive print mode
 orion -p "review the current git diff"
 echo "summarize this project" | orion --print
 ```
@@ -78,8 +79,8 @@ The default TUI displays a portable sky-blue pixel banner: a compact landscape
 rectangle with a line-drawn Orion constellation on the left and a full,
 centered `OC` mark on the right, beside `ORION CODE | 猎户座`. The mark uses
 three pixel densities and cyan depth levels for a finely layered appearance. It
-works in Apple Terminal and automatically becomes a compact text banner in
-narrow terminals.
+is designed for terminals without inline-image support and automatically becomes
+a compact text banner in narrow terminals.
 
 ```bash
 # Default portable pixel banner
@@ -94,77 +95,100 @@ ORION_TUI_IMAGE=iterm2 orion
 ORION_TUI_ICON=/absolute/path/to/icon.png orion
 ```
 
-Apple Terminal does not support either inline image protocol, so both protocol
-requests safely fall back to the pixel banner instead of emitting image data.
+Apple Terminal does not support either inline image protocol. Capability detection
+therefore selects the pixel banner instead of emitting image data. Real macOS
+Terminal validation remains part of the release gate.
 
 ## Key Features
 
-| Feature | Description |
-|---------|-------------|
-| **Tool Orchestration** | 22 built-in tools: file I/O, shell, web, memory, git, LSP |
-| **Multi-Model** | OpenAI-compatible providers with model switching |
-| **Context Awareness** | Per-model context windows, token-based auto-compact |
-| **MCP Protocol** | stdio MCP servers with heartbeat + reconnect |
-| **Memory System** | User / Project / Session memory with semantic search |
-| **Session Management** | Persistent sessions with history restore |
-| **Safety Boundaries** | Bash safety checks, audit logging, permission modes |
-| **Skills System** | Builtin + user + project-level skill extensions |
-| **Multi-Agent** | Subagent fork/worker-pool with smart routing |
-| **CLI Utilities** | `doctor`, `diff`, `commit`, `-p` print mode |
+| Feature                | Description                                                                   |
+| ---------------------- | ----------------------------------------------------------------------------- |
+| **Tool Orchestration** | 29 built-in tools: file I/O, shell, web, memory, git, LSP, Goal, and planning |
+| **Multi-Model**        | OpenAI-compatible providers with model switching                              |
+| **Context Awareness**  | Per-model context windows, token-based auto-compact                           |
+| **MCP Protocol**       | stdio MCP servers with heartbeat + reconnect                                  |
+| **Memory System**      | User / Project / Session memory with semantic search                          |
+| **Session Management** | Persistent sessions with history restore                                      |
+| **Persistent Goal**    | Typed multi-turn continuation, safe restart/resume, criterion evidence audit  |
+| **Safety Boundaries**  | Bash safety checks, audit logging, permission modes                           |
+| **Skills System**      | Builtin + user + project-level skill extensions                               |
+| **Multi-Agent**        | Subagent fork/worker-pool with smart routing                                  |
+| **CLI Utilities**      | `doctor`, `diff`, `commit`, experimental `-p` print mode                      |
 
 ## Configuration
 
 ```json
 {
-  "providers": [{
-    "id": "my-provider",
-    "baseUrl": "https://api.example.com/v1",
-    "apiKey": "$MY_API_KEY",
-    "protocol": "openai-completions"
-  }],
-  "models": [{
-    "id": "my-model",
-    "provider": "my-provider",
-    "model": "model-name",
-    "contextWindow": 200000,
-    "maxOutputTokens": 64000
-  }],
+  "providers": [
+    {
+      "id": "my-provider",
+      "baseUrl": "https://api.example.com/v1",
+      "apiKey": "$MY_API_KEY",
+      "protocol": "openai-completions"
+    }
+  ],
+  "models": [
+    {
+      "id": "my-model",
+      "provider": "my-provider",
+      "model": "model-name",
+      "contextWindow": 200000,
+      "maxOutputTokens": 64000
+    }
+  ],
   "defaultModel": "my-model",
   "toolConfirmation": "deny",
-  "ui": { "renderer": "tui" },
-  "subagents": { "mode": "auto", "maxParallel": 4 }
+  "subagents": { "mode": "auto", "maxParallel": 3 }
 }
 ```
 
 Configuration: `~/.orion-code/orion.json` | Priority: `CLI flags > config > env vars > defaults`
 
+The renderer is a runtime choice rather than a persisted setting: `orion` starts
+the TUI, while `--ui terminal` selects the technical renderer.
+
 ## Interactive Commands
 
-| Command | Description |
-|---------|-------------|
-| `/help` | Show help |
-| `/target` (`/goal`) | Create or inspect a persistent multi-turn goal |
-| `/status` | System status |
-| `/model` | View or switch models |
-| `/config` | Show configuration |
-| `/usage` | Token usage and cost |
-| `/compact` | Trigger context compact |
-| `/sessions` | List recent sessions |
-| `/resume` | Resume last session |
-| `/memory` | Memory system status |
-| `/skills` | List loaded skills |
-| `/mcp` | MCP server status |
-| `/doctor` | Run diagnostics |
-| `/diff` | Workspace diff |
-| `/commit` | Commit plan |
-| `/clear` | Clear screen |
-| `/context-clear --yes` | Clear in-memory model context; preserve the saved session |
-| `/exit` | Exit |
+| Command                | Description                                                                 |
+| ---------------------- | --------------------------------------------------------------------------- |
+| `/help`                | Show help                                                                   |
+| `/target` (`/goal`)    | Create, inspect, pause, resume, replace, budget, or clear a persistent goal |
+| `/status`              | System status                                                               |
+| `/model`               | View or switch models                                                       |
+| `/config`              | Show configuration                                                          |
+| `/usage`               | Token usage and cost                                                        |
+| `/compact`             | Trigger context compact                                                     |
+| `/sessions`            | List recent sessions                                                        |
+| `/resume`              | Resume last session                                                         |
+| `/memory`              | Memory system status                                                        |
+| `/skills`              | List loaded skills                                                          |
+| `/mcp`                 | MCP server status                                                           |
+| `/doctor`              | Run diagnostics                                                             |
+| `/diff`                | Workspace diff                                                              |
+| `/commit`              | Commit plan                                                                 |
+| `/clear`               | Clear screen                                                                |
+| `/context-clear --yes` | Clear in-memory model context; preserve the saved session                   |
+| `/exit`                | Exit                                                                        |
 
 TUI is the public product interface and the default launch path. `terminal-ui`
 is maintained as a technical diagnostics/compatibility renderer, not a second
 public product. Ink is deprecated, receives no new product features, and is
 scheduled for removal in v0.2.0.
+
+### Persistent Goal safety contract
+
+`/target <objective>` creates one active Goal for the current session. Automatic
+continuations are typed runtime requests: they are not echoed or stored as fake
+user messages. After a process restart or `/resume`, an active Goal is restored
+in a visible paused state; run `/target resume` to continue deliberately.
+
+The model may request `complete` or `blocked`, but cannot set either terminal
+state directly. Orion records runtime/tool evidence and audits every success
+criterion. Missing, failed, unmapped, wrong-kind, expired, or stale evidence keeps the
+Goal open. Criteria that require human acceptance can only receive trusted
+`user` evidence from `/target confirm <criterion-id>`; model tools cannot mint
+that confirmation. v0.1.2 remains single-session and single-active-Goal; it does not
+promise multi-Goal scheduling or unattended background execution.
 
 ## Migration from OpenHorse
 
@@ -176,15 +200,16 @@ orion migrate openhorse [--include-env]
 orion migrate openhorse --yes [--include-env]
 ```
 
-See the [v0.1.1 release notes](docs/mvp/v0.1.1.md) and
-[release-readiness report](docs/plan/v01.1-release-readiness.md).
+See the [v0.1.2 release notes](https://github.com/orion-agents/orion-code/blob/main/docs/mvp/v0.1.2.md),
+[Goal evidence and recovery guide](https://github.com/orion-agents/orion-code/blob/main/docs/goals/goal-evidence-and-recovery.md),
+and [execution plan](https://github.com/orion-agents/orion-code/blob/main/docs/plan/v0.1.2-execution-plan.md).
 
 ## Development
 
 ```bash
 npm install      # Install dependencies
 npm run build    # Build
-npm test         # Run tests (1,929+ tests)
+npm test         # Run the full Jest suite
 npm run lint     # Lint
 npm run format   # Format
 ```

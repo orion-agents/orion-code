@@ -2,7 +2,10 @@ import { execFileSync } from 'child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { AgentRuntimeController, type AgentRuntimeRunner } from '../src/runtime/agent-runtime-controller';
+import {
+  AgentRuntimeController,
+  type AgentRuntimeRunner,
+} from '../src/runtime/agent-runtime-controller';
 import {
   type AgentRuntimeEvent,
   createAgentRuntimeEventSinkFromUiEvents,
@@ -33,11 +36,25 @@ import { listArtifacts, retrieveArtifact } from '../src/core/tool-artifacts';
 import { listCheckpoints } from '../src/core/checkpoint';
 import { createContextHarness } from '../src/harness';
 import { CompactCoordinator } from '../src/services/compact/coordinator';
+import { ProviderRequestPreflightError } from '../src/services/llm';
+import { getProjectSessionsDir } from '../src/services/config-dir';
+import { GoalCoordinator } from '../src/runtime/goals/coordinator';
+import * as goalStorage from '../src/services/goal-storage';
+import {
+  currentGoalToolContext,
+  runWithGoalToolContext,
+  type GoalToolExecutionContext,
+} from '../src/runtime/goals/tools';
 import { findCommand } from '../src/commands';
 import type { CommandContext } from '../src/commands/types';
-import { makeToolStartedEvent, makeToolFinishedEvent, resetToolEventSequence } from './test-helpers';
+import {
+  makeToolStartedEvent,
+  makeToolFinishedEvent,
+  resetToolEventSequence,
+} from './test-helpers';
 
-const stripAnsi = (text: string): string => text.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
+const stripAnsi = (text: string): string =>
+  text.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
 
 function createRuntime(overrides: Partial<OpenHorseUiRuntime> = {}): OpenHorseUiRuntime {
   return {
@@ -66,6 +83,7 @@ function createEvents() {
   const traceEvents: unknown[] = [];
   const harnessDiagnostics: unknown[] = [];
   const sessionRestoredEvents: unknown[] = [];
+  const goalEvents: import('../src/runtime/goals/types').GoalRuntimeEvent[] = [];
   const events: UiEventSink = {
     append: jest.fn(entry => {
       appended.push(entry);
@@ -85,25 +103,112 @@ function createEvents() {
     loopStatsUpdated: jest.fn(stats => loopStats.push(stats)),
     traceEventRecorded: jest.fn(event => traceEvents.push(event)),
     harnessDiagnosticsUpdated: jest.fn(diagnostics => harnessDiagnostics.push(diagnostics)),
+    goalEvent: jest.fn(event => goalEvents.push(event)),
     setProcessing: jest.fn(value => processing.push(value)),
   };
 
-  return { events, appended, statuses, processing, loopStats, traceEvents, harnessDiagnostics, sessionRestoredEvents };
-}
-
-function createDeferredRunner(): AgentRuntimeRunner & {
-  calls: Array<{ input: string; signal?: AbortSignal; resolve: () => void; reject: (error: unknown) => void }>;
-} {
-  const calls: Array<{ input: string; signal?: AbortSignal; resolve: () => void; reject: (error: unknown) => void }> = [];
   return {
-    calls,
-    runInput: jest.fn((input, options) => new Promise<void>((resolve, reject) => {
-      calls.push({ input, signal: options?.abortSignal, resolve, reject });
-    })),
+    events,
+    appended,
+    statuses,
+    processing,
+    loopStats,
+    traceEvents,
+    harnessDiagnostics,
+    sessionRestoredEvents,
+    goalEvents,
   };
 }
 
-async function withTempConfig<T>(fn: (paths: { configDir: string; projectDir: string }) => Promise<T> | T): Promise<T> {
+function createDeferredRunner(): AgentRuntimeRunner & {
+  calls: Array<{
+    input: string;
+    signal?: AbortSignal;
+    resolve: () => void;
+    reject: (error: unknown) => void;
+  }>;
+} {
+  const calls: Array<{
+    input: string;
+    signal?: AbortSignal;
+    resolve: () => void;
+    reject: (error: unknown) => void;
+  }> = [];
+  return {
+    calls,
+    runInput: jest.fn(
+      (input, options) =>
+        new Promise<void>((resolve, reject) => {
+          calls.push({ input, signal: options?.abortSignal, resolve, reject });
+        })
+    ),
+  };
+}
+
+async function flushImmediate(): Promise<void> {
+  await new Promise<void>(resolve => setImmediate(resolve));
+}
+
+function completeGoal(coordinator: GoalCoordinator, turnId: string = 'turn-complete'): void {
+  const goal = coordinator.goal!;
+  const evidence = {
+    id: `evidence-${turnId}`,
+    goalId: goal.goalId,
+    goalRevision: goal.revision,
+    objectiveRevision: goal.contract?.objectiveRevision ?? 0,
+    turnId,
+    kind: 'test' as const,
+    subject: `${goal.objective} regression test`,
+    result: 'passed' as const,
+    sourceRef: `tool:${turnId}:exec_command`,
+    capturedAt: Date.now(),
+    workspaceFingerprint: 'workspace-current',
+    redacted: true,
+  };
+  coordinator.finalizeTurn({
+    turnId,
+    sessionId: goal.sessionId,
+    goalId: goal.goalId,
+    goalRevision: goal.revision,
+    goalGeneration: coordinator.generation,
+    startedAt: 10,
+    endedAt: 20,
+    finishReason: 'completed',
+    usage: { promptTokens: 10, completionTokens: 5, subagentTokens: 0, totalTokens: 15 },
+    usageComplete: true,
+    madeProgress: true,
+    workspaceFingerprint: 'workspace-current',
+    evidenceRecords: [evidence],
+    verificationSummary: 'test passed',
+    pendingTerminalRequest: {
+      requestedStatus: 'complete',
+      requestedAt: Date.now(),
+      goalId: goal.goalId,
+      goalRevision: goal.revision,
+      turnId,
+      criterionEvidence: [
+        {
+          criterionId: goal.contract!.successCriteria[0].id,
+          evidenceIds: [evidence.id],
+        },
+      ],
+    },
+  });
+}
+
+function createLiveGoalLock(projectDir: string, sessionId: string): string {
+  const lockPath = join(getProjectSessionsDir(projectDir), `${sessionId}.goal.json.lock`);
+  mkdirSync(lockPath, { recursive: true, mode: 0o700 });
+  writeFileSync(
+    join(lockPath, 'owner.json'),
+    JSON.stringify({ token: 'controller-test-lock', pid: process.pid, createdAt: Date.now() })
+  );
+  return lockPath;
+}
+
+async function withTempConfig<T>(
+  fn: (paths: { configDir: string; projectDir: string }) => Promise<T> | T
+): Promise<T> {
   const previousConfigDir = process.env.ORION_CODE_CONFIG_DIR;
   const root = mkdtempSync(join(tmpdir(), 'openhorse-runtime-test-'));
   const configDir = join(root, 'config');
@@ -148,14 +253,18 @@ describe('AgentRuntimeController', () => {
       extraAssistantSpacing: true,
       suppressAbortNotice: true,
     });
-    expect(resolveUiRendererCapabilities(undefined, 'legacy')).toEqual(expect.objectContaining({
-      structuredPickers: true,
-      inlineProgress: true,
-    }));
-    expect(resolveUiRendererCapabilities(undefined, 'v2')).toEqual(expect.objectContaining({
-      structuredPickers: true,
-      inlineProgress: true,
-    }));
+    expect(resolveUiRendererCapabilities(undefined, 'legacy')).toEqual(
+      expect.objectContaining({
+        structuredPickers: true,
+        inlineProgress: true,
+      })
+    );
+    expect(resolveUiRendererCapabilities(undefined, 'v2')).toEqual(
+      expect.objectContaining({
+        structuredPickers: true,
+        inlineProgress: true,
+      })
+    );
     expect(resolveUiRendererCapabilities(undefined, 'print')).toEqual({
       structuredPickers: false,
       inlineProgress: false,
@@ -163,10 +272,12 @@ describe('AgentRuntimeController', () => {
       extraAssistantSpacing: false,
       suppressAbortNotice: false,
     });
-    expect(resolveUiRendererCapabilities({ structuredPickers: false }, 'terminal')).toEqual(expect.objectContaining({
-      structuredPickers: false,
-      inlineProgress: true,
-    }));
+    expect(resolveUiRendererCapabilities({ structuredPickers: false }, 'terminal')).toEqual(
+      expect.objectContaining({
+        structuredPickers: false,
+        inlineProgress: true,
+      })
+    );
   });
 
   it('uses structured resume pickers when the renderer adapter supports them', async () => {
@@ -180,13 +291,13 @@ describe('AgentRuntimeController', () => {
 
       await controller.runInput('/resume');
 
-      expect(events.showSessionPicker).toHaveBeenCalledWith(expect.objectContaining({
-        title: 'Pick a Session',
-        sessions: expect.arrayContaining([
-          expect.objectContaining({ projectPath: projectDir }),
-        ]),
-        maxVisibleItems: 10,
-      }));
+      expect(events.showSessionPicker).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: 'Pick a Session',
+          sessions: expect.arrayContaining([expect.objectContaining({ projectPath: projectDir })]),
+          maxVisibleItems: 10,
+        })
+      );
       expect(appended).toEqual([]);
     });
   });
@@ -209,9 +320,324 @@ describe('AgentRuntimeController', () => {
         expect.objectContaining({
           role: 'system',
           title: '/resume',
-          content: expect.stringContaining('Use /resume <number|session-id|name> or /resume --last.'),
+          content: expect.stringContaining(
+            'Use /resume <number|session-id|name> or /resume --last.'
+          ),
         }),
       ]);
+    });
+  });
+
+  it('clears stale provider metrics for builtin commands and local fast paths', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      mkdirSync(projectDir, { recursive: true });
+      writeFileSync(join(projectDir, 'fresh.txt'), 'fresh local result', 'utf-8');
+      const config = loadConfig({ apiKey: 'test-key', model: 'test-model' });
+      const store = new Store({ config, tools: TOOLS, currentModel: 'test-model' });
+      const staleStats = {
+        turnsStarted: 2,
+        finishReason: 'completed' as const,
+        llmRequests: 2,
+        toolCalls: 0,
+        readOnlyToolCalls: 0,
+        unsafeToolCalls: 0,
+        toolResultBytes: 0,
+        modelVisibleToolBytes: 0,
+        summarizedBytes: 0,
+        loopBudgetSource: 'default' as const,
+        loopBudgetBaseProfile: 'default' as const,
+        loopBudgetMaxLlmRequests: 24,
+        loopBudgetMaxToolCalls: 40,
+        loopBudgetMaxReadOnlyFragmentation: 6,
+        loopBudgetMaxModelVisibleBytes: 512000,
+        loopBudgetConfigOverride: false,
+        singleReadOnlyStreak: 0,
+        batchReadSuggestionCount: 0,
+        localFastPathUsed: false,
+      };
+      store.setState({
+        tokenUsage: { promptTokens: 90, completionTokens: 10 },
+        lastLoopStats: staleStats,
+      });
+      let session: SessionMeta | null = null;
+      const runtime = createRuntime({
+        cwd: projectDir,
+        config,
+        store,
+        ensureSession: jest.fn(() => {
+          session ??= createSession(projectDir, 'test-model');
+          return session;
+        }),
+        getSession: jest.fn(() => session),
+      });
+      const controller = new AgentChatController(runtime, createEvents().events);
+
+      await controller.runInput('/help');
+      expect(store.getSnapshot().tokenUsage).toEqual({ promptTokens: 0, completionTokens: 0 });
+      expect(store.getSnapshot().lastLoopStats).toBeUndefined();
+
+      store.setState({
+        tokenUsage: { promptTokens: 90, completionTokens: 10 },
+        lastLoopStats: staleStats,
+      });
+      await controller.runInput('read fresh.txt', { turnId: 'fresh-local-turn' });
+      expect(store.getSnapshot().tokenUsage).toEqual({ promptTokens: 0, completionTokens: 0 });
+      expect(store.getSnapshot().lastLoopStats).toMatchObject({
+        finishReason: 'completed',
+        llmRequests: 0,
+        localFastPathUsed: true,
+      });
+    });
+  });
+
+  it('installs the provider budget preflight while a manual compact command runs', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      mkdirSync(projectDir, { recursive: true });
+      const config = loadConfig({ apiKey: 'test-key', model: 'test-model' });
+      const store = new Store({ config, tools: TOOLS, currentModel: 'test-model' });
+      store.setState({
+        conversationHistory: [
+          { role: 'user', content: 'old question' },
+          { role: 'assistant', content: 'old answer' },
+          { role: 'user', content: 'new question' },
+        ],
+      });
+      let activePreflight: ((context: any) => Promise<{ available: boolean }>) | undefined;
+      const providerPreflight = jest.fn(async () => ({
+        available: false,
+        reason: 'Goal token budget exhausted',
+      }));
+      const llm = {
+        getModel: jest.fn(() => 'test-model'),
+        getMaxTokens: jest.fn(() => 4096),
+        setProviderRequestPreflight: jest.fn((preflight?: typeof activePreflight) => {
+          const previous = activePreflight;
+          activePreflight = preflight;
+          return () => {
+            activePreflight = previous;
+          };
+        }),
+        chat: jest.fn(async () => {
+          const decision = await activePreflight?.({
+            operation: 'chat',
+            attempt: 1,
+            model: 'test-model',
+            estimatedPromptTokens: 100,
+          });
+          if (decision && !decision.available) {
+            throw new ProviderRequestPreflightError('Goal token budget exhausted');
+          }
+          return { content: 'provider summary', model: 'test-model' };
+        }),
+      };
+      const runtime = createRuntime({ cwd: projectDir, config, store, llm: llm as any });
+      const controller = new AgentChatController(runtime, createEvents().events, {
+        beforeProviderRequest: providerPreflight,
+      });
+
+      await expect(controller.runInput('/compact 1')).resolves.toBeUndefined();
+      expect(llm.chat).toHaveBeenCalledTimes(1);
+      expect(providerPreflight).toHaveBeenCalledWith(
+        expect.objectContaining({ operation: 'chat', estimatedPromptTokens: 100 })
+      );
+      expect(activePreflight).toBeUndefined();
+    });
+  });
+
+  it('records successful manual compact provider usage in the current root turn', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      mkdirSync(projectDir, { recursive: true });
+      const config = loadConfig({ apiKey: 'test-key', model: 'test-model' });
+      const store = new Store({ config, tools: TOOLS, currentModel: 'test-model' });
+      store.setState({
+        conversationHistory: [
+          { role: 'user', content: 'old question' },
+          { role: 'assistant', content: 'old answer' },
+          { role: 'user', content: 'new question' },
+        ],
+      });
+      let usageObserver:
+        | ((event: {
+            usage: { promptTokens: number; completionTokens: number };
+            model: string;
+            operation: 'chat';
+          }) => void)
+        | undefined;
+      const llm = {
+        getModel: jest.fn(() => 'test-model'),
+        getMaxTokens: jest.fn(() => 4096),
+        setProviderRequestPreflight: jest.fn(() => jest.fn()),
+        subscribeUsage: jest.fn((observer: typeof usageObserver) => {
+          usageObserver = observer;
+          return () => {
+            usageObserver = undefined;
+          };
+        }),
+        chat: jest.fn(async () => {
+          usageObserver?.({
+            usage: { promptTokens: 31, completionTokens: 7 },
+            model: 'test-model',
+            operation: 'chat',
+          });
+          return { content: 'provider summary', model: 'test-model' };
+        }),
+      };
+      const runtime = createRuntime({ cwd: projectDir, config, store, llm: llm as any });
+      const controller = new AgentChatController(runtime, createEvents().events, {
+        beforeProviderRequest: jest.fn(async () => ({ available: true })),
+      });
+
+      await controller.runInput('/compact 1');
+
+      expect(store.getSnapshot().tokenUsage).toEqual({ promptTokens: 31, completionTokens: 7 });
+      expect(store.getSnapshot().lastLoopStats).toMatchObject({
+        finishReason: 'completed',
+        llmRequests: 1,
+        providerRetryCount: 0,
+        providerFallbackCount: 0,
+      });
+      expect(usageObserver).toBeUndefined();
+    });
+  });
+
+  it('preserves manual compact retry and fallback diagnostics for fail-closed Goal accounting', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      mkdirSync(projectDir, { recursive: true });
+      const config = loadConfig({ apiKey: 'test-key', model: 'test-model' });
+      const store = new Store({ config, tools: TOOLS, currentModel: 'test-model' });
+      store.setState({
+        conversationHistory: [
+          { role: 'user', content: 'old question' },
+          { role: 'assistant', content: 'old answer' },
+          { role: 'user', content: 'new question' },
+        ],
+      });
+      let activePreflight: ((context: any) => Promise<{ available: boolean }>) | undefined;
+      let usageObserver: ((event: any) => void) | undefined;
+      const llm = {
+        getModel: jest.fn(() => 'fallback-model'),
+        getMaxTokens: jest.fn(() => 4096),
+        setProviderRequestPreflight: jest.fn((preflight?: typeof activePreflight) => {
+          activePreflight = preflight;
+          return () => {
+            activePreflight = undefined;
+          };
+        }),
+        subscribeUsage: jest.fn((observer: typeof usageObserver) => {
+          usageObserver = observer;
+          return () => {
+            usageObserver = undefined;
+          };
+        }),
+        getLastRequestDiagnostics: jest.fn(() => ({
+          retryCount: 1,
+          retryDelayMs: 250,
+          retryErrorTypes: ['rate_limit'],
+          lastRetryErrorType: 'rate_limit',
+          lastRetryStatus: 429,
+          fallbackTriggered: true,
+          fallbackFromModel: 'primary-model',
+          fallbackToModel: 'fallback-model',
+          finalModel: 'fallback-model',
+          usingFallback: true,
+        })),
+        chat: jest.fn(async () => {
+          await activePreflight?.({
+            operation: 'chat',
+            attempt: 1,
+            model: 'primary-model',
+            estimatedPromptTokens: 100,
+          });
+          await activePreflight?.({
+            operation: 'chat',
+            attempt: 2,
+            model: 'fallback-model',
+            estimatedPromptTokens: 100,
+          });
+          usageObserver?.({
+            usage: { promptTokens: 40, completionTokens: 8 },
+            model: 'fallback-model',
+            operation: 'chat',
+          });
+          return { content: 'fallback summary', model: 'fallback-model' };
+        }),
+      };
+      const runtime = createRuntime({ cwd: projectDir, config, store, llm: llm as any });
+      const controller = new AgentChatController(runtime, createEvents().events, {
+        beforeProviderRequest: jest.fn(async () => ({ available: true })),
+      });
+
+      await controller.runInput('/compact 1');
+
+      expect(store.getSnapshot().tokenUsage).toEqual({ promptTokens: 40, completionTokens: 8 });
+      expect(store.getSnapshot().lastLoopStats).toMatchObject({
+        finishReason: 'completed',
+        llmRequests: 2,
+        providerRetryCount: 1,
+        providerFallbackCount: 1,
+        providerLastRetryErrorType: 'rate_limit',
+        providerUsingFallback: true,
+      });
+    });
+  });
+
+  it('marks manual compact provider failure with unknown usage as incomplete', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      mkdirSync(projectDir, { recursive: true });
+      const config = loadConfig({ apiKey: 'test-key', model: 'test-model' });
+      const store = new Store({ config, tools: TOOLS, currentModel: 'test-model' });
+      store.setState({
+        conversationHistory: [
+          { role: 'user', content: 'old question' },
+          { role: 'assistant', content: 'old answer' },
+          { role: 'user', content: 'new question' },
+        ],
+      });
+      let activePreflight: ((context: any) => Promise<{ available: boolean }>) | undefined;
+      const llm = {
+        getModel: jest.fn(() => 'test-model'),
+        getMaxTokens: jest.fn(() => 4096),
+        setProviderRequestPreflight: jest.fn((preflight?: typeof activePreflight) => {
+          activePreflight = preflight;
+          return () => {
+            activePreflight = undefined;
+          };
+        }),
+        subscribeUsage: jest.fn(() => jest.fn()),
+        getLastRequestDiagnostics: jest.fn(() => ({
+          retryCount: 1,
+          retryDelayMs: 100,
+          retryErrorTypes: ['provider_busy'],
+          lastRetryErrorType: 'provider_busy',
+          lastRetryStatus: 529,
+          fallbackTriggered: false,
+          finalModel: 'test-model',
+          usingFallback: false,
+        })),
+        chat: jest.fn(async () => {
+          await activePreflight?.({
+            operation: 'chat',
+            attempt: 1,
+            model: 'test-model',
+            estimatedPromptTokens: 100,
+          });
+          throw new Error('provider unavailable');
+        }),
+      };
+      const runtime = createRuntime({ cwd: projectDir, config, store, llm: llm as any });
+      const controller = new AgentChatController(runtime, createEvents().events, {
+        beforeProviderRequest: jest.fn(async () => ({ available: true })),
+      });
+
+      await controller.runInput('/compact 1');
+
+      expect(store.getSnapshot().tokenUsage).toEqual({ promptTokens: 0, completionTokens: 0 });
+      expect(store.getSnapshot().lastLoopStats).toMatchObject({
+        finishReason: 'failed',
+        llmRequests: 1,
+        providerRetryCount: 1,
+        providerLastRetryErrorType: 'provider_busy',
+      });
     });
   });
 
@@ -249,23 +675,28 @@ describe('AgentRuntimeController', () => {
 
       const llm = {
         getModel: jest.fn(() => 'test-model'),
-        chatStream: jest.fn(async (
-          messages: Array<{ role: string; content: string }>,
-          callbacks?: { onChunk?: (chunk: string) => void },
-        ) => {
-          callbacks?.onChunk?.('继续处理 compact/resume');
-          return {
-            content: '继续处理 compact/resume',
-            model: 'test-model',
-            usage: { promptTokens: 100, completionTokens: 10 },
-          };
-        }),
+        chatStream: jest.fn(
+          async (
+            messages: Array<{ role: string; content: string }>,
+            callbacks?: { onChunk?: (chunk: string) => void }
+          ) => {
+            callbacks?.onChunk?.('继续处理 compact/resume');
+            return {
+              content: '继续处理 compact/resume',
+              model: 'test-model',
+              usage: { promptTokens: 100, completionTokens: 10 },
+            };
+          }
+        ),
       };
       let session = createSession(projectDir, 'test-model');
-      appendSessionMessages(session.id, history.map((message, index) => ({
-        ...message,
-        timestamp: Date.now() - 10_000 + index,
-      })));
+      appendSessionMessages(
+        session.id,
+        history.map((message, index) => ({
+          ...message,
+          timestamp: Date.now() - 10_000 + index,
+        }))
+      );
       updateSessionHarnessState(session.id, harnessState);
 
       const runtime = createRuntime({
@@ -289,13 +720,22 @@ describe('AgentRuntimeController', () => {
       expect(loadSessionCompactCheckpoint(session.id)).not.toBeNull();
 
       await expect(controller.runInput(`/resume ${session.id}`)).resolves.toBeUndefined();
-      expect(store.getSnapshot().conversationHistory.map(message => message.content).join('\n'))
-        .not.toContain(oldHiddenAssistant);
+      expect(
+        store
+          .getSnapshot()
+          .conversationHistory.map(message => message.content)
+          .join('\n')
+      ).not.toContain(oldHiddenAssistant);
 
-      await expect(controller.runInput('继续', { turnId: 'turn-resume-continue' })).resolves.toBeUndefined();
+      await expect(
+        controller.runInput('继续', { turnId: 'turn-resume-continue' })
+      ).resolves.toBeUndefined();
 
       expect(llm.chatStream).toHaveBeenCalledTimes(1);
-      const modelMessages = (llm.chatStream as jest.Mock).mock.calls[0][0] as Array<{ role: string; content: string }>;
+      const modelMessages = (llm.chatStream as jest.Mock).mock.calls[0][0] as Array<{
+        role: string;
+        content: string;
+      }>;
       const modelContext = modelMessages.map(message => message.content).join('\n');
       expect(modelContext).toContain(rootObjective);
       expect(modelContext).toContain(activeInstruction);
@@ -363,15 +803,15 @@ describe('AgentRuntimeController', () => {
       expect(checkpoint?.mode).toBe('predictive');
       expect(readSessionMessages(session.id)).toHaveLength(32);
       expect(firstStore.getSnapshot().conversationHistory).toEqual(checkpoint?.modelHistory);
-      expect(loadSessionHistory(session.id).map(message => message.content).join('\n'))
-        .not.toContain(oldHiddenMessage);
+      expect(
+        loadSessionHistory(session.id)
+          .map(message => message.content)
+          .join('\n')
+      ).not.toContain(oldHiddenMessage);
 
       const restartedStore = new Store({ config, tools: TOOLS, currentModel: 'test-model' });
       const restartedRuntime = makeRuntimeWithStore(restartedStore);
-      const restartedController = new AgentChatController(
-        restartedRuntime,
-        createEvents().events
-      );
+      const restartedController = new AgentChatController(restartedRuntime, createEvents().events);
       await restartedController.runInput(`/resume ${session.id}`);
       expect(restartedStore.getSnapshot().conversationHistory).toEqual(checkpoint?.modelHistory);
 
@@ -399,18 +839,20 @@ describe('AgentRuntimeController', () => {
       });
       const llm = {
         getModel: jest.fn(() => 'test-model'),
-        chatStream: jest.fn(async (
-          messages: Array<{ role: string; content: string }>,
-          callbacks?: { onChunk?: (chunk: string) => void },
-          tools?: Array<{ function: { name: string } }>,
-        ) => {
-          callbacks?.onChunk?.('done');
-          return {
-            content: 'done',
-            model: 'test-model',
-            usage: { promptTokens: 10, completionTokens: 2 },
-          };
-        }),
+        chatStream: jest.fn(
+          async (
+            messages: Array<{ role: string; content: string }>,
+            callbacks?: { onChunk?: (chunk: string) => void },
+            tools?: Array<{ function: { name: string } }>
+          ) => {
+            callbacks?.onChunk?.('done');
+            return {
+              content: 'done',
+              model: 'test-model',
+              usage: { promptTokens: 10, completionTokens: 2 },
+            };
+          }
+        ),
       };
       let session: SessionMeta | null = null;
       const runtime = createRuntime({
@@ -442,20 +884,26 @@ describe('AgentRuntimeController', () => {
       expect(systemPrompt).toContain('## Active Skills');
       expect(systemPrompt).toContain('# Code Review Skill');
       expect(scopedTools).toBeDefined();
-      expect(scopedTools!.map((tool: { function: { name: string } }) => tool.function.name).sort())
-        .toEqual(['glob', 'grep', 'read_file']);
+      expect(
+        scopedTools!.map((tool: { function: { name: string } }) => tool.function.name).sort()
+      ).toEqual(['glob', 'grep', 'read_file']);
 
       const pathPrompt = '/Users/hope/linux2010/my-skills/vendor/skills 做啥的？';
       await expect(controller.runInput(pathPrompt)).resolves.toBeUndefined();
 
       expect(llm.chatStream).toHaveBeenCalledTimes(2);
       const [pathMessages] = llm.chatStream.mock.calls[1];
-      expect(pathMessages).toEqual(expect.arrayContaining([
-        expect.objectContaining({ role: 'user', content: pathPrompt }),
-      ]));
-      expect(appended).not.toEqual(expect.arrayContaining([
-        expect.objectContaining({ role: 'error', content: expect.stringContaining('Unknown command') }),
-      ]));
+      expect(pathMessages).toEqual(
+        expect.arrayContaining([expect.objectContaining({ role: 'user', content: pathPrompt })])
+      );
+      expect(appended).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: 'error',
+            content: expect.stringContaining('Unknown command'),
+          }),
+        ])
+      );
     });
   });
 
@@ -498,9 +946,11 @@ describe('AgentRuntimeController', () => {
       const { events, harnessDiagnostics } = createEvents();
       const controller = new AgentChatController(runtime, events);
 
-      await expect(controller.runInput(
-        'Use OPENAI_API_KEY=sk-secretvalue123456 and Authorization: Bearer token-secret-123456 to test diagnostics',
-      )).resolves.toBeUndefined();
+      await expect(
+        controller.runInput(
+          'Use OPENAI_API_KEY=sk-secretvalue123456 and Authorization: Bearer token-secret-123456 to test diagnostics'
+        )
+      ).resolves.toBeUndefined();
 
       const serialized = JSON.stringify(harnessDiagnostics);
       expect(serialized).toContain('[REDACTED_SECRET]');
@@ -545,16 +995,20 @@ describe('AgentRuntimeController', () => {
       const { events, appended, statuses, loopStats, traceEvents } = createEvents();
       const controller = new AgentChatController(runtime, events);
 
-      await expect(controller.runInput('read package.json', { turnId: 'turn-fast' })).resolves.toBeUndefined();
+      await expect(
+        controller.runInput('read package.json', { turnId: 'turn-fast' })
+      ).resolves.toBeUndefined();
 
       expect(llm.chatStream).not.toHaveBeenCalled();
-      expect(appended).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          role: 'tool',
-          title: 'local',
-          content: expect.stringContaining('read package.json'),
-        }),
-      ]));
+      expect(appended).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: 'tool',
+            title: 'local',
+            content: expect.stringContaining('read package.json'),
+          }),
+        ])
+      );
       expect(statuses).toContain('Completed local read package.json');
       expect(store.getSnapshot().lastLoopStats).toMatchObject({
         localFastPathUsed: true,
@@ -568,7 +1022,10 @@ describe('AgentRuntimeController', () => {
         toolCalls: 1,
       });
       expect(session).not.toBeNull();
-      expect(readSessionMessages(session!.id).map(message => message.role)).toEqual(['user', 'assistant']);
+      expect(readSessionMessages(session!.id).map(message => message.role)).toEqual([
+        'user',
+        'assistant',
+      ]);
       expect(readSessionTraceEvents(session!.id).map(event => event.type)).toEqual([
         'turn_start',
         'workspace_snapshot',
@@ -635,7 +1092,9 @@ describe('AgentRuntimeController', () => {
       const { events } = createEvents();
       const controller = new AgentChatController(runtime, events);
 
-      await expect(controller.runInput('read large.txt', { turnId: 'turn-large-fast' })).resolves.toBeUndefined();
+      await expect(
+        controller.runInput('read large.txt', { turnId: 'turn-large-fast' })
+      ).resolves.toBeUndefined();
 
       expect(llm.chatStream).not.toHaveBeenCalled();
       expect(session).not.toBeNull();
@@ -644,6 +1103,51 @@ describe('AgentRuntimeController', () => {
       expect(assistantContent).toContain('Full output: /artifacts show');
       expect(assistantContent).toContain('Preview:');
       expect(listArtifacts(projectDir)).toHaveLength(1);
+    });
+  });
+
+  it('correlates every active Goal turn trace with the frozen goal request identity', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      mkdirSync(projectDir, { recursive: true });
+      writeFileSync(join(projectDir, 'goal-trace.txt'), 'goal trace', 'utf-8');
+      const config = loadConfig({ apiKey: 'test-key', model: 'test-model' });
+      const store = new Store({ config, tools: TOOLS, currentModel: 'test-model' });
+      const session = createSession(projectDir, 'test-model');
+      const runtime = createRuntime({
+        cwd: projectDir,
+        config,
+        store,
+        ensureSession: jest.fn(() => session),
+        getSession: jest.fn(() => session),
+      });
+      const controller = new AgentChatController(runtime, createEvents().events);
+      const coordinator = new GoalCoordinator(projectDir, session.id);
+      expect(coordinator.create('Keep Goal traces correlated')).toEqual({ ok: true });
+      controller.setGoalCoordinator(coordinator);
+      const request = coordinator.buildContinuationRequest()!;
+
+      await controller.runRequest(
+        { ...request, text: 'read goal-trace.txt' },
+        { turnId: 'goal-trace-turn' }
+      );
+
+      const traces = readSessionTraceEvents(session.id);
+      expect(traces.length).toBeGreaterThan(0);
+      expect(traces).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ type: 'turn_start' }),
+          expect.objectContaining({ type: 'tool_result' }),
+          expect.objectContaining({ type: 'complete' }),
+        ])
+      );
+      for (const trace of traces) {
+        expect(trace).toMatchObject({
+          turnId: 'goal-trace-turn',
+          goalId: request.goal!.goalId,
+          goalRevision: request.goal!.revision,
+          goalInputKind: 'goal_continuation',
+        });
+      }
     });
   });
 
@@ -728,17 +1232,24 @@ describe('AgentRuntimeController', () => {
       const { events, appended } = createEvents();
       const controller = new AgentChatController(runtime, events);
 
-      await expect(controller.runInput('run test: rm -rf /tmp/openhorse-fast-path-danger')).resolves.toBeUndefined();
+      await expect(
+        controller.runInput('run test: rm -rf /tmp/openhorse-fast-path-danger')
+      ).resolves.toBeUndefined();
 
       expect(llm.chatStream).not.toHaveBeenCalled();
-      expect(appended).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          role: 'error',
-          title: 'local',
-          content: expect.stringContaining('destructive'),
-        }),
-      ]));
-      expect(store.getSnapshot().conversationHistory.map(message => message.role)).toEqual(['user', 'assistant']);
+      expect(appended).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: 'error',
+            title: 'local',
+            content: expect.stringContaining('destructive'),
+          }),
+        ])
+      );
+      expect(store.getSnapshot().conversationHistory.map(message => message.role)).toEqual([
+        'user',
+        'assistant',
+      ]);
       expect(store.getSnapshot().lastLoopStats).toMatchObject({
         finishReason: 'blocked',
         localFastPathUsed: true,
@@ -790,17 +1301,20 @@ describe('AgentRuntimeController', () => {
       const controller = new AgentChatController(runtime, events);
       const command = 'grep definitely-missing missing-file.txt';
 
-      await expect(controller.runInput(`run test: ${command}`, { turnId: 'turn-fast-fail' }))
-        .resolves.toBeUndefined();
+      await expect(
+        controller.runInput(`run test: ${command}`, { turnId: 'turn-fast-fail' })
+      ).resolves.toBeUndefined();
 
       expect(llm.chatStream).not.toHaveBeenCalled();
-      expect(appended).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          role: 'error',
-          title: 'local',
-          content: expect.stringContaining('Command exited with code'),
-        }),
-      ]));
+      expect(appended).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: 'error',
+            title: 'local',
+            content: expect.stringContaining('Command exited with code'),
+          }),
+        ])
+      );
       expect(statuses).toContain(`Failed local run test: ${command}`);
       expect(store.getSnapshot().conversationHistory.map(message => message.role)).toEqual([
         'user',
@@ -821,22 +1335,24 @@ describe('AgentRuntimeController', () => {
       });
       expect(session).not.toBeNull();
       const traceEvents = readSessionTraceEvents(session!.id);
-      expect(traceEvents).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          type: 'tool_result',
-          turnId: 'turn-fast-fail',
-          name: 'exec_command',
-          success: false,
-        }),
-        expect.objectContaining({
-          type: 'complete',
-          turnId: 'turn-fast-fail',
-          finishReason: 'failed',
-          localFastPathUsed: true,
-          llmRequests: 0,
-          toolCalls: 1,
-        }),
-      ]));
+      expect(traceEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'tool_result',
+            turnId: 'turn-fast-fail',
+            name: 'exec_command',
+            success: false,
+          }),
+          expect.objectContaining({
+            type: 'complete',
+            turnId: 'turn-fast-fail',
+            finishReason: 'failed',
+            localFastPathUsed: true,
+            llmRequests: 0,
+            toolCalls: 1,
+          }),
+        ])
+      );
       expect(readSessionMessages(session!.id).at(-1)?.content).toContain('failed');
     });
   });
@@ -861,7 +1377,8 @@ describe('AgentRuntimeController', () => {
       });
       const llm = {
         getModel: jest.fn(() => 'test-model'),
-        chatStream: jest.fn()
+        chatStream: jest
+          .fn()
           .mockResolvedValueOnce({
             content: '',
             model: 'test-model',
@@ -898,8 +1415,9 @@ describe('AgentRuntimeController', () => {
       const { events, appended, loopStats, traceEvents } = createEvents();
       const controller = new AgentChatController(runtime, events);
 
-      await expect(controller.runInput('read repeatedly', { turnId: 'turn-budget' }))
-        .resolves.toBeUndefined();
+      await expect(
+        controller.runInput('read repeatedly', { turnId: 'turn-budget' })
+      ).resolves.toBeUndefined();
 
       expect(llm.chatStream).toHaveBeenCalledTimes(1);
       expect(store.getSnapshot().lastLoopStats).toMatchObject({
@@ -939,37 +1457,43 @@ describe('AgentRuntimeController', () => {
       expect(messages.at(-1)?.content).toContain('reply `继续`');
       expect(messages.at(-1)?.content).toContain('raise agentLoop.budget');
       const persistedTrace = readSessionTraceEvents(session!.id);
-      expect(persistedTrace).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          type: 'complete',
-          turnId: 'turn-budget',
-          finishReason: 'budget_exceeded',
-          budgetExceededReason: 'LLM request budget 1 reached',
-          continuationActions: [
-            'reply_continue',
-            'narrow_instruction',
-            'inspect_loop_stats',
-            'raise_budget',
-          ],
-          continuationHint: expect.stringContaining('Reply `继续`'),
-          llmRequests: 1,
-          toolCalls: 1,
-        }),
-      ]));
-      expect(traceEvents).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          type: 'complete',
-          turnId: 'turn-budget',
-          finishReason: 'budget_exceeded',
-          continuationActions: [
-            'reply_continue',
-            'narrow_instruction',
-            'inspect_loop_stats',
-            'raise_budget',
-          ],
-        }),
-      ]));
-      const budgetNotice = appended.find(entry => entry.role === 'status' && entry.title === 'budget');
+      expect(persistedTrace).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'complete',
+            turnId: 'turn-budget',
+            finishReason: 'budget_exceeded',
+            budgetExceededReason: 'LLM request budget 1 reached',
+            continuationActions: [
+              'reply_continue',
+              'narrow_instruction',
+              'inspect_loop_stats',
+              'raise_budget',
+            ],
+            continuationHint: expect.stringContaining('Reply `继续`'),
+            llmRequests: 1,
+            toolCalls: 1,
+          }),
+        ])
+      );
+      expect(traceEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'complete',
+            turnId: 'turn-budget',
+            finishReason: 'budget_exceeded',
+            continuationActions: [
+              'reply_continue',
+              'narrow_instruction',
+              'inspect_loop_stats',
+              'raise_budget',
+            ],
+          }),
+        ])
+      );
+      const budgetNotice = appended.find(
+        entry => entry.role === 'status' && entry.title === 'budget'
+      );
       expect(budgetNotice).toBeDefined();
       expect(budgetNotice?.content).toContain('Loop budget reached');
       expect(budgetNotice?.content).toContain('Progress:');
@@ -998,26 +1522,28 @@ describe('AgentRuntimeController', () => {
       });
       const llm = {
         getModel: jest.fn(() => 'test-model'),
-        chatStream: jest.fn(async (_messages: unknown, callbacks?: { onChunk?: (chunk: string) => void }) => {
-          callbacks?.onChunk?.('Need two files');
-          return {
-            content: 'Need two files',
-            model: 'test-model',
-            toolCalls: [
-              {
-                id: 'call-one',
-                type: 'function' as const,
-                function: { name: 'read_file', arguments: '{"path":"one.txt"}' },
-              },
-              {
-                id: 'call-two',
-                type: 'function' as const,
-                function: { name: 'read_file', arguments: '{"path":"two.txt"}' },
-              },
-            ],
-            usage: { promptTokens: 10, completionTokens: 1 },
-          };
-        }),
+        chatStream: jest.fn(
+          async (_messages: unknown, callbacks?: { onChunk?: (chunk: string) => void }) => {
+            callbacks?.onChunk?.('Need two files');
+            return {
+              content: 'Need two files',
+              model: 'test-model',
+              toolCalls: [
+                {
+                  id: 'call-one',
+                  type: 'function' as const,
+                  function: { name: 'read_file', arguments: '{"path":"one.txt"}' },
+                },
+                {
+                  id: 'call-two',
+                  type: 'function' as const,
+                  function: { name: 'read_file', arguments: '{"path":"two.txt"}' },
+                },
+              ],
+              usage: { promptTokens: 10, completionTokens: 1 },
+            };
+          }
+        ),
       };
       let session: SessionMeta | null = null;
       const runtime = createRuntime({
@@ -1038,8 +1564,9 @@ describe('AgentRuntimeController', () => {
       const { events, loopStats, traceEvents } = createEvents();
       const controller = new AgentChatController(runtime, events);
 
-      await expect(controller.runInput('read both files', { turnId: 'turn-tool-budget' }))
-        .resolves.toBeUndefined();
+      await expect(
+        controller.runInput('read both files', { turnId: 'turn-tool-budget' })
+      ).resolves.toBeUndefined();
 
       expect(llm.chatStream).toHaveBeenCalledTimes(1);
       expect(store.getSnapshot().lastLoopStats).toMatchObject({
@@ -1081,30 +1608,34 @@ describe('AgentRuntimeController', () => {
       expect(persistedTrace.some(event => event.type === 'assistant_tool_calls')).toBe(false);
       expect(persistedTrace.some(event => event.type === 'tool_call')).toBe(false);
       expect(persistedTrace.some(event => event.type === 'tool_result')).toBe(false);
-      expect(persistedTrace).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          type: 'complete',
-          turnId: 'turn-tool-budget',
-          finishReason: 'budget_exceeded',
-          budgetExceededReason: 'tool call budget 1 would be exceeded by 2 requested tools',
-          continuationActions: [
-            'reply_continue',
-            'narrow_instruction',
-            'inspect_loop_stats',
-            'raise_budget',
-          ],
-          llmRequests: 1,
-          toolCalls: 0,
-        }),
-      ]));
-      expect(traceEvents).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          type: 'complete',
-          turnId: 'turn-tool-budget',
-          finishReason: 'budget_exceeded',
-          toolCalls: 0,
-        }),
-      ]));
+      expect(persistedTrace).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'complete',
+            turnId: 'turn-tool-budget',
+            finishReason: 'budget_exceeded',
+            budgetExceededReason: 'tool call budget 1 would be exceeded by 2 requested tools',
+            continuationActions: [
+              'reply_continue',
+              'narrow_instruction',
+              'inspect_loop_stats',
+              'raise_budget',
+            ],
+            llmRequests: 1,
+            toolCalls: 0,
+          }),
+        ])
+      );
+      expect(traceEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'complete',
+            turnId: 'turn-tool-budget',
+            finishReason: 'budget_exceeded',
+            toolCalls: 0,
+          }),
+        ])
+      );
     });
   });
 
@@ -1145,12 +1676,16 @@ describe('AgentRuntimeController', () => {
       const longFlag = `--filter=${'trace-command-argument-'.repeat(12)}`;
       const command = `grep trace-command ${longFlag} missing-file.txt`;
 
-      await expect(controller.runInput(`run test: ${command}`, { turnId: 'turn-long-command' })).resolves.toBeUndefined();
+      await expect(
+        controller.runInput(`run test: ${command}`, { turnId: 'turn-long-command' })
+      ).resolves.toBeUndefined();
 
       expect(llm.chatStream).not.toHaveBeenCalled();
       expect(session).not.toBeNull();
       const traceEvents = readSessionTraceEvents(session!.id);
-      const toolCall = traceEvents.find(event => event.type === 'tool_call' && event.name === 'exec_command');
+      const toolCall = traceEvents.find(
+        event => event.type === 'tool_call' && event.name === 'exec_command'
+      );
       expect(toolCall).toMatchObject({
         type: 'tool_call',
         argsSummary: expect.stringContaining('grep trace-command'),
@@ -1170,7 +1705,11 @@ describe('AgentRuntimeController', () => {
   it('records local fast-path output artifacts in tool events and trace', async () => {
     await withTempConfig(async ({ projectDir }) => {
       mkdirSync(projectDir, { recursive: true });
-      writeFileSync(join(projectDir, 'large-output.txt'), `${'local-fast-path-output\n'.repeat(160)}`, 'utf-8');
+      writeFileSync(
+        join(projectDir, 'large-output.txt'),
+        `${'local-fast-path-output\n'.repeat(160)}`,
+        'utf-8'
+      );
       const config = loadConfig({
         apiKey: 'test-key',
         model: 'test-model',
@@ -1203,7 +1742,9 @@ describe('AgentRuntimeController', () => {
       const { events, appended } = createEvents();
       const controller = new AgentChatController(runtime, events);
 
-      await expect(controller.runInput('read large-output.txt', { turnId: 'turn-large-local-output' })).resolves.toBeUndefined();
+      await expect(
+        controller.runInput('read large-output.txt', { turnId: 'turn-large-local-output' })
+      ).resolves.toBeUndefined();
 
       expect(llm.chatStream).not.toHaveBeenCalled();
       expect(session).not.toBeNull();
@@ -1214,7 +1755,9 @@ describe('AgentRuntimeController', () => {
       expect(appended.at(-1)?.content).toContain('--full (3.6 KB)');
 
       const traceEvents = readSessionTraceEvents(session!.id);
-      const toolResult = traceEvents.find(event => event.type === 'tool_result' && event.name === 'read_file');
+      const toolResult = traceEvents.find(
+        event => event.type === 'tool_result' && event.name === 'read_file'
+      );
       expect(toolResult).toMatchObject({
         type: 'tool_result',
         artifactId: expect.stringMatching(/^read_file-/),
@@ -1243,7 +1786,7 @@ describe('AgentRuntimeController', () => {
         cwd: projectDir,
         config,
         store,
-        runtime: ({
+        runtime: {
           brain: {
             getStatus: () => ({ agents: [], pendingTasks: 0, strategy: 'sequential' }),
           },
@@ -1253,7 +1796,7 @@ describe('AgentRuntimeController', () => {
           store: {
             getStats: () => ({ working: 0, 'short-term': 0, 'long-term': 0 }),
           },
-        } as unknown) as OpenHorseUiRuntime['runtime'],
+        } as unknown as OpenHorseUiRuntime['runtime'],
       });
       const { events, appended } = createEvents();
       const controller = new AgentRuntimeController({
@@ -1267,7 +1810,9 @@ describe('AgentRuntimeController', () => {
 
       const status = appended.map(entry => entry.content).join('\n');
       expect(status).toContain('Renderer   print non-interactive');
-      expect(status).toContain('text-pickers, legacy-progress, legacy-meta, compact-spacing, abort-notice');
+      expect(status).toContain(
+        'text-pickers, legacy-progress, legacy-meta, compact-spacing, abort-notice'
+      );
     });
   });
 
@@ -1283,7 +1828,7 @@ describe('AgentRuntimeController', () => {
         cwd: projectDir,
         config,
         store,
-        runtime: ({
+        runtime: {
           brain: {
             getStatus: () => ({ agents: [], pendingTasks: 0, strategy: 'sequential' }),
           },
@@ -1293,7 +1838,7 @@ describe('AgentRuntimeController', () => {
           store: {
             getStats: () => ({ working: 0, 'short-term': 0, 'long-term': 0 }),
           },
-        } as unknown) as OpenHorseUiRuntime['runtime'],
+        } as unknown as OpenHorseUiRuntime['runtime'],
       });
       const { events, appended } = createEvents();
       const controller = new AgentRuntimeController({
@@ -1309,7 +1854,9 @@ describe('AgentRuntimeController', () => {
 
       const status = appended.map(entry => entry.content).join('\n');
       expect(status).toContain('Renderer   print non-interactive');
-      expect(status).toContain('text-pickers, legacy-progress, legacy-meta, compact-spacing, abort-notice');
+      expect(status).toContain(
+        'text-pickers, legacy-progress, legacy-meta, compact-spacing, abort-notice'
+      );
     });
   });
 
@@ -1330,13 +1877,17 @@ describe('AgentRuntimeController', () => {
       await controller.waitForIdle();
 
       expect(events.showSessionPicker).not.toHaveBeenCalled();
-      expect(appended).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          role: 'system',
-          title: '/resume',
-          content: expect.stringContaining('Use /resume <number|session-id|name> or /resume --last.'),
-        }),
-      ]));
+      expect(appended).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: 'system',
+            title: '/resume',
+            content: expect.stringContaining(
+              'Use /resume <number|session-id|name> or /resume --last.'
+            ),
+          }),
+        ])
+      );
     });
   });
 
@@ -1356,9 +1907,7 @@ describe('AgentRuntimeController', () => {
     await controller.waitForIdle();
 
     expect(runner.calls).toEqual(['hello']);
-    expect(appended).toEqual([
-      expect.objectContaining({ role: 'user', content: 'hello' }),
-    ]);
+    expect(appended).toEqual([expect.objectContaining({ role: 'user', content: 'hello' })]);
     expect(processing).toEqual([true, false]);
     expect(runtime.store.setProcessing).toHaveBeenCalledWith(true);
     expect(runtime.store.setProcessing).toHaveBeenCalledWith(false);
@@ -1382,9 +1931,14 @@ describe('AgentRuntimeController', () => {
     expect(controller.submit('hello')).toEqual({ type: 'started' });
     await expect(controller.waitForIdle()).resolves.toBeUndefined();
 
-    expect(appended).toEqual(expect.arrayContaining([
-      expect.objectContaining({ role: 'error', content: expect.stringContaining('NotEnoughCvError') }),
-    ]));
+    expect(appended).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'error',
+          content: expect.stringContaining('NotEnoughCvError'),
+        }),
+      ])
+    );
     expect(processing).toEqual([true, false]);
     expect(statuses).toContain('ready');
     expect(controller.hasActiveTurn()).toBe(false);
@@ -1425,7 +1979,9 @@ describe('AgentRuntimeController', () => {
 
     expect(runner.calls).toHaveLength(1);
     expect(runner.calls[0].signal?.aborted).toBe(false);
-    expect(statuses).toContain('Command ignored while agent is running. Press Ctrl+C to interrupt first.');
+    expect(statuses).toContain(
+      'Command ignored while agent is running. Press Ctrl+C to interrupt first.'
+    );
   });
 
   it('uses double Ctrl+C semantics while running', () => {
@@ -1471,9 +2027,15 @@ describe('AgentRuntimeController', () => {
     const runner = createDeferredRunner();
     const controller = new AgentRuntimeController({ runtime, events, runner });
 
-    expect(controller.handle({ type: 'submit', text: 'protocol task', source: 'composer' })).toEqual({ type: 'started' });
-    expect(controller.handle({ type: 'clear_exit_intent' })).toEqual({ type: 'exit_intent_cleared' });
-    expect(controller.handle({ type: 'interrupt', source: 'keyboard' })).toEqual({ type: 'interrupted' });
+    expect(
+      controller.handle({ type: 'submit', text: 'protocol task', source: 'composer' })
+    ).toEqual({ type: 'started' });
+    expect(controller.handle({ type: 'clear_exit_intent' })).toEqual({
+      type: 'exit_intent_cleared',
+    });
+    expect(controller.handle({ type: 'interrupt', source: 'keyboard' })).toEqual({
+      type: 'interrupted',
+    });
     expect(runner.calls[0].signal?.aborted).toBe(true);
   });
 
@@ -1488,12 +2050,14 @@ describe('AgentRuntimeController', () => {
     };
     const controller = new AgentRuntimeController({ runtime, events, runner });
 
-    expect(controller.handle({
-      type: 'select_session',
-      sessionId: 'session-123',
-      allProjects: true,
-      source: 'picker',
-    })).toEqual({ type: 'started' });
+    expect(
+      controller.handle({
+        type: 'select_session',
+        sessionId: 'session-123',
+        allProjects: true,
+        source: 'picker',
+      })
+    ).toEqual({ type: 'started' });
     await controller.waitForIdle();
 
     expect(runner.calls).toEqual(['/resume session-123 --all']);
@@ -1517,24 +2081,29 @@ describe('AgentRuntimeController', () => {
       args: { remote: 'origin' },
       reason: 'updates remote repository',
     });
-    const request = emitted.find((event): event is Extract<AgentRuntimeEvent, { type: 'permission_requested' }> =>
-      event.type === 'permission_requested'
+    const request = emitted.find(
+      (event): event is Extract<AgentRuntimeEvent, { type: 'permission_requested' }> =>
+        event.type === 'permission_requested'
     );
 
-    expect(request).toEqual(expect.objectContaining({
-      type: 'permission_requested',
-      request: expect.objectContaining({
-        name: 'git_push',
-        args: { remote: 'origin' },
-        reason: 'updates remote repository',
-      }),
-    }));
-    expect(controller.handle({
-      type: 'permission_decision',
-      requestId: request!.request.id,
-      approved: true,
-      source: 'keyboard',
-    })).toEqual({ type: 'permission_decision_recorded' });
+    expect(request).toEqual(
+      expect.objectContaining({
+        type: 'permission_requested',
+        request: expect.objectContaining({
+          name: 'git_push',
+          args: { remote: 'origin' },
+          reason: 'updates remote repository',
+        }),
+      })
+    );
+    expect(
+      controller.handle({
+        type: 'permission_decision',
+        requestId: request!.request.id,
+        approved: true,
+        source: 'keyboard',
+      })
+    ).toEqual({ type: 'permission_decision_recorded' });
     await expect(decision).resolves.toBe(true);
   });
 
@@ -1547,11 +2116,13 @@ describe('AgentRuntimeController', () => {
       runner: { runInput: jest.fn(async () => undefined) },
     });
 
-    expect(controller.handle({
-      type: 'permission_decision',
-      requestId: 'missing',
-      approved: true,
-    })).toEqual({ type: 'permission_decision_ignored' });
+    expect(
+      controller.handle({
+        type: 'permission_decision',
+        requestId: 'missing',
+        approved: true,
+      })
+    ).toEqual({ type: 'permission_decision_ignored' });
   });
 
   it('denies pending tool permission when its abort signal fires', async () => {
@@ -1576,14 +2147,17 @@ describe('AgentRuntimeController', () => {
     abortController.abort();
 
     await expect(decision).resolves.toBe(false);
-    const request = emitted.find((event): event is Extract<AgentRuntimeEvent, { type: 'permission_requested' }> =>
-      event.type === 'permission_requested'
+    const request = emitted.find(
+      (event): event is Extract<AgentRuntimeEvent, { type: 'permission_requested' }> =>
+        event.type === 'permission_requested'
     );
-    expect(controller.handle({
-      type: 'permission_decision',
-      requestId: request!.request.id,
-      approved: true,
-    })).toEqual({ type: 'permission_decision_ignored' });
+    expect(
+      controller.handle({
+        type: 'permission_decision',
+        requestId: request!.request.id,
+        approved: true,
+      })
+    ).toEqual({ type: 'permission_decision_ignored' });
   });
 
   it('can run with only a structured runtime event sink', async () => {
@@ -1603,12 +2177,17 @@ describe('AgentRuntimeController', () => {
       },
     });
 
-    expect(controller.handle({ type: 'submit', text: 'event protocol task' })).toEqual({ type: 'started' });
+    expect(controller.handle({ type: 'submit', text: 'event protocol task' })).toEqual({
+      type: 'started',
+    });
     await controller.waitForIdle();
 
-    expect(runner.runInput).toHaveBeenCalledWith('event protocol task', expect.objectContaining({
-      abortSignal: expect.any(AbortSignal),
-    }));
+    expect(runner.runInput).toHaveBeenCalledWith(
+      'event protocol task',
+      expect.objectContaining({
+        abortSignal: expect.any(AbortSignal),
+      })
+    );
     expect(emitted.map(event => event.type)).toEqual([
       'transcript_append',
       'processing_changed',
@@ -1630,7 +2209,9 @@ describe('AgentRuntimeController', () => {
       const llm = {
         getModel: jest.fn(() => 'xopglm51'),
         chatStream: jest.fn(async () => {
-          throw new Error('Xunfei request failed with Sid: cht000d6760 code: 11210, msg: NotEnoughCvError');
+          throw new Error(
+            'Xunfei request failed with Sid: cht000d6760 code: 11210, msg: NotEnoughCvError'
+          );
         }),
         getLastRequestDiagnostics: jest.fn(() => ({
           retryCount: 1,
@@ -1662,15 +2243,19 @@ describe('AgentRuntimeController', () => {
       const { events, appended, statuses, loopStats, traceEvents } = createEvents();
       const controller = new AgentChatController(runtime, events);
 
-      await expect(controller.runInput('hello', { turnId: 'turn-provider-failed' })).resolves.toBeUndefined();
+      await expect(
+        controller.runInput('hello', { turnId: 'turn-provider-failed' })
+      ).resolves.toBeUndefined();
 
       expect(llm.chatStream).toHaveBeenCalledTimes(1);
-      expect(appended).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          role: 'error',
-          content: expect.stringContaining('Provider quota or credit appears insufficient'),
-        }),
-      ]));
+      expect(appended).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: 'error',
+            content: expect.stringContaining('Provider quota or credit appears insufficient'),
+          }),
+        ])
+      );
       expect(statuses).toContain('Turn failed. Ready for the next input.');
       expect(store.getSnapshot().lastLoopStats).toMatchObject({
         finishReason: 'failed',
@@ -1690,36 +2275,39 @@ describe('AgentRuntimeController', () => {
       expect(session).not.toBeNull();
       expect(readSessionMessages(session!.id)).toHaveLength(0);
       const persistedTrace = readSessionTraceEvents(session!.id);
-      expect(persistedTrace).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          turnId: 'turn-provider-failed',
-          type: 'request_start',
-          model: 'xopglm51',
-        }),
-        expect.objectContaining({
-          turnId: 'turn-provider-failed',
-          type: 'provider_retry',
-          providerRetryCount: 1,
-          providerRetryErrorTypes: ['quota_or_credit_exhausted'],
-          providerLastRetryStatus: 402,
-        }),
-        expect.objectContaining({
-          turnId: 'turn-provider-failed',
-          type: 'error',
-          error: expect.stringContaining('NotEnoughCvError'),
-        }),
-        expect.objectContaining({
-          turnId: 'turn-provider-failed',
-          type: 'complete',
-          finishReason: 'failed',
-          llmRequests: 1,
-          toolCalls: 0,
-          loopBudgetSource: 'default',
-          loopBudgetMaxLlmRequests: 24,
-        }),
-      ]));
-      expect(traceEvents.map(event => (event as { type?: string }).type))
-        .toEqual(persistedTrace.map(event => event.type));
+      expect(persistedTrace).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            turnId: 'turn-provider-failed',
+            type: 'request_start',
+            model: 'xopglm51',
+          }),
+          expect.objectContaining({
+            turnId: 'turn-provider-failed',
+            type: 'provider_retry',
+            providerRetryCount: 1,
+            providerRetryErrorTypes: ['quota_or_credit_exhausted'],
+            providerLastRetryStatus: 402,
+          }),
+          expect.objectContaining({
+            turnId: 'turn-provider-failed',
+            type: 'error',
+            error: expect.stringContaining('NotEnoughCvError'),
+          }),
+          expect.objectContaining({
+            turnId: 'turn-provider-failed',
+            type: 'complete',
+            finishReason: 'failed',
+            llmRequests: 1,
+            toolCalls: 0,
+            loopBudgetSource: 'default',
+            loopBudgetMaxLlmRequests: 24,
+          }),
+        ])
+      );
+      expect(traceEvents.map(event => (event as { type?: string }).type)).toEqual(
+        persistedTrace.map(event => event.type)
+      );
     });
   });
 
@@ -1738,19 +2326,23 @@ describe('AgentRuntimeController', () => {
       });
       const llm = {
         getModel: jest.fn(() => 'primary-model'),
-        chatStream: jest.fn()
+        chatStream: jest
+          .fn()
           .mockResolvedValueOnce({
             content: '',
             model: 'fallback-model',
-            toolCalls: [{
-              id: 'call-read',
-              type: 'function' as const,
-              function: { name: 'read_file', arguments: JSON.stringify({ path: 'target.txt' }) },
-            }],
+            toolCalls: [
+              {
+                id: 'call-read',
+                type: 'function' as const,
+                function: { name: 'read_file', arguments: JSON.stringify({ path: 'target.txt' }) },
+              },
+            ],
             usage: { promptTokens: 10, completionTokens: 1 },
           })
           .mockRejectedValueOnce(new Error('Xunfei request failed: provider busy')),
-        getLastRequestDiagnostics: jest.fn()
+        getLastRequestDiagnostics: jest
+          .fn()
           .mockReturnValueOnce({
             retryCount: 2,
             retryDelayMs: 1000,
@@ -1793,10 +2385,15 @@ describe('AgentRuntimeController', () => {
       const { events, loopStats } = createEvents();
       const controller = new AgentChatController(runtime, events);
 
-      await expect(controller.runInput('inspect then answer', { turnId: 'turn-provider-late-fail' }))
-        .resolves.toBeUndefined();
+      await expect(
+        controller.runInput('inspect then answer', { turnId: 'turn-provider-late-fail' })
+      ).resolves.toBeUndefined();
 
       expect(llm.chatStream).toHaveBeenCalledTimes(2);
+      expect(store.getSnapshot().tokenUsage).toEqual({
+        promptTokens: 10,
+        completionTokens: 1,
+      });
       expect(store.getSnapshot().lastLoopStats).toMatchObject({
         finishReason: 'failed',
         llmRequests: 2,
@@ -1818,22 +2415,24 @@ describe('AgentRuntimeController', () => {
       });
       expect(session).not.toBeNull();
       expect(readSessionMessages(session!.id)).toHaveLength(0);
-      expect(readSessionTraceEvents(session!.id)).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          turnId: 'turn-provider-late-fail',
-          type: 'tool_result',
-          name: 'read_file',
-          success: true,
-        }),
-        expect.objectContaining({
-          turnId: 'turn-provider-late-fail',
-          type: 'complete',
-          finishReason: 'failed',
-          llmRequests: 2,
-          toolCalls: 1,
-          readOnlyToolCalls: 1,
-        }),
-      ]));
+      expect(readSessionTraceEvents(session!.id)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            turnId: 'turn-provider-late-fail',
+            type: 'tool_result',
+            name: 'read_file',
+            success: true,
+          }),
+          expect.objectContaining({
+            turnId: 'turn-provider-late-fail',
+            type: 'complete',
+            finishReason: 'failed',
+            llmRequests: 2,
+            toolCalls: 1,
+            readOnlyToolCalls: 1,
+          }),
+        ])
+      );
     });
   });
 
@@ -1842,8 +2441,12 @@ describe('AgentRuntimeController', () => {
       mkdirSync(join(projectDir, 'src'), { recursive: true });
       writeFileSync(join(projectDir, 'src', 'target.ts'), 'export const value = 1;\n', 'utf-8');
       execFileSync('git', ['-C', projectDir, 'init'], { stdio: 'ignore' });
-      execFileSync('git', ['-C', projectDir, 'config', 'user.email', 'test@example.com'], { stdio: 'ignore' });
-      execFileSync('git', ['-C', projectDir, 'config', 'user.name', 'Test User'], { stdio: 'ignore' });
+      execFileSync('git', ['-C', projectDir, 'config', 'user.email', 'test@example.com'], {
+        stdio: 'ignore',
+      });
+      execFileSync('git', ['-C', projectDir, 'config', 'user.name', 'Test User'], {
+        stdio: 'ignore',
+      });
       execFileSync('git', ['-C', projectDir, 'add', '.'], { stdio: 'ignore' });
       execFileSync('git', ['-C', projectDir, 'commit', '-m', 'initial'], { stdio: 'ignore' });
       const config = loadConfig({
@@ -1857,21 +2460,24 @@ describe('AgentRuntimeController', () => {
       });
       const llm = {
         getModel: jest.fn(() => 'test-model'),
-        chatStream: jest.fn()
+        chatStream: jest
+          .fn()
           .mockResolvedValueOnce({
             content: '',
             model: 'test-model',
-            toolCalls: [{
-              id: 'call-write',
-              type: 'function' as const,
-              function: {
-                name: 'write_file',
-                arguments: JSON.stringify({
-                  path: 'src/target.ts',
-                  content: 'export const value = 2;\n',
-                }),
+            toolCalls: [
+              {
+                id: 'call-write',
+                type: 'function' as const,
+                function: {
+                  name: 'write_file',
+                  arguments: JSON.stringify({
+                    path: 'src/target.ts',
+                    content: 'export const value = 2;\n',
+                  }),
+                },
               },
-            }],
+            ],
             usage: { promptTokens: 10, completionTokens: 1 },
           })
           .mockRejectedValueOnce(new Error('provider busy after edit')),
@@ -1895,49 +2501,56 @@ describe('AgentRuntimeController', () => {
       const { events, appended } = createEvents();
       const controller = new AgentChatController(runtime, events);
 
-      await expect(controller.runInput('edit target', { turnId: 'turn-failed-edit' }))
-        .resolves.toBeUndefined();
+      await expect(
+        controller.runInput('edit target', { turnId: 'turn-failed-edit' })
+      ).resolves.toBeUndefined();
 
-      expect(appended).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          role: 'status',
-          title: 'recovery',
-          content: expect.stringContaining('Checkpoints: turn-failed-edit'),
-        }),
-      ]));
+      expect(appended).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: 'status',
+            title: 'recovery',
+            content: expect.stringContaining('Checkpoints: turn-failed-edit'),
+          }),
+        ])
+      );
       expect(session).not.toBeNull();
       const traceEvents = readSessionTraceEvents(session!.id);
-      expect(traceEvents).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          type: 'checkpoint',
-          turnId: 'turn-failed-edit',
-          checkpointId: 'turn-failed-edit',
-          checkpointFiles: ['src/target.ts'],
-        }),
-        expect.objectContaining({
-          type: 'workspace_delta',
-          turnId: 'turn-failed-edit',
-          workspaceChangedByTurn: ['src/target.ts'],
-        }),
-        expect.objectContaining({
-          type: 'error',
-          turnId: 'turn-failed-edit',
-          note: expect.stringContaining('Checkpoints: turn-failed-edit'),
-        }),
-        expect.objectContaining({
-          type: 'complete',
-          turnId: 'turn-failed-edit',
-          finishReason: 'failed',
-          llmRequests: 2,
-          toolCalls: 1,
-        }),
-      ]));
-      expect(listCheckpoints(projectDir)).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          turnId: 'turn-failed-edit',
-          files: [expect.objectContaining({ path: 'src/target.ts' })],
-        }),
-      ]));
+      expect(traceEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'checkpoint',
+            turnId: 'turn-failed-edit',
+            checkpointId: 'turn-failed-edit',
+            checkpointFiles: ['src/target.ts'],
+          }),
+          expect.objectContaining({
+            type: 'workspace_delta',
+            turnId: 'turn-failed-edit',
+            workspaceChangedByTurn: ['src/target.ts'],
+          }),
+          expect.objectContaining({
+            type: 'error',
+            turnId: 'turn-failed-edit',
+            note: expect.stringContaining('Checkpoints: turn-failed-edit'),
+          }),
+          expect.objectContaining({
+            type: 'complete',
+            turnId: 'turn-failed-edit',
+            finishReason: 'failed',
+            llmRequests: 2,
+            toolCalls: 1,
+          }),
+        ])
+      );
+      expect(listCheckpoints(projectDir)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            turnId: 'turn-failed-edit',
+            files: [expect.objectContaining({ path: 'src/target.ts' })],
+          }),
+        ])
+      );
       expect(readSessionMessages(session!.id)).toHaveLength(0);
     });
   });
@@ -1993,8 +2606,9 @@ describe('AgentRuntimeController', () => {
       const { events, loopStats, traceEvents } = createEvents();
       const controller = new AgentChatController(runtime, events);
 
-      await expect(controller.runInput('hello provider status', { turnId: 'turn-provider' }))
-        .resolves.toBeUndefined();
+      await expect(
+        controller.runInput('hello provider status', { turnId: 'turn-provider' })
+      ).resolves.toBeUndefined();
 
       expect(llm.chatStream).toHaveBeenCalledTimes(1);
       expect(loopStats.at(-1)).toMatchObject({
@@ -2009,32 +2623,40 @@ describe('AgentRuntimeController', () => {
       });
       expect(session).not.toBeNull();
       const persistedTrace = readSessionTraceEvents(session!.id);
-      expect(persistedTrace).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          turnId: 'turn-provider',
-          type: 'provider_retry',
-          providerRetryCount: 3,
-          providerRetryDelayMs: 1500,
-          providerRetryErrorTypes: ['rate_limit', 'provider_busy'],
-          providerLastRetryErrorType: 'provider_busy',
-          providerLastRetryStatus: 529,
-          providerFinalModel: 'fallback-model',
-          providerUsingFallback: true,
-        }),
-        expect.objectContaining({
-          turnId: 'turn-provider',
-          type: 'provider_fallback',
-          providerFallbackCount: 1,
-          providerFallbackFromModel: 'primary-model',
-          providerFallbackToModel: 'fallback-model',
-          providerFinalModel: 'fallback-model',
-          providerUsingFallback: true,
-        }),
-      ]));
+      expect(persistedTrace).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            turnId: 'turn-provider',
+            type: 'provider_retry',
+            providerRetryCount: 3,
+            providerRetryDelayMs: 1500,
+            providerRetryErrorTypes: ['rate_limit', 'provider_busy'],
+            providerLastRetryErrorType: 'provider_busy',
+            providerLastRetryStatus: 529,
+            providerFinalModel: 'fallback-model',
+            providerUsingFallback: true,
+          }),
+          expect.objectContaining({
+            turnId: 'turn-provider',
+            type: 'provider_fallback',
+            providerFallbackCount: 1,
+            providerFallbackFromModel: 'primary-model',
+            providerFallbackToModel: 'fallback-model',
+            providerFinalModel: 'fallback-model',
+            providerUsingFallback: true,
+          }),
+        ])
+      );
       const eventTypes = persistedTrace.map(event => event.type);
-      expect(eventTypes.indexOf('provider_retry')).toBeGreaterThan(eventTypes.indexOf('request_start'));
-      expect(eventTypes.indexOf('provider_fallback')).toBeGreaterThan(eventTypes.indexOf('provider_retry'));
-      expect(eventTypes.indexOf('complete')).toBeGreaterThan(eventTypes.indexOf('provider_fallback'));
+      expect(eventTypes.indexOf('provider_retry')).toBeGreaterThan(
+        eventTypes.indexOf('request_start')
+      );
+      expect(eventTypes.indexOf('provider_fallback')).toBeGreaterThan(
+        eventTypes.indexOf('provider_retry')
+      );
+      expect(eventTypes.indexOf('complete')).toBeGreaterThan(
+        eventTypes.indexOf('provider_fallback')
+      );
       expect(traceEvents.map(event => (event as { type?: string }).type)).toEqual(eventTypes);
     });
   });
@@ -2057,7 +2679,11 @@ describe('AgentRuntimeController', () => {
           content: '',
           model: 'test-model',
           toolCalls: [
-            { id: 'call-search', type: 'function', function: { name: 'web_search', arguments: '{"query":"openhorse"}' } },
+            {
+              id: 'call-search',
+              type: 'function',
+              function: { name: 'web_search', arguments: '{"query":"openhorse"}' },
+            },
           ],
         })),
       };
@@ -2080,7 +2706,9 @@ describe('AgentRuntimeController', () => {
       const { events, loopStats } = createEvents();
       const controller = new AgentChatController(runtime, events);
 
-      await expect(controller.runInput('search openhorse', { turnId: 'turn-denied' })).resolves.toBeUndefined();
+      await expect(
+        controller.runInput('search openhorse', { turnId: 'turn-denied' })
+      ).resolves.toBeUndefined();
 
       expect(llm.chatStream).toHaveBeenCalledTimes(1);
       expect(loopStats.at(-1)).toMatchObject({
@@ -2089,22 +2717,24 @@ describe('AgentRuntimeController', () => {
         toolCalls: 1,
       });
       const traceEvents = readSessionTraceEvents(session!.id);
-      expect(traceEvents).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          type: 'permission_decision',
-          turnId: 'turn-denied',
-          name: 'web_search',
-          permissionApproved: false,
-          permissionSource: 'config_deny',
-        }),
-        expect.objectContaining({
-          type: 'complete',
-          turnId: 'turn-denied',
-          finishReason: 'blocked',
-          llmRequests: 1,
-          toolCalls: 1,
-        }),
-      ]));
+      expect(traceEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'permission_decision',
+            turnId: 'turn-denied',
+            name: 'web_search',
+            permissionApproved: false,
+            permissionSource: 'config_deny',
+          }),
+          expect.objectContaining({
+            type: 'complete',
+            turnId: 'turn-denied',
+            finishReason: 'blocked',
+            llmRequests: 1,
+            toolCalls: 1,
+          }),
+        ])
+      );
     });
   });
 
@@ -2178,8 +2808,9 @@ describe('AgentRuntimeController', () => {
         loopBudgetSource: 'complex',
         loopBudgetMaxLlmRequests: 48,
       });
-      const completeTrace = readSessionTraceEvents(session!.id)
-        .find(event => event.type === 'complete');
+      const completeTrace = readSessionTraceEvents(session!.id).find(
+        event => event.type === 'complete'
+      );
       expect(completeTrace).toMatchObject({
         type: 'complete',
         finishReason: 'completed',
@@ -2229,7 +2860,9 @@ describe('AgentRuntimeController', () => {
         model: 'test-model',
       });
       const harness = createContextHarness({ cwd: projectDir, modelId: 'test-model' });
-      harness.updateContractFromUserInput('完成一个大的任务：多步骤修复 agent-loop、harness、session 并验证');
+      harness.updateContractFromUserInput(
+        '完成一个大的任务：多步骤修复 agent-loop、harness、session 并验证'
+      );
       const store = new Store({
         config,
         tools: TOOLS,
@@ -2327,7 +2960,8 @@ describe('AgentRuntimeController', () => {
       ];
       const llm = {
         getModel: jest.fn(() => 'test-model'),
-        chatStream: jest.fn()
+        chatStream: jest
+          .fn()
           .mockResolvedValueOnce({
             content: '',
             model: 'test-model',
@@ -2359,28 +2993,36 @@ describe('AgentRuntimeController', () => {
       const { events, statuses } = createEvents();
       const controller = new AgentChatController(runtime, events);
 
-      await expect(controller.runInput('read both files', { turnId: 'turn-tools' })).resolves.toBeUndefined();
+      await expect(
+        controller.runInput('read both files', { turnId: 'turn-tools' })
+      ).resolves.toBeUndefined();
 
-      expect(statuses).toEqual(expect.arrayContaining([
-        'Working: thinking',
-        'Working: running 2 tools',
-        'Working: reading tool results',
-      ]));
+      expect(statuses).toEqual(
+        expect.arrayContaining([
+          'Working: thinking',
+          'Working: running 2 tools',
+          'Working: reading tool results',
+        ])
+      );
       expect(llm.chatStream).toHaveBeenCalledTimes(2);
       expect(session).not.toBeNull();
-      expect(readSessionTraceEvents(session!.id).map(event => event.type)).toEqual(expect.arrayContaining([
-        'turn_start',
-        'workspace_snapshot',
-        'request_start',
-        'assistant_tool_calls',
-        'tool_call',
-        'tool_result',
-        'message',
-        'workspace_snapshot',
-        'workspace_delta',
-        'complete',
-      ]));
-      expect(readSessionTraceEvents(session!.id).filter(event => event.type === 'tool_result')).toHaveLength(2);
+      expect(readSessionTraceEvents(session!.id).map(event => event.type)).toEqual(
+        expect.arrayContaining([
+          'turn_start',
+          'workspace_snapshot',
+          'request_start',
+          'assistant_tool_calls',
+          'tool_call',
+          'tool_result',
+          'message',
+          'workspace_snapshot',
+          'workspace_delta',
+          'complete',
+        ])
+      );
+      expect(
+        readSessionTraceEvents(session!.id).filter(event => event.type === 'tool_result')
+      ).toHaveLength(2);
     });
   });
 
@@ -2407,7 +3049,8 @@ describe('AgentRuntimeController', () => {
       ];
       const llm = {
         getModel: jest.fn(() => 'test-model'),
-        chatStream: jest.fn()
+        chatStream: jest
+          .fn()
           .mockResolvedValueOnce({
             content: '',
             model: 'test-model',
@@ -2439,16 +3082,22 @@ describe('AgentRuntimeController', () => {
       const { events, statuses } = createEvents();
       const controller = new AgentChatController(runtime, events);
 
-      await expect(controller.runInput('read one file', { turnId: 'turn-one-tool' })).resolves.toBeUndefined();
+      await expect(
+        controller.runInput('read one file', { turnId: 'turn-one-tool' })
+      ).resolves.toBeUndefined();
 
-      expect(statuses).toEqual(expect.arrayContaining([
-        'Working: thinking',
-        'Working: running tool',
-        'Working: reading tool results',
-      ]));
+      expect(statuses).toEqual(
+        expect.arrayContaining([
+          'Working: thinking',
+          'Working: running tool',
+          'Working: reading tool results',
+        ])
+      );
       expect(llm.chatStream).toHaveBeenCalledTimes(2);
       expect(session).not.toBeNull();
-      expect(readSessionTraceEvents(session!.id).filter(event => event.type === 'tool_result')).toHaveLength(1);
+      expect(
+        readSessionTraceEvents(session!.id).filter(event => event.type === 'tool_result')
+      ).toHaveLength(1);
     });
   });
 
@@ -2487,7 +3136,8 @@ describe('AgentRuntimeController', () => {
       ];
       const llm = {
         getModel: jest.fn(() => 'test-model'),
-        chatStream: jest.fn()
+        chatStream: jest
+          .fn()
           .mockResolvedValueOnce({
             content: '',
             model: 'test-model',
@@ -2519,10 +3169,14 @@ describe('AgentRuntimeController', () => {
       const { events, appended } = createEvents();
       const controller = new AgentChatController(runtime, events);
 
-      await expect(controller.runInput('read three files', { turnId: 'turn-batch-read' })).resolves.toBeUndefined();
+      await expect(
+        controller.runInput('read three files', { turnId: 'turn-batch-read' })
+      ).resolves.toBeUndefined();
 
       const statusEntries = appended.filter(e => e.role === 'status');
-      const batchingStatus = statusEntries.find(e => e.content?.includes('independent read-only tool calls'));
+      const batchingStatus = statusEntries.find(e =>
+        e.content?.includes('independent read-only tool calls')
+      );
       expect(batchingStatus).toBeDefined();
       expect(batchingStatus!.content).toContain('3 independent read-only tool calls');
       expect(batchingStatus!.content).toContain('reduce model-tool roundtrips');
@@ -2552,7 +3206,8 @@ describe('AgentRuntimeController', () => {
       ];
       const llm = {
         getModel: jest.fn(() => 'test-model'),
-        chatStream: jest.fn()
+        chatStream: jest
+          .fn()
           .mockResolvedValueOnce({
             content: '',
             model: 'test-model',
@@ -2584,10 +3239,14 @@ describe('AgentRuntimeController', () => {
       const { events, appended } = createEvents();
       const controller = new AgentChatController(runtime, events);
 
-      await expect(controller.runInput('read one file', { turnId: 'turn-single-read' })).resolves.toBeUndefined();
+      await expect(
+        controller.runInput('read one file', { turnId: 'turn-single-read' })
+      ).resolves.toBeUndefined();
 
       const statusEntries = appended.filter(e => e.role === 'status');
-      const batchingStatus = statusEntries.find(e => e.content?.includes('independent read-only tool calls'));
+      const batchingStatus = statusEntries.find(e =>
+        e.content?.includes('independent read-only tool calls')
+      );
       expect(batchingStatus).toBeUndefined();
     });
   });
@@ -2627,7 +3286,8 @@ describe('AgentRuntimeController', () => {
       ];
       const llm = {
         getModel: jest.fn(() => 'test-model'),
-        chatStream: jest.fn()
+        chatStream: jest
+          .fn()
           .mockResolvedValueOnce({
             content: '',
             model: 'test-model',
@@ -2659,8 +3319,9 @@ describe('AgentRuntimeController', () => {
       const { events } = createEvents();
       const controller = new AgentChatController(runtime, events);
 
-      await expect(controller.runInput('update two files', { turnId: 'turn-checkpoint' }))
-        .resolves.toBeUndefined();
+      await expect(
+        controller.runInput('update two files', { turnId: 'turn-checkpoint' })
+      ).resolves.toBeUndefined();
 
       expect(session).not.toBeNull();
       const traceEvents = readSessionTraceEvents(session!.id);
@@ -2696,12 +3357,20 @@ describe('AgentRuntimeController', () => {
     await withTempConfig(async ({ projectDir }) => {
       mkdirSync(join(projectDir, 'src'), { recursive: true });
       execFileSync('git', ['-C', projectDir, 'init'], { stdio: 'ignore' });
-      writeFileSync(join(projectDir, 'package.json'), JSON.stringify({
-        scripts: { build: 'node -e "process.exit(0)"' },
-      }), 'utf-8');
+      writeFileSync(
+        join(projectDir, 'package.json'),
+        JSON.stringify({
+          scripts: { build: 'node -e "process.exit(0)"' },
+        }),
+        'utf-8'
+      );
       const files = ['a', 'b', 'c', 'd', 'e'];
       for (const name of files) {
-        writeFileSync(join(projectDir, 'src', `${name}.ts`), `export const ${name} = 1;\n`, 'utf-8');
+        writeFileSync(
+          join(projectDir, 'src', `${name}.ts`),
+          `export const ${name} = 1;\n`,
+          'utf-8'
+        );
       }
 
       const config = loadConfig({ apiKey: 'test-key', model: 'test-model' });
@@ -2711,12 +3380,16 @@ describe('AgentRuntimeController', () => {
         type: 'function' as const,
         function: {
           name: 'write_file',
-          arguments: JSON.stringify({ path: `src/${name}.ts`, content: `export const ${name} = 2;\n` }),
+          arguments: JSON.stringify({
+            path: `src/${name}.ts`,
+            content: `export const ${name} = 2;\n`,
+          }),
         },
       }));
       const llm = {
         getModel: jest.fn(() => 'test-model'),
-        chatStream: jest.fn()
+        chatStream: jest
+          .fn()
           .mockResolvedValueOnce({
             content: '',
             model: 'test-model',
@@ -2748,8 +3421,9 @@ describe('AgentRuntimeController', () => {
       const { events, appended } = createEvents();
       const controller = new AgentChatController(runtime, events);
 
-      await expect(controller.runInput('update five files', { turnId: 'turn-risky' }))
-        .resolves.toBeUndefined();
+      await expect(
+        controller.runInput('update five files', { turnId: 'turn-risky' })
+      ).resolves.toBeUndefined();
 
       expect(session).not.toBeNull();
       const traceEvents = readSessionTraceEvents(session!.id);
@@ -2758,9 +3432,13 @@ describe('AgentRuntimeController', () => {
         note: 'risky_multi_file_checkpoint',
         checkpointFileCount: 5,
       });
-      const verificationProfileEvent = traceEvents.find(event => event.type === 'verification_profile');
+      const verificationProfileEvent = traceEvents.find(
+        event => event.type === 'verification_profile'
+      );
       expect(verificationProfileEvent?.verificationRisky).toBe(true);
-      const riskyNotice = appended.find(entry => entry.role === 'status' && entry.title === 'checkpoint');
+      const riskyNotice = appended.find(
+        entry => entry.role === 'status' && entry.title === 'checkpoint'
+      );
       expect(riskyNotice?.content).toContain('Risky edit');
       expect(riskyNotice?.content).toContain('5 files');
     });
@@ -2770,13 +3448,17 @@ describe('AgentRuntimeController', () => {
     await withTempConfig(async ({ projectDir }) => {
       mkdirSync(join(projectDir, 'src'), { recursive: true });
       execFileSync('git', ['-C', projectDir, 'init'], { stdio: 'ignore' });
-      writeFileSync(join(projectDir, 'package.json'), JSON.stringify({
-        scripts: {
-          build: 'node -e "process.exit(0)"',
-          test: 'jest',
-          lint: 'eslint src/',
-        },
-      }), 'utf-8');
+      writeFileSync(
+        join(projectDir, 'package.json'),
+        JSON.stringify({
+          scripts: {
+            build: 'node -e "process.exit(0)"',
+            test: 'jest',
+            lint: 'eslint src/',
+          },
+        }),
+        'utf-8'
+      );
 
       const config = loadConfig({
         apiKey: 'test-key',
@@ -2793,7 +3475,10 @@ describe('AgentRuntimeController', () => {
           type: 'function' as const,
           function: {
             name: 'write_file',
-            arguments: JSON.stringify({ path: 'src/index.ts', content: 'export const value = 1;\n' }),
+            arguments: JSON.stringify({
+              path: 'src/index.ts',
+              content: 'export const value = 1;\n',
+            }),
           },
         },
         {
@@ -2807,7 +3492,8 @@ describe('AgentRuntimeController', () => {
       ];
       const llm = {
         getModel: jest.fn(() => 'test-model'),
-        chatStream: jest.fn()
+        chatStream: jest
+          .fn()
           .mockResolvedValueOnce({
             content: '',
             model: 'test-model',
@@ -2845,7 +3531,9 @@ describe('AgentRuntimeController', () => {
       } = createEvents();
       const controller = new AgentChatController(runtime, events);
 
-      await expect(controller.runInput('create index', { turnId: 'turn-write' })).resolves.toBeUndefined();
+      await expect(
+        controller.runInput('create index', { turnId: 'turn-write' })
+      ).resolves.toBeUndefined();
 
       expect(session).not.toBeNull();
       const traceEvents = readSessionTraceEvents(session!.id);
@@ -2934,15 +3622,21 @@ describe('AgentRuntimeController', () => {
           omittedEvidence: expect.any(Number),
         }),
       });
-      expect(emittedTraceEvents.map(event => (event as { type?: string }).type)).toEqual(eventTypes);
-      expect(appended).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          role: 'status',
-          title: 'verification',
-          content: expect.stringContaining('[Orion Code Verification Gate]'),
-        }),
-      ]));
-      expect(readSessionMessages(session!.id).at(-1)?.content).toContain('[Orion Code Verification Gate]');
+      expect(emittedTraceEvents.map(event => (event as { type?: string }).type)).toEqual(
+        eventTypes
+      );
+      expect(appended).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: 'status',
+            title: 'verification',
+            content: expect.stringContaining('[Orion Code Verification Gate]'),
+          }),
+        ])
+      );
+      expect(readSessionMessages(session!.id).at(-1)?.content).toContain(
+        '[Orion Code Verification Gate]'
+      );
     });
   });
 
@@ -2950,13 +3644,21 @@ describe('AgentRuntimeController', () => {
     await withTempConfig(async ({ projectDir }) => {
       mkdirSync(join(projectDir, 'src'), { recursive: true });
       execFileSync('git', ['-C', projectDir, 'init'], { stdio: 'ignore' });
-      execFileSync('git', ['-C', projectDir, 'config', 'user.email', 'test@example.com'], { stdio: 'ignore' });
-      execFileSync('git', ['-C', projectDir, 'config', 'user.name', 'Test User'], { stdio: 'ignore' });
-      writeFileSync(join(projectDir, 'package.json'), JSON.stringify({
-        scripts: {
-          build: 'node -e "process.exit(0)"',
-        },
-      }), 'utf-8');
+      execFileSync('git', ['-C', projectDir, 'config', 'user.email', 'test@example.com'], {
+        stdio: 'ignore',
+      });
+      execFileSync('git', ['-C', projectDir, 'config', 'user.name', 'Test User'], {
+        stdio: 'ignore',
+      });
+      writeFileSync(
+        join(projectDir, 'package.json'),
+        JSON.stringify({
+          scripts: {
+            build: 'node -e "process.exit(0)"',
+          },
+        }),
+        'utf-8'
+      );
       writeFileSync(join(projectDir, 'src', 'existing.ts'), 'export const value = 0;\n', 'utf-8');
       execFileSync('git', ['-C', projectDir, 'add', '.'], { stdio: 'ignore' });
       execFileSync('git', ['-C', projectDir, 'commit', '-m', 'initial'], { stdio: 'ignore' });
@@ -2977,7 +3679,10 @@ describe('AgentRuntimeController', () => {
           type: 'function' as const,
           function: {
             name: 'write_file',
-            arguments: JSON.stringify({ path: 'src/existing.ts', content: 'export const value = 2;\n' }),
+            arguments: JSON.stringify({
+              path: 'src/existing.ts',
+              content: 'export const value = 2;\n',
+            }),
           },
         },
         {
@@ -2991,7 +3696,8 @@ describe('AgentRuntimeController', () => {
       ];
       const llm = {
         getModel: jest.fn(() => 'test-model'),
-        chatStream: jest.fn()
+        chatStream: jest
+          .fn()
           .mockResolvedValueOnce({
             content: '',
             model: 'test-model',
@@ -3023,10 +3729,14 @@ describe('AgentRuntimeController', () => {
       const { events } = createEvents();
       const controller = new AgentChatController(runtime, events);
 
-      await expect(controller.runInput('update existing file', { turnId: 'turn-existing-dirty' })).resolves.toBeUndefined();
+      await expect(
+        controller.runInput('update existing file', { turnId: 'turn-existing-dirty' })
+      ).resolves.toBeUndefined();
 
       expect(session).not.toBeNull();
-      const delta = readSessionTraceEvents(session!.id).find(event => event.type === 'workspace_delta');
+      const delta = readSessionTraceEvents(session!.id).find(
+        event => event.type === 'workspace_delta'
+      );
       expect(delta).toMatchObject({
         workspaceNewByTurn: [],
         workspaceChangedByTurn: ['src/existing.ts'],
@@ -3040,11 +3750,15 @@ describe('AgentRuntimeController', () => {
     await withTempConfig(async ({ projectDir }) => {
       mkdirSync(join(projectDir, 'src'), { recursive: true });
       execFileSync('git', ['-C', projectDir, 'init'], { stdio: 'ignore' });
-      writeFileSync(join(projectDir, 'package.json'), JSON.stringify({
-        scripts: {
-          build: 'node -e "process.exit(0)"',
-        },
-      }), 'utf-8');
+      writeFileSync(
+        join(projectDir, 'package.json'),
+        JSON.stringify({
+          scripts: {
+            build: 'node -e "process.exit(0)"',
+          },
+        }),
+        'utf-8'
+      );
 
       const config = loadConfig({
         apiKey: 'test-key',
@@ -3061,7 +3775,10 @@ describe('AgentRuntimeController', () => {
           type: 'function' as const,
           function: {
             name: 'write_file',
-            arguments: JSON.stringify({ path: 'src/index.ts', content: 'export const value = 1;\n' }),
+            arguments: JSON.stringify({
+              path: 'src/index.ts',
+              content: 'export const value = 1;\n',
+            }),
           },
         },
         {
@@ -3075,7 +3792,8 @@ describe('AgentRuntimeController', () => {
       ];
       const llm = {
         getModel: jest.fn(() => 'test-model'),
-        chatStream: jest.fn()
+        chatStream: jest
+          .fn()
           .mockResolvedValueOnce({
             content: '',
             model: 'test-model',
@@ -3107,7 +3825,9 @@ describe('AgentRuntimeController', () => {
       const { events, appended, loopStats } = createEvents();
       const controller = new AgentChatController(runtime, events);
 
-      await expect(controller.runInput('create index', { turnId: 'turn-write-verified' })).resolves.toBeUndefined();
+      await expect(
+        controller.runInput('create index', { turnId: 'turn-write-verified' })
+      ).resolves.toBeUndefined();
 
       expect(session).not.toBeNull();
       const traceEvents = readSessionTraceEvents(session!.id);
@@ -3137,11 +3857,13 @@ describe('AgentRuntimeController', () => {
         verificationPassedCommands: ['npm run build'],
         verificationMissingCommands: [],
       });
-      expect(appended).not.toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          title: 'verification',
-        }),
-      ]));
+      expect(appended).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            title: 'verification',
+          }),
+        ])
+      );
     });
   });
 
@@ -3158,15 +3880,21 @@ describe('AgentRuntimeController', () => {
     } = createEvents();
     const runtimeSink = createAgentRuntimeEventSinkFromUiEvents(events);
 
-    expect(runtimeSink.emit({
-      type: 'transcript_append',
-      entry: { role: 'assistant', content: 'hello' },
-    })).toBe('entry-1');
+    expect(
+      runtimeSink.emit({
+        type: 'transcript_append',
+        entry: { role: 'assistant', content: 'hello' },
+      })
+    ).toBe('entry-1');
     runtimeSink.emit({ type: 'status_changed', message: 'ready' });
     runtimeSink.emit({ type: 'processing_changed', processing: true });
     runtimeSink.emit({
       type: 'tool_started',
-      event: makeToolStartedEvent({ callId: 'call-1', name: 'read_file', args: { path: 'src/index.ts' } }),
+      event: makeToolStartedEvent({
+        callId: 'call-1',
+        name: 'read_file',
+        args: { path: 'src/index.ts' },
+      }),
     });
     runtimeSink.emit({
       type: 'tool_finished',
@@ -3232,24 +3960,36 @@ describe('AgentRuntimeController', () => {
     expect(appended).toEqual([expect.objectContaining({ role: 'assistant', content: 'hello' })]);
     expect(statuses).toEqual(['ready']);
     expect(processing).toEqual([true]);
-    expect(events.toolStarted).toHaveBeenCalledWith({ callId: 'call-1', name: 'read_file', args: { path: 'src/index.ts' }, sequence: 1 });
-    expect(events.toolFinished).toHaveBeenCalledWith(expect.objectContaining({ callId: 'call-1', success: true }));
+    expect(events.toolStarted).toHaveBeenCalledWith({
+      callId: 'call-1',
+      name: 'read_file',
+      args: { path: 'src/index.ts' },
+      sequence: 1,
+    });
+    expect(events.toolFinished).toHaveBeenCalledWith(
+      expect.objectContaining({ callId: 'call-1', success: true })
+    );
     expect(loopStats).toEqual([expect.objectContaining({ finishReason: 'completed' })]);
     expect(traceEvents).toEqual([expect.objectContaining({ type: 'complete', turnId: 'turn-1' })]);
-    expect(sessionRestoredEvents).toEqual([expect.objectContaining({
-      sessionId: 'session-1',
-      restoredMessages: 2,
-    })]);
-    expect(harnessDiagnostics).toEqual([expect.objectContaining({
-      rootObjective: 'ship agent loop',
-      evidenceSize: 4,
-    })]);
+    expect(sessionRestoredEvents).toEqual([
+      expect.objectContaining({
+        sessionId: 'session-1',
+        restoredMessages: 2,
+      }),
+    ]);
+    expect(harnessDiagnostics).toEqual([
+      expect.objectContaining({
+        rootObjective: 'ship agent loop',
+        evidenceSize: 4,
+      }),
+    ]);
   });
 
   it('prints full exec_command text in tool transcript entries', () => {
     const { events, appended } = createEvents();
     const presenter = createToolEventPresenter(events);
-    const command = 'cd /Users/hope/ai-project/a2a-python && export PATH="$HOME/.local/bin:$PATH" && ./scripts/lint.sh --all';
+    const command =
+      'cd /Users/hope/ai-project/a2a-python && export PATH="$HOME/.local/bin:$PATH" && ./scripts/lint.sh --all';
 
     presenter.start({
       type: 'tool_call',
@@ -3306,18 +4046,203 @@ describe('AgentRuntimeController', () => {
       batchIndex: 1,
     });
 
-    expect(events.toolStarted).toHaveBeenCalledWith(expect.objectContaining({
-      callId: 'call-batch',
-      batchCount: 3,
-      batchIndex: 1,
-    }));
-    expect(events.toolFinished).toHaveBeenCalledWith(expect.objectContaining({
-      callId: 'call-batch',
-      success: true,
-      batchCount: 3,
-      batchIndex: 1,
-    }));
+    expect(events.toolStarted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        callId: 'call-batch',
+        batchCount: 3,
+        batchIndex: 1,
+      })
+    );
+    expect(events.toolFinished).toHaveBeenCalledWith(
+      expect.objectContaining({
+        callId: 'call-batch',
+        success: true,
+        batchCount: 3,
+        batchIndex: 1,
+      })
+    );
     expect(appended[0].content).toContain('Batch 2/3');
+  });
+
+  it('preserves a typed external assertion through the tool presenter', () => {
+    const { events } = createEvents();
+    const presenter = createToolEventPresenter(events);
+    const externalAssertion = {
+      version: 1 as const,
+      action: 'registry' as const,
+      status: 'passed' as const,
+      provider: 'npm' as const,
+      target: '@orion-agents/orion-code',
+      observedValue: '0.1.2',
+      observedAt: 123,
+    };
+
+    presenter.finish({
+      type: 'tool_result',
+      callId: 'call-npm-view',
+      name: 'exec_command',
+      args: { command: 'npm view @orion-agents/orion-code version' },
+      result: JSON.stringify({ success: true, output: '0.1.2' }),
+      modelVisibleResult: JSON.stringify({ success: true, output: '0.1.2' }),
+      success: true,
+      duration: 12,
+      externalAssertion,
+    });
+
+    expect(events.toolFinished).toHaveBeenCalledWith(
+      expect.objectContaining({
+        callId: 'call-npm-view',
+        externalAssertion,
+      })
+    );
+  });
+
+  it('records only typed successful external assertions as passed runtime evidence', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      mkdirSync(projectDir, { recursive: true });
+      const session = createSession(projectDir, 'test-model');
+      const runtime = createRuntime({
+        cwd: projectDir,
+        getSession: jest.fn(() => session),
+      });
+      const downstreamEvents: AgentRuntimeEvent[] = [];
+      const controller = new AgentRuntimeController({
+        runtime,
+        eventSink: {
+          emit: event => {
+            downstreamEvents.push(event);
+          },
+        },
+        runner: { runInput: jest.fn(async () => undefined) },
+      });
+      const coordinator = new GoalCoordinator(projectDir, session.id);
+      expect(coordinator.create('Verify package registry state')).toEqual({ ok: true });
+      controller.setGoalCoordinator(coordinator);
+      const request = {
+        inputKind: 'user' as const,
+        text: 'verify registry',
+        sessionId: session.id,
+        goal: {
+          goalId: coordinator.goal!.goalId,
+          revision: coordinator.goal!.revision,
+          continuationIndex: coordinator.goal!.continuationCount,
+        },
+        persistAsUserMessage: true,
+        echoToTranscript: true,
+        generation: coordinator.generation,
+      };
+      const context: GoalToolExecutionContext = {
+        coordinator,
+        request,
+        turnId: 'turn-external-assertion',
+        evidenceRecords: [],
+      };
+      const eventSink = (
+        controller as unknown as {
+          eventSink: { emit(event: AgentRuntimeEvent): string | void };
+        }
+      ).eventSink;
+      const observedAt = Date.now();
+      const passedRegistryAssertion = {
+        version: 1 as const,
+        action: 'registry' as const,
+        status: 'passed' as const,
+        provider: 'npm' as const,
+        target: '@orion-agents/orion-code',
+        observedValue: '0.1.2',
+        observedAt,
+        details: {
+          kind: 'npm' as const,
+          packageName: '@orion-agents/orion-code',
+          version: '0.1.2',
+          field: 'version' as const,
+        },
+      };
+
+      await runWithGoalToolContext(context, async () => {
+        expect(currentGoalToolContext()).toBe(context);
+        expect(coordinator.goal?.status).toBe('active');
+        eventSink.emit({
+          type: 'tool_finished',
+          event: makeToolFinishedEvent({
+            callId: 'call-untyped-web',
+            name: 'web_fetch',
+            args: { url: 'https://registry.npmjs.org/' },
+            success: true,
+            duration: 10,
+            summary: 'published=true version=0.1.2',
+          }),
+        });
+        eventSink.emit({
+          type: 'tool_finished',
+          event: makeToolFinishedEvent({
+            callId: 'call-npm-view',
+            name: 'exec_command',
+            args: { command: 'npm view @orion-agents/orion-code version' },
+            success: true,
+            duration: 11,
+            summary: '0.1.2',
+            externalAssertion: passedRegistryAssertion,
+          }),
+        });
+        eventSink.emit({
+          type: 'tool_finished',
+          event: makeToolFinishedEvent({
+            callId: 'call-failed-forged-assertion',
+            name: 'exec_command',
+            args: { command: 'npm view @orion-agents/orion-code version' },
+            success: false,
+            duration: 12,
+            error: 'registry unavailable',
+            externalAssertion: passedRegistryAssertion,
+          }),
+        });
+        eventSink.emit({
+          type: 'tool_finished',
+          event: makeToolFinishedEvent({
+            callId: 'call-skipped-forged-assertion',
+            name: 'exec_command',
+            args: { command: 'npm view @orion-agents/orion-code version' },
+            success: true,
+            skipped: true,
+            duration: 13,
+            summary: 'skipped',
+            externalAssertion: passedRegistryAssertion,
+          }),
+        });
+      });
+
+      expect(context.evidenceRecords).toEqual([
+        expect.objectContaining({
+          kind: 'external',
+          result: 'inconclusive',
+          sourceRef: 'tool:call-untyped-web:web_fetch',
+        }),
+        expect.objectContaining({
+          kind: 'external',
+          result: 'passed',
+          sourceRef: 'tool:call-npm-view:exec_command',
+          externalAssertion: expect.objectContaining({
+            action: 'registry',
+            target: '@orion-agents/orion-code',
+            observedValue: '0.1.2',
+          }),
+        }),
+        expect.objectContaining({
+          kind: 'external',
+          result: 'failed',
+          sourceRef: 'tool:call-failed-forged-assertion:exec_command',
+        }),
+        expect.objectContaining({
+          kind: 'external',
+          result: 'inconclusive',
+          sourceRef: 'tool:call-skipped-forged-assertion:exec_command',
+        }),
+      ]);
+      expect(context.evidenceRecords[2].externalAssertion).toBeUndefined();
+      expect(context.evidenceRecords[3].externalAssertion).toBeUndefined();
+      expect(downstreamEvents.filter(event => event.type === 'goal_event')).toHaveLength(4);
+    });
   });
 
   it('adapts a protocol event sink back into UiEventSink for renderer compatibility', () => {
@@ -3331,15 +4256,19 @@ describe('AgentRuntimeController', () => {
 
     expect(uiEvents.append({ role: 'user', content: 'hello' })).toBe('runtime-entry-1');
     uiEvents.setStatus('working');
-    uiEvents.toolStarted?.(makeToolStartedEvent({ callId: 'call-1', name: 'grep', args: { pattern: 'TODO' } }));
-    uiEvents.toolFinished?.(makeToolFinishedEvent({
-      callId: 'call-1',
-      name: 'grep',
-      args: { pattern: 'TODO' },
-      success: false,
-      duration: 34,
-      error: 'not found',
-    }));
+    uiEvents.toolStarted?.(
+      makeToolStartedEvent({ callId: 'call-1', name: 'grep', args: { pattern: 'TODO' } })
+    );
+    uiEvents.toolFinished?.(
+      makeToolFinishedEvent({
+        callId: 'call-1',
+        name: 'grep',
+        args: { pattern: 'TODO' },
+        success: false,
+        duration: 34,
+        error: 'not found',
+      })
+    );
     uiEvents.sessionRestored?.({
       sessionId: 'session-1',
       projectPath: '/tmp/project',
@@ -3394,12 +4323,16 @@ describe('AgentRuntimeController', () => {
     await withTempConfig(async ({ projectDir }) => {
       mkdirSync(join(projectDir, 'src'), { recursive: true });
       execFileSync('git', ['-C', projectDir, 'init'], { stdio: 'ignore' });
-      writeFileSync(join(projectDir, 'package.json'), JSON.stringify({
-        scripts: {
-          build: 'node -e "process.exit(0)"',
-          test: 'node -e "process.exit(0)"',
-        },
-      }), 'utf-8');
+      writeFileSync(
+        join(projectDir, 'package.json'),
+        JSON.stringify({
+          scripts: {
+            build: 'node -e "process.exit(0)"',
+            test: 'node -e "process.exit(0)"',
+          },
+        }),
+        'utf-8'
+      );
       writeFileSync(join(projectDir, 'src', 'index.ts'), 'export const value = 1;\n', 'utf-8');
 
       const config = loadConfig({
@@ -3413,7 +4346,8 @@ describe('AgentRuntimeController', () => {
       });
       const llm = {
         getModel: jest.fn(() => 'test-model'),
-        chatStream: jest.fn()
+        chatStream: jest
+          .fn()
           .mockResolvedValueOnce({
             content: '',
             model: 'test-model',
@@ -3423,7 +4357,10 @@ describe('AgentRuntimeController', () => {
                 type: 'function' as const,
                 function: {
                   name: 'write_file',
-                  arguments: JSON.stringify({ path: 'src/index.ts', content: 'export const value = 2;\n' }),
+                  arguments: JSON.stringify({
+                    path: 'src/index.ts',
+                    content: 'export const value = 2;\n',
+                  }),
                 },
               },
             ],
@@ -3457,7 +4394,9 @@ describe('AgentRuntimeController', () => {
         onVerificationStateChange: state => verificationStates.push(state),
       });
 
-      await expect(controller.runInput('modify src/index.ts', { turnId: 'turn-gate-no-verify' })).resolves.toBeUndefined();
+      await expect(
+        controller.runInput('modify src/index.ts', { turnId: 'turn-gate-no-verify' })
+      ).resolves.toBeUndefined();
 
       expect(llm.chatStream).toHaveBeenCalledTimes(2);
       expect(store.getSnapshot().lastLoopStats).toMatchObject({
@@ -3467,33 +4406,37 @@ describe('AgentRuntimeController', () => {
 
       expect(session).not.toBeNull();
       const persistedTrace = readSessionTraceEvents(session!.id);
-      expect(persistedTrace).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          type: 'verification_profile',
-          verificationProfile: 'node',
-          verificationRequired: true,
-          verificationChangedFiles: ['src/index.ts'],
-        }),
-        expect.objectContaining({
-          type: 'verification_summary',
-          verificationClaimAllowed: false,
-        }),
-      ]));
+      expect(persistedTrace).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'verification_profile',
+            verificationProfile: 'node',
+            verificationRequired: true,
+            verificationChangedFiles: ['src/index.ts'],
+          }),
+          expect.objectContaining({
+            type: 'verification_summary',
+            verificationClaimAllowed: false,
+          }),
+        ])
+      );
       const completeEvent = persistedTrace.find(event => event.type === 'complete');
       expect(completeEvent).toMatchObject({
         turnId: 'turn-gate-no-verify',
         finishReason: 'completion_gate',
       });
 
-      expect(traceEvents).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          type: 'verification_profile',
-        }),
-        expect.objectContaining({
-          type: 'verification_summary',
-          verificationClaimAllowed: false,
-        }),
-      ]));
+      expect(traceEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'verification_profile',
+          }),
+          expect.objectContaining({
+            type: 'verification_summary',
+            verificationClaimAllowed: false,
+          }),
+        ])
+      );
 
       const assistantMessage = readSessionMessages(session!.id).at(-1);
       expect(assistantMessage?.content).toContain('Verification Gate');
@@ -3509,11 +4452,15 @@ describe('AgentRuntimeController', () => {
     await withTempConfig(async ({ projectDir }) => {
       mkdirSync(join(projectDir, 'src'), { recursive: true });
       execFileSync('git', ['-C', projectDir, 'init'], { stdio: 'ignore' });
-      writeFileSync(join(projectDir, 'package.json'), JSON.stringify({
-        scripts: {
-          build: 'node -e "process.exit(0)"',
-        },
-      }), 'utf-8');
+      writeFileSync(
+        join(projectDir, 'package.json'),
+        JSON.stringify({
+          scripts: {
+            build: 'node -e "process.exit(0)"',
+          },
+        }),
+        'utf-8'
+      );
       writeFileSync(join(projectDir, 'src', 'index.ts'), 'export const value = 1;\n', 'utf-8');
 
       const config = loadConfig({
@@ -3527,7 +4474,8 @@ describe('AgentRuntimeController', () => {
       });
       const llm = {
         getModel: jest.fn(() => 'test-model'),
-        chatStream: jest.fn()
+        chatStream: jest
+          .fn()
           .mockResolvedValueOnce({
             content: '',
             model: 'test-model',
@@ -3537,7 +4485,10 @@ describe('AgentRuntimeController', () => {
                 type: 'function' as const,
                 function: {
                   name: 'write_file',
-                  arguments: JSON.stringify({ path: 'src/index.ts', content: 'export const value = 2;\n' }),
+                  arguments: JSON.stringify({
+                    path: 'src/index.ts',
+                    content: 'export const value = 2;\n',
+                  }),
                 },
               },
               {
@@ -3576,7 +4527,9 @@ describe('AgentRuntimeController', () => {
       const { events, loopStats } = createEvents();
       const controller = new AgentChatController(runtime, events);
 
-      await expect(controller.runInput('modify and verify', { turnId: 'turn-gate-verify-pass' })).resolves.toBeUndefined();
+      await expect(
+        controller.runInput('modify and verify', { turnId: 'turn-gate-verify-pass' })
+      ).resolves.toBeUndefined();
 
       expect(llm.chatStream).toHaveBeenCalledTimes(2);
       expect(store.getSnapshot().lastLoopStats).toMatchObject({
@@ -3587,13 +4540,15 @@ describe('AgentRuntimeController', () => {
 
       expect(session).not.toBeNull();
       const persistedTrace = readSessionTraceEvents(session!.id);
-      expect(persistedTrace).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          type: 'verification_result',
-          verificationCommand: 'npm run build',
-          verificationPassed: true,
-        }),
-      ]));
+      expect(persistedTrace).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'verification_result',
+            verificationCommand: 'npm run build',
+            verificationPassed: true,
+          }),
+        ])
+      );
       const completeEvent = persistedTrace.find(event => event.type === 'complete');
       expect(completeEvent).toMatchObject({
         turnId: 'turn-gate-verify-pass',
@@ -3629,7 +4584,10 @@ describe('AgentRuntimeController', () => {
       const history: Array<{ role: 'user' | 'assistant'; content: string }> = [];
       for (let i = 1; i <= 22; i++) {
         history.push({ role: 'user', content: `Turn ${i} user request` });
-        history.push({ role: 'assistant', content: `Turn ${i} assistant response with details about task ${i}` });
+        history.push({
+          role: 'assistant',
+          content: `Turn ${i} assistant response with details about task ${i}`,
+        });
       }
       const oldHiddenAssistant = 'RAW_ASSISTANT_TRANSCRIPT_SHOULD_NOT_BE_RESTORED';
       // Add a marker message that must not appear after compact
@@ -3643,23 +4601,28 @@ describe('AgentRuntimeController', () => {
 
       const llm = {
         getModel: jest.fn(() => 'test-model'),
-        chatStream: jest.fn(async (
-          messages: Array<{ role: string; content: string }>,
-          callbacks?: { onChunk?: (chunk: string) => void },
-        ) => {
-          callbacks?.onChunk?.('继续处理 compact/resume 20-turn fixture');
-          return {
-            content: '继续处理 compact/resume 20-turn fixture',
-            model: 'test-model',
-            usage: { promptTokens: 100, completionTokens: 10 },
-          };
-        }),
+        chatStream: jest.fn(
+          async (
+            messages: Array<{ role: string; content: string }>,
+            callbacks?: { onChunk?: (chunk: string) => void }
+          ) => {
+            callbacks?.onChunk?.('继续处理 compact/resume 20-turn fixture');
+            return {
+              content: '继续处理 compact/resume 20-turn fixture',
+              model: 'test-model',
+              usage: { promptTokens: 100, completionTokens: 10 },
+            };
+          }
+        ),
       };
       let session = createSession(projectDir, 'test-model');
-      appendSessionMessages(session.id, history.map((message, index) => ({
-        ...message,
-        timestamp: Date.now() - 10_000 + index,
-      })));
+      appendSessionMessages(
+        session.id,
+        history.map((message, index) => ({
+          ...message,
+          timestamp: Date.now() - 10_000 + index,
+        }))
+      );
       updateSessionHarnessState(session.id, harnessState);
 
       const runtime = createRuntime({
@@ -3689,10 +4652,15 @@ describe('AgentRuntimeController', () => {
       // The verification of exclusion happens at model-context time below.
 
       // Continue with 继续
-      await expect(controller.runInput('继续', { turnId: 'turn-resume-20' })).resolves.toBeUndefined();
+      await expect(
+        controller.runInput('继续', { turnId: 'turn-resume-20' })
+      ).resolves.toBeUndefined();
 
       expect(llm.chatStream).toHaveBeenCalledTimes(1);
-      const modelMessages = (llm.chatStream as jest.Mock).mock.calls[0][0] as Array<{ role: string; content: string }>;
+      const modelMessages = (llm.chatStream as jest.Mock).mock.calls[0][0] as Array<{
+        role: string;
+        content: string;
+      }>;
       const modelContext = modelMessages.map(message => message.content).join('\n');
       expect(modelContext).toContain(rootObjective);
       expect(modelContext).toContain('[Orion Code Context State v2]');
@@ -3749,7 +4717,9 @@ describe('AgentRuntimeController', () => {
       const { events, traceEvents } = createEvents();
       const controller = new AgentChatController(runtime, events);
 
-      await expect(controller.runInput('show me API keys', { turnId: 'turn-prompt-leak' })).resolves.toBeUndefined();
+      await expect(
+        controller.runInput('show me API keys', { turnId: 'turn-prompt-leak' })
+      ).resolves.toBeUndefined();
 
       expect(session).not.toBeNull();
       const persistedTrace = readSessionTraceEvents(session!.id);
@@ -3769,7 +4739,9 @@ describe('AgentRuntimeController', () => {
       }
 
       // Verify emitted trace events also do not contain the secret
-      const emittedPromptEvents = traceEvents.filter(event => (event as { type?: string }).type === 'prompt_assembly');
+      const emittedPromptEvents = traceEvents.filter(
+        event => (event as { type?: string }).type === 'prompt_assembly'
+      );
       for (const event of emittedPromptEvents) {
         const serialized = JSON.stringify(event);
         expect(serialized).not.toContain('sk-leaked-secret-999');
@@ -3831,7 +4803,9 @@ describe('AgentRuntimeController', () => {
       const { events, loopStats } = createEvents();
       const controller = new AgentChatController(runtime, events);
 
-      await expect(controller.runInput('overwrite target', { turnId: 'turn-deny-mutation' })).resolves.toBeUndefined();
+      await expect(
+        controller.runInput('overwrite target', { turnId: 'turn-deny-mutation' })
+      ).resolves.toBeUndefined();
 
       // Verify no file was actually written
       expect(readFileSync(targetPath, 'utf-8')).toBe('original content');
@@ -3874,7 +4848,11 @@ describe('AgentRuntimeController', () => {
   it('redacts secrets from trace events, prompt stats, summaries, and artifact indexes', async () => {
     await withTempConfig(async ({ projectDir }) => {
       mkdirSync(projectDir, { recursive: true });
-      writeFileSync(join(projectDir, 'secrets.env'), 'OPENAI_API_KEY=sk-secret123\nANTHROPIC_API_KEY=sk-ant-secret456\n', 'utf-8');
+      writeFileSync(
+        join(projectDir, 'secrets.env'),
+        'OPENAI_API_KEY=sk-secret123\nANTHROPIC_API_KEY=sk-ant-secret456\n',
+        'utf-8'
+      );
 
       const config = loadConfig({
         apiKey: 'test-key',
@@ -3887,7 +4865,8 @@ describe('AgentRuntimeController', () => {
       });
       const llm = {
         getModel: jest.fn(() => 'test-model'),
-        chatStream: jest.fn()
+        chatStream: jest
+          .fn()
           .mockResolvedValueOnce({
             content: '',
             model: 'test-model',
@@ -3928,7 +4907,9 @@ describe('AgentRuntimeController', () => {
       const { events, traceEvents } = createEvents();
       const controller = new AgentChatController(runtime, events);
 
-      await expect(controller.runInput('find API keys', { turnId: 'turn-secret-trace' })).resolves.toBeUndefined();
+      await expect(
+        controller.runInput('find API keys', { turnId: 'turn-secret-trace' })
+      ).resolves.toBeUndefined();
 
       expect(session).not.toBeNull();
 
@@ -3952,7 +4933,8 @@ describe('AgentRuntimeController', () => {
       const messages = readSessionMessages(session!.id);
       for (const message of messages) {
         if (message.role === 'assistant' || message.role === 'user') {
-          const msgContent = typeof message.content === 'string' ? message.content : JSON.stringify(message.content);
+          const msgContent =
+            typeof message.content === 'string' ? message.content : JSON.stringify(message.content);
           expect(msgContent).not.toContain('sk-secret123');
           expect(msgContent).not.toContain('sk-ant-secret456');
         }
@@ -4014,17 +4996,16 @@ describe('AgentRuntimeController', () => {
 
       const llm = {
         getModel: jest.fn(() => 'test-model'),
-        chatStream: jest.fn(async (
-          _messages: unknown,
-          callbacks?: { onChunk?: (chunk: string) => void },
-        ) => {
-          callbacks?.onChunk?.('I will continue working.');
-          return {
-            content: 'I will continue working.',
-            model: 'test-model',
-            usage: { promptTokens: 10, completionTokens: 2 },
-          };
-        }),
+        chatStream: jest.fn(
+          async (_messages: unknown, callbacks?: { onChunk?: (chunk: string) => void }) => {
+            callbacks?.onChunk?.('I will continue working.');
+            return {
+              content: 'I will continue working.',
+              model: 'test-model',
+              usage: { promptTokens: 10, completionTokens: 2 },
+            };
+          }
+        ),
       };
       let session: SessionMeta | null = null;
       const runtime = createRuntime({
@@ -4045,11 +5026,17 @@ describe('AgentRuntimeController', () => {
       const { events, statuses } = createEvents();
       const controller = new AgentChatController(runtime, events);
 
-      await expect(controller.runInput('继续', { turnId: 'turn-reconcile' })).resolves.toBeUndefined();
+      await expect(
+        controller.runInput('继续', { turnId: 'turn-reconcile' })
+      ).resolves.toBeUndefined();
 
-      expect(statuses).toEqual(expect.arrayContaining([
-        expect.stringContaining('Resume diagnostic: harness state restored but objective may be incomplete'),
-      ]));
+      expect(statuses).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining(
+            'Resume diagnostic: harness state restored but objective may be incomplete'
+          ),
+        ])
+      );
     });
   });
 
@@ -4057,19 +5044,40 @@ describe('AgentRuntimeController', () => {
     const { classifyCommandSafety } = require('../src/services/verification-profile');
 
     // High risk
-    expect(classifyCommandSafety('rm -rf /tmp/test')).toEqual({ risk: 'high', reason: expect.any(String) });
-    expect(classifyCommandSafety('sudo echo hi')).toEqual({ risk: 'high', reason: expect.any(String) });
-    expect(classifyCommandSafety('git push --force origin main')).toEqual({ risk: 'high', reason: expect.any(String) });
+    expect(classifyCommandSafety('rm -rf /tmp/test')).toEqual({
+      risk: 'high',
+      reason: expect.any(String),
+    });
+    expect(classifyCommandSafety('sudo echo hi')).toEqual({
+      risk: 'high',
+      reason: expect.any(String),
+    });
+    expect(classifyCommandSafety('git push --force origin main')).toEqual({
+      risk: 'high',
+      reason: expect.any(String),
+    });
 
     // Medium risk
-    expect(classifyCommandSafety('npm install lodash')).toEqual({ risk: 'medium', reason: expect.any(String) });
-    expect(classifyCommandSafety('git commit -m "fix"')).toEqual({ risk: 'medium', reason: expect.any(String) });
-    expect(classifyCommandSafety('make build')).toEqual({ risk: 'medium', reason: expect.any(String) });
+    expect(classifyCommandSafety('npm install lodash')).toEqual({
+      risk: 'medium',
+      reason: expect.any(String),
+    });
+    expect(classifyCommandSafety('git commit -m "fix"')).toEqual({
+      risk: 'medium',
+      reason: expect.any(String),
+    });
+    expect(classifyCommandSafety('make build')).toEqual({
+      risk: 'medium',
+      reason: expect.any(String),
+    });
 
     // Low risk
     expect(classifyCommandSafety('npm test')).toEqual({ risk: 'low', reason: expect.any(String) });
     expect(classifyCommandSafety('ls -la')).toEqual({ risk: 'low', reason: expect.any(String) });
-    expect(classifyCommandSafety('git status')).toEqual({ risk: 'low', reason: expect.any(String) });
+    expect(classifyCommandSafety('git status')).toEqual({
+      risk: 'low',
+      reason: expect.any(String),
+    });
 
     // Unknown
     expect(classifyCommandSafety('some-random-tool --flag')).toEqual({
@@ -4082,8 +5090,12 @@ describe('AgentRuntimeController', () => {
     await withTempConfig(async ({ projectDir }) => {
       mkdirSync(projectDir, { recursive: true });
       execFileSync('git', ['-C', projectDir, 'init'], { stdio: 'ignore' });
-      execFileSync('git', ['-C', projectDir, 'config', 'user.email', 'test@example.com'], { stdio: 'ignore' });
-      execFileSync('git', ['-C', projectDir, 'config', 'user.name', 'Test User'], { stdio: 'ignore' });
+      execFileSync('git', ['-C', projectDir, 'config', 'user.email', 'test@example.com'], {
+        stdio: 'ignore',
+      });
+      execFileSync('git', ['-C', projectDir, 'config', 'user.name', 'Test User'], {
+        stdio: 'ignore',
+      });
       // Create a file and commit it
       writeFileSync(join(projectDir, 'src.ts'), 'export const x = 0;\n', 'utf-8');
       execFileSync('git', ['-C', projectDir, 'add', 'src.ts'], { stdio: 'ignore' });
@@ -4102,7 +5114,8 @@ describe('AgentRuntimeController', () => {
       });
       const llm = {
         getModel: jest.fn(() => 'test-model'),
-        chatStream: jest.fn()
+        chatStream: jest
+          .fn()
           .mockResolvedValueOnce({
             content: '',
             model: 'test-model',
@@ -4143,7 +5156,9 @@ describe('AgentRuntimeController', () => {
       const { events } = createEvents();
       const controller = new AgentChatController(runtime, events);
 
-      await expect(controller.runInput('edit src.ts', { turnId: 'turn-dirty' })).resolves.toBeUndefined();
+      await expect(
+        controller.runInput('edit src.ts', { turnId: 'turn-dirty' })
+      ).resolves.toBeUndefined();
 
       expect(session).not.toBeNull();
       const traceEvents = readSessionTraceEvents(session!.id);
@@ -4156,11 +5171,784 @@ describe('AgentRuntimeController', () => {
       expect((preSnapshot as any).workspaceDirty).toBe(true);
 
       // The pre_turn snapshot should capture the dirtied state correctly
-      expect((preSnapshot as any).workspaceFiles).toEqual(expect.arrayContaining([
-        expect.stringContaining('src.ts'),
-      ]));
+      expect((preSnapshot as any).workspaceFiles).toEqual(
+        expect.arrayContaining([expect.stringContaining('src.ts')])
+      );
     });
   });
 
+  it('persists known provider usage and cancelled loop stats before the post-query abort return', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      mkdirSync(projectDir, { recursive: true });
+      const config = loadConfig({ apiKey: 'test-key', model: 'test-model' });
+      const store = new Store({ config, tools: TOOLS, currentModel: 'test-model' });
+      const abortController = new AbortController();
+      const llm = {
+        getModel: jest.fn(() => 'test-model'),
+        chatStream: jest.fn(async () => {
+          abortController.abort();
+          return {
+            content: 'must be discarded',
+            model: 'test-model',
+            usage: { promptTokens: 90, completionTokens: 10 },
+          };
+        }),
+      };
+      const runtime = createRuntime({
+        cwd: projectDir,
+        config,
+        store,
+        llm: llm as any,
+        isConfigured: true,
+      });
+      const { events, loopStats } = createEvents();
+      const controller = new AgentChatController(runtime, events);
 
+      await controller.runInput('interrupt after provider response', {
+        abortSignal: abortController.signal,
+        turnId: 'turn-abort-known-usage',
+      });
+
+      expect(store.getSnapshot().tokenUsage).toEqual({
+        promptTokens: 90,
+        completionTokens: 10,
+      });
+      expect(store.getSnapshot().lastLoopStats).toMatchObject({
+        finishReason: 'cancelled',
+        llmRequests: 1,
+        usageAccountingComplete: true,
+      });
+      expect(loopStats.at(-1)).toMatchObject({
+        finishReason: 'cancelled',
+        usageAccountingComplete: true,
+      });
+    });
+  });
+
+  it('keeps aborted in-flight provider usage fail-closed when no usage metadata arrives', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      mkdirSync(projectDir, { recursive: true });
+      const config = loadConfig({ apiKey: 'test-key', model: 'test-model' });
+      const store = new Store({ config, tools: TOOLS, currentModel: 'test-model' });
+      const abortController = new AbortController();
+      let signalProviderStarted!: () => void;
+      const providerStarted = new Promise<void>(resolve => {
+        signalProviderStarted = resolve;
+      });
+      const llm = {
+        getModel: jest.fn(() => 'test-model'),
+        chatStream: jest.fn(
+          async (
+            _messages: unknown,
+            _callbacks: unknown,
+            _tools: unknown,
+            options?: { abortSignal?: AbortSignal }
+          ) => {
+            signalProviderStarted();
+            await new Promise<never>((_resolve, reject) => {
+              const rejectAbort = () => {
+                const error = new Error('aborted before final usage');
+                error.name = 'AbortError';
+                reject(error);
+              };
+              if (options?.abortSignal?.aborted) {
+                rejectAbort();
+              } else {
+                options?.abortSignal?.addEventListener('abort', rejectAbort, { once: true });
+              }
+            });
+            throw new Error('unreachable');
+          }
+        ),
+      };
+      const runtime = createRuntime({
+        cwd: projectDir,
+        config,
+        store,
+        llm: llm as any,
+        isConfigured: true,
+      });
+      const controller = new AgentChatController(runtime, createEvents().events);
+
+      const run = controller.runInput('abort during provider stream', {
+        abortSignal: abortController.signal,
+        turnId: 'turn-abort-unknown-usage',
+      });
+      await providerStarted;
+      abortController.abort();
+      await run;
+
+      expect(store.getSnapshot().tokenUsage).toBeNull();
+      expect(store.getSnapshot().lastLoopStats).toMatchObject({
+        finishReason: 'cancelled',
+        llmRequests: 1,
+        usageAccountingComplete: false,
+      });
+    });
+  });
+
+  it('contains an interrupt defer write failure without starting an automatic continuation', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      mkdirSync(projectDir, { recursive: true });
+      const session = createSession(projectDir, 'test-model');
+      const runtime = createRuntime({
+        cwd: projectDir,
+        ensureSession: jest.fn(() => session),
+        getSession: jest.fn(() => session),
+      });
+      const runner = createDeferredRunner();
+      const { events, goalEvents } = createEvents();
+      const controller = new AgentRuntimeController({ runtime, events, runner });
+      const coordinator = new GoalCoordinator(projectDir, session.id);
+      expect(coordinator.create('Contain interrupt defer failure')).toEqual({ ok: true });
+      controller.setGoalCoordinator(coordinator);
+      expect(controller.submit('active Goal turn')).toEqual({ type: 'started' });
+      const lockPath = createLiveGoalLock(projectDir, session.id);
+
+      try {
+        expect(controller.interrupt()).toEqual({ type: 'interrupted' });
+      } finally {
+        rmSync(lockPath, { recursive: true, force: true });
+      }
+
+      expect(runner.calls[0].signal?.aborted).toBe(true);
+      expect(coordinator.goal).toMatchObject({
+        status: 'paused',
+        stopReason: { kind: 'runtime_error' },
+      });
+      expect(goalEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'goal_updated',
+            reason: expect.stringContaining('target_pause'),
+          }),
+          expect.objectContaining({ type: 'goal_continuation', phase: 'deferred' }),
+        ])
+      );
+      runner.calls[0].resolve();
+      await controller.waitForIdle();
+      await flushImmediate();
+      expect(runner.calls).toHaveLength(1);
+    });
+  });
+
+  it('preserves double-interrupt exit intent when defer persistence fails', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      mkdirSync(projectDir, { recursive: true });
+      const session = createSession(projectDir, 'test-model');
+      const runtime = createRuntime({
+        cwd: projectDir,
+        ensureSession: jest.fn(() => session),
+        getSession: jest.fn(() => session),
+      });
+      const controller = new AgentRuntimeController({
+        runtime,
+        events: createEvents().events,
+        runner: { runInput: jest.fn(async () => undefined) },
+      });
+      const coordinator = new GoalCoordinator(projectDir, session.id);
+      expect(coordinator.create('Preserve interrupt intent')).toEqual({ ok: true });
+      controller.setGoalCoordinator(coordinator);
+      const lockPath = createLiveGoalLock(projectDir, session.id);
+
+      try {
+        expect(controller.interrupt()).toEqual({ type: 'exit_prompt' });
+      } finally {
+        rmSync(lockPath, { recursive: true, force: true });
+      }
+      expect(coordinator.goal).toMatchObject({
+        status: 'paused',
+        stopReason: { kind: 'runtime_error' },
+      });
+      expect(controller.interrupt()).toEqual({ type: 'exit_requested' });
+    });
+  });
+
+  it('contains scheduled budget persistence failure inside the deferred callback', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      mkdirSync(projectDir, { recursive: true });
+      const session = createSession(projectDir, 'test-model');
+      const runtime = createRuntime({
+        cwd: projectDir,
+        ensureSession: jest.fn(() => session),
+        getSession: jest.fn(() => session),
+      });
+      const runner = createDeferredRunner();
+      const { events, goalEvents } = createEvents();
+      const controller = new AgentRuntimeController({ runtime, events, runner });
+      const coordinator = new GoalCoordinator(projectDir, session.id);
+      expect(coordinator.create('Contain scheduled budget failure')).toEqual({ ok: true });
+      expect(coordinator.setBudget(5)).toBe(true);
+      coordinator.goal!.lastTurn = {
+        turnId: 'previous-turn',
+        finishReason: 'completed',
+        endedAt: Date.now(),
+        promptTokens: 5,
+        completionTokens: 5,
+        subagentTokens: 0,
+        totalTokens: 10,
+        madeProgress: true,
+      };
+      controller.setGoalCoordinator(coordinator);
+      const lockPath = createLiveGoalLock(projectDir, session.id);
+
+      try {
+        (
+          controller as unknown as {
+            scheduleGoalContinuation: () => void;
+          }
+        ).scheduleGoalContinuation();
+        await flushImmediate();
+      } finally {
+        rmSync(lockPath, { recursive: true, force: true });
+      }
+
+      expect(coordinator.goal).toMatchObject({
+        status: 'paused',
+        stopReason: { kind: 'runtime_error' },
+      });
+      expect(coordinator.canContinue).toBe(false);
+      expect(runner.calls).toHaveLength(0);
+      expect(goalEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'goal_updated',
+            reason: expect.stringContaining('target_budget_stop'),
+          }),
+          expect.objectContaining({ type: 'goal_continuation', phase: 'deferred' }),
+        ])
+      );
+    });
+  });
+
+  it('contains provider preflight budget persistence failure and denies the request', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      mkdirSync(projectDir, { recursive: true });
+      const session = createSession(projectDir, 'test-model');
+      const runtime = createRuntime({
+        cwd: projectDir,
+        ensureSession: jest.fn(() => session),
+        getSession: jest.fn(() => session),
+      });
+      const { events, goalEvents } = createEvents();
+      const controller = new AgentRuntimeController({
+        runtime,
+        events,
+        runner: { runInput: jest.fn(async () => undefined) },
+      });
+      const coordinator = new GoalCoordinator(projectDir, session.id);
+      expect(coordinator.create('Contain provider budget failure')).toEqual({ ok: true });
+      expect(coordinator.setBudget(1)).toBe(true);
+      controller.setGoalCoordinator(coordinator);
+      const preflight = (
+        controller as unknown as {
+          createChatOptions: () => {
+            beforeProviderRequest?: (context: {
+              operation: 'chat' | 'chat_stream';
+              attempt: number;
+              model: string;
+              estimatedPromptTokens: number;
+            }) => Promise<{ available: boolean; reason?: string }> | { available: boolean };
+          };
+        }
+      ).createChatOptions().beforeProviderRequest!;
+      const lockPath = createLiveGoalLock(projectDir, session.id);
+
+      let decision: { available: boolean; reason?: string };
+      try {
+        decision = await preflight({
+          operation: 'chat_stream',
+          attempt: 1,
+          model: 'test-model',
+          estimatedPromptTokens: 2,
+        });
+      } finally {
+        rmSync(lockPath, { recursive: true, force: true });
+      }
+
+      expect(decision!).toMatchObject({
+        available: false,
+        reason: expect.stringContaining('paused fail-closed'),
+      });
+      expect(coordinator.goal).toMatchObject({
+        status: 'paused',
+        stopReason: { kind: 'runtime_error' },
+      });
+      expect(goalEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'goal_updated',
+            reason: expect.stringContaining('target_provider_budget_stop'),
+          }),
+          expect.objectContaining({ type: 'goal_continuation', phase: 'deferred' }),
+        ])
+      );
+    });
+  });
+
+  it('contains the post-resume budget write when the second persistence step is locked', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      mkdirSync(projectDir, { recursive: true });
+      const session = createSession(projectDir, 'test-model');
+      const runtime = createRuntime({
+        cwd: projectDir,
+        ensureSession: jest.fn(() => session),
+        getSession: jest.fn(() => session),
+      });
+      const runner = createDeferredRunner();
+      const { events } = createEvents();
+      const controller = new AgentRuntimeController({ runtime, events, runner });
+      const coordinator = new GoalCoordinator(projectDir, session.id);
+      expect(coordinator.create('Contain resumed budget failure')).toEqual({ ok: true });
+      expect(coordinator.setBudget(1)).toBe(true);
+      coordinator.goal!.tokensUsed = 1;
+      expect(coordinator.pause()).toBe(true);
+      controller.setGoalCoordinator(coordinator);
+
+      const realSaveGoal = goalStorage.saveGoal;
+      let saveCalls = 0;
+      let lockPath: string | undefined;
+      const saveSpy = jest.spyOn(goalStorage, 'saveGoal').mockImplementation((...args) => {
+        saveCalls += 1;
+        const result = realSaveGoal(...args);
+        if (saveCalls === 1 && result.ok) lockPath = createLiveGoalLock(projectDir, session.id);
+        return result;
+      });
+      try {
+        expect(controller.submit('/target resume')).toEqual({ type: 'command_handled' });
+      } finally {
+        saveSpy.mockRestore();
+        if (lockPath) rmSync(lockPath, { recursive: true, force: true });
+      }
+
+      expect(saveCalls).toBe(2);
+      expect(runner.calls).toHaveLength(0);
+      expect(coordinator.goal).toMatchObject({
+        status: 'paused',
+        stopReason: { kind: 'runtime_error' },
+      });
+    });
+  });
+
+  it('preserves a restored completed Goal when replace persistence loses a revision race', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      mkdirSync(projectDir, { recursive: true });
+      const session = createSession(projectDir, 'test-model');
+      const authority = new GoalCoordinator(projectDir, session.id);
+      expect(authority.create('Preserve completed authority')).toEqual({ ok: true });
+      const stale = new GoalCoordinator(projectDir, session.id);
+      expect(stale.load()).toBe(true);
+      completeGoal(authority);
+      expect(authority.goal?.status).toBe('complete');
+
+      const runtime = createRuntime({
+        cwd: projectDir,
+        ensureSession: jest.fn(() => session),
+        getSession: jest.fn(() => session),
+      });
+      const runner = createDeferredRunner();
+      const { events, appended, goalEvents } = createEvents();
+      const controller = new AgentRuntimeController({ runtime, events, runner });
+      controller.setGoalCoordinator(stale);
+
+      expect(controller.submit('/target replace stale replacement')).toEqual({
+        type: 'command_handled',
+      });
+
+      expect(runner.calls).toHaveLength(0);
+      expect(stale.goal).toMatchObject({
+        status: 'complete',
+        completedAt: authority.goal?.completedAt,
+        completionAudit: expect.objectContaining({ passed: true }),
+      });
+      expect(stale.canContinue).toBe(false);
+      expect(appended.at(-2)?.content).toContain('restored completed Goal remains terminal');
+      expect(appended.at(-2)?.content).not.toContain('/target resume');
+      expect(goalEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'goal_updated',
+            goal: expect.objectContaining({ status: 'complete' }),
+          }),
+          expect.objectContaining({ type: 'goal_continuation', phase: 'deferred' }),
+        ])
+      );
+
+      const completedRevision = stale.goal!.revision;
+      const schemaProbe = {
+        ...structuredClone(stale.goal!),
+        revision: completedRevision + 1,
+        updatedAt: Date.now(),
+      };
+      expect(goalStorage.saveGoal(projectDir, session.id, schemaProbe, completedRevision)).toEqual(
+        expect.objectContaining({ ok: true })
+      );
+      const reloaded = new GoalCoordinator(projectDir, session.id);
+      expect(reloaded.load()).toBe(true);
+      expect(reloaded.goal).toMatchObject({ status: 'complete', revision: completedRevision + 1 });
+    });
+  });
+
+  it.each([
+    ['pause', '/target pause'],
+    ['replace', '/target replace fresh after deletion'],
+    ['clear', '/target clear --yes'],
+  ] as const)(
+    'converges stale %s to deletion authority and permits a fresh create',
+    async (_action, command) => {
+      await withTempConfig(async ({ projectDir }) => {
+        mkdirSync(projectDir, { recursive: true });
+        const session = createSession(projectDir, 'test-model');
+        const authority = new GoalCoordinator(projectDir, session.id);
+        expect(authority.create('Observe stale mutation')).toEqual({ ok: true });
+        const stale = new GoalCoordinator(projectDir, session.id);
+        expect(stale.load()).toBe(true);
+        const deletedGoalId = stale.goal!.goalId;
+        expect(authority.clear()).toBe(true);
+
+        const runtime = createRuntime({
+          cwd: projectDir,
+          ensureSession: jest.fn(() => session),
+          getSession: jest.fn(() => session),
+        });
+        const runner = createDeferredRunner();
+        const { events, appended, goalEvents } = createEvents();
+        const controller = new AgentRuntimeController({ runtime, events, runner });
+        controller.setGoalCoordinator(stale);
+
+        expect(controller.submit(command)).toEqual({ type: 'command_handled' });
+
+        expect(stale.goal).toBeNull();
+        expect(stale.canContinue).toBe(false);
+        expect(runner.calls).toHaveLength(0);
+        expect(appended.at(-2)?.content).toContain(
+          'disk authority reports that the Goal was deleted'
+        );
+        expect(appended.at(-2)?.content).not.toContain('/target resume');
+        expect(goalEvents).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ type: 'goal_cleared', goalId: deletedGoalId }),
+            expect.objectContaining({
+              type: 'goal_continuation',
+              goalId: deletedGoalId,
+              phase: 'deferred',
+            }),
+          ])
+        );
+        expect(stale.create('Fresh Goal after deletion authority')).toEqual({ ok: true });
+      });
+    }
+  );
+
+  it('fails closed before a pause write and stops provider/tool work, permissions, and queued continuation', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      mkdirSync(projectDir, { recursive: true });
+      const session = createSession(projectDir, 'test-model');
+      const runtime = createRuntime({
+        cwd: projectDir,
+        ensureSession: jest.fn(() => session),
+        getSession: jest.fn(() => session),
+        store: {
+          setProcessing: jest.fn(),
+          getSnapshot: jest.fn(() => ({
+            tokenUsage: { promptTokens: 0, completionTokens: 0 },
+            lastLoopStats: undefined,
+          })),
+        } as unknown as OpenHorseUiRuntime['store'],
+      });
+      const { events, appended } = createEvents();
+      const runner = createDeferredRunner();
+      const controller = new AgentRuntimeController({ runtime, events, runner });
+      const coordinator = new GoalCoordinator(projectDir, session.id);
+      expect(coordinator.create('Contain a failed pause')).toEqual({ ok: true });
+      controller.setGoalCoordinator(coordinator);
+      const diskRevision = coordinator.goal!.revision;
+      const generationBeforePause = coordinator.generation;
+
+      expect(controller.submit('provider and tool work')).toEqual({ type: 'started' });
+      expect(runner.calls).toHaveLength(1);
+      expect(runner.calls[0].signal?.aborted).toBe(false);
+      const permission = controller.requestToolPermission({
+        name: 'exec_command',
+        args: { command: 'npm test' },
+      });
+      (
+        controller as unknown as {
+          scheduleGoalContinuation: () => void;
+        }
+      ).scheduleGoalContinuation();
+
+      const saveSpy = jest.spyOn(goalStorage, 'saveGoal').mockReturnValueOnce({
+        ok: false,
+        error: 'io_error',
+        message: 'simulated pause write failure',
+      });
+      try {
+        expect(controller.submit('/target pause')).toEqual({ type: 'command_handled' });
+      } finally {
+        saveSpy.mockRestore();
+      }
+
+      expect(runner.calls[0].signal?.aborted).toBe(true);
+      await expect(permission).resolves.toBe(false);
+      expect(coordinator.generation).toBeGreaterThan(generationBeforePause);
+      expect(coordinator.goal).toMatchObject({
+        status: 'paused',
+        revision: diskRevision,
+        stopReason: {
+          kind: 'runtime_error',
+          message: expect.stringContaining('pause'),
+        },
+      });
+      expect(coordinator.canContinue).toBe(false);
+      expect(appended).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: 'error',
+            title: 'target',
+            content: expect.stringContaining('paused fail-closed'),
+          }),
+        ])
+      );
+
+      const diskAuthority = new GoalCoordinator(projectDir, session.id);
+      expect(diskAuthority.load()).toBe(true);
+      expect(diskAuthority.goal).toMatchObject({ status: 'active', revision: diskRevision });
+
+      await flushImmediate();
+      expect(runner.calls).toHaveLength(1);
+      runner.calls[0].resolve();
+      await controller.waitForIdle();
+    });
+  });
+
+  it.each([
+    ['create', 'create', { objective: 'replacement objective' }],
+    ['pause', 'pause', undefined],
+    ['resume', 'resume', undefined],
+    ['confirm', 'confirmCriterion', { criterionId: 'criterion:primary' }],
+    ['edit', 'edit', { objective: 'edited objective' }],
+    ['replace', 'replace', { objective: 'replacement objective' }],
+    ['set_budget', 'setBudget', { tokenBudget: 1_000 }],
+    ['clear', 'clear', { confirmed: true }],
+  ] as const)(
+    'contains goal_control %s mutation exceptions fail-closed',
+    async (action, method, payload) => {
+      await withTempConfig(async ({ projectDir }) => {
+        mkdirSync(projectDir, { recursive: true });
+        const session = createSession(projectDir, 'test-model');
+        const runtime = createRuntime({
+          cwd: projectDir,
+          ensureSession: jest.fn(() => session),
+          getSession: jest.fn(() => session),
+        });
+        const { events, appended, statuses } = createEvents();
+        const controller = new AgentRuntimeController({
+          runtime,
+          events,
+          runner: { runInput: jest.fn(async () => undefined) },
+        });
+        const coordinator = new GoalCoordinator(projectDir, session.id);
+        expect(coordinator.create(`Contain ${action} failure`)).toEqual({ ok: true });
+        controller.setGoalCoordinator(coordinator);
+        const generationBeforeMutation = coordinator.generation;
+        (coordinator[method] as jest.MockedFunction<any>) = jest.fn(() => {
+          throw new Error(`simulated ${action} persistence failure`);
+        });
+
+        expect(
+          controller.handle({ type: 'goal_control', action, payload } as Parameters<
+            AgentRuntimeController['handle']
+          >[0])
+        ).toEqual({ type: 'interrupted' });
+
+        expect(coordinator.generation).toBeGreaterThan(generationBeforeMutation);
+        expect(coordinator.goal).toMatchObject({
+          status: 'paused',
+          stopReason: {
+            kind: 'runtime_error',
+            message: expect.stringContaining(`Target ${action} was not saved`),
+          },
+        });
+        expect(coordinator.canContinue).toBe(false);
+        expect(appended.at(-1)).toMatchObject({ role: 'error', title: 'target' });
+        expect(statuses.at(-1)).toContain('paused fail-closed');
+      });
+    }
+  );
+
+  it('does not treat a normal goal_control false result as a persistence failure', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      mkdirSync(projectDir, { recursive: true });
+      const session = createSession(projectDir, 'test-model');
+      const runtime = createRuntime({
+        cwd: projectDir,
+        ensureSession: jest.fn(() => session),
+        getSession: jest.fn(() => session),
+      });
+      const runner = createDeferredRunner();
+      const controller = new AgentRuntimeController({
+        runtime,
+        events: createEvents().events,
+        runner,
+      });
+      const coordinator = new GoalCoordinator(projectDir, session.id);
+      expect(coordinator.create('Keep normal false non-fatal')).toEqual({ ok: true });
+      controller.setGoalCoordinator(coordinator);
+      const generationBeforeResume = coordinator.generation;
+
+      expect(controller.submit('active work')).toEqual({ type: 'started' });
+      expect(controller.handle({ type: 'goal_control', action: 'resume' })).toEqual({
+        type: 'empty',
+      });
+
+      expect(runner.calls[0].signal?.aborted).toBe(false);
+      expect(coordinator.generation).toBe(generationBeforeResume);
+      expect(coordinator.goal).toMatchObject({ status: 'active' });
+      expect(coordinator.goal?.stopReason).toBeUndefined();
+      runner.calls[0].resolve();
+      await controller.stopActiveTurn();
+    });
+  });
+
+  it('accounts each paused interrupt once and stops resume before network at the token budget', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      mkdirSync(projectDir, { recursive: true });
+      const config = loadConfig({ apiKey: 'test-key', model: 'test-model' });
+      const store = new Store({ config, tools: TOOLS, currentModel: 'test-model' });
+      const session = createSession(projectDir, 'test-model');
+      let activePreflight:
+        | ((context: {
+            operation: 'chat_stream';
+            attempt: number;
+            model: string;
+            estimatedPromptTokens: number;
+          }) => Promise<{ available: boolean; reason?: string }>)
+        | undefined;
+      const releases: Array<() => void> = [];
+      let networkCalls = 0;
+      const waitForNetworkCall = async (count: number): Promise<void> => {
+        while (releases.length < count) {
+          await new Promise<void>(resolve => setImmediate(resolve));
+        }
+      };
+      const llm = {
+        getModel: jest.fn(() => 'test-model'),
+        setProviderRequestPreflight: jest.fn((preflight?: typeof activePreflight) => {
+          const previous = activePreflight;
+          activePreflight = preflight;
+          return () => {
+            activePreflight = previous;
+          };
+        }),
+        chatStream: jest.fn(async () => {
+          const decision = await activePreflight?.({
+            operation: 'chat_stream',
+            attempt: 1,
+            model: 'test-model',
+            estimatedPromptTokens: 1,
+          });
+          if (decision && !decision.available) {
+            throw new ProviderRequestPreflightError(decision.reason ?? 'budget rejected');
+          }
+          networkCalls++;
+          await new Promise<void>(resolve => releases.push(resolve));
+          return {
+            content: 'interrupted response',
+            model: 'test-model',
+            usage: { promptTokens: 60, completionTokens: 40 },
+          };
+        }),
+      };
+      const runtime = createRuntime({
+        cwd: projectDir,
+        config,
+        store,
+        llm: llm as any,
+        isConfigured: true,
+        ensureSession: jest.fn(() => session),
+        getSession: jest.fn(() => session),
+      });
+      const { events } = createEvents();
+      const controller = new AgentRuntimeController({ runtime, events });
+      const coordinator = new GoalCoordinator(projectDir, session.id);
+      expect(coordinator.create('Do not lose usage when interrupted')).toEqual({ ok: true });
+      expect(coordinator.setBudget(100_000)).toBe(true);
+      controller.setGoalCoordinator(coordinator);
+      const firstGoalRequest = {
+        inputKind: 'user' as const,
+        text: 'first billable turn',
+        sessionId: session.id,
+        goal: {
+          goalId: coordinator.goal!.goalId,
+          revision: coordinator.goal!.revision,
+          continuationIndex: coordinator.goal!.continuationCount,
+        },
+        persistAsUserMessage: true,
+        echoToTranscript: true,
+        generation: coordinator.generation,
+      };
+
+      expect(controller.submit('first billable turn')).toEqual({ type: 'started' });
+      await waitForNetworkCall(1);
+      expect(controller.submit('/target pause')).toEqual({ type: 'command_handled' });
+      releases[0]();
+      await controller.waitForIdle();
+
+      expect(coordinator.goal).toMatchObject({
+        status: 'paused',
+        tokensUsed: 100,
+        continuationCount: 1,
+        noProgressCount: 0,
+      });
+      const firstTurnId = coordinator.goal?.lastTurn?.turnId;
+      expect(firstTurnId).toBeDefined();
+
+      // Replaying finalization for the exact same turn must not charge it a
+      // second time. This models a duplicated completion callback after an
+      // interrupt boundary.
+      const tokensBeforeDuplicate = coordinator.goal!.tokensUsed;
+      const turnsBeforeDuplicate = coordinator.goal!.continuationCount;
+      (
+        controller as unknown as {
+          finalizeGoalTurn: (
+            turnId: string,
+            request: typeof firstGoalRequest,
+            toolContext: undefined,
+            startedAt: number,
+            workspaceFingerprintBefore: undefined,
+            turnAborted: boolean
+          ) => void;
+        }
+      ).finalizeGoalTurn(firstTurnId!, firstGoalRequest, undefined, Date.now(), undefined, true);
+      expect(coordinator.goal).toMatchObject({
+        tokensUsed: tokensBeforeDuplicate,
+        continuationCount: turnsBeforeDuplicate,
+      });
+
+      expect(controller.submit('/target resume')).toEqual({ type: 'started' });
+      await waitForNetworkCall(2);
+      expect(controller.interrupt()).toEqual({ type: 'interrupted' });
+      releases[1]();
+      await controller.waitForIdle();
+
+      expect(coordinator.goal).toMatchObject({
+        status: 'paused',
+        tokensUsed: 200,
+        continuationCount: 2,
+        noProgressCount: 0,
+      });
+      expect(coordinator.goal?.lastTurn?.turnId).not.toBe(firstTurnId);
+
+      expect(coordinator.setBudget(200)).toBe(true);
+      expect(controller.submit('/target resume')).toEqual({ type: 'command_handled' });
+      await controller.waitForIdle();
+
+      expect(networkCalls).toBe(2);
+      expect(coordinator.goal).toMatchObject({
+        status: 'budget_limited',
+        tokensUsed: 200,
+      });
+    });
+  });
 });

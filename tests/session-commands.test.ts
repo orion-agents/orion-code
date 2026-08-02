@@ -141,7 +141,10 @@ describe('session commands', () => {
   });
 
   test('/resume <session-id> restores history and switches active session', async () => {
-    const session = createRestorableSession('restore this exact session apiKey=sk-testsecret123456', true);
+    const session = createRestorableSession(
+      'restore this exact session apiKey=sk-testsecret123456',
+      true
+    );
     const { ctx, restored, sessionRestored, store } = makeContext('terminal');
 
     const result = await findCommand('resume')!.execute(ctx, session.id);

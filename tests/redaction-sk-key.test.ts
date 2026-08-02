@@ -8,6 +8,8 @@
  */
 import { redactTraceText } from '../src/services/redaction';
 
+const SYNTHETIC_AWS_ACCESS_KEY_ID = ['AKIA', 'ABCDEFGHIJKLMNOP'].join('');
+
 describe('redaction sk- key with dots (bug-hunt round 10)', () => {
   it('fully redacts an sk-proj key that contains dots (no body leakage)', () => {
     const key = 'sk-proj-abcDEF1234567890ab.cdef-ghi_jkl';
@@ -22,5 +24,26 @@ describe('redaction sk- key with dots (bug-hunt round 10)', () => {
     const result = redactTraceText('token: sk-abcdefgh1234567890XYZ');
     expect(result).not.toMatch(/abcdefgh1234567890XYZ/);
     expect(result).toContain('[REDACTED_SECRET]');
+  });
+
+  it.each([
+    'GH_TOKEN=ghp_abcdefghijklmnopqrst',
+    'GITHUB_TOKEN=github_pat_abcdefghijklmnop',
+    `AWS_ACCESS_KEY_ID=${SYNTHETIC_AWS_ACCESS_KEY_ID}`,
+    'AWS_SECRET_ACCESS_KEY=abcDEF1234567890abcDEF1234567890abcDEF12',
+    'AWS_SESSION_TOKEN=session-token-with-sensitive-body',
+  ])('redacts common GitHub and AWS environment secrets: %s', secret => {
+    const result = redactTraceText(`exec ${secret} command`);
+    expect(result).toContain('[REDACTED_SECRET]');
+    expect(result).not.toContain(secret.split('=')[1]);
+  });
+
+  it('redacts standalone GitHub and AWS access token formats', () => {
+    const result = redactTraceText(
+      `tokens ghp_abcdefghijklmnopqrst github_pat_abcdefghijklmnop ${SYNTHETIC_AWS_ACCESS_KEY_ID}`
+    );
+    expect(result).not.toContain('ghp_abcdefghijklmnopqrst');
+    expect(result).not.toContain('github_pat_abcdefghijklmnop');
+    expect(result).not.toContain(SYNTHETIC_AWS_ACCESS_KEY_ID);
   });
 });

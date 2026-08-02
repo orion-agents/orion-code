@@ -12,13 +12,12 @@ import {
   type ProjectConfig,
 } from '../src/services/global-config';
 import { loadUsageState } from '../src/services/usage-state';
-import { existsSync, rmSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
+import { tmpdir } from 'os';
 
 describe('global-config', () => {
-  // Use a unique test directory based on timestamp to avoid conflicts
-  const testDir = join(homedir(), `.openhorse-test-global-${Date.now()}`);
+  const testDir = mkdtempSync(join(tmpdir(), 'orion-global-config-'));
   const originalEnv = process.env.ORION_CODE_CONFIG_DIR;
 
   beforeAll(() => {
@@ -211,12 +210,19 @@ describe('global-config', () => {
         rmSync(usagePath);
       }
 
-      writeFileSync(configPath, JSON.stringify({
-        defaultModel: 'gpt-4o',
-        totalSessions: 12,
-        totalTokens: 3456,
-        totalCost: 0.78,
-      }, null, 2));
+      writeFileSync(
+        configPath,
+        JSON.stringify(
+          {
+            defaultModel: 'gpt-4o',
+            totalSessions: 12,
+            totalTokens: 3456,
+            totalCost: 0.78,
+          },
+          null,
+          2
+        )
+      );
 
       const usage = loadUsageState();
       const config = JSON.parse(readFileSync(configPath, 'utf-8'));

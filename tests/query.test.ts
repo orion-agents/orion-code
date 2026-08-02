@@ -1,8 +1,9 @@
-import { DEFAULT_LOOP_BUDGET, query } from '../src/framework/query';
+import { DEFAULT_LOOP_BUDGET, QueryLoopError, query } from '../src/framework/query';
 import type { QueryEvent } from '../src/framework/query';
 import { buildTool } from '../src/framework/tool';
 import type { OpenHorseTool, ToolContext } from '../src/framework/tool';
-import type { LLMService, LLMResponse, Message, Tool } from '../src/services/llm';
+import { LLMService, type LLMResponse, type Message, type Tool } from '../src/services/llm';
+import { ProviderResilienceCoordinator } from '../src/services/provider-resilience';
 import { resetAutoCompact } from '../src/services/compact/auto-compact';
 import { CompactCoordinator } from '../src/services/compact/coordinator';
 import { CostTracker } from '../src/core/cost-tracker';
@@ -104,11 +105,13 @@ describe('query generator', () => {
         content: '',
         model: 'test-model',
         usage: { promptTokens: 100, completionTokens: 20, requestId: 'tool-turn' },
-        toolCalls: [{
-          id: 'call-1',
-          type: 'function',
-          function: { name: 'read_file', arguments: '{"path":"a.ts"}' },
-        }],
+        toolCalls: [
+          {
+            id: 'call-1',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{"path":"a.ts"}' },
+          },
+        ],
       },
       {
         content: 'done',
@@ -121,20 +124,68 @@ describe('query generator', () => {
       { role: 'system', content: 'You are a bot.' },
       { role: 'user', content: 'Read a.ts' },
     ];
+    let complete: Extract<QueryEvent, { type: 'complete' }> | undefined;
 
-    for await (const _event of query({
+    for await (const event of query({
       messages,
       tools: [mockTool],
       toolExecutor: async () => 'file content',
       llm,
       costTracker,
     })) {
-      // Drain the loop.
+      if (event.type === 'complete') complete = event;
     }
 
     const stats = costTracker.getStats();
     expect(stats.recordCount).toBe(2);
     expect(stats.totalTokens).toBe(350);
+    expect(complete?.usage).toEqual({ promptTokens: 300, completionTokens: 50 });
+  });
+
+  test('preserves known usage when a later model request fails', async () => {
+    const llm = makeMockLLM([]);
+    (llm.chatStream as jest.Mock)
+      .mockResolvedValueOnce({
+        content: '',
+        model: 'test-model',
+        usage: { promptTokens: 100, completionTokens: 20 },
+        toolCalls: [
+          {
+            id: 'call-1',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{"path":"a.ts"}' },
+          },
+        ],
+      })
+      .mockRejectedValueOnce(new Error('provider failed'));
+    let caught: unknown;
+
+    try {
+      for await (const _event of query({
+        messages: [
+          { role: 'system', content: 'You are a bot.' },
+          { role: 'user', content: 'Read a.ts' },
+        ],
+        tools: [mockTool],
+        toolExecutor: async () => 'file content',
+        llm,
+      })) {
+        // Consume the loop until the second provider request fails.
+      }
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(QueryLoopError);
+    expect((caught as QueryLoopError).aggregateUsage).toEqual({
+      promptTokens: 100,
+      completionTokens: 20,
+    });
+    expect((caught as QueryLoopError).stats).toMatchObject({
+      finishReason: 'failed',
+      llmRequests: 2,
+      toolCalls: 1,
+    });
   });
 
   test('yields prompt assembly stats before model response when harness is active', async () => {
@@ -249,6 +300,74 @@ describe('query generator', () => {
     expect(executedTools).toHaveLength(1);
     expect(executedTools[0].name).toBe('read_file');
     expect(executedTools[0].args).toEqual({ path: '/test' });
+  });
+
+  test('preserves a typed external assertion on the tool_result event', async () => {
+    const execTool: OpenHorseTool = buildTool({
+      name: 'exec_command',
+      description: 'Execute a command',
+      parameters: {
+        type: 'object',
+        properties: { command: { type: 'string', description: 'Command' } },
+        required: ['command'],
+      },
+      execute: async () => ({ success: true, output: '0.1.2' }),
+    });
+    const llm = makeMockLLM([
+      {
+        content: '',
+        model: 'test-model',
+        toolCalls: [
+          {
+            id: 'call-external',
+            type: 'function',
+            function: {
+              name: 'exec_command',
+              arguments: '{"command":"npm view @orion-agents/orion-code version"}',
+            },
+          },
+        ],
+      },
+      { content: 'Done', model: 'test-model' },
+    ]);
+    const observedAt = Date.now();
+    const assertion = {
+      version: 1,
+      action: 'registry',
+      status: 'passed',
+      provider: 'npm',
+      target: '@orion-agents/orion-code',
+      observedValue: '0.1.2',
+      observedAt,
+      details: {
+        kind: 'npm',
+        packageName: '@orion-agents/orion-code',
+        version: '0.1.2',
+        field: 'version',
+      },
+    } as const;
+    const events: QueryEvent[] = [];
+
+    for await (const event of query({
+      messages: [
+        { role: 'system', content: 'You are a bot.' },
+        { role: 'user', content: 'Verify registry' },
+      ],
+      tools: [execTool],
+      toolExecutor: async () =>
+        JSON.stringify({ success: true, output: '0.1.2', externalAssertion: assertion }),
+      llm,
+    })) {
+      events.push(event);
+    }
+
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'tool_result',
+        callId: 'call-external',
+        externalAssertion: assertion,
+      })
+    );
   });
 
   test('emits multi-tool event sequence in stable runtime order', async () => {
@@ -468,11 +587,103 @@ describe('query generator', () => {
     });
   });
 
+  test('propagates production resilience retries into loop stats', async () => {
+    const llm = new LLMService({ apiKey: 'test-key', model: 'primary-model' });
+    llm.resilience = new ProviderResilienceCoordinator({
+      maxTotalAttempts: 2,
+      baseDelayMs: 0,
+      maxDelayMs: 0,
+    });
+    const create = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('network error'))
+      .mockImplementationOnce(async function* () {
+        yield {
+          choices: [{ delta: { content: 'Recovered' } }],
+          model: 'primary-model',
+          usage: { prompt_tokens: 3, completion_tokens: 1 },
+        };
+      });
+    (llm as any).client = { chat: { completions: { create } } };
+
+    const events: QueryEvent[] = [];
+    for await (const event of query({
+      messages: [{ role: 'user', content: 'Recover from provider failure' }],
+      tools: [mockTool],
+      toolExecutor: async () => 'result',
+      llm,
+    })) {
+      events.push(event);
+    }
+
+    const complete = events.find(event => event.type === 'complete') as Extract<
+      QueryEvent,
+      { type: 'complete' }
+    >;
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(complete.stats).toMatchObject({
+      finishReason: 'completed',
+      providerRetryCount: 1,
+      providerRetryErrorTypes: ['invalid_endpoint'],
+      providerLastRetryErrorType: 'invalid_endpoint',
+      providerFinalModel: 'primary-model',
+      providerFallbackCount: 0,
+    });
+  });
+
+  test('propagates an unswitched resilience fallback count fail-closed', async () => {
+    const llm = new LLMService({ apiKey: 'test-key', model: 'primary-model' });
+    llm.resilience = {
+      execute: jest.fn().mockResolvedValue({
+        result: { content: 'Recovered', model: 'primary-model' },
+        diagnostics: {
+          logicalRequestId: 'fallback-diagnostic',
+          operation: 'root_chat_stream',
+          requestedModel: 'primary-model',
+          finalModel: 'primary-model',
+          finalState: 'succeeded',
+          attempts: [],
+          retryCount: 0,
+          recoveryCount: 0,
+          fallbackCount: 1,
+          totalBackoffMs: 0,
+          sdkRetriesDisabled: true,
+          usageConfidence: 'unknown',
+          unknownBilledAttemptCount: 1,
+        },
+      }),
+    } as any;
+
+    const events: QueryEvent[] = [];
+    for await (const event of query({
+      messages: [{ role: 'user', content: 'Use fallback' }],
+      tools: [mockTool],
+      toolExecutor: async () => 'result',
+      llm,
+    })) {
+      events.push(event);
+    }
+
+    const complete = events.find(event => event.type === 'complete') as Extract<
+      QueryEvent,
+      { type: 'complete' }
+    >;
+    expect(complete.stats).toMatchObject({
+      providerRetryCount: 0,
+      providerFallbackCount: 1,
+      providerFallbackFromModel: 'primary-model',
+      providerFinalModel: 'primary-model',
+      providerUsingFallback: false,
+    });
+    expect(complete.stats?.providerFallbackToModel).toBeUndefined();
+  });
+
   test('stops before another model request when LLM request budget is reached', async () => {
     const llm = makeMockLLM([
       {
         content: '',
         model: 'test-model',
+        usage: { promptTokens: 40, completionTokens: 5 },
         toolCalls: [
           {
             id: 'call-1',
@@ -519,6 +730,7 @@ describe('query generator', () => {
       },
     });
     expect(complete.stats?.continuationHint).toContain('Reply `继续`');
+    expect(complete.usage).toEqual({ promptTokens: 40, completionTokens: 5 });
     expect(complete.content).toContain('Agent loop budget reached');
     expect(complete.content).toContain('preserved the current session state');
     expect(complete.content).toContain('reply `继续`');

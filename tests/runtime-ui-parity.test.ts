@@ -1,5 +1,12 @@
-import { AgentRuntimeController, type AgentRuntimeRunner } from '../src/runtime/agent-runtime-controller';
-import type { AgentRuntimeEvent, AgentRuntimeEventSink } from '../src/runtime/agent-runtime-protocol';
+import {
+  AgentRuntimeController,
+  type AgentRuntimeRunner,
+} from '../src/runtime/agent-runtime-controller';
+import type {
+  AgentRuntimeEvent,
+  AgentRuntimeEventSink,
+} from '../src/runtime/agent-runtime-protocol';
+import type { AgentTurnRequest } from '../src/runtime/goals/types';
 import type {
   OpenHorseUiRuntime,
   RuntimeToolFinishedEvent,
@@ -37,14 +44,33 @@ function createRuntime(): OpenHorseUiRuntime {
 }
 
 function createDeferredRunner(): AgentRuntimeRunner & {
-  calls: Array<{ input: string; signal?: AbortSignal; resolve: () => void }>;
+  calls: Array<{
+    input: string;
+    request?: AgentTurnRequest;
+    signal?: AbortSignal;
+    resolve: () => void;
+  }>;
 } {
-  const calls: Array<{ input: string; signal?: AbortSignal; resolve: () => void }> = [];
+  const calls: Array<{
+    input: string;
+    request?: AgentTurnRequest;
+    signal?: AbortSignal;
+    resolve: () => void;
+  }> = [];
   return {
     calls,
-    runInput: jest.fn((input, options) => new Promise<void>(resolve => {
-      calls.push({ input, signal: options?.abortSignal, resolve });
-    })),
+    runInput: jest.fn(
+      (input, options) =>
+        new Promise<void>(resolve => {
+          calls.push({ input, signal: options?.abortSignal, resolve });
+        })
+    ),
+    runRequest: jest.fn(
+      (request, options) =>
+        new Promise<void>(resolve => {
+          calls.push({ input: request.text ?? '', request, signal: options?.abortSignal, resolve });
+        })
+    ),
   };
 }
 
@@ -72,6 +98,8 @@ function normalizeEvent(event: AgentRuntimeEvent): string {
       return `harness:${event.diagnostics.taskEpoch ?? '?'}:${event.diagnostics.evidenceSize}:${event.diagnostics.turnSummaryCount}`;
     case 'subtask_event':
       return `subtask:${event.event.state}:${event.event.role}:${event.event.taskId}`;
+    case 'goal_event':
+      return `goal:${event.event.type}`;
     case 'session_picker_requested':
       return `session_picker:${event.request.title}:${event.request.sessions.length}`;
     case 'edit_preview_requested':
@@ -122,23 +150,36 @@ function createRecordingController(mode: SinkMode): {
       return `ui-${events.length}`;
     },
     update: (id, patch) => events.push(normalizeEvent({ type: 'transcript_update', id, patch })),
-    finalize: (id, patch) => events.push(normalizeEvent({ type: 'transcript_finalize', id, patch })),
+    finalize: (id, patch) =>
+      events.push(normalizeEvent({ type: 'transcript_finalize', id, patch })),
     remove: id => events.push(normalizeEvent({ type: 'transcript_remove', id })),
-    replaceTranscript: entries => events.push(normalizeEvent({ type: 'transcript_replace', entries })),
+    replaceTranscript: entries =>
+      events.push(normalizeEvent({ type: 'transcript_replace', entries })),
     clearTranscript: () => events.push(normalizeEvent({ type: 'transcript_clear' })),
     setStatus: message => events.push(normalizeEvent({ type: 'status_changed', message })),
-    showSessionPicker: request => events.push(normalizeEvent({ type: 'session_picker_requested', request })),
-    showEditPreview: request => events.push(normalizeEvent({ type: 'edit_preview_requested', request })),
-    showPermissionRequest: request => events.push(normalizeEvent({ type: 'permission_requested', request })),
-    toolStarted: (event: RuntimeToolStartedEvent) => events.push(normalizeEvent({ type: 'tool_started', event })),
-    toolFinished: (event: RuntimeToolFinishedEvent) => events.push(normalizeEvent({ type: 'tool_finished', event })),
-    sessionRestored: (event: RuntimeSessionRestoredEvent) => events.push(normalizeEvent({ type: 'session_restored', event })),
+    showSessionPicker: request =>
+      events.push(normalizeEvent({ type: 'session_picker_requested', request })),
+    showEditPreview: request =>
+      events.push(normalizeEvent({ type: 'edit_preview_requested', request })),
+    showPermissionRequest: request =>
+      events.push(normalizeEvent({ type: 'permission_requested', request })),
+    toolStarted: (event: RuntimeToolStartedEvent) =>
+      events.push(normalizeEvent({ type: 'tool_started', event })),
+    toolFinished: (event: RuntimeToolFinishedEvent) =>
+      events.push(normalizeEvent({ type: 'tool_finished', event })),
+    sessionRestored: (event: RuntimeSessionRestoredEvent) =>
+      events.push(normalizeEvent({ type: 'session_restored', event })),
     loopStatsUpdated: stats => events.push(normalizeEvent({ type: 'loop_stats_updated', stats })),
-    traceEventRecorded: event => events.push(normalizeEvent({ type: 'trace_event_recorded', event })),
-    harnessDiagnosticsUpdated: diagnostics => events.push(normalizeEvent({ type: 'harness_diagnostics_updated', diagnostics })),
-    setProcessing: processing => events.push(normalizeEvent({ type: 'processing_changed', processing })),
+    traceEventRecorded: event =>
+      events.push(normalizeEvent({ type: 'trace_event_recorded', event })),
+    harnessDiagnosticsUpdated: diagnostics =>
+      events.push(normalizeEvent({ type: 'harness_diagnostics_updated', diagnostics })),
+    goalEvent: event => events.push(normalizeEvent({ type: 'goal_event', event })),
+    setProcessing: processing =>
+      events.push(normalizeEvent({ type: 'processing_changed', processing })),
     clearView: () => events.push(normalizeEvent({ type: 'clear_view' })),
-    shutdownRequested: reason => events.push(normalizeEvent({ type: 'shutdown_requested', reason })),
+    shutdownRequested: reason =>
+      events.push(normalizeEvent({ type: 'shutdown_requested', reason })),
   };
 
   return {
@@ -148,15 +189,21 @@ function createRecordingController(mode: SinkMode): {
   };
 }
 
-async function runRevisionScenario(mode: SinkMode): Promise<{ runnerInputs: string[]; firstAborted: boolean; events: string[] }> {
+async function runRevisionScenario(
+  mode: SinkMode
+): Promise<{ runnerInputs: string[]; firstAborted: boolean; events: string[] }> {
   const { controller, runner, events } = createRecordingController(mode);
 
-  expect(controller.handle({ type: 'submit', text: 'first goal', source: 'composer' })).toEqual({ type: 'started' });
-  expect(controller.handle({ type: 'submit', text: 'latest revision', source: 'composer' })).toEqual({ type: 'revision_requested' });
+  expect(controller.handle({ type: 'submit', text: 'first goal', source: 'composer' })).toEqual({
+    type: 'started',
+  });
+  expect(
+    controller.handle({ type: 'submit', text: 'latest revision', source: 'composer' })
+  ).toEqual({ type: 'revision_requested' });
   const firstAborted = runner.calls[0].signal?.aborted === true;
 
   runner.calls[0].resolve();
-  await Promise.resolve();
+  await new Promise<void>(resolve => setImmediate(resolve));
   runner.calls[1].resolve();
   await controller.waitForIdle();
 
@@ -167,7 +214,9 @@ async function runRevisionScenario(mode: SinkMode): Promise<{ runnerInputs: stri
   };
 }
 
-async function runPermissionScenario(mode: SinkMode): Promise<{ result: boolean; events: string[] }> {
+async function runPermissionScenario(
+  mode: SinkMode
+): Promise<{ result: boolean; events: string[] }> {
   const { controller, events } = createRecordingController(mode);
   const decision = controller.requestToolPermission({
     name: 'exec_command',
@@ -175,12 +224,14 @@ async function runPermissionScenario(mode: SinkMode): Promise<{ result: boolean;
     reason: 'publishing changes external state',
   });
 
-  expect(controller.handle({
-    type: 'permission_decision',
-    requestId: 'permission-1',
-    approved: false,
-    source: 'programmatic',
-  })).toEqual({ type: 'permission_decision_recorded' });
+  expect(
+    controller.handle({
+      type: 'permission_decision',
+      requestId: 'permission-1',
+      approved: false,
+      source: 'programmatic',
+    })
+  ).toEqual({ type: 'permission_decision_recorded' });
 
   return { result: await decision, events };
 }
@@ -220,25 +271,31 @@ describe('runtime/UI renderer parity contract', () => {
     const ui = createRecordingController('ui-events');
     const runtime = createRecordingController('runtime-events');
 
-    expect(ui.controller.handle({
-      type: 'select_session',
-      sessionId: 'session-abc',
-      allProjects: true,
-      source: 'picker',
-    })).toEqual({ type: 'started' });
-    expect(runtime.controller.handle({
-      type: 'select_session',
-      sessionId: 'session-abc',
-      allProjects: true,
-      source: 'picker',
-    })).toEqual({ type: 'started' });
+    expect(
+      ui.controller.handle({
+        type: 'select_session',
+        sessionId: 'session-abc',
+        allProjects: true,
+        source: 'picker',
+      })
+    ).toEqual({ type: 'started' });
+    expect(
+      runtime.controller.handle({
+        type: 'select_session',
+        sessionId: 'session-abc',
+        allProjects: true,
+        source: 'picker',
+      })
+    ).toEqual({ type: 'started' });
 
     ui.runner.calls[0].resolve();
     runtime.runner.calls[0].resolve();
     await ui.controller.waitForIdle();
     await runtime.controller.waitForIdle();
 
-    expect(ui.runner.calls.map(call => call.input)).toEqual(runtime.runner.calls.map(call => call.input));
+    expect(ui.runner.calls.map(call => call.input)).toEqual(
+      runtime.runner.calls.map(call => call.input)
+    );
     expect(ui.runner.calls.map(call => call.input)).toEqual(['/resume session-abc --all']);
     expect(ui.events).toEqual(runtime.events);
   });
@@ -247,8 +304,12 @@ describe('runtime/UI renderer parity contract', () => {
     const ui = createRecordingController('ui-events');
     const runtime = createRecordingController('runtime-events');
 
-    expect(ui.controller.handle({ type: 'submit', text: 'hello', source: 'composer' })).toEqual({ type: 'started' });
-    expect(runtime.controller.handle({ type: 'submit', text: 'hello', source: 'composer' })).toEqual({ type: 'started' });
+    expect(ui.controller.handle({ type: 'submit', text: 'hello', source: 'composer' })).toEqual({
+      type: 'started',
+    });
+    expect(
+      runtime.controller.handle({ type: 'submit', text: 'hello', source: 'composer' })
+    ).toEqual({ type: 'started' });
 
     ui.runner.calls[0].resolve();
     runtime.runner.calls[0].resolve();
@@ -258,25 +319,25 @@ describe('runtime/UI renderer parity contract', () => {
     expect(ui.runner.calls.map(call => call.input)).toEqual(['hello']);
     expect(runtime.runner.calls.map(call => call.input)).toEqual(['hello']);
     expect(ui.events).toEqual(runtime.events);
-    expect(ui.events).toEqual([
-      'append:user:hello',
-      'processing:true',
-      'processing:false',
-    ]);
+    expect(ui.events).toEqual(['append:user:hello', 'processing:true', 'processing:false']);
   });
 
   it('routes clear and shutdown system events through both adapters identically', () => {
     const ui = createRecordingController('ui-events');
     const runtime = createRecordingController('runtime-events');
 
-    expect(ui.controller.handle({ type: 'submit', text: '/clear', source: 'composer' }))
-      .toEqual({ type: 'command_handled' });
-    expect(runtime.controller.handle({ type: 'submit', text: '/clear', source: 'composer' }))
-      .toEqual({ type: 'command_handled' });
-    expect(ui.controller.handle({ type: 'submit', text: '/exit', source: 'composer' }))
-      .toEqual({ type: 'exit_requested' });
-    expect(runtime.controller.handle({ type: 'submit', text: '/exit', source: 'composer' }))
-      .toEqual({ type: 'exit_requested' });
+    expect(ui.controller.handle({ type: 'submit', text: '/clear', source: 'composer' })).toEqual({
+      type: 'command_handled',
+    });
+    expect(
+      runtime.controller.handle({ type: 'submit', text: '/clear', source: 'composer' })
+    ).toEqual({ type: 'command_handled' });
+    expect(ui.controller.handle({ type: 'submit', text: '/exit', source: 'composer' })).toEqual({
+      type: 'exit_requested',
+    });
+    expect(
+      runtime.controller.handle({ type: 'submit', text: '/exit', source: 'composer' })
+    ).toEqual({ type: 'exit_requested' });
 
     expect(ui.events).toEqual(runtime.events);
     expect(ui.events).toEqual([
@@ -290,26 +351,67 @@ describe('runtime/UI renderer parity contract', () => {
     const ui = createRecordingController('ui-events');
     const runtime = createRecordingController('runtime-events');
 
-    expect(ui.controller.handle({
-      type: 'submit',
-      text: '/target verify renderer parity',
-      source: 'composer',
-    })).toEqual({ type: 'started' });
-    expect(runtime.controller.handle({
-      type: 'submit',
-      text: '/target verify renderer parity',
-      source: 'composer',
-    })).toEqual({ type: 'started' });
+    expect(
+      ui.controller.handle({
+        type: 'submit',
+        text: '/target verify renderer parity',
+        source: 'composer',
+      })
+    ).toEqual({ type: 'started' });
+    expect(
+      runtime.controller.handle({
+        type: 'submit',
+        text: '/target verify renderer parity',
+        source: 'composer',
+      })
+    ).toEqual({ type: 'started' });
 
-    expect(ui.runner.calls.map(call => call.input)).toEqual(['[goal continuation #1]']);
-    expect(runtime.runner.calls.map(call => call.input)).toEqual(['[goal continuation #1]']);
+    expect(ui.runner.calls.map(call => call.request?.inputKind)).toEqual(['goal_continuation']);
+    expect(runtime.runner.calls.map(call => call.request?.inputKind)).toEqual([
+      'goal_continuation',
+    ]);
+    expect(ui.runner.calls[0].request).toMatchObject({
+      persistAsUserMessage: false,
+      echoToTranscript: false,
+      goal: { continuationIndex: 1 },
+    });
+    expect(ui.runner.calls[0].input).not.toContain('[goal continuation');
     expect(ui.events).toEqual(runtime.events);
-    expect(ui.events[0]).toContain('append:system:Target: [active] verify renderer parity');
+    const targetStatus = ui.events.find(event => event.startsWith('append:system:Target:'));
+    expect(targetStatus).toContain('Target: [active] verify renderer parity | 0 turns | 0 tokens');
+    expect(targetStatus).toContain('\nPlan: r0 initial');
+    expect(targetStatus).toContain('\nCriteria: 1 pending | 0/1 passed | 0 failed | 0 stale');
 
     ui.runner.calls[0].resolve();
     runtime.runner.calls[0].resolve();
     await ui.controller.stopActiveTurn();
     await runtime.controller.stopActiveTurn();
+  });
+
+  it('reports pending, passed, failed, and stale criteria explicitly', async () => {
+    const recording = createRecordingController('runtime-events');
+    expect(recording.controller.submit('/target verify mixed criterion states')).toEqual({
+      type: 'started',
+    });
+
+    const coordinator = (
+      recording.controller as unknown as {
+        goalCoordinator: import('../src/runtime/goals/coordinator').GoalCoordinator;
+      }
+    ).goalCoordinator;
+    const primary = coordinator.goal!.contract!.successCriteria[0];
+    primary.status = 'passed';
+    coordinator.goal!.contract!.successCriteria.push(
+      { ...primary, id: 'criterion:pending', status: 'pending' },
+      { ...primary, id: 'criterion:failed', status: 'failed' },
+      { ...primary, id: 'criterion:stale', status: 'stale' }
+    );
+
+    const status = recording.controller.handleTargetInput('/target status').statusText;
+    expect(status).toContain('Criteria: 1 pending | 1/4 passed | 1 failed | 1 stale');
+
+    recording.runner.calls[0].resolve();
+    await recording.controller.stopActiveTurn();
   });
 
   it('adapts tool started and finished events identically across runtime and UI sinks', () => {
@@ -342,22 +444,33 @@ describe('runtime/UI renderer parity contract', () => {
         ui.events.push(normalizeEvent({ type: 'transcript_append', entry }));
         return 'ui-entry';
       },
-      update: (id, patch) => ui.events.push(normalizeEvent({ type: 'transcript_update', id, patch })),
-      finalize: (id, patch) => ui.events.push(normalizeEvent({ type: 'transcript_finalize', id, patch })),
+      update: (id, patch) =>
+        ui.events.push(normalizeEvent({ type: 'transcript_update', id, patch })),
+      finalize: (id, patch) =>
+        ui.events.push(normalizeEvent({ type: 'transcript_finalize', id, patch })),
       remove: id => ui.events.push(normalizeEvent({ type: 'transcript_remove', id })),
-      replaceTranscript: entries => ui.events.push(normalizeEvent({ type: 'transcript_replace', entries })),
+      replaceTranscript: entries =>
+        ui.events.push(normalizeEvent({ type: 'transcript_replace', entries })),
       clearTranscript: () => ui.events.push(normalizeEvent({ type: 'transcript_clear' })),
       setStatus: message => ui.events.push(normalizeEvent({ type: 'status_changed', message })),
-      showSessionPicker: request => ui.events.push(normalizeEvent({ type: 'session_picker_requested', request })),
-      showEditPreview: request => ui.events.push(normalizeEvent({ type: 'edit_preview_requested', request })),
-      showPermissionRequest: request => ui.events.push(normalizeEvent({ type: 'permission_requested', request })),
+      showSessionPicker: request =>
+        ui.events.push(normalizeEvent({ type: 'session_picker_requested', request })),
+      showEditPreview: request =>
+        ui.events.push(normalizeEvent({ type: 'edit_preview_requested', request })),
+      showPermissionRequest: request =>
+        ui.events.push(normalizeEvent({ type: 'permission_requested', request })),
       toolStarted: tool => ui.events.push(normalizeEvent({ type: 'tool_started', event: tool })),
       toolFinished: tool => ui.events.push(normalizeEvent({ type: 'tool_finished', event: tool })),
-      sessionRestored: restored => ui.events.push(normalizeEvent({ type: 'session_restored', event: restored })),
-      loopStatsUpdated: stats => ui.events.push(normalizeEvent({ type: 'loop_stats_updated', stats })),
-      traceEventRecorded: trace => ui.events.push(normalizeEvent({ type: 'trace_event_recorded', event: trace })),
-      harnessDiagnosticsUpdated: diagnostics => ui.events.push(normalizeEvent({ type: 'harness_diagnostics_updated', diagnostics })),
-      setProcessing: processing => ui.events.push(normalizeEvent({ type: 'processing_changed', processing })),
+      sessionRestored: restored =>
+        ui.events.push(normalizeEvent({ type: 'session_restored', event: restored })),
+      loopStatsUpdated: stats =>
+        ui.events.push(normalizeEvent({ type: 'loop_stats_updated', stats })),
+      traceEventRecorded: trace =>
+        ui.events.push(normalizeEvent({ type: 'trace_event_recorded', event: trace })),
+      harnessDiagnosticsUpdated: diagnostics =>
+        ui.events.push(normalizeEvent({ type: 'harness_diagnostics_updated', diagnostics })),
+      setProcessing: processing =>
+        ui.events.push(normalizeEvent({ type: 'processing_changed', processing })),
     };
     uiSink.toolStarted?.(started);
     uiSink.toolFinished?.(finished);
@@ -388,22 +501,33 @@ describe('runtime/UI renderer parity contract', () => {
         ui.events.push(normalizeEvent({ type: 'transcript_append', entry }));
         return 'ui-entry';
       },
-      update: (id, patch) => ui.events.push(normalizeEvent({ type: 'transcript_update', id, patch })),
-      finalize: (id, patch) => ui.events.push(normalizeEvent({ type: 'transcript_finalize', id, patch })),
+      update: (id, patch) =>
+        ui.events.push(normalizeEvent({ type: 'transcript_update', id, patch })),
+      finalize: (id, patch) =>
+        ui.events.push(normalizeEvent({ type: 'transcript_finalize', id, patch })),
       remove: id => ui.events.push(normalizeEvent({ type: 'transcript_remove', id })),
-      replaceTranscript: replaced => ui.events.push(normalizeEvent({ type: 'transcript_replace', entries: replaced })),
+      replaceTranscript: replaced =>
+        ui.events.push(normalizeEvent({ type: 'transcript_replace', entries: replaced })),
       clearTranscript: () => ui.events.push(normalizeEvent({ type: 'transcript_clear' })),
       setStatus: message => ui.events.push(normalizeEvent({ type: 'status_changed', message })),
-      showSessionPicker: request => ui.events.push(normalizeEvent({ type: 'session_picker_requested', request })),
-      showEditPreview: request => ui.events.push(normalizeEvent({ type: 'edit_preview_requested', request })),
-      showPermissionRequest: request => ui.events.push(normalizeEvent({ type: 'permission_requested', request })),
+      showSessionPicker: request =>
+        ui.events.push(normalizeEvent({ type: 'session_picker_requested', request })),
+      showEditPreview: request =>
+        ui.events.push(normalizeEvent({ type: 'edit_preview_requested', request })),
+      showPermissionRequest: request =>
+        ui.events.push(normalizeEvent({ type: 'permission_requested', request })),
       toolStarted: tool => ui.events.push(normalizeEvent({ type: 'tool_started', event: tool })),
       toolFinished: tool => ui.events.push(normalizeEvent({ type: 'tool_finished', event: tool })),
-      sessionRestored: restored => ui.events.push(normalizeEvent({ type: 'session_restored', event: restored })),
-      loopStatsUpdated: stats => ui.events.push(normalizeEvent({ type: 'loop_stats_updated', stats })),
-      traceEventRecorded: trace => ui.events.push(normalizeEvent({ type: 'trace_event_recorded', event: trace })),
-      harnessDiagnosticsUpdated: diagnostics => ui.events.push(normalizeEvent({ type: 'harness_diagnostics_updated', diagnostics })),
-      setProcessing: processing => ui.events.push(normalizeEvent({ type: 'processing_changed', processing })),
+      sessionRestored: restored =>
+        ui.events.push(normalizeEvent({ type: 'session_restored', event: restored })),
+      loopStatsUpdated: stats =>
+        ui.events.push(normalizeEvent({ type: 'loop_stats_updated', stats })),
+      traceEventRecorded: trace =>
+        ui.events.push(normalizeEvent({ type: 'trace_event_recorded', event: trace })),
+      harnessDiagnosticsUpdated: diagnostics =>
+        ui.events.push(normalizeEvent({ type: 'harness_diagnostics_updated', diagnostics })),
+      setProcessing: processing =>
+        ui.events.push(normalizeEvent({ type: 'processing_changed', processing })),
     };
     uiSink.replaceTranscript?.(entries);
 
@@ -438,31 +562,42 @@ describe('runtime/UI renderer parity contract', () => {
         ui.events.push(normalizeEvent({ type: 'transcript_append', entry }));
         return 'ui-entry';
       },
-      update: (id, patch) => ui.events.push(normalizeEvent({ type: 'transcript_update', id, patch })),
-      finalize: (id, patch) => ui.events.push(normalizeEvent({ type: 'transcript_finalize', id, patch })),
+      update: (id, patch) =>
+        ui.events.push(normalizeEvent({ type: 'transcript_update', id, patch })),
+      finalize: (id, patch) =>
+        ui.events.push(normalizeEvent({ type: 'transcript_finalize', id, patch })),
       remove: id => ui.events.push(normalizeEvent({ type: 'transcript_remove', id })),
-      replaceTranscript: entries => ui.events.push(normalizeEvent({ type: 'transcript_replace', entries })),
+      replaceTranscript: entries =>
+        ui.events.push(normalizeEvent({ type: 'transcript_replace', entries })),
       clearTranscript: () => ui.events.push(normalizeEvent({ type: 'transcript_clear' })),
       setStatus: message => ui.events.push(normalizeEvent({ type: 'status_changed', message })),
-      showSessionPicker: request => ui.events.push(normalizeEvent({ type: 'session_picker_requested', request })),
-      showEditPreview: request => ui.events.push(normalizeEvent({ type: 'edit_preview_requested', request })),
-      showPermissionRequest: request => ui.events.push(normalizeEvent({ type: 'permission_requested', request })),
-      toolStarted: started => ui.events.push(normalizeEvent({ type: 'tool_started', event: started })),
-      toolFinished: finished => ui.events.push(normalizeEvent({ type: 'tool_finished', event: finished })),
-      sessionRestored: restored => ui.events.push(normalizeEvent({ type: 'session_restored', event: restored })),
-      loopStatsUpdated: stats => ui.events.push(normalizeEvent({ type: 'loop_stats_updated', stats })),
-      traceEventRecorded: trace => ui.events.push(normalizeEvent({ type: 'trace_event_recorded', event: trace })),
-      harnessDiagnosticsUpdated: diagnostics => ui.events.push(normalizeEvent({ type: 'harness_diagnostics_updated', diagnostics })),
-      setProcessing: processing => ui.events.push(normalizeEvent({ type: 'processing_changed', processing })),
+      showSessionPicker: request =>
+        ui.events.push(normalizeEvent({ type: 'session_picker_requested', request })),
+      showEditPreview: request =>
+        ui.events.push(normalizeEvent({ type: 'edit_preview_requested', request })),
+      showPermissionRequest: request =>
+        ui.events.push(normalizeEvent({ type: 'permission_requested', request })),
+      toolStarted: started =>
+        ui.events.push(normalizeEvent({ type: 'tool_started', event: started })),
+      toolFinished: finished =>
+        ui.events.push(normalizeEvent({ type: 'tool_finished', event: finished })),
+      sessionRestored: restored =>
+        ui.events.push(normalizeEvent({ type: 'session_restored', event: restored })),
+      loopStatsUpdated: stats =>
+        ui.events.push(normalizeEvent({ type: 'loop_stats_updated', stats })),
+      traceEventRecorded: trace =>
+        ui.events.push(normalizeEvent({ type: 'trace_event_recorded', event: trace })),
+      harnessDiagnosticsUpdated: diagnostics =>
+        ui.events.push(normalizeEvent({ type: 'harness_diagnostics_updated', diagnostics })),
+      setProcessing: processing =>
+        ui.events.push(normalizeEvent({ type: 'processing_changed', processing })),
     };
     uiSink.sessionRestored?.(event);
 
     runtime.events.push(normalizeEvent({ type: 'session_restored', event }));
 
     expect(ui.events).toEqual(runtime.events);
-    expect(ui.events).toEqual([
-      'session_restored:session-abc:3:7:123456:checkpoint-1',
-    ]);
+    expect(ui.events).toEqual(['session_restored:session-abc:3:7:123456:checkpoint-1']);
   });
 
   // --- v0.2.19 completion: TUI-vs-terminal capability parity ---

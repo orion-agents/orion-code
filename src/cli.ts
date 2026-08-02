@@ -4,8 +4,6 @@
 
 import 'dotenv/config';
 import chalk from 'chalk';
-import { readFileSync } from 'fs';
-import { join } from 'path';
 import { init, type OrionCodeRuntime } from './init';
 import { LLMService } from './services/llm';
 import { ProviderResilienceCoordinator } from './services/provider-resilience';
@@ -21,7 +19,13 @@ import {
 import { ensureConfigDir } from './services/config-dir';
 import { recordFirstStartTime, incrementSessionCount } from './services/global-config';
 import { appendUsageRecord } from './services/usage-state';
-import { createSession, endSession, readSessionMessages, updateSessionSummary, type SessionMeta } from './services/session-storage';
+import {
+  createSession,
+  endSession,
+  readSessionMessages,
+  updateSessionSummary,
+  type SessionMeta,
+} from './services/session-storage';
 import { loadAllMemories } from './memory/storage';
 import { loadProjectInstructions } from './services/project-instructions';
 import { getSkillsRegistry } from './skills';
@@ -32,7 +36,11 @@ import { discoverModelContexts } from './services/model-context';
 import { launchInkUI } from './ink-ui/launch';
 import { launchTuiUI } from './tui-ui/launch';
 import { launchTerminalUI } from './terminal-ui/launch';
-import { launchPrintMode, readPromptFromStdinIfAvailable, type PrintOutputFormat } from './print-ui/launch';
+import {
+  launchPrintMode,
+  readPromptFromStdinIfAvailable,
+  type PrintOutputFormat,
+} from './print-ui/launch';
 import { collectDoctorReport, formatDoctorReport, hasDoctorFailures } from './services/doctor';
 import { collectWorkspaceDiff, formatWorkspaceDiff } from './services/workspace-diff';
 import { createCommitPlan, formatCommitPlan } from './services/commit-plan';
@@ -40,6 +48,7 @@ import type { OrionCodeUiRuntime } from './runtime/ui-events';
 import { CompactCoordinator } from './services/compact';
 import { handleMigrateCommand } from './migration/command';
 import type { CommandContext } from './commands/types';
+import { PACKAGE_VERSION } from './product/version';
 
 const BRAND = chalk.hex('#FF6B35');
 const ACCENT = chalk.hex('#00D4AA');
@@ -47,15 +56,7 @@ const DIM = chalk.dim;
 const ERROR = chalk.red;
 const WARN = chalk.yellow;
 
-const VERSION = (() => {
-  try {
-    const pkgPath = join(__dirname, '..', 'package.json');
-    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
-    return pkg.version || '0.2.0';
-  } catch {
-    return '0.2.0';
-  }
-})();
+const VERSION = PACKAGE_VERSION;
 
 function showCliHelp(): void {
   console.log();
@@ -82,7 +83,11 @@ function showCliHelp(): void {
   console.log(`  --ui <mode>    UI renderer: ${SUPPORTED_UI_RENDERERS.join(', ')}`);
   console.log('  --output-format <text|json>  Print-mode output format');
   console.log();
-  console.log(DIM('tui is the default product UI. terminal is the technical fallback; ink is deprecated (removed in v0.2.0); print is experimental.'));
+  console.log(
+    DIM(
+      'tui is the default product UI. terminal is the technical fallback; ink is deprecated (removed in v0.2.0); print is experimental.'
+    )
+  );
   console.log();
 }
 
@@ -111,11 +116,12 @@ function parseCliOptions(args: string[]): CliOptions {
       continue;
     }
 
-    const uiValue = arg === '--ui'
-      ? args[i + 1]
-      : arg.startsWith('--ui=')
-        ? arg.slice('--ui='.length)
-        : undefined;
+    const uiValue =
+      arg === '--ui'
+        ? args[i + 1]
+        : arg.startsWith('--ui=')
+          ? arg.slice('--ui='.length)
+          : undefined;
 
     if (uiValue !== undefined) {
       if (arg === '--ui') i++;
@@ -126,7 +132,11 @@ function parseCliOptions(args: string[]): CliOptions {
       }
 
       if (uiValue === 'legacy' || uiValue === 'v2') {
-        console.log(WARN(`Renderer "${uiValue}" was removed in v0.2.0; starting the TUI product renderer instead.`));
+        console.log(
+          WARN(
+            `Renderer "${uiValue}" is no longer supported; starting the TUI product renderer instead.`
+          )
+        );
         uiRenderer = 'tui';
         continue;
       }
@@ -136,11 +146,12 @@ function parseCliOptions(args: string[]): CliOptions {
       process.exit(1);
     }
 
-    const outputFormatValue = arg === '--output-format'
-      ? args[i + 1]
-      : arg.startsWith('--output-format=')
-        ? arg.slice('--output-format='.length)
-        : undefined;
+    const outputFormatValue =
+      arg === '--output-format'
+        ? args[i + 1]
+        : arg.startsWith('--output-format=')
+          ? arg.slice('--output-format='.length)
+          : undefined;
 
     if (outputFormatValue !== undefined) {
       if (arg === '--output-format') i++;
@@ -167,9 +178,10 @@ async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OrionCodeUiRunt
   const cwd = process.cwd();
   const config = loadConfig({ ui: { renderer: uiRenderer } });
   const memories = loadAllMemories(cwd);
-  const memoryContent = memories.length > 0
-    ? memories.map(memory => `## ${memory.name} (${memory.type})\n${memory.content}`).join('\n\n')
-    : '';
+  const memoryContent =
+    memories.length > 0
+      ? memories.map(memory => `## ${memory.name} (${memory.type})\n${memory.content}`).join('\n\n')
+      : '';
   const projectInstructionsContent = loadProjectInstructions(cwd);
 
   let skillsContent = '';
@@ -209,7 +221,9 @@ async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OrionCodeUiRunt
       : null;
     llm = new LLMService({
       apiKey: defaultProvider
-        ? (defaultProvider.apiKey.startsWith('$') ? process.env[defaultProvider.apiKey.slice(1)] ?? '' : defaultProvider.apiKey)
+        ? defaultProvider.apiKey.startsWith('$')
+          ? (process.env[defaultProvider.apiKey.slice(1)] ?? '')
+          : defaultProvider.apiKey
         : config.apiKey,
       baseUrl: defaultProvider?.baseUrl ?? config.apiBaseUrl,
       model: config.modelRegistry?.defaultProfile?.model ?? config.model,
@@ -268,7 +282,10 @@ async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OrionCodeUiRunt
 
   const ensureSession = (): SessionMeta => {
     if (!currentSession) {
-      currentSession = createSession(cwd, store.getSnapshot().currentModel || store.getSnapshot().config.model);
+      currentSession = createSession(
+        cwd,
+        store.getSnapshot().currentModel || store.getSnapshot().config.model
+      );
       incrementSessionCount();
     }
     return currentSession;
@@ -371,9 +388,14 @@ async function main(): Promise<void> {
 
   if (!options.printMode && options.promptArgs[0] === 'diff') {
     const maxFilesIndex = options.promptArgs.findIndex(arg => arg === '--max-files');
-    const maxFiles = maxFilesIndex >= 0
-      ? Number(options.promptArgs[maxFilesIndex + 1] ?? 40)
-      : Number(options.promptArgs.find(arg => arg.startsWith('--max-files='))?.slice('--max-files='.length) ?? 40);
+    const maxFiles =
+      maxFilesIndex >= 0
+        ? Number(options.promptArgs[maxFilesIndex + 1] ?? 40)
+        : Number(
+            options.promptArgs
+              .find(arg => arg.startsWith('--max-files='))
+              ?.slice('--max-files='.length) ?? 40
+          );
     const report = collectWorkspaceDiff({
       cwd: runtime.cwd,
       maxFiles: Number.isFinite(maxFiles) && maxFiles > 0 ? maxFiles : 40,
@@ -381,7 +403,9 @@ async function main(): Promise<void> {
     if (options.outputFormat === 'json') {
       process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
     } else {
-      process.stdout.write(`${formatWorkspaceDiff(report, { maxFiles: Number.isFinite(maxFiles) && maxFiles > 0 ? maxFiles : 40 })}\n`);
+      process.stdout.write(
+        `${formatWorkspaceDiff(report, { maxFiles: Number.isFinite(maxFiles) && maxFiles > 0 ? maxFiles : 40 })}\n`
+      );
     }
     await runtime.shutdown();
     process.exit(report.isGitRepo ? 0 : 1);
@@ -389,9 +413,14 @@ async function main(): Promise<void> {
 
   if (!options.printMode && options.promptArgs[0] === 'commit') {
     const maxFilesIndex = options.promptArgs.findIndex(arg => arg === '--max-files');
-    const maxFiles = maxFilesIndex >= 0
-      ? Number(options.promptArgs[maxFilesIndex + 1] ?? 20)
-      : Number(options.promptArgs.find(arg => arg.startsWith('--max-files='))?.slice('--max-files='.length) ?? 20);
+    const maxFiles =
+      maxFilesIndex >= 0
+        ? Number(options.promptArgs[maxFilesIndex + 1] ?? 20)
+        : Number(
+            options.promptArgs
+              .find(arg => arg.startsWith('--max-files='))
+              ?.slice('--max-files='.length) ?? 20
+          );
     const plan = createCommitPlan({
       cwd: runtime.cwd,
       maxFiles: Number.isFinite(maxFiles) && maxFiles > 0 ? maxFiles : 20,
@@ -406,7 +435,7 @@ async function main(): Promise<void> {
   }
 
   if (options.printMode) {
-    const prompt = options.promptArgs.join(' ').trim() || await readPromptFromStdinIfAvailable();
+    const prompt = options.promptArgs.join(' ').trim() || (await readPromptFromStdinIfAvailable());
     if (!prompt) {
       console.error(ERROR('Print mode requires a prompt argument or piped stdin.'));
       await runtime.shutdown();

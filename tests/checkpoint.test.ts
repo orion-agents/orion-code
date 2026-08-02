@@ -15,6 +15,10 @@ import {
 import { getProjectCheckpointsDir } from '../src/services/config-dir';
 
 const TEST_PROJECT = `/tmp/openhorse-checkpoint-test-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+const OUTSIDE_FILE = path.join(
+  path.dirname(TEST_PROJECT),
+  `${path.basename(TEST_PROJECT)}-outside.txt`
+);
 
 describe('checkpoint', () => {
   beforeEach(() => {
@@ -126,21 +130,22 @@ describe('checkpoint', () => {
       JSON.stringify({
         turnId: 'evil-turn',
         createdAt: Date.now(),
-        files: [{
-          path: '../outside.txt',
-          content: '',
-          sizeBytes: 0,
-        }],
+        files: [
+          {
+            path: `../${path.basename(OUTSIDE_FILE)}`,
+            content: '',
+            sizeBytes: 0,
+          },
+        ],
       }),
-      'utf8',
+      'utf8'
     );
 
-    const outside = path.join(TEST_PROJECT, '..', 'outside.txt');
-    if (fs.existsSync(outside)) fs.rmSync(outside, { force: true });
+    if (fs.existsSync(OUTSIDE_FILE)) fs.rmSync(OUTSIDE_FILE, { force: true });
 
     const result = restoreCheckpoint(TEST_PROJECT, 'evil-turn');
     expect(result.error).toContain('Invalid checkpoint path');
-    expect(fs.existsSync(outside)).toBe(false);
+    expect(fs.existsSync(OUTSIDE_FILE)).toBe(false);
   });
 
   test('restoreCheckpoint returns error for non-existent checkpoint', () => {
@@ -158,7 +163,9 @@ describe('checkpoint', () => {
     createCheckpoint(TEST_PROJECT, 'turn-1', [file1]);
     // Ensure different createdAt
     const start = Date.now();
-    while (Date.now() === start) { /* spin */ }
+    while (Date.now() === start) {
+      /* spin */
+    }
     createCheckpoint(TEST_PROJECT, 'turn-2', [file2]);
 
     const checkpoints = listCheckpoints(TEST_PROJECT);

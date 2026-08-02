@@ -12,6 +12,8 @@ import type {
   TranscriptEntry,
   UiEventSink,
 } from '../runtime/ui-events';
+import type { GoalRuntimeEvent } from '../runtime/goals/types';
+import { formatGoalRuntimeEvent } from '../runtime/goals/presentation';
 
 export type PrintOutputFormat = 'text' | 'json';
 
@@ -25,6 +27,7 @@ export interface PrintModeResult {
   toolEvents: PrintRuntimeToolEvent[];
   statuses: string[];
   errors: string[];
+  goalEvents: GoalRuntimeEvent[];
   sessionId: string | null;
   model: string;
 }
@@ -42,17 +45,42 @@ function stderrLine(text: string): void {
   process.stderr.write(`${stripTrailingNewlines(text)}\n`);
 }
 
+function flushStdout(text: string = ''): Promise<void> {
+  return new Promise((resolve, reject) => {
+    process.stdout.write(text, error => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+function flushStderr(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    process.stderr.write('', error => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
 export class PrintEventSink implements UiEventSink {
   private readonly entries = new Map<string, TranscriptEntry>();
   private readonly printedContent = new Map<string, string>();
   private readonly toolEvents: PrintRuntimeToolEvent[] = [];
   private readonly statuses: string[] = [];
   private readonly errors: string[] = [];
+  private readonly goalEvents: GoalRuntimeEvent[] = [];
   private idCounter = 0;
 
   constructor(
     private readonly runtime: OpenHorseUiRuntime,
-    private readonly outputFormat: PrintOutputFormat,
+    private readonly outputFormat: PrintOutputFormat
   ) {}
 
   append(entry: TranscriptAppendEntry): string {
@@ -105,6 +133,9 @@ export class PrintEventSink implements UiEventSink {
   setStatus(message: string): void {
     if (!message.trim()) return;
     this.statuses.push(message);
+    if (message.startsWith('Goal continuation deferred but persistence failed:')) {
+      this.errors.push(message);
+    }
     if (this.outputFormat === 'text') {
       stderrLine(message);
     }
@@ -142,6 +173,13 @@ export class PrintEventSink implements UiEventSink {
     this.toolEvents.push({ type: 'finished', ...event });
   }
 
+  goalEvent(event: GoalRuntimeEvent): void {
+    this.goalEvents.push(event);
+    if (this.outputFormat === 'text') {
+      stderrLine(formatGoalRuntimeEvent(event));
+    }
+  }
+
   setProcessing(_processing: boolean): void {
     // Non-interactive print mode has no live processing indicator.
   }
@@ -149,7 +187,9 @@ export class PrintEventSink implements UiEventSink {
   result(): PrintModeResult {
     const entries = Array.from(this.entries.values());
     const content = entries
-      .filter(entry => entry.role === 'assistant' || entry.role === 'system' || entry.role === 'command')
+      .filter(
+        entry => entry.role === 'assistant' || entry.role === 'system' || entry.role === 'command'
+      )
       .map(entry => entry.content)
       .filter(Boolean)
       .join('\n')
@@ -161,13 +201,17 @@ export class PrintEventSink implements UiEventSink {
       toolEvents: [...this.toolEvents],
       statuses: [...this.statuses],
       errors: [...this.errors],
+      goalEvents: [...this.goalEvents],
       sessionId: this.runtime.getSession()?.id ?? null,
       model: this.runtime.store.getSnapshot().currentModel || this.runtime.config.model,
     };
   }
 
   hasErrors(): boolean {
-    return Array.from(this.entries.values()).some(entry => entry.role === 'error') || this.errors.length > 0;
+    return (
+      Array.from(this.entries.values()).some(entry => entry.role === 'error') ||
+      this.errors.length > 0
+    );
   }
 
   private printEntry(entry: TranscriptEntry, finalized: boolean): void {
@@ -215,7 +259,9 @@ export class PrintEventSink implements UiEventSink {
   }
 }
 
-export async function readPromptFromStdinIfAvailable(stdin: NodeJS.ReadStream = process.stdin): Promise<string> {
+export async function readPromptFromStdinIfAvailable(
+  stdin: NodeJS.ReadStream = process.stdin
+): Promise<string> {
   if (stdin.isTTY) return '';
 
   stdin.setEncoding('utf8');
@@ -229,13 +275,12 @@ export async function readPromptFromStdinIfAvailable(stdin: NodeJS.ReadStream = 
 export async function launchPrintMode(
   runtime: OpenHorseUiRuntime,
   input: string,
-  options: PrintModeOptions = {},
+  options: PrintModeOptions = {}
 ): Promise<number> {
   const outputFormat = options.outputFormat ?? 'text';
   await runtime.mcpReady?.catch(() => undefined);
 
   const events = new PrintEventSink(runtime, outputFormat);
-  let controller!: AgentRuntimeController;
   const eventSink: AgentRuntimeEventSink = {
     emit: event => {
       if (event.type !== 'permission_requested') {
@@ -252,7 +297,7 @@ export async function launchPrintMode(
       return undefined;
     },
   };
-  controller = new AgentRuntimeController({
+  const controller = new AgentRuntimeController({
     runtime,
     eventSink,
     echoSubmittedInput: false,
@@ -261,19 +306,71 @@ export async function launchPrintMode(
     uiRenderer: 'print',
   });
 
+  let requestedExitCode: number | undefined;
+  let lifecycleError: unknown;
+  let hasLifecycleError = false;
   try {
     const result = controller.handle({ type: 'submit', text: input, source: 'programmatic' });
     if (result.type === 'exit_requested' || result.type === 'empty') {
-      return result.type === 'empty' ? 1 : 0;
+      requestedExitCode = result.type === 'empty' ? 1 : 0;
+    } else {
+      await controller.waitForIdle();
     }
-    await controller.waitForIdle();
-  } finally {
+  } catch (error) {
+    lifecycleError = error;
+    hasLifecycleError = true;
+  }
+
+  // A completed turn may already have queued a Goal continuation for the next
+  // tick. Stop the shared controller before shutting down runtime services so
+  // non-interactive mode can never issue a ghost provider call. Capture errors
+  // until after output is drained because the CLI exits immediately on reject.
+  try {
+    await controller.stopActiveTurn();
+  } catch (error) {
+    lifecycleError = error;
+    hasLifecycleError = true;
+  }
+  try {
     await runtime.shutdown();
+  } catch (error) {
+    // Preserve shutdown as the primary lifecycle failure, matching the former
+    // nested-finally behavior when stopping and shutdown both failed.
+    lifecycleError = error;
+    hasLifecycleError = true;
   }
 
-  if (outputFormat === 'json') {
-    process.stdout.write(`${JSON.stringify(events.result(), null, 2)}\n`);
+  let outputError: unknown;
+  let hasOutputError = false;
+  try {
+    if (outputFormat === 'json') {
+      await flushStdout(`${JSON.stringify(events.result(), null, 2)}\n`);
+    } else {
+      // `src/cli.ts` exits immediately after this promise resolves. Queueing an
+      // empty write behind the streamed text guarantees every prior write has
+      // reached the underlying descriptor before that explicit process exit.
+      await flushStdout();
+    }
+  } catch (error) {
+    outputError = error;
+    hasOutputError = true;
+  }
+  // Status, Goal lifecycle and error diagnostics are written to stderr. The
+  // CLI calls process.exit immediately after this function resolves, so queue
+  // a callback behind those writes as well to prevent redirected diagnostics
+  // from being truncated.
+  try {
+    await flushStderr();
+  } catch (error) {
+    if (!hasOutputError) {
+      outputError = error;
+      hasOutputError = true;
+    }
   }
 
-  return events.hasErrors() ? 1 : 0;
+  if (hasLifecycleError) throw lifecycleError;
+  if (hasOutputError) throw outputError;
+
+  if (events.hasErrors()) return 1;
+  return requestedExitCode ?? 0;
 }

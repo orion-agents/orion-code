@@ -1,4 +1,5 @@
 import { execFileSync } from 'child_process';
+import { createHash } from 'crypto';
 import { statSync } from 'fs';
 import { join } from 'path';
 
@@ -13,6 +14,7 @@ export interface WorkspaceSnapshot {
   gitAvailable: boolean;
   dirty: boolean;
   branch?: string;
+  head?: string;
   fileCount: number;
   files: WorkspaceFileChange[];
   error?: string;
@@ -83,18 +85,26 @@ export function captureWorkspaceSnapshot(cwd: string): WorkspaceSnapshot {
   } catch {
     branch = undefined;
   }
+  let head: string | undefined;
+  try {
+    head = runGit(cwd, ['rev-parse', 'HEAD']) || undefined;
+  } catch {
+    head = undefined;
+  }
 
   try {
     const output = runGit(cwd, ['status', '--porcelain=v1', '--untracked-files=all']);
     const files = output
-      ? (output.split('\n').map(parsePorcelainLine).filter(Boolean) as WorkspaceFileChange[])
-        .map(file => attachFileMetadata(gitRoot, file))
+      ? (output.split('\n').map(parsePorcelainLine).filter(Boolean) as WorkspaceFileChange[]).map(
+          file => attachFileMetadata(gitRoot, file)
+        )
       : [];
 
     return {
       gitAvailable: true,
       dirty: files.length > 0,
       branch,
+      head,
       fileCount: files.length,
       files,
     };
@@ -103,6 +113,7 @@ export function captureWorkspaceSnapshot(cwd: string): WorkspaceSnapshot {
       gitAvailable: true,
       dirty: false,
       branch,
+      head,
       fileCount: 0,
       files: [],
       error: error instanceof Error ? error.message : String(error),
@@ -110,24 +121,43 @@ export function captureWorkspaceSnapshot(cwd: string): WorkspaceSnapshot {
   }
 }
 
-function fileFingerprint(file: WorkspaceFileChange | undefined): string {
-  if (!file) return '';
-  return [
-    file.status,
-    file.path,
-    file.sizeBytes ?? 'missing',
-    file.mtimeMs ?? 'missing',
-  ].join('\0');
+/** Stable workspace identity used to invalidate verification after code changes. */
+export function fingerprintWorkspaceSnapshot(snapshot: WorkspaceSnapshot): string | undefined {
+  if (!snapshot.gitAvailable || snapshot.error) return undefined;
+  const files = [...snapshot.files]
+    .sort((a, b) => a.path.localeCompare(b.path))
+    .map(file => [file.status, file.path, file.sizeBytes ?? null, file.mtimeMs ?? null]);
+  return createHash('sha256')
+    .update(JSON.stringify({ head: snapshot.head, branch: snapshot.branch, files }))
+    .digest('hex');
 }
 
-export function diffWorkspaceSnapshots(before: WorkspaceSnapshot, after: WorkspaceSnapshot): WorkspaceDelta {
+export function captureWorkspaceFingerprint(cwd: string): string | undefined {
+  return fingerprintWorkspaceSnapshot(captureWorkspaceSnapshot(cwd));
+}
+
+function fileFingerprint(file: WorkspaceFileChange | undefined): string {
+  if (!file) return '';
+  return [file.status, file.path, file.sizeBytes ?? 'missing', file.mtimeMs ?? 'missing'].join(
+    '\0'
+  );
+}
+
+export function diffWorkspaceSnapshots(
+  before: WorkspaceSnapshot,
+  after: WorkspaceSnapshot
+): WorkspaceDelta {
   const beforeByPath = new Map(before.files.map(file => [file.path, file]));
   const afterByPath = new Map(after.files.map(file => [file.path, file]));
   const beforeSet = new Set(beforeByPath.keys());
   const afterSet = new Set(afterByPath.keys());
 
   const changedByTurn = [...afterSet]
-    .filter(file => !beforeSet.has(file) || fileFingerprint(beforeByPath.get(file)) !== fileFingerprint(afterByPath.get(file)))
+    .filter(
+      file =>
+        !beforeSet.has(file) ||
+        fileFingerprint(beforeByPath.get(file)) !== fileFingerprint(afterByPath.get(file))
+    )
     .sort();
 
   return {

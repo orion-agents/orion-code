@@ -18,8 +18,9 @@ export interface TuiFileQuery {
 }
 
 export function visibleCommandItems(input: string): TuiPickerItem[] {
+  const commandToken = input.match(/^\/([^\s]*)/u)?.[1] ?? '';
   return createCommandPickerState({
-    input,
+    input: `/${commandToken}`,
     commands: getVisibleCommands('tui'),
     categoryLabel: getCommandCategoryLabel,
   }).visibleItems.map(item => ({
@@ -41,9 +42,11 @@ export function visibleFileItems(cwd: string, input: string): TuiPickerItem[] {
     files: matchFiles(fileQuery.query, cwd, { limit: 80 }),
     maxVisibleItems: 80,
   });
-  return state?.visibleItems.map(item => ({
-    value: item.value,
-    label: item.label,
-    description: item.description,
-  })) ?? [];
+  return (
+    state?.visibleItems.map(item => ({
+      value: item.value,
+      label: item.label,
+      description: item.description,
+    })) ?? []
+  );
 }

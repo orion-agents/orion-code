@@ -6,14 +6,14 @@ Orion Code is a TypeScript CLI and agent harness. Source lives in `src/`, with t
 
 ## Build, Test, and Development Commands
 
-- `npm install`: install dependencies; Node.js 18+ is required.
+- `npm install`: install dependencies; Node.js 20+ is required.
 - `npm run start` or `npm run cli`: run the CLI through `ts-node src/cli.ts`.
 - `npm run dev`: run the CLI with `nodemon` for local iteration.
 - `npm run build`: compile TypeScript into `dist/` and emit declarations.
 - `npm test`: run the Jest suite from `tests/`.
 - `npm run lint`: lint `src/` with ESLint.
 - `npm run format`: format `src/` with Prettier.
-- `npm run prepublishOnly`: build and test before publishing.
+- `npm run prepublishOnly`: lint, build, and run the full serial Jest suite before publishing.
 
 ## Coding Style & Naming Conventions
 
@@ -31,20 +31,14 @@ Use Conventional Commits, matching history: `feat:`, `fix:`, `docs:`, `test:`, `
 
 Do not commit `.env`, local config, generated databases, or secrets. Use `.env.example` and `docs/orion.example.json` as references for configuration. Review changes to `src/tools/bash_security.ts`, auth services, MCP transports, and file-writing utilities carefully because they affect command execution and local system access.
 
+OH_TERMINAL_AGENT_RULE_MARKER_20260619
 
 OH_TERMINAL_AGENT_RULE_MARKER_20260619
 
+OH_TERMINAL_AGENT_RULE_MARKER_20260619
 
 OH_TERMINAL_AGENT_RULE_MARKER_20260619
 
-
 OH_TERMINAL_AGENT_RULE_MARKER_20260619
-
-
-OH_TERMINAL_AGENT_RULE_MARKER_20260619
-
-
-OH_TERMINAL_AGENT_RULE_MARKER_20260619
-
 
 OC_TERMINAL_AGENT_RULE_MARKER_20260619

@@ -6,6 +6,7 @@
 
 export type ProviderFailureKind =
   | 'aborted'
+  | 'preflight_rejected'
   | 'connect_timeout'
   | 'read_timeout'
   | 'connection_reset'
@@ -104,7 +105,13 @@ export interface ProviderRequestDiagnosticsV2 {
   operation: ProviderOperation;
   requestedModel: string;
   finalModel?: string;
-  finalState: 'succeeded' | 'recovered' | 'retry_exhausted' | 'failed_fast' | 'aborted' | 'circuit_open';
+  finalState:
+    | 'succeeded'
+    | 'recovered'
+    | 'retry_exhausted'
+    | 'failed_fast'
+    | 'aborted'
+    | 'circuit_open';
   attempts: ProviderAttemptRecord[];
   retryCount: number;
   recoveryCount: number;

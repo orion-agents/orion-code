@@ -3,6 +3,7 @@
  */
 
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import {
   storeArtifact,
@@ -16,26 +17,18 @@ import {
 } from '../src/core/tool-artifacts';
 import { getProjectArtifactsDir } from '../src/services/config-dir';
 
-const TEST_PROJECT = '/tmp/openhorse-artifact-test';
+let testProject = '';
 
 describe('tool-artifacts', () => {
   beforeEach(() => {
-    if (fs.existsSync(TEST_PROJECT)) {
-      fs.rmSync(TEST_PROJECT, { recursive: true, force: true });
-    }
-    fs.mkdirSync(TEST_PROJECT, { recursive: true });
-    if (fs.existsSync(getProjectArtifactsDir(TEST_PROJECT))) {
-      fs.rmSync(getProjectArtifactsDir(TEST_PROJECT), { recursive: true, force: true });
-    }
+    testProject = fs.mkdtempSync(path.join(os.tmpdir(), 'orion-artifact-test-'));
   });
 
   afterEach(() => {
-    if (fs.existsSync(TEST_PROJECT) && fs.existsSync(getProjectArtifactsDir(TEST_PROJECT))) {
-      fs.rmSync(getProjectArtifactsDir(TEST_PROJECT), { recursive: true, force: true });
-    }
-    if (fs.existsSync(TEST_PROJECT)) {
-      fs.rmSync(TEST_PROJECT, { recursive: true, force: true });
-    }
+    const artifactDir = testProject ? getProjectArtifactsDir(testProject) : '';
+    if (artifactDir) fs.rmSync(artifactDir, { recursive: true, force: true });
+    if (testProject) fs.rmSync(testProject, { recursive: true, force: true });
+    testProject = '';
   });
 
   test('ARTIFACT_THRESHOLD is 10KB', () => {
@@ -44,14 +37,14 @@ describe('tool-artifacts', () => {
 
   test('storeArtifact creates a file and returns reference', () => {
     const output = 'Hello, artifact!';
-    const artifact = storeArtifact(TEST_PROJECT, 'read_file', output, Buffer.byteLength(output));
+    const artifact = storeArtifact(testProject, 'read_file', output, Buffer.byteLength(output));
 
     expect(artifact).not.toBeNull();
     expect(artifact!.id).toMatch(/^read_file-\d+-[a-z0-9]+$/);
     expect(artifact!.outputBytes).toBe(Buffer.byteLength(output));
     expect(artifact!.truncated).toBe(false);
     expect(fs.existsSync(artifact!.path)).toBe(true);
-    expect(artifact!.path.startsWith(getProjectArtifactsDir(TEST_PROJECT))).toBe(true);
+    expect(artifact!.path.startsWith(getProjectArtifactsDir(testProject))).toBe(true);
   });
 
   test('sanitizeArtifactToolName preserves known names and strips unsafe characters', () => {
@@ -69,10 +62,10 @@ describe('tool-artifacts', () => {
   test('storeArtifact keeps unsafe tool names inside the artifact directory', () => {
     const output = 'Sensitive artifact output';
     const artifact = storeArtifact(
-      TEST_PROJECT,
+      testProject,
       '../sk-secretvalue123456/read_file',
       output,
-      Buffer.byteLength(output),
+      Buffer.byteLength(output)
     );
 
     expect(artifact).not.toBeNull();
@@ -81,7 +74,7 @@ describe('tool-artifacts', () => {
     expect(artifact!.id).not.toContain('\\');
     expect(artifact!.id).not.toContain('sk-secretvalue123456');
     expect(path.basename(artifact!.path)).toBe(`${artifact!.id}.txt`);
-    const artifactDir = `${path.resolve(getProjectArtifactsDir(TEST_PROJECT))}${path.sep}`;
+    const artifactDir = `${path.resolve(getProjectArtifactsDir(testProject))}${path.sep}`;
     expect(path.resolve(artifact!.path).startsWith(artifactDir)).toBe(true);
     expect(fs.existsSync(artifact!.path)).toBe(true);
     expect(retrieveArtifact(artifact!.path)).toBe(output);
@@ -89,21 +82,21 @@ describe('tool-artifacts', () => {
 
   test('retrieveArtifact returns the stored content', () => {
     const output = 'Test content for retrieval';
-    const artifact = storeArtifact(TEST_PROJECT, 'grep', output, Buffer.byteLength(output));
+    const artifact = storeArtifact(testProject, 'grep', output, Buffer.byteLength(output));
 
     const retrieved = retrieveArtifact(artifact!.path);
     expect(retrieved).toBe(output);
   });
 
   test('listArtifacts returns newest artifacts with metadata', () => {
-    const first = storeArtifact(TEST_PROJECT, 'grep', 'first', 5)!;
-    const second = storeArtifact(TEST_PROJECT, 'read_file', 'second', 6)!;
+    const first = storeArtifact(testProject, 'grep', 'first', 5)!;
+    const second = storeArtifact(testProject, 'read_file', 'second', 6)!;
     const older = new Date(Date.now() - 1000);
     const newer = new Date();
     fs.utimesSync(first.path, older, older);
     fs.utimesSync(second.path, newer, newer);
 
-    const artifacts = listArtifacts(TEST_PROJECT);
+    const artifacts = listArtifacts(testProject);
 
     expect(artifacts.map(artifact => artifact.id)).toEqual([second.id, first.id]);
     expect(artifacts[0]).toMatchObject({
@@ -115,11 +108,11 @@ describe('tool-artifacts', () => {
   });
 
   test('findArtifact resolves exact ids and unique prefixes', () => {
-    const artifact = storeArtifact(TEST_PROJECT, 'exec_command', 'output', 6)!;
+    const artifact = storeArtifact(testProject, 'exec_command', 'output', 6)!;
 
-    expect(findArtifact(TEST_PROJECT, artifact.id)).toMatchObject({ id: artifact.id });
-    expect(findArtifact(TEST_PROJECT, artifact.id.slice(0, 16))).toMatchObject({ id: artifact.id });
-    expect(findArtifact(TEST_PROJECT, '../bad')).toBeNull();
+    expect(findArtifact(testProject, artifact.id)).toMatchObject({ id: artifact.id });
+    expect(findArtifact(testProject, artifact.id.slice(0, 16))).toMatchObject({ id: artifact.id });
+    expect(findArtifact(testProject, '../bad')).toBeNull();
   });
 
   test('storeArtifact returns null for empty project path', () => {
@@ -153,21 +146,21 @@ describe('tool-artifacts', () => {
   });
 
   test('cleanupArtifacts removes old files', () => {
-    const artifact = storeArtifact(TEST_PROJECT, 'test', 'data', 4);
+    const artifact = storeArtifact(testProject, 'test', 'data', 4);
     // Make the file old
     const oldTime = new Date(Date.now() - 25 * 60 * 60 * 1000); // 25 hours ago
     fs.utimesSync(artifact!.path, oldTime, oldTime);
 
-    cleanupArtifacts(TEST_PROJECT);
+    cleanupArtifacts(testProject);
 
     expect(fs.existsSync(artifact!.path)).toBe(false);
   });
 
   test('cleanupArtifacts keeps recent files', () => {
-    const artifact = storeArtifact(TEST_PROJECT, 'test', 'data', 4);
+    const artifact = storeArtifact(testProject, 'test', 'data', 4);
     // File is current (default)
 
-    cleanupArtifacts(TEST_PROJECT);
+    cleanupArtifacts(testProject);
 
     expect(fs.existsSync(artifact!.path)).toBe(true);
   });

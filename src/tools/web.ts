@@ -26,6 +26,7 @@ import {
   shouldFallbackToAdapters,
   shouldTryMcpFirst,
 } from '../services/web-search-adapters';
+import { ORION_USER_AGENT } from '../product/version';
 
 // ============================================================================
 // SSRF Protection - Issue #32 #3.7
@@ -33,15 +34,15 @@ import {
 
 /** 内网 IP 地址范围（禁止访问） */
 const BLOCKED_IP_PATTERNS = [
-  /^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/,       // 127.x.x.x (localhost range)
-  /^10\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/,        // 10.x.x.x (private class A)
-  /^192\.168\.(\d{1,3})\.(\d{1,3})$/,             // 192.168.x.x (private class C)
-  /^169\.254\.(\d{1,3})\.(\d{1,3})$/,             // 169.254.x.x (link-local)
+  /^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/, // 127.x.x.x (localhost range)
+  /^10\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/, // 10.x.x.x (private class A)
+  /^192\.168\.(\d{1,3})\.(\d{1,3})$/, // 192.168.x.x (private class C)
+  /^169\.254\.(\d{1,3})\.(\d{1,3})$/, // 169.254.x.x (link-local)
   /^172\.(1[6-9]|2\d|3[01])\.(\d{1,3})\.(\d{1,3})$/, // 172.16-31.x.x (private class B)
-  /^0\.0\.0\.0$/,                                  // 0.0.0.0
-  /^::1$/,                                         // IPv6 localhost
-  /^fc[0-9a-f]{2}:/i,                              // IPv6 unique local
-  /^fe[8-9a-f][0-9a-f]:/i,                         // IPv6 link-local
+  /^0\.0\.0\.0$/, // 0.0.0.0
+  /^::1$/, // IPv6 localhost
+  /^fc[0-9a-f]{2}:/i, // IPv6 unique local
+  /^fe[8-9a-f][0-9a-f]:/i, // IPv6 link-local
 ];
 
 /** 禁止访问的主机名 */
@@ -50,9 +51,9 @@ const BLOCKED_HOSTNAMES = [
   'localhost.localdomain',
   'ip6-localhost',
   'ip6-loopback',
-  'metadata.google.internal',    // GCP metadata server
-  'metadata',                     // Azure metadata
-  'kubernetes.default',           // K8s internal
+  'metadata.google.internal', // GCP metadata server
+  'metadata', // Azure metadata
+  'kubernetes.default', // K8s internal
   'kubernetes.default.svc',
 ];
 
@@ -92,13 +93,20 @@ function isUrlSafeForSSRF(url: string): { safe: boolean; reason?: string } {
     if (normalizedV4) {
       for (const pattern of BLOCKED_IP_PATTERNS) {
         if (pattern.test(normalizedV4)) {
-          return { safe: false, reason: `Blocked IP range: ${hostname} (resolves to ${normalizedV4})` };
+          return {
+            safe: false,
+            reason: `Blocked IP range: ${hostname} (resolves to ${normalizedV4})`,
+          };
         }
       }
     }
 
     // 检查以 .internal, .local, .localhost 结尾的主机名
-    if (hostname.endsWith('.internal') || hostname.endsWith('.local') || hostname.endsWith('.localhost')) {
+    if (
+      hostname.endsWith('.internal') ||
+      hostname.endsWith('.local') ||
+      hostname.endsWith('.localhost')
+    ) {
       return { safe: false, reason: `Blocked internal hostname: ${hostname}` };
     }
 
@@ -290,9 +298,9 @@ interface FetchResult {
   content: string;
   code: number;
   contentType: string;
-  url?: string;           // 最终 URL（跟随重定向后）
-  redirects?: string[];   // 重定向链
-  errorType?: string;     // 错误类型
+  url?: string; // 最终 URL（跟随重定向后）
+  redirects?: string[]; // 重定向链
+  errorType?: string; // 错误类型
 }
 
 async function fetchUrl(url: string, _maxRedirects: number = 5): Promise<FetchResult> {
@@ -314,10 +322,10 @@ async function fetchUrl(url: string, _maxRedirects: number = 5): Promise<FetchRe
     // Issue #20 修复：启用 redirect: 'follow' 自动跟随重定向
     const response = await fetch(url, {
       headers: {
-        'User-Agent': 'Orion-Code/0.2.27',
-        'Accept': 'text/html,application/xhtml+xml,text/markdown,text/plain,*/*',
+        'User-Agent': ORION_USER_AGENT,
+        Accept: 'text/html,application/xhtml+xml,text/markdown,text/plain,*/*',
       },
-      redirect: 'follow',  // 自动跟随重定向（最多 20 次，由 fetch 内置限制）
+      redirect: 'follow', // 自动跟随重定向（最多 20 次，由 fetch 内置限制）
     });
 
     // Issue #32 #3.7: Content-Length 检查
@@ -426,12 +434,13 @@ Before using this tool, check if the URL points to an authenticated service (e.g
       },
       prompt: {
         type: 'string',
-        description: 'The prompt to run on the fetched content (e.g. "extract the title", "summarize the content")',
+        description:
+          'The prompt to run on the fetched content (e.g. "extract the title", "summarize the content")',
       },
     },
     required: ['url', 'prompt'],
   },
-  execute: async (args) => {
+  execute: async args => {
     const url = args.url as string;
     const prompt = args.prompt as string;
 
@@ -499,7 +508,7 @@ Before using this tool, check if the URL points to an authenticated service (e.g
   },
   isReadOnly: () => true,
   isConcurrencySafe: () => true,
-  checkPermissions: (args) => {
+  checkPermissions: args => {
     const url = args.url as string;
     try {
       const parsed = new URL(url);
@@ -511,7 +520,7 @@ Before using this tool, check if the URL points to an authenticated service (e.g
     }
     return { behavior: 'ask', reason: 'Fetching external URL' };
   },
-  userFacingName: (args) => {
+  userFacingName: args => {
     try {
       const url = new URL(args.url as string);
       return `Fetch ${url.hostname}`;
@@ -576,7 +585,7 @@ You MUST include the Sources section with markdown hyperlinks in your response.`
     },
     required: ['query'],
   },
-  execute: async (args) => {
+  execute: async args => {
     const query = args.query as string;
     const limit = (args.limit as number) || 5;
 
@@ -598,13 +607,23 @@ You MUST include the Sources section with markdown hyperlinks in your response.`
         return {
           success: true,
           output: result.output,
-          metadata: { source: 'websearch-mcp', provider: result.provider, endpoint: result.endpoint, tool: result.toolName },
+          metadata: {
+            source: 'websearch-mcp',
+            provider: result.provider,
+            endpoint: result.endpoint,
+            tool: result.toolName,
+          },
         };
       } catch (err: any) {
         const resolvedConfig = resolveWebSearchMcpConfig(config);
-        mcpError = err instanceof WebSearchMcpError
-          ? err
-          : new WebSearchMcpError('WEBSEARCH_MCP_ERROR', err.message || String(err), resolvedConfig.endpoint || DEFAULT_WEBSEARCH_MCP_ENDPOINT);
+        mcpError =
+          err instanceof WebSearchMcpError
+            ? err
+            : new WebSearchMcpError(
+                'WEBSEARCH_MCP_ERROR',
+                err.message || String(err),
+                resolvedConfig.endpoint || DEFAULT_WEBSEARCH_MCP_ENDPOINT
+              );
 
         if (!shouldFallbackToAdapters(mode)) {
           return {
@@ -617,7 +636,11 @@ You MUST include the Sources section with markdown hyperlinks in your response.`
               message: mcpError.message,
               suggestion: getWebSearchMcpErrorSuggestion(resolvedConfig),
             }),
-            metadata: { source: 'websearch-mcp', provider: resolvedConfig.provider, endpoint: mcpError.endpoint },
+            metadata: {
+              source: 'websearch-mcp',
+              provider: resolvedConfig.provider,
+              endpoint: mcpError.endpoint,
+            },
           };
         }
       }
@@ -631,7 +654,11 @@ You MUST include the Sources section with markdown hyperlinks in your response.`
       return {
         success: true,
         output: formatAdapterOutput(adapterResult, query),
-        metadata: { source: 'websearch-adapter', provider: adapterResult.provider, mcpError: mcpError?.type },
+        metadata: {
+          source: 'websearch-adapter',
+          provider: adapterResult.provider,
+          mcpError: mcpError?.type,
+        },
       };
     } catch (adapterErr: any) {
       const resolvedConfig = resolveWebSearchMcpConfig(config);
@@ -655,7 +682,11 @@ You MUST include the Sources section with markdown hyperlinks in your response.`
             'Or set ORION_CODE_WEBSEARCH_PROVIDER=ddg/tavily/brave/custom with the matching adapter configuration.',
           ].join(' '),
         }),
-        metadata: { source: 'websearch', provider: resolvedConfig.provider, endpoint: resolvedConfig.endpoint },
+        metadata: {
+          source: 'websearch',
+          provider: resolvedConfig.provider,
+          endpoint: resolvedConfig.endpoint,
+        },
       };
     }
   },
@@ -664,7 +695,7 @@ You MUST include the Sources section with markdown hyperlinks in your response.`
   checkPermissions: () => {
     return { behavior: 'ask', reason: 'Web search may query external services' };
   },
-  userFacingName: (args) => `Search "${(args.query as string)?.slice(0, 30)}"`,
+  userFacingName: args => `Search "${(args.query as string)?.slice(0, 30)}"`,
 });
 
 // ============================================================================

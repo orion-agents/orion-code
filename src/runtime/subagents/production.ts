@@ -12,13 +12,18 @@
  * `query()`.
  */
 
-import { LLMService, type LLMConfig, type Message } from '../../services/llm';
+import {
+  LLMService,
+  type LLMConfig,
+  type Message,
+  type ProviderRequestPreflight,
+} from '../../services/llm';
 import type { ProviderResilienceCoordinator } from '../../services/provider-resilience';
 import type { LoopStats } from '../../framework';
 import { query, type QueryEvent, type QueryParams } from '../../framework/query';
 import type { ExecuteChildQuery } from './runner';
 import type { SubtaskUsage } from './types';
-import { EMPTY_SUBTASK_USAGE } from './types';
+import { EMPTY_SUBTASK_USAGE, SubtaskExecutionError } from './types';
 import type { SubagentProviderGate } from './provider-gate';
 
 export interface SubagentLlmFactoryDeps {
@@ -34,6 +39,8 @@ export interface SubagentLlmFactoryDeps {
   providerGate: SubagentProviderGate;
   /** Per-child turn cap. */
   maxTurnsPerTask: number;
+  /** Shared Goal token-budget preflight applied to every child provider attempt. */
+  beforeProviderRequest?: ProviderRequestPreflight;
 }
 
 /**
@@ -42,7 +49,7 @@ export interface SubagentLlmFactoryDeps {
  * another child's model choice or diagnostics.
  */
 export function createChildLlmConfig(
-  rootConfig: Pick<LLMConfig, 'apiKey' | 'baseUrl' | 'model' | 'fallbackModel'>,
+  rootConfig: Pick<LLMConfig, 'apiKey' | 'baseUrl' | 'model' | 'fallbackModel'>
 ): LLMConfig {
   return {
     apiKey: rootConfig.apiKey,
@@ -62,29 +69,55 @@ export function createChildLlmConfig(
  */
 export function createProductionExecuteQuery(deps: SubagentLlmFactoryDeps): ExecuteChildQuery {
   const createLlm = deps.createLlm ?? ((config: LLMConfig) => new LLMService(config));
-  const runQuery = deps.runQuery ?? (((params: QueryParams) => query(params)) as (params: QueryParams) => AsyncIterable<QueryEvent>);
-  return async (messages, toolSet, abortSignal): Promise<{ content: string; usage: SubtaskUsage }> => {
+  const runQuery =
+    deps.runQuery ??
+    (((params: QueryParams) => query(params)) as (
+      params: QueryParams
+    ) => AsyncIterable<QueryEvent>);
+  return async (
+    messages,
+    toolSet,
+    abortSignal
+  ): Promise<{ content: string; usage: SubtaskUsage }> => {
     const llm = createLlm(createChildLlmConfig(deps.rootConfig));
     // v0.2.26: inject the shared resilience coordinator so child requests
     // also go through the retry/circuit-breaker/stream-recovery layer.
     if (deps.resilience) {
       llm.resilience = deps.resilience;
     }
+    let providerAttempts = 0;
+    const providerPreflight: ProviderRequestPreflight = async context => {
+      providerAttempts += 1;
+      return deps.beforeProviderRequest ? deps.beforeProviderRequest(context) : { available: true };
+    };
+    const restoreProviderPreflight =
+      typeof llm.setProviderRequestPreflight === 'function'
+        ? llm.setProviderRequestPreflight(providerPreflight)
+        : undefined;
     let finalContent = '';
     const usage: SubtaskUsage = { ...EMPTY_SUBTASK_USAGE };
+    const startedAt = Date.now();
     let modelRequests = 0;
     let observedModelRequests = 0;
     let providerCostComplete = true;
     let providerCostUsd = 0;
-    const unsubscribeUsage = typeof llm.subscribeUsage === 'function'
-      ? llm.subscribeUsage(event => {
-          observedModelRequests++;
-          usage.promptTokens += event.usage.promptTokens;
-          usage.completionTokens += event.usage.completionTokens;
-          if (event.usage.costUsd === undefined) providerCostComplete = false;
-          else providerCostUsd += event.usage.costUsd;
-        })
-      : undefined;
+    let completionUsageComplete = false;
+    const unsubscribeUsage =
+      typeof llm.subscribeUsage === 'function'
+        ? llm.subscribeUsage(event => {
+            observedModelRequests++;
+            usage.promptTokens += event.usage.promptTokens;
+            usage.completionTokens += event.usage.completionTokens;
+            if (event.usage.costUsd === undefined) providerCostComplete = false;
+            else providerCostUsd += event.usage.costUsd;
+          })
+        : undefined;
+    const finalizeUsage = (usageComplete: boolean): void => {
+      usage.modelRequests = Math.max(usage.modelRequests, modelRequests, observedModelRequests);
+      usage.durationMs = Math.max(0, Date.now() - startedAt);
+      usage.usageComplete = usageComplete;
+      if (observedModelRequests > 0 && providerCostComplete) usage.costUsd = providerCostUsd;
+    };
 
     try {
       const params: QueryParams = {
@@ -107,7 +140,7 @@ export function createProductionExecuteQuery(deps: SubagentLlmFactoryDeps): Exec
             event.stats,
             modelRequests,
             event.usage?.promptTokens,
-            event.usage?.completionTokens,
+            event.usage?.completionTokens
           );
           usage.modelRequests = loopUsage.modelRequests;
           usage.toolCalls = loopUsage.toolCalls;
@@ -115,9 +148,27 @@ export function createProductionExecuteQuery(deps: SubagentLlmFactoryDeps): Exec
             usage.promptTokens = loopUsage.promptTokens;
             usage.completionTokens = loopUsage.completionTokens;
           }
+          const expectedSuccessfulRequests = Math.max(
+            event.stats?.llmRequests ?? 0,
+            loopUsage.modelRequests
+          );
+          const hasAggregateUsage = Boolean(
+            event.usage &&
+            Number.isFinite(event.usage.promptTokens) &&
+            Number.isFinite(event.usage.completionTokens)
+          );
+          const successfulUsageCovered =
+            observedModelRequests >= expectedSuccessfulRequests || hasAggregateUsage;
+          const unknownFailedAttempts =
+            (event.stats?.providerRetryCount ?? 0) > 0 ||
+            (event.stats?.providerFallbackCount ?? 0) > 0 ||
+            (Boolean(unsubscribeUsage) && providerAttempts > observedModelRequests);
+          completionUsageComplete = successfulUsageCovered && !unknownFailedAttempts;
         } else if (event.type === 'assistant_tool_calls') {
           modelRequests += 1;
           finalContent = event.content;
+        } else if (event.type === 'tool_result') {
+          usage.toolCalls += 1;
         }
       }
     } catch (err) {
@@ -126,15 +177,16 @@ export function createProductionExecuteQuery(deps: SubagentLlmFactoryDeps): Exec
         const retryAfter = extractRetryAfterMs(err);
         deps.providerGate.enterCooldown(retryAfter);
       }
-      // Re-throw so the runner normalizes into failed/cancelled. The runner
-      // never lets this propagate to the root loop.
-      throw err;
+      // Preserve already-observed usage as a lower bound. The runner
+      // normalizes this into failed/cancelled without losing provider cost.
+      finalizeUsage(false);
+      throw new SubtaskExecutionError(err instanceof Error ? err.message : String(err), usage);
     } finally {
       unsubscribeUsage?.();
+      restoreProviderPreflight?.();
     }
 
-    usage.modelRequests = Math.max(usage.modelRequests, modelRequests, observedModelRequests);
-    if (observedModelRequests > 0 && providerCostComplete) usage.costUsd = providerCostUsd;
+    finalizeUsage(completionUsageComplete);
     return { content: finalContent, usage };
   };
 }
@@ -143,7 +195,7 @@ function loopStatsToUsage(
   stats: LoopStats | undefined,
   modelRequests: number,
   promptTokens?: number,
-  completionTokens?: number,
+  completionTokens?: number
 ): SubtaskUsage {
   return {
     modelRequests: Math.max(modelRequests, stats?.llmRequests ?? modelRequests, 1),

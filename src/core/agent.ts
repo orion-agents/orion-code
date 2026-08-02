@@ -6,8 +6,9 @@
  * Issue #32 #2.4: 类型安全重构 - 引入泛型 + 鉴别联合
  */
 
+import { randomUUID } from 'crypto';
+
 import { EventEmitter } from 'eventemitter3';
-import { v4 as uuidv4 } from 'uuid';
 
 export interface AgentConfig {
   id: string;
@@ -59,14 +60,14 @@ export abstract class BaseAgent extends EventEmitter {
   public readonly name: string;
   public readonly description: string;
   public readonly capabilities: string[];
-  
+
   protected maxRetries: number;
   protected timeout: number;
   protected status: 'idle' | 'working' | 'error' = 'idle';
 
   constructor(config: AgentConfig) {
     super();
-    this.id = config.id || uuidv4();
+    this.id = config.id || randomUUID();
     this.name = config.name;
     this.description = config.description;
     this.capabilities = config.capabilities;
@@ -96,7 +97,7 @@ export abstract class BaseAgent extends EventEmitter {
    */
   registerSkill<P = unknown, R = unknown>(
     name: string,
-    handler: (ctx: SkillContext<P>) => Promise<R> | R,
+    handler: (ctx: SkillContext<P>) => Promise<R> | R
   ): void {
     this.on(`skill:${name}`, handler);
   }
@@ -104,10 +105,7 @@ export abstract class BaseAgent extends EventEmitter {
   /**
    * 触发技能 (Issue #32 #2.4: 泛型化)
    */
-  async triggerSkill<P = unknown, R = unknown>(
-    name: string,
-    params?: P,
-  ): Promise<R[]> {
+  async triggerSkill<P = unknown, R = unknown>(name: string, params?: P): Promise<R[]> {
     const listeners = this.listeners(`skill:${name}`) as Array<
       (ctx: SkillContext<P>) => Promise<R> | R
     >;

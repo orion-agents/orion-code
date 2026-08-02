@@ -2,9 +2,11 @@
 
 > **Orion Code — 通用 Agent 驾驭框架**
 > 一个 CLI 驱动的编码 Agent，具备安全边界、工具编排、记忆系统和上下文管理。
+>
+> v0.1.2 — Goal 连续性与证据审计
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Node.js](https://img.shields.io/badge/node-%3E%3D18.0-green.svg)](https://nodejs.org)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D20.0-green.svg)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/typescript-5.0-blue.svg)](https://www.typescriptlang.org)
 [![npm](https://img.shields.io/npm/v/%40orion-agents%2Forion-code.svg)](https://www.npmjs.com/package/@orion-agents/orion-code)
 
@@ -20,36 +22,37 @@
 
 ### 核心理念
 
-| 维度 | 说明 |
-|------|------|
-| **AI 如马** | 强大的模型需要引导和约束 |
-| **Orion Code 如缰** | 精准控制方向，防止跑偏失控 |
-| **Harness 系统** | 安全边界、任务约束、结果验证 |
-| **工具调用** | LLM 自动调用工具完成任务 |
-| **记忆系统** | 分层记忆：工作 / 短期 / 长期 / 语义搜索 |
-| **MCP 协议** | 支持连接外部 MCP Server |
+| 维度                | 说明                                    |
+| ------------------- | --------------------------------------- |
+| **AI 如马**         | 强大的模型需要引导和约束                |
+| **Orion Code 如缰** | 精准控制方向，防止跑偏失控              |
+| **Harness 系统**    | 安全边界、任务约束、结果验证            |
+| **工具调用**        | LLM 自动调用工具完成任务                |
+| **记忆系统**        | 分层记忆：工作 / 短期 / 长期 / 语义搜索 |
+| **MCP 协议**        | 支持连接外部 MCP Server                 |
 
 ---
 
 ## 核心特性
 
-| 特性 | 说明 |
-|------|------|
-| **工具编排** | 20+ 内置工具：文件读写、搜索、Shell、网页、记忆、任务、计划 |
-| **多模型支持** | OpenAI、Claude、DashScope（GLM/Qwen/Kimi）、自定义端点 |
-| **上下文感知** | 每个模型独立的上下文窗口，95% 自动压缩 |
-| **动态发现** | 启动时自动通过 `/models` 端点发现模型信息 |
-| **MCP 协议** | 完整 MCP 支持，心跳检测 + 指数退避重连 |
-| **记忆系统** | 用户 / 项目 / 会话记忆，支持语义搜索 |
-| **会话管理** | 会话持久化、历史恢复、摘要生成 |
-| **安全边界** | Bash 安全检查、审计日志、权限模式 |
-| **流式输出** | 实时 LLM 响应，Markdown 渲染 |
-| **TUI** | 默认且面向公众的主产品界面；支持 transcript、inspector、CJK 输入和工具输出 |
-| **terminal-ui** | 仅用于 runtime 验证、诊断、兼容性排查和必要回退的技术版本 |
-| **Ink** | 已废弃，不再承接新功能，计划在 v0.2.0 删除 |
-| **Print Mode** | 实验性 `-p/--print` 一次性入口，用于后续自动化/remote UI 验证 |
-| **状态栏** | 实时显示 Token 用量、成本、模型、上下文百分比 |
-| **精简配置** | 仅 4 个用户字段，其余由 Agent 内部管理 |
+| 特性            | 说明                                                                       |
+| --------------- | -------------------------------------------------------------------------- |
+| **工具编排**    | 29 个内置工具：文件读写、Shell、网页、记忆、Git、LSP、Goal 和计划          |
+| **多模型支持**  | OpenAI、Claude、DashScope（GLM/Qwen/Kimi）、自定义端点                     |
+| **上下文感知**  | 每个模型独立的上下文窗口，95% 自动压缩                                     |
+| **动态发现**    | 启动时自动通过 `/models` 端点发现模型信息                                  |
+| **MCP 协议**    | 完整 MCP 支持，心跳检测 + 指数退避重连                                     |
+| **记忆系统**    | 用户 / 项目 / 会话记忆，支持语义搜索                                       |
+| **会话管理**    | 会话持久化、历史恢复、摘要生成                                             |
+| **持久 Goal**   | typed 多轮 continuation、安全 restart/resume、逐项证据审计                 |
+| **安全边界**    | Bash 安全检查、审计日志、权限模式                                          |
+| **流式输出**    | 实时 LLM 响应，Markdown 渲染                                               |
+| **TUI**         | 默认且面向公众的主产品界面；支持 transcript、inspector、CJK 输入和工具输出 |
+| **terminal-ui** | 仅用于 runtime 验证、诊断、兼容性排查和必要回退的技术版本                  |
+| **Ink**         | 已废弃，不再承接新功能，计划在 v0.2.0 删除                                 |
+| **Print Mode**  | 实验性 `-p/--print` 一次性入口，用于后续自动化/remote UI 验证              |
+| **状态栏**      | 实时显示 Token 用量、成本、模型、上下文百分比                              |
+| **模型配置**    | `providers + models` profile，可显式绑定端点、协议和上下文能力             |
 
 ---
 
@@ -57,7 +60,7 @@
 
 ### 环境要求
 
-- Node.js >= 18.0
+- Node.js >= 20.0
 - npm >= 9.0
 
 ### 安装运行
@@ -80,7 +83,7 @@ export ORION_CODE_API_KEY=your-api-key
 # 方式 2: .env 文件
 cp .env.example .env
 
-# 方式 3: ~/.orion-code/orion-code.json（推荐）
+# 方式 3: ~/.orion-code/orion.json（推荐）
 # 首次运行时自动创建
 
 # 启动默认公众产品 TUI
@@ -101,66 +104,87 @@ npm start -- --print "review the current git diff"
 
 ### 全局安装
 
+固定安装 v0.1.2：
+
 ```bash
-npm link
+npm install -g @orion-agents/orion-code@0.1.2
 # 任意目录运行
 orion
 ```
 
+也可以在源码工作树中使用 `npm ci && npm run build && npm start`。
+
 公众体验、交互优化和新增工作流优先落在 TUI。`terminal-ui` 不作为与
 TUI 并行发展的公众产品；Ink 只保留迁移期兼容，不再增加产品能力。
+
+### 持久 Goal 安全契约
+
+`/target <目标>` 在当前 session 创建唯一 Active Goal。自动 continuation 是结构化 runtime
+请求，不会伪装成用户输入，也不会写入 transcript。进程重启或 `/resume` 后，原 Active Goal
+会以可见的 paused 恢复态加载；用户必须显式执行 `/target resume` 才会继续。
+
+模型只能请求 `complete` 或 `blocked`，不能直接写入终态。Orion 会记录真实工具/runtime
+证据并逐项审计 success criterion；缺失、失败、未映射、类型不匹配、过期或 stale 证据都会让 Goal 保持未完成。
+需要人工验收的 criterion 只能由用户执行 `/target confirm <criterion-id>` 生成可信的 `user`
+evidence，模型工具不能伪造该确认。
+v0.1.2 只覆盖单 Session、单 Active Goal，不承诺多 Goal 调度或无人值守后台执行。
 
 ---
 
 ## 配置
 
-### 用户配置 (`~/.orion-code/orion-code.json`)
+### 用户配置 (`~/.orion-code/orion.json`)
 
-仅 **4 个字段** 对用户开放，其余由 Agent 内部管理：
+当前推荐使用 `providers + models` 格式。旧的
+`apiKey/apiBaseUrl/defaultModel/fallbackModel` 四字段格式仍可兼容读取，但启动时会提示迁移：
 
 ```json
 {
-  "apiKey": "sk-xxx",
-  "apiBaseUrl": "https://coding.dashscope.aliyuncs.com/v1",
-  "defaultModel": "glm-5",
-  "fallbackModel": "qwen-plus"
+  "providers": [
+    {
+      "id": "my-provider",
+      "baseUrl": "https://api.example.com/v1",
+      "apiKey": "$MY_API_KEY",
+      "protocol": "openai-completions"
+    }
+  ],
+  "models": [
+    {
+      "id": "my-model",
+      "provider": "my-provider",
+      "model": "model-name",
+      "contextWindow": 200000,
+      "maxOutputTokens": 64000
+    }
+  ],
+  "defaultModel": "my-model",
+  "toolConfirmation": "deny",
+  "subagents": { "mode": "auto", "maxParallel": 3 }
 }
 ```
 
-| 字段 | 必填 | 说明 |
-|------|------|------|
-| `apiKey` | 是 | LLM API 密钥 |
-| `apiBaseUrl` | 否 | API 端点 URL |
-| `defaultModel` | 否 | 默认模型（`glm-5`） |
-| `fallbackModel` | 否 | 失败时的降级模型 |
-
-### Agent 内部参数
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `maxTokens` | 8192 | 最大输出 Token 数 |
-| `temperature` | 0.1 | 采样温度 |
-| `maxRetries` | 3 | 失败重试次数 |
-| `retryBaseDelay` | 1000ms | 重试基础延迟 |
+`provider.apiKey` 支持 `$ENV_VAR` 引用；模型上下文和最大输出应按实际 Provider
+能力填写。renderer 不从配置文件持久化读取：直接运行 `orion` 使用默认 TUI，
+`--ui terminal` 只用于技术诊断和兼容回退。
 
 ### 配置优先级
 
 ```
-CLI 参数 > ~/.orion-code/orion-code.json > 环境变量 > 内部默认
+CLI 参数 > ~/.orion-code/orion.json > 环境变量 > 内部默认
 ```
 
 ### 环境变量
 
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `ORION_CODE_API_KEY` | - | LLM API 密钥 |
-| `ORION_CODE_API_BASE_URL` | - | API 基础 URL |
-| `ORION_CODE_MODEL` | `glm-5` | 默认模型 |
-| `ORION_CODE_MODE` | `development` | 运行模式 |
-| `ORION_CODE_LOG_LEVEL` | `info` | 日志级别 |
-| `ORION_CODE_EMBEDDING_PROVIDER` | - | Embedding 服务（ollama/openai） |
+| 变量                            | 默认值        | 说明                            |
+| ------------------------------- | ------------- | ------------------------------- |
+| `ORION_CODE_API_KEY`            | -             | LLM API 密钥                    |
+| `ORION_CODE_API_BASE_URL`       | -             | API 基础 URL                    |
+| `ORION_CODE_MODEL`              | `gpt-4o`      | 默认模型                        |
+| `ORION_CODE_MODE`               | `development` | 运行模式                        |
+| `ORION_CODE_LOG_LEVEL`          | `info`        | 日志级别                        |
+| `ORION_CODE_EMBEDDING_PROVIDER` | -             | Embedding 服务（ollama/openai） |
 
-详见 [docs/config.md](docs/config.md)。
+运行 `/config` 可查看当前生效配置，`orion --help` 可查看 CLI 级覆盖方式。
 
 ---
 
@@ -168,26 +192,26 @@ CLI 参数 > ~/.orion-code/orion-code.json > 环境变量 > 内部默认
 
 ### 模型家族
 
-| 服务商 | 模型 | 端点 |
-|--------|------|------|
-| **GLM（智谱）** | `glm-5`, `glm-4` | DashScope coding |
+| 服务商           | 模型                                               | 端点             |
+| ---------------- | -------------------------------------------------- | ---------------- |
+| **GLM（智谱）**  | `glm-5`, `glm-4`                                   | DashScope coding |
 | **Qwen（通义）** | `qwen-turbo`, `qwen-plus`, `qwen-max`, `qwen-long` | DashScope coding |
-| **OpenAI** | `gpt-4o`, `gpt-4o-mini`, `gpt-4` | OpenAI API |
-| **Claude** | `claude-sonnet-4-6`, `claude-opus-4-8` | Anthropic API |
-| **DeepSeek** | `deepseek-chat`, `deepseek-reasoner` | DeepSeek API |
+| **OpenAI**       | `gpt-4o`, `gpt-4o-mini`, `gpt-4`                   | OpenAI API       |
+| **Claude**       | `claude-sonnet-4-6`, `claude-opus-4-8`             | Anthropic API    |
+| **DeepSeek**     | `deepseek-chat`, `deepseek-reasoner`               | DeepSeek API     |
 
 ### 上下文窗口
 
 Orion Code 跟踪每个模型的上下文窗口，在 **95% 用量时自动压缩**：
 
-| 模型 | 上下文 | 最大输出 |
-|------|--------|----------|
-| `glm-5` | 202,752 | 8,192 |
-| `qwen-long` | 1,000,000 | 8,192 |
-| `qwen-plus` | 131,072 | 8,192 |
-| `gpt-4o` | 128,000 | 16,384 |
-| `claude-sonnet-4-6` | 200,000 | 16,000 |
-| `claude-opus-4-8` | 200,000 | 32,000 |
+| 模型                | 上下文    | 最大输出 |
+| ------------------- | --------- | -------- |
+| `glm-5`             | 202,752   | 8,192    |
+| `qwen-long`         | 1,000,000 | 8,192    |
+| `qwen-plus`         | 131,072   | 8,192    |
+| `gpt-4o`            | 128,000   | 16,384   |
+| `claude-sonnet-4-6` | 200,000   | 16,000   |
+| `claude-opus-4-8`   | 200,000   | 32,000   |
 
 未知模型默认使用 **128,000** 上下文。
 
@@ -209,43 +233,43 @@ Orion Code 跟踪每个模型的上下文窗口，在 **95% 用量时自动压�
 
 ### 文件操作
 
-| 工具 | 说明 |
-|------|------|
-| `read_file` | 读取文件内容 |
-| `write_file` | 写入文件 |
-| `edit_file` | 编辑文件（行替换） |
-| `list_files` | 列出目录内容 |
-| `glob` | Glob 模式搜索文件 |
-| `grep` | 正则搜索文件内容 |
+| 工具         | 说明               |
+| ------------ | ------------------ |
+| `read_file`  | 读取文件内容       |
+| `write_file` | 写入文件           |
+| `edit_file`  | 编辑文件（行替换） |
+| `list_files` | 列出目录内容       |
+| `glob`       | Glob 模式搜索文件  |
+| `grep`       | 正则搜索文件内容   |
 
 ### Shell 执行
 
-| 工具 | 说明 |
-|------|------|
+| 工具           | 说明                          |
+| -------------- | ----------------------------- |
 | `exec_command` | 执行 Shell 命令（带安全检查） |
 
 ### 网络工具
 
-| 工具 | 说明 |
-|------|------|
-| `web_fetch` | 抓取网页内容 |
-| `web_search` | 网络搜索 |
+| 工具         | 说明         |
+| ------------ | ------------ |
+| `web_fetch`  | 抓取网页内容 |
+| `web_search` | 网络搜索     |
 
 ### 记忆系统
 
-| 工具 | 说明 |
-|------|------|
-| `memory_save` | 保存记忆 |
+| 工具            | 说明     |
+| --------------- | -------- |
+| `memory_save`   | 保存记忆 |
 | `memory_recall` | 搜索记忆 |
 | `memory_forget` | 删除记忆 |
 
 ### 任务管理
 
-| 工具 | 说明 |
-|------|------|
-| `todo_write` | 创建/更新任务列表 |
-| `enter_plan_mode` | 进入计划模式 |
-| `exit_plan_mode` | 退出计划模式 |
+| 工具              | 说明              |
+| ----------------- | ----------------- |
+| `todo_write`      | 创建/更新任务列表 |
+| `enter_plan_mode` | 进入计划模式      |
+| `exit_plan_mode`  | 退出计划模式      |
 
 ---
 
@@ -314,29 +338,32 @@ ctxPercent = (promptTokens / 模型上下文窗口) × 100
 
 ---
 
-## 交互命令
+## 常用交互命令
 
-| 命令 | 别名 | 说明 |
-|------|------|------|
-| `/help` | `/h` | 显示帮助信息 |
-| `/status` | `/s` | 系统状态总览 |
-| `/model` | - | 查看或切换模型 |
-| `/config` | - | 显示当前配置 |
-| `/cost` | - | 显示 Token 用量和成本 |
-| `/compact` | - | 手动触发上下文压缩 |
-| `/sessions` | - | 列出最近会话 |
-| `/resume` | - | 恢复上次会话 |
-| `/memory` | - | 记忆系统状态 |
-| `/memory reindex` | - | 重建语义搜索索引 |
-| `/skills` | - | 列出已加载技能 |
-| `/mcp` | - | MCP Server 状态 |
-| `/agents` | - | Agent 列表 |
-| `/safety` | - | 安全检查配置 |
-| `/task` | - | 任务管理 |
-| `/run` | - | 通过 Agent 执行任务 |
-| `/clear` | - | 清屏 |
-| `/clear-history` | `/reset` | 清除对话历史 |
-| `/exit` | `/q` | 退出 |
+| 命令                   | 说明                                                |
+| ---------------------- | --------------------------------------------------- |
+| `/help`                | 显示当前 renderer 可用的完整命令列表                |
+| `/target`（`/goal`）   | 创建、查看、暂停、恢复、替换或清除持久 Goal         |
+| `/status`              | 系统状态总览                                        |
+| `/model`               | 查看或切换模型                                      |
+| `/config`              | 显示当前生效配置                                    |
+| `/usage`               | 显示详细 Token 用量和成本                           |
+| `/compact`             | 手动触发上下文压缩                                  |
+| `/sessions`            | 列出或搜索最近会话                                  |
+| `/resume`              | 恢复已有会话                                        |
+| `/memory`              | 查看记忆状态；`/memory reindex` 重建语义索引        |
+| `/skills`              | 列出已加载技能                                      |
+| `/tools`               | 列出内置和 MCP 工具                                 |
+| `/mcp`                 | 查看 MCP Server 状态                                |
+| `/doctor`              | 运行配置、工具、MCP、Skill、Session 和 Harness 诊断 |
+| `/diff`                | 只读汇总当前 Git 工作区改动                         |
+| `/commit`              | 生成只读 commit 计划和建议消息                      |
+| `/context-clear --yes` | 清除当前内存中的模型上下文，保留已保存 session      |
+| `/clear`               | 只清理当前视图，不删除 session 数据                 |
+| `/exit`                | 安全关闭并退出                                      |
+
+完整列表及 renderer 范围以 `/help` 为准。`/cost` 是 `/usage` 的废弃兼容入口；
+`/task`、`/run`、`/clear-history` 仅保留为隐藏的迁移兼容命令，不属于公开工作流。
 
 ---
 
@@ -345,70 +372,25 @@ ctxPercent = (promptTokens / 模型上下文窗口) × 100
 ```
 orion-code/
 ├── bin/
-│   └── orion-code                  # CLI 入口
+│   └── orion                     # npm 全局命令入口
 ├── src/
-│   ├── cli.ts                     # CLI 交互入口
-│   ├── commands/                  # 斜杠命令
-│   │   ├── index.ts               # 命令注册表
-│   │   ├── parser.ts              # 输入解析器
-│   │   └── types.ts               # 命令类型
-│   ├── core/                      # 核心逻辑
-│   │   ├── agent.ts               # Agent 基类
-│   │   ├── brain.ts               # 决策引擎
-│   │   └── strategy-tracker.ts    # 策略追踪
-│   ├── agents/                    # Agent 实现
-│   │   ├── leader.ts              # 协调者 Agent
-│   │   ├── coder.ts               # 编码 Agent
-│   │   └── router.ts              # Agent 路由
-│   ├── framework/
-│   │   ├── store.ts               # 状态管理
-│   │   ├── query.ts               # 查询引擎（异步生成器）
-│   │   └── tool-state.ts          # 工具状态
-│   ├── harness/                   # 安全与约束
-│   │   ├── safety.ts              # 安全检查
-│   │   └── bash-safety.ts         # Bash 命令安全
-│   ├── memory/                    # 记忆系统
-│   │   ├── storage.ts             # 记忆存储
-│   │   ├── semantic-search.ts     # 语义搜索
-│   │   ├── embeddings.ts          # Embedding 生成
-│   │   └── vector-store.ts        # 向量存储（SQLite vec0）
-│   ├── skills/                    # 技能系统
-│   │   ├── loader.ts              # 技能加载器
-│   │   └── registry.ts            # 技能注册表
-│   ├── services/
-│   │   ├── llm.ts                 # LLM 服务（重试/降级）
-│   │   ├── config.ts              # 配置加载
-│   │   ├── global-config.ts       # 全局配置
-│   │   ├── model-context.ts       # 模型上下文数据库 + 发现
-│   │   ├── session-storage.ts     # 会话持久化
-│   │   ├── atomic-write.ts        # 原子写入
-│   │   ├── agent-runner.ts        # Agent 执行器
-│   │   ├── task-manager.ts        # 任务管理器
-│   │   └── file-glob.ts           # 文件匹配
-│   ├── services/compact/          # 上下文压缩
-│   │   ├── auto-compact.ts        # 基于 Token 的自动压缩
-│   │   ├── compact.ts             # 压缩实现
-│   │   └── summary-generator.ts   # 摘要生成
-│   ├── tools/                     # 工具实现
-│   │   ├── index.ts               # 工具注册表
-│   │   ├── mcp.ts                 # MCP 客户端
-│   │   ├── todo.ts                # 任务工具
-│   │   ├── plan.ts                # 计划工具
-│   │   ├── web.ts                 # 网页工具
-│   │   └── memory.ts              # 记忆工具
-│   └── ui/                        # UI 组件
-│       ├── box.ts                 # UI 框
-│       ├── markdown.ts            # Markdown 渲染
-│       ├── status-bar.ts          # 状态栏
-│       ├── stream-markdown.ts     # 流式 Markdown
-│       ├── tool-preview.ts        # 工具预览卡片
-│       └── suggestions.ts         # 命令建议
-├── tests/                         # 测试套件
-├── docs/                          # 文档
-│   ├── version/                   # 版本发布说明
-│   ├── roadmap/                   # 版本路线图
-│   └── config.md                  # 配置指南
-├── .env.example                   # 环境变量模板
+│   ├── cli.ts                    # CLI 入口和 renderer 选择
+│   ├── commands/                 # 斜杠命令注册表与处理器
+│   ├── core/                     # Agent 核心状态
+│   ├── framework/                # Query 与 Tool 抽象
+│   ├── runtime/                  # Shared runtime、Goal、事件与 Subagent
+│   ├── services/                 # 配置、LLM、Session、Storage、MCP
+│   ├── tools/                    # 内置工具
+│   ├── tui-ui/                   # 默认公众 TUI
+│   ├── terminal-ui/              # 技术诊断 renderer
+│   ├── print-ui/                 # 实验性 Print/Text 与 Print/JSON
+│   └── skills/                   # 内置 Skill
+├── tests/                        # Jest 测试套件
+├── test-runtime/                 # 运行时 smoke 脚本
+├── docs/
+│   ├── goals/                    # 项目 Goal、证据与恢复说明
+│   ├── mvp/                      # 版本计划与发布说明
+│   └── plan/                     # 执行计划与准出报告
 ├── package.json
 └── tsconfig.json
 ```
@@ -417,37 +399,23 @@ orion-code/
 
 ## 版本历史
 
-### v0.1.16（当前开发中）
+### v0.1.2（当前版本）
 
-- **基于 Token 的自动压缩** — 95% 上下文使用量触发（替代消息数量阈值）
-- **模型上下文感知** — 每个模型独立的上下文窗口（15+ 已知模型）
-- **动态模型发现** — 启动时查询 `/models` 端点
-- **精简用户配置** — 仅 4 个字段：`apiKey`、`apiBaseUrl`、`defaultModel`、`fallbackModel`
-- **Agent 内部管理** — `maxTokens`、`temperature`、`retries` 由 Agent 内部控制
-- **用户可配置 Fallback 模型**
-- **命令面板渲染优化**
-- **上下文编排工作流** — 多 Agent 上下文管理
+- 单 Session、单 Active Goal 的 typed continuation；
+- restart/resume 后安全暂停，必须显式恢复；
+- runtime evidence ledger、逐 criterion completion audit 与精确 stop reason；
+- TUI 主产品体验和 terminal-ui/Print 事件语义一致。
 
-### v0.1.15
+### v0.1.1（已发布）
 
-- **完整 Markdown 流式渲染** — 语法高亮
-- **CJK 文本宽度计算修复** — 终端显示
-- **命令面板输入清除优化**
-- 表格渲染移除（改为原始透传）
+- 命令契约、TUI 默认路径、OpenHorse 迁移和数据安全收敛；
+- terminal-ui 定位为技术诊断版本，Ink 正式废弃。
 
-### v0.1.14
+### v0.1.0（已发布）
 
-- LSP 崩溃修复、紧凑 UI、精简 Agent 输出
+- Orion Code 首个公开基线版本。
 
-### v0.1.10 — v0.1.13
-
-- MCP 客户端（心跳/重连）、语义搜索、技能系统、原子写入、模型别名、存储修复
-
-### v0.1.1 — v0.1.9
-
-- CLI 框架、Harness 系统、记忆系统、会话管理、工具编排
-
-详见 `docs/version/` 目录。
+详见 `docs/mvp/` 和 `docs/plan/`。
 
 ---
 
@@ -477,15 +445,12 @@ npm run format
 
 ## Roadmap
 
-| 版本 | 目标 |
-|------|------|
-| v0.1.16 | 上下文感知、自动压缩、配置精简 |
-| v0.1.17 | Agent 生命周期增强、工具编排优化 |
-| v0.1.18 | 插件/Hook 系统 |
-| v0.1.19 | VS Code 扩展 |
-| v0.1.20 | Web UI 面板 |
+| 版本   | 目标                                                |
+| ------ | --------------------------------------------------- |
+| v0.1.2 | Goal 连续性、证据审计、恢复与发布可信度             |
+| v0.2.0 | 在项目级 Goal 约束下评估多目标等非 patch 兼容性能力 |
 
-详见 `docs/roadmap/` 目录。
+详见[项目级目标](https://github.com/orion-agents/orion-code/blob/main/docs/goals/orion-code-项目级目标.md)。
 
 ---
 
@@ -503,4 +468,4 @@ MIT License — 详见 [LICENSE](LICENSE)
 
 **Orion Code — Universal Agent Harness Framework.**
 
-*"AI 如马，Orion Code 如缰。"*
+_"AI 如马，Orion Code 如缰。"_

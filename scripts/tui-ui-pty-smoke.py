@@ -24,6 +24,8 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from pty_runner_identity import resolve_orion_command
+
 
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b[()][A-Za-z0-9]")
 
@@ -531,8 +533,9 @@ def spawn_orion(repo: Path, base_url: str, config_dir: str, rows: int = 24, cols
             "ORION_CODE_UI_RENDERER": "terminal",
         }
     )
+    command = resolve_orion_command(repo, ["npm", "run", "start"])
     process = subprocess.Popen(
-        ["npm", "run", "start"],
+        command,
         cwd=repo,
         stdin=slave,
         stdout=slave,

@@ -20,12 +20,7 @@ jest.mock('../src/services/config-dir', () => {
 });
 
 import type { SessionGoalV1 } from '../src/runtime/goals/types';
-import {
-  loadGoal,
-  saveGoal,
-  deleteGoal,
-  createGoal,
-} from '../src/services/goal-storage';
+import { loadGoal, saveGoal, deleteGoal, createGoal } from '../src/services/goal-storage';
 
 const projectPath = '/test/project';
 const sessionId = randomUUID();
@@ -53,7 +48,9 @@ describe('Goal sidecar storage', () => {
     // Clean up test goal files.
     const files = [join(sessionsDir, `${sessionId}.goal.json`)];
     for (const f of files) {
-      try { rmSync(f, { force: true }); } catch {}
+      try {
+        rmSync(f, { force: true });
+      } catch {}
     }
   });
 
@@ -103,8 +100,14 @@ describe('Goal sidecar storage', () => {
 
   it('returns corrupt for missing goalId', () => {
     const bad = makeGoal();
-    delete (bad as any).goalId;
-    saveGoal(projectPath, sessionId, bad);
+    Reflect.deleteProperty(bad, 'goalId');
+    expect(saveGoal(projectPath, sessionId, bad)).toEqual(
+      expect.objectContaining({ ok: false, error: 'io_error' })
+    );
+    expect(loadGoal(projectPath, sessionId)).toEqual(
+      expect.objectContaining({ ok: false, error: 'not_found' })
+    );
+    writeFileSync(join(sessionsDir, `${sessionId}.goal.json`), JSON.stringify(bad));
     const result = loadGoal(projectPath, sessionId);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toBe('corrupt');

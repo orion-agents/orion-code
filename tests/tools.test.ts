@@ -10,7 +10,7 @@ const ctx: ToolContext = {
   config: { name: 'test', mode: 'development' },
 };
 
-const testDir = path.join(process.cwd(), 'tests', 'tmp');
+const testDir = fs.mkdtempSync(path.join(tmpdir(), 'orion-tools-'));
 
 function setupTestDir() {
   if (!fs.existsSync(testDir)) {
@@ -57,7 +57,7 @@ describe('TOOLS array', () => {
 });
 
 describe('memory tools project cwd', () => {
-  const memoryProject = path.join(tmpdir(), `openhorse-memory-tools-${Date.now()}`);
+  const memoryProject = fs.mkdtempSync(path.join(tmpdir(), 'orion-memory-tools-'));
   const memoryCtx: ToolContext = {
     cwd: memoryProject,
     config: { name: 'test', mode: 'development' },
@@ -86,12 +86,17 @@ describe('memory tools project cwd', () => {
 
   test('memory_save writes to ToolContext.cwd project memory', async () => {
     const name = `ctx-memory-${Date.now()}`;
-    const result = await executeTool('memory_save', {
-      name,
-      type: 'project',
-      description: 'Context memory',
-      content: 'Stored via tool context cwd',
-    }, undefined, memoryCtx);
+    const result = await executeTool(
+      'memory_save',
+      {
+        name,
+        type: 'project',
+        description: 'Context memory',
+        content: 'Stored via tool context cwd',
+      },
+      undefined,
+      memoryCtx
+    );
 
     expect(JSON.parse(result).success).toBe(true);
     expect(fs.existsSync(path.join(getMemoryDir(memoryProject), `${name}.md`))).toBe(true);
@@ -100,20 +105,39 @@ describe('memory tools project cwd', () => {
   });
 
   test('memory_recall and memory_forget use ToolContext.cwd', async () => {
-    await executeTool('memory_save', {
-      name: 'ctx-forget',
-      type: 'feedback',
-      content: 'Forget me from context project',
-    }, undefined, memoryCtx);
+    await executeTool(
+      'memory_save',
+      {
+        name: 'ctx-forget',
+        type: 'feedback',
+        content: 'Forget me from context project',
+      },
+      undefined,
+      memoryCtx
+    );
 
-    const recalled = JSON.parse(await executeTool('memory_recall', {
-      query: 'Forget me',
-    }, undefined, memoryCtx));
+    const recalled = JSON.parse(
+      await executeTool(
+        'memory_recall',
+        {
+          query: 'Forget me',
+        },
+        undefined,
+        memoryCtx
+      )
+    );
     expect(recalled.output).toContain('ctx-forget');
 
-    const forgotten = JSON.parse(await executeTool('memory_forget', {
-      name: 'ctx-forget',
-    }, undefined, memoryCtx));
+    const forgotten = JSON.parse(
+      await executeTool(
+        'memory_forget',
+        {
+          name: 'ctx-forget',
+        },
+        undefined,
+        memoryCtx
+      )
+    );
     expect(forgotten.success).toBe(true);
     expect(loadMemory('ctx-forget', memoryProject)).toBeNull();
   });
@@ -322,10 +346,13 @@ describe('exec_command tool', () => {
   // Issue #28: Output truncation tests
   test('truncates large output with maxOutput parameter', async () => {
     // Generate 100KB of output
-    const result = await tool.execute({
-      command: 'yes "test line" | head -2000',
-      maxOutput: 1024, // 1KB limit
-    }, ctx);
+    const result = await tool.execute(
+      {
+        command: 'yes "test line" | head -2000',
+        maxOutput: 1024, // 1KB limit
+      },
+      ctx
+    );
     expect(result.success).toBe(true);
     expect(result.output.length).toBeLessThan(1100); // Allow some overhead for truncation message
     expect(result.output).toContain('[... output truncated');
@@ -333,19 +360,25 @@ describe('exec_command tool', () => {
 
   test('default maxOutput is 50KB', async () => {
     // Generate 60KB of output, should be truncated
-    const result = await tool.execute({
-      command: 'yes "test line for truncation test" | head -1500',
-    }, ctx);
+    const result = await tool.execute(
+      {
+        command: 'yes "test line for truncation test" | head -1500',
+      },
+      ctx
+    );
     expect(result.success).toBe(true);
     // Default is 51200 bytes, output should be truncated
     expect(result.output.length).toBeLessThan(52000);
   });
 
   test('does not truncate small output', async () => {
-    const result = await tool.execute({
-      command: 'echo "small output"',
-      maxOutput: 1024,
-    }, ctx);
+    const result = await tool.execute(
+      {
+        command: 'echo "small output"',
+        maxOutput: 1024,
+      },
+      ctx
+    );
     expect(result.success).toBe(true);
     expect(result.output).toContain('small output');
     expect(result.output).not.toContain('[... output truncated');
@@ -356,10 +389,13 @@ describe('exec_command tool', () => {
     fs.mkdirSync(path.join(dir, 'child'));
 
     try {
-      const result = await tool.execute({ command: 'pwd', cwd: 'child' }, {
-        ...ctx,
-        cwd: dir,
-      });
+      const result = await tool.execute(
+        { command: 'pwd', cwd: 'child' },
+        {
+          ...ctx,
+          cwd: dir,
+        }
+      );
 
       expect(result.success).toBe(true);
       expect(fs.realpathSync(result.output.trim())).toBe(fs.realpathSync(path.join(dir, 'child')));
@@ -380,9 +416,14 @@ describe('executeTool', () => {
   });
 
   test('exec_command failure summary includes error and output preview', async () => {
-    const result = await executeTool('exec_command', {
-      command: 'printf "found-uv\\n"; exit 1',
-    }, undefined, ctx);
+    const result = await executeTool(
+      'exec_command',
+      {
+        command: 'printf "found-uv\\n"; exit 1',
+      },
+      undefined,
+      ctx
+    );
     const parsed = JSON.parse(result);
 
     expect(parsed.success).toBe(false);
@@ -393,9 +434,14 @@ describe('executeTool', () => {
   });
 
   test('exec_command summary preserves useful tail of long commands', async () => {
-    const result = await executeTool('exec_command', {
-      command: `printf ok # ${'x'.repeat(140)} tail-marker`,
-    }, undefined, ctx);
+    const result = await executeTool(
+      'exec_command',
+      {
+        command: `printf ok # ${'x'.repeat(140)} tail-marker`,
+      },
+      undefined,
+      ctx
+    );
     const parsed = JSON.parse(result);
 
     expect(parsed.success).toBe(true);
@@ -405,9 +451,14 @@ describe('executeTool', () => {
 
   test('exec_command summary bounds the model-facing command text', async () => {
     const longCommand = `printf ok # head-marker ${'x'.repeat(600)} tail-marker`;
-    const result = await executeTool('exec_command', {
-      command: longCommand,
-    }, undefined, ctx);
+    const result = await executeTool(
+      'exec_command',
+      {
+        command: longCommand,
+      },
+      undefined,
+      ctx
+    );
     const parsed = JSON.parse(result);
 
     expect(parsed.success).toBe(true);
@@ -469,7 +520,11 @@ describe('batch_read tool', () => {
 
       expect(outer.success).toBe(true);
       expect(inner.success).toBe(true);
-      expect(inner.steps.map((step: any) => step.tool)).toEqual(['list_files', 'read_file', 'grep']);
+      expect(inner.steps.map((step: any) => step.tool)).toEqual([
+        'list_files',
+        'read_file',
+        'grep',
+      ]);
       expect(inner.steps[0].output).toContain('note.txt');
       expect(inner.steps[1].output).toContain('needle in batch');
       expect(inner.steps[2].output).toContain('note.txt:1');
@@ -497,7 +552,10 @@ describe('batch_read tool', () => {
   });
 
   test('rejects more than eight steps', async () => {
-    const steps = Array.from({ length: 9 }, () => ({ tool: 'list_files', args: { path: 'src', maxDepth: 0 } }));
+    const steps = Array.from({ length: 9 }, () => ({
+      tool: 'list_files',
+      args: { path: 'src', maxDepth: 0 },
+    }));
     const { outer, inner } = await runBatchRead(steps);
 
     expect(outer.success).toBe(false);
@@ -511,9 +569,7 @@ describe('batch_read tool', () => {
     fs.writeFileSync(file, 'a'.repeat(5000), 'utf-8');
 
     try {
-      const { inner } = await runBatchRead([
-        { tool: 'read_file', args: { path: file } },
-      ]);
+      const { inner } = await runBatchRead([{ tool: 'read_file', args: { path: file } }]);
 
       expect(inner.success).toBe(true);
       expect(inner.steps[0].output.length).toBeLessThan(2500);
@@ -548,7 +604,10 @@ describe('edit_file tool', () => {
     const testFile = path.join(testDir, 'test-edit.txt');
     fs.writeFileSync(testFile, 'hello world', 'utf-8');
 
-    const result = await tool.execute({ path: testFile, old_string: 'hello', new_string: 'hi' }, ctx);
+    const result = await tool.execute(
+      { path: testFile, old_string: 'hello', new_string: 'hi' },
+      ctx
+    );
     expect(result.success).toBe(true);
 
     const content = fs.readFileSync(testFile, 'utf-8');
@@ -559,7 +618,10 @@ describe('edit_file tool', () => {
     const testFile = path.join(testDir, 'test-edit-notfound.txt');
     fs.writeFileSync(testFile, 'hello world', 'utf-8');
 
-    const result = await tool.execute({ path: testFile, old_string: 'notfound', new_string: 'hi' }, ctx);
+    const result = await tool.execute(
+      { path: testFile, old_string: 'notfound', new_string: 'hi' },
+      ctx
+    );
     expect(result.success).toBe(false);
     expect(result.error).toContain('not found');
   });
@@ -568,11 +630,14 @@ describe('edit_file tool', () => {
     const testFile = path.join(testDir, 'test-edit-fuzzy-default.txt');
     fs.writeFileSync(testFile, 'function target() {\n  return true;\n}\n', 'utf-8');
 
-    const result = await tool.execute({
-      path: testFile,
-      old_string: 'function target() { return true; }',
-      new_string: 'function target() {\n  return false;\n}',
-    }, ctx);
+    const result = await tool.execute(
+      {
+        path: testFile,
+        old_string: 'function target() { return true; }',
+        new_string: 'function target() {\n  return false;\n}',
+      },
+      ctx
+    );
 
     expect(result.success).toBe(false);
     expect(fs.readFileSync(testFile, 'utf-8')).toContain('return true;');
@@ -582,36 +647,42 @@ describe('edit_file tool', () => {
     const testFile = path.join(testDir, 'test-edit-fuzzy-opt-in.txt');
     fs.writeFileSync(testFile, 'prefix\n\nfunction target() {\n  return true;\n}\n', 'utf-8');
 
-    const result = await tool.execute({
-      path: testFile,
-      old_string: 'function target() { return true; }',
-      new_string: 'function target() {\n  return false;\n}',
-      fuzzy_match: true,
-    }, ctx);
+    const result = await tool.execute(
+      {
+        path: testFile,
+        old_string: 'function target() { return true; }',
+        new_string: 'function target() {\n  return false;\n}',
+        fuzzy_match: true,
+      },
+      ctx
+    );
 
     expect(result.success).toBe(true);
-    expect(fs.readFileSync(testFile, 'utf-8')).toBe('prefix\n\nfunction target() {\n  return false;\n}\n');
+    expect(fs.readFileSync(testFile, 'utf-8')).toBe(
+      'prefix\n\nfunction target() {\n  return false;\n}\n'
+    );
   });
 
   test('rejects ambiguous fuzzy matches', async () => {
     const testFile = path.join(testDir, 'test-edit-fuzzy-ambiguous.txt');
-    fs.writeFileSync(testFile, [
-      'function foo() {',
-      '  return 1;',
-      '}',
-      'function foo() {',
-      '  return 2;',
-      '}',
-      '',
-    ].join('\n'), 'utf-8');
+    fs.writeFileSync(
+      testFile,
+      ['function foo() {', '  return 1;', '}', 'function foo() {', '  return 2;', '}', ''].join(
+        '\n'
+      ),
+      'utf-8'
+    );
 
-    const result = await tool.execute({
-      path: testFile,
-      old_string: 'function foo() { return',
-      new_string: 'function bar() { return',
-      fuzzy_match: true,
-      replace_all: true,
-    }, ctx);
+    const result = await tool.execute(
+      {
+        path: testFile,
+        old_string: 'function foo() { return',
+        new_string: 'function bar() { return',
+        fuzzy_match: true,
+        replace_all: true,
+      },
+      ctx
+    );
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('Fuzzy match found');
@@ -630,14 +701,17 @@ describe('edit_file tool', () => {
     ].join('\n');
     fs.writeFileSync(testFile, original, 'utf-8');
 
-    const result = await tool.execute({
-      path: testFile,
-      old_string: 'function foo() { return',
-      new_string: 'function bar() { return',
-      fuzzy_match: true,
-      replace_all: true,
-      preview: true,
-    }, ctx);
+    const result = await tool.execute(
+      {
+        path: testFile,
+        old_string: 'function foo() { return',
+        new_string: 'function bar() { return',
+        fuzzy_match: true,
+        replace_all: true,
+        preview: true,
+      },
+      ctx
+    );
 
     expect(result.success).toBe(true);
     expect(result.output).toContain('Fuzzy');
@@ -649,7 +723,10 @@ describe('edit_file tool', () => {
     const testFile = path.join(testDir, 'test-edit-multi.txt');
     fs.writeFileSync(testFile, 'hello hello hello', 'utf-8');
 
-    const result = await tool.execute({ path: testFile, old_string: 'hello', new_string: 'hi' }, ctx);
+    const result = await tool.execute(
+      { path: testFile, old_string: 'hello', new_string: 'hi' },
+      ctx
+    );
     expect(result.success).toBe(false);
     expect(result.error).toContain('3 times');
   });
@@ -658,12 +735,15 @@ describe('edit_file tool', () => {
     const testFile = path.join(testDir, 'test-edit-preview-multi.txt');
     fs.writeFileSync(testFile, 'hello hello hello', 'utf-8');
 
-    const result = await tool.execute({
-      path: testFile,
-      old_string: 'hello',
-      new_string: 'hi',
-      preview: true,
-    }, ctx);
+    const result = await tool.execute(
+      {
+        path: testFile,
+        old_string: 'hello',
+        new_string: 'hi',
+        preview: true,
+      },
+      ctx
+    );
 
     expect(result.success).toBe(true);
     expect(result.output).toContain('Exact match candidates (3)');
@@ -674,7 +754,10 @@ describe('edit_file tool', () => {
     const testFile = path.join(testDir, 'test-edit-all.txt');
     fs.writeFileSync(testFile, 'hello hello hello', 'utf-8');
 
-    const result = await tool.execute({ path: testFile, old_string: 'hello', new_string: 'hi', replace_all: true }, ctx);
+    const result = await tool.execute(
+      { path: testFile, old_string: 'hello', new_string: 'hi', replace_all: true },
+      ctx
+    );
     expect(result.success).toBe(true);
 
     const content = fs.readFileSync(testFile, 'utf-8');
@@ -685,7 +768,10 @@ describe('edit_file tool', () => {
     const testFile = path.join(testDir, 'test-edit-delete.txt');
     fs.writeFileSync(testFile, 'hello world', 'utf-8');
 
-    const result = await tool.execute({ path: testFile, old_string: 'hello ', new_string: '' }, ctx);
+    const result = await tool.execute(
+      { path: testFile, old_string: 'hello ', new_string: '' },
+      ctx
+    );
 
     expect(result.success).toBe(true);
     expect(fs.readFileSync(testFile, 'utf-8')).toBe('world');
@@ -697,11 +783,14 @@ describe('edit_file tool', () => {
     fs.writeFileSync(file, 'old skill body', 'utf-8');
 
     try {
-      const result = await tool.execute({
-        path: `[$imagegen](${file})`,
-        old_string: 'old',
-        new_string: 'new',
-      }, ctx);
+      const result = await tool.execute(
+        {
+          path: `[$imagegen](${file})`,
+          old_string: 'old',
+          new_string: 'new',
+        },
+        ctx
+      );
 
       expect(result.success).toBe(true);
       expect(fs.readFileSync(file, 'utf-8')).toBe('new skill body');
@@ -734,10 +823,13 @@ describe('glob tool', () => {
     fs.writeFileSync(path.join(dir, 'src', 'local.ts'), 'export {}', 'utf-8');
 
     try {
-      const result = await tool.execute({ pattern: '**/*.ts', path: 'src' }, {
-        ...ctx,
-        cwd: dir,
-      });
+      const result = await tool.execute(
+        { pattern: '**/*.ts', path: 'src' },
+        {
+          ...ctx,
+          cwd: dir,
+        }
+      );
 
       expect(result.success).toBe(true);
       expect(result.output).toContain('local.ts');
@@ -784,10 +876,13 @@ describe('grep tool', () => {
     fs.writeFileSync(path.join(dir, 'docs', 'note.txt'), 'needle from cwd', 'utf-8');
 
     try {
-      const result = await tool.execute({ pattern: 'needle', path: 'docs' }, {
-        ...ctx,
-        cwd: dir,
-      });
+      const result = await tool.execute(
+        { pattern: 'needle', path: 'docs' },
+        {
+          ...ctx,
+          cwd: dir,
+        }
+      );
 
       expect(result.success).toBe(true);
       expect(result.output).toContain('note.txt');
@@ -820,15 +915,18 @@ describe('todo_write tool', () => {
   const tool = TOOLS.find(t => t.name === 'todo_write')!;
 
   test('accepts direct array arguments as well as JSON strings', async () => {
-    const result = await tool.execute({
-      todos: [
-        {
-          content: 'Run tests',
-          activeForm: 'Running tests',
-          status: 'in_progress',
-        },
-      ],
-    }, ctx);
+    const result = await tool.execute(
+      {
+        todos: [
+          {
+            content: 'Run tests',
+            activeForm: 'Running tests',
+            status: 'in_progress',
+          },
+        ],
+      },
+      ctx
+    );
 
     expect(result.success).toBe(true);
     expect(result.output).toContain('Run tests');

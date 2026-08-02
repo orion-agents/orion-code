@@ -10,8 +10,9 @@
  * 未来可扩展为文件/数据库后端。
  */
 
+import { randomUUID } from 'crypto';
+
 import { EventEmitter } from 'eventemitter3';
-import { v4 as uuidv4 } from 'uuid';
 
 // ============================================================================
 // 类型定义
@@ -92,10 +93,7 @@ export class MemoryStore extends EventEmitter {
   // ==========================================================================
 
   /** 写入工作记忆 */
-  pushWorking(
-    content: unknown,
-    options?: { tags?: string[]; source?: string },
-  ): MemoryEntry {
+  pushWorking(content: unknown, options?: { tags?: string[]; source?: string }): MemoryEntry {
     const entry = this.createEntry(content, options);
     this.working.push(entry);
     this.emit('write', { tier: 'working' as MemoryTier, id: entry.id });
@@ -128,10 +126,7 @@ export class MemoryStore extends EventEmitter {
   // ==========================================================================
 
   /** 写入短期记忆 */
-  pushShortTerm(
-    content: unknown,
-    options?: { tags?: string[]; source?: string },
-  ): MemoryEntry {
+  pushShortTerm(content: unknown, options?: { tags?: string[]; source?: string }): MemoryEntry {
     const entry = this.createEntry(content, options);
     this.promoteToShortTerm(entry);
     this.emit('write', { tier: 'short-term' as MemoryTier, id: entry.id });
@@ -149,10 +144,7 @@ export class MemoryStore extends EventEmitter {
   // ==========================================================================
 
   /** 写入长期记忆 */
-  pushLongTerm(
-    content: unknown,
-    options?: { tags?: string[]; source?: string },
-  ): MemoryEntry {
+  pushLongTerm(content: unknown, options?: { tags?: string[]; source?: string }): MemoryEntry {
     const entry = this.createEntry(content, options);
     this.longTerm.set(entry.id, entry);
     this.emit('write', { tier: 'long-term' as MemoryTier, id: entry.id });
@@ -201,13 +193,19 @@ export class MemoryStore extends EventEmitter {
     };
 
     if (!tier || tier === 'working') {
-      this.readWorking().filter(matches).forEach(e => results.push(e));
+      this.readWorking()
+        .filter(matches)
+        .forEach(e => results.push(e));
     }
     if (!tier || tier === 'short-term') {
-      this.readShortTerm().filter(matches).forEach(e => results.push(e));
+      this.readShortTerm()
+        .filter(matches)
+        .forEach(e => results.push(e));
     }
     if (!tier || tier === 'long-term') {
-      Array.from(this.longTerm.values()).filter(matches).forEach(e => results.push(e));
+      Array.from(this.longTerm.values())
+        .filter(matches)
+        .forEach(e => results.push(e));
     }
 
     const limit = query.limit ?? results.length;
@@ -250,11 +248,11 @@ export class MemoryStore extends EventEmitter {
 
   private createEntry(
     content: unknown,
-    options?: { tags?: string[]; source?: string },
+    options?: { tags?: string[]; source?: string }
   ): MemoryEntry {
     const now = Date.now();
     return {
-      id: uuidv4(),
+      id: randomUUID(),
       content,
       createdAt: now,
       lastAccessedAt: now,

@@ -12,9 +12,13 @@ import { readFileSync, existsSync, readdirSync, mkdirSync, unlinkSync } from 'fs
 import { join, basename } from 'path';
 import { createHash } from 'crypto';
 import type { MemoryEntry, MemoryType } from './types';
-import { getConfigHome, getLegacyProjectMemoryDir, getProjectMemoryDir } from '../services/config-dir';
+import {
+  getConfigHome,
+  getLegacyProjectMemoryDir,
+  getProjectMemoryDir,
+} from '../services/config-dir';
 import { atomicWriteFileSync } from '../services/atomic-write';
-import { getVectorStore } from './vector-store';  // Issue #32 #3.8
+import { getVectorStore } from './vector-store'; // Issue #32 #3.8
 
 // Re-export types for convenience
 export type { MemoryEntry, MemoryType } from './types';
@@ -270,6 +274,7 @@ export function deleteMemory(name: string, projectPath?: string): void {
  * Update MEMORY.md index for a project.
  */
 export function updateMemoryIndex(projectPath?: string): void {
+  ensureMemoryDir(projectPath);
   const memories = loadAllMemories(projectPath);
   const lines: string[] = [
     '# Memory Index',
@@ -340,7 +345,11 @@ export function getMemoriesByType(type: MemoryType, projectPath?: string): Memor
  * Async search using VectorStore index (faster for large memory sets).
  * Falls back to synchronous search if VectorStore not initialized.
  */
-export async function searchMemoriesAsync(query: string, projectPath?: string, limit: number = 50): Promise<MemoryEntry[]> {
+export async function searchMemoriesAsync(
+  query: string,
+  projectPath?: string,
+  limit: number = 50
+): Promise<MemoryEntry[]> {
   try {
     const store = getVectorStore();
     if (store.isVectorSearchAvailable()) {

@@ -57,9 +57,6 @@ export {
   type MemoryType,
 } from './paths';
 
-export {
-  ENV,
-  LEGACY_ENV_MAP,
-  LEGACY_ENV_REVERSE_MAP,
-  webSearchEnv,
-} from './environment';
+export { ENV, LEGACY_ENV_MAP, LEGACY_ENV_REVERSE_MAP, webSearchEnv } from './environment';
+
+export { PACKAGE_VERSION, ORION_USER_AGENT, resolvePackageVersion } from './version';

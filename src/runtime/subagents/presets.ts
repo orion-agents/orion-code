@@ -17,12 +17,10 @@ export const READ_ONLY_INVESTIGATION_TOOLS = [
   'glob',
   'grep',
   'batch_read',
-  // NOTE: mcp_call and mcp_list are intentionally EXCLUDED from the child
-  // allowlist. mcp_call is a generic escape hatch that can invoke any MCP
-  // action (including mutating ones) without going through the root's
-  // permission flow. mcp_list leaks server topology. Instead, first-class
-  // MCP tools (mcp__<server>__<tool>) with readOnlyHint === true are
-  // dynamically included by filterToolsForRole at runtime.
+  // MCP tools are intentionally excluded. `readOnlyHint` says whether a tool
+  // mutates remote state, but does not certify that its arguments are pathless
+  // or constrained to the packet scope. Dynamic MCP exposure can return only
+  // after the runtime has explicit path-scope capability metadata.
 ] as const;
 
 /**
@@ -39,8 +37,8 @@ export const SUBAGENT_FORBIDDEN_TOOLS = [
   'memory_forget',
   'orion-code',
   'subtask',
-  // Generic MCP escape hatches — children must use first-class MCP tools
-  // (mcp__<server>__<tool>) with readOnlyHint === true instead.
+  // Generic MCP escape hatches. First-class mcp__ tools are also rejected by
+  // filterToolsForRole/assertNoForbiddenTools until path-scope metadata exists.
   'mcp_call',
   'mcp_list',
   // Cross-session information leak: history_search reads transcripts from
@@ -81,7 +79,7 @@ export const ROLE_PRESETS: Record<SubagentRole, RolePreset> = {
     tools: READ_ONLY_INVESTIGATION_TOOLS,
     systemPrompt: `You are a read-only research subagent for Orion Code. Your job is to gather repository facts, official documentation, or API behavior and return a structured conclusion.
 
-You may only read files, list/glob/grep, batch read-only steps, and use configured read-only MCP tools (e.g. web search/fetch). You may inspect git state only through read-only means available to you.
+You may only read files, list/glob/grep, and batch repository read-only steps exposed by the runtime. You may inspect git state only through read-only means available to you.
 
 Focus narrowly on the objective you were given. Do not attempt edits or commands.${JSON_OUTPUT_CONTRACT}`,
   },
@@ -90,14 +88,14 @@ Focus narrowly on the objective you were given. Do not attempt edits or commands
     tools: READ_ONLY_INVESTIGATION_TOOLS,
     systemPrompt: `You are a read-only code review subagent for Orion Code. Your job is to review a diff, changeset, or code area for risks, regressions, and test gaps, and return a structured conclusion.
 
-You may read files, list/glob/grep, batch read-only steps, and use read-only MCP tools. You may NOT fix code, change review scope, execute shell, or commit.${JSON_OUTPUT_CONTRACT}`,
+You may read files, list/glob/grep, and batch repository read-only steps. You may NOT fix code, change review scope, execute shell, use MCP tools, or commit.${JSON_OUTPUT_CONTRACT}`,
   },
   'test-investigate': {
     role: 'test-investigate',
     tools: READ_ONLY_INVESTIGATION_TOOLS,
     systemPrompt: `You are a read-only test investigation subagent for Orion Code. You analyze failing test logs, test code, and configuration to identify likely root causes, and return a structured conclusion.
 
-You may read files, list/glob/grep, batch read-only steps, and use read-only MCP tools. You may NOT execute tests, install dependencies, update snapshots, write fixtures, or publish. If a command would help diagnose the failure, suggest it in "commands" for the root Agent to run.${JSON_OUTPUT_CONTRACT}`,
+You may read files, list/glob/grep, and batch repository read-only steps. You may NOT execute tests, use MCP tools, install dependencies, update snapshots, write fixtures, or publish. If a command would help diagnose the failure, suggest it in "commands" for the root Agent to run.${JSON_OUTPUT_CONTRACT}`,
   },
 };
 
@@ -113,10 +111,9 @@ export function systemPromptForRole(role: SubagentRole): string {
 
 /**
  * Filter an upstream tool list to a role's allowlist, removing any forbidden
- * tool and the recursive `subtask` capability. Also includes first-class MCP
- * tools (mcp__<server>__<tool>) that declare `readOnlyHint === true` via
- * their `isReadOnly()` method — these are safe for children because they
- * cannot invoke arbitrary MCP actions.
+ * tool, every dynamic first-class MCP tool, and the recursive `subtask`
+ * capability. `readOnlyHint` is not a path-containment capability, so it must
+ * not make an MCP tool child-visible.
  *
  * Returns the names the child may receive; the caller is responsible for
  * resolving them to tool definitions.
@@ -124,31 +121,18 @@ export function systemPromptForRole(role: SubagentRole): string {
 export function filterToolsForRole(
   availableToolNames: readonly string[],
   role: SubagentRole,
-  runtimeTools?: readonly OpenHorseTool[],
+  _runtimeTools?: readonly OpenHorseTool[]
 ): string[] {
   const allowed = new Set(toolsForRole(role));
   const denied = new Set<string>(SUBAGENT_FORBIDDEN_TOOLS);
-
-  // Build a map of tool name → tool definition for annotation checks.
-  const toolMap = new Map<string, OpenHorseTool>();
-  if (runtimeTools) {
-    for (const t of runtimeTools) {
-      toolMap.set(t.name, t);
-    }
-  }
 
   return availableToolNames.filter(name => {
     // Explicitly denied tools are never allowed.
     if (denied.has(name)) return false;
 
-    // First-class MCP tools (mcp__<server>__<tool>) are allowed only if
-    // they declare isReadOnly() === true. Unknown or missing annotation
-    // means denied — conservative default.
-    if (name.startsWith('mcp__')) {
-      const tool = toolMap.get(name);
-      if (!tool) return false;
-      return tool.isReadOnly?.({}) === true;
-    }
+    // First-class MCP tools remain unavailable even with readOnlyHint=true:
+    // read-only does not prove project-root or packet-scope containment.
+    if (name.startsWith('mcp__')) return false;
 
     // Static allowlist covers non-MCP tools.
     return allowed.has(name);
@@ -158,7 +142,7 @@ export function filterToolsForRole(
 /** Assert a filtered tool list contains no forbidden tool. Used by the runner. */
 export function assertNoForbiddenTools(toolNames: readonly string[]): void {
   const denied = new Set<string>(SUBAGENT_FORBIDDEN_TOOLS);
-  const found = toolNames.filter(name => denied.has(name));
+  const found = toolNames.filter(name => denied.has(name) || name.startsWith('mcp__'));
   if (found.length > 0) {
     throw new Error(`Subagent tool list contains forbidden tools: ${found.join(', ')}`);
   }

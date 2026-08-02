@@ -37,10 +37,7 @@ import {
 } from './model-registry';
 import { ModelClientPool } from './model-client-pool';
 import { delimiter } from 'path';
-import {
-  DEFAULT_SUBAGENT_CONFIG,
-  type SubagentConfig,
-} from '../runtime/subagents/types';
+import { DEFAULT_SUBAGENT_CONFIG, type SubagentConfig } from '../runtime/subagents/types';
 import { clampSubagentConfig } from '../runtime/subagents/policy';
 import { ENV, webSearchEnv } from '../product/environment';
 
@@ -63,7 +60,11 @@ export const PRODUCT_UI_RENDERER: UIRenderer = 'tui';
 export const TECHNICAL_UI_RENDERERS = ['terminal'] as const satisfies readonly UIRenderer[];
 export const DEPRECATED_UI_RENDERERS = ['ink'] as const satisfies readonly UIRenderer[];
 export const DEFAULT_UI_RENDERER: UIRenderer = PRODUCT_UI_RENDERER;
-export const SUPPORTED_UI_RENDERERS = [PRODUCT_UI_RENDERER, ...TECHNICAL_UI_RENDERERS, ...DEPRECATED_UI_RENDERERS] as const satisfies readonly UIRenderer[];
+export const SUPPORTED_UI_RENDERERS = [
+  PRODUCT_UI_RENDERER,
+  ...TECHNICAL_UI_RENDERERS,
+  ...DEPRECATED_UI_RENDERERS,
+] as const satisfies readonly UIRenderer[];
 
 /** @deprecated Legacy export only; TUI is the product renderer, not beta. */
 export const RECOMMENDED_BETA_UI_RENDERER: UIRenderer = PRODUCT_UI_RENDERER;
@@ -72,7 +73,10 @@ export const STABLE_UI_RENDERER: UIRenderer = 'terminal';
 /** @deprecated Use DEPRECATED_UI_RENDERERS instead. */
 export const DEPRECATED_BETA_UI_RENDERERS = DEPRECATED_UI_RENDERERS;
 /** @deprecated Use PRODUCT_UI_RENDERER / TECHNICAL_UI_RENDERERS / DEPRECATED_UI_RENDERERS instead. */
-export const BETA_UI_RENDERERS = [PRODUCT_UI_RENDERER, ...DEPRECATED_UI_RENDERERS] as const satisfies readonly UIRenderer[];
+export const BETA_UI_RENDERERS = [
+  PRODUCT_UI_RENDERER,
+  ...DEPRECATED_UI_RENDERERS,
+] as const satisfies readonly UIRenderer[];
 
 // ============================================================================
 // Types
@@ -118,9 +122,7 @@ const INTERNAL_DEFAULTS = {
 } as const;
 
 function normalizeToolConfirmationPolicy(value: unknown): ToolConfirmationPolicy | undefined {
-  return value === 'ask' || value === 'allow' || value === 'deny'
-    ? value
-    : undefined;
+  return value === 'ask' || value === 'allow' || value === 'deny' ? value : undefined;
 }
 
 export function resolveUIRenderer(value: unknown): UIRenderer | undefined {
@@ -145,11 +147,13 @@ export function isTechnicalUIRenderer(value: unknown): boolean {
 }
 
 export function isDeprecatedUIRenderer(value: unknown): boolean {
-  return typeof value === 'string' && (DEPRECATED_UI_RENDERERS as readonly string[]).includes(value);
+  return (
+    typeof value === 'string' && (DEPRECATED_UI_RENDERERS as readonly string[]).includes(value)
+  );
 }
 
 /** @deprecated Use isProductUIRenderer / isTechnicalUIRenderer instead. */
-export function isBetaUIRenderer(value: unknown): value is typeof BETA_UI_RENDERERS[number] {
+export function isBetaUIRenderer(value: unknown): value is (typeof BETA_UI_RENDERERS)[number] {
   return typeof value === 'string' && (BETA_UI_RENDERERS as readonly string[]).includes(value);
 }
 
@@ -159,9 +163,7 @@ export function isRecommendedBetaUIRenderer(value: unknown): boolean {
 }
 
 function normalizeUIConfirmationMode(value: unknown): UIConfirmationMode | undefined {
-  return value === 'config' || value === 'interactive'
-    ? value
-    : undefined;
+  return value === 'config' || value === 'interactive' ? value : undefined;
 }
 
 function parsePositiveInt(value: string | undefined): number | undefined {
@@ -190,9 +192,7 @@ function loadSkillsConfig(
 ): SkillsConfig | undefined {
   const paths = normalizeStringList([
     ...normalizeStringList(globalConfig.skills?.paths),
-    ...(process.env[ENV.SKILLS_PATHS]
-      ? process.env[ENV.SKILLS_PATHS]!.split(delimiter)
-      : []),
+    ...(process.env[ENV.SKILLS_PATHS] ? process.env[ENV.SKILLS_PATHS]!.split(delimiter) : []),
     ...normalizeStringList(overrides.skills?.paths),
   ]);
 
@@ -210,7 +210,8 @@ function loadWebSearchConfig(
 
   const endpoint = process.env[webSearchEnv('MCP_ENDPOINT')];
   const apiKey = process.env[webSearchEnv('API_KEY')] ?? process.env.DASHSCOPE_API_KEY;
-  const provider = process.env[webSearchEnv('PROVIDER')] ?? process.env[webSearchEnv('MCP_PROVIDER')];
+  const provider =
+    process.env[webSearchEnv('PROVIDER')] ?? process.env[webSearchEnv('MCP_PROVIDER')];
   const toolName = process.env[webSearchEnv('MCP_TOOL')];
   const timeoutMs = parsePositiveInt(process.env[webSearchEnv('MCP_TIMEOUT_MS')]);
   const authType = process.env[webSearchEnv('AUTH_TYPE')];
@@ -222,7 +223,12 @@ function loadWebSearchConfig(
   if (apiKey) merged.apiKey = apiKey;
   if (toolName) merged.toolName = toolName;
   if (timeoutMs) merged.timeoutMs = timeoutMs;
-  if (authType === 'bearer' || authType === 'header' || authType === 'query' || authType === 'none') {
+  if (
+    authType === 'bearer' ||
+    authType === 'header' ||
+    authType === 'query' ||
+    authType === 'none'
+  ) {
     merged.authType = authType;
   }
   if (apiKeyHeader) merged.apiKeyHeader = apiKeyHeader;
@@ -238,14 +244,12 @@ function loadUIConfig(
   const envConfirmations = process.env[ENV.UI_CONFIRMATIONS];
 
   return {
-    renderer:
-      resolveUIRenderer(overrides.ui?.renderer)
-      ?? INTERNAL_DEFAULTS.ui.renderer,
+    renderer: resolveUIRenderer(overrides.ui?.renderer) ?? INTERNAL_DEFAULTS.ui.renderer,
     confirmations:
-      normalizeUIConfirmationMode(overrides.ui?.confirmations)
-      ?? normalizeUIConfirmationMode(globalConfig.ui?.confirmations)
-      ?? normalizeUIConfirmationMode(envConfirmations)
-      ?? INTERNAL_DEFAULTS.ui.confirmations,
+      normalizeUIConfirmationMode(overrides.ui?.confirmations) ??
+      normalizeUIConfirmationMode(globalConfig.ui?.confirmations) ??
+      normalizeUIConfirmationMode(envConfirmations) ??
+      INTERNAL_DEFAULTS.ui.confirmations,
   };
 }
 
@@ -280,12 +284,12 @@ function normalizePricing(value: unknown): CostConfig['defaultPricing'] | undefi
   const output = pricing.output;
   const cachedInput = pricing.cachedInput;
   if (
-    typeof input !== 'number'
-    || !Number.isFinite(input)
-    || input < 0
-    || typeof output !== 'number'
-    || !Number.isFinite(output)
-    || output < 0
+    typeof input !== 'number' ||
+    !Number.isFinite(input) ||
+    input < 0 ||
+    typeof output !== 'number' ||
+    !Number.isFinite(output) ||
+    output < 0
   ) {
     return undefined;
   }
@@ -300,7 +304,7 @@ function normalizePricing(value: unknown): CostConfig['defaultPricing'] | undefi
 
 function loadCostConfig(
   globalConfig: GlobalConfig,
-  overrides: Partial<OrionCodeCLIConfig>,
+  overrides: Partial<OrionCodeCLIConfig>
 ): CostConfig | undefined {
   const sourceModels = {
     ...(globalConfig.cost?.modelPricing ?? {}),
@@ -310,11 +314,11 @@ function loadCostConfig(
     Object.entries(sourceModels)
       .map(([model, pricing]) => [model, normalizePricing(pricing)] as const)
       .filter((entry): entry is readonly [string, NonNullable<CostConfig['defaultPricing']>] =>
-        Boolean(entry[1]),
-      ),
+        Boolean(entry[1])
+      )
   );
   const defaultPricing = normalizePricing(
-    overrides.cost?.defaultPricing ?? globalConfig.cost?.defaultPricing,
+    overrides.cost?.defaultPricing ?? globalConfig.cost?.defaultPricing
   );
 
   if (Object.keys(modelPricing).length === 0 && !defaultPricing) return undefined;
@@ -330,7 +334,7 @@ function parseSubagentMode(value: unknown): SubagentMode | undefined {
 
 function loadSubagentConfig(
   globalConfig: GlobalConfig,
-  overrides: Partial<OrionCodeCLIConfig>,
+  overrides: Partial<OrionCodeCLIConfig>
 ): SubagentConfig {
   const merged: SubagentUserConfig = {
     ...globalConfig.subagents,
@@ -348,8 +352,10 @@ function loadSubagentConfig(
     maxParallel: merged.maxParallel ?? DEFAULT_SUBAGENT_CONFIG.maxParallel,
     maxTasksPerTurn: merged.maxTasksPerTurn ?? DEFAULT_SUBAGENT_CONFIG.maxTasksPerTurn,
     maxTurnsPerTask: merged.maxTurnsPerTask ?? DEFAULT_SUBAGENT_CONFIG.maxTurnsPerTask,
-    maxModelRequestsPerTask: merged.maxModelRequestsPerTask ?? DEFAULT_SUBAGENT_CONFIG.maxModelRequestsPerTask,
-    maxModelRequestsPerTurn: merged.maxModelRequestsPerTurn ?? DEFAULT_SUBAGENT_CONFIG.maxModelRequestsPerTurn,
+    maxModelRequestsPerTask:
+      merged.maxModelRequestsPerTask ?? DEFAULT_SUBAGENT_CONFIG.maxModelRequestsPerTask,
+    maxModelRequestsPerTurn:
+      merged.maxModelRequestsPerTurn ?? DEFAULT_SUBAGENT_CONFIG.maxModelRequestsPerTurn,
     maxToolCallsPerTask: merged.maxToolCallsPerTask ?? DEFAULT_SUBAGENT_CONFIG.maxToolCallsPerTask,
     timeoutMs: merged.timeoutMs ?? DEFAULT_SUBAGENT_CONFIG.timeoutMs,
     roles: merged.roles && merged.roles.length > 0 ? merged.roles : DEFAULT_SUBAGENT_CONFIG.roles,
@@ -395,42 +401,42 @@ export function loadConfig(overrides: Partial<OrionCodeCLIConfig> = {}): OrionCo
     if (isLegacyConfig(rawConfig)) {
       if (!_legacyConfigWarned) {
         _legacyConfigWarned = true;
-        console.warn('[orion-code] Using legacy configuration format. Migrate to providers+models for v0.2.26+.');
+        console.warn(`[orion-code] ${getLegacyMigrationHint().split('\n')[0]}`);
       }
     }
     resolvedModel =
-      toNonEmptyString(overrides.model)
-      ?? toNonEmptyString(globalConfig.defaultModel)
-      ?? toNonEmptyString(process.env[ENV.MODEL])
-      ?? 'gpt-4o';
+      toNonEmptyString(overrides.model) ??
+      toNonEmptyString(globalConfig.defaultModel) ??
+      toNonEmptyString(process.env[ENV.MODEL]) ??
+      'gpt-4o';
     resolvedFallback =
-      toNonEmptyString(overrides.fallbackModel)
-      ?? toNonEmptyString(globalConfig.fallbackModel)
-      ?? toNonEmptyString(process.env[ENV.FALLBACK_MODEL])
-      ?? undefined;
+      toNonEmptyString(overrides.fallbackModel) ??
+      toNonEmptyString(globalConfig.fallbackModel) ??
+      toNonEmptyString(process.env[ENV.FALLBACK_MODEL]) ??
+      undefined;
   }
 
   const config: OrionCodeCLIConfig = {
     apiKey:
-      toNonEmptyString(overrides.apiKey)
-      ?? globalConfig.apiKey
-      ?? toNonEmptyString(process.env[ENV.API_KEY])
-      ?? '',
+      toNonEmptyString(overrides.apiKey) ??
+      globalConfig.apiKey ??
+      toNonEmptyString(process.env[ENV.API_KEY]) ??
+      '',
     apiBaseUrl:
-      toNonEmptyString(overrides.apiBaseUrl)
-      ?? globalConfig.apiBaseUrl
-      ?? toNonEmptyString(process.env[ENV.API_BASE_URL])
-      ?? toNonEmptyString(process.env[ENV.BASE_URL])
-      ?? undefined,
+      toNonEmptyString(overrides.apiBaseUrl) ??
+      globalConfig.apiBaseUrl ??
+      toNonEmptyString(process.env[ENV.API_BASE_URL]) ??
+      toNonEmptyString(process.env[ENV.BASE_URL]) ??
+      undefined,
     model: resolvedModel,
     fallbackModel: resolvedFallback,
     modelRegistry,
     modelClientPool,
     toolConfirmation:
-      normalizeToolConfirmationPolicy(overrides.toolConfirmation)
-      ?? normalizeToolConfirmationPolicy(globalConfig.toolConfirmation)
-      ?? normalizeToolConfirmationPolicy(process.env[ENV.TOOL_CONFIRMATION])
-      ?? INTERNAL_DEFAULTS.toolConfirmation,
+      normalizeToolConfirmationPolicy(overrides.toolConfirmation) ??
+      normalizeToolConfirmationPolicy(globalConfig.toolConfirmation) ??
+      normalizeToolConfirmationPolicy(process.env[ENV.TOOL_CONFIRMATION]) ??
+      INTERNAL_DEFAULTS.toolConfirmation,
     webSearch: loadWebSearchConfig(globalConfig, overrides),
     ui: loadUIConfig(globalConfig, overrides),
     skills: loadSkillsConfig(globalConfig, overrides),
@@ -438,12 +444,13 @@ export function loadConfig(overrides: Partial<OrionCodeCLIConfig> = {}): OrionCo
     subagents: loadSubagentConfig(globalConfig, overrides),
     cost: loadCostConfig(globalConfig, overrides),
 
-    name:
-      overrides.name ?? process.env[ENV.NAME] ?? INTERNAL_DEFAULTS.name,
-    mode:
-      (overrides.mode ?? process.env[ENV.MODE] ?? INTERNAL_DEFAULTS.mode) as 'development' | 'production',
-    logLevel:
-      (overrides.logLevel ?? process.env[ENV.LOG_LEVEL] ?? INTERNAL_DEFAULTS.logLevel) as OrionCodeCLIConfig['logLevel'],
+    name: overrides.name ?? process.env[ENV.NAME] ?? INTERNAL_DEFAULTS.name,
+    mode: (overrides.mode ?? process.env[ENV.MODE] ?? INTERNAL_DEFAULTS.mode) as
+      | 'development'
+      | 'production',
+    logLevel: (overrides.logLevel ??
+      process.env[ENV.LOG_LEVEL] ??
+      INTERNAL_DEFAULTS.logLevel) as OrionCodeCLIConfig['logLevel'],
   };
 
   return config;
@@ -451,7 +458,9 @@ export function loadConfig(overrides: Partial<OrionCodeCLIConfig> = {}): OrionCo
 
 export function isConfigured(config: OrionCodeCLIConfig): boolean {
   if (config.modelRegistry?.defaultProfile) {
-    const provider = config.modelRegistry.providers.get(config.modelRegistry.defaultProfile.provider);
+    const provider = config.modelRegistry.providers.get(
+      config.modelRegistry.defaultProfile.provider
+    );
     if (provider) {
       return provider.apiKey.length > 0;
     }
@@ -462,7 +471,9 @@ export function isConfigured(config: OrionCodeCLIConfig): boolean {
 export function getConfigErrors(config: OrionCodeCLIConfig): string[] {
   const errors: string[] = [];
   if (!isConfigured(config)) {
-    errors.push('Missing ORION_CODE_API_KEY. Set it in ~/.orion-code/orion.json or environment variable.');
+    errors.push(
+      'Missing ORION_CODE_API_KEY. Set it in ~/.orion-code/orion.json or environment variable.'
+    );
   }
   return errors;
 }
@@ -478,8 +489,9 @@ export function getConfigSummary(config: OrionCodeCLIConfig): Record<string, str
     logLevel: config.logLevel,
     toolConfirmation: config.toolConfirmation,
     ui: `${config.ui?.renderer ?? INTERNAL_DEFAULTS.ui.renderer}/${config.ui?.confirmations ?? INTERNAL_DEFAULTS.ui.confirmations}`,
-    webSearch: config.webSearch?.endpoint || config.webSearch?.apiKey || config.webSearch?.toolName
-      ? 'configured'
-      : '(default)',
+    webSearch:
+      config.webSearch?.endpoint || config.webSearch?.apiKey || config.webSearch?.toolName
+        ? 'configured'
+        : '(default)',
   };
 }
