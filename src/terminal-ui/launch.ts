@@ -38,6 +38,8 @@ import type {
   ToolPermissionRequest,
   UiEventSink,
 } from '../runtime/ui-events';
+import type { GoalRuntimeEvent } from '../runtime/goals/types';
+import { formatGoalRuntimeEvent } from '../runtime/goals/presentation';
 
 const ACCENT = chalk.hex('#80E6E8');
 const DIM = chalk.hex('#567089');
@@ -589,6 +591,10 @@ export class TerminalEventSink implements UiEventSink {
     });
   }
 
+  goalEvent(event: GoalRuntimeEvent): void {
+    this.setStatus(formatGoalRuntimeEvent(event));
+  }
+
   setProcessing(_processing: boolean): void {
     // The technical terminal UI is append-only, so there is no live spinner state.
   }
@@ -1092,28 +1098,42 @@ export async function launchTerminalUI(runtime: OpenHorseUiRuntime): Promise<voi
     cwd: runtime.cwd,
     onSubmit: input => handleInput(input),
     onCtrlC: () => handleSigint(),
-    onNotice: message => { void writer.write(`${DIM(message)}\n`); },
+    onNotice: message => {
+      void writer.write(`${DIM(message)}\n`);
+    },
   });
   const outputAdapter: TerminalOutputWriter = {
     write: text => editor.writeExternalBatch([text]),
-    on: (event, listener) => { process.stdout.on(event, listener); },
-    off: (event, listener) => { process.stdout.off(event, listener); },
+    on: (event, listener) => {
+      process.stdout.on(event, listener);
+    },
+    off: (event, listener) => {
+      process.stdout.off(event, listener);
+    },
   };
   const outputQueue = new TerminalOutputQueue(outputAdapter);
   let outputBatchSequence = 0;
   writer = {
     write: text => {
-      void outputQueue.enqueue({
-        id: `terminal-output-${++outputBatchSequence}`,
-        chunks: [text],
-        releaseEntryIds: [],
-      }).catch(() => undefined);
+      void outputQueue
+        .enqueue({
+          id: `terminal-output-${++outputBatchSequence}`,
+          chunks: [text],
+          releaseEntryIds: [],
+        })
+        .catch(() => undefined);
     },
-    writeAsync: text => outputQueue.enqueue({
-      id: `terminal-output-${++outputBatchSequence}`,
-      chunks: [text],
-      releaseEntryIds: [],
-    }).then(() => true, () => false),
+    writeAsync: text =>
+      outputQueue
+        .enqueue({
+          id: `terminal-output-${++outputBatchSequence}`,
+          chunks: [text],
+          releaseEntryIds: [],
+        })
+        .then(
+          () => true,
+          () => false
+        ),
   };
   const events = new TerminalEventSink(runtime, writer);
 

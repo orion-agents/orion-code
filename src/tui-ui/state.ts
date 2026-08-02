@@ -10,6 +10,8 @@ import type {
   TranscriptEntry,
   UiEventSink,
 } from '../runtime/ui-events';
+import type { GoalRuntimeEvent, RuntimeGoalSnapshot } from '../runtime/goals/types';
+import { formatGoalRuntimeEvent } from '../runtime/goals/presentation';
 import {
   createPromptState,
   createSessionRestoredView,
@@ -88,6 +90,8 @@ export interface TuiUiState {
   recentToolDetails: TuiToolDetailSummary[];
   /** v0.2.23: Inspector state (null when closed). */
   inspector: ToolInspectorState | null;
+  /** Shared runtime Goal projection. Null when the session has no goal. */
+  goal: RuntimeGoalSnapshot | null;
 }
 
 export interface TuiToolDetailSummary {
@@ -109,7 +113,12 @@ export type TuiUiAction =
   | { type: 'clearTranscript' }
   | { type: 'setPrompt'; value: string; cursor?: number }
   | { type: 'setStatus'; message: string }
-  | { type: 'setStatusSnapshot'; snapshot: StatusSnapshot; phase?: TuiStatusState['phase']; message?: string }
+  | {
+      type: 'setStatusSnapshot';
+      snapshot: StatusSnapshot;
+      phase?: TuiStatusState['phase'];
+      message?: string;
+    }
   | { type: 'setProcessing'; processing: boolean }
   | { type: 'showSessionPicker'; request: SessionPickerRequest }
   | { type: 'showEditPreview'; request: EditPreviewRequest }
@@ -117,6 +126,7 @@ export type TuiUiAction =
   | { type: 'toolStarted'; event: RuntimeToolStartedEvent }
   | { type: 'toolFinished'; event: RuntimeToolFinishedEvent }
   | { type: 'subtaskEvent'; event: RuntimeSubtaskEvent }
+  | { type: 'goalEvent'; event: GoalRuntimeEvent }
   | { type: 'showCommandPalette'; query: string; items: TuiPickerItem[] }
   | { type: 'showFilePicker'; base: string; query: string; items: TuiPickerItem[] }
   | { type: 'showShortcuts' }
@@ -158,6 +168,7 @@ export const initialTuiUiState: TuiUiState = {
   toolOutputViewMode: 'adaptive',
   recentToolDetails: [],
   inspector: null,
+  goal: null,
 };
 
 export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState {
@@ -181,26 +192,26 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
     case 'updateTranscript':
       return {
         ...state,
-        transcript: state.transcript.map(entry => (
+        transcript: state.transcript.map(entry =>
           entry.id === action.id
             ? { ...entry, ...action.patch, revision: entry.revision + 1 }
             : entry
-        )),
+        ),
       };
 
     case 'finalizeTranscript':
       return commitStaticTranscriptPrefix({
         ...state,
-        transcript: state.transcript.map(entry => (
+        transcript: state.transcript.map(entry =>
           entry.id === action.id
             ? {
-              ...entry,
-              ...action.patch,
-              finalized: true,
-              revision: entry.revision + (action.patch ? 1 : 0),
-            }
+                ...entry,
+                ...action.patch,
+                finalized: true,
+                revision: entry.revision + (action.patch ? 1 : 0),
+              }
             : entry
-        )),
+        ),
       });
 
     case 'removeTranscript':
@@ -225,7 +236,7 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
         transcriptGeneration: state.transcriptGeneration + 1,
         recentToolDetails: mergeRecentToolDetails(
           state.recentToolDetails,
-          action.entries.flatMap(toolDetailsFromTranscriptEntry),
+          action.entries.flatMap(toolDetailsFromTranscriptEntry)
         ),
       };
     }
@@ -240,20 +251,19 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
         transcriptGeneration: state.transcriptGeneration + 1,
       };
 
-    case 'setPrompt':
-      {
-        const prompt = createPromptState({
-          value: action.value,
-          cursor: action.cursor ?? action.value.length,
-        });
-        return {
-          ...state,
-          prompt: {
-            value: prompt.value,
-            cursor: prompt.cursor,
-          },
-        };
-      }
+    case 'setPrompt': {
+      const prompt = createPromptState({
+        value: action.value,
+        cursor: action.cursor ?? action.value.length,
+      });
+      return {
+        ...state,
+        prompt: {
+          value: prompt.value,
+          cursor: prompt.cursor,
+        },
+      };
+    }
 
     case 'setStatus':
       return {
@@ -261,6 +271,36 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
         statusMessage: action.message,
         statusState: { ...state.statusState, message: action.message },
       };
+
+    case 'goalEvent': {
+      const event = action.event;
+      const statusMessage = formatGoalRuntimeEvent(event);
+      if (event.type === 'goal_cleared') return { ...state, goal: null, statusMessage };
+      if (
+        event.type === 'goal_updated' ||
+        event.type === 'goal_restored' ||
+        event.type === 'goal_completed'
+      ) {
+        return {
+          ...state,
+          goal: event.goal,
+          statusMessage,
+        };
+      }
+      if (event.type === 'goal_plan_updated' && state.goal?.goalId === event.goalId) {
+        return {
+          ...state,
+          goal: {
+            ...state.goal,
+            planRevision: event.planRevision,
+            planPhase: event.phase,
+            nextAction: event.nextAction,
+          },
+          statusMessage,
+        };
+      }
+      return { ...state, statusMessage };
+    }
 
     case 'setStatusSnapshot': {
       const activeTools = countActiveTools(state.runtimeToolEvents);
@@ -322,10 +362,13 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
         summary: event.summary ?? event.error,
         artifactId: event.artifactRef?.id,
       };
-      const next = appendRuntimeToolEvent({
-        ...state,
-        recentToolDetails: mergeRecentToolDetails(state.recentToolDetails, [detail]),
-      }, { type: 'finished', ...event });
+      const next = appendRuntimeToolEvent(
+        {
+          ...state,
+          recentToolDetails: mergeRecentToolDetails(state.recentToolDetails, [detail]),
+        },
+        { type: 'finished', ...event }
+      );
       return updateStatusCounts(next);
     }
 
@@ -417,7 +460,7 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
       const newIndex = clampNumber(
         state.inspector.selectedIndex + action.delta,
         0,
-        Math.max(0, state.recentToolDetails.length - 1),
+        Math.max(0, state.recentToolDetails.length - 1)
       );
       return {
         ...state,
@@ -478,9 +521,10 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
         inspector: {
           ...state.inspector,
           searchQuery: action.query,
-          searchDirection: action.query === state.inspector.searchQuery
-            ? (state.inspector.searchDirection === 1 ? -1 : 1) as 1 | -1
-            : 1,
+          searchDirection:
+            action.query === state.inspector.searchQuery
+              ? ((state.inspector.searchDirection === 1 ? -1 : 1) as 1 | -1)
+              : 1,
           selectedIndex: 0,
           detailOffset: 0,
         },
@@ -558,17 +602,23 @@ export interface TranscriptCommitAcknowledgement {
 /** Release only the exact finalized prefix confirmed by the surface write. */
 export function acknowledgeTranscriptCommit(
   state: TuiUiState,
-  acknowledgement: TranscriptCommitAcknowledgement,
+  acknowledgement: TranscriptCommitAcknowledgement
 ): { state: TuiUiState; accepted: boolean } {
   if (acknowledgement.generation !== state.transcriptGeneration) {
     return { state, accepted: false };
   }
   const count = acknowledgement.recordIds.length;
-  if (count === 0 || count > state.queuedTranscriptCount || count > state.committableTranscriptCount) {
+  if (
+    count === 0 ||
+    count > state.queuedTranscriptCount ||
+    count > state.committableTranscriptCount
+  ) {
     return { state, accepted: false };
   }
   const prefix = state.transcript.slice(0, count);
-  if (prefix.some((entry, index) => !entry.finalized || entry.id !== acknowledgement.recordIds[index])) {
+  if (
+    prefix.some((entry, index) => !entry.finalized || entry.id !== acknowledgement.recordIds[index])
+  ) {
     return { state, accepted: false };
   }
   return {
@@ -634,6 +684,7 @@ export function createTuiUiEventSink(
       });
     },
     subtaskEvent: event => dispatch({ type: 'subtaskEvent', event }),
+    goalEvent: event => dispatch({ type: 'goalEvent', event }),
     setProcessing: processing => dispatch({ type: 'setProcessing', processing }),
     clearView: () => dispatch({ type: 'clearTranscript' }),
   };
@@ -657,7 +708,7 @@ function appendRuntimeToolEvent(state: TuiUiState, event: TuiRuntimeToolEvent): 
 
 function mergeRecentToolDetails(
   current: TuiToolDetailSummary[],
-  incoming: TuiToolDetailSummary[],
+  incoming: TuiToolDetailSummary[]
 ): TuiToolDetailSummary[] {
   const byCallId = new Map(current.map(detail => [detail.callId, detail]));
   for (const detail of incoming) {
@@ -671,20 +722,19 @@ function toolDetailsFromTranscriptEntry(entry: TranscriptEntry): TuiToolDetailSu
   const activity = entry.toolActivity;
   const detailRef = activity?.outputView?.detailRef;
   if (!activity || !detailRef) return [];
-  const state = activity.state === 'error'
-    ? 'error'
-    : activity.state === 'skipped'
-      ? 'skipped'
-      : 'success';
-  return [{
-    callId: detailRef.callId,
-    sequence: detailRef.sequence,
-    toolName: activity.name,
-    outputBytes: detailRef.outputBytes,
-    state,
-    summary: activity.summary ?? activity.outputView?.summary,
-    artifactId: detailRef.artifactId,
-  }];
+  const state =
+    activity.state === 'error' ? 'error' : activity.state === 'skipped' ? 'skipped' : 'success';
+  return [
+    {
+      callId: detailRef.callId,
+      sequence: detailRef.sequence,
+      toolName: activity.name,
+      outputBytes: detailRef.outputBytes,
+      state,
+      summary: activity.summary ?? activity.outputView?.summary,
+      artifactId: detailRef.artifactId,
+    },
+  ];
 }
 
 /** Count tools with a 'started' event but no matching 'finished' event. */
@@ -729,8 +779,8 @@ function isLiveTranscriptAppend(entry: TranscriptAppendEntry): boolean {
 function commitStaticTranscriptPrefix(state: TuiUiState): TuiUiState {
   let committableTranscriptCount = state.committableTranscriptCount;
   while (
-    committableTranscriptCount < state.transcript.length
-    && state.transcript[committableTranscriptCount]?.finalized
+    committableTranscriptCount < state.transcript.length &&
+    state.transcript[committableTranscriptCount]?.finalized
   ) {
     committableTranscriptCount += 1;
   }
@@ -742,8 +792,8 @@ function commitStaticTranscriptPrefix(state: TuiUiState): TuiUiState {
 function recomputeStaticTranscriptPrefix(state: TuiUiState): TuiUiState {
   let committableTranscriptCount = 0;
   while (
-    committableTranscriptCount < state.transcript.length
-    && state.transcript[committableTranscriptCount]?.finalized
+    committableTranscriptCount < state.transcript.length &&
+    state.transcript[committableTranscriptCount]?.finalized
   ) {
     committableTranscriptCount += 1;
   }

@@ -27,11 +27,18 @@ export class ProviderResilienceCoordinator {
   /** Execute a logical request with full retry/fallback/recovery logic. */
   async execute<T>(
     ctx: ProviderRequestContext,
-    transport: (attempt: number, signal?: AbortSignal) => Promise<{ response: T; usage?: { promptTokens: number; completionTokens: number; totalTokens: number }; providerRequestId?: string }>,
+    transport: (
+      attempt: number,
+      signal?: AbortSignal
+    ) => Promise<{
+      response: T;
+      usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
+      providerRequestId?: string;
+    }>,
     options?: {
       onStreamChunk?: (text: string) => void;
       buildRecoveryRequest?: (partialText: string) => Promise<unknown>;
-    },
+    }
   ): Promise<{ result: T; diagnostics: ProviderRequestDiagnosticsV2 }> {
     const diagnostics: ProviderRequestDiagnosticsV2 = {
       logicalRequestId: ctx.logicalRequestId,
@@ -56,7 +63,7 @@ export class ProviderResilienceCoordinator {
       // Check elapsed budget
       if (Date.now() - startedAt >= this.config.maxElapsedMs) {
         diagnostics.finalState = 'retry_exhausted';
-        throw new ProviderRetryExhaustedError(diagnostics, 'max elapsed time exceeded');
+        throw new ProviderRetryExhaustedError(diagnostics, 'max elapsed time exceeded', lastError);
       }
 
       // Check abort
@@ -95,13 +102,21 @@ export class ProviderResilienceCoordinator {
         switch (classification.disposition) {
           case 'fail_fast':
             diagnostics.finalState = 'failed_fast';
-            throw new ProviderRetryExhaustedError(diagnostics, `fail fast: ${classification.kind}`);
+            throw new ProviderRetryExhaustedError(
+              diagnostics,
+              `fail fast: ${classification.kind}`,
+              error
+            );
 
           case 'retry_precommit':
           case 'recover_stream':
             if (attempt >= this.config.maxTotalAttempts) {
               diagnostics.finalState = 'retry_exhausted';
-              throw new ProviderRetryExhaustedError(diagnostics, `max attempts (${this.config.maxTotalAttempts}) reached`);
+              throw new ProviderRetryExhaustedError(
+                diagnostics,
+                `max attempts (${this.config.maxTotalAttempts}) reached`,
+                error
+              );
             }
             const delay = this.computeBackoff(attempt, classification.retryAfterMs);
             attemptRecord.backoffMs = delay;
@@ -121,20 +136,28 @@ export class ProviderResilienceCoordinator {
 
           case 'defer_until_cooldown':
             diagnostics.finalState = 'retry_exhausted';
-            throw new ProviderRetryExhaustedError(diagnostics, 'provider cooldown active');
+            throw new ProviderRetryExhaustedError(diagnostics, 'provider cooldown active', error);
         }
       }
     }
 
     diagnostics.finalState = 'retry_exhausted';
-    throw new ProviderRetryExhaustedError(diagnostics, `max attempts exhausted: ${String(lastError)}`);
+    throw new ProviderRetryExhaustedError(
+      diagnostics,
+      `max attempts exhausted: ${String(lastError)}`,
+      lastError
+    );
   }
 
   getConfig(): ProviderResilienceConfig {
     return { ...this.config };
   }
 
-  private startAttempt(ctx: ProviderRequestContext, attempt: number, diag: ProviderRequestDiagnosticsV2): ProviderAttemptRecord {
+  private startAttempt(
+    ctx: ProviderRequestContext,
+    attempt: number,
+    diag: ProviderRequestDiagnosticsV2
+  ): ProviderAttemptRecord {
     return {
       attemptId: randomUUID().slice(0, 8),
       logicalRequestId: ctx.logicalRequestId,
@@ -154,13 +177,19 @@ export class ProviderResilienceCoordinator {
     if (retryAfterMs && retryAfterMs > 0 && retryAfterMs <= this.config.maxRetryAfterMs) {
       return Math.max(retryAfterMs, this.config.minRateLimitDelayMs);
     }
-    const cap = Math.min(this.config.maxDelayMs, this.config.baseDelayMs * Math.pow(2, attempt - 1));
+    const cap = Math.min(
+      this.config.maxDelayMs,
+      this.config.baseDelayMs * Math.pow(2, attempt - 1)
+    );
     return cap / 2 + Math.floor(Math.random() * (cap / 2));
   }
 
   private sleep(ms: number, signal?: AbortSignal): Promise<void> {
     return new Promise((resolve, reject) => {
-      if (signal?.aborted) { resolve(); return; }
+      if (signal?.aborted) {
+        resolve();
+        return;
+      }
       const timer = setTimeout(resolve, ms);
       const onAbort = (): void => {
         clearTimeout(timer);
@@ -178,6 +207,7 @@ export class ProviderRetryExhaustedError extends Error {
   constructor(
     readonly diagnostics: ProviderRequestDiagnosticsV2,
     reason: string,
+    readonly originalError?: unknown
   ) {
     super(`Provider retry exhausted: ${reason}`);
     this.name = 'ProviderRetryExhaustedError';

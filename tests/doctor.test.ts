@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
@@ -9,7 +9,7 @@ import { TOOLS } from '../src/tools';
 import { mcpManager } from '../src/tools/mcp';
 import { findCommand } from '../src/commands';
 import type { CommandContext } from '../src/commands/types';
-import { getLegacyProjectMemoryDir } from '../src/services/config-dir';
+import { getLegacyProjectMemoryDir, getProjectSessionsDir } from '../src/services/config-dir';
 import { resolveProjectPath } from '../src/services/session-storage';
 import { resetSkillsRegistry } from '../src/skills/registry';
 
@@ -92,7 +92,9 @@ describe('doctor report', () => {
 
     expect(report.checks.find(check => check.id === 'config')?.status).toBe('ok');
     expect(report.checks.find(check => check.id === 'llm')?.summary).toContain('mock-doctor');
-    expect(report.checks.find(check => check.id === 'project-instructions')?.summary).toContain('1 files');
+    expect(report.checks.find(check => check.id === 'project-instructions')?.summary).toContain(
+      '1 files'
+    );
     expect(store.getSnapshot().projectInstructionsContent).toContain('Follow repository rules.');
   });
 
@@ -155,7 +157,9 @@ describe('doctor report', () => {
     });
     const rendered = formatDoctorReport(report);
 
-    expect(rendered).toContain('https://[REDACTED]@provider.example.test/v1?key=[REDACTED]&token=[REDACTED]');
+    expect(rendered).toContain(
+      'https://[REDACTED]@provider.example.test/v1?key=[REDACTED]&token=[REDACTED]'
+    );
     expect(rendered).not.toContain('user:password');
     expect(rendered).not.toContain('secret123');
     expect(rendered).not.toContain('tok123');
@@ -242,13 +246,16 @@ describe('doctor report', () => {
   it('warns about legacy storage layout without failing doctor', () => {
     const legacyMemoryDir = getLegacyProjectMemoryDir(resolveProjectPath(projectDir));
     mkdirSync(legacyMemoryDir, { recursive: true });
-    writeFileSync(join(legacyMemoryDir, 'legacy-memory.md'), `---
+    writeFileSync(
+      join(legacyMemoryDir, 'legacy-memory.md'),
+      `---
 name: legacy-memory
 description: Legacy memory
 type: project
 ---
 
-Legacy content`);
+Legacy content`
+    );
 
     const config = loadConfig({ apiKey: 'sk-test', model: 'mock-doctor' });
     const store = new Store({
@@ -271,21 +278,141 @@ Legacy content`);
     expect(hasDoctorFailures(report)).toBe(false);
   });
 
+  it('reports corrupt and orphan Goal sidecars without changing them', () => {
+    const projectPath = resolveProjectPath(projectDir);
+    const sessionsDir = getProjectSessionsDir(projectPath);
+    mkdirSync(sessionsDir, { recursive: true });
+    const corruptPath = join(sessionsDir, 'corrupt-session.goal.json');
+    const orphanPath = join(sessionsDir, 'orphan-session.goal.json');
+    writeFileSync(corruptPath, '{not-json');
+    writeFileSync(
+      orphanPath,
+      JSON.stringify({
+        version: 1,
+        goalId: 'goal-orphan',
+        sessionId: 'orphan-session',
+        revision: 0,
+        objective: 'orphan objective',
+        status: 'active',
+      })
+    );
+    const config = loadConfig({ apiKey: 'sk-test', model: 'mock-doctor' });
+    const store = new Store({ config, tools: TOOLS, currentModel: config.model });
+
+    const report = collectDoctorReport({
+      cwd: projectDir,
+      config,
+      store,
+      llm: makeLlm('mock-doctor') as any,
+      runtime: makeRuntime() as any,
+    });
+    const goals = report.checks.find(check => check.id === 'goal-sidecars');
+
+    expect(goals?.status).toBe('warn');
+    expect(goals?.summary).toContain('1 corrupt');
+    expect(goals?.summary).toContain('2 orphan');
+    expect(goals?.detail).toContain('/doctor never deletes or rewrites Goal data');
+    expect(readFileSync(corruptPath, 'utf8')).toBe('{not-json');
+    expect(existsSync(orphanPath)).toBe(true);
+    expect(hasDoctorFailures(report)).toBe(false);
+  });
+
+  it('reports deletion fences and live-sidecar collisions without changing Goal data', () => {
+    const projectPath = resolveProjectPath(projectDir);
+    const sessionsDir = getProjectSessionsDir(projectPath);
+    mkdirSync(sessionsDir, { recursive: true });
+    const compactFencePath = join(sessionsDir, 'collision-session.goal.json.deleted');
+    const liveSidecarPath = join(sessionsDir, 'collision-session.goal.json');
+    const renamedFencePath = join(sessionsDir, 'renamed-session.goal.json.deleted');
+    const invalidFencePath = join(sessionsDir, 'invalid-session.goal.json.deleted');
+    const unsafeRevisionFencePath = join(sessionsDir, 'unsafe-session.goal.json.deleted');
+    const compactFence = JSON.stringify({
+      version: 1,
+      kind: 'goal_deletion_fence',
+      sessionId: 'collision-session',
+      goalId: 'goal-collision',
+      revision: 4,
+      deletedAt: Date.now(),
+    });
+    const liveSidecar = JSON.stringify({
+      version: 1,
+      goalId: 'goal-collision-new',
+      sessionId: 'collision-session',
+      revision: 0,
+      objective: 'unexpected resurrected Goal',
+      status: 'active',
+    });
+    const renamedFence = JSON.stringify({
+      version: 1,
+      goalId: 'goal-renamed',
+      sessionId: 'renamed-session',
+      revision: 7,
+      objective: 'full sidecar retained after atomic rename',
+      status: 'active',
+    });
+    const invalidFence = '{not-json';
+    const unsafeRevisionFence = JSON.stringify({
+      version: 1,
+      kind: 'goal_deletion_fence',
+      sessionId: 'unsafe-session',
+      goalId: 'goal-unsafe',
+      revision: Number.MAX_SAFE_INTEGER + 1,
+      deletedAt: Date.now(),
+    });
+    writeFileSync(compactFencePath, compactFence);
+    writeFileSync(liveSidecarPath, liveSidecar);
+    writeFileSync(renamedFencePath, renamedFence);
+    writeFileSync(invalidFencePath, invalidFence);
+    writeFileSync(unsafeRevisionFencePath, unsafeRevisionFence);
+    const config = loadConfig({ apiKey: 'sk-test', model: 'mock-doctor' });
+    const store = new Store({ config, tools: TOOLS, currentModel: config.model });
+
+    const report = collectDoctorReport({
+      cwd: projectDir,
+      config,
+      store,
+      llm: makeLlm('mock-doctor') as any,
+      runtime: makeRuntime() as any,
+    });
+    const goals = report.checks.find(check => check.id === 'goal-sidecars');
+
+    expect(goals?.status).toBe('warn');
+    expect(goals?.summary).toContain('4 deletion fence (2 valid, 2 invalid)');
+    expect(goals?.summary).toContain('1 live/fence collision');
+    expect(goals?.detail).toContain('Goal writes with v0.1.1 are NO-GO');
+    expect(goals?.detail).toContain('v0.1.1 does not understand deletion fences');
+    expect(goals?.detail).toContain('possible stale-writer resurrection');
+    expect(goals?.detail).toContain('/doctor never deletes or rewrites Goal data');
+    expect(readFileSync(compactFencePath, 'utf8')).toBe(compactFence);
+    expect(readFileSync(liveSidecarPath, 'utf8')).toBe(liveSidecar);
+    expect(readFileSync(renamedFencePath, 'utf8')).toBe(renamedFence);
+    expect(readFileSync(invalidFencePath, 'utf8')).toBe(invalidFence);
+    expect(readFileSync(unsafeRevisionFencePath, 'utf8')).toBe(unsafeRevisionFence);
+    expect(hasDoctorFailures(report)).toBe(false);
+  });
+
   it('reports duplicate skill diagnostics without failing doctor', () => {
     const externalRoot = join(configDir, 'configured-skills');
     const skillDir = join(externalRoot, 'code-review');
     mkdirSync(skillDir, { recursive: true });
-    writeFileSync(join(configDir, 'orion.json'), JSON.stringify({
-      defaultModel: 'mock-doctor',
-      skills: { paths: [externalRoot] },
-    }), 'utf-8');
-    writeFileSync(join(skillDir, 'SKILL.md'), `---
+    writeFileSync(
+      join(configDir, 'orion.json'),
+      JSON.stringify({
+        defaultModel: 'mock-doctor',
+        skills: { paths: [externalRoot] },
+      }),
+      'utf-8'
+    );
+    writeFileSync(
+      join(skillDir, 'SKILL.md'),
+      `---
 name: code-review
 description: Configured code review
 trigger: /review
 priority: 100
 ---
-# Configured Code Review`);
+# Configured Code Review`
+    );
 
     const config = loadConfig({ apiKey: 'sk-test', model: 'mock-doctor' });
     const store = new Store({
@@ -373,7 +500,9 @@ describe('openhorse doctor CLI', () => {
     expect(result.status).toBe(0);
     expect(result.stdout).not.toContain('stable terminal UI');
     const parsed = JSON.parse(result.stdout);
-    expect(parsed.checks.some((check: any) => check.id === 'config' && check.status === 'ok')).toBe(true);
+    expect(parsed.checks.some((check: any) => check.id === 'config' && check.status === 'ok')).toBe(
+      true
+    );
     expect(parsed.checks.some((check: any) => check.id === 'tools')).toBe(true);
   });
 });

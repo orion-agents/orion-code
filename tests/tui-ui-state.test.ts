@@ -11,7 +11,11 @@ import {
   type TuiUiState,
 } from '../src/tui-ui/state';
 import type { SessionMeta } from '../src/services/session-storage';
-import { makeToolStartedEvent, makeToolFinishedEvent, resetToolEventSequence } from './test-helpers';
+import {
+  makeToolStartedEvent,
+  makeToolFinishedEvent,
+  resetToolEventSequence,
+} from './test-helpers';
 
 function reduce(actions: TuiUiAction[]): TuiUiState {
   return actions.reduce(tuiUiReducer, initialTuiUiState);
@@ -23,8 +27,14 @@ describe('tui-ui state', () => {
   it('keeps finalized transcript separate from live tool/activity entries', () => {
     const state = reduce([
       { type: 'appendTranscript', entry: { id: 'u1', role: 'user', content: 'hello' } },
-      { type: 'appendTranscript', entry: { id: 'a1', role: 'assistant', content: 'working', live: true } },
-      { type: 'appendTranscript', entry: { id: 't1', role: 'tool', content: 'Running list_files' } },
+      {
+        type: 'appendTranscript',
+        entry: { id: 'a1', role: 'assistant', content: 'working', live: true },
+      },
+      {
+        type: 'appendTranscript',
+        entry: { id: 't1', role: 'tool', content: 'Running list_files' },
+      },
     ]);
 
     expect(staticTuiTranscriptEntries(state).map(entry => entry.id)).toEqual(['u1']);
@@ -43,7 +53,10 @@ describe('tui-ui state', () => {
   it('commits live entries when finalized without reordering transcript history', () => {
     const state = reduce([
       { type: 'appendTranscript', entry: { id: 'u1', role: 'user', content: 'hello' } },
-      { type: 'appendTranscript', entry: { id: 'a1', role: 'assistant', content: 'hel', live: true } },
+      {
+        type: 'appendTranscript',
+        entry: { id: 'a1', role: 'assistant', content: 'hel', live: true },
+      },
       { type: 'updateTranscript', id: 'a1', patch: { content: 'hello back' } },
       { type: 'finalizeTranscript', id: 'a1' },
     ]);
@@ -149,7 +162,11 @@ describe('tui-ui state', () => {
     const state = reduce([
       {
         type: 'toolStarted',
-        event: makeToolStartedEvent({ callId: 'call-1', name: 'read_file', args: { path: 'src/index.ts' } }),
+        event: makeToolStartedEvent({
+          callId: 'call-1',
+          name: 'read_file',
+          args: { path: 'src/index.ts' },
+        }),
       },
       {
         type: 'toolFinished',
@@ -166,7 +183,13 @@ describe('tui-ui state', () => {
 
     expect(state.transcript).toEqual([]);
     expect(state.runtimeToolEvents).toEqual([
-      { type: 'started', callId: 'call-1', name: 'read_file', args: { path: 'src/index.ts' }, sequence: 1 },
+      {
+        type: 'started',
+        callId: 'call-1',
+        name: 'read_file',
+        args: { path: 'src/index.ts' },
+        sequence: 1,
+      },
       {
         type: 'finished',
         callId: 'call-1',
@@ -184,7 +207,12 @@ describe('tui-ui state', () => {
     const state = reduce([
       { type: 'showCommandPalette', query: 's', items: [{ value: 'status', label: '/status' }] },
       { type: 'moveOverlaySelection', delta: 5 },
-      { type: 'showFilePicker', base: 'open ', query: 'src/', items: [{ value: 'src/cli.ts', label: 'file src/cli.ts' }] },
+      {
+        type: 'showFilePicker',
+        base: 'open ',
+        query: 'src/',
+        items: [{ value: 'src/cli.ts', label: 'file src/cli.ts' }],
+      },
       { type: 'showShortcuts' },
     ]);
 
@@ -255,9 +283,7 @@ describe('tui-ui state', () => {
       expect.objectContaining({
         role: 'status',
         title: 'resume',
-        content: expect.stringContaining(
-          'restored 8 model-context / 20 transcript messages'
-        ),
+        content: expect.stringContaining('restored 8 model-context / 20 transcript messages'),
       }),
     ]);
     expect(state.transcript[0].content).toContain('(compact checkpoint)');
@@ -273,14 +299,21 @@ describe('slice 5: status snapshot and active counts', () => {
   beforeEach(() => resetToolEventSequence());
 
   it('setStatusSnapshot stores structured snapshot and phase', () => {
-    const state = reduce([{
-      type: 'setStatusSnapshot',
-      snapshot: {
-        renderer: { name: 'tui', status: 'beta', capabilities: {} as never, capabilityLabels: [] },
-        model: 'glm-5',
-      } as never,
-      phase: 'running',
-    }]);
+    const state = reduce([
+      {
+        type: 'setStatusSnapshot',
+        snapshot: {
+          renderer: {
+            name: 'tui',
+            status: 'beta',
+            capabilities: {} as never,
+            capabilityLabels: [],
+          },
+          model: 'glm-5',
+        } as never,
+        phase: 'running',
+      },
+    ]);
     expect(state.statusState.phase).toBe('running');
     expect(state.statusState.snapshot).toBeDefined();
     expect(state.statusState.snapshot?.model).toBe('glm-5');
@@ -298,7 +331,10 @@ describe('slice 5: status snapshot and active counts', () => {
     const state = reduce([
       { type: 'toolStarted', event: makeToolStartedEvent({ callId: 'c1', name: 'read_file' }) },
       { type: 'toolStarted', event: makeToolStartedEvent({ callId: 'c2', name: 'grep' }) },
-      { type: 'toolFinished', event: makeToolFinishedEvent({ callId: 'c1', name: 'read_file', success: true }) },
+      {
+        type: 'toolFinished',
+        event: makeToolFinishedEvent({ callId: 'c1', name: 'read_file', success: true }),
+      },
     ]);
     expect(state.statusState.activeTools).toBe(1);
   });
@@ -317,16 +353,26 @@ describe('slice 5: status snapshot and active counts', () => {
 describe('slice 5: subtask timeline keyed updates', () => {
   it('updates same taskId without duplicate rows', () => {
     const queuedEvent = {
-      batchId: 'b1', taskId: 't1', role: 'research' as const,
-      state: 'queued' as const, objective: 'investigate',
+      batchId: 'b1',
+      taskId: 't1',
+      role: 'research' as const,
+      state: 'queued' as const,
+      objective: 'investigate',
     };
     const runningEvent = {
-      batchId: 'b1', taskId: 't1', role: 'research' as const,
-      state: 'running' as const, objective: 'investigate',
+      batchId: 'b1',
+      taskId: 't1',
+      role: 'research' as const,
+      state: 'running' as const,
+      objective: 'investigate',
     };
     const completedEvent = {
-      batchId: 'b1', taskId: 't1', role: 'research' as const,
-      state: 'completed' as const, objective: 'investigate', summary: 'done',
+      batchId: 'b1',
+      taskId: 't1',
+      role: 'research' as const,
+      state: 'completed' as const,
+      objective: 'investigate',
+      summary: 'done',
     };
 
     const state = reduce([
@@ -343,17 +389,45 @@ describe('slice 5: subtask timeline keyed updates', () => {
 
   it('counts active subtasks (queued/running)', () => {
     const state = reduce([
-      { type: 'subtaskEvent', event: { batchId: 'b1', taskId: 't1', role: 'research', state: 'running', objective: 'a' } },
-      { type: 'subtaskEvent', event: { batchId: 'b1', taskId: 't2', role: 'review', state: 'queued', objective: 'b' } },
-      { type: 'subtaskEvent', event: { batchId: 'b1', taskId: 't3', role: 'review', state: 'completed', objective: 'c', summary: 'done' } },
+      {
+        type: 'subtaskEvent',
+        event: { batchId: 'b1', taskId: 't1', role: 'research', state: 'running', objective: 'a' },
+      },
+      {
+        type: 'subtaskEvent',
+        event: { batchId: 'b1', taskId: 't2', role: 'review', state: 'queued', objective: 'b' },
+      },
+      {
+        type: 'subtaskEvent',
+        event: {
+          batchId: 'b1',
+          taskId: 't3',
+          role: 'review',
+          state: 'completed',
+          objective: 'c',
+          summary: 'done',
+        },
+      },
     ]);
     expect(state.statusState.activeSubtasks).toBe(2);
   });
 
   it('Ctrl+C cancelled subtask does not stay running', () => {
     const state = reduce([
-      { type: 'subtaskEvent', event: { batchId: 'b1', taskId: 't1', role: 'research', state: 'running', objective: 'a' } },
-      { type: 'subtaskEvent', event: { batchId: 'b1', taskId: 't1', role: 'research', state: 'cancelled', objective: 'a' } },
+      {
+        type: 'subtaskEvent',
+        event: { batchId: 'b1', taskId: 't1', role: 'research', state: 'running', objective: 'a' },
+      },
+      {
+        type: 'subtaskEvent',
+        event: {
+          batchId: 'b1',
+          taskId: 't1',
+          role: 'research',
+          state: 'cancelled',
+          objective: 'a',
+        },
+      },
     ]);
     expect(state.statusState.activeSubtasks).toBe(0);
     const entry = state.subtaskTimeline.find(e => e.taskId === 't1');
@@ -398,5 +472,82 @@ describe('slice 5 gate: narrow-width status', () => {
     for (const state of allStates) {
       expect(result.subtaskTimeline.some((e: any) => e.state === state)).toBe(true);
     }
+  });
+});
+
+describe('v0.1.2 Goal projection', () => {
+  const goal = {
+    goalId: 'goal-1',
+    revision: 2,
+    objective: 'Verify typed continuation',
+    status: 'active' as const,
+    tokensUsed: 120,
+    timeUsedMs: 50,
+    continuationCount: 2,
+    updatedAt: 100,
+    criteria: { passed: 1, total: 2, failed: 0, stale: 0 },
+    planRevision: 1,
+    planPhase: 'verification',
+    nextAction: 'Run the remaining test',
+  };
+
+  it('projects restored and updated Goal events into TUI state', () => {
+    const restored = tuiUiReducer(initialTuiUiState, {
+      type: 'goalEvent',
+      event: { type: 'goal_restored', goal },
+    });
+    expect(restored.goal).toEqual(goal);
+
+    const updated = tuiUiReducer(restored, {
+      type: 'goalEvent',
+      event: { type: 'goal_updated', goal: { ...goal, status: 'paused' }, reason: 'interrupt' },
+    });
+    expect(updated.goal?.status).toBe('paused');
+  });
+
+  it('clears the Goal projection without clearing transcript state', () => {
+    const restored = tuiUiReducer(initialTuiUiState, {
+      type: 'goalEvent',
+      event: { type: 'goal_restored', goal },
+    });
+    const cleared = tuiUiReducer(restored, {
+      type: 'goalEvent',
+      event: { type: 'goal_cleared', goalId: goal.goalId, reason: 'user_clear' },
+    });
+    expect(cleared.goal).toBeNull();
+  });
+
+  it('projects plan and audit events without inventing transcript messages', () => {
+    const restored = tuiUiReducer(initialTuiUiState, {
+      type: 'goalEvent',
+      event: { type: 'goal_restored', goal },
+    });
+    const planned = tuiUiReducer(restored, {
+      type: 'goalEvent',
+      event: {
+        type: 'goal_plan_updated',
+        goalId: goal.goalId,
+        planRevision: 2,
+        phase: 'delivery',
+        nextAction: 'Prepare release evidence',
+      },
+    });
+    const audited = tuiUiReducer(planned, {
+      type: 'goalEvent',
+      event: {
+        type: 'goal_audit_failed',
+        goalId: goal.goalId,
+        audit: 'completion',
+        summary: 'criterion:test needs fresh evidence',
+      },
+    });
+
+    expect(planned.goal).toMatchObject({
+      planRevision: 2,
+      planPhase: 'delivery',
+      nextAction: 'Prepare release evidence',
+    });
+    expect(audited.statusMessage).toContain('criterion:test needs fresh evidence');
+    expect(audited.transcript).toEqual([]);
   });
 });

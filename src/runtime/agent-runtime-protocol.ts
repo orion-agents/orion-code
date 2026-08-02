@@ -13,6 +13,7 @@ import type {
   TranscriptEntry,
   UiEventSink,
 } from './ui-events';
+import type { GoalControlAction, GoalControlInput, GoalRuntimeEvent } from './goals/types';
 
 export type AgentRuntimeInput =
   | {
@@ -47,8 +48,9 @@ export type AgentRuntimeInput =
   // v0.2.24: goal control input from /target commands.
   | {
       type: 'goal_control';
-      action: string;
-      payload?: Record<string, unknown>;
+      action: GoalControlAction;
+      payload?: GoalControlInput['payload'];
+      source?: 'command' | 'programmatic';
     };
 
 export type AgentRuntimeSubmitResult =
@@ -89,6 +91,7 @@ export type AgentRuntimeEvent =
   | { type: 'trace_event_recorded'; event: RuntimeTraceEvent }
   | { type: 'harness_diagnostics_updated'; diagnostics: RuntimeHarnessDiagnostics }
   | { type: 'subtask_event'; event: RuntimeSubtaskEvent }
+  | { type: 'goal_event'; event: GoalRuntimeEvent }
   | { type: 'processing_changed'; processing: boolean }
   | { type: 'clear_view' }
   | { type: 'shutdown_requested'; reason?: string };
@@ -148,6 +151,9 @@ export function emitToUiEventSink(events: UiEventSink, event: AgentRuntimeEvent)
       return undefined;
     case 'subtask_event':
       events.subtaskEvent?.(event.event);
+      return undefined;
+    case 'goal_event':
+      events.goalEvent?.(event.event);
       return undefined;
     case 'processing_changed':
       events.setProcessing(event.processing);
@@ -217,6 +223,9 @@ export function createUiEventSinkFromAgentRuntimeEvents(sink: AgentRuntimeEventS
     subtaskEvent: event => {
       sink.emit({ type: 'subtask_event', event });
     },
+    goalEvent: event => {
+      sink.emit({ type: 'goal_event', event });
+    },
     setProcessing: processing => {
       sink.emit({ type: 'processing_changed', processing });
     },
@@ -229,7 +238,9 @@ export function createUiEventSinkFromAgentRuntimeEvents(sink: AgentRuntimeEventS
   };
 }
 
-export function createAgentRuntimeEventSinkFromUiEvents(events: UiEventSink): AgentRuntimeEventSink {
+export function createAgentRuntimeEventSinkFromUiEvents(
+  events: UiEventSink
+): AgentRuntimeEventSink {
   return {
     emit: event => emitToUiEventSink(events, event),
   };

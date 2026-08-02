@@ -8,10 +8,19 @@
  */
 
 import OpenAI from 'openai';
-import type { ChatCompletionMessageParam, ChatCompletionTool } from 'openai/resources/chat/completions';
+import type {
+  ChatCompletionMessageParam,
+  ChatCompletionTool,
+} from 'openai/resources/chat/completions';
 import { randomUUID } from 'crypto';
 import { diagnoseProviderError, toLLMProviderError } from './provider-diagnostics';
 import type { ProviderErrorType } from './provider-diagnostics';
+import {
+  ProviderRetryExhaustedError,
+  type ProviderFailureKind,
+  type ProviderRequestDiagnosticsV2,
+} from './provider-resilience';
+import { estimateMessagesTokens } from '../utils/token-estimate';
 
 export { LLMProviderError } from './provider-diagnostics';
 export type { ProviderErrorDiagnostic, ProviderErrorType } from './provider-diagnostics';
@@ -69,7 +78,7 @@ export interface LLMRequestDiagnostics {
 export class FallbackTriggeredError extends Error {
   constructor(
     public readonly originalModel: string,
-    public readonly fallbackModel: string,
+    public readonly fallbackModel: string
   ) {
     super(`Fallback triggered: ${originalModel} -> ${fallbackModel}`);
     this.name = 'FallbackTriggeredError';
@@ -160,6 +169,53 @@ export interface StreamCallbacks {
 
 export interface StreamOptions {
   abortSignal?: AbortSignal;
+}
+
+export interface ProviderRequestPreflightContext {
+  operation: 'chat' | 'chat_stream';
+  attempt: number;
+  model: string;
+  estimatedPromptTokens: number;
+}
+
+export interface ProviderRequestPreflightDecision {
+  available: boolean;
+  reason?: string;
+}
+
+export type ProviderRequestPreflight = (
+  context: ProviderRequestPreflightContext
+) => ProviderRequestPreflightDecision | Promise<ProviderRequestPreflightDecision>;
+
+export class ProviderRequestPreflightError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ProviderRequestPreflightError';
+  }
+}
+
+function providerErrorTypeForFailureKind(kind?: ProviderFailureKind): ProviderErrorType {
+  switch (kind) {
+    case 'model_not_found':
+      return 'model_not_found';
+    case 'invalid_endpoint':
+    case 'connect_timeout':
+    case 'connection_reset':
+    case 'network_error':
+      return 'invalid_endpoint';
+    case 'auth_failed':
+    case 'permission_denied':
+      return 'auth_failed';
+    case 'quota_or_credit_exhausted':
+      return 'quota_or_credit_exhausted';
+    case 'rate_limit':
+      return 'rate_limit';
+    case 'provider_overloaded':
+    case 'server_error':
+      return 'provider_busy';
+    default:
+      return 'unknown_provider_error';
+  }
 }
 
 // ============================================================================
@@ -256,15 +312,15 @@ function sleep(ms: number, abortSignal?: AbortSignal): Promise<void> {
 
 /** 带重试的操作 */
 async function withRetry<T>(
-  operation: () => Promise<T>,
-  config: RetryConfig,
+  operation: (attempt: number) => Promise<T>,
+  config: RetryConfig
 ): Promise<T> {
   let lastError: Error | undefined;
 
   for (let attempt = 1; attempt <= config.maxRetries + 1; attempt++) {
     try {
       throwIfAborted(config.abortSignal);
-      return await operation();
+      return await operation(attempt);
     } catch (error: unknown) {
       lastError = error instanceof Error ? error : new Error(String(error));
 
@@ -302,8 +358,8 @@ async function withRetry<T>(
 // Agent 内部参数默认值（用户无需配置）
 // ============================================================================
 
-const DEFAULT_MAX_TOKENS = 8192;      // 代码场景需要足够长的输出
-const DEFAULT_TEMPERATURE = 0.1;       // 代码场景需要确定性输出
+const DEFAULT_MAX_TOKENS = 8192; // 代码场景需要足够长的输出
+const DEFAULT_TEMPERATURE = 0.1; // 代码场景需要确定性输出
 const DEFAULT_MAX_RETRIES = DEFAULT_RETRY_CONFIG.maxRetries;
 const DEFAULT_RETRY_DELAY = DEFAULT_RETRY_CONFIG.baseDelayMs;
 
@@ -332,8 +388,7 @@ function extractProviderCost(usage: any, response: any): number | undefined {
 
 function extractLLMUsage(usage: any, response: any, requestId?: string): LLMUsage {
   const cachedPromptTokens = toNonNegativeFiniteNumber(
-    usage?.prompt_tokens_details?.cached_tokens
-      ?? usage?.input_tokens_details?.cached_tokens,
+    usage?.prompt_tokens_details?.cached_tokens ?? usage?.input_tokens_details?.cached_tokens
   );
   return {
     promptTokens: toNonNegativeFiniteNumber(usage?.prompt_tokens ?? usage?.input_tokens) ?? 0,
@@ -362,6 +417,7 @@ export class LLMService {
   private usingFallback = false;
   private lastRequestDiagnostics: LLMRequestDiagnostics;
   private usageObservers = new Set<(event: LLMUsageEvent) => void>();
+  private providerRequestPreflight?: ProviderRequestPreflight;
   /** v0.2.25: injected resilience coordinator (optional — falls back to old withRetry if absent). */
   resilience?: import('./provider-resilience').ProviderResilienceCoordinator;
 
@@ -406,6 +462,34 @@ export class LLMService {
     return () => this.usageObservers.delete(observer);
   }
 
+  /** Install a per-provider-attempt budget gate and return a scoped restore callback. */
+  setProviderRequestPreflight(preflight?: ProviderRequestPreflight): () => void {
+    const previous = this.providerRequestPreflight;
+    this.providerRequestPreflight = preflight;
+    return () => {
+      if (this.providerRequestPreflight === preflight) this.providerRequestPreflight = previous;
+    };
+  }
+
+  private async assertProviderRequestAllowed(
+    operation: ProviderRequestPreflightContext['operation'],
+    attempt: number,
+    messages: Message[]
+  ): Promise<void> {
+    if (!this.providerRequestPreflight) return;
+    const decision = await this.providerRequestPreflight({
+      operation,
+      attempt,
+      model: this.config.model,
+      estimatedPromptTokens: estimateMessagesTokens(messages),
+    });
+    if (!decision.available) {
+      throw new ProviderRequestPreflightError(
+        decision.reason ?? 'Provider request rejected by token budget preflight.'
+      );
+    }
+  }
+
   /** 触发 fallback */
   triggerFallback(): void {
     if (this.config.fallbackModel && !this.usingFallback) {
@@ -425,6 +509,8 @@ export class LLMService {
    * 非流式对话
    */
   async chat(messages: Message[], tools?: Tool[]): Promise<LLMResponse> {
+    const requestDiagnostics = this.createRequestDiagnostics();
+    this.lastRequestDiagnostics = requestDiagnostics;
     const params: Record<string, unknown> = {
       model: this.config.model,
       messages: this.toOpenAIMessages(messages),
@@ -441,16 +527,34 @@ export class LLMService {
     try {
       if (this.resilience) {
         const result = await this.resilience.execute(
-          { logicalRequestId: `chat-${Date.now()}`, operation: 'root_chat', providerKey: 'default', requestedModel: this.config.model },
-          async () => ({ response: await this.client.chat.completions.create(params as any) }),
+          {
+            logicalRequestId: `chat-${Date.now()}`,
+            operation: 'root_chat',
+            providerKey: 'default',
+            requestedModel: this.config.model,
+          },
+          async attempt => {
+            await this.assertProviderRequestAllowed('chat', attempt, messages);
+            return { response: await this.client.chat.completions.create(params as any) };
+          }
         );
         response = result.result;
+        this.applyResilienceDiagnostics(requestDiagnostics, result.diagnostics);
       } else {
+        await this.assertProviderRequestAllowed('chat', 1, messages);
         response = await this.client.chat.completions.create(params as any);
       }
     } catch (error) {
+      if (error instanceof ProviderRetryExhaustedError) {
+        this.applyResilienceDiagnostics(requestDiagnostics, error.diagnostics);
+        if (error.originalError instanceof ProviderRequestPreflightError) {
+          throw error.originalError;
+        }
+        throw error;
+      }
       // v0.2.25: ProviderRetryExhaustedError is a recoverable turn failure.
       if (error instanceof Error && error.name === 'ProviderRetryExhaustedError') throw error;
+      if (error instanceof ProviderRequestPreflightError) throw error;
       if (isAbortError(error)) throw error;
       throw toLLMProviderError(error);
     }
@@ -470,6 +574,13 @@ export class LLMService {
       ? extractLLMUsage(response.usage, response, response.id)
       : undefined;
 
+    requestDiagnostics.finalModel = response.model ?? this.config.model;
+    requestDiagnostics.usingFallback = this.usingFallback;
+    this.lastRequestDiagnostics = {
+      ...requestDiagnostics,
+      retryErrorTypes: [...requestDiagnostics.retryErrorTypes],
+    };
+
     if (usage) this.publishUsage(usage, response.model ?? this.config.model, 'chat');
 
     return {
@@ -487,7 +598,7 @@ export class LLMService {
     messages: Message[],
     callbacks?: StreamCallbacks | StreamCallback,
     tools?: Tool[],
-    options?: StreamOptions,
+    options?: StreamOptions
   ): Promise<LLMResponse> {
     const onChunk = typeof callbacks === 'function' ? callbacks : callbacks?.onChunk;
     const onThinking = typeof callbacks === 'object' ? callbacks?.onThinking : undefined;
@@ -508,9 +619,17 @@ export class LLMService {
         requestDiagnostics.lastRetryStatus = diagnostic.status;
 
         // Provider overload/busy errors can often recover by retrying or using fallback.
-        if (diagnostic.status === 529 || diagnostic.type === 'provider_busy' || diagnostic.type === 'rate_limit') {
+        if (
+          diagnostic.status === 529 ||
+          diagnostic.type === 'provider_busy' ||
+          diagnostic.type === 'rate_limit'
+        ) {
           this.consecutive529Errors++;
-          if (this.consecutive529Errors >= MAX_529_RETRIES && this.config.fallbackModel && !this.usingFallback) {
+          if (
+            this.consecutive529Errors >= MAX_529_RETRIES &&
+            this.config.fallbackModel &&
+            !this.usingFallback
+          ) {
             const originalModel = this.config.model;
             this.triggerFallback();
             if (this.config.model !== originalModel) {
@@ -536,8 +655,9 @@ export class LLMService {
             requestedModel: this.config.model,
             abortSignal: options?.abortSignal,
           },
-          async (_attempt: number, signal?: AbortSignal) => {
+          async (attempt: number, signal?: AbortSignal) => {
             throwIfAborted(signal);
+            await this.assertProviderRequestAllowed('chat_stream', attempt, messages);
 
             const params: Record<string, unknown> = {
               model: this.config.model,
@@ -555,20 +675,23 @@ export class LLMService {
             onThinking?.();
 
             const requestOptions = signal ? { signal } : undefined;
-            const stream = await this.client.chat.completions.create(
+            const stream = (await this.client.chat.completions.create(
               params as any,
-              requestOptions as any,
-            ) as unknown as AsyncIterable<any>;
+              requestOptions as any
+            )) as unknown as AsyncIterable<any>;
 
             let content = '';
             let usedModel = this.config.model;
             let usage: LLMUsage | undefined;
             let providerRequestId: string | undefined;
-            const toolCallsMap = new Map<string, {
-              id: string;
-              type: 'function';
-              function: { name: string; arguments: string };
-            }>();
+            const toolCallsMap = new Map<
+              string,
+              {
+                id: string;
+                type: 'function';
+                function: { name: string; arguments: string };
+              }
+            >();
 
             for await (const chunk of stream) {
               throwIfAborted(signal);
@@ -596,7 +719,10 @@ export class LLMService {
                   toolCallsMap.set(idx, {
                     id: tc.id ?? `call_${idx}`,
                     type: 'function',
-                    function: { name: tc.function?.name ?? '', arguments: tc.function?.arguments ?? '' },
+                    function: {
+                      name: tc.function?.name ?? '',
+                      arguments: tc.function?.arguments ?? '',
+                    },
                   });
                 } else {
                   if (tc.id) existing.id = tc.id;
@@ -613,7 +739,10 @@ export class LLMService {
                     toolCallsMap.set(msgTc.index ?? 0, {
                       id: msgTc.id,
                       type: 'function',
-                      function: { name: msgTc.function?.name ?? '', arguments: msgTc.function?.arguments ?? '' },
+                      function: {
+                        name: msgTc.function?.name ?? '',
+                        arguments: msgTc.function?.arguments ?? '',
+                      },
                     });
                   } else if (existing && msgTc.function?.arguments) {
                     existing.function.arguments += msgTc.function.arguments;
@@ -658,18 +787,21 @@ export class LLMService {
                 usage,
                 toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
               } as LLMResponse,
-              usage: usage ? {
-                promptTokens: usage.promptTokens,
-                completionTokens: usage.completionTokens,
-                totalTokens: usage.promptTokens + usage.completionTokens,
-              } : undefined,
+              usage: usage
+                ? {
+                    promptTokens: usage.promptTokens,
+                    completionTokens: usage.completionTokens,
+                    totalTokens: usage.promptTokens + usage.completionTokens,
+                  }
+                : undefined,
               providerRequestId,
             };
-          },
+          }
         );
 
         // Unpack resilience result
         const response: LLMResponse = streamResult.result;
+        this.applyResilienceDiagnostics(requestDiagnostics, streamResult.diagnostics);
         this.consecutive529Errors = 0;
         requestDiagnostics.finalModel = response.model;
         requestDiagnostics.usingFallback = this.usingFallback;
@@ -682,9 +814,9 @@ export class LLMService {
 
       // Legacy path: without resilience coordinator
       else {
-        const response = await withRetry(
-        async () => {
+        const response = await withRetry(async attempt => {
           throwIfAborted(options?.abortSignal);
+          await this.assertProviderRequestAllowed('chat_stream', attempt, messages);
 
           const params: Record<string, unknown> = {
             model: this.config.model,
@@ -702,20 +834,23 @@ export class LLMService {
           onThinking?.();
 
           const requestOptions = options?.abortSignal ? { signal: options.abortSignal } : undefined;
-          const stream = await this.client.chat.completions.create(
+          const stream = (await this.client.chat.completions.create(
             params as any,
-            requestOptions as any,
-          ) as unknown as AsyncIterable<any>;
+            requestOptions as any
+          )) as unknown as AsyncIterable<any>;
 
           let content = '';
           let usedModel = this.config.model;
           let usage: LLMUsage | undefined;
           let providerRequestId: string | undefined;
-          const toolCallsMap = new Map<string, {
-            id: string;
-            type: 'function';
-            function: { name: string; arguments: string };
-          }>();
+          const toolCallsMap = new Map<
+            string,
+            {
+              id: string;
+              type: 'function';
+              function: { name: string; arguments: string };
+            }
+          >();
 
           for await (const chunk of stream) {
             throwIfAborted(options?.abortSignal);
@@ -745,7 +880,10 @@ export class LLMService {
                 toolCallsMap.set(idx, {
                   id: tc.id ?? `call_${idx}`,
                   type: 'function',
-                  function: { name: tc.function?.name ?? '', arguments: tc.function?.arguments ?? '' },
+                  function: {
+                    name: tc.function?.name ?? '',
+                    arguments: tc.function?.arguments ?? '',
+                  },
                 });
               } else {
                 if (tc.id) existing.id = tc.id;
@@ -763,7 +901,10 @@ export class LLMService {
                   toolCallsMap.set(msgTc.index ?? 0, {
                     id: msgTc.id,
                     type: 'function',
-                    function: { name: msgTc.function?.name ?? '', arguments: msgTc.function?.arguments ?? '' },
+                    function: {
+                      name: msgTc.function?.name ?? '',
+                      arguments: msgTc.function?.arguments ?? '',
+                    },
                   });
                 } else if (existing && msgTc.function?.arguments) {
                   existing.function.arguments += msgTc.function.arguments;
@@ -814,25 +955,33 @@ export class LLMService {
             usage,
             toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
           };
-        },
-        retryConfig,
-      );
-      requestDiagnostics.finalModel = response.model;
-      requestDiagnostics.usingFallback = this.usingFallback;
-      this.lastRequestDiagnostics = {
-        ...requestDiagnostics,
-        retryErrorTypes: [...requestDiagnostics.retryErrorTypes],
-      };
-      return response;
+        }, retryConfig);
+        requestDiagnostics.finalModel = response.model;
+        requestDiagnostics.usingFallback = this.usingFallback;
+        this.lastRequestDiagnostics = {
+          ...requestDiagnostics,
+          retryErrorTypes: [...requestDiagnostics.retryErrorTypes],
+        };
+        return response;
       } // end legacy else branch
     } catch (error) {
+      if (error instanceof ProviderRetryExhaustedError) {
+        this.applyResilienceDiagnostics(requestDiagnostics, error.diagnostics);
+      }
       requestDiagnostics.finalModel = this.config.model;
       requestDiagnostics.usingFallback = this.usingFallback;
       this.lastRequestDiagnostics = {
         ...requestDiagnostics,
         retryErrorTypes: [...requestDiagnostics.retryErrorTypes],
       };
+      if (
+        error instanceof ProviderRetryExhaustedError &&
+        error.originalError instanceof ProviderRequestPreflightError
+      ) {
+        throw error.originalError;
+      }
       if (isAbortError(error)) throw error;
+      if (error instanceof ProviderRequestPreflightError) throw error;
       throw toLLMProviderError(error);
     }
   }
@@ -840,7 +989,7 @@ export class LLMService {
   private publishUsage(
     usage: LLMUsage,
     model: string,
-    operation: LLMUsageEvent['operation'],
+    operation: LLMUsageEvent['operation']
   ): void {
     for (const observer of this.usageObservers) {
       try {
@@ -859,17 +1008,21 @@ export class LLMService {
     tools: Tool[],
     toolExecutor: (name: string, args: Record<string, unknown>) => Promise<string>,
     callbacks?: StreamCallbacks,
-    maxIterations = 10,
+    maxIterations = 10
   ): Promise<LLMResponse> {
     let iteration = 0;
 
     while (iteration < maxIterations) {
       iteration++;
 
-      const response = await this.chatStream(messages, {
-        onChunk: callbacks?.onChunk,
-        onThinking: iteration === 1 ? callbacks?.onThinking : undefined,
-      }, tools);
+      const response = await this.chatStream(
+        messages,
+        {
+          onChunk: callbacks?.onChunk,
+          onThinking: iteration === 1 ? callbacks?.onThinking : undefined,
+        },
+        tools
+      );
 
       const assistantMsg: Message = {
         role: 'assistant',
@@ -952,6 +1105,38 @@ export class LLMService {
       finalModel: this.config.model,
       usingFallback: this.usingFallback,
     };
+  }
+
+  private applyResilienceDiagnostics(
+    target: LLMRequestDiagnostics,
+    diagnostics: ProviderRequestDiagnosticsV2
+  ): void {
+    const retriedAttempts = diagnostics.attempts.filter(attempt => attempt.backoffMs !== undefined);
+    const lastRetriedAttempt = retriedAttempts[retriedAttempts.length - 1];
+
+    target.retryCount += diagnostics.retryCount;
+    target.retryDelayMs += diagnostics.totalBackoffMs;
+    target.retryErrorTypes.push(
+      ...retriedAttempts.map(attempt => providerErrorTypeForFailureKind(attempt.failureKind))
+    );
+    if (lastRetriedAttempt) {
+      target.lastRetryErrorType = providerErrorTypeForFailureKind(lastRetriedAttempt.failureKind);
+      target.lastRetryStatus = lastRetriedAttempt.status;
+    }
+
+    if (diagnostics.fallbackCount > 0) {
+      // The current coordinator records fallback dispositions but does not yet
+      // switch models. Surface the count through the legacy diagnostics contract
+      // so Goal accounting fails closed without claiming that a switch occurred.
+      target.fallbackTriggered = true;
+      target.fallbackFromModel = diagnostics.requestedModel;
+      if (diagnostics.finalModel && diagnostics.finalModel !== diagnostics.requestedModel) {
+        target.fallbackToModel = diagnostics.finalModel;
+      }
+    }
+
+    target.finalModel = diagnostics.finalModel ?? target.finalModel;
+    target.usingFallback = this.usingFallback;
   }
 
   /** 转换为 OpenAI SDK 消息格式 */

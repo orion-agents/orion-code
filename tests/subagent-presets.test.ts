@@ -10,9 +10,21 @@ import {
 import type { SubagentRole } from '../src/runtime/subagents/types';
 
 const ALL_UPSTREAM_TOOLS = [
-  'read_file', 'write_file', 'list_files', 'exec_command', 'edit_file',
-  'glob', 'grep', 'batch_read', 'memory_save', 'memory_recall',
-  'memory_forget', 'history_search', 'mcp_call', 'mcp_list', 'openhorse',
+  'read_file',
+  'write_file',
+  'list_files',
+  'exec_command',
+  'edit_file',
+  'glob',
+  'grep',
+  'batch_read',
+  'memory_save',
+  'memory_recall',
+  'memory_forget',
+  'history_search',
+  'mcp_call',
+  'mcp_list',
+  'openhorse',
 ];
 
 describe('subagent presets', () => {
@@ -34,7 +46,9 @@ describe('subagent presets', () => {
         expect(prompt).toMatch(/findings/);
         expect(prompt).toMatch(/commands/);
         // Must forbid the dangerous capabilities
-        expect(prompt.toLowerCase()).toMatch(/cannot edit|cannot write|may not edit|may not write|cannot execute|may not execute/);
+        expect(prompt.toLowerCase()).toMatch(
+          /cannot edit|cannot write|may not edit|may not write|cannot execute|may not execute/
+        );
       });
     }
   });
@@ -44,8 +58,8 @@ describe('subagent presets', () => {
       const filtered = filterToolsForRole(ALL_UPSTREAM_TOOLS, 'research');
       expect(filtered).toContain('read_file');
       expect(filtered).toContain('batch_read');
-      // R2: generic mcp_call/mcp_list are forbidden escape hatches - must be
-      // excluded. First-class mcp__ tools are gated by isReadOnly() instead.
+      // Generic mcp_call/mcp_list and first-class mcp__ tools are all excluded
+      // until MCP definitions carry explicit path-scope capability metadata.
       expect(filtered).not.toContain('mcp_call');
       expect(filtered).not.toContain('mcp_list');
       // history_search removed in R3 (cross-project session leakage).
@@ -74,11 +88,11 @@ describe('subagent presets', () => {
       }
     });
 
-    it('R2: first-class MCP tool admitted only when isReadOnly() === true', () => {
-      // Fake tool definitions simulating MCP first-class tools.
+    it('denies every first-class MCP tool even when isReadOnly() is true', () => {
+      const readOnlyCheck = jest.fn(() => true);
       const readOnlyMcp = {
         name: 'mcp__server__get',
-        isReadOnly: () => true,
+        isReadOnly: readOnlyCheck,
       } as any;
       const mutatingMcp = {
         name: 'mcp__server__write',
@@ -93,19 +107,17 @@ describe('subagent presets', () => {
       const filtered = filterToolsForRole(
         ['mcp__server__get', 'mcp__server__write', 'mcp__server__unknown'],
         'research',
-        runtimeTools,
+        runtimeTools
       );
-      expect(filtered).toContain('mcp__server__get');
+      expect(filtered).not.toContain('mcp__server__get');
       expect(filtered).not.toContain('mcp__server__write');
       expect(filtered).not.toContain('mcp__server__unknown');
+      expect(readOnlyCheck).not.toHaveBeenCalled();
     });
 
-    it('R2: denies all first-class MCP tools when no tool definitions provided', () => {
-      // Without runtimeTools, we cannot verify isReadOnly() -> deny all.
-      const filtered = filterToolsForRole(
-        ['mcp__server__get', 'mcp__server__write'],
-        'research',
-      );
+    it('denies all first-class MCP tools when no tool definitions are provided', () => {
+      // Missing path-scope capability metadata always means deny.
+      const filtered = filterToolsForRole(['mcp__server__get', 'mcp__server__write'], 'research');
       expect(filtered).not.toContain('mcp__server__get');
       expect(filtered).not.toContain('mcp__server__write');
     });
@@ -124,6 +136,10 @@ describe('subagent presets', () => {
     it('R2: rejects mcp_call and mcp_list escape hatches', () => {
       expect(() => assertNoForbiddenTools(['read_file', 'mcp_call'])).toThrow(/forbidden/);
       expect(() => assertNoForbiddenTools(['read_file', 'mcp_list'])).toThrow(/forbidden/);
+    });
+
+    it('rejects first-class MCP tools as a defense-in-depth runtime assertion', () => {
+      expect(() => assertNoForbiddenTools(['read_file', 'mcp__server__get'])).toThrow(/forbidden/);
     });
   });
 

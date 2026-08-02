@@ -12,13 +12,8 @@
 
 import { buildChildMessages } from './context-builder';
 import { parseSubtaskResult } from './result-parser';
-import type {
-  SubtaskPacket,
-  SubtaskResult,
-  SubtaskResultStatus,
-  SubtaskUsage,
-} from './types';
-import { EMPTY_SUBTASK_USAGE } from './types';
+import type { SubtaskPacket, SubtaskResult, SubtaskResultStatus, SubtaskUsage } from './types';
+import { EMPTY_SUBTASK_USAGE, SubtaskExecutionError } from './types';
 
 /**
  * R5: bounded grace period to let a child query settle after it was aborted
@@ -50,14 +45,18 @@ export interface ChildToolSet {
   /** Resolved tool definitions the child may call. */
   tools: unknown[];
   /** Tool name -> executor. */
-  toolExecutor: (name: string, args: Record<string, unknown>, abortSignal?: AbortSignal) => Promise<string>;
+  toolExecutor: (
+    name: string,
+    args: Record<string, unknown>,
+    abortSignal?: AbortSignal
+  ) => Promise<string>;
 }
 
 /** Injectable child query function. Returns the final assistant text + usage. */
 export type ExecuteChildQuery = (
   messages: ReturnType<typeof buildChildMessages>,
   toolSet: ChildToolSet,
-  abortSignal: AbortSignal,
+  abortSignal: AbortSignal
 ) => Promise<{ content: string; usage: SubtaskUsage }>;
 
 export interface SubagentRunnerDeps {
@@ -91,7 +90,7 @@ export interface RunSubtaskOutcome {
 export async function runSubtask(
   packet: SubtaskPacket,
   deps: SubagentRunnerDeps,
-  taskId: string,
+  taskId: string
 ): Promise<RunSubtaskOutcome> {
   const messages = buildChildMessages({
     cwd: deps.cwd,
@@ -144,17 +143,29 @@ export async function runSubtask(
     }
   });
 
-  const queryPromise = deps
+  type QueryOutcome =
+    | { kind: 'done'; content: { content: string; usage: SubtaskUsage } }
+    | { kind: 'error'; message: string; usage: SubtaskUsage };
+  let settledQueryOutcome: QueryOutcome | undefined;
+  const queryPromise: Promise<QueryOutcome> = deps
     .executeQuery(messages, deps.toolSet, childController.signal)
     .then(content => ({ kind: 'done' as const, content }))
     .catch(err => ({
       kind: 'error' as const,
       message: err instanceof Error ? err.message : String(err),
-    }));
+      usage:
+        err instanceof SubtaskExecutionError
+          ? err.usage
+          : { ...EMPTY_SUBTASK_USAGE, usageComplete: false },
+    }))
+    .then(outcome => {
+      settledQueryOutcome = outcome;
+      return outcome;
+    });
 
   let status: SubtaskResultStatus;
   let content = '';
-  let usage: SubtaskUsage = EMPTY_SUBTASK_USAGE;
+  let usage: SubtaskUsage = { ...EMPTY_SUBTASK_USAGE, usageComplete: false };
   let parentCancelled = false;
 
   try {
@@ -166,6 +177,7 @@ export async function runSubtask(
     } else if (outcome.kind === 'timeout') {
       status = 'timed_out';
     } else if (outcome.kind === 'error') {
+      usage = outcome.usage;
       // If the parent aborted, treat as cancel; otherwise a failure.
       if (parentAborted && !timedOut) {
         status = 'cancelled';
@@ -183,7 +195,10 @@ export async function runSubtask(
       } else {
         status = 'completed';
         content = outcome.content.content;
-        usage = outcome.content.usage;
+        usage = {
+          ...outcome.content.usage,
+          usageComplete: outcome.content.usage.usageComplete === true,
+        };
       }
     }
   } finally {
@@ -206,6 +221,14 @@ export async function runSubtask(
   // stuck child cannot hang the whole turn forever.
   if (status === 'timed_out' || status === 'cancelled') {
     await settleWithGrace(queryPromise, CHILD_SHUTDOWN_GRACE_MS);
+    if (settledQueryOutcome?.kind === 'done') {
+      usage = {
+        ...settledQueryOutcome.content.usage,
+        usageComplete: settledQueryOutcome.content.usage.usageComplete === true,
+      };
+    } else if (settledQueryOutcome?.kind === 'error') {
+      usage = settledQueryOutcome.usage;
+    }
   }
 
   const result = parseSubtaskResult({

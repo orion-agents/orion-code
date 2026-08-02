@@ -28,27 +28,38 @@ import {
   resolveProjectPath,
   updateSessionHarnessState,
   loadSessionHarnessState,
+  appendSessionTraceEvent,
+  readSessionTraceEvents,
   type SessionMeta,
   type HistoryEntry,
   type SessionMessage,
 } from '../src/services/session-storage';
 import { loadSessionIndex, saveSessionIndex, searchSessions } from '../src/services/session-index';
 import { createContextHarness } from '../src/harness';
-import { existsSync, mkdirSync, readFileSync, rmSync, realpathSync, writeFileSync } from 'fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
+import { tmpdir } from 'os';
 import {
   getProjectSessionCompactPath,
   getProjectSessionHarnessPath,
   getProjectSessionMessagesPath,
   getProjectSessionMetaPath,
+  getProjectSessionsDir,
 } from '../src/services/config-dir';
+import { createGoal, loadGoal, saveGoal } from '../src/services/goal-storage';
 import { createContextUsageSnapshot } from '../src/services/model-context';
 import * as atomicWrite from '../src/services/atomic-write';
 
 describe('session-storage', () => {
-  // Use a unique test directory based on timestamp to avoid conflicts
-  const testDir = join(homedir(), `.openhorse-test-session-${Date.now()}`);
+  const testDir = mkdtempSync(join(tmpdir(), 'orion-session-storage-'));
   const originalEnv = process.env.ORION_CODE_CONFIG_DIR;
 
   beforeAll(() => {
@@ -92,6 +103,48 @@ describe('session-storage', () => {
       expect(session.projectKey).toBeDefined();
       expect(existsSync(getProjectSessionMetaPath(session.projectPath, session.id))).toBe(true);
       expect(existsSync(join(testDir, 'sessions', `${session.id}.json`))).toBe(false);
+    });
+  });
+
+  describe('Goal trace compatibility', () => {
+    test('round-trips additive Goal correlation and redacts the stop reason', () => {
+      const session = createSession('/tmp/project-goal-trace', 'gpt-4o');
+      appendSessionTraceEvent(session.id, {
+        turnId: 'goal-turn-1',
+        type: 'goal_state',
+        goalId: 'goal-1',
+        goalRevision: 7,
+        goalInputKind: 'goal_continuation',
+        goalStopReason: 'provider failed with sk-secret1234567890',
+      });
+
+      expect(readSessionTraceEvents(session.id)).toEqual([
+        expect.objectContaining({
+          turnId: 'goal-turn-1',
+          type: 'goal_state',
+          goalId: 'goal-1',
+          goalRevision: 7,
+          goalInputKind: 'goal_continuation',
+          goalStopReason: expect.stringContaining('[REDACTED'),
+        }),
+      ]);
+      expect(JSON.stringify(readSessionTraceEvents(session.id))).not.toContain(
+        'sk-secret1234567890'
+      );
+    });
+
+    test('keeps legacy trace rows without Goal fields readable', () => {
+      const session = createSession('/tmp/project-legacy-trace', 'gpt-4o');
+      appendSessionTraceEvent(session.id, {
+        turnId: 'legacy-turn',
+        type: 'message',
+        note: 'legacy row',
+      });
+
+      expect(readSessionTraceEvents(session.id)).toEqual([
+        expect.objectContaining({ turnId: 'legacy-turn', type: 'message', note: 'legacy row' }),
+      ]);
+      expect(readSessionTraceEvents(session.id)[0].goalId).toBeUndefined();
     });
   });
 
@@ -205,9 +258,7 @@ describe('session-storage', () => {
       });
 
       expect(loadSessionCompactCheckpoint(session.id)?.checkpointId).toBe(latest.checkpointId);
-      expect(loadSessionHistory(session.id)).toEqual([
-        { role: 'user', content: 'checkpoint-two' },
-      ]);
+      expect(loadSessionHistory(session.id)).toEqual([{ role: 'user', content: 'checkpoint-two' }]);
       expect(readSessionMessages(session.id)).toHaveLength(3);
     });
 
@@ -312,6 +363,33 @@ describe('session-storage', () => {
 
       expect(deleteSession(session.id)).toBe(true);
       expect(existsSync(compactPath)).toBe(false);
+    });
+
+    test('deleting a session fences its Goal against a stale writer', () => {
+      const session = createSession('/tmp/project-delete-goal', 'gpt-4o');
+      const goal = createGoal(session.projectPath, session.id, 'Goal owned by deleted session');
+      if (!goal.ok) throw new Error(goal.message);
+
+      expect(deleteSession(session.id)).toBe(true);
+      expect(
+        existsSync(
+          join(getProjectSessionsDir(session.projectPath), `${session.id}.goal.json.deleted`)
+        )
+      ).toBe(true);
+      expect(loadGoal(session.projectPath, session.id)).toEqual(
+        expect.objectContaining({ ok: false, error: 'not_found' })
+      );
+
+      const stale = saveGoal(
+        session.projectPath,
+        session.id,
+        { ...goal.value, revision: goal.value.revision + 1 },
+        goal.value.revision
+      );
+      expect(stale).toEqual(expect.objectContaining({ ok: false, error: 'revision_stale' }));
+      expect(loadGoal(session.projectPath, session.id)).toEqual(
+        expect.objectContaining({ ok: false, error: 'not_found' })
+      );
     });
   });
 
@@ -584,7 +662,11 @@ describe('session-storage', () => {
           content: '',
           timestamp: 1000,
           tool_calls: [
-            { id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"/large"}' } },
+            {
+              id: 'call-1',
+              type: 'function',
+              function: { name: 'read_file', arguments: '{"path":"/large"}' },
+            },
           ],
         },
         {
@@ -700,8 +782,15 @@ describe('session-storage', () => {
       const otherSession = createSession('/tmp/project-find-other', 'gpt-4o');
 
       const projectMatch = findSession(projectSession.id.slice(0, 8), '/tmp/project-find-current');
-      const wrongProjectMatch = findSession(otherSession.id.slice(0, 8), '/tmp/project-find-current');
-      const allProjectsMatch = findSession(otherSession.id.slice(0, 8), '/tmp/project-find-current', { allProjects: true });
+      const wrongProjectMatch = findSession(
+        otherSession.id.slice(0, 8),
+        '/tmp/project-find-current'
+      );
+      const allProjectsMatch = findSession(
+        otherSession.id.slice(0, 8),
+        '/tmp/project-find-current',
+        { allProjects: true }
+      );
 
       expect(projectMatch?.id).toBe(projectSession.id);
       expect(wrongProjectMatch).toBeNull();
@@ -720,7 +809,9 @@ describe('session-storage', () => {
 
       expect(sessions.filter(s => s.id === session.id)).toHaveLength(1);
       expect(sessions.every(s => typeof s.id === 'string' && !s.id.endsWith('.index'))).toBe(true);
-      expect(findSession(session.id.slice(0, 8), '/tmp/project-index-sidecar')?.id).toBe(session.id);
+      expect(findSession(session.id.slice(0, 8), '/tmp/project-index-sidecar')?.id).toBe(
+        session.id
+      );
     });
 
     test('appendSessionMessages updates the session index', () => {
@@ -814,7 +905,10 @@ describe('session-storage', () => {
       const meta = loadSessionMeta(session.id);
       const index = loadSessionIndex(session.id, '/tmp/project-truncate-abort');
 
-      expect(truncated.map(message => message.content)).toEqual(['complete topic', 'complete answer']);
+      expect(truncated.map(message => message.content)).toEqual([
+        'complete topic',
+        'complete answer',
+      ]);
       expect(persisted).toHaveLength(2);
       expect(meta?.messageCount).toBe(2);
       expect(index?.topics).toContain('complete topic');
@@ -831,7 +925,13 @@ describe('session-storage', () => {
           role: 'assistant',
           content: '',
           timestamp: Date.now(),
-          tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"bug.ts"}' } }],
+          tool_calls: [
+            {
+              id: 'call-1',
+              type: 'function',
+              function: { name: 'read_file', arguments: '{"path":"bug.ts"}' },
+            },
+          ],
         },
       ]);
 
@@ -850,9 +950,20 @@ describe('session-storage', () => {
           role: 'assistant',
           content: '',
           timestamp: Date.now(),
-          tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'grep', arguments: '{"pattern":"foo"}' } }],
+          tool_calls: [
+            {
+              id: 'call-1',
+              type: 'function',
+              function: { name: 'grep', arguments: '{"pattern":"foo"}' },
+            },
+          ],
         },
-        { role: 'tool', content: 'found foo in src/a.ts', timestamp: Date.now(), toolCallId: 'call-1' },
+        {
+          role: 'tool',
+          content: 'found foo in src/a.ts',
+          timestamp: Date.now(),
+          toolCallId: 'call-1',
+        },
       ]);
 
       const truncated = truncateSessionToLastComplete(session.id);
@@ -879,7 +990,10 @@ describe('session-storage', () => {
       ]);
 
       const truncated = truncateSessionToLastComplete(session.id);
-      expect(truncated.map(message => message.content)).toEqual(['question', 'Here is the answer with details.']);
+      expect(truncated.map(message => message.content)).toEqual([
+        'question',
+        'Here is the answer with details.',
+      ]);
       expect(readSessionMessages(session.id)).toHaveLength(2);
     });
 
@@ -904,15 +1018,40 @@ describe('session-storage', () => {
         { role: 'user', content: 'task 1', timestamp: Date.now() },
         { role: 'assistant', content: 'done 1', timestamp: Date.now() },
         { role: 'user', content: 'task 2', timestamp: Date.now() },
-        { role: 'assistant', content: '', timestamp: Date.now(), tool_calls: [
-          { id: 'call-a', type: 'function', function: { name: 'read_file', arguments: '{"path":"a.ts"}' } },
-          { id: 'call-b', type: 'function', function: { name: 'read_file', arguments: '{"path":"b.ts"}' } },
-        ] },
+        {
+          role: 'assistant',
+          content: '',
+          timestamp: Date.now(),
+          tool_calls: [
+            {
+              id: 'call-a',
+              type: 'function',
+              function: { name: 'read_file', arguments: '{"path":"a.ts"}' },
+            },
+            {
+              id: 'call-b',
+              type: 'function',
+              function: { name: 'read_file', arguments: '{"path":"b.ts"}' },
+            },
+          ],
+        },
         { role: 'tool', content: 'content a', timestamp: Date.now(), toolCallId: 'call-a' },
         { role: 'tool', content: 'content b', timestamp: Date.now(), toolCallId: 'call-b' },
-        { role: 'assistant', content: 'processing...', timestamp: Date.now(), tool_calls: [
-          { id: 'call-c', type: 'function', function: { name: 'edit_file', arguments: '{"path":"a.ts","old_string":"x","new_string":"y"}' } },
-        ] },
+        {
+          role: 'assistant',
+          content: 'processing...',
+          timestamp: Date.now(),
+          tool_calls: [
+            {
+              id: 'call-c',
+              type: 'function',
+              function: {
+                name: 'edit_file',
+                arguments: '{"path":"a.ts","old_string":"x","new_string":"y"}',
+              },
+            },
+          ],
+        },
       ]);
 
       const truncated = truncateSessionToLastComplete(session.id);
@@ -946,8 +1085,16 @@ describe('session-storage', () => {
       const project = '/tmp/project-search-sort';
       const sessionA = createSession(project, 'gpt-4o');
       const sessionB = createSession(project, 'gpt-4o');
-      appendSessionMessage(sessionA.id, { role: 'user', content: 'billing query', timestamp: Date.now() + 1 });
-      appendSessionMessage(sessionB.id, { role: 'user', content: 'billing query', timestamp: Date.now() + 2 });
+      appendSessionMessage(sessionA.id, {
+        role: 'user',
+        content: 'billing query',
+        timestamp: Date.now() + 1,
+      });
+      appendSessionMessage(sessionB.id, {
+        role: 'user',
+        content: 'billing query',
+        timestamp: Date.now() + 2,
+      });
 
       const candidates = [
         { id: sessionA.id, projectPath: sessionA.projectPath },
@@ -963,7 +1110,10 @@ describe('session-storage', () => {
       saveSessionIndex(sessionA.id, sessionA.projectPath, { ...indexA, updatedAt: 1000 });
       saveSessionIndex(sessionB.id, sessionB.projectPath, { ...indexB, updatedAt: 1000 });
       const tieResult = searchSessions('billing', candidates);
-      expect(tieResult).toEqual([sessionA.id < sessionB.id ? sessionA.id : sessionB.id, sessionA.id < sessionB.id ? sessionB.id : sessionA.id]);
+      expect(tieResult).toEqual([
+        sessionA.id < sessionB.id ? sessionA.id : sessionB.id,
+        sessionA.id < sessionB.id ? sessionB.id : sessionA.id,
+      ]);
 
       // same score, updatedAt changed => recent first.
       saveSessionIndex(sessionA.id, sessionA.projectPath, { ...indexA, updatedAt: 2000 });
@@ -992,7 +1142,9 @@ describe('session-storage', () => {
       const result = lookupSessionRef('abc', project);
       expect(result.status).toBe('ambiguous');
       if (result.status === 'ambiguous') {
-        expect(result.matches.map(s => s.id)).toEqual(expect.arrayContaining(['abc111-session', 'abc222-session']));
+        expect(result.matches.map(s => s.id)).toEqual(
+          expect.arrayContaining(['abc111-session', 'abc222-session'])
+        );
       }
       expect(findSession('abc', project)).toBeNull();
     });
@@ -1059,9 +1211,9 @@ describe('session-storage', () => {
 
       expect(existsSync(sidecarPath)).toBe(true);
       expect(meta?.harnessState?.version).toBe(2);
-      expect((meta?.harnessState?.ledger.length ?? 0)).toBeLessThan(40);
+      expect(meta?.harnessState?.ledger.length ?? 0).toBeLessThan(40);
       expect(loaded?.rootObjective).toContain('Context Harness sidecar');
-      expect((loaded?.ledger.length ?? 0)).toBeGreaterThanOrEqual(40);
+      expect(loaded?.ledger.length ?? 0).toBeGreaterThanOrEqual(40);
     });
 
     test('resolveProjectPath returns a stable absolute path for non-git folders', () => {

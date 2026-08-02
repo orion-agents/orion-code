@@ -14,7 +14,12 @@
 import { SubagentBudgetLedger, TurnTaskState } from './budget';
 import { evaluateSubtaskPolicy, type PolicyContext, type PolicyRejectReason } from './policy';
 import { SubagentProviderGate } from './provider-gate';
-import { runSubtask, type ExecuteChildQuery, type ChildToolSet, type SubagentRunnerDeps } from './runner';
+import {
+  runSubtask,
+  type ExecuteChildQuery,
+  type ChildToolSet,
+  type SubagentRunnerDeps,
+} from './runner';
 import type { ScopeHolder } from './child-executor-guard';
 import {
   sumSubtaskUsage,
@@ -36,10 +41,10 @@ export interface SubagentSupervisorDeps {
   /** Filtered, child-safe tool set (already passed through presets). */
   toolSet: ChildToolSet;
   /**
-   * R3: mutable scope holder. The supervisor sets the current packet's
-   * canonical scope before running it, so the turn-level executor guard can
-   * enforce per-packet containment. Optional: when absent, only root
-   * containment is enforced.
+   * R3: async-context scope holder. The supervisor binds each child run to
+   * its packet's canonical scope so parallel children cannot overwrite or
+   * clear one another's containment boundary. Optional: when absent, only
+   * root containment is enforced.
    */
   scopeHolder?: ScopeHolder;
   /**
@@ -61,7 +66,12 @@ export interface SubagentSupervisorDeps {
    * state (completed/failed/cancelled/timed_out), so partial usage before a
    * failure is still accounted.
    */
-  onChildUsage?: (taskId: string, role: import('./types').SubagentRole, usage: import('./types').SubtaskUsage, modelLabel?: string) => void;
+  onChildUsage?: (
+    taskId: string,
+    role: import('./types').SubagentRole,
+    usage: import('./types').SubtaskUsage,
+    modelLabel?: string
+  ) => void;
   /** Parent turn abort signal; propagated to every child. */
   parentAbortSignal?: AbortSignal;
   /** Read-only context forwarded to each child. */
@@ -102,7 +112,7 @@ export interface RunBatchOutcome {
  */
 export async function runSubtaskBatch(
   request: SubtaskRequest,
-  deps: SubagentSupervisorDeps,
+  deps: SubagentSupervisorDeps
 ): Promise<RunBatchOutcome> {
   const policyCtx: PolicyContext = {
     depth: 0,
@@ -151,7 +161,10 @@ export async function runSubtaskBatch(
   // reject batches that would actually fit once real usage is known.
   const reservePerTask = Math.max(
     1,
-    Math.min(deps.config.maxModelRequestsPerTask, Math.floor(deps.config.maxModelRequestsPerTurn / tasks.length)),
+    Math.min(
+      deps.config.maxModelRequestsPerTask,
+      Math.floor(deps.config.maxModelRequestsPerTurn / tasks.length)
+    )
   );
 
   // Reserve budget for every task up front; abort the batch if any reserve fails.
@@ -173,7 +186,10 @@ export async function runSubtaskBatch(
       };
     }
     emit(deps, {
-      batchId, taskId: taskIds[i], role: tasks[i].role, state: 'queued',
+      batchId,
+      taskId: taskIds[i],
+      role: tasks[i].role,
+      state: 'queued',
       objective: tasks[i].objective,
     });
   }
@@ -215,7 +231,7 @@ async function runParallel(
   taskIds: string[],
   batchId: string,
   deps: SubagentSupervisorDeps,
-  runnerDeps: (i: number) => SubagentRunnerDeps,
+  runnerDeps: (i: number) => SubagentRunnerDeps
 ): Promise<Array<{ result: SubtaskResult; parentCancelled: boolean }>> {
   // Launch each child; the provider gate bounds actual concurrency. Collect
   // by index so the final order matches the request order.
@@ -237,7 +253,14 @@ async function runParallel(
       commands: [],
       verification: [],
       risks: ['runner threw unexpectedly'],
-      usage: { modelRequests: 0, toolCalls: 0, promptTokens: 0, completionTokens: 0, durationMs: 0 },
+      usage: {
+        modelRequests: 0,
+        toolCalls: 0,
+        promptTokens: 0,
+        completionTokens: 0,
+        durationMs: 0,
+        usageComplete: false,
+      },
     };
     finalizeTask(deps, batchId, taskIds[i], task, result);
     return { result, parentCancelled: false };
@@ -249,7 +272,7 @@ async function runSerial(
   taskIds: string[],
   batchId: string,
   deps: SubagentSupervisorDeps,
-  runnerDeps: (i: number) => SubagentRunnerDeps,
+  runnerDeps: (i: number) => SubagentRunnerDeps
 ): Promise<Array<{ result: SubtaskResult; parentCancelled: boolean }>> {
   const outcomes: Array<{ result: SubtaskResult; parentCancelled: boolean }> = [];
   for (let i = 0; i < tasks.length; i++) {
@@ -279,7 +302,7 @@ async function runOne(
   batchId: string,
   _index: number,
   deps: SubagentSupervisorDeps,
-  runnerDeps: SubagentRunnerDeps,
+  runnerDeps: SubagentRunnerDeps
 ): Promise<{ result: SubtaskResult; parentCancelled: boolean }> {
   // R4: pass the parent abort signal so a queued waiter is removed and
   // rejected when the user hits Ctrl+C, instead of hanging until a slot
@@ -295,21 +318,25 @@ async function runOne(
     return { result: cancelled, parentCancelled: true };
   }
   try {
-    // R3: set the current packet's canonical scope so the executor guard
-    // enforces per-packet containment. Cleared in finally.
+    const execute = async () => {
+      emit(deps, { batchId, taskId, role: task.role, state: 'running', objective: task.objective });
+      const outcome = await runSubtask(task, runnerDeps, taskId);
+      // R7: single finalize path - terminal event + result callback + usage
+      // callback all happen here, exactly once, with errors isolated so a
+      // throwing sink cannot reject the batch or corrupt sibling aggregation.
+      finalizeTask(deps, batchId, taskId, task, outcome.result);
+      return outcome;
+    };
+
+    // R3: bind the full child async chain to its canonical packet scope.
+    // AsyncLocalStorage automatically restores the parent context when this
+    // run finishes, so no child can clear a sibling or root boundary.
     if (deps.scopeHolder) {
-      deps.scopeHolder.setScope(runnerDeps.canonicalScopePaths ?? []);
+      return await deps.scopeHolder.runWithScope(runnerDeps.canonicalScopePaths ?? [], execute);
     }
-    emit(deps, { batchId, taskId, role: task.role, state: 'running', objective: task.objective });
-    const outcome = await runSubtask(task, runnerDeps, taskId);
-    // R7: single finalize path - terminal event + result callback + usage
-    // callback all happen here, exactly once, with errors isolated so a
-    // throwing sink cannot reject the batch or corrupt sibling aggregation.
-    finalizeTask(deps, batchId, taskId, task, outcome.result);
-    return outcome;
+    return await execute();
   } finally {
     deps.providerGate.release();
-    deps.scopeHolder?.clear();
   }
 }
 
@@ -325,12 +352,14 @@ function finalizeTask(
   batchId: string,
   taskId: string,
   task: SubtaskPacket,
-  result: SubtaskResult,
+  result: SubtaskResult
 ): void {
   // Terminal lifecycle event - isolated.
   try {
     emit(deps, {
-      batchId, taskId, role: task.role,
+      batchId,
+      taskId,
+      role: task.role,
       state: toEventState(result.status),
       objective: task.objective,
       summary: result.summary,
@@ -358,16 +387,25 @@ function finalizeTask(
 
 function toEventState(status: SubtaskResult['status']): RuntimeSubtaskEvent['state'] {
   switch (status) {
-    case 'completed': return 'completed';
-    case 'failed': return 'failed';
-    case 'cancelled': return 'cancelled';
-    case 'timed_out': return 'timed_out';
-    case 'rejected': return 'rejected';
+    case 'completed':
+      return 'completed';
+    case 'failed':
+      return 'failed';
+    case 'cancelled':
+      return 'cancelled';
+    case 'timed_out':
+      return 'timed_out';
+    case 'rejected':
+      return 'rejected';
   }
 }
 
 /** Build a rejected result (does not emit - finalizeTask handles that). */
-function buildRejectedResult(packet: SubtaskPacket, reason: string, taskId?: string): SubtaskResult {
+function buildRejectedResult(
+  packet: SubtaskPacket,
+  reason: string,
+  taskId?: string
+): SubtaskResult {
   const id = taskId ?? nextTaskId();
   return {
     id,

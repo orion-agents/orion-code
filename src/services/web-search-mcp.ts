@@ -7,30 +7,13 @@
 
 import type { WebSearchMcpConfig } from './config';
 import { BAILIAN_WEBSEARCH_MCP_ENDPOINT } from './web-search-provider';
-import { readFileSync } from 'fs';
-import { resolve as resolvePath } from 'path';
+import { MCP_CLIENT_NAME } from '../product/identity';
+import { PACKAGE_VERSION } from '../product/version';
 
 export const DEFAULT_WEBSEARCH_MCP_ENDPOINT = BAILIAN_WEBSEARCH_MCP_ENDPOINT;
 
 const MCP_PROTOCOL_VERSION = '2025-03-26';
 const DEFAULT_TIMEOUT_MS = 30_000;
-const CLIENT_VERSION_FALLBACK = '0.2.6';
-
-function getPackageVersion(): string {
-  if (process.env.npm_package_version) return process.env.npm_package_version;
-
-  try {
-    const pkgPath = resolvePath(__dirname, '../../package.json');
-    const pkgText = readFileSync(pkgPath, 'utf8');
-    const payload = JSON.parse(pkgText);
-    if (typeof payload?.version === 'string' && payload.version) return payload.version;
-  } catch {
-    // ignore and fall back below
-  }
-  return CLIENT_VERSION_FALLBACK;
-}
-
-const CLIENT_VERSION = getPackageVersion();
 
 interface JsonRpcMessage {
   jsonrpc: '2.0';
@@ -179,17 +162,36 @@ function selectSearchTool(tools: McpToolDefinition[], preferred?: string): McpTo
   return fuzzy || tools[0];
 }
 
-function buildSearchArgs(tool: McpToolDefinition, query: string, limit?: number): Record<string, unknown> {
+function buildSearchArgs(
+  tool: McpToolDefinition,
+  query: string,
+  limit?: number
+): Record<string, unknown> {
   const properties = tool.inputSchema?.properties || {};
   const args: Record<string, unknown> = {};
 
-  const queryKey = ['query', 'q', 'keyword', 'keywords', 'search_query', 'searchQuery', 'input']
-    .find(key => Object.prototype.hasOwnProperty.call(properties, key));
+  const queryKey = [
+    'query',
+    'q',
+    'keyword',
+    'keywords',
+    'search_query',
+    'searchQuery',
+    'input',
+  ].find(key => Object.prototype.hasOwnProperty.call(properties, key));
   args[queryKey || 'query'] = query;
 
   if (limit && limit > 0) {
-    const limitKey = ['limit', 'count', 'num_results', 'max_results', 'top_k', 'topK', 'page_size', 'pageSize']
-      .find(key => Object.prototype.hasOwnProperty.call(properties, key));
+    const limitKey = [
+      'limit',
+      'count',
+      'num_results',
+      'max_results',
+      'top_k',
+      'topK',
+      'page_size',
+      'pageSize',
+    ].find(key => Object.prototype.hasOwnProperty.call(properties, key));
     if (limitKey) {
       args[limitKey] = limit;
     }
@@ -218,7 +220,11 @@ export class WebSearchMcpClient {
     });
 
     if (result?.isError) {
-      throw new WebSearchMcpError('WEBSEARCH_MCP_TOOL_ERROR', normalizeMcpOutput(result), this.config.endpoint);
+      throw new WebSearchMcpError(
+        'WEBSEARCH_MCP_TOOL_ERROR',
+        normalizeMcpOutput(result),
+        this.config.endpoint
+      );
     }
 
     return {
@@ -233,10 +239,10 @@ export class WebSearchMcpClient {
     if (this.initialized) return;
 
     if (
-      this.config.authType !== 'none'
-      && !this.config.apiKey
-      && !this.config.headers.Authorization
-      && !this.config.headers.authorization
+      this.config.authType !== 'none' &&
+      !this.config.apiKey &&
+      !this.config.headers.Authorization &&
+      !this.config.headers.authorization
     ) {
       throw new WebSearchMcpError(
         'WEBSEARCH_MCP_NOT_CONFIGURED',
@@ -248,7 +254,7 @@ export class WebSearchMcpClient {
     await this.request('initialize', {
       protocolVersion: MCP_PROTOCOL_VERSION,
       capabilities: {},
-      clientInfo: { name: 'orion-code', version: CLIENT_VERSION },
+      clientInfo: { name: MCP_CLIENT_NAME, version: PACKAGE_VERSION },
     });
 
     await this.notification('notifications/initialized', {});
@@ -269,7 +275,11 @@ export class WebSearchMcpClient {
     const response = messages.find(msg => String(msg.id) === id) || messages[0];
 
     if (!response) {
-      throw new WebSearchMcpError('WEBSEARCH_MCP_EMPTY_RESPONSE', `Empty MCP response for ${method}`, this.config.endpoint);
+      throw new WebSearchMcpError(
+        'WEBSEARCH_MCP_EMPTY_RESPONSE',
+        `Empty MCP response for ${method}`,
+        this.config.endpoint
+      );
     }
     if (response.error) {
       throw new WebSearchMcpError(
@@ -286,7 +296,7 @@ export class WebSearchMcpClient {
     const authType = this.config.authType || 'bearer';
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      'Accept': 'application/json, text/event-stream',
+      Accept: 'application/json, text/event-stream',
       'MCP-Protocol-Version': MCP_PROTOCOL_VERSION,
       ...this.config.headers,
     };
@@ -299,16 +309,15 @@ export class WebSearchMcpClient {
     }
 
     if (
-      this.config.apiKey
-      && authType !== 'none'
-      && authType !== 'query'
-      && !headers.Authorization
-      && !headers.authorization
+      this.config.apiKey &&
+      authType !== 'none' &&
+      authType !== 'query' &&
+      !headers.Authorization &&
+      !headers.authorization
     ) {
       const headerName = this.config.apiKeyHeader || 'Authorization';
-      headers[headerName] = authType === 'header'
-        ? this.config.apiKey
-        : `Bearer ${this.config.apiKey}`;
+      headers[headerName] =
+        authType === 'header' ? this.config.apiKey : `Bearer ${this.config.apiKey}`;
     }
     if (this.sessionId) {
       headers['Mcp-Session-Id'] = this.sessionId;
@@ -325,15 +334,17 @@ export class WebSearchMcpClient {
         signal: timeout.signal,
       });
     } catch (err: any) {
-      const message = err?.name === 'AbortError'
-        ? `request timed out after ${this.config.timeoutMs}ms`
-        : err?.message || String(err);
+      const message =
+        err?.name === 'AbortError'
+          ? `request timed out after ${this.config.timeoutMs}ms`
+          : err?.message || String(err);
       throw new WebSearchMcpError('WEBSEARCH_MCP_NETWORK_ERROR', message, this.config.endpoint);
     } finally {
       timeout.cleanup();
     }
 
-    const sessionId = response.headers.get('mcp-session-id') || response.headers.get('Mcp-Session-Id');
+    const sessionId =
+      response.headers.get('mcp-session-id') || response.headers.get('Mcp-Session-Id');
     if (sessionId) {
       this.sessionId = sessionId;
     }

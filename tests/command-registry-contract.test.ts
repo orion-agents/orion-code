@@ -27,7 +27,15 @@ describe('Command registry contract', () => {
     it('has at least one visible command per non-legacy category', () => {
       const categories = new Set(visible.map(c => c.category));
       // Every product-facing category must appear.
-      for (const cat of ['workflow', 'session', 'context', 'tools', 'model', 'system', 'diagnostics'] as const) {
+      for (const cat of [
+        'workflow',
+        'session',
+        'context',
+        'tools',
+        'model',
+        'system',
+        'diagnostics',
+      ] as const) {
         expect(categories.has(cat)).toBe(true);
       }
     });
@@ -144,7 +152,7 @@ describe('Command registry contract', () => {
         expect(cmd.deprecated!.since).toBeTruthy();
         // Must have either a replacement or a planned removal version.
         expect(
-          cmd.deprecated!.replacement !== undefined || cmd.deprecated!.removeIn !== undefined,
+          cmd.deprecated!.replacement !== undefined || cmd.deprecated!.removeIn !== undefined
         ).toBe(true);
       }
     });
@@ -162,6 +170,12 @@ describe('Command registry contract', () => {
       const goal = findCommand('goal');
       expect(goal).toBe(findCommand('target'));
       expect(goal?.aliases).toContain('goal');
+    });
+
+    it('/target advertises replace and explicit user confirmation arguments', () => {
+      const target = findCommand('target');
+      expect(target?.argumentHint).toContain('replace <text>');
+      expect(target?.argumentHint).toContain('confirm <criterion-id>');
     });
 
     it('/cost is deprecated in favor of /usage', () => {

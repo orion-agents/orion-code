@@ -9,6 +9,11 @@
  */
 
 import type { OpenHorseTool, PermissionResult, ToolContext } from './tool';
+import {
+  externalAssertionMatchesInvocation,
+  isToolExternalAssertion,
+  type ToolExternalAssertion,
+} from './external-assertion';
 import type { Message } from '../services/llm';
 import type { DriftCheckResult } from '../harness/types';
 
@@ -38,6 +43,7 @@ export interface ExecutedToolCall {
   summary?: string;
   outputBytes?: number;
   artifactRef?: { id: string; outputBytes: number };
+  externalAssertion?: ToolExternalAssertion;
   strategyResult: 'success' | 'failed';
   strategyError?: string;
   permissionDecision?: ToolPermissionDecision;
@@ -70,7 +76,11 @@ export interface ToolSchedulerOptions {
   /** Available tool registry */
   tools: OpenHorseTool[];
   /** Tool executor: (name, args, abortSignal?) => result string */
-  toolExecutor: (name: string, args: Record<string, unknown>, abortSignal?: AbortSignal) => Promise<string>;
+  toolExecutor: (
+    name: string,
+    args: Record<string, unknown>,
+    abortSignal?: AbortSignal
+  ) => Promise<string>;
   /** Permission mode */
   permissionMode?: string;
   /** Fallback for permission checks that would need an interactive prompt */
@@ -93,7 +103,10 @@ export interface ToolSchedulerOptions {
   /** Add tool to strategy tracker */
   addToolToTracker?: (attemptId: string, toolName: string) => void;
   /** Harness drift check callback */
-  harnessDriftCheck?: (params: { name: string; args: Record<string, unknown> }) => DriftCheckResult | undefined;
+  harnessDriftCheck?: (params: {
+    name: string;
+    args: Record<string, unknown>;
+  }) => DriftCheckResult | undefined;
   /** Harness blocked result formatter */
   harnessBlockedResult?: (drift: DriftCheckResult) => string;
 }
@@ -130,18 +143,21 @@ export function prepareToolCalls(options: ToolSchedulerOptions): PreparedToolCal
     options.addToolToTracker?.(attemptId, tc.function.name);
     const tool = tools.find(t => t.name === tc.function.name);
     const drift = options.harnessDriftCheck?.({ name: tc.function.name, args });
-    const permission = tool?.checkPermissions && options.toolContext
-      ? tool.checkPermissions(args, options.toolContext)
-      : undefined;
+    const permission =
+      tool?.checkPermissions && options.toolContext
+        ? tool.checkPermissions(args, options.toolContext)
+        : undefined;
     const confirmation = options.toolConfirmation ?? 'ask';
-    const needsInteractiveConfirmation = permission?.behavior === 'ask'
-      && options.permissionMode === 'default'
-      && confirmation === 'ask'
-      && Boolean(options.confirmToolUse);
-    const canRunConcurrently = tool?.isConcurrencySafe?.(args) === true
-      && drift?.status !== 'block'
-      && permission?.behavior !== 'deny'
-      && !needsInteractiveConfirmation;
+    const needsInteractiveConfirmation =
+      permission?.behavior === 'ask' &&
+      options.permissionMode === 'default' &&
+      confirmation === 'ask' &&
+      Boolean(options.confirmToolUse);
+    const canRunConcurrently =
+      tool?.isConcurrencySafe?.(args) === true &&
+      drift?.status !== 'block' &&
+      permission?.behavior !== 'deny' &&
+      !needsInteractiveConfirmation;
 
     preparedCalls.push({
       index: i,
@@ -168,9 +184,18 @@ function isArtifactRef(value: unknown): value is { id: string; outputBytes: numb
   return typeof record.id === 'string' && typeof record.outputBytes === 'number';
 }
 
-function parseToolResult(result: string): Pick<
+function parseToolResult(
+  result: string
+): Pick<
   ExecutedToolCall,
-  'success' | 'error' | 'summary' | 'outputBytes' | 'artifactRef' | 'strategyResult' | 'strategyError'
+  | 'success'
+  | 'error'
+  | 'summary'
+  | 'outputBytes'
+  | 'artifactRef'
+  | 'externalAssertion'
+  | 'strategyResult'
+  | 'strategyError'
 > {
   try {
     const parsed = JSON.parse(result);
@@ -183,7 +208,10 @@ function parseToolResult(result: string): Pick<
       summary: typeof parsed.summary === 'string' ? parsed.summary : undefined,
       outputBytes,
       artifactRef,
-      strategyResult: success ? 'success' as const : 'failed' as const,
+      externalAssertion: isToolExternalAssertion(parsed.externalAssertion)
+        ? parsed.externalAssertion
+        : undefined,
+      strategyResult: success ? ('success' as const) : ('failed' as const),
       strategyError: success ? undefined : parsed.error || 'Unknown error',
     };
   } catch {
@@ -220,7 +248,7 @@ function executePreparedTool(
   confirmToolUse?: ToolSchedulerOptions['confirmToolUse'],
   permissionMode?: string,
   toolConfirmation?: string,
-  harnessBlockedResult?: ToolSchedulerOptions['harnessBlockedResult'],
+  harnessBlockedResult?: ToolSchedulerOptions['harnessBlockedResult']
 ): Promise<ExecutedToolCall> {
   const start = Date.now();
   const { tc, args, drift, permission } = prepared;
@@ -302,9 +330,10 @@ function executePreparedTool(
       };
       return JSON.stringify({
         success: false,
-        error: confirmation === 'deny'
-          ? `Tool ${tc.function.name} requires user confirmation and was denied by toolConfirmation=deny.`
-          : `Tool ${tc.function.name} requires user confirmation.`,
+        error:
+          confirmation === 'deny'
+            ? `Tool ${tc.function.name} requires user confirmation and was denied by toolConfirmation=deny.`
+            : `Tool ${tc.function.name} requires user confirmation.`,
       });
     }
     return exec();
@@ -312,12 +341,24 @@ function executePreparedTool(
 
   return run().then(result => {
     const duration = Date.now() - start;
+    const parsed = parseToolResult(result);
+    if (
+      parsed.externalAssertion &&
+      !externalAssertionMatchesInvocation({
+        assertion: parsed.externalAssertion,
+        name: tc.function.name,
+        args,
+        success: parsed.success,
+      })
+    ) {
+      parsed.externalAssertion = undefined;
+    }
     return {
       prepared,
       result,
       duration,
       permissionDecision,
-      ...parseToolResult(result),
+      ...parsed,
     };
   });
 }
@@ -339,25 +380,27 @@ export async function* executeToolCalls(
     toolConfirmation?: string;
     harnessBlockedResult?: ToolSchedulerOptions['harnessBlockedResult'];
     maxParallelToolCalls?: number;
-  },
+  }
 ): AsyncGenerator<ExecutedToolCall> {
   let parallelGroup: PreparedToolCall[] = [];
   const maxParallelToolCalls = Math.max(1, options.maxParallelToolCalls ?? 6);
 
   const runParallelGroup = async (group: PreparedToolCall[]): Promise<ExecutedToolCall[]> => {
     const settled = await Promise.allSettled(
-      group.map(call => executePreparedTool(
-        call,
-        options.toolExecutor,
-        options.abortSignal,
-        options.confirmToolUse,
-        options.permissionMode,
-        options.toolConfirmation,
-        options.harnessBlockedResult,
-      )),
+      group.map(call =>
+        executePreparedTool(
+          call,
+          options.toolExecutor,
+          options.abortSignal,
+          options.confirmToolUse,
+          options.permissionMode,
+          options.toolConfirmation,
+          options.harnessBlockedResult
+        )
+      )
     );
     return settled.map((result, index) =>
-      result.status === 'fulfilled' ? result.value : failedExecution(group[index], result.reason),
+      result.status === 'fulfilled' ? result.value : failedExecution(group[index], result.reason)
     );
   };
 
@@ -392,7 +435,7 @@ export async function* executeToolCalls(
       options.confirmToolUse,
       options.permissionMode,
       options.toolConfirmation,
-      options.harnessBlockedResult,
+      options.harnessBlockedResult
     ).catch(err => failedExecution(prepared, err));
     yield executed;
   }

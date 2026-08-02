@@ -108,6 +108,8 @@ export interface SubtaskUsage {
   promptTokens: number;
   completionTokens: number;
   durationMs: number;
+  /** False when some provider/tool work may have happened without final usage metadata. */
+  usageComplete?: boolean;
   /** Sum of provider-reported costs, present only when every child call reported cost. */
   costUsd?: number;
 }
@@ -118,7 +120,19 @@ export const EMPTY_SUBTASK_USAGE: SubtaskUsage = {
   promptTokens: 0,
   completionTokens: 0,
   durationMs: 0,
+  usageComplete: true,
 };
+
+/** Preserve a failed child query's observed lower-bound usage across the runner boundary. */
+export class SubtaskExecutionError extends Error {
+  readonly usage: SubtaskUsage;
+
+  constructor(message: string, usage: SubtaskUsage) {
+    super(message);
+    this.name = 'SubtaskExecutionError';
+    this.usage = { ...usage, usageComplete: false };
+  }
+}
 
 export interface SubtaskFinding {
   severity?: 'critical' | 'high' | 'medium' | 'low' | 'info';
@@ -135,12 +149,7 @@ export interface SubtaskCommandSuggestion {
   executed: false;
 }
 
-export type SubtaskResultStatus =
-  | 'completed'
-  | 'failed'
-  | 'cancelled'
-  | 'timed_out'
-  | 'rejected';
+export type SubtaskResultStatus = 'completed' | 'failed' | 'cancelled' | 'timed_out' | 'rejected';
 
 export interface SubtaskResult {
   id: string;
@@ -181,8 +190,9 @@ export function sumSubtaskUsage(usages: SubtaskUsage[]): SubtaskUsage {
       promptTokens: acc.promptTokens + u.promptTokens,
       completionTokens: acc.completionTokens + u.completionTokens,
       durationMs: acc.durationMs + u.durationMs,
+      usageComplete: acc.usageComplete === true && u.usageComplete === true,
     }),
-    { ...EMPTY_SUBTASK_USAGE },
+    { ...EMPTY_SUBTASK_USAGE }
   );
   if (usages.length > 0 && usages.every(usage => usage.costUsd !== undefined)) {
     aggregate.costUsd = usages.reduce((sum, usage) => sum + (usage.costUsd ?? 0), 0);

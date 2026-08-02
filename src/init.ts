@@ -4,8 +4,9 @@
  * Unified init entry: config loading → Harness → Memory → Agents → Brain → start.
  */
 
+import { randomUUID } from 'crypto';
+
 import { EventEmitter } from 'eventemitter3';
-import { v4 as uuidv4 } from 'uuid';
 import { BaseAgent, AgentConfig, Task, TaskResult } from './core/agent';
 import { Brain, BrainConfig } from './core/brain';
 import { LeaderAgent } from './agents/leader';
@@ -101,7 +102,11 @@ export class Harness extends EventEmitter {
       if (Array.isArray(actions) && actions.every(a => typeof a === 'string')) {
         const blocked = (actions as string[]).filter(a => this.config.blockedActions.includes(a));
         if (blocked.length > 0) {
-          return { passed: false, stage: 'pre-exec', reason: `Blocked actions detected: ${blocked.join(', ')}` };
+          return {
+            passed: false,
+            stage: 'pre-exec',
+            reason: `Blocked actions detected: ${blocked.join(', ')}`,
+          };
         }
       }
     }
@@ -109,9 +114,15 @@ export class Harness extends EventEmitter {
     if (this.config.allowedActions[0] !== '*' && task.params?.actions) {
       const actions = task.params.actions;
       if (Array.isArray(actions) && actions.every(a => typeof a === 'string')) {
-        const disallowed = (actions as string[]).filter(a => !this.config.allowedActions.includes(a));
+        const disallowed = (actions as string[]).filter(
+          a => !this.config.allowedActions.includes(a)
+        );
         if (disallowed.length > 0) {
-          return { passed: false, stage: 'pre-exec', reason: `Actions not in whitelist: ${disallowed.join(', ')}` };
+          return {
+            passed: false,
+            stage: 'pre-exec',
+            reason: `Actions not in whitelist: ${disallowed.join(', ')}`,
+          };
         }
       }
     }
@@ -124,7 +135,11 @@ export class Harness extends EventEmitter {
       return { passed: true, stage: 'post-exec' };
     }
     if (result.duration && result.duration > this.config.timeout) {
-      return { passed: false, stage: 'post-exec', reason: `Execution exceeded timeout: ${result.duration}ms > ${this.config.timeout}ms` };
+      return {
+        passed: false,
+        stage: 'post-exec',
+        reason: `Execution exceeded timeout: ${result.duration}ms > ${this.config.timeout}ms`,
+      };
     }
     return { passed: true, stage: 'post-exec' };
   }
@@ -157,7 +172,12 @@ export class MemorySystem extends EventEmitter {
 
   constructor(config: Partial<MemoryConfig> = {}) {
     super();
-    this.config = { workingCapacity: 10, shortTermCapacity: 100, longTermBackend: 'memory', ...config };
+    this.config = {
+      workingCapacity: 10,
+      shortTermCapacity: 100,
+      longTermBackend: 'memory',
+      ...config,
+    };
   }
 
   writeToWorking(content: any, tags?: string[]): MemoryEntry {
@@ -165,13 +185,19 @@ export class MemorySystem extends EventEmitter {
     this.workingMemory.push(entry);
     if (this.workingMemory.length > this.config.workingCapacity) {
       const evicted = this.workingMemory.shift();
-      if (evicted) { this.addToShortTerm(evicted); this.emit('evicted', { tier: 'working', id: evicted.id }); }
+      if (evicted) {
+        this.addToShortTerm(evicted);
+        this.emit('evicted', { tier: 'working', id: evicted.id });
+      }
     }
     this.emit('write', { tier: 'working', id: entry.id });
     return entry;
   }
 
-  readWorking(): MemoryEntry[] { this.touchEntries(this.workingMemory); return [...this.workingMemory]; }
+  readWorking(): MemoryEntry[] {
+    this.touchEntries(this.workingMemory);
+    return [...this.workingMemory];
+  }
 
   clearWorking(): void {
     const important = this.workingMemory.filter(e => e.accessCount >= 3);
@@ -187,7 +213,10 @@ export class MemorySystem extends EventEmitter {
     return entry;
   }
 
-  readShortTerm(): MemoryEntry[] { this.touchEntries(this.shortTermMemory); return [...this.shortTermMemory]; }
+  readShortTerm(): MemoryEntry[] {
+    this.touchEntries(this.shortTermMemory);
+    return [...this.shortTermMemory];
+  }
 
   writeToLongTerm(content: any, tags?: string[]): MemoryEntry {
     const entry = this.createEntry(content, tags);
@@ -198,7 +227,10 @@ export class MemorySystem extends EventEmitter {
 
   readLongTerm(id: string): MemoryEntry | undefined {
     const entry = this.longTermMemory.get(id);
-    if (entry) { entry.lastAccessedAt = Date.now(); entry.accessCount++; }
+    if (entry) {
+      entry.lastAccessedAt = Date.now();
+      entry.accessCount++;
+    }
     return entry;
   }
 
@@ -219,12 +251,16 @@ export class MemorySystem extends EventEmitter {
   }
 
   getStatus(): Record<MemoryTier, number> {
-    return { working: this.workingMemory.length, 'short-term': this.shortTermMemory.length, 'long-term': this.longTermMemory.size };
+    return {
+      working: this.workingMemory.length,
+      'short-term': this.shortTermMemory.length,
+      'long-term': this.longTermMemory.size,
+    };
   }
 
   private createEntry(content: any, tags?: string[]): MemoryEntry {
     const now = Date.now();
-    return { id: uuidv4(), content, createdAt: now, lastAccessedAt: now, accessCount: 0, tags };
+    return { id: randomUUID(), content, createdAt: now, lastAccessedAt: now, accessCount: 0, tags };
   }
 
   private addToShortTerm(entry: MemoryEntry): void {
@@ -232,12 +268,18 @@ export class MemorySystem extends EventEmitter {
     this.shortTermMemory.push(entry);
     if (this.shortTermMemory.length > this.config.shortTermCapacity) {
       const evicted = this.shortTermMemory.shift();
-      if (evicted) { this.longTermMemory.set(evicted.id, evicted); this.emit('evicted', { tier: 'short-term', id: evicted.id }); }
+      if (evicted) {
+        this.longTermMemory.set(evicted.id, evicted);
+        this.emit('evicted', { tier: 'short-term', id: evicted.id });
+      }
     }
   }
 
   private touchEntries(entries: MemoryEntry[]): void {
-    entries.forEach(e => { e.lastAccessedAt = Date.now(); e.accessCount++; });
+    entries.forEach(e => {
+      e.lastAccessedAt = Date.now();
+      e.accessCount++;
+    });
   }
 }
 
@@ -251,12 +293,20 @@ const DEFAULT_CONFIG: OrionCodeConfig = {
   logLevel: (process.env[ENV.LOG_LEVEL] as OrionCodeConfig['logLevel']) || 'info',
   brain: { strategy: 'priority', maxConcurrent: 5 },
   harness: {
-    goalConstraint: true, maxSteps: 50, boundaryCheck: true,
-    allowedActions: ['*'], blockedActions: ['rm -rf /', 'eval', 'exec'],
-    resultValidation: true, sandbox: false, timeout: 60000,
+    goalConstraint: true,
+    maxSteps: 50,
+    boundaryCheck: true,
+    allowedActions: ['*'],
+    blockedActions: ['rm -rf /', 'eval', 'exec'],
+    resultValidation: true,
+    sandbox: false,
+    timeout: 60000,
   },
   memory: { workingCapacity: 10, shortTermCapacity: 100, longTermBackend: 'memory' },
-  safety: { enabled: true, policy: { sandboxMode: false, allowedFileSystemOps: ['read', 'write'] } },
+  safety: {
+    enabled: true,
+    policy: { sandboxMode: false, allowedFileSystemOps: ['read', 'write'] },
+  },
   agents: [{ type: 'leader' }, { type: 'coder' }],
 };
 
@@ -285,27 +335,51 @@ export async function init(userConfig: Partial<OrionCodeConfig> = {}): Promise<O
   const harness = new Harness(config.harness);
   const memory = new MemorySystem(config.memory);
   const safety = new SafetyChecker(config.safety?.policy);
-  const store = new MemoryStore({ workingCapacity: config.memory.workingCapacity, shortTermCapacity: config.memory.shortTermCapacity });
+  const store = new MemoryStore({
+    workingCapacity: config.memory.workingCapacity,
+    shortTermCapacity: config.memory.shortTermCapacity,
+  });
   const brain = new Brain(config.brain);
   const agents = await registerAgents(brain, config.agents, harness, memory, logger);
 
-  memory.writeToWorking({ event: 'system-start', timestamp: new Date().toISOString(), mode: config.mode, agentCount: agents.length }, ['system', 'startup']);
+  memory.writeToWorking(
+    {
+      event: 'system-start',
+      timestamp: new Date().toISOString(),
+      mode: config.mode,
+      agentCount: agents.length,
+    },
+    ['system', 'startup']
+  );
 
   const runtime: OrionCodeRuntime = {
-    brain, harness, memory, safety, store, agents, config,
+    brain,
+    harness,
+    memory,
+    safety,
+    store,
+    agents,
+    config,
     async start() {
-      memory.writeToWorking({ event: 'system-started', timestamp: new Date().toISOString() }, ['system']);
+      memory.writeToWorking({ event: 'system-started', timestamp: new Date().toISOString() }, [
+        'system',
+      ]);
       agents.forEach(agent => {
         agent.on('task-failed', ({ task, error }) => {
           logger.error(`[Orion Code] Task "${task.name}" failed on ${agent.name}: ${error}`);
-          memory.writeToShortTerm({ event: 'task-failed', taskId: task.id, agent: agent.name, error }, ['error', task.id]);
+          memory.writeToShortTerm(
+            { event: 'task-failed', taskId: task.id, agent: agent.name, error },
+            ['error', task.id]
+          );
         });
       });
     },
     async shutdown() {
       agents.forEach(agent => agent.stop());
       const workingMemories = memory.readWorking();
-      workingMemories.forEach(entry => { memory.writeToLongTerm(entry.content, entry.tags); });
+      workingMemories.forEach(entry => {
+        memory.writeToLongTerm(entry.content, entry.tags);
+      });
       memory.clearWorking();
     },
   };
@@ -321,14 +395,25 @@ function createLogger(level: OrionCodeConfig['logLevel']) {
   const levels = { debug: 0, info: 1, warn: 2, error: 3 };
   const current = levels[level];
   return {
-    debug(msg: string) { if (current <= levels.debug) console.debug(msg); },
-    info(msg: string)  { if (current <= levels.info)  console.log(msg); },
-    warn(msg: string)  { if (current <= levels.warn)  console.warn(msg); },
-    error(msg: string) { console.error(msg); },
+    debug(msg: string) {
+      if (current <= levels.debug) console.debug(msg);
+    },
+    info(msg: string) {
+      if (current <= levels.info) console.log(msg);
+    },
+    warn(msg: string) {
+      if (current <= levels.warn) console.warn(msg);
+    },
+    error(msg: string) {
+      console.error(msg);
+    },
   };
 }
 
-function mergeConfig(defaults: OrionCodeConfig, override: Partial<OrionCodeConfig>): OrionCodeConfig {
+function mergeConfig(
+  defaults: OrionCodeConfig,
+  override: Partial<OrionCodeConfig>
+): OrionCodeConfig {
   const result = { ...defaults };
   if (override.name !== undefined) result.name = override.name;
   if (override.mode !== undefined) result.mode = override.mode;
@@ -342,19 +427,24 @@ function mergeConfig(defaults: OrionCodeConfig, override: Partial<OrionCodeConfi
 }
 
 const AGENT_FACTORY: Record<string, (config?: Partial<AgentConfig>) => BaseAgent> = {
-  leader: (cfg) => new LeaderAgent(cfg),
-  coder: (cfg) => new CoderAgent(cfg),
+  leader: cfg => new LeaderAgent(cfg),
+  coder: cfg => new CoderAgent(cfg),
 };
 
 async function registerAgents(
-  brain: Brain, entries: AgentRegistryEntry[],
-  harness: Harness, memory: MemorySystem,
-  logger: ReturnType<typeof createLogger>,
+  brain: Brain,
+  entries: AgentRegistryEntry[],
+  harness: Harness,
+  memory: MemorySystem,
+  logger: ReturnType<typeof createLogger>
 ): Promise<BaseAgent[]> {
   const agents: BaseAgent[] = [];
   for (const entry of entries) {
     const factory = AGENT_FACTORY[entry.type];
-    if (!factory) { logger.warn(`[Orion Code] Unknown agent type: ${entry.type}, skipping.`); continue; }
+    if (!factory) {
+      logger.warn(`[Orion Code] Unknown agent type: ${entry.type}, skipping.`);
+      continue;
+    }
     const agent = factory(entry.config);
 
     agent.on('task-started', (task: Task) => {
@@ -370,9 +460,16 @@ async function registerAgents(
       if (!verdict.passed) {
         logger.warn(`[Orion Code] Harness validation failed for "${task.name}": ${verdict.reason}`);
       }
-      memory.writeToShortTerm({
-        event: 'task-completed', taskId: task.id, agent: agent.name, success: result.success, duration: result.duration,
-      }, ['task', task.id]);
+      memory.writeToShortTerm(
+        {
+          event: 'task-completed',
+          taskId: task.id,
+          agent: agent.name,
+          success: result.success,
+          duration: result.duration,
+        },
+        ['task', task.id]
+      );
     });
 
     brain.registerAgent(agent);
@@ -394,8 +491,14 @@ async function main(): Promise<void> {
 
   const runtime = await init({ mode: 'development', logLevel: 'debug' });
 
-  process.on('SIGINT', async () => { await runtime.shutdown(); process.exit(0); });
-  process.on('SIGTERM', async () => { await runtime.shutdown(); process.exit(0); });
+  process.on('SIGINT', async () => {
+    await runtime.shutdown();
+    process.exit(0);
+  });
+  process.on('SIGTERM', async () => {
+    await runtime.shutdown();
+    process.exit(0);
+  });
 
   await runtime.start();
 
@@ -408,13 +511,20 @@ async function main(): Promise<void> {
 
   console.log('\n[Orion Code] Submitting demo task...');
   runtime.brain.submitTask({
-    id: 'init-task-001', name: 'Init verification task', description: 'Verify system init success',
-    priority: 'P1', assignedTo: 'leader', status: 'pending',
+    id: 'init-task-001',
+    name: 'Init verification task',
+    description: 'Verify system init success',
+    priority: 'P1',
+    assignedTo: 'leader',
+    status: 'pending',
   });
 }
 
 if (require.main === module) {
-  main().catch(err => { console.error('[Orion Code] Fatal error:', err); process.exit(1); });
+  main().catch(err => {
+    console.error('[Orion Code] Fatal error:', err);
+    process.exit(1);
+  });
 }
 
 // ============================================================================
@@ -424,4 +534,9 @@ if (require.main === module) {
 export { SafetyChecker } from './harness/safety';
 export { MemoryStore } from './memory/store';
 export type { SafetyPolicy, SafetyCheck, SecurityLevel, AuditLogEntry } from './harness/safety';
-export type { MemoryEntry as StoreMemoryEntry, MemoryTier as StoreMemoryTier, MemoryQuery, MemoryStoreConfig } from './memory/store';
+export type {
+  MemoryEntry as StoreMemoryEntry,
+  MemoryTier as StoreMemoryTier,
+  MemoryQuery,
+  MemoryStoreConfig,
+} from './memory/store';

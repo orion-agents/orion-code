@@ -1,10 +1,27 @@
 import { runSubtaskBatch } from '../src/runtime/subagents/supervisor';
 import type { SubagentSupervisorDeps } from '../src/runtime/subagents/supervisor';
-import { SubagentBudgetLedger, TurnTaskState, budgetLimitsFromConfig } from '../src/runtime/subagents/budget';
+import {
+  SubagentBudgetLedger,
+  TurnTaskState,
+  budgetLimitsFromConfig,
+} from '../src/runtime/subagents/budget';
 import { SubagentProviderGate } from '../src/runtime/subagents/provider-gate';
 import type { ExecuteChildQuery, ChildToolSet } from '../src/runtime/subagents/runner';
-import type { RuntimeSubtaskEvent, SubagentConfig, SubtaskPacket, SubtaskRequest, SubtaskUsage } from '../src/runtime/subagents/types';
+import type {
+  RuntimeSubtaskEvent,
+  SubagentConfig,
+  SubtaskPacket,
+  SubtaskRequest,
+  SubtaskUsage,
+} from '../src/runtime/subagents/types';
 import { DEFAULT_SUBAGENT_CONFIG } from '../src/runtime/subagents/types';
+import {
+  createChildToolExecutorGuard,
+  ScopeHolder,
+} from '../src/runtime/subagents/child-executor-guard';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 const TOOL_SET: ChildToolSet = { tools: [], toolExecutor: async () => '' };
 
@@ -12,36 +29,66 @@ function packet(objective: string, role: 'research' | 'review' = 'research'): Su
   return { role, objective, reason: 'independent' };
 }
 
-function request(tasks: SubtaskPacket[], execution: 'parallel' | 'serial' = 'parallel'): SubtaskRequest {
+function request(
+  tasks: SubtaskPacket[],
+  execution: 'parallel' | 'serial' = 'parallel'
+): SubtaskRequest {
   return { tasks, execution };
 }
 
-function makeDeps(overrides: {
-  config?: Partial<SubagentConfig>;
-  executeQuery?: ExecuteChildQuery;
-  parentAbortSignal?: AbortSignal;
-  onEvent?: (e: RuntimeSubtaskEvent) => void;
-  turnTaskState?: TurnTaskState;
-  hasPendingPermission?: () => boolean;
-  onChildUsage?: (taskId: string, role: SubtaskPacket['role'], usage: SubtaskUsage, modelLabel?: string) => void;
-  onSubtaskResult?: (result: import('../src/runtime/subagents/types').SubtaskResult, batchId: string) => void;
-  rootObjectiveSummary?: string;
-} = {}): SubagentSupervisorDeps {
+function makeDeps(
+  overrides: {
+    config?: Partial<SubagentConfig>;
+    executeQuery?: ExecuteChildQuery;
+    parentAbortSignal?: AbortSignal;
+    onEvent?: (e: RuntimeSubtaskEvent) => void;
+    turnTaskState?: TurnTaskState;
+    hasPendingPermission?: () => boolean;
+    onChildUsage?: (
+      taskId: string,
+      role: SubtaskPacket['role'],
+      usage: SubtaskUsage,
+      modelLabel?: string
+    ) => void;
+    onSubtaskResult?: (
+      result: import('../src/runtime/subagents/types').SubtaskResult,
+      batchId: string
+    ) => void;
+    rootObjectiveSummary?: string;
+    cwd?: string;
+    toolSet?: ChildToolSet;
+    scopeHolder?: ScopeHolder;
+  } = {}
+): SubagentSupervisorDeps {
   const config = { ...DEFAULT_SUBAGENT_CONFIG, ...overrides.config };
-  const budget = new SubagentBudgetLedger(budgetLimitsFromConfig({
-    maxModelRequestsPerTurn: config.maxModelRequestsPerTurn,
-    maxModelRequestsPerTask: config.maxModelRequestsPerTask,
-    maxToolCallsPerTask: config.maxToolCallsPerTask,
-    timeoutMs: config.timeoutMs,
-  }));
+  const budget = new SubagentBudgetLedger(
+    budgetLimitsFromConfig({
+      maxModelRequestsPerTurn: config.maxModelRequestsPerTurn,
+      maxModelRequestsPerTask: config.maxModelRequestsPerTask,
+      maxToolCallsPerTask: config.maxToolCallsPerTask,
+      timeoutMs: config.timeoutMs,
+    })
+  );
   const providerGate = new SubagentProviderGate({ maxConcurrent: config.maxParallel });
   return {
     config,
-    cwd: '/tmp/project',
+    cwd: overrides.cwd ?? '/tmp/project',
     budget,
     providerGate,
-    executeQuery: overrides.executeQuery ?? (async () => ({ content: JSON.stringify({ summary: 'ok' }), usage: { modelRequests: 1, toolCalls: 0, promptTokens: 0, completionTokens: 0, durationMs: 100 } })),
-    toolSet: TOOL_SET,
+    executeQuery:
+      overrides.executeQuery ??
+      (async () => ({
+        content: JSON.stringify({ summary: 'ok' }),
+        usage: {
+          modelRequests: 1,
+          toolCalls: 0,
+          promptTokens: 0,
+          completionTokens: 0,
+          durationMs: 100,
+        },
+      })),
+    toolSet: overrides.toolSet ?? TOOL_SET,
+    scopeHolder: overrides.scopeHolder,
     turnTaskState: overrides.turnTaskState,
     hasPendingPermission: overrides.hasPendingPermission,
     onChildUsage: overrides.onChildUsage,
@@ -60,10 +107,20 @@ describe('subagent supervisor', () => {
       const order = seq++;
       const delay = order === 0 ? 50 : 5; // first task slowest
       return new Promise(resolve => {
-        setTimeout(() => resolve({
-          content: JSON.stringify({ summary: `result-${order}` }),
-          usage: { modelRequests: 2, toolCalls: 1, promptTokens: 0, completionTokens: 0, durationMs: delay },
-        }), delay);
+        setTimeout(
+          () =>
+            resolve({
+              content: JSON.stringify({ summary: `result-${order}` }),
+              usage: {
+                modelRequests: 2,
+                toolCalls: 1,
+                promptTokens: 0,
+                completionTokens: 0,
+                durationMs: delay,
+              },
+            }),
+          delay
+        );
       });
     };
     const deps = makeDeps({ executeQuery });
@@ -81,10 +138,25 @@ describe('subagent supervisor', () => {
     const executeQuery: ExecuteChildQuery = async (_m, _t, _sig) => {
       const label = `r${order.length}`;
       order.push('start');
-      return { content: JSON.stringify({ summary: label }), usage: { modelRequests: 1, toolCalls: 0, promptTokens: 0, completionTokens: 0, durationMs: 10 } };
+      return {
+        content: JSON.stringify({ summary: label }),
+        usage: {
+          modelRequests: 1,
+          toolCalls: 0,
+          promptTokens: 0,
+          completionTokens: 0,
+          durationMs: 10,
+        },
+      };
     };
     const deps = makeDeps({ executeQuery });
-    const outcome = await runSubtaskBatch(request([packet('investigate alpha'), packet('investigate beta'), packet('investigate gamma')], 'serial'), deps);
+    const outcome = await runSubtaskBatch(
+      request(
+        [packet('investigate alpha'), packet('investigate beta'), packet('investigate gamma')],
+        'serial'
+      ),
+      deps
+    );
     expect(outcome.result.results.map(r => r.summary)).toEqual(['r0', 'r1', 'r2']);
   });
 
@@ -93,10 +165,26 @@ describe('subagent supervisor', () => {
     const executeQuery: ExecuteChildQuery = async () => {
       const idx = i++;
       if (idx === 1) throw new Error('provider 500');
-      return { content: JSON.stringify({ summary: `ok-${idx}` }), usage: { modelRequests: 1, toolCalls: 0, promptTokens: 0, completionTokens: 0, durationMs: 5 } };
+      return {
+        content: JSON.stringify({ summary: `ok-${idx}` }),
+        usage: {
+          modelRequests: 1,
+          toolCalls: 0,
+          promptTokens: 0,
+          completionTokens: 0,
+          durationMs: 5,
+        },
+      };
     };
     const deps = makeDeps({ executeQuery });
-    const outcome = await runSubtaskBatch(request([packet('investigate alpha'), packet('investigate beta'), packet('investigate gamma')]), deps);
+    const outcome = await runSubtaskBatch(
+      request([
+        packet('investigate alpha'),
+        packet('investigate beta'),
+        packet('investigate gamma'),
+      ]),
+      deps
+    );
     expect(outcome.result.results[0].status).toBe('completed');
     expect(outcome.result.results[1].status).toBe('failed');
     expect(outcome.result.results[2].status).toBe('completed');
@@ -113,10 +201,22 @@ describe('subagent supervisor', () => {
           abortSignal.addEventListener('abort', onAbort, { once: true });
         });
       }
-      return { content: JSON.stringify({ summary: `ok-${idx}` }), usage: { modelRequests: 1, toolCalls: 0, promptTokens: 0, completionTokens: 0, durationMs: 5 } };
+      return {
+        content: JSON.stringify({ summary: `ok-${idx}` }),
+        usage: {
+          modelRequests: 1,
+          toolCalls: 0,
+          promptTokens: 0,
+          completionTokens: 0,
+          durationMs: 5,
+        },
+      };
     };
     const deps = makeDeps({ executeQuery, config: { timeoutMs: 40 } });
-    const outcome = await runSubtaskBatch(request([packet('investigate slow path'), packet('investigate fast path')]), deps);
+    const outcome = await runSubtaskBatch(
+      request([packet('investigate slow path'), packet('investigate fast path')]),
+      deps
+    );
     expect(outcome.result.results[0].status).toBe('timed_out');
     expect(outcome.result.results[1].status).toBe('completed');
   });
@@ -142,7 +242,10 @@ describe('subagent supervisor', () => {
 
   it('rejects the whole batch when policy denies (mode off)', async () => {
     const deps = makeDeps({ config: { mode: 'off' } });
-    const outcome = await runSubtaskBatch(request([packet('investigate something specific')]), deps);
+    const outcome = await runSubtaskBatch(
+      request([packet('investigate something specific')]),
+      deps
+    );
     expect(outcome.rejected).toBe(true);
     expect(outcome.rejectReason).toBe('mode_off');
     expect(outcome.result.results[0].status).toBe('rejected');
@@ -151,7 +254,13 @@ describe('subagent supervisor', () => {
   it('reconciles budget with actual child usage', async () => {
     const executeQuery: ExecuteChildQuery = async () => ({
       content: JSON.stringify({ summary: 'ok' }),
-      usage: { modelRequests: 3, toolCalls: 2, promptTokens: 0, completionTokens: 0, durationMs: 50 },
+      usage: {
+        modelRequests: 3,
+        toolCalls: 2,
+        promptTokens: 0,
+        completionTokens: 0,
+        durationMs: 50,
+      },
     });
     const deps = makeDeps({ executeQuery });
     await runSubtaskBatch(request([packet('investigate alpha'), packet('investigate beta')]), deps);
@@ -170,11 +279,120 @@ describe('subagent supervisor', () => {
       maxActive = Math.max(maxActive, active);
       await new Promise(r => setTimeout(r, 20));
       active -= 1;
-      return { content: JSON.stringify({ summary: 'ok' }), usage: { modelRequests: 1, toolCalls: 0, promptTokens: 0, completionTokens: 0, durationMs: 20 } };
+      return {
+        content: JSON.stringify({ summary: 'ok' }),
+        usage: {
+          modelRequests: 1,
+          toolCalls: 0,
+          promptTokens: 0,
+          completionTokens: 0,
+          durationMs: 20,
+        },
+      };
     };
     const deps = makeDeps({ executeQuery, config: { maxParallel: 2 } });
-    await runSubtaskBatch(request([packet('investigate alpha'), packet('investigate beta'), packet('investigate gamma')]), deps);
+    await runSubtaskBatch(
+      request([
+        packet('investigate alpha'),
+        packet('investigate beta'),
+        packet('investigate gamma'),
+      ]),
+      deps
+    );
     expect(maxActive).toBeLessThanOrEqual(2);
+  });
+
+  it('isolates parallel packet scopes across async child runs and cleanup', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'orion-subagent-scope-concurrency-'));
+    mkdirSync(join(root, 'scope-a'));
+    mkdirSync(join(root, 'scope-b'));
+    writeFileSync(join(root, 'scope-a', 'a.ts'), 'a');
+    writeFileSync(join(root, 'scope-b', 'b.ts'), 'b');
+    writeFileSync(join(root, 'root-only.ts'), 'root');
+
+    const scopeHolder = new ScopeHolder();
+    const inner = jest.fn(async () => JSON.stringify({ success: true, output: 'ok' }));
+    const guardedExecutor = createChildToolExecutorGuard(inner, { rootCwd: root, scopeHolder });
+    const observed = new Map<string, boolean[]>();
+
+    let started = 0;
+    let releaseBoth!: () => void;
+    const bothStarted = new Promise<void>(resolve => {
+      releaseBoth = resolve;
+    });
+    let releaseFirstFinished!: () => void;
+    const firstFinished = new Promise<void>(resolve => {
+      releaseFirstFinished = resolve;
+    });
+
+    const executeQuery: ExecuteChildQuery = async (messages, toolSet) => {
+      const isAlpha = JSON.stringify(messages).includes('investigate alpha scope');
+      const label = isAlpha ? 'alpha' : 'beta';
+      started += 1;
+      if (started === 2) releaseBoth();
+      await bothStarted;
+
+      if (!isAlpha) {
+        // Alpha completes first. Waiting one event-loop turn after its result
+        // callback makes this exercise the old child-clear race deterministically.
+        await firstFinished;
+        await new Promise<void>(resolve => setImmediate(resolve));
+      }
+
+      const own = isAlpha ? 'scope-a/a.ts' : 'scope-b/b.ts';
+      const sibling = isAlpha ? 'scope-b/b.ts' : 'scope-a/a.ts';
+      const results = await Promise.all([
+        toolSet.toolExecutor('read_file', { path: own }),
+        toolSet.toolExecutor('read_file', { path: sibling }),
+        toolSet.toolExecutor('read_file', { path: 'root-only.ts' }),
+      ]);
+      observed.set(
+        label,
+        results.map(result => JSON.parse(result).success === true)
+      );
+
+      return {
+        content: JSON.stringify({ summary: label }),
+        usage: {
+          modelRequests: 1,
+          toolCalls: 3,
+          promptTokens: 0,
+          completionTokens: 0,
+          durationMs: 1,
+        },
+      };
+    };
+
+    const deps = makeDeps({
+      cwd: root,
+      executeQuery,
+      scopeHolder,
+      toolSet: { tools: [], toolExecutor: guardedExecutor },
+      onSubtaskResult: result => {
+        if (result.summary === 'alpha') releaseFirstFinished();
+      },
+    });
+    const outcome = await runSubtaskBatch(
+      request([
+        { ...packet('investigate alpha scope'), scope: { paths: ['scope-a'] } },
+        { ...packet('investigate beta scope'), scope: { paths: ['scope-b'] } },
+      ]),
+      deps
+    );
+
+    expect(outcome.rejected).toBe(false);
+    expect(outcome.result.results.map(result => result.status)).toEqual(['completed', 'completed']);
+    // Each child may read only its own scope. The sibling and root-only file
+    // stay denied, including after the first child has fully completed.
+    expect(observed.get('alpha')).toEqual([true, false, false]);
+    expect(observed.get('beta')).toEqual([true, false, false]);
+    expect(inner).toHaveBeenCalledTimes(2);
+
+    // Outside any child async context, the shared executor keeps the legacy
+    // root-only behavior and no completed child leaves a scope behind.
+    const rootResult = await guardedExecutor('read_file', { path: 'root-only.ts' });
+    expect(JSON.parse(rootResult).success).toBe(true);
+    expect(inner).toHaveBeenCalledTimes(3);
   });
 
   it('cancels remaining serial tasks when parent aborts', async () => {
@@ -191,17 +409,45 @@ describe('subagent supervisor', () => {
           parent.signal.addEventListener('abort', onAbort, { once: true });
         });
       }
-      return { content: JSON.stringify({ summary: `ok-${idx}` }), usage: { modelRequests: 1, toolCalls: 0, promptTokens: 0, completionTokens: 0, durationMs: 5 } };
+      return {
+        content: JSON.stringify({ summary: `ok-${idx}` }),
+        usage: {
+          modelRequests: 1,
+          toolCalls: 0,
+          promptTokens: 0,
+          completionTokens: 0,
+          durationMs: 5,
+        },
+      };
     };
-    const deps = makeDeps({ executeQuery, parentAbortSignal: parent.signal, config: { timeoutMs: 30_000 } });
-    const outcome = await runSubtaskBatch(request([packet('investigate first module'), packet('investigate second module'), packet('investigate third module')], 'serial'), deps);
+    const deps = makeDeps({
+      executeQuery,
+      parentAbortSignal: parent.signal,
+      config: { timeoutMs: 30_000 },
+    });
+    const outcome = await runSubtaskBatch(
+      request(
+        [
+          packet('investigate first module'),
+          packet('investigate second module'),
+          packet('investigate third module'),
+        ],
+        'serial'
+      ),
+      deps
+    );
     // First was running and got cancelled; the rest never started and are cancelled.
-    expect(outcome.result.results.filter(r => r.status === 'cancelled').length).toBeGreaterThanOrEqual(2);
+    expect(
+      outcome.result.results.filter(r => r.status === 'cancelled').length
+    ).toBeGreaterThanOrEqual(2);
   });
 
   it('produces a stable batchId and distinct taskIds', async () => {
     const deps = makeDeps();
-    const outcome = await runSubtaskBatch(request([packet('investigate alpha'), packet('investigate beta')]), deps);
+    const outcome = await runSubtaskBatch(
+      request([packet('investigate alpha'), packet('investigate beta')]),
+      deps
+    );
     const ids = outcome.result.results.map(r => r.id);
     expect(new Set(ids).size).toBe(2);
     expect(outcome.result.batchId).toBeTruthy();
@@ -217,10 +463,16 @@ describe('subagent supervisor', () => {
     const turnTaskState = new TurnTaskState();
     const deps = makeDeps({ turnTaskState });
 
-    const first = await runSubtaskBatch(request([packet('investigate alpha'), packet('investigate beta')]), deps);
+    const first = await runSubtaskBatch(
+      request([packet('investigate alpha'), packet('investigate beta')]),
+      deps
+    );
     expect(first.rejected).toBe(false);
 
-    const second = await runSubtaskBatch(request([packet('investigate gamma'), packet('investigate delta')]), deps);
+    const second = await runSubtaskBatch(
+      request([packet('investigate gamma'), packet('investigate delta')]),
+      deps
+    );
     // 2 + 2 = 4 > maxTasksPerTurn(3) -> rejected.
     expect(second.rejected).toBe(true);
     expect(second.rejectReason).toBe('too_many_tasks');
@@ -228,7 +480,10 @@ describe('subagent supervisor', () => {
 
   it('R6: hasPendingPermission=true rejects the batch as pending_permission', async () => {
     const deps = makeDeps({ hasPendingPermission: () => true });
-    const outcome = await runSubtaskBatch(request([packet('investigate something specific')]), deps);
+    const outcome = await runSubtaskBatch(
+      request([packet('investigate something specific')]),
+      deps
+    );
     expect(outcome.rejected).toBe(true);
     expect(outcome.rejectReason).toBe('pending_permission');
   });
@@ -240,7 +495,10 @@ describe('subagent supervisor', () => {
       hasPendingPermission: () => false,
       rootObjectiveSummary: 'parallel research of runtime and session modules',
     });
-    const outcome = await runSubtaskBatch(request([packet('investigate something specific')]), deps);
+    const outcome = await runSubtaskBatch(
+      request([packet('investigate something specific')]),
+      deps
+    );
     expect(outcome.rejected).toBe(false);
   });
 
@@ -248,11 +506,18 @@ describe('subagent supervisor', () => {
     const reported: Array<{ taskId: string; role: string; modelRequests: number }> = [];
     const executeQuery: ExecuteChildQuery = async () => ({
       content: JSON.stringify({ summary: 'ok' }),
-      usage: { modelRequests: 3, toolCalls: 2, promptTokens: 50, completionTokens: 20, durationMs: 75 },
+      usage: {
+        modelRequests: 3,
+        toolCalls: 2,
+        promptTokens: 50,
+        completionTokens: 20,
+        durationMs: 75,
+      },
     });
     const deps = makeDeps({
       executeQuery,
-      onChildUsage: (taskId, role, usage) => reported.push({ taskId, role: String(role), modelRequests: usage.modelRequests }),
+      onChildUsage: (taskId, role, usage) =>
+        reported.push({ taskId, role: String(role), modelRequests: usage.modelRequests }),
     });
     await runSubtaskBatch(request([packet('investigate alpha'), packet('investigate beta')]), deps);
     expect(reported).toHaveLength(2);
@@ -289,10 +554,17 @@ describe('subagent supervisor', () => {
     const persisted: string[] = [];
     const reported: string[] = [];
     const deps = makeDeps({
-      onSubtaskResult: (result) => { persisted.push(result.id); },
-      onChildUsage: (taskId) => { reported.push(taskId); },
+      onSubtaskResult: result => {
+        persisted.push(result.id);
+      },
+      onChildUsage: taskId => {
+        reported.push(taskId);
+      },
     });
-    const outcome = await runSubtaskBatch(request([packet('investigate alpha'), packet('investigate beta')]), deps);
+    const outcome = await runSubtaskBatch(
+      request([packet('investigate alpha'), packet('investigate beta')]),
+      deps
+    );
     // Each task's result persisted exactly once.
     const ids = outcome.result.results.map(r => r.id);
     expect(persisted).toEqual(ids);
@@ -304,10 +576,17 @@ describe('subagent supervisor', () => {
     const events: RuntimeSubtaskEvent[] = [];
     const deps = makeDeps({
       config: { mode: 'off' },
-      onSubtaskResult: (result) => { persisted.push(result); },
-      onEvent: (e) => { events.push(e); },
+      onSubtaskResult: result => {
+        persisted.push(result);
+      },
+      onEvent: e => {
+        events.push(e);
+      },
     });
-    const outcome = await runSubtaskBatch(request([packet('investigate alpha'), packet('investigate beta')]), deps);
+    const outcome = await runSubtaskBatch(
+      request([packet('investigate alpha'), packet('investigate beta')]),
+      deps
+    );
     expect(outcome.rejected).toBe(true);
     // Rejected results persisted (artifact/trace) exactly once each.
     expect(persisted).toHaveLength(2);
@@ -330,16 +609,34 @@ describe('subagent supervisor', () => {
           parent.signal.addEventListener('abort', onAbort, { once: true });
         });
       }
-      return { content: JSON.stringify({ summary: `ok-${idx}` }), usage: { modelRequests: 1, toolCalls: 0, promptTokens: 0, completionTokens: 0, durationMs: 5 } };
+      return {
+        content: JSON.stringify({ summary: `ok-${idx}` }),
+        usage: {
+          modelRequests: 1,
+          toolCalls: 0,
+          promptTokens: 0,
+          completionTokens: 0,
+          durationMs: 5,
+        },
+      };
     };
     const deps = makeDeps({
       executeQuery,
       parentAbortSignal: parent.signal,
-      onSubtaskResult: (result) => { persisted.push(result); },
+      onSubtaskResult: result => {
+        persisted.push(result);
+      },
     });
     const outcome = await runSubtaskBatch(
-      request([packet('investigate first module'), packet('investigate second module'), packet('investigate third module')], 'serial'),
-      deps,
+      request(
+        [
+          packet('investigate first module'),
+          packet('investigate second module'),
+          packet('investigate third module'),
+        ],
+        'serial'
+      ),
+      deps
     );
     // All 3 tasks finalized exactly once (first cancelled, rest cancelled-before-run).
     expect(persisted).toHaveLength(3);
@@ -350,10 +647,16 @@ describe('subagent supervisor', () => {
   it('R7: throwing onSubtaskResult does not reject the batch or corrupt siblings', async () => {
     let throwCount = 0;
     const deps = makeDeps({
-      onSubtaskResult: () => { throwCount += 1; throw new Error('artifact sink failed'); },
+      onSubtaskResult: () => {
+        throwCount += 1;
+        throw new Error('artifact sink failed');
+      },
     });
     // Must NOT throw - sink error is isolated.
-    const outcome = await runSubtaskBatch(request([packet('investigate alpha'), packet('investigate beta')]), deps);
+    const outcome = await runSubtaskBatch(
+      request([packet('investigate alpha'), packet('investigate beta')]),
+      deps
+    );
     expect(outcome.rejected).toBe(false);
     expect(outcome.result.results).toHaveLength(2);
     // Both tasks' sinks were invoked despite throwing.
@@ -364,10 +667,15 @@ describe('subagent supervisor', () => {
 
   it('R7: throwing onEvent does not reject the batch', async () => {
     const deps = makeDeps({
-      onEvent: () => { throw new Error('event sink failed'); },
+      onEvent: () => {
+        throw new Error('event sink failed');
+      },
       // R9: use two packets to bypass auto-mode single-task eligibility gate.
     });
-    const outcome = await runSubtaskBatch(request([packet('investigate alpha'), packet('investigate beta')]), deps);
+    const outcome = await runSubtaskBatch(
+      request([packet('investigate alpha'), packet('investigate beta')]),
+      deps
+    );
     expect(outcome.rejected).toBe(false);
     expect(outcome.result.results[0].status).toBe('completed');
     expect(outcome.result.results[1].status).toBe('completed');
@@ -376,9 +684,15 @@ describe('subagent supervisor', () => {
   it('R7: throwing onChildUsage does not reject the batch', async () => {
     let callCount = 0;
     const deps = makeDeps({
-      onChildUsage: () => { callCount += 1; throw new Error('cost sink failed'); },
+      onChildUsage: () => {
+        callCount += 1;
+        throw new Error('cost sink failed');
+      },
     });
-    const outcome = await runSubtaskBatch(request([packet('investigate alpha'), packet('investigate beta')]), deps);
+    const outcome = await runSubtaskBatch(
+      request([packet('investigate alpha'), packet('investigate beta')]),
+      deps
+    );
     expect(outcome.rejected).toBe(false);
     expect(callCount).toBe(2);
   });

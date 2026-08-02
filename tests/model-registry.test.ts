@@ -1,5 +1,5 @@
 /**
- * v0.2.26 — Model Registry unit tests (Slice 1).
+ * Model Registry unit tests.
  */
 import {
   isLegacyConfig,
@@ -37,7 +37,14 @@ function validConfig(overrides: Partial<ModelRegistryConfig> = {}): ModelRegistr
 describe('Model Registry (Slice 1)', () => {
   describe('legacy detection', () => {
     it('detects legacy 4-field config', () => {
-      expect(isLegacyConfig({ apiKey: 'sk-xxx', apiBaseUrl: 'https://x.com', defaultModel: 'm', fallbackModel: 'f' })).toBe(true);
+      expect(
+        isLegacyConfig({
+          apiKey: 'sk-xxx',
+          apiBaseUrl: 'https://x.com',
+          defaultModel: 'm',
+          fallbackModel: 'f',
+        })
+      ).toBe(true);
     });
 
     it('does not flag new config as legacy', () => {
@@ -48,7 +55,8 @@ describe('Model Registry (Slice 1)', () => {
       const hint = getLegacyMigrationHint();
       expect(hint).toContain('providers');
       expect(hint).toContain('models');
-      expect(hint).toContain('v0.2.26');
+      expect(hint).toContain('README.md#configuration');
+      expect(hint).not.toContain('v0.2.26');
     });
   });
 
@@ -97,7 +105,11 @@ describe('Model Registry (Slice 1)', () => {
     });
 
     it('rejects missing defaultModel', () => {
-      const r = buildRegistry({ providers: [VALID_PROVIDER], models: [VALID_PROFILE], defaultModel: 'nonexistent' });
+      const r = buildRegistry({
+        providers: [VALID_PROVIDER],
+        models: [VALID_PROFILE],
+        defaultModel: 'nonexistent',
+      });
       expect(r.valid).toBe(false);
     });
   });
@@ -146,8 +158,9 @@ describe('Model Registry (Slice 1)', () => {
     it('generates stable fingerprint', () => {
       const r1 = buildRegistry(validConfig());
       const r2 = buildRegistry(validConfig());
-      expect(r1.registry!.profiles.get('test-model')!.fingerprint)
-        .toBe(r2.registry!.profiles.get('test-model')!.fingerprint);
+      expect(r1.registry!.profiles.get('test-model')!.fingerprint).toBe(
+        r2.registry!.profiles.get('test-model')!.fingerprint
+      );
     });
   });
 
@@ -195,7 +208,13 @@ describe('Model Registry (Slice 1)', () => {
         providers: [VALID_PROVIDER],
         models: [
           VALID_PROFILE,
-          { ...VALID_PROFILE, id: 'disabled-model', enabled: false, provider: 'test-provider', model: 'v3' },
+          {
+            ...VALID_PROFILE,
+            id: 'disabled-model',
+            enabled: false,
+            provider: 'test-provider',
+            model: 'v3',
+          },
         ],
       });
       expect(r.registry!.enabledProfiles.length).toBe(1);

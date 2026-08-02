@@ -8,9 +8,10 @@
  *   - 事件驱动的状态变更通知
  */
 
+import { randomUUID } from 'crypto';
+
 import { EventEmitter } from 'eventemitter3';
 import { Task, TaskResult } from '../core/agent';
-import { v4 as uuidv4 } from 'uuid';
 
 // ============================================================================
 // 类型定义
@@ -106,7 +107,7 @@ const VALID_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
   pending: ['running', 'cancelled'],
   running: ['completed', 'failed'],
   completed: [],
-  failed: ['pending'],  // 可重试
+  failed: ['pending'], // 可重试
   cancelled: ['pending'], // 可恢复
 };
 
@@ -141,7 +142,7 @@ export class TaskManager extends EventEmitter {
 
     const now = Date.now();
     const record: TaskRecord = {
-      id: uuidv4(),
+      id: randomUUID(),
       name: options.name,
       description: options.description,
       priority: options.priority ?? 'P1',
@@ -398,7 +399,7 @@ export class TaskManager extends EventEmitter {
     const allowed = VALID_TRANSITIONS[task.status];
     if (!allowed.includes(target)) {
       console.warn(
-        `[TaskManager] Invalid transition: "${task.status}" → "${target}" for task "${task.name}"`,
+        `[TaskManager] Invalid transition: "${task.status}" → "${target}" for task "${task.name}"`
       );
       return undefined;
     }

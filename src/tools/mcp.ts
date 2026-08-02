@@ -7,8 +7,16 @@
 import { spawn, type ChildProcess } from 'child_process';
 import { readFileSync, existsSync } from 'fs';
 import { join, resolve } from 'path';
-import { buildTool, type OpenHorseTool, type OrionCodeTool, type ToolInputJSONSchema, type ToolResult } from '../framework/tool';
+import {
+  buildTool,
+  type OpenHorseTool,
+  type OrionCodeTool,
+  type ToolInputJSONSchema,
+  type ToolResult,
+} from '../framework/tool';
 import { getConfigHome } from '../services/config-dir';
+import { MCP_CLIENT_NAME } from '../product/identity';
+import { PACKAGE_VERSION } from '../product/version';
 
 // ============================================================================
 // MCP Types
@@ -47,7 +55,14 @@ interface MCPClientState {
   process: ChildProcess | null;
   tools: MCPToolDefinition[];
   connected: boolean;
-  pendingRequests: Map<string, { resolve: (...args: unknown[]) => unknown; reject: (...args: unknown[]) => unknown; timer: NodeJS.Timeout }>;
+  pendingRequests: Map<
+    string,
+    {
+      resolve: (...args: unknown[]) => unknown;
+      reject: (...args: unknown[]) => unknown;
+      timer: NodeJS.Timeout;
+    }
+  >;
   buffer: string;
 }
 
@@ -55,7 +70,6 @@ const HEARTBEAT_INTERVAL_MS = 30_000;
 const RECONNECT_MAX_ATTEMPTS = 3;
 const RECONNECT_BASE_DELAY_MS = 1000;
 const MCP_REQUEST_TIMEOUT_MS = 30_000;
-const MCP_CLIENT_VERSION = process.env.npm_package_version || '0.1.23';
 
 export function getMcpConfigPath(): string {
   return join(getConfigHome(), 'mcp.json');
@@ -74,13 +88,18 @@ export function buildMcpToolName(serverName: string, toolName: string): string {
 }
 
 function expandEnvValue(value: string): string {
-  return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, key: string) => process.env[key] ?? '');
+  return value.replace(
+    /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g,
+    (_, key: string) => process.env[key] ?? ''
+  );
 }
 
 function expandServerConfig(config: MCPServerConfig): MCPServerConfig {
   const args = config.args?.map(arg => expandEnvValue(arg));
   const env = config.env
-    ? Object.fromEntries(Object.entries(config.env).map(([key, value]) => [key, expandEnvValue(value)]))
+    ? Object.fromEntries(
+        Object.entries(config.env).map(([key, value]) => [key, expandEnvValue(value)])
+      )
     : undefined;
 
   return {
@@ -93,9 +112,10 @@ function expandServerConfig(config: MCPServerConfig): MCPServerConfig {
 }
 
 function normalizeMcpInputSchema(schema: MCPToolDefinition['inputSchema']): ToolInputJSONSchema {
-  const normalized: any = schema?.type === 'object'
-    ? { ...schema, properties: { ...(schema.properties ?? {}) } }
-    : { type: 'object', properties: {} };
+  const normalized: any =
+    schema?.type === 'object'
+      ? { ...schema, properties: { ...(schema.properties ?? {}) } }
+      : { type: 'object', properties: {} };
 
   for (const [name, raw] of Object.entries(normalized.properties)) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
@@ -134,7 +154,8 @@ function formatMcpResult(result: any): ToolResult {
   }
 
   const metadata: Record<string, unknown> = {};
-  if (result?.structuredContent !== undefined) metadata.structuredContent = result.structuredContent;
+  if (result?.structuredContent !== undefined)
+    metadata.structuredContent = result.structuredContent;
   return {
     success: true,
     output,
@@ -184,7 +205,9 @@ class SimpleMCPClient {
     const config = this.serverConfig;
     if (!config) throw new Error('No server config');
     if (config.type && config.type !== 'stdio') {
-      throw new Error(`MCP transport "${config.type}" is not supported yet; only stdio is available`);
+      throw new Error(
+        `MCP transport "${config.type}" is not supported yet; only stdio is available`
+      );
     }
     if (!config.command) {
       throw new Error('MCP stdio server requires a command');
@@ -206,7 +229,7 @@ class SimpleMCPClient {
       console.error(`[MCP ${this.name} stderr]:`, data.toString().trim());
     });
 
-    this.state.process.on('error', (err) => {
+    this.state.process.on('error', err => {
       console.error(`[MCP ${this.name} error]:`, err.message);
       this.state.connected = false;
     });
@@ -222,7 +245,7 @@ class SimpleMCPClient {
     await this.sendRequest('initialize', {
       protocolVersion: '2024-11-05',
       capabilities: {},
-      clientInfo: { name: 'orion-code', version: MCP_CLIENT_VERSION },
+      clientInfo: { name: MCP_CLIENT_NAME, version: PACKAGE_VERSION },
     });
 
     this.sendNotification('notifications/initialized', {});
@@ -250,7 +273,11 @@ class SimpleMCPClient {
       this.sendRequest('tools/list', {}).catch(() => {
         // request failure → mark disconnected and let close handler reconnect
         this.state.connected = false;
-        try { this.state.process?.kill(); } catch { /* noop */ }
+        try {
+          this.state.process?.kill();
+        } catch {
+          /* noop */
+        }
       });
     }, HEARTBEAT_INTERVAL_MS);
   }
@@ -265,18 +292,22 @@ class SimpleMCPClient {
   private scheduleReconnect(): void {
     if (this.intentionallyDisconnected || this.reconnectTimer) return;
     if (this.reconnectAttempts >= RECONNECT_MAX_ATTEMPTS) {
-      console.error(`[MCP ${this.name}] giving up after ${RECONNECT_MAX_ATTEMPTS} failed reconnects`);
+      console.error(
+        `[MCP ${this.name}] giving up after ${RECONNECT_MAX_ATTEMPTS} failed reconnects`
+      );
       this.stopHeartbeat();
       this.onDeadCallback?.();
       return;
     }
     this.reconnectAttempts++;
     const delay = RECONNECT_BASE_DELAY_MS * Math.pow(2, this.reconnectAttempts - 1);
-    console.error(`[MCP ${this.name}] reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${RECONNECT_MAX_ATTEMPTS})`);
+    console.error(
+      `[MCP ${this.name}] reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${RECONNECT_MAX_ATTEMPTS})`
+    );
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (this.intentionallyDisconnected) return;
-      this.spawnAndInit().catch((err) => {
+      this.spawnAndInit().catch(err => {
         console.error(`[MCP ${this.name}] reconnect failed:`, err.message);
         this.scheduleReconnect();
       });
@@ -318,12 +349,13 @@ class SimpleMCPClient {
     }
 
     const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const request = JSON.stringify({
-      jsonrpc: '2.0',
-      id,
-      method,
-      params,
-    }) + '\n';
+    const request =
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id,
+        method,
+        params,
+      }) + '\n';
 
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -341,11 +373,12 @@ class SimpleMCPClient {
   private sendNotification(method: string, params: any): void {
     if (!this.state.process) return;
 
-    const notification = JSON.stringify({
-      jsonrpc: '2.0',
-      method,
-      params,
-    }) + '\n';
+    const notification =
+      JSON.stringify({
+        jsonrpc: '2.0',
+        method,
+        params,
+      }) + '\n';
 
     this.state.process.stdin?.write(notification);
   }
@@ -375,7 +408,11 @@ class SimpleMCPClient {
     }
     this.failPendingRequests('MCP client disconnected');
     if (this.state.process) {
-      try { this.state.process.kill(); } catch { /* noop */ }
+      try {
+        this.state.process.kill();
+      } catch {
+        /* noop */
+      }
       this.state.process = null;
     }
     this.state.connected = false;
@@ -431,7 +468,9 @@ class MCPServerManager {
       try {
         const expandedConfig = expandServerConfig(serverConfig);
         if (expandedConfig.type && expandedConfig.type !== 'stdio') {
-          throw new Error(`transport "${expandedConfig.type}" is not supported yet; only stdio is available`);
+          throw new Error(
+            `transport "${expandedConfig.type}" is not supported yet; only stdio is available`
+          );
         }
         const client = new SimpleMCPClient();
         client.setOnDead(() => {
@@ -483,7 +522,7 @@ class MCPServerManager {
         name: orionCodeName,
         description: `[MCP:${server}/${tool.name}] ${tool.description || 'External MCP tool'}`,
         parameters: normalizeMcpInputSchema(tool.inputSchema),
-        execute: async (args) => {
+        execute: async args => {
           const client = this.getClient(server);
           if (!client?.isConnected()) {
             return {
@@ -494,11 +533,17 @@ class MCPServerManager {
           }
           return client.callTool(tool.name, args);
         },
-        checkPermissions: () => ({ behavior: 'ask', reason: `Calling external MCP tool ${server}/${tool.name}` }),
+        checkPermissions: () => ({
+          behavior: 'ask',
+          reason: `Calling external MCP tool ${server}/${tool.name}`,
+        }),
         isReadOnly: () => tool.annotations?.readOnlyHint === true,
         isDestructive: () => tool.annotations?.destructiveHint === true,
         userFacingName: () => `MCP ${server}/${tool.name}`,
-        getSummary: (_args, result) => result.success ? `MCP ${server}/${tool.name}` : result.error || `MCP ${server}/${tool.name} failed`,
+        getSummary: (_args, result) =>
+          result.success
+            ? `MCP ${server}/${tool.name}`
+            : result.error || `MCP ${server}/${tool.name} failed`,
       });
     });
   }
@@ -550,7 +595,7 @@ export const mcpListTool: OpenHorseTool = buildTool({
     },
     required: [],
   },
-  execute: async (args) => {
+  execute: async args => {
     const serverFilter = args.server as string | undefined;
     const allTools = mcpManager.getAllTools();
 
@@ -561,9 +606,7 @@ export const mcpListTool: OpenHorseTool = buildTool({
       };
     }
 
-    const filteredTools = serverFilter
-      ? allTools.filter(t => t.server === serverFilter)
-      : allTools;
+    const filteredTools = serverFilter ? allTools.filter(t => t.server === serverFilter) : allTools;
 
     if (filteredTools.length === 0) {
       return {
@@ -616,7 +659,7 @@ export const mcpCallTool: OpenHorseTool = buildTool({
     },
     required: ['server', 'tool'],
   },
-  execute: async (args) => {
+  execute: async args => {
     const server = args.server as string;
     const tool = args.tool as string;
     const toolArgs = (args.args || {}) as Record<string, any>;
@@ -661,7 +704,7 @@ export const mcpCallTool: OpenHorseTool = buildTool({
   checkPermissions: () => {
     return { behavior: 'ask', reason: 'Calling external MCP tool' };
   },
-  userFacingName: (args) => `Call ${(args.server as string)}/${(args.tool as string)}`,
+  userFacingName: args => `Call ${args.server as string}/${args.tool as string}`,
 });
 
 export const MCP_TOOLS: OpenHorseTool[] = [mcpListTool, mcpCallTool];

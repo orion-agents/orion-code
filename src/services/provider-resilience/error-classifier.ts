@@ -16,8 +16,14 @@ export interface ClassificationResult {
 
 export function classifyProviderError(
   error: unknown,
-  semanticDeltaSeen: boolean,
+  semanticDeltaSeen: boolean
 ): ClassificationResult {
+  // Local budget/policy preflight failures happen before any provider request.
+  // Keep them fail-fast so the caller can preserve the typed control signal.
+  if (isProviderRequestPreflightError(error)) {
+    return { kind: 'preflight_rejected', disposition: 'fail_fast' };
+  }
+
   // User abort
   if (isAbortError(error)) {
     return { kind: 'aborted', disposition: 'fail_fast' };
@@ -54,35 +60,67 @@ export function classifyProviderError(
 
   // Retryable by status
   if (status === 408) {
-    return { kind: 'conflict', disposition: semanticDeltaSeen ? 'recover_stream' : 'retry_precommit', retryAfterMs, status };
+    return {
+      kind: 'conflict',
+      disposition: semanticDeltaSeen ? 'recover_stream' : 'retry_precommit',
+      retryAfterMs,
+      status,
+    };
   }
   if (status === 409) {
     return { kind: 'conflict', disposition: 'retry_precommit', retryAfterMs, status };
   }
   if (status === 429) {
-    return { kind: 'rate_limit', disposition: semanticDeltaSeen ? 'recover_stream' : 'retry_precommit', retryAfterMs, status };
+    return {
+      kind: 'rate_limit',
+      disposition: semanticDeltaSeen ? 'recover_stream' : 'retry_precommit',
+      retryAfterMs,
+      status,
+    };
   }
   if (status === 529) {
-    return { kind: 'provider_overloaded', disposition: semanticDeltaSeen ? 'recover_stream' : 'retry_precommit', retryAfterMs, status };
+    return {
+      kind: 'provider_overloaded',
+      disposition: semanticDeltaSeen ? 'recover_stream' : 'retry_precommit',
+      retryAfterMs,
+      status,
+    };
   }
   if (status && status >= 500) {
-    return { kind: 'server_error', disposition: semanticDeltaSeen ? 'recover_stream' : 'retry_precommit', retryAfterMs, status };
+    return {
+      kind: 'server_error',
+      disposition: semanticDeltaSeen ? 'recover_stream' : 'retry_precommit',
+      retryAfterMs,
+      status,
+    };
   }
 
   // Network errors
   if (isConnectionReset(error)) {
-    return { kind: 'connection_reset', disposition: semanticDeltaSeen ? 'recover_stream' : 'retry_precommit' };
+    return {
+      kind: 'connection_reset',
+      disposition: semanticDeltaSeen ? 'recover_stream' : 'retry_precommit',
+    };
   }
   if (isTimeout(error)) {
-    return { kind: isConnectTimeout(error) ? 'connect_timeout' : 'read_timeout', disposition: semanticDeltaSeen ? 'recover_stream' : 'retry_precommit' };
+    return {
+      kind: isConnectTimeout(error) ? 'connect_timeout' : 'read_timeout',
+      disposition: semanticDeltaSeen ? 'recover_stream' : 'retry_precommit',
+    };
   }
   if (isNetworkError(error)) {
-    return { kind: 'network_error', disposition: semanticDeltaSeen ? 'recover_stream' : 'retry_precommit' };
+    return {
+      kind: 'network_error',
+      disposition: semanticDeltaSeen ? 'recover_stream' : 'retry_precommit',
+    };
   }
 
   // Malformed response
   if (isMalformedResponse(error)) {
-    return { kind: 'malformed_response', disposition: semanticDeltaSeen ? 'recover_stream' : 'retry_precommit' };
+    return {
+      kind: 'malformed_response',
+      disposition: semanticDeltaSeen ? 'recover_stream' : 'retry_precommit',
+    };
   }
 
   // Stream interrupted
@@ -93,10 +131,18 @@ export function classifyProviderError(
   return { kind: 'unknown', disposition: 'retry_precommit' };
 }
 
+function isProviderRequestPreflightError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'ProviderRequestPreflightError';
+}
+
 function isAbortError(error: unknown): boolean {
   if (error instanceof Error) {
-    return error.name === 'AbortError' || error.name === 'CanceledError'
-      || error.message?.includes('abort') || error.message?.includes('cancel');
+    return (
+      error.name === 'AbortError' ||
+      error.name === 'CanceledError' ||
+      error.message?.includes('abort') ||
+      error.message?.includes('cancel')
+    );
   }
   return false;
 }
@@ -114,18 +160,29 @@ function isQuotaError(error: unknown): boolean {
   if (!e) return false;
   const msg = String(e.message ?? '').toLowerCase();
   const code = String(e.code ?? '').toLowerCase();
-  return msg.includes('quota') || msg.includes('credit') || msg.includes('insufficient')
-    || code === 'insufficient_quota' || code === 'billing_not_active';
+  return (
+    msg.includes('quota') ||
+    msg.includes('credit') ||
+    msg.includes('insufficient') ||
+    code === 'insufficient_quota' ||
+    code === 'billing_not_active'
+  );
 }
 
 function isContextOverflow(error: unknown): boolean {
   const msg = String((error as any)?.message ?? '').toLowerCase();
-  return msg.includes('context') && (msg.includes('overflow') || msg.includes('too long') || msg.includes('maximum context'));
+  return (
+    msg.includes('context') &&
+    (msg.includes('overflow') || msg.includes('too long') || msg.includes('maximum context'))
+  );
 }
 
 function isContentPolicy(error: unknown): boolean {
   const msg = String((error as any)?.message ?? '').toLowerCase();
-  return msg.includes('content') && (msg.includes('policy') || msg.includes('safety') || msg.includes('moderation'));
+  return (
+    msg.includes('content') &&
+    (msg.includes('policy') || msg.includes('safety') || msg.includes('moderation'))
+  );
 }
 
 function isConnectionReset(error: unknown): boolean {
@@ -145,13 +202,20 @@ function isConnectTimeout(error: unknown): boolean {
 
 function isNetworkError(error: unknown): boolean {
   const msg = String((error as any)?.message ?? '').toLowerCase();
-  return msg.includes('econnrefused') || msg.includes('enotfound') || msg.includes('enonet')
-    || msg.includes('network') || msg.includes('dns');
+  return (
+    msg.includes('econnrefused') ||
+    msg.includes('enotfound') ||
+    msg.includes('enonet') ||
+    msg.includes('network') ||
+    msg.includes('dns')
+  );
 }
 
 function isMalformedResponse(error: unknown): boolean {
   const msg = String((error as any)?.message ?? '').toLowerCase();
-  return msg.includes('malformed') || msg.includes('unexpected token') || msg.includes('parse error');
+  return (
+    msg.includes('malformed') || msg.includes('unexpected token') || msg.includes('parse error')
+  );
 }
 
 function extractRetryAfterMs(error: unknown): number | undefined {
@@ -160,12 +224,21 @@ function extractRetryAfterMs(error: unknown): number | undefined {
   const headers = e.headers as Record<string, string> | undefined;
   if (headers) {
     const ms = headers['retry-after-ms'];
-    if (ms) { const n = Number(ms); if (Number.isFinite(n) && n > 0) return n; }
+    if (ms) {
+      const n = Number(ms);
+      if (Number.isFinite(n) && n > 0) return n;
+    }
     const sec = headers['retry-after'];
-    if (sec) { const n = Number(sec); if (Number.isFinite(n) && n > 0) return n * 1000; }
+    if (sec) {
+      const n = Number(sec);
+      if (Number.isFinite(n) && n > 0) return n * 1000;
+    }
     const date = headers['retry-after'];
     if (date && !Number(date)) {
-      try { const ms = Date.parse(date) - Date.now(); if (ms > 0) return ms; } catch {}
+      try {
+        const ms = Date.parse(date) - Date.now();
+        if (ms > 0) return ms;
+      } catch {}
     }
   }
   return undefined;

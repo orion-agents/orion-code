@@ -2,7 +2,11 @@
  * Tool Result Serializer unit tests
  */
 
-import { serializeToolResult, parseToolResultEnvelope, TOOL_RESULT_SCHEMA_VERSION } from '../src/framework/tool-serializer';
+import {
+  serializeToolResult,
+  parseToolResultEnvelope,
+  TOOL_RESULT_SCHEMA_VERSION,
+} from '../src/framework/tool-serializer';
 
 describe('tool-serializer', () => {
   test('TOOL_RESULT_SCHEMA_VERSION is 1', () => {
@@ -77,6 +81,15 @@ describe('tool-serializer', () => {
       outputBytes: 11,
       artifactRef: { id: 'art-1', outputBytes: 50000 },
       metadata: { candidates: [{ index: 0, line: 1 }] },
+      externalAssertion: {
+        version: 1 as const,
+        action: 'registry' as const,
+        status: 'passed' as const,
+        provider: 'npm' as const,
+        target: '@orion-agents/orion-code',
+        observedValue: '0.1.2',
+        observedAt: 123,
+      },
     };
 
     const serialized = serializeToolResult(original);
@@ -87,5 +100,20 @@ describe('tool-serializer', () => {
     expect(parsed.output).toBe('full output');
     expect(parsed.summary).toBe('compact');
     expect(parsed.artifactRef).toEqual({ id: 'art-1', outputBytes: 50000 });
+    expect(parsed.externalAssertion).toEqual(original.externalAssertion);
+  });
+
+  test('drops a malformed external assertion while preserving the envelope', () => {
+    const parsed = parseToolResultEnvelope(
+      JSON.stringify({
+        schemaVersion: 1,
+        success: true,
+        output: 'ok',
+        externalAssertion: { version: 1, action: 'publish', status: 'passed' },
+      })
+    );
+
+    expect(parsed.success).toBe(true);
+    expect(parsed.externalAssertion).toBeUndefined();
   });
 });

@@ -20,6 +20,7 @@ import { createChildToolExecutorGuard, ScopeHolder } from './child-executor-guar
 import type { RuntimeSubtaskEvent, SubagentConfig, SubtaskUsage } from './types';
 import type { LLMConfig } from '../../services/llm';
 import type { ProviderResilienceCoordinator } from '../../services/provider-resilience';
+import type { ProviderRequestPreflight } from '../../services/llm';
 import type { OpenHorseCLIConfig } from '../../services/config';
 
 /**
@@ -66,9 +67,16 @@ export interface SubagentTurnInputs {
    * it into its shared CostTracker. The observed values are never clamped;
    * `/cost` and telemetry must reflect the truth.
    */
-  onChildUsage?: (taskId: string, role: import('./types').SubagentRole, usage: import('./types').SubtaskUsage, modelLabel?: string) => void;
+  onChildUsage?: (
+    taskId: string,
+    role: import('./types').SubagentRole,
+    usage: import('./types').SubtaskUsage,
+    modelLabel?: string
+  ) => void;
   /** v0.2.26: shared resilience coordinator for child LLM requests. */
   resilience?: ProviderResilienceCoordinator;
+  /** Shared Goal token-budget preflight for every child provider attempt. */
+  beforeProviderRequest?: ProviderRequestPreflight;
 }
 
 /**
@@ -100,22 +108,36 @@ export function createSubagentBundleForTurn(inputs: SubagentTurnInputs): Subagen
   const childToolByName = new Map<string, OpenHorseTool>();
   for (const t of childTools) childToolByName.set(t.name, t);
 
-  // R3: scope holder lets the supervisor set the current packet's scope
-  // before each child runs, so the turn-level guard enforces per-packet
-  // containment without rebuilding the executor.
+  // R3: the async-context scope holder lets the supervisor bind each child to
+  // its packet scope, so parallel children cannot overwrite one another while
+  // sharing the same guarded executor.
   const scopeHolder = new ScopeHolder();
 
-  const unguardedExecutor = async (name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<string> => {
+  const unguardedExecutor = async (
+    name: string,
+    args: Record<string, unknown>,
+    signal?: AbortSignal
+  ): Promise<string> => {
     if (!allowedNames.has(name)) {
-      return JSON.stringify({ success: false, error: `Tool ${name} is not available to subagents.` });
+      return JSON.stringify({
+        success: false,
+        error: `Tool ${name} is not available to subagents.`,
+      });
     }
     // Re-verify read-only at execution time: catches tools whose isReadOnly()
     // returns false (mutating MCP actions, future regressions).
     const tool = childToolByName.get(name);
     if (!tool || tool.isReadOnly?.(args) !== true) {
-      return JSON.stringify({ success: false, error: `Tool ${name} is not read-only and cannot run in a subagent.` });
+      return JSON.stringify({
+        success: false,
+        error: `Tool ${name} is not read-only and cannot run in a subagent.`,
+      });
     }
-    const toolContext: ToolContext = { cwd, config: { name: 'orion-code-subagent', mode: 'subagent' }, abortSignal: signal };
+    const toolContext: ToolContext = {
+      cwd,
+      config: { name: 'orion-code-subagent', mode: 'subagent' },
+      abortSignal: signal,
+    };
     return executeTool(name, args, signal, toolContext);
   };
 
@@ -126,14 +148,16 @@ export function createSubagentBundleForTurn(inputs: SubagentTurnInputs): Subagen
 
   const providerGate = new SubagentProviderGate({
     maxConcurrent: config.maxParallel,
-    sharedGate: inputs.resilience ? (inputs as any).sharedGate ?? undefined : undefined,
+    sharedGate: inputs.resilience ? ((inputs as any).sharedGate ?? undefined) : undefined,
   });
-  const budget = new SubagentBudgetLedger(budgetLimitsFromConfig({
-    maxModelRequestsPerTurn: config.maxModelRequestsPerTurn,
-    maxModelRequestsPerTask: config.maxModelRequestsPerTask,
-    maxToolCallsPerTask: config.maxToolCallsPerTask,
-    timeoutMs: config.timeoutMs,
-  }));
+  const budget = new SubagentBudgetLedger(
+    budgetLimitsFromConfig({
+      maxModelRequestsPerTurn: config.maxModelRequestsPerTurn,
+      maxModelRequestsPerTask: config.maxModelRequestsPerTask,
+      maxToolCallsPerTask: config.maxToolCallsPerTask,
+      timeoutMs: config.timeoutMs,
+    })
+  );
   // R6: turn-level task counter persists across `subtask` calls so multiple
   // calls in one root turn cannot exceed `maxTasksPerTurn`.
   const turnTaskState = new TurnTaskState();
@@ -143,6 +167,7 @@ export function createSubagentBundleForTurn(inputs: SubagentTurnInputs): Subagen
     providerGate,
     maxTurnsPerTask: config.maxTurnsPerTask,
     resilience: inputs.resilience,
+    beforeProviderRequest: inputs.beforeProviderRequest,
   });
 
   const supervisorDeps: SubagentSupervisorDeps = {
@@ -193,7 +218,9 @@ export interface SubagentTurnBundle {
 }
 
 /** Derive the root LLM config slice from the runtime config. */
-export function deriveRootLlmConfig(config: OpenHorseCLIConfig): Pick<LLMConfig, 'apiKey' | 'baseUrl' | 'model' | 'fallbackModel'> {
+export function deriveRootLlmConfig(
+  config: OpenHorseCLIConfig
+): Pick<LLMConfig, 'apiKey' | 'baseUrl' | 'model' | 'fallbackModel'> {
   return {
     apiKey: config.apiKey,
     baseUrl: config.apiBaseUrl,

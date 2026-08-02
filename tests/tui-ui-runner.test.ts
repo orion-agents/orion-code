@@ -7,7 +7,11 @@ import { InlineTerminalSurface, MemoryOutput } from '../src/tui-ui/inline-surfac
 import { TranscriptInspectorSurface } from '../src/tui-ui/transcript-inspector-surface';
 import { renderStyledFrameRow, type TuiFrame } from '../src/tui-core/frame';
 import { styleKey, type StyledRow } from '../src/tui-core/style';
-import { makeToolStartedEvent, makeToolFinishedEvent, resetToolEventSequence } from './test-helpers';
+import {
+  makeToolStartedEvent,
+  makeToolFinishedEvent,
+  resetToolEventSequence,
+} from './test-helpers';
 import type { SessionMeta } from '../src/services/session-storage';
 import type { ToolDetailRepository } from '../src/runtime/tool-detail-repository';
 
@@ -89,6 +93,30 @@ describe('tui-ui runner', () => {
     expect(submitted).toEqual(['hello']);
     expect(runner.getState().prompt).toEqual({ value: '', cursor: 0 });
     expect(runner.renderFullFrame().cursor).toEqual({ row: 7, column: 4, visible: true });
+  });
+
+  it('submits a recognized slash command with arguments from the command palette', () => {
+    const { output } = createOutput();
+    const submitted: string[] = [];
+    const runner = new TuiRunner({
+      output,
+      width: 80,
+      height: 10,
+      onSubmit: input => {
+        submitted.push(input);
+      },
+    });
+
+    runner.feedInput(Buffer.from('/target status'));
+    expect(runner.getState().overlay).toMatchObject({
+      type: 'commands',
+      items: [expect.objectContaining({ value: 'target' })],
+    });
+    runner.feedInput(Buffer.from('\r'));
+
+    expect(submitted).toEqual(['/target status']);
+    expect(runner.getState().prompt).toEqual({ value: '', cursor: 0 });
+    expect(runner.getState().overlay).toBeNull();
   });
 
   it('handles TUI-only tool output mode and redraw commands locally', () => {
@@ -269,34 +297,42 @@ describe('tui-ui runner', () => {
     runner.events.finalize(liveId);
 
     const visible = runner.renderFullFrame();
-    const rows = visible.rows.map(row => row.map(cell => cell.width === 0 ? '' : cell.char).join('')).join('\n');
+    const rows = visible.rows
+      .map(row => row.map(cell => (cell.width === 0 ? '' : cell.char)).join(''))
+      .join('\n');
     expect(rows).toContain('done');
     expect(rows).toContain('model=glm-5 session=abcd');
-    expect(runner.getState().transcript.map(entry => [entry.id, entry.finalized])).toEqual([[liveId, true]]);
+    expect(runner.getState().transcript.map(entry => [entry.id, entry.finalized])).toEqual([
+      [liveId, true],
+    ]);
   });
 
   it('keeps tool transcript output and structured runtime tool events ordered', () => {
     const { output } = createOutput();
     const runner = new TuiRunner({ output, width: 72, height: 12 });
 
-    runner.events.toolStarted?.(makeToolStartedEvent({
-      callId: 'call-1',
-      name: 'read_file',
-      args: { path: 'src/index.ts' },
-    }));
+    runner.events.toolStarted?.(
+      makeToolStartedEvent({
+        callId: 'call-1',
+        name: 'read_file',
+        args: { path: 'src/index.ts' },
+      })
+    );
     const toolId = runner.events.append({
       role: 'tool',
       title: 'tool',
       content: 'Running read_file src/index.ts',
     });
-    runner.events.toolFinished?.(makeToolFinishedEvent({
-      callId: 'call-1',
-      name: 'read_file',
-      args: { path: 'src/index.ts' },
-      success: true,
-      duration: 12,
-      summary: '✓ read_file src/index.ts (12ms)',
-    }));
+    runner.events.toolFinished?.(
+      makeToolFinishedEvent({
+        callId: 'call-1',
+        name: 'read_file',
+        args: { path: 'src/index.ts' },
+        success: true,
+        duration: 12,
+        summary: '✓ read_file src/index.ts (12ms)',
+      })
+    );
     runner.events.finalize(toolId, {
       role: 'tool',
       title: 'tool',
@@ -310,12 +346,20 @@ describe('tui-ui runner', () => {
     runner.events.finalize(assistantId);
 
     const fullFrame = runner.renderFullFrame();
-    const rows = fullFrame.rows.map(row => row.map(cell => cell.width === 0 ? '' : cell.char).join('')).join('\n');
+    const rows = fullFrame.rows
+      .map(row => row.map(cell => (cell.width === 0 ? '' : cell.char)).join(''))
+      .join('\n');
     expect(rows).toContain('✓ read_file src/index.ts (12ms)');
     expect(rows).toContain('Done.');
     expect(rows.indexOf('✓ read_file')).toBeLessThan(rows.indexOf('Done.'));
     expect(runner.getState().runtimeToolEvents).toEqual([
-      { type: 'started', callId: 'call-1', name: 'read_file', args: { path: 'src/index.ts' }, sequence: 1 },
+      {
+        type: 'started',
+        callId: 'call-1',
+        name: 'read_file',
+        args: { path: 'src/index.ts' },
+        sequence: 1,
+      },
       {
         type: 'finished',
         callId: 'call-1',
@@ -417,7 +461,9 @@ describe('tui-ui runner', () => {
 
     expect(runner.getState().overlay).toMatchObject({ type: 'commands' });
     const frame = runner.renderFullFrame();
-    const rows = frame.rows.map(row => row.map(cell => cell.width === 0 ? '' : cell.char).join('')).join('\n');
+    const rows = frame.rows
+      .map(row => row.map(cell => (cell.width === 0 ? '' : cell.char)).join(''))
+      .join('\n');
     expect(rows).toContain('Commands "sta"');
 
     runner.feedInput(Buffer.from('\t'));
@@ -453,7 +499,9 @@ describe('tui-ui runner', () => {
     expect(runner.getState().prompt.value).toBe('');
     expect(runner.getState().overlay).toEqual({ type: 'shortcuts' });
     const shortcutFrame = runner.renderFullFrame();
-    const shortcutRows = shortcutFrame.rows.map(row => row.map(cell => cell.width === 0 ? '' : cell.char).join('')).join('\n');
+    const shortcutRows = shortcutFrame.rows
+      .map(row => row.map(cell => (cell.width === 0 ? '' : cell.char)).join(''))
+      .join('\n');
     expect(shortcutRows).toContain('Shortcuts');
   });
 
@@ -469,7 +517,9 @@ describe('tui-ui runner', () => {
 
       expect(runner.getState().overlay).toMatchObject({ type: 'files' });
       const fileFrame = runner.renderFullFrame();
-      const fileRows = fileFrame.rows.map(row => row.map(cell => cell.width === 0 ? '' : cell.char).join('')).join('\n');
+      const fileRows = fileFrame.rows
+        .map(row => row.map(cell => (cell.width === 0 ? '' : cell.char)).join(''))
+        .join('\n');
       expect(fileRows).toContain('file src/cli.ts');
 
       runner.feedInput(Buffer.from('\t'));
@@ -492,7 +542,9 @@ describe('tui-ui runner', () => {
     expect(runner.getState().prompt.value).toBe(long);
     // Render full frame and check viewport truncation
     const frame = runner.renderFullFrame();
-    const rows = frame.rows.map(row => row.map(cell => cell.width === 0 ? '' : cell.char).join(''));
+    const rows = frame.rows.map(row =>
+      row.map(cell => (cell.width === 0 ? '' : cell.char)).join('')
+    );
     // Prompt box borders are intact
     expect(rows.join('\n')).toContain('┌');
     expect(rows.join('\n')).toContain('└');
@@ -535,9 +587,13 @@ describe('tui-ui runner', () => {
     const { output } = createOutput();
     const runner = new TuiRunner({ output, width: 40, height: 8 });
     runner.events.setStatus('model=gpt-4o  ctx=85%');
-    runner.feedInput(Buffer.from('This is a relatively long prompt that should not break the status line at all'));
+    runner.feedInput(
+      Buffer.from('This is a relatively long prompt that should not break the status line at all')
+    );
     const frame = runner.renderFullFrame();
-    const rows = frame.rows.map(row => row.map(cell => cell.width === 0 ? '' : cell.char).join('')).join('\n');
+    const rows = frame.rows
+      .map(row => row.map(cell => (cell.width === 0 ? '' : cell.char)).join(''))
+      .join('\n');
     expect(rows).toContain('model=gpt-4o');
     expect(rows).toContain('┌');
     expect(rows).toContain('│ ›');
@@ -558,7 +614,9 @@ describe('tui-ui runner', () => {
     runner.feedInput(Buffer.from('\x1bX'));
     // Verify old overlay was dismissed (re-creation by the / prefix is
     // acceptable beta behavior)
-    expect(runner.getState().overlay?.type === 'commands' || runner.getState().overlay === null).toBe(true);
+    expect(
+      runner.getState().overlay?.type === 'commands' || runner.getState().overlay === null
+    ).toBe(true);
   });
 
   it('dismisses shortcuts overlay on Escape without inserting ?', () => {
@@ -727,10 +785,35 @@ describe('tui-ui runner', () => {
     const { output } = createOutput();
     const runner = new TuiRunner({ output, width: 72, height: 12 });
 
-    const ev1 = makeToolStartedEvent({ callId: 'call-x', name: 'list_files', args: {}, sequence: 1 });
-    const ev2 = makeToolFinishedEvent({ callId: 'call-x', name: 'list_files', args: {}, success: true, duration: 5, sequence: 1 });
-    const ev3 = makeToolStartedEvent({ callId: 'call-y', name: 'grep', args: { pattern: 'TODO' }, sequence: 2 });
-    const ev4 = makeToolFinishedEvent({ callId: 'call-y', name: 'grep', args: { pattern: 'TODO' }, success: false, duration: 34, error: 'not found', sequence: 2 });
+    const ev1 = makeToolStartedEvent({
+      callId: 'call-x',
+      name: 'list_files',
+      args: {},
+      sequence: 1,
+    });
+    const ev2 = makeToolFinishedEvent({
+      callId: 'call-x',
+      name: 'list_files',
+      args: {},
+      success: true,
+      duration: 5,
+      sequence: 1,
+    });
+    const ev3 = makeToolStartedEvent({
+      callId: 'call-y',
+      name: 'grep',
+      args: { pattern: 'TODO' },
+      sequence: 2,
+    });
+    const ev4 = makeToolFinishedEvent({
+      callId: 'call-y',
+      name: 'grep',
+      args: { pattern: 'TODO' },
+      success: false,
+      duration: 34,
+      error: 'not found',
+      sequence: 2,
+    });
 
     runner.events.toolStarted?.(ev1);
     runner.events.toolFinished?.(ev2);
@@ -742,7 +825,12 @@ describe('tui-ui runner', () => {
     expect(events[0]).toMatchObject({ type: 'started', sequence: 1, name: 'list_files' });
     expect(events[1]).toMatchObject({ type: 'finished', sequence: 1, success: true });
     expect(events[2]).toMatchObject({ type: 'started', sequence: 2, name: 'grep' });
-    expect(events[3]).toMatchObject({ type: 'finished', sequence: 2, success: false, error: 'not found' });
+    expect(events[3]).toMatchObject({
+      type: 'finished',
+      sequence: 2,
+      success: false,
+      error: 'not found',
+    });
   });
 
   it('keeps runtimeToolEvents separate from transcript entries (no cross-contamination)', () => {
@@ -750,12 +838,17 @@ describe('tui-ui runner', () => {
     const runner = new TuiRunner({ output, width: 72, height: 12 });
 
     runner.events.append({ role: 'assistant', content: 'Hello' });
-    runner.events.toolStarted?.(makeToolStartedEvent({ callId: 'c1', name: 'read_file', args: {} }));
+    runner.events.toolStarted?.(
+      makeToolStartedEvent({ callId: 'c1', name: 'read_file', args: {} })
+    );
 
     // Verifies tool events don't appear in transcript and vice versa
     expect(runner.getState().runtimeToolEvents).toHaveLength(1);
     expect(runner.getState().runtimeToolEvents[0]).toMatchObject({ type: 'started', sequence: 1 });
-    const transcriptText = runner.getState().transcript.map(e => e.content).join('\n');
+    const transcriptText = runner
+      .getState()
+      .transcript.map(e => e.content)
+      .join('\n');
     expect(transcriptText).toContain('Hello');
   });
 
@@ -874,8 +967,22 @@ describe('tui-ui runner', () => {
       newString: 'new-value',
       kind: 'exact',
       candidates: [
-        { index: 0, line: 10, match: 'old-value', contextBefore: 'const x = ', contextAfter: ';', isReplaceAll: false },
-        { index: 1, line: 20, match: 'old-value', contextBefore: 'const y = ', contextAfter: ';', isReplaceAll: false },
+        {
+          index: 0,
+          line: 10,
+          match: 'old-value',
+          contextBefore: 'const x = ',
+          contextAfter: ';',
+          isReplaceAll: false,
+        },
+        {
+          index: 1,
+          line: 20,
+          match: 'old-value',
+          contextBefore: 'const y = ',
+          contextAfter: ';',
+          isReplaceAll: false,
+        },
       ],
     });
 
@@ -903,7 +1010,14 @@ describe('tui-ui runner', () => {
       newString: 'updated',
       kind: 'fuzzy',
       candidates: [
-        { index: 0, line: 5, match: 'old', contextBefore: 'return ', contextAfter: ';', isReplaceAll: false },
+        {
+          index: 0,
+          line: 5,
+          match: 'old',
+          contextBefore: 'return ',
+          contextAfter: ';',
+          isReplaceAll: false,
+        },
       ],
     });
 
@@ -1139,14 +1253,14 @@ describe('tui-ui runner', () => {
 
     const batch = commit.mock.calls.at(-1)?.[0];
     const committedRows = batch?.entries[0]?.rows ?? [];
-    const committedText = committedRows
-      .map(row => row.map(span => span.text).join(''))
-      .join('\n');
+    const committedText = committedRows.map(row => row.map(span => span.text).join('')).join('\n');
     expect(committedText).toContain('Two');
     expect(committedText).not.toContain('One');
-    expect(committedRows[0]?.some(span => span.text.includes('Two') && span.style?.bold)).toBe(true);
+    expect(committedRows[0]?.some(span => span.text.includes('Two') && span.style?.bold)).toBe(
+      true
+    );
     expect(transcriptRowsFromFrame(liveFrame!, committedRows.length)).toEqual(
-      committedRows.map(row => row.map(span => ({ text: span.text, style: span.style ?? {} }))),
+      committedRows.map(row => row.map(span => ({ text: span.text, style: span.style ?? {} })))
     );
 
     await surface.unmount();
@@ -1175,7 +1289,7 @@ describe('tui-ui runner', () => {
     const committedRows = commit.mock.calls.at(-1)?.[0].entries[0].rows ?? [];
     expect(committedRows.length).toBeGreaterThan(1);
     expect(transcriptRowsFromFrame(liveFrame!, committedRows.length)).toEqual(
-      committedRows.map(row => row.map(span => ({ text: span.text, style: span.style ?? {} }))),
+      committedRows.map(row => row.map(span => ({ text: span.text, style: span.style ?? {} })))
     );
     await surface.unmount();
   });

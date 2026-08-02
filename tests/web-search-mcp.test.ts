@@ -1,8 +1,10 @@
-import { existsSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { webSearchTool, resetWebSearchMcpClientForTests } from '../src/tools/web';
 import type { ToolContext } from '../src/framework/tool';
+import { MCP_CLIENT_NAME } from '../src/product/identity';
+import { PACKAGE_VERSION } from '../src/product/version';
 
 const ctx: ToolContext = {
   cwd: process.cwd(),
@@ -18,14 +20,15 @@ function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
 }
 
 describe('web_search MCP delegation', () => {
-  const configDir = join(tmpdir(), `openhorse-web-search-mcp-${Date.now()}`);
+  const configDir = mkdtempSync(join(tmpdir(), 'orion-web-search-mcp-'));
   const originalEnv = { ...process.env };
   const originalFetch = global.fetch;
 
   beforeEach(() => {
     process.env.ORION_CODE_CONFIG_DIR = configDir;
     process.env.ORION_CODE_WEBSEARCH_API_KEY = 'sk-test-websearch';
-    process.env.ORION_CODE_WEBSEARCH_MCP_ENDPOINT = 'https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp';
+    process.env.ORION_CODE_WEBSEARCH_MCP_ENDPOINT =
+      'https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp';
     delete process.env.ORION_CODE_WEBSEARCH_PROVIDER;
     delete process.env.ORION_CODE_WEBSEARCH_MCP_PROVIDER;
     delete process.env.ORION_CODE_WEBSEARCH_AUTH_TYPE;
@@ -57,41 +60,58 @@ describe('web_search MCP delegation', () => {
   });
 
   test('calls remote MCP initialize, list tools, and tool call', async () => {
-    const fetchMock = jest.fn()
-      .mockResolvedValueOnce(jsonResponse({
-        jsonrpc: '2.0',
-        id: 'initialize-response',
-        result: { protocolVersion: '2025-03-26', capabilities: {}, serverInfo: { name: 'WebSearch' } },
-      }, { headers: { 'content-type': 'application/json', 'mcp-session-id': 'session-1' } }))
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            jsonrpc: '2.0',
+            id: 'initialize-response',
+            result: {
+              protocolVersion: '2025-03-26',
+              capabilities: {},
+              serverInfo: { name: 'WebSearch' },
+            },
+          },
+          { headers: { 'content-type': 'application/json', 'mcp-session-id': 'session-1' } }
+        )
+      )
       .mockResolvedValueOnce(new Response('', { status: 202 }))
-      .mockResolvedValueOnce(jsonResponse({
-        jsonrpc: '2.0',
-        id: 'tools-list-response',
-        result: {
-          tools: [
-            {
-              name: 'web_search',
-              description: 'Search the web',
-              inputSchema: {
-                type: 'object',
-                properties: {
-                  query: { type: 'string' },
-                  limit: { type: 'number' },
+      .mockResolvedValueOnce(
+        jsonResponse({
+          jsonrpc: '2.0',
+          id: 'tools-list-response',
+          result: {
+            tools: [
+              {
+                name: 'web_search',
+                description: 'Search the web',
+                inputSchema: {
+                  type: 'object',
+                  properties: {
+                    query: { type: 'string' },
+                    limit: { type: 'number' },
+                  },
                 },
               },
-            },
-          ],
-        },
-      }))
-      .mockResolvedValueOnce(jsonResponse({
-        jsonrpc: '2.0',
-        id: 'tools-call-response',
-        result: {
-          content: [
-            { type: 'text', text: 'Search results\nSources:\n- [Orion Code](https://example.com)' },
-          ],
-        },
-      }));
+            ],
+          },
+        })
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          jsonrpc: '2.0',
+          id: 'tools-call-response',
+          result: {
+            content: [
+              {
+                type: 'text',
+                text: 'Search results\nSources:\n- [Orion Code](https://example.com)',
+              },
+            ],
+          },
+        })
+      );
     global.fetch = fetchMock as any;
 
     const result = await webSearchTool.execute({ query: 'openhorse web search', limit: 3 }, ctx);
@@ -103,6 +123,10 @@ describe('web_search MCP delegation', () => {
 
     const initRequest = JSON.parse(fetchMock.mock.calls[0][1].body);
     expect(initRequest.method).toBe('initialize');
+    expect(initRequest.params.clientInfo).toEqual({
+      name: MCP_CLIENT_NAME,
+      version: PACKAGE_VERSION,
+    });
     expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer sk-test-websearch');
 
     const callRequest = JSON.parse(fetchMock.mock.calls[3][1].body);
@@ -130,13 +154,19 @@ describe('web_search MCP delegation', () => {
     delete process.env.ORION_CODE_WEBSEARCH_API_KEY;
     process.env.ORION_CODE_API_KEY = 'sk-sp-test-dedicated';
     process.env.ORION_CODE_API_BASE_URL = 'https://coding.dashscope.aliyuncs.com/v1';
-    global.fetch = jest.fn()
+    global.fetch = jest
+      .fn()
       .mockResolvedValueOnce(new Response('Unauthorized', { status: 401 }))
-      .mockResolvedValueOnce(new Response(`
+      .mockResolvedValueOnce(
+        new Response(
+          `
         <html>
           <a class="result__a" href="https://example.com/orion-code">Orion Code</a>
         </html>
-      `, { status: 200, headers: { 'content-type': 'text/html' } })) as any;
+      `,
+          { status: 200, headers: { 'content-type': 'text/html' } }
+        )
+      ) as any;
 
     const result = await webSearchTool.execute({ query: 'openhorse' }, ctx);
 
@@ -155,35 +185,46 @@ describe('web_search MCP delegation', () => {
     process.env.ORION_CODE_WEBSEARCH_PROVIDER = 'tavily-mcp';
     process.env.TAVILY_API_KEY = 'tvly-test';
 
-    const fetchMock = jest.fn()
-      .mockResolvedValueOnce(jsonResponse({
-        jsonrpc: '2.0',
-        id: 'initialize-response',
-        result: { protocolVersion: '2025-03-26', capabilities: {}, serverInfo: { name: 'Tavily' } },
-      }))
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          jsonrpc: '2.0',
+          id: 'initialize-response',
+          result: {
+            protocolVersion: '2025-03-26',
+            capabilities: {},
+            serverInfo: { name: 'Tavily' },
+          },
+        })
+      )
       .mockResolvedValueOnce(new Response('', { status: 202 }))
-      .mockResolvedValueOnce(jsonResponse({
-        jsonrpc: '2.0',
-        id: 'tools-list-response',
-        result: {
-          tools: [
-            {
-              name: 'search',
-              inputSchema: {
-                type: 'object',
-                properties: {
-                  query: { type: 'string' },
+      .mockResolvedValueOnce(
+        jsonResponse({
+          jsonrpc: '2.0',
+          id: 'tools-list-response',
+          result: {
+            tools: [
+              {
+                name: 'search',
+                inputSchema: {
+                  type: 'object',
+                  properties: {
+                    query: { type: 'string' },
+                  },
                 },
               },
-            },
-          ],
-        },
-      }))
-      .mockResolvedValueOnce(jsonResponse({
-        jsonrpc: '2.0',
-        id: 'tools-call-response',
-        result: { content: [{ type: 'text', text: 'Tavily result' }] },
-      }));
+            ],
+          },
+        })
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          jsonrpc: '2.0',
+          id: 'tools-call-response',
+          result: { content: [{ type: 'text', text: 'Tavily result' }] },
+        })
+      );
     global.fetch = fetchMock as any;
 
     const result = await webSearchTool.execute({ query: 'openhorse' }, ctx);
@@ -200,15 +241,17 @@ describe('web_search MCP delegation', () => {
     process.env.ORION_CODE_WEBSEARCH_PROVIDER = 'tavily';
     process.env.TAVILY_API_KEY = 'tvly-test';
 
-    const fetchMock = jest.fn().mockResolvedValueOnce(jsonResponse({
-      results: [
-        {
-          title: 'Orion Code',
-          url: 'https://example.com/orion-code',
-          content: 'Orion Code search adapter result',
-        },
-      ],
-    }));
+    const fetchMock = jest.fn().mockResolvedValueOnce(
+      jsonResponse({
+        results: [
+          {
+            title: 'Orion Code',
+            url: 'https://example.com/orion-code',
+            content: 'Orion Code search adapter result',
+          },
+        ],
+      })
+    );
     global.fetch = fetchMock as any;
 
     const result = await webSearchTool.execute({ query: 'openhorse', limit: 2 }, ctx);

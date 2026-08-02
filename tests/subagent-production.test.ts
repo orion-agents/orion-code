@@ -1,8 +1,12 @@
-import { createProductionExecuteQuery, createChildLlmConfig } from '../src/runtime/subagents/production';
+import {
+  createProductionExecuteQuery,
+  createChildLlmConfig,
+} from '../src/runtime/subagents/production';
 import { SubagentProviderGate } from '../src/runtime/subagents/provider-gate';
 import type { LLMService, LLMConfig } from '../src/services/llm';
 import type { QueryEvent, QueryParams } from '../src/framework/query';
 import type { ChildToolSet } from '../src/runtime/subagents/runner';
+import { SubtaskExecutionError } from '../src/runtime/subagents/types';
 
 const TOOL_SET: ChildToolSet = { tools: [], toolExecutor: async () => '' };
 
@@ -12,7 +16,12 @@ function makeMockLlm(): LLMService {
 
 describe('subagent production executeQuery binding', () => {
   it('createChildLlmConfig derives an isolated config from the root config', () => {
-    const cfg = createChildLlmConfig({ apiKey: 'key', baseUrl: 'http://x', model: 'gpt-4o', fallbackModel: 'gpt-4o-mini' });
+    const cfg = createChildLlmConfig({
+      apiKey: 'key',
+      baseUrl: 'http://x',
+      model: 'gpt-4o',
+      fallbackModel: 'gpt-4o-mini',
+    });
     expect(cfg.apiKey).toBe('key');
     expect(cfg.model).toBe('gpt-4o');
     expect(cfg.fallbackModel).toBe('gpt-4o-mini');
@@ -22,14 +31,26 @@ describe('subagent production executeQuery binding', () => {
     let created = 0;
     const executeQuery = createProductionExecuteQuery({
       rootConfig: { apiKey: 'k', model: 'm' },
-      createLlm: () => { created++; return makeMockLlm(); },
+      createLlm: () => {
+        created++;
+        return makeMockLlm();
+      },
       runQuery: async function* (): AsyncIterable<QueryEvent> {
-        yield { type: 'complete', content: JSON.stringify({ summary: 'ok' }), usage: { promptTokens: 10, completionTokens: 5 }, model: 'm', stats: { llmRequests: 1, toolCalls: 0 } as never };
+        yield {
+          type: 'complete',
+          content: JSON.stringify({ summary: 'ok' }),
+          usage: { promptTokens: 10, completionTokens: 5 },
+          model: 'm',
+          stats: { llmRequests: 1, toolCalls: 0 } as never,
+        };
       },
       providerGate: new SubagentProviderGate({ maxConcurrent: 3 }),
       maxTurnsPerTask: 6,
     });
-    const messages = [{ role: 'system' as const, content: 'sys' }, { role: 'user' as const, content: 'do it' }];
+    const messages = [
+      { role: 'system' as const, content: 'sys' },
+      { role: 'user' as const, content: 'do it' },
+    ];
     await executeQuery(messages, TOOL_SET, new AbortController().signal);
     await executeQuery(messages, TOOL_SET, new AbortController().signal);
     expect(created).toBe(2);
@@ -41,7 +62,13 @@ describe('subagent production executeQuery binding', () => {
       createLlm: () => makeMockLlm(),
       runQuery: async function* (): AsyncIterable<QueryEvent> {
         yield { type: 'assistant_tool_calls', content: 'partial', toolCalls: [] as never };
-        yield { type: 'complete', content: JSON.stringify({ summary: 'done' }), usage: { promptTokens: 20, completionTokens: 8 }, model: 'm', stats: { llmRequests: 2, toolCalls: 3 } as never };
+        yield {
+          type: 'complete',
+          content: JSON.stringify({ summary: 'done' }),
+          usage: { promptTokens: 20, completionTokens: 8 },
+          model: 'm',
+          stats: { llmRequests: 2, toolCalls: 3 } as never,
+        };
       },
       providerGate: new SubagentProviderGate({ maxConcurrent: 3 }),
       maxTurnsPerTask: 6,
@@ -49,12 +76,65 @@ describe('subagent production executeQuery binding', () => {
     const { content, usage } = await executeQuery(
       [{ role: 'user', content: 'go' }],
       TOOL_SET,
-      new AbortController().signal,
+      new AbortController().signal
     );
     expect(content).toBe(JSON.stringify({ summary: 'done' }));
     expect(usage.modelRequests).toBeGreaterThanOrEqual(2);
     expect(usage.toolCalls).toBe(3);
     expect(usage.promptTokens).toBe(20);
+    expect(usage.usageComplete).toBe(true);
+  });
+
+  it.each([
+    ['provider retry', { providerRetryCount: 1 }],
+    ['provider fallback', { providerFallbackCount: 1 }],
+  ])('marks successful child usage incomplete after a %s', async (_label, diagnostics) => {
+    const executeQuery = createProductionExecuteQuery({
+      rootConfig: { apiKey: 'k', model: 'm' },
+      createLlm: () => makeMockLlm(),
+      runQuery: async function* (): AsyncIterable<QueryEvent> {
+        yield {
+          type: 'complete',
+          content: '{}',
+          usage: { promptTokens: 10, completionTokens: 5 },
+          model: 'm',
+          stats: { llmRequests: 1, toolCalls: 0, ...diagnostics } as never,
+        };
+      },
+      providerGate: new SubagentProviderGate({ maxConcurrent: 3 }),
+      maxTurnsPerTask: 6,
+    });
+
+    const { usage } = await executeQuery(
+      [{ role: 'user', content: 'go' }],
+      TOOL_SET,
+      new AbortController().signal
+    );
+    expect(usage).toMatchObject({ promptTokens: 10, completionTokens: 5, usageComplete: false });
+  });
+
+  it('marks usage incomplete when a completed child request has no usage metadata', async () => {
+    const executeQuery = createProductionExecuteQuery({
+      rootConfig: { apiKey: 'k', model: 'm' },
+      createLlm: () => makeMockLlm(),
+      runQuery: async function* (): AsyncIterable<QueryEvent> {
+        yield {
+          type: 'complete',
+          content: '{}',
+          model: 'm',
+          stats: { llmRequests: 1, toolCalls: 0 } as never,
+        };
+      },
+      providerGate: new SubagentProviderGate({ maxConcurrent: 3 }),
+      maxTurnsPerTask: 6,
+    });
+
+    const { usage } = await executeQuery(
+      [{ role: 'user', content: 'go' }],
+      TOOL_SET,
+      new AbortController().signal
+    );
+    expect(usage).toMatchObject({ promptTokens: 0, completionTokens: 0, usageComplete: false });
   });
 
   it('enters provider cooldown when query throws a 429', async () => {
@@ -64,16 +144,17 @@ describe('subagent production executeQuery binding', () => {
       rootConfig: { apiKey: 'k', model: 'm' },
       createLlm: () => makeMockLlm(),
       runQuery: async function* (): AsyncIterable<QueryEvent> {
-        throw Object.assign(new Error('Too Many Requests'), { status: 429, headers: { 'retry-after': '2' } });
+        throw Object.assign(new Error('Too Many Requests'), {
+          status: 429,
+          headers: { 'retry-after': '2' },
+        });
       },
       providerGate: gate,
       maxTurnsPerTask: 6,
     });
-    await expect(executeQuery(
-      [{ role: 'user', content: 'go' }],
-      TOOL_SET,
-      new AbortController().signal,
-    )).rejects.toThrow(/Too Many Requests/);
+    await expect(
+      executeQuery([{ role: 'user', content: 'go' }], TOOL_SET, new AbortController().signal)
+    ).rejects.toThrow(/Too Many Requests/);
     expect(gate.isInCooldown()).toBe(true);
     expect(gate.cooldownRemainingMs()).toBe(2000);
   });
@@ -89,12 +170,49 @@ describe('subagent production executeQuery binding', () => {
       providerGate: gate,
       maxTurnsPerTask: 6,
     });
-    await expect(executeQuery(
+    await expect(
+      executeQuery([{ role: 'user', content: 'go' }], TOOL_SET, new AbortController().signal)
+    ).rejects.toThrow(/provider 500/);
+    expect(gate.isInCooldown()).toBe(false);
+  });
+
+  it('carries observed lower-bound usage when a child query fails', async () => {
+    let usageListener:
+      | ((event: {
+          usage: { promptTokens: number; completionTokens: number; costUsd?: number };
+        }) => void)
+      | undefined;
+    const executeQuery = createProductionExecuteQuery({
+      rootConfig: { apiKey: 'k', model: 'm' },
+      createLlm: () =>
+        ({
+          getModel: () => 'test-model',
+          subscribeUsage: (listener: typeof usageListener) => {
+            usageListener = listener;
+            return () => undefined;
+          },
+        }) as unknown as LLMService,
+      runQuery: async function* (): AsyncIterable<QueryEvent> {
+        usageListener?.({ usage: { promptTokens: 9, completionTokens: 4 } });
+        throw new Error('provider failed after usage');
+      },
+      providerGate: new SubagentProviderGate({ maxConcurrent: 3 }),
+      maxTurnsPerTask: 6,
+    });
+
+    const rejection = await executeQuery(
       [{ role: 'user', content: 'go' }],
       TOOL_SET,
-      new AbortController().signal,
-    )).rejects.toThrow(/provider 500/);
-    expect(gate.isInCooldown()).toBe(false);
+      new AbortController().signal
+    ).catch(error => error as SubtaskExecutionError);
+
+    expect(rejection).toBeInstanceOf(SubtaskExecutionError);
+    expect(rejection.usage).toMatchObject({
+      modelRequests: 1,
+      promptTokens: 9,
+      completionTokens: 4,
+      usageComplete: false,
+    });
   });
 
   it('passes the child abort signal through to query', async () => {
@@ -104,7 +222,13 @@ describe('subagent production executeQuery binding', () => {
       createLlm: () => makeMockLlm(),
       runQuery: async function* (params: QueryParams): AsyncIterable<QueryEvent> {
         receivedSignal = params.abortSignal;
-        yield { type: 'complete', content: '{}', usage: { promptTokens: 0, completionTokens: 0 }, model: 'm', stats: { llmRequests: 1, toolCalls: 0 } as never };
+        yield {
+          type: 'complete',
+          content: '{}',
+          usage: { promptTokens: 0, completionTokens: 0 },
+          model: 'm',
+          stats: { llmRequests: 1, toolCalls: 0 } as never,
+        };
       },
       providerGate: new SubagentProviderGate({ maxConcurrent: 3 }),
       maxTurnsPerTask: 6,
@@ -121,7 +245,13 @@ describe('subagent production executeQuery binding', () => {
       createLlm: () => makeMockLlm(),
       runQuery: async function* (params: QueryParams): AsyncIterable<QueryEvent> {
         receivedMaxTurns = params.maxTurns;
-        yield { type: 'complete', content: '{}', usage: { promptTokens: 0, completionTokens: 0 }, model: 'm', stats: { llmRequests: 1, toolCalls: 0 } as never };
+        yield {
+          type: 'complete',
+          content: '{}',
+          usage: { promptTokens: 0, completionTokens: 0 },
+          model: 'm',
+          stats: { llmRequests: 1, toolCalls: 0 } as never,
+        };
       },
       providerGate: new SubagentProviderGate({ maxConcurrent: 3 }),
       maxTurnsPerTask: 4,

@@ -11,10 +11,22 @@
 
 import type { AgentRuntimeEvent } from '../src/runtime/agent-runtime-protocol';
 import { getCommands, findCommand } from '../src/commands';
+import type { CommandContext } from '../src/commands/types';
 import { GoalCoordinator } from '../src/runtime/goals/coordinator';
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import {
+  getCanonicalProjectKey,
+  getProjectMetadataPath,
+  getProjectsDir,
+} from '../src/services/config-dir';
+import {
+  collectStorageCleanupPlan,
+  deserializeStorageMaintenancePlan,
+  resetStorageMaintenancePlanRegistry,
+  serializeStorageMaintenancePlan,
+} from '../src/services/storage-maintenance';
 
 // ---------------------------------------------------------------------------
 // Event type completeness
@@ -247,9 +259,15 @@ describe('Renderer event parity for system commands', () => {
 // ---------------------------------------------------------------------------
 
 describe('Storage maintenance protocol', () => {
+  const storageContext = {} as CommandContext;
+
+  beforeEach(() => resetStorageMaintenancePlanRegistry());
+  afterEach(() => resetStorageMaintenancePlanRegistry());
+
   it('/storage command exposes --dry-run for preview', () => {
     const cmd = findCommand('storage');
     expect(cmd?.argumentHint).toContain('--dry-run');
+    expect(cmd?.argumentHint).toContain('repair [--dry-run|--yes]');
   });
 
   it('/storage command supports doctor sub-action (read-only)', () => {
@@ -271,19 +289,47 @@ describe('Storage maintenance protocol', () => {
     const originalConfigDir = process.env.ORION_CODE_CONFIG_DIR;
     const configDir = mkdtempSync(join(tmpdir(), 'orion-storage-command-'));
     const legacySessions = join(configDir, 'sessions');
-    const log = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    const logs: string[] = [];
+    const log = jest.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      logs.push(args.map(String).join(' '));
+    });
     process.env.ORION_CODE_CONFIG_DIR = configDir;
     mkdirSync(legacySessions, { recursive: true });
 
     try {
       const command = findCommand('storage')!;
-      const preview = await command.execute({} as any, 'cleanup');
+      const preview = await command.execute(storageContext, 'cleanup');
       expect(preview.success).toBe(true);
       expect(existsSync(legacySessions)).toBe(true);
+      const planToken = extractStoragePlanToken(logs, 'cleanup');
 
-      const confirmed = await command.execute({} as any, 'cleanup --yes');
+      const explicitPreview = await command.execute(
+        storageContext,
+        `cleanup --plan=${planToken} --dry-run --yes`
+      );
+      expect(explicitPreview.success).toBe(true);
+      expect(existsSync(legacySessions)).toBe(true);
+
+      const nearMatch = await command.execute(storageContext, 'cleanup --yesplease');
+      expect(nearMatch.success).toBe(false);
+      expect(existsSync(legacySessions)).toBe(true);
+
+      const unknown = await command.execute(storageContext, 'cleanup --unknown');
+      expect(unknown.success).toBe(false);
+      expect(existsSync(legacySessions)).toBe(true);
+
+      const missingPlan = await command.execute(storageContext, 'cleanup --yes');
+      expect(missingPlan.success).toBe(false);
+      expect(existsSync(legacySessions)).toBe(true);
+
+      const lateTarget = join(getProjectsDir(), 'tmp-orion-code-command-late');
+      mkdirSync(lateTarget, { recursive: true });
+      const confirmed = await command.execute(storageContext, `cleanup --plan=${planToken} --yes`);
       expect(confirmed.success).toBe(true);
       expect(existsSync(legacySessions)).toBe(false);
+      expect(existsSync(lateTarget)).toBe(true);
+      const replay = await command.execute(storageContext, `cleanup --plan=${planToken} --yes`);
+      expect(replay.success).toBe(false);
     } finally {
       log.mockRestore();
       rmSync(configDir, { recursive: true, force: true });
@@ -294,7 +340,181 @@ describe('Storage maintenance protocol', () => {
       }
     }
   });
+
+  it('/storage cleanup skips a previewed target whose contents change before confirmation', async () => {
+    const originalConfigDir = process.env.ORION_CODE_CONFIG_DIR;
+    const configDir = mkdtempSync(join(tmpdir(), 'orion-storage-command-drift-'));
+    const legacySessions = join(configDir, 'sessions');
+    const logs: string[] = [];
+    const log = jest.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      logs.push(args.map(String).join(' '));
+    });
+    process.env.ORION_CODE_CONFIG_DIR = configDir;
+    mkdirSync(legacySessions, { recursive: true });
+
+    try {
+      const command = findCommand('storage')!;
+      await command.execute(storageContext, 'cleanup');
+      const planToken = extractStoragePlanToken(logs, 'cleanup');
+      writeFileSync(join(legacySessions, 'late-data.json'), '{"important":true}');
+
+      const confirmed = await command.execute(storageContext, `cleanup --plan=${planToken} --yes`);
+
+      expect(confirmed.success).toBe(true);
+      expect(existsSync(join(legacySessions, 'late-data.json'))).toBe(true);
+    } finally {
+      log.mockRestore();
+      rmSync(configDir, { recursive: true, force: true });
+      if (originalConfigDir === undefined) delete process.env.ORION_CODE_CONFIG_DIR;
+      else process.env.ORION_CODE_CONFIG_DIR = originalConfigDir;
+    }
+  });
+
+  it('/storage cleanup rejects a forged opaque plan token', async () => {
+    const originalConfigDir = process.env.ORION_CODE_CONFIG_DIR;
+    const configDir = mkdtempSync(join(tmpdir(), 'orion-storage-token-forge-'));
+    const legacySessions = join(configDir, 'sessions');
+    const logs: string[] = [];
+    const log = jest.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      logs.push(args.map(String).join(' '));
+    });
+    process.env.ORION_CODE_CONFIG_DIR = configDir;
+    mkdirSync(legacySessions, { recursive: true });
+
+    try {
+      const command = findCommand('storage')!;
+      await command.execute(storageContext, 'cleanup');
+      const planToken = extractStoragePlanToken(logs, 'cleanup');
+      const finalCharacter = planToken.at(-1) === 'A' ? 'B' : 'A';
+      const forgedToken = `${planToken.slice(0, -1)}${finalCharacter}`;
+
+      const forged = await command.execute(storageContext, `cleanup --plan=${forgedToken} --yes`);
+
+      expect(forged.success).toBe(false);
+      expect(existsSync(legacySessions)).toBe(true);
+    } finally {
+      resetStorageMaintenancePlanRegistry();
+      log.mockRestore();
+      rmSync(configDir, { recursive: true, force: true });
+      if (originalConfigDir === undefined) delete process.env.ORION_CODE_CONFIG_DIR;
+      else process.env.ORION_CODE_CONFIG_DIR = originalConfigDir;
+    }
+  });
+
+  it('/storage cleanup rejects a token after process-local registry reset', async () => {
+    const originalConfigDir = process.env.ORION_CODE_CONFIG_DIR;
+    const configDir = mkdtempSync(join(tmpdir(), 'orion-storage-token-process-'));
+    const legacySessions = join(configDir, 'sessions');
+    const logs: string[] = [];
+    const log = jest.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      logs.push(args.map(String).join(' '));
+    });
+    process.env.ORION_CODE_CONFIG_DIR = configDir;
+    mkdirSync(legacySessions, { recursive: true });
+
+    try {
+      const command = findCommand('storage')!;
+      await command.execute(storageContext, 'cleanup');
+      const planToken = extractStoragePlanToken(logs, 'cleanup');
+      resetStorageMaintenancePlanRegistry();
+
+      const confirmed = await command.execute(storageContext, `cleanup --plan=${planToken} --yes`);
+
+      expect(confirmed.success).toBe(false);
+      expect(existsSync(legacySessions)).toBe(true);
+    } finally {
+      resetStorageMaintenancePlanRegistry();
+      log.mockRestore();
+      rmSync(configDir, { recursive: true, force: true });
+      if (originalConfigDir === undefined) delete process.env.ORION_CODE_CONFIG_DIR;
+      else process.env.ORION_CODE_CONFIG_DIR = originalConfigDir;
+    }
+  });
+
+  it('/storage plan tokens expire without becoming portable capabilities', () => {
+    const originalConfigDir = process.env.ORION_CODE_CONFIG_DIR;
+    const configDir = mkdtempSync(join(tmpdir(), 'orion-storage-token-expiry-'));
+    process.env.ORION_CODE_CONFIG_DIR = configDir;
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-08-01T00:00:00.000Z'));
+
+    try {
+      const plan = collectStorageCleanupPlan();
+      const token = serializeStorageMaintenancePlan({ kind: 'cleanup', plan });
+      expect(deserializeStorageMaintenancePlan(token)?.kind).toBe('cleanup');
+      jest.advanceTimersByTime(10 * 60 * 1000 + 1);
+      expect(deserializeStorageMaintenancePlan(token)).toBeUndefined();
+    } finally {
+      jest.useRealTimers();
+      resetStorageMaintenancePlanRegistry();
+      rmSync(configDir, { recursive: true, force: true });
+      if (originalConfigDir === undefined) delete process.env.ORION_CODE_CONFIG_DIR;
+      else process.env.ORION_CODE_CONFIG_DIR = originalConfigDir;
+    }
+  });
+
+  it('/storage repair preview is non-consuming and confirmed apply fails closed', async () => {
+    const originalConfigDir = process.env.ORION_CODE_CONFIG_DIR;
+    const configDir = mkdtempSync(join(tmpdir(), 'orion-storage-repair-command-'));
+    const logs: string[] = [];
+    const log = jest.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      logs.push(args.map(String).join(' '));
+    });
+    process.env.ORION_CODE_CONFIG_DIR = configDir;
+
+    try {
+      const plannedPath = '/tmp/orion-command-repair-planned';
+      const plannedKey = getCanonicalProjectKey(plannedPath);
+      const plannedSessions = join(getProjectsDir(), plannedKey, 'sessions');
+      mkdirSync(plannedSessions, { recursive: true });
+      writeFileSync(
+        join(plannedSessions, 'planned.json'),
+        JSON.stringify({ id: 'planned', projectPath: plannedPath })
+      );
+      const command = findCommand('storage')!;
+      const preview = await command.execute(storageContext, 'repair');
+      expect(preview.success).toBe(true);
+      const planToken = extractStoragePlanToken(logs, 'repair');
+
+      const latePath = '/tmp/orion-command-repair-late';
+      const lateKey = getCanonicalProjectKey(latePath);
+      const lateSessions = join(getProjectsDir(), lateKey, 'sessions');
+      mkdirSync(lateSessions, { recursive: true });
+      writeFileSync(
+        join(lateSessions, 'late.json'),
+        JSON.stringify({ id: 'late', projectPath: latePath })
+      );
+
+      const missingPlan = await command.execute(storageContext, 'repair --yes');
+      expect(missingPlan.success).toBe(false);
+      const invalidPlan = await command.execute(storageContext, 'repair --plan=corrupted --yes');
+      expect(invalidPlan.success).toBe(false);
+      const explicitPreview = await command.execute(
+        storageContext,
+        `repair --plan=${planToken} --yes --dry-run`
+      );
+      expect(explicitPreview.success).toBe(true);
+      expect(existsSync(getProjectMetadataPath(plannedPath))).toBe(false);
+      const confirmed = await command.execute(storageContext, `repair --plan=${planToken} --yes`);
+
+      expect(confirmed.success).toBe(false);
+      expect(confirmed.error).toContain('race-safe');
+      expect(existsSync(getProjectMetadataPath(plannedPath))).toBe(false);
+      expect(existsSync(getProjectMetadataPath(latePath))).toBe(false);
+    } finally {
+      log.mockRestore();
+      rmSync(configDir, { recursive: true, force: true });
+      if (originalConfigDir === undefined) delete process.env.ORION_CODE_CONFIG_DIR;
+      else process.env.ORION_CODE_CONFIG_DIR = originalConfigDir;
+    }
+  });
 });
+
+function extractStoragePlanToken(logs: string[], action: 'cleanup' | 'repair'): string {
+  const match = logs.join('\n').match(new RegExp(`/storage ${action} --plan=([^\\s]+) --yes`));
+  if (!match) throw new Error(`Missing ${action} storage plan token in command output`);
+  return match[1];
+}
 
 // ---------------------------------------------------------------------------
 // Goal state survives renderer switches

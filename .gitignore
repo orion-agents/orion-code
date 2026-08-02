@@ -1,7 +1,8 @@
 node_modules/
 dist/
+.DS_Store
+test-output.txt
 .env
-package-lock.json
 tests/tmp/
 coverage/
 .workbuddy/

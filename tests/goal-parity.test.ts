@@ -10,8 +10,12 @@
 
 import { GoalCoordinator } from '../src/runtime/goals/coordinator';
 import { goalTransition, GOAL_INVARIANTS } from '../src/runtime/goals/types';
-import type { GoalStatus } from '../src/runtime/goals/types';
-import { auditCompletion, auditBlocked, blockerFingerprint } from '../src/runtime/goals/completion-audit';
+import type { GoalContract, GoalEvidenceRecord, GoalStatus } from '../src/runtime/goals/types';
+import {
+  auditCompletion,
+  auditBlocked,
+  blockerFingerprint,
+} from '../src/runtime/goals/completion-audit';
 import { parseTargetCommand } from '../src/commands/target-command';
 import { findCommand } from '../src/commands';
 
@@ -210,11 +214,46 @@ describe('Goal coordinator lifecycle', () => {
 // ---------------------------------------------------------------------------
 
 describe('Completion audit', () => {
+  const contract: GoalContract = {
+    originalObjective: 'Verify renderer parity',
+    objectiveRevision: 0,
+    constraints: [],
+    successCriteria: [
+      {
+        id: 'criterion:primary',
+        statement: 'Renderer parity remains stable',
+        source: 'derived',
+        status: 'pending',
+        requiredEvidenceKinds: ['test'],
+        evidenceRefs: ['e-1'],
+      },
+    ],
+  };
+  const evidence: GoalEvidenceRecord = {
+    id: 'e-1',
+    goalId: 'goal-1',
+    goalRevision: 1,
+    objectiveRevision: contract.objectiveRevision,
+    turnId: 'turn-1',
+    kind: 'test',
+    subject: 'renderer parity test suite',
+    result: 'passed',
+    sourceRef: 'tool:call-1:exec_command',
+    capturedAt: 1,
+    workspaceFingerprint: 'workspace-current',
+    redacted: true,
+  };
+
   it('auditCompletion requires evidence for completion', () => {
     const result = auditCompletion({
       objective: 'Test goal',
-      evidenceRefs: [],
+      contract,
+      evidenceLedger: [],
+      goalId: 'goal-1',
+      goalRevision: 1,
+      requestedAt: 1,
       verificationSummary: '',
+      workspaceFingerprint: 'workspace-current',
     });
     expect(result.passed).toBe(false);
   });
@@ -222,8 +261,13 @@ describe('Completion audit', () => {
   it('auditCompletion allows completion with sufficient evidence', () => {
     const result = auditCompletion({
       objective: 'Test goal',
-      evidenceRefs: ['test-output.log'],
+      contract,
+      evidenceLedger: [evidence],
+      goalId: 'goal-1',
+      goalRevision: 1,
+      requestedAt: 1,
       verificationSummary: 'All tests pass, code compiles. Feature complete.',
+      workspaceFingerprint: 'workspace-current',
     });
     expect(result.passed).toBe(true);
   });
@@ -231,6 +275,8 @@ describe('Completion audit', () => {
   it('auditBlocked requires 3+ consecutive turns and 3+ no-progress counts', () => {
     const insufficient = auditBlocked({
       blocker: {
+        category: 'permission',
+        retryable: false,
         fingerprint: 'missing:tests',
         firstSeenAt: Date.now() - 60000,
         lastSeenAt: Date.now(),
@@ -243,6 +289,8 @@ describe('Completion audit', () => {
 
     const sufficient = auditBlocked({
       blocker: {
+        category: 'permission',
+        retryable: false,
         fingerprint: 'missing:tests',
         firstSeenAt: Date.now() - 60000,
         lastSeenAt: Date.now(),

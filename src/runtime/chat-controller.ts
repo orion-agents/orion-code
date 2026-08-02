@@ -1,8 +1,14 @@
 import { findCommand } from '../commands';
+import { AsyncLocalStorage } from 'async_hooks';
 import { parseInput, buildCommandSuggestions } from '../commands/parser';
 import * as path from 'path';
 import type { CommandContext, CommandResult, CommandUiRenderer } from '../commands/types';
-import type { LLMRequestDiagnostics, Message, StreamCallbacks } from '../services/llm';
+import type {
+  LLMRequestDiagnostics,
+  Message,
+  ProviderRequestPreflight,
+  StreamCallbacks,
+} from '../services/llm';
 import type { SessionMessage, SessionTraceEvent } from '../services/session-storage';
 import {
   appendSessionMessage,
@@ -90,16 +96,23 @@ import {
   verificationGateStatus,
 } from './agent-status';
 import { resolveRuntimeLoopBudget } from './loop-budget';
-import {
-  createToolOutputView,
-  DEFAULT_TOOL_OUTPUT_POLICY,
-} from './tool-output-presentation';
+import { createToolOutputView, DEFAULT_TOOL_OUTPUT_POLICY } from './tool-output-presentation';
 import { presentAggregateToolResult } from './aggregate-tool-presenter';
 
 const ANSI_PATTERN = /\x1b\[[0-9;?]*[A-Za-z]/g;
 const LOCAL_FAST_PATH_INLINE_OUTPUT_BYTES = 2048;
 const TRACE_ARGS_ARTIFACT_THRESHOLD_BYTES = 160;
 const TOOL_TRANSCRIPT_ARG_BUDGET = 512;
+
+/**
+ * Runtime-only accounting confidence carried from the chat loop into Goal
+ * finalization. `false` means the recorded token totals are a known lower
+ * bound (for example, an in-flight provider request was aborted before usage
+ * metadata arrived).
+ */
+type GoalAccountingLoopStats = LoopStats & {
+  usageAccountingComplete?: boolean;
+};
 
 function stripAnsi(text: string): string {
   return text.replace(ANSI_PATTERN, '');
@@ -534,7 +547,14 @@ function recordTraceEvent(
   event: Omit<SessionTraceEvent, 'sessionId' | 'timestamp'> & { timestamp?: number }
 ): SessionTraceEvent | null {
   if (!sessionId) return null;
-  const traceEvent = appendSessionTraceEvent(sessionId, event);
+  const goal = goalTraceContext.getStore();
+  const traceEvent = appendSessionTraceEvent(sessionId, {
+    ...event,
+    goalId: goal?.goalId,
+    goalRevision: goal?.goalRevision,
+    goalInputKind: goal?.goalInputKind,
+    goalStopReason: goal?.getStopReason(),
+  });
   if (traceEvent) {
     events.traceEventRecorded?.(traceEvent);
   }
@@ -642,20 +662,23 @@ interface ToolEventPresenterOptions {
 function structuredToolFinishActivity(
   event: ToolResultEvent,
   seq: number,
-  options: ToolEventPresenterOptions = {},
+  options: ToolEventPresenterOptions = {}
 ): StructuredToolActivity {
   const modelVisible = parseToolResultEnvelope(event.modelVisibleResult);
   const durable = parseToolResultEnvelope(event.result);
   const durableOutput = typeof durable.output === 'string' ? durable.output : '';
-  const displayOutput = typeof modelVisible.output === 'string' ? modelVisible.output : durableOutput;
+  const displayOutput =
+    typeof modelVisible.output === 'string' ? modelVisible.output : durableOutput;
   const outputBytes = event.outputBytes ?? Buffer.byteLength(durableOutput, 'utf8');
   const aggregatePresentation = presentAggregateToolResult(event.name, durableOutput, outputBytes);
   const aggregate = aggregatePresentation?.view;
-  const storedArtifact = event.artifactRef ?? (
-    options.projectPath && durableOutput && (outputBytes > DEFAULT_TOOL_OUTPUT_POLICY.inlineMaxBytes || aggregate)
-      ? storeArtifact(options.projectPath, event.name, durableOutput, outputBytes) ?? undefined
-      : undefined
-  );
+  const storedArtifact =
+    event.artifactRef ??
+    (options.projectPath &&
+    durableOutput &&
+    (outputBytes > DEFAULT_TOOL_OUTPUT_POLICY.inlineMaxBytes || aggregate)
+      ? (storeArtifact(options.projectPath, event.name, durableOutput, outputBytes) ?? undefined)
+      : undefined);
   const artifactRef = storedArtifact
     ? { id: storedArtifact.id, outputBytes: storedArtifact.outputBytes }
     : undefined;
@@ -780,11 +803,13 @@ export interface SessionTranscriptEntryOptions {
 
 export function sessionMessagesToTranscriptEntries(
   sessionId: string,
-  options: SessionTranscriptEntryOptions = {},
+  options: SessionTranscriptEntryOptions = {}
 ): TranscriptEntry[] {
   const messages = loadSessionTranscriptMessages(sessionId);
   const resultTraces = options.includeToolOutputViews
-    ? readSessionTraceEvents(sessionId).filter(trace => trace.type === 'tool_result' && trace.callId)
+    ? readSessionTraceEvents(sessionId).filter(
+        trace => trace.type === 'tool_result' && trace.callId
+      )
     : [];
   const resultTraceByCallId = new Map(resultTraces.map(trace => [trace.callId!, trace]));
   const sequenceByCallId = new Map<string, number>();
@@ -839,29 +864,32 @@ export function sessionMessagesToTranscriptEntries(
         ? parseToolResultEnvelope(message.modelVisibleContent)
         : durable;
       const durableOutput = typeof durable.output === 'string' ? durable.output : '';
-      const displayOutput = typeof modelVisible.output === 'string' ? modelVisible.output : durableOutput;
-      const outputBytes = trace?.outputBytes
-        ?? (durable.schemaVersion === 1 ? durable.outputBytes : undefined)
-        ?? Buffer.byteLength(durableOutput, 'utf8');
+      const displayOutput =
+        typeof modelVisible.output === 'string' ? modelVisible.output : durableOutput;
+      const outputBytes =
+        trace?.outputBytes ??
+        (durable.schemaVersion === 1 ? durable.outputBytes : undefined) ??
+        Buffer.byteLength(durableOutput, 'utf8');
       const artifactId = durable.artifactRef?.id ?? trace?.artifactId;
       fallbackToolSequence += 1;
       const sequence = message.toolCallId
-        ? sequenceByCallId.get(message.toolCallId) ?? fallbackToolSequence
+        ? (sequenceByCallId.get(message.toolCallId) ?? fallbackToolSequence)
         : fallbackToolSequence;
-      const outputView = options.includeToolOutputViews && call && message.toolCallId
-        ? createToolOutputView({
-          toolName: call.function.name,
-          success: durable.success,
-          summary: durable.summary,
-          rawOutput: durableOutput.length <= 64 * 1024 ? durableOutput : displayOutput,
-          outputBytes,
-          artifactRef: artifactId ? { id: artifactId, outputBytes } : undefined,
-          callId: message.toolCallId,
-          sequence,
-          turnId: trace?.turnId,
-          policy: DEFAULT_TOOL_OUTPUT_POLICY,
-        })
-        : undefined;
+      const outputView =
+        options.includeToolOutputViews && call && message.toolCallId
+          ? createToolOutputView({
+              toolName: call.function.name,
+              success: durable.success,
+              summary: durable.summary,
+              rawOutput: durableOutput.length <= 64 * 1024 ? durableOutput : displayOutput,
+              outputBytes,
+              artifactRef: artifactId ? { id: artifactId, outputBytes } : undefined,
+              callId: message.toolCallId,
+              sequence,
+              turnId: trace?.turnId,
+              policy: DEFAULT_TOOL_OUTPUT_POLICY,
+            })
+          : undefined;
       entries.push({
         id: `${idBase}-tool`,
         role: 'tool',
@@ -870,27 +898,30 @@ export function sessionMessagesToTranscriptEntries(
           (message.toolCallId
             ? `Tool result ${message.toolCallId}\n${message.content}`
             : message.content),
-        toolActivity: call && message.toolCallId && outputView
-          ? {
-            state: durable.success ? 'success' : 'error',
-            name: call.function.name,
-            detail: redactTraceText(compactToolArgs(parseToolCallArgs(call.function.arguments))),
-            summary: durable.summary
-              ? redactTraceText(durable.summary.split(/\r?\n/u, 1)[0])
-              : undefined,
-            outputBytes,
-            body: redactTraceText(
-              durableOutput.length <= 64 * 1024 ? durableOutput : displayOutput,
-            ),
-            error: durable.error ? redactTraceText(durable.error) : undefined,
-            duration: typeof trace?.duration === 'number' ? `${trace.duration}ms` : undefined,
-            seq: sequence,
-            artifactHint: artifactId ? `/artifacts show ${artifactId} --full` : undefined,
-            callId: message.toolCallId,
-            turnId: trace?.turnId,
-            outputView,
-          }
-          : undefined,
+        toolActivity:
+          call && message.toolCallId && outputView
+            ? {
+                state: durable.success ? 'success' : 'error',
+                name: call.function.name,
+                detail: redactTraceText(
+                  compactToolArgs(parseToolCallArgs(call.function.arguments))
+                ),
+                summary: durable.summary
+                  ? redactTraceText(durable.summary.split(/\r?\n/u, 1)[0])
+                  : undefined,
+                outputBytes,
+                body: redactTraceText(
+                  durableOutput.length <= 64 * 1024 ? durableOutput : displayOutput
+                ),
+                error: durable.error ? redactTraceText(durable.error) : undefined,
+                duration: typeof trace?.duration === 'number' ? `${trace.duration}ms` : undefined,
+                seq: sequence,
+                artifactHint: artifactId ? `/artifacts show ${artifactId} --full` : undefined,
+                callId: message.toolCallId,
+                turnId: trace?.turnId,
+                outputView,
+              }
+            : undefined,
       });
       return;
     }
@@ -981,6 +1012,15 @@ export function createAssistantStreamPresenter(
 
 type ToolCallEvent = Extract<QueryEvent, { type: 'tool_call' }>;
 type ToolResultEvent = Extract<QueryEvent, { type: 'tool_result' }>;
+
+interface GoalTraceContext {
+  goalId: string;
+  goalRevision: number;
+  goalInputKind: import('./goals/types').AgentInputKind;
+  getStopReason: () => string | undefined;
+}
+
+const goalTraceContext = new AsyncLocalStorage<GoalTraceContext>();
 
 interface LocalFastPathAction {
   tool: string;
@@ -1085,7 +1125,7 @@ export interface ToolEventPresenter {
 
 export function createToolEventPresenter(
   events: UiEventSink,
-  options: ToolEventPresenterOptions = {},
+  options: ToolEventPresenterOptions = {}
 ): ToolEventPresenter {
   const runningToolEntries = new Map<
     string,
@@ -1162,10 +1202,11 @@ export function createToolEventPresenter(
         outputBytes: event.outputBytes,
         artifactRef: toolActivity.outputView?.detailRef?.artifactId
           ? {
-            id: toolActivity.outputView.detailRef.artifactId,
-            outputBytes: toolActivity.outputView.detailRef.outputBytes,
-          }
+              id: toolActivity.outputView.detailRef.artifactId,
+              outputBytes: toolActivity.outputView.detailRef.outputBytes,
+            }
           : event.artifactRef,
+        externalAssertion: event.externalAssertion,
         sequence: seq,
         batchCount: event.batchCount,
         batchIndex: event.batchIndex,
@@ -1234,6 +1275,8 @@ async function captureConsoleOutput(
 export interface RunInputOptions {
   abortSignal?: AbortSignal;
   turnId?: number | string;
+  persistAsUserMessage?: boolean;
+  inputKind?: import('./goals/types').AgentInputKind;
 }
 
 export interface AgentChatControllerOptions {
@@ -1262,6 +1305,8 @@ export interface AgentChatControllerOptions {
     usage: import('./subagents/types').SubtaskUsage,
     modelLabel?: string
   ) => void;
+  /** Shared Goal budget gate installed on every root, compact, retry, fallback, and child request. */
+  beforeProviderRequest?: ProviderRequestPreflight;
 }
 
 /** @deprecated Use AgentChatControllerOptions. Chat execution is renderer-independent. */
@@ -1289,6 +1334,20 @@ export class AgentChatController {
   async runInput(input: string, options: RunInputOptions = {}): Promise<void> {
     const text = input.trim();
     if (!text) return;
+
+    // Every root input owns a fresh accounting snapshot. Commands and local
+    // fast paths are known zero-provider turns; runChat changes tokenUsage to
+    // null before networking so missing provider usage remains fail-closed.
+    const storeWithState = this.runtime.store as typeof this.runtime.store & {
+      setState?: (partial: {
+        tokenUsage?: { promptTokens: number; completionTokens: number } | null;
+        lastLoopStats?: LoopStats;
+      }) => void;
+    };
+    storeWithState.setState?.({
+      tokenUsage: { promptTokens: 0, completionTokens: 0 },
+      lastLoopStats: undefined,
+    });
 
     const parsed = parseInput(text);
     if (!parsed.isCommand) {
@@ -1338,7 +1397,68 @@ export class AgentChatController {
     }
 
     const ctx = this.createCommandContext(options.abortSignal, options.turnId);
-    const { result, output } = await captureConsoleOutput(() => command.execute(ctx, parsed.args));
+    let commandProviderAttempts = 0;
+    const commandProviderPreflight: ProviderRequestPreflight = async context => {
+      commandProviderAttempts += 1;
+      return this.controllerOptions.beforeProviderRequest
+        ? this.controllerOptions.beforeProviderRequest(context)
+        : { available: true };
+    };
+    const restoreProviderPreflight =
+      typeof this.runtime.llm?.setProviderRequestPreflight === 'function'
+        ? this.runtime.llm.setProviderRequestPreflight(commandProviderPreflight)
+        : undefined;
+    const commandUsage = { promptTokens: 0, completionTokens: 0 };
+    let commandUsageEvents = 0;
+    const unsubscribeCommandUsage =
+      typeof this.runtime.llm?.subscribeUsage === 'function'
+        ? this.runtime.llm.subscribeUsage(event => {
+            commandUsageEvents += 1;
+            commandUsage.promptTokens += event.usage.promptTokens;
+            commandUsage.completionTokens += event.usage.completionTokens;
+          })
+        : undefined;
+    let result: Awaited<ReturnType<typeof command.execute>>;
+    let output: string;
+    try {
+      ({ result, output } = await captureConsoleOutput(() => command.execute(ctx, parsed.args)));
+    } finally {
+      unsubscribeCommandUsage?.();
+      restoreProviderPreflight?.();
+      if (commandUsage.promptTokens > 0 || commandUsage.completionTokens > 0) {
+        this.runtime.store.setTokenUsage(commandUsage);
+      }
+      const providerRequests = Math.max(commandProviderAttempts, commandUsageEvents);
+      if (providerRequests > 0) {
+        const diagnostics = getLastRequestDiagnostics(this.runtime.llm);
+        const retryCount = diagnostics?.retryCount ?? 0;
+        const fallbackCount = diagnostics?.fallbackTriggered ? 1 : 0;
+        this.setLoopStats({
+          turnsStarted: 1,
+          llmRequests: providerRequests,
+          toolCalls: 0,
+          readOnlyToolCalls: 0,
+          unsafeToolCalls: 0,
+          toolResultBytes: 0,
+          modelVisibleToolBytes: 0,
+          summarizedBytes: 0,
+          finishReason: commandUsageEvents > 0 ? 'completed' : 'failed',
+          providerRetryCount: retryCount,
+          providerRetryDelayMs: diagnostics?.retryDelayMs,
+          providerRetryErrorTypes: diagnostics?.retryErrorTypes,
+          providerLastRetryErrorType: diagnostics?.lastRetryErrorType,
+          providerLastRetryStatus: diagnostics?.lastRetryStatus,
+          providerFallbackCount: fallbackCount,
+          providerFallbackFromModel: diagnostics?.fallbackFromModel,
+          providerFallbackToModel: diagnostics?.fallbackToModel,
+          providerFinalModel: diagnostics?.finalModel,
+          providerUsingFallback: diagnostics?.usingFallback,
+          singleReadOnlyStreak: 0,
+          batchReadSuggestionCount: 0,
+          localFastPathUsed: false,
+        });
+      }
+    }
 
     if (output) {
       this.events.append({
@@ -1380,6 +1500,34 @@ export class AgentChatController {
     }
   }
 
+  async runRequest(
+    request: import('./goals/types').AgentTurnRequest,
+    options: RunInputOptions = {}
+  ): Promise<void> {
+    const internalInput =
+      request.text?.trim() ||
+      'Continue pursuing the active goal from its persisted plan and evidence.';
+    const run = () =>
+      this.runInput(internalInput, {
+        ...options,
+        persistAsUserMessage: request.persistAsUserMessage,
+        inputKind: request.inputKind,
+      });
+    if (!request.goal) {
+      await run();
+      return;
+    }
+    await goalTraceContext.run(
+      {
+        goalId: request.goal.goalId,
+        goalRevision: request.goal.revision,
+        goalInputKind: request.inputKind,
+        getStopReason: () => this.goalCoordinator?.goal?.stopReason?.message,
+      },
+      run
+    );
+  }
+
   private async runLocalFastPath(
     input: string,
     action: LocalFastPathAction,
@@ -1417,7 +1565,9 @@ export class AgentChatController {
         note: compactMiddle(action.label, 160),
       });
     }
-    this.runtime.store.addMessage({ role: 'user', content: input });
+    if (options.persistAsUserMessage !== false) {
+      this.runtime.store.addMessage({ role: 'user', content: input });
+    }
     this.events.setStatus(`Running local ${action.label}...`);
 
     try {
@@ -1601,12 +1751,13 @@ export class AgentChatController {
       ensureSession: this.runtime.ensureSession,
       setSession: session => {
         this.runtime.setSession(session);
-        const renderer = this.controllerOptions.uiRenderer
-          ?? this.runtime.config.ui?.renderer
-          ?? 'terminal';
-        this.events.replaceTranscript(sessionMessagesToTranscriptEntries(session.id, {
-          includeToolOutputViews: renderer === 'tui',
-        }));
+        const renderer =
+          this.controllerOptions.uiRenderer ?? this.runtime.config.ui?.renderer ?? 'terminal';
+        this.events.replaceTranscript(
+          sessionMessagesToTranscriptEntries(session.id, {
+            includeToolOutputViews: renderer === 'tui',
+          })
+        );
       },
       sessionRestored: event => {
         this.events.sessionRestored?.(event);
@@ -1708,7 +1859,8 @@ export class AgentChatController {
   private foldSubagentUsage(stats: LoopStats, bundle: SubagentTurnBundle | null): LoopStats {
     if (!bundle) return stats;
     const usage = bundle.getAggregateUsage();
-    if (usage.modelRequests === 0 && usage.toolCalls === 0) return stats;
+    if (usage.modelRequests === 0 && usage.toolCalls === 0 && usage.usageComplete === true)
+      return stats;
     const subtaskCount = bundle.getSubtaskCount();
     const subagentSuffix = `subagents: ${usage.modelRequests} req/${usage.toolCalls} calls across ${subtaskCount} task(s)`;
     return {
@@ -1716,16 +1868,19 @@ export class AgentChatController {
       llmRequests: (stats.llmRequests ?? 0) + usage.modelRequests,
       toolCalls: (stats.toolCalls ?? 0) + usage.toolCalls,
       readOnlyToolCalls: (stats.readOnlyToolCalls ?? 0) + usage.toolCalls,
+      subagentPromptTokens: usage.promptTokens,
+      subagentCompletionTokens: usage.completionTokens,
+      subagentTotalTokens: usage.promptTokens + usage.completionTokens,
+      usageAccountingComplete:
+        (stats as GoalAccountingLoopStats).usageAccountingComplete !== false &&
+        usage.usageComplete === true,
       continuationHint: stats.continuationHint
         ? `${stats.continuationHint} (${subagentSuffix})`
         : subagentSuffix,
     };
   }
 
-  private async runChat(
-    input: string,
-    options: { abortSignal?: AbortSignal; turnId?: number | string } = {}
-  ): Promise<void> {
+  private async runChat(input: string, options: RunInputOptions = {}): Promise<void> {
     if (!input) {
       this.events.append({
         role: 'error',
@@ -1745,6 +1900,10 @@ export class AgentChatController {
       return;
     }
 
+    // Usage belongs to a single root turn. Clear the previous snapshot before
+    // any provider request so failures without usage cannot inherit stale data.
+    this.runtime.store.setState({ tokenUsage: null });
+
     const abortSignal = options.abortSignal;
     const turnId = traceTurnId(options.turnId);
     const activeSession =
@@ -1763,7 +1922,7 @@ export class AgentChatController {
     });
     const appliedSkillNames = skillResolution.skills.map(skill => skill.name);
 
-    if (sessionId) {
+    if (sessionId && options.persistAsUserMessage !== false) {
       appendSessionMessage(sessionId, {
         role: 'user',
         content: input,
@@ -1779,7 +1938,9 @@ export class AgentChatController {
       appendWorkspaceSnapshotTrace(this.events, sessionId, turnId, 'pre_turn', preWorkspace);
     }
 
-    this.runtime.store.addMessage({ role: 'user', content: input });
+    if (options.persistAsUserMessage !== false) {
+      this.runtime.store.addMessage({ role: 'user', content: input });
+    }
     refreshProjectInstructions(this.runtime.store, this.runtime.cwd);
     const snapshot = this.runtime.store.getSnapshot();
     const harness = createContextHarness({
@@ -1792,7 +1953,11 @@ export class AgentChatController {
         completionGate: true,
       },
     });
-    const intent = harness.updateContractFromUserInput(input);
+    const intent = harness.updateContractFromUserInput(
+      options.inputKind === 'goal_continuation'
+        ? (this.goalCoordinator?.goal?.objective ?? input)
+        : input
+    );
     harness.recordAppliedSkills(skillResolution.skills);
 
     // Reconcile diagnostic: when harness state is present but objective may be incomplete
@@ -1859,6 +2024,7 @@ export class AgentChatController {
             // R6: wire child usage callback so CostTracker records subagent
             // token consumption. Injected by AgentRuntimeController via chatOptions.
             onChildUsage: this.controllerOptions.onChildUsage,
+            beforeProviderRequest: this.controllerOptions.beforeProviderRequest,
           })
         : null;
     const subtaskTool = subagentBundle?.tool ?? null;
@@ -1874,15 +2040,19 @@ export class AgentChatController {
       projectInstructionsContent: snapshot.projectInstructionsContent,
       activeSkillsContent: skillResolution.promptInjection,
       referencedFilesContent: buildReferencedFilesPrompt(input, this.runtime.cwd),
-      goalContent: this.goalCoordinator?.goal?.status === 'active'
-        ? buildGoalContextFragment(this.goalCoordinator.goal)?.text
-        : undefined,
+      goalContent:
+        this.goalCoordinator?.goal?.status === 'active'
+          ? buildGoalContextFragment(this.goalCoordinator.goal)?.text
+          : undefined,
     };
     const systemPrompt = buildSystemPrompt(promptCtx);
     const messages: Message[] = [
       { role: 'system', content: systemPrompt.static, cacheControl: { type: 'ephemeral' } },
       ...(systemPrompt.dynamic ? [{ role: 'system' as const, content: systemPrompt.dynamic }] : []),
       ...snapshot.conversationHistory,
+      ...(options.persistAsUserMessage === false
+        ? [{ role: 'user' as const, content: input }]
+        : []),
     ];
 
     let finalContent = '';
@@ -1951,6 +2121,37 @@ export class AgentChatController {
     let observedUnsafeToolCalls = 0;
     let observedToolResultBytes = 0;
     let observedModelVisibleToolBytes = 0;
+    const restoreProviderPreflight =
+      typeof this.runtime.llm.setProviderRequestPreflight === 'function'
+        ? this.runtime.llm.setProviderRequestPreflight(this.controllerOptions.beforeProviderRequest)
+        : undefined;
+
+    const persistInterruptedAccounting = (
+      rootUsage: { promptTokens: number; completionTokens: number } | undefined,
+      stats: LoopStats,
+      usageAccountingComplete: boolean
+    ): void => {
+      const accountingStats: GoalAccountingLoopStats = {
+        ...stats,
+        finishReason: 'cancelled',
+        usageAccountingComplete,
+      };
+      const interruptedStats = this.foldSubagentUsage(
+        accountingStats,
+        subagentBundle
+      ) as GoalAccountingLoopStats;
+      this.setLoopStats(interruptedStats);
+
+      const subagentUsage = subagentBundle?.getAggregateUsage();
+      const knownZeroRootUsage = usageAccountingComplete && interruptedStats.llmRequests === 0;
+      if (rootUsage || knownZeroRootUsage) {
+        this.runtime.store.setTokenUsage({
+          promptTokens: (rootUsage?.promptTokens ?? 0) + (subagentUsage?.promptTokens ?? 0),
+          completionTokens:
+            (rootUsage?.completionTokens ?? 0) + (subagentUsage?.completionTokens ?? 0),
+        });
+      }
+    };
 
     try {
       for await (const event of query({
@@ -2255,6 +2456,25 @@ export class AgentChatController {
 
       const wasAborted = abortSignal?.aborted === true;
       if (wasAborted) {
+        const stats =
+          pendingCompleteStats ??
+          createFailedLoopStats({
+            loopBudget,
+            diagnostics:
+              observedLlmRequests > 0 ? getLastRequestDiagnostics(this.runtime.llm) : undefined,
+            turnsStarted: observedTurnsStarted,
+            llmRequests: observedLlmRequests,
+            toolCalls: observedToolCalls,
+            readOnlyToolCalls: observedReadOnlyToolCalls,
+            unsafeToolCalls: observedUnsafeToolCalls,
+            toolResultBytes: observedToolResultBytes,
+            modelVisibleToolBytes: observedModelVisibleToolBytes,
+          });
+        persistInterruptedAccounting(
+          finalUsage,
+          stats,
+          finalUsage !== undefined || stats.llmRequests === 0
+        );
         assistantStream.discardSegment();
         this.events.setStatus('Interrupted.');
         removeTrailingUserMessage(this.runtime);
@@ -2507,11 +2727,38 @@ export class AgentChatController {
           if (gc?.goal?.status === 'active') {
             gc.deferContinuation();
           }
-        } catch { /* best effort */ }
+        } catch {
+          /* best effort */
+        }
 
         return;
       }
       if (isAbortError(error, abortSignal)) {
+        const interruptedStats =
+          error instanceof QueryLoopError
+            ? error.stats
+            : createFailedLoopStats({
+                loopBudget,
+                diagnostics:
+                  observedLlmRequests > 0 ? getLastRequestDiagnostics(this.runtime.llm) : undefined,
+                turnsStarted: observedTurnsStarted,
+                llmRequests: observedLlmRequests,
+                toolCalls: observedToolCalls,
+                readOnlyToolCalls: observedReadOnlyToolCalls,
+                unsafeToolCalls: observedUnsafeToolCalls,
+                toolResultBytes: observedToolResultBytes,
+                modelVisibleToolBytes: observedModelVisibleToolBytes,
+              });
+        const interruptedRootUsage =
+          error instanceof QueryLoopError ? error.aggregateUsage : undefined;
+        // A thrown abort after a provider request started can only prove a
+        // lower bound: the in-flight request may be billable even when its
+        // final usage chunk never arrived.
+        persistInterruptedAccounting(
+          interruptedRootUsage,
+          interruptedStats,
+          interruptedStats.llmRequests === 0
+        );
         assistantStream.discardSegment();
         this.events.setStatus('Interrupted.');
         removeTrailingUserMessage(this.runtime);
@@ -2552,7 +2799,7 @@ export class AgentChatController {
         errorLayer: errorLayerForChatError(error),
       });
       this.events.setStatus('Turn failed. Ready for the next input.');
-      const failedStats =
+      const failedStats = this.foldSubagentUsage(
         error instanceof QueryLoopError
           ? error.stats
           : createFailedLoopStats({
@@ -2566,7 +2813,20 @@ export class AgentChatController {
               unsafeToolCalls: observedUnsafeToolCalls,
               toolResultBytes: observedToolResultBytes,
               modelVisibleToolBytes: observedModelVisibleToolBytes,
-            });
+            }),
+        subagentBundle
+      );
+      const rootUsage = error instanceof QueryLoopError ? error.aggregateUsage : undefined;
+      const subagentUsage = subagentBundle?.getAggregateUsage();
+      const hasSubagentUsage =
+        (subagentUsage?.promptTokens ?? 0) > 0 || (subagentUsage?.completionTokens ?? 0) > 0;
+      if (rootUsage || hasSubagentUsage) {
+        this.runtime.store.setTokenUsage({
+          promptTokens: (rootUsage?.promptTokens ?? 0) + (subagentUsage?.promptTokens ?? 0),
+          completionTokens:
+            (rootUsage?.completionTokens ?? 0) + (subagentUsage?.completionTokens ?? 0),
+        });
+      }
       this.setLoopStats(failedStats);
       if (sessionId) {
         recordProviderTraceEvents(this.events, sessionId, turnId, failedStats);
@@ -2620,6 +2880,8 @@ export class AgentChatController {
       if (history.length > 0) {
         this.runtime.store.setState({ conversationHistory: history.slice(0, -1) });
       }
+    } finally {
+      restoreProviderPreflight?.();
     }
   }
 }

@@ -24,7 +24,12 @@ export function parseTargetCommand(rawInput: string): TargetParseResult {
   const input = rawInput.trim();
 
   // Bare /target or /target status
-  if (input === '/target' || input === '/goal' || input === '/target status' || input === '/goal status') {
+  if (
+    input === '/target' ||
+    input === '/goal' ||
+    input === '/target status' ||
+    input === '/goal status'
+  ) {
     return { ok: true, input: { type: 'goal_control', action: 'show' } };
   }
 
@@ -44,11 +49,25 @@ export function parseTargetCommand(rawInput: string): TargetParseResult {
     return { ok: true, input: { type: 'goal_control', action: 'resume' } };
   }
 
+  if (rest.startsWith('confirm ')) {
+    const criterionId = rest.slice(8).trim();
+    if (!criterionId || /\s/u.test(criterionId)) {
+      return { ok: false, error: 'Usage: /target confirm <criterion-id>' };
+    }
+    return {
+      ok: true,
+      input: { type: 'goal_control', action: 'confirm', payload: { criterionId } },
+    };
+  }
+
   if (rest.startsWith('edit ')) {
     const objective = rest.slice(5).trim();
     if (!objective) return { ok: false, error: 'Objective cannot be empty.' };
     if (objective.length > GOAL_INVARIANTS.maxObjectiveChars) {
-      return { ok: false, error: `Objective too long (${objective.length} chars, max ${GOAL_INVARIANTS.maxObjectiveChars}). Use /target --file <path> for long objectives.` };
+      return {
+        ok: false,
+        error: `Objective too long (${objective.length} chars, max ${GOAL_INVARIANTS.maxObjectiveChars}). Use /target --file <path> for long objectives.`,
+      };
     }
     return { ok: true, input: { type: 'goal_control', action: 'edit', payload: { objective } } };
   }
@@ -57,7 +76,10 @@ export function parseTargetCommand(rawInput: string): TargetParseResult {
     const objective = rest.slice(8).trim();
     if (!objective) return { ok: false, error: 'Objective cannot be empty.' };
     if (objective.length > GOAL_INVARIANTS.maxObjectiveChars) {
-      return { ok: false, error: `Objective too long (${objective.length} chars, max ${GOAL_INVARIANTS.maxObjectiveChars}).` };
+      return {
+        ok: false,
+        error: `Objective too long (${objective.length} chars, max ${GOAL_INVARIANTS.maxObjectiveChars}).`,
+      };
     }
     return { ok: true, input: { type: 'goal_control', action: 'replace', payload: { objective } } };
   }
@@ -65,13 +87,22 @@ export function parseTargetCommand(rawInput: string): TargetParseResult {
   if (rest.startsWith('budget ')) {
     const budgetArg = rest.slice(7).trim();
     if (budgetArg === 'off') {
-      return { ok: true, input: { type: 'goal_control', action: 'set_budget', payload: { tokenBudget: null } } };
+      return {
+        ok: true,
+        input: { type: 'goal_control', action: 'set_budget', payload: { tokenBudget: null } },
+      };
     }
     const budget = Number(budgetArg);
     if (!Number.isInteger(budget) || budget < GOAL_INVARIANTS.tokenBudgetMin) {
-      return { ok: false, error: `Token budget must be a positive integer (minimum ${GOAL_INVARIANTS.tokenBudgetMin}).` };
+      return {
+        ok: false,
+        error: `Token budget must be a positive integer (minimum ${GOAL_INVARIANTS.tokenBudgetMin}).`,
+      };
     }
-    return { ok: true, input: { type: 'goal_control', action: 'set_budget', payload: { tokenBudget: budget } } };
+    return {
+      ok: true,
+      input: { type: 'goal_control', action: 'set_budget', payload: { tokenBudget: budget } },
+    };
   }
 
   if (rest === 'clear' || rest === 'clear --yes') {
@@ -81,9 +112,15 @@ export function parseTargetCommand(rawInput: string): TargetParseResult {
 
   // Default: treat as create with objective
   if (rest.length > GOAL_INVARIANTS.maxObjectiveChars) {
-    return { ok: false, error: `Objective too long (${rest.length} chars, max ${GOAL_INVARIANTS.maxObjectiveChars}). Use /target --file <path> for long objectives.` };
+    return {
+      ok: false,
+      error: `Objective too long (${rest.length} chars, max ${GOAL_INVARIANTS.maxObjectiveChars}). Use /target --file <path> for long objectives.`,
+    };
   }
-  return { ok: true, input: { type: 'goal_control', action: 'create', payload: { objective: rest } } };
+  return {
+    ok: true,
+    input: { type: 'goal_control', action: 'create', payload: { objective: rest } },
+  };
 }
 
 /**

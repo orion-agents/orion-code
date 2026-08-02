@@ -582,6 +582,11 @@ export class TuiRunner {
             this.submitPrompt();
             return;
           }
+          if (this.hasRecognizedCommandArguments()) {
+            this.dispatch({ type: 'closeOverlay' });
+            this.submitPrompt();
+            return;
+          }
           this.completeCommand(overlay.items[overlay.selectedIndex], true);
           return;
         case 'escape':
@@ -883,6 +888,18 @@ export class TuiRunner {
     if (submitImmediately && (!needsArgs || promptAlreadyMatchesCommand)) {
       this.submitPrompt();
     }
+  }
+
+  private hasRecognizedCommandArguments(): boolean {
+    const prompt = this.state.prompt.value.trim();
+    const match = prompt.match(/^\/([^\s]+)\s+\S/u);
+    if (!match) return false;
+    const name = match[1].toLowerCase();
+    return getCommands().some(
+      command =>
+        command.name.toLowerCase() === name ||
+        command.aliases?.some(alias => alias.toLowerCase() === name)
+    );
   }
 
   private completeFile(item: TuiPickerItem | undefined): void {

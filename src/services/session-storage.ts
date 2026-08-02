@@ -33,6 +33,7 @@ import {
 import { atomicWriteFileSync } from './atomic-write';
 import { deleteSessionIndex, updateSessionIndex } from './session-index';
 import { redactTraceText } from './redaction';
+import { deleteGoal } from './goal-storage';
 import type { LoopContinuationAction, LoopFinishReason } from '../framework/query';
 import type { Message } from './llm';
 import type { ContextUsageSnapshot } from './model-context';
@@ -214,13 +215,20 @@ export type SessionTraceEventType =
   | 'subtask_timed_out'
   | 'subtask_artifact_stored'
   | 'compact_completed'
-  | 'compact_failed';
+  | 'compact_failed'
+  | 'goal_state';
 
 export interface SessionTraceEvent {
   sessionId: string;
   turnId: string;
   timestamp: number;
   type: SessionTraceEventType;
+  /** Additive active-Goal correlation. Absent on legacy/non-Goal traces. */
+  goalId?: string;
+  goalRevision?: number;
+  goalInputKind?: import('../runtime/goals/types').AgentInputKind;
+  /** Redacted terminal/continuation reason captured by the runtime. */
+  goalStopReason?: string;
   model?: string;
   turn?: number;
   name?: string;
@@ -320,6 +328,7 @@ function sanitizeTraceEvent(
     'note',
     'permissionReason',
     'continuationHint',
+    'goalStopReason',
   ] as const) {
     if (typeof sanitized[key] === 'string') {
       sanitized[key] = redactTraceText(sanitized[key]);
@@ -706,6 +715,21 @@ export function resumeSession(sessionId: string): SessionMeta | null {
 
   session.endTime = undefined;
   session.gitBranch = getGitBranch(session.projectPath);
+  session.updatedAt = Date.now();
+  session.updatedAtIso = new Date(session.updatedAt).toISOString();
+  saveSessionMeta(session);
+  return session;
+}
+
+/** Keep the session metadata's additive Goal binding in sync with its sidecar. */
+export function updateSessionGoalBinding(
+  sessionId: string,
+  goal: { goalId: string; objective: string } | null
+): SessionMeta | null {
+  const session = loadSessionMeta(sessionId);
+  if (!session) return null;
+  session.activeGoalId = goal?.goalId;
+  session.activeGoalObjective = goal?.objective;
   session.updatedAt = Date.now();
   session.updatedAtIso = new Date(session.updatedAt).toISOString();
   saveSessionMeta(session);
@@ -1424,11 +1448,15 @@ export function deleteSession(sessionId: string): boolean {
     getProjectSessionTracePath(session.projectPath, sessionId),
   ];
 
-  // v0.2.24: also delete goal sidecar.
+  // Preserve a durable deletion fence so a stale writer in another process
+  // cannot recreate the Goal after the rest of the session is removed.
   const goalPath = join(getProjectSessionsDir(session.projectPath), `${sessionId}.goal.json`);
-  if (existsSync(goalPath)) {
-    try { unlinkSync(goalPath); deleted = true; } catch { /* ok */ }
+  const hadGoal = existsSync(goalPath);
+  const goalDeletion = deleteGoal(session.projectPath, sessionId);
+  if (!goalDeletion.ok) {
+    return false;
   }
+  if (hadGoal) deleted = true;
 
   deleteSessionIndex(sessionId, session.projectPath);
 

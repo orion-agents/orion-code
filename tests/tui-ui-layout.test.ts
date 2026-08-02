@@ -6,7 +6,11 @@ import {
 } from '../src/tui-ui/layout';
 import { initialTuiUiState, tuiUiReducer, type TuiUiAction } from '../src/tui-ui/state';
 import type { SessionMeta } from '../src/services/session-storage';
-import { makeToolFinishedEvent, makeToolStartedEvent, resetToolEventSequence } from './test-helpers';
+import {
+  makeToolFinishedEvent,
+  makeToolStartedEvent,
+  resetToolEventSequence,
+} from './test-helpers';
 
 function reduce(actions: TuiUiAction[]) {
   return actions.reduce(tuiUiReducer, initialTuiUiState);
@@ -138,31 +142,38 @@ describe('tui-ui layout', () => {
   });
 
   it('renders command, file, and shortcut overlays without writing transcript entries', () => {
-    const commandFrame = renderTuiUiFrame(reduce([
-      {
-        type: 'showCommandPalette',
-        query: 's',
-        items: [{ value: 'status', label: '/status', description: 'System  Show system status' }],
-      },
-    ]), { width: 72, height: 10 });
+    const commandFrame = renderTuiUiFrame(
+      reduce([
+        {
+          type: 'showCommandPalette',
+          query: 's',
+          items: [{ value: 'status', label: '/status', description: 'System  Show system status' }],
+        },
+      ]),
+      { width: 72, height: 10 }
+    );
     const commandRows = renderFrameRows(commandFrame);
     expect(commandRows[0]).toContain('Commands "s"');
     expect(commandRows[1]).toContain('› /status');
 
-    const fileFrame = renderTuiUiFrame(reduce([
-      {
-        type: 'showFilePicker',
-        base: 'open ',
-        query: 'src/c',
-        items: [{ value: 'src/cli.ts', label: 'file src/cli.ts', description: 'file' }],
-      },
-    ]), { width: 72, height: 10 });
+    const fileFrame = renderTuiUiFrame(
+      reduce([
+        {
+          type: 'showFilePicker',
+          base: 'open ',
+          query: 'src/c',
+          items: [{ value: 'src/cli.ts', label: 'file src/cli.ts', description: 'file' }],
+        },
+      ]),
+      { width: 72, height: 10 }
+    );
     expect(renderFrameRows(fileFrame).join('\n')).toContain('Files "src/c"');
     expect(renderFrameRows(fileFrame).join('\n')).toContain('file src/cli.ts');
 
-    const shortcutFrame = renderTuiUiFrame(reduce([
-      { type: 'showShortcuts' },
-    ]), { width: 72, height: 10 });
+    const shortcutFrame = renderTuiUiFrame(reduce([{ type: 'showShortcuts' }]), {
+      width: 72,
+      height: 10,
+    });
     expect(renderFrameRows(shortcutFrame).join('\n')).toContain('/ commands');
     expect(renderFrameRows(shortcutFrame).join('\n')).toContain('Ctrl+C interrupt');
   });
@@ -253,11 +264,147 @@ describe('tui-ui layout', () => {
     expect(rows[4]).toContain('ready');
   });
 
+  it('renders Goal objective, phase, budget and next action in the owned status row', () => {
+    const state = reduce([
+      {
+        type: 'goalEvent',
+        event: {
+          type: 'goal_restored',
+          goal: {
+            goalId: 'goal-layout',
+            revision: 3,
+            objective: 'Ship typed Goal runtime',
+            status: 'active',
+            tokenBudget: 1000,
+            tokensUsed: 320,
+            timeUsedMs: 100,
+            continuationCount: 2,
+            updatedAt: 100,
+            criteria: { passed: 1, total: 3, failed: 0, stale: 0 },
+            planRevision: 2,
+            planPhase: 'verification',
+            nextAction: 'Run Goal E2E',
+          },
+        },
+      },
+    ]);
+    const rows = renderFrameRows(renderTuiUiFrame(state, { width: 120, height: 8 }));
+    const status = rows[4];
+
+    expect(status).toContain('goal:active 1/3');
+    expect(status).toContain('Ship typed Goal run');
+    expect(status).toContain('verification');
+    expect(status).toContain('320/1000tok');
+    expect(status).toContain('next:Run Goal E2E');
+  });
+
+  it('keeps the first failed audit requirement visible in the Goal status row', () => {
+    const state = reduce([
+      {
+        type: 'goalEvent',
+        event: {
+          type: 'goal_updated',
+          reason: 'turn_finalized',
+          goal: {
+            goalId: 'goal-audit-layout',
+            revision: 4,
+            objective: 'Verify release evidence',
+            status: 'active',
+            tokensUsed: 420,
+            timeUsedMs: 100,
+            continuationCount: 2,
+            updatedAt: 100,
+            criteria: { passed: 1, total: 2, failed: 1, stale: 0 },
+            planPhase: 'verification',
+            nextAction: 'Run npm test -- release',
+            auditRemaining: ['criterion:release needs a passing release test'],
+          },
+        },
+      },
+    ]);
+    const status = renderFrameRows(renderTuiUiFrame(state, { width: 180, height: 8 }))[4];
+
+    expect(status).toContain('audit:criterion:release');
+    expect(status).toContain('next:Run npm test -- release');
+  });
+
+  it('does not repeat an audit requirement in the status message and Goal badge', () => {
+    const requirement = 'criterion:release needs a passing release test';
+    const state = reduce([
+      {
+        type: 'goalEvent',
+        event: {
+          type: 'goal_updated',
+          reason: 'turn_finalized',
+          goal: {
+            goalId: 'goal-audit-dedupe',
+            revision: 4,
+            objective: 'Verify release evidence',
+            status: 'active',
+            tokensUsed: 420,
+            timeUsedMs: 100,
+            continuationCount: 2,
+            updatedAt: 100,
+            criteria: { passed: 1, total: 2, failed: 1, stale: 0 },
+            planPhase: 'verification',
+            nextAction: requirement,
+            auditRemaining: [requirement],
+          },
+        },
+      },
+      {
+        type: 'goalEvent',
+        event: {
+          type: 'goal_audit_failed',
+          goalId: 'goal-audit-dedupe',
+          audit: 'completion',
+          summary: requirement,
+        },
+      },
+    ]);
+    const status = renderFrameRows(renderTuiUiFrame(state, { width: 220, height: 8 }))[4];
+
+    expect(status).toContain(`Goal audit failed (completion): ${requirement}`);
+    expect(status).not.toContain('audit:criterion:release');
+    expect(status.match(/criterion:release/g)).toHaveLength(1);
+  });
+
+  it.each([80, 120, 154])('keeps Goal status and prompt ownership intact at %i columns', width => {
+    const state = reduce([
+      {
+        type: 'goalEvent',
+        event: {
+          type: 'goal_restored',
+          goal: {
+            goalId: 'goal-width',
+            revision: 1,
+            objective: 'Verify renderer width parity',
+            status: 'paused',
+            tokensUsed: 20,
+            timeUsedMs: 10,
+            continuationCount: 1,
+            updatedAt: 100,
+            stopReason: 'Use /target resume to continue.',
+            criteria: { passed: 0, total: 1, failed: 0, stale: 0 },
+            planPhase: 'recovery',
+          },
+        },
+      },
+      { type: 'setPrompt', value: '继续验证', cursor: 4 },
+    ]);
+    const frame = renderTuiUiFrame(state, { width, height: 8 });
+    const rows = renderFrameRows(frame);
+
+    expect(rows[4]).toContain('goal:paused');
+    expect(rows[5]).toBe(`┌${'─'.repeat(width - 2)}┐`);
+    expect(rows[6]).toContain('│ › 继续验证');
+    expect(rows[7]).toBe(`└${'─'.repeat(width - 2)}┘`);
+    expect(frame.cursor.visible).toBe(true);
+  });
+
   it('keeps a long multi-line prompt inside a bounded, closed viewport', () => {
     const value = Array.from({ length: 20 }, (_, index) => `line-${index}`).join('\n');
-    const state = reduce([
-      { type: 'setPrompt', value, cursor: value.length },
-    ]);
+    const state = reduce([{ type: 'setPrompt', value, cursor: value.length }]);
     const frame = renderTuiUiFrame(state, { width: 30, height: 8 });
     const rows = renderFrameRows(frame);
 
@@ -314,9 +461,9 @@ describe('tui-ui layout', () => {
     const rows = renderFrameRows(frame);
     // Overlay occupies transcript rows, not status/prompt rows
     expect(rows[6]).toContain('ready'); // status
-    expect(rows[7]).toContain('┌');     // prompt top border
-    expect(rows[8]).toContain('│ ›');   // prompt input
-    expect(rows[9]).toContain('└');     // prompt bottom border
+    expect(rows[7]).toContain('┌'); // prompt top border
+    expect(rows[8]).toContain('│ ›'); // prompt input
+    expect(rows[9]).toContain('└'); // prompt bottom border
     // Overlay is in the transcript area
     expect(rows[0]).toContain('Sessions');
   });
@@ -345,9 +492,7 @@ describe('tui-ui layout', () => {
   });
 
   it('preserves prompt cursor position after resize', () => {
-    const state = reduce([
-      { type: 'setPrompt', value: 'hello world', cursor: 5 },
-    ]);
+    const state = reduce([{ type: 'setPrompt', value: 'hello world', cursor: 5 }]);
     // Simulate two consecutive renders at different sizes
     const frame1 = renderTuiUiFrame(state, { width: 40, height: 12 });
     const frame2 = renderTuiUiFrame(state, { width: 80, height: 24 });
@@ -364,7 +509,11 @@ describe('tui-ui layout', () => {
   it('truncates super-long status text to fit the frame width', () => {
     const state = reduce([
       { type: 'appendTranscript', entry: { id: 'u1', role: 'user', content: 'hello' } },
-      { type: 'setStatus', message: 'model=gpt-4o-very-long-model-name  ctx=85%  tokens=123456/200000  session=abc-def-ghi-jkl-mno-pqr' },
+      {
+        type: 'setStatus',
+        message:
+          'model=gpt-4o-very-long-model-name  ctx=85%  tokens=123456/200000  session=abc-def-ghi-jkl-mno-pqr',
+      },
     ]);
     const frame = renderTuiUiFrame(state, { width: 30, height: 10 });
     const rows = renderFrameRows(frame);
@@ -388,7 +537,11 @@ describe('tui-ui layout', () => {
     const streaming = reduce([
       {
         type: 'appendTranscript',
-        entry: { id: 'live', role: 'tool', content: Array.from({ length: 30 }, (_, i) => `line-${i}`).join('\n') },
+        entry: {
+          id: 'live',
+          role: 'tool',
+          content: Array.from({ length: 30 }, (_, i) => `line-${i}`).join('\n'),
+        },
       },
     ]);
     expect(measureTuiLiveFrameHeight(streaming, 120, 23)).toBe(23);
@@ -422,9 +575,7 @@ describe('tui-ui layout', () => {
   });
 
   it('renderTuiLiveFrame handles minimum band size (8 rows)', () => {
-    const state = reduce([
-      { type: 'setPrompt', value: 'min', cursor: 3 },
-    ]);
+    const state = reduce([{ type: 'setPrompt', value: 'min', cursor: 3 }]);
 
     // Very small terminal → band = max(8, round(8*0.75)) = 8
     const bandRows = 8;

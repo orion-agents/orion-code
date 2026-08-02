@@ -9,7 +9,11 @@
  */
 
 export { buildTool, toOpenAITool, toOpenAITools } from './tool';
-export { serializeToolResult, parseToolResultEnvelope, TOOL_RESULT_SCHEMA_VERSION } from './tool-serializer';
+export {
+  serializeToolResult,
+  parseToolResultEnvelope,
+  TOOL_RESULT_SCHEMA_VERSION,
+} from './tool-serializer';
 export type {
   OrionCodeTool,
   OpenHorseTool,
@@ -20,8 +24,20 @@ export type {
   ToolInputJSONSchema,
   OpenAITool,
 } from './tool';
+export { deriveToolExternalAssertion, isToolExternalAssertion } from './external-assertion';
+export type {
+  ToolExternalAssertion,
+  ToolExternalAssertionAction,
+  ToolExternalAssertionStatus,
+} from './external-assertion';
 
-export { query, DEFAULT_LOOP_BUDGET, QueryLoopError, createFailedLoopStats, createLocalFastPathLoopStats } from './query';
+export {
+  query,
+  DEFAULT_LOOP_BUDGET,
+  QueryLoopError,
+  createFailedLoopStats,
+  createLocalFastPathLoopStats,
+} from './query';
 export type {
   AutoCompactNotice,
   LoopBudget,
@@ -36,7 +52,12 @@ export type {
 } from './query';
 
 export { prepareToolCalls, executeToolCalls, inspectSchedule } from './tool-scheduler';
-export type { PreparedToolCall, ExecutedToolCall, ToolSchedule, ToolSchedulerOptions } from './tool-scheduler';
+export type {
+  PreparedToolCall,
+  ExecutedToolCall,
+  ToolSchedule,
+  ToolSchedulerOptions,
+} from './tool-scheduler';
 
 export { buildSystemPrompt, getSystemPrompt } from './prompt';
 export type { PromptContext, PromptSection } from './prompt';
@@ -70,10 +91,5 @@ export type {
   TurnSummary,
 } from '../harness';
 
-export {
-  getToolState,
-  setToolState,
-  subscribeToolState,
-  resetToolState,
-} from './tool-state';
+export { getToolState, setToolState, subscribeToolState, resetToolState } from './tool-state';
 export type { ToolState, TodoItem } from './tool-state';

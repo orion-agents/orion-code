@@ -1,12 +1,14 @@
 import fs from 'fs';
+import { tmpdir } from 'os';
 import path from 'path';
 import { executeTool, getRuntimeTools } from '../src/tools';
 import { buildMcpToolName, mcpManager } from '../src/tools/mcp';
 import type { ToolContext } from '../src/framework/tool';
+import { PACKAGE_VERSION } from '../src/product/version';
 
-const testRoot = path.join(process.cwd(), 'tests', 'tmp-mcp');
-const configDir = path.join(testRoot, 'config');
-const serverPath = path.join(testRoot, 'fake-mcp-server.js');
+let testRoot = '';
+let configDir = '';
+let serverPath = '';
 const originalConfigDir = process.env.ORION_CODE_CONFIG_DIR;
 const originalSuffix = process.env.MCP_TEST_SUFFIX;
 
@@ -17,9 +19,12 @@ const ctx: ToolContext = {
 
 function writeFakeMcpServer(): void {
   fs.mkdirSync(testRoot, { recursive: true });
-  fs.writeFileSync(serverPath, `
+  fs.writeFileSync(
+    serverPath,
+    `
 const readline = require('readline');
 const rl = readline.createInterface({ input: process.stdin });
+let clientVersion = '';
 
 if (process.env.MCP_TEST_NOISE === '1') {
   process.stdout.write('fake MCP banner\\n{not-json}\\n');
@@ -42,6 +47,7 @@ rl.on('line', (line) => {
     if (process.env.MCP_TEST_FAIL_INIT === '1') {
       process.exit(1);
     }
+    clientVersion = msg.params.clientInfo.version;
     respond(msg.id, {
       protocolVersion: msg.params.protocolVersion,
       capabilities: { tools: {} },
@@ -75,14 +81,16 @@ rl.on('line', (line) => {
     }
     const args = msg.params.arguments || {};
     respond(msg.id, {
-      content: [{ type: 'text', text: 'echo:' + args.text + ':' + (process.env.MCP_SUFFIX || '') }]
+      content: [{ type: 'text', text: 'echo:' + args.text + ':' + (process.env.MCP_SUFFIX || '') + ':' + clientVersion }]
     });
     return;
   }
 
   fail(msg.id, -32601, 'Unknown method');
 });
-`, 'utf-8');
+`,
+    'utf-8'
+  );
 }
 
 function writeMcpConfig(payload: unknown): void {
@@ -92,7 +100,9 @@ function writeMcpConfig(payload: unknown): void {
 
 describe('MCP integration', () => {
   beforeEach(() => {
-    fs.rmSync(testRoot, { recursive: true, force: true });
+    testRoot = fs.mkdtempSync(path.join(tmpdir(), 'orion-mcp-'));
+    configDir = path.join(testRoot, 'config');
+    serverPath = path.join(testRoot, 'fake-mcp-server.js');
     writeFakeMcpServer();
     process.env.ORION_CODE_CONFIG_DIR = configDir;
     process.env.MCP_TEST_SUFFIX = 'ok';
@@ -112,6 +122,9 @@ describe('MCP integration', () => {
       process.env.MCP_TEST_SUFFIX = originalSuffix;
     }
     fs.rmSync(testRoot, { recursive: true, force: true });
+    testRoot = '';
+    configDir = '';
+    serverPath = '';
   });
 
   test('connects configured stdio servers and exposes first-class MCP tools', async () => {
@@ -139,12 +152,14 @@ describe('MCP integration', () => {
     expect(runtimeTool?.isReadOnly?.({})).toBe(true);
 
     const rawResult = await executeTool(toolName, { text: 'hello' });
-    expect(JSON.parse(rawResult)).toEqual(expect.objectContaining({
-      success: true,
-      output: 'echo:hello:ok',
-      summary: 'MCP sample/echo',
-      outputBytes: 13,
-    }));
+    expect(JSON.parse(rawResult)).toEqual(
+      expect.objectContaining({
+        success: true,
+        output: `echo:hello:ok:${PACKAGE_VERSION}`,
+        summary: 'MCP sample/echo',
+        outputBytes: Buffer.byteLength(`echo:hello:ok:${PACKAGE_VERSION}`),
+      })
+    );
   });
 
   test('mcp_list includes connected server tools', async () => {

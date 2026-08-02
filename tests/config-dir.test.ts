@@ -24,13 +24,12 @@ import {
   getExistingMemoryPaths,
   type MemoryType,
 } from '../src/services/config-dir';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
+import { tmpdir } from 'os';
 
 describe('config-dir', () => {
-  // Use a unique test directory based on timestamp to avoid conflicts
-  const testDir = join(homedir(), `.openhorse-test-${Date.now()}`);
+  const testDir = mkdtempSync(join(tmpdir(), 'orion-config-dir-'));
   const originalEnv = process.env.ORION_CODE_CONFIG_DIR;
 
   beforeAll(() => {
@@ -111,7 +110,9 @@ describe('config-dir', () => {
       expect(key).toContain('tmp-openhorse-config-dir-project');
       expect(getProjectMemoryDir(projectPath)).toBe(join(testDir, 'projects', key, 'memory'));
       expect(getProjectArtifactsDir(projectPath)).toBe(join(testDir, 'projects', key, 'artifacts'));
-      expect(getProjectCheckpointsDir(projectPath)).toBe(join(testDir, 'projects', key, 'checkpoints'));
+      expect(getProjectCheckpointsDir(projectPath)).toBe(
+        join(testDir, 'projects', key, 'checkpoints')
+      );
       expect(getLegacyProjectMemoryDir(projectPath)).not.toBe(getProjectMemoryDir(projectPath));
     });
 

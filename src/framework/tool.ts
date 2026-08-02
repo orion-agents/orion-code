@@ -9,13 +9,18 @@
 // ============================================================================
 
 /** JSON Schema for tool input parameters */
+export interface ToolInputJSONSchemaProperty {
+  type: string;
+  description?: string;
+  enum?: string[];
+  properties?: Record<string, ToolInputJSONSchemaProperty>;
+  required?: string[];
+  items?: ToolInputJSONSchemaProperty;
+}
+
 export interface ToolInputJSONSchema {
   type: 'object';
-  properties: Record<string, {
-    type: string;
-    description: string;
-    enum?: string[];
-  }>;
+  properties: Record<string, ToolInputJSONSchemaProperty>;
   required?: string[];
 }
 
@@ -34,6 +39,8 @@ export interface ToolResult {
   outputBytes?: number;
   /** Reference to a disk artifact for large outputs (set by executeTool when output > threshold) */
   artifactRef?: { id: string; outputBytes: number };
+  /** Typed external state emitted only by allowlisted adapters/commands. */
+  externalAssertion?: import('./external-assertion').ToolExternalAssertion;
   metadata?: Record<string, unknown>;
 }
 

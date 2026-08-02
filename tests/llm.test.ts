@@ -10,10 +10,12 @@
 import {
   LLMProviderError,
   LLMService,
+  ProviderRequestPreflightError,
   type CacheControlContentPart,
   type Message,
   type Tool,
 } from '../src/services/llm';
+import { ProviderResilienceCoordinator } from '../src/services/provider-resilience';
 import { diagnoseProviderError } from '../src/services/provider-diagnostics';
 
 // Skip real API tests if no API key is available
@@ -48,11 +50,17 @@ describe('LLMService', () => {
       // Tool message format
       const messages: Message[] = [
         { role: 'user', content: 'What is the weather?' },
-        { role: 'assistant', content: '', tool_calls: [{
-          id: 'call-123',
-          type: 'function',
-          function: { name: 'get_weather', arguments: '{"location":"Beijing"}' },
-        }] },
+        {
+          role: 'assistant',
+          content: '',
+          tool_calls: [
+            {
+              id: 'call-123',
+              type: 'function',
+              function: { name: 'get_weather', arguments: '{"location":"Beijing"}' },
+            },
+          ],
+        },
         { role: 'tool', content: '{"temp":25}', tool_call_id: 'call-123' },
       ];
 
@@ -102,8 +110,16 @@ describe('LLMService', () => {
           false,
         ],
         [Object.assign(new Error('401 invalid_api_key'), { status: 401 }), 'auth_failed', false],
-        [new Error('Xunfei code: 11210, msg: NotEnoughCvError'), 'quota_or_credit_exhausted', false],
-        [{ status: 403, code: '11210', message: 'NotEnoughCvError' }, 'quota_or_credit_exhausted', false],
+        [
+          new Error('Xunfei code: 11210, msg: NotEnoughCvError'),
+          'quota_or_credit_exhausted',
+          false,
+        ],
+        [
+          { status: 403, code: '11210', message: 'NotEnoughCvError' },
+          'quota_or_credit_exhausted',
+          false,
+        ],
         [Object.assign(new Error('429 API_LIMIT'), { status: 429 }), 'rate_limit', true],
         [new Error('code: 10012, msg: EngineInternalError: system is busy'), 'provider_busy', true],
         [new Error('Invalid URL: ht!tp://bad-endpoint'), 'invalid_endpoint', false],
@@ -121,10 +137,10 @@ describe('LLMService', () => {
         model: 'gpt-4o',
       });
       const create = jest.fn().mockRejectedValue(
-        Object.assign(
-          new Error('401 invalid_api_key: Bearer sk-secret123456789 rejected'),
-          { status: 401, code: 'invalid_api_key' }
-        )
+        Object.assign(new Error('401 invalid_api_key: Bearer sk-secret123456789 rejected'), {
+          status: 401,
+          code: 'invalid_api_key',
+        })
       );
 
       (llm as any).client = {
@@ -250,14 +266,13 @@ describe('LLMService', () => {
         [{ role: 'user', content: 'Hi' }],
         undefined,
         undefined,
-        { abortSignal: controller.signal },
+        { abortSignal: controller.signal }
       );
 
       expect(response.content).toBe('ok');
-      expect(create).toHaveBeenCalledWith(
-        expect.objectContaining({ stream: true }),
-        { signal: controller.signal },
-      );
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({ stream: true }), {
+        signal: controller.signal,
+      });
     });
 
     test('stops processing stream chunks after abort', async () => {
@@ -281,12 +296,11 @@ describe('LLMService', () => {
         },
       };
 
-      await expect(llm.chatStream(
-        [{ role: 'user', content: 'Hi' }],
-        { onChunk },
-        undefined,
-        { abortSignal: controller.signal },
-      )).rejects.toMatchObject({ name: 'AbortError' });
+      await expect(
+        llm.chatStream([{ role: 'user', content: 'Hi' }], { onChunk }, undefined, {
+          abortSignal: controller.signal,
+        })
+      ).rejects.toMatchObject({ name: 'AbortError' });
       expect(onChunk).not.toHaveBeenCalled();
     });
   });
@@ -299,24 +313,26 @@ describe('LLMService', () => {
       });
       const create = jest.fn(async function* () {
         yield {
-          choices: [{
-            delta: {
-              tool_calls: [
-                {
-                  index: 0,
-                  id: 'call-0',
-                  type: 'function',
-                  function: { name: 'read_file', arguments: '{"path":"a.ts"}' },
-                },
-                {
-                  index: 1,
-                  id: 'call-1',
-                  type: 'function',
-                  function: { name: 'grep', arguments: '{"pattern":"foo"}' },
-                },
-              ],
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: 'call-0',
+                    type: 'function',
+                    function: { name: 'read_file', arguments: '{"path":"a.ts"}' },
+                  },
+                  {
+                    index: 1,
+                    id: 'call-1',
+                    type: 'function',
+                    function: { name: 'grep', arguments: '{"pattern":"foo"}' },
+                  },
+                ],
+              },
             },
-          }],
+          ],
           model: 'gpt-4o',
         };
       });
@@ -339,6 +355,155 @@ describe('LLMService', () => {
   });
 
   describe('provider transient errors', () => {
+    test('surfaces production resilience retry diagnostics for turn accounting', async () => {
+      const llm = new LLMService({ apiKey: 'test-key', model: 'gpt-4o' });
+      llm.resilience = new ProviderResilienceCoordinator({
+        maxTotalAttempts: 2,
+        baseDelayMs: 0,
+        maxDelayMs: 0,
+      });
+      const create = jest
+        .fn()
+        .mockRejectedValueOnce(new Error('network error'))
+        .mockImplementationOnce(async function* () {
+          yield {
+            choices: [{ delta: { content: 'recovered' } }],
+            model: 'gpt-4o',
+            usage: { prompt_tokens: 3, completion_tokens: 1 },
+          };
+        });
+      (llm as any).client = { chat: { completions: { create } } };
+
+      await expect(
+        llm.chatStream([{ role: 'user', content: 'Retry safely' }])
+      ).resolves.toMatchObject({ content: 'recovered' });
+
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(llm.getLastRequestDiagnostics()).toMatchObject({
+        retryCount: 1,
+        retryDelayMs: 0,
+        retryErrorTypes: ['invalid_endpoint'],
+        lastRetryErrorType: 'invalid_endpoint',
+        finalModel: 'gpt-4o',
+        fallbackTriggered: false,
+      });
+    });
+
+    test('keeps a production resilience preflight rejection typed and fail-fast', async () => {
+      const llm = new LLMService({ apiKey: 'test-key', model: 'gpt-4o' });
+      llm.resilience = new ProviderResilienceCoordinator({
+        maxTotalAttempts: 3,
+        baseDelayMs: 0,
+        maxDelayMs: 0,
+      });
+      const create = jest.fn();
+      const preflight = jest.fn(() => ({
+        available: false,
+        reason: 'goal budget exhausted',
+      }));
+      (llm as any).client = { chat: { completions: { create } } };
+      llm.setProviderRequestPreflight(preflight);
+
+      const request = llm.chatStream([{ role: 'user', content: 'Do not send' }]);
+      await expect(request).rejects.toBeInstanceOf(ProviderRequestPreflightError);
+      await expect(request).rejects.toThrow('goal budget exhausted');
+
+      expect(preflight).toHaveBeenCalledTimes(1);
+      expect(create).not.toHaveBeenCalled();
+      expect(llm.getLastRequestDiagnostics()).toMatchObject({
+        retryCount: 0,
+        fallbackTriggered: false,
+      });
+    });
+
+    test('reports an unswitched resilience fallback disposition fail-closed', async () => {
+      const llm = new LLMService({ apiKey: 'test-key', model: 'primary-model' });
+      llm.resilience = {
+        execute: jest.fn().mockResolvedValue({
+          result: { content: 'ok', model: 'primary-model' },
+          diagnostics: {
+            logicalRequestId: 'fallback-diagnostic',
+            operation: 'root_chat_stream',
+            requestedModel: 'primary-model',
+            finalModel: 'primary-model',
+            finalState: 'succeeded',
+            attempts: [],
+            retryCount: 0,
+            recoveryCount: 0,
+            fallbackCount: 1,
+            totalBackoffMs: 0,
+            sdkRetriesDisabled: true,
+            usageConfidence: 'unknown',
+            unknownBilledAttemptCount: 1,
+          },
+        }),
+      } as any;
+
+      await expect(
+        llm.chatStream([{ role: 'user', content: 'Use fallback' }])
+      ).resolves.toMatchObject({ content: 'ok' });
+
+      expect(llm.getLastRequestDiagnostics()).toMatchObject({
+        retryCount: 0,
+        fallbackTriggered: true,
+        fallbackFromModel: 'primary-model',
+        finalModel: 'primary-model',
+        usingFallback: false,
+      });
+      expect(llm.getLastRequestDiagnostics().fallbackToModel).toBeUndefined();
+    });
+
+    test('runs budget preflight before a non-stream provider call', async () => {
+      const llm = new LLMService({ apiKey: 'test-key', model: 'gpt-4o' });
+      llm.resilience = new ProviderResilienceCoordinator({
+        maxTotalAttempts: 3,
+        baseDelayMs: 0,
+        maxDelayMs: 0,
+      });
+      const create = jest.fn();
+      (llm as any).client = { chat: { completions: { create } } };
+      const preflight = jest.fn(() => ({ available: false, reason: 'goal budget exhausted' }));
+      llm.setProviderRequestPreflight(preflight);
+
+      await expect(
+        llm.chat([{ role: 'user', content: 'Do not send this request' }])
+      ).rejects.toBeInstanceOf(ProviderRequestPreflightError);
+      expect(create).not.toHaveBeenCalled();
+      expect(preflight).toHaveBeenCalledTimes(1);
+      expect(preflight).toHaveBeenCalledWith(
+        expect.objectContaining({
+          operation: 'chat',
+          attempt: 1,
+          model: 'gpt-4o',
+          estimatedPromptTokens: expect.any(Number),
+        })
+      );
+    });
+
+    test('runs budget preflight before every stream retry and prevents the denied attempt', async () => {
+      const llm = new LLMService({ apiKey: 'test-key', model: 'xopglm51' });
+      (llm as any).config.retryBaseDelay = 1;
+      (llm as any).config.maxRetries = 2;
+      const create = jest
+        .fn()
+        .mockRejectedValue(new Error('code: 10012, msg: EngineInternalError: system is busy'));
+      (llm as any).client = { chat: { completions: { create } } };
+      const preflight = jest.fn(({ attempt }: { attempt: number }) => ({
+        available: attempt < 2,
+        reason: attempt < 2 ? undefined : 'retry would exceed goal budget',
+      }));
+      llm.setProviderRequestPreflight(preflight);
+
+      await expect(
+        llm.chatStream([{ role: 'user', content: 'Retry safely' }])
+      ).rejects.toMatchObject({
+        name: 'ProviderRequestPreflightError',
+        message: 'retry would exceed goal budget',
+      });
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(preflight).toHaveBeenCalledTimes(2);
+    });
+
     test('retries Xunfei busy errors and returns the later stream response', async () => {
       const llm = new LLMService({
         apiKey: 'test-key',
@@ -347,8 +512,13 @@ describe('LLMService', () => {
       (llm as any).config.retryBaseDelay = 1;
       (llm as any).config.maxRetries = 1;
 
-      const create = jest.fn()
-        .mockRejectedValueOnce(new Error('Xunfei request failed with Sid: abc code: 10012, msg: EngineInternalError:The system is busy, please try again later.'))
+      const create = jest
+        .fn()
+        .mockRejectedValueOnce(
+          new Error(
+            'Xunfei request failed with Sid: abc code: 10012, msg: EngineInternalError:The system is busy, please try again later.'
+          )
+        )
         .mockImplementationOnce(async function* () {
           yield {
             choices: [{ delta: { content: 'ok' } }],
@@ -376,7 +546,8 @@ describe('LLMService', () => {
       (llm as any).config.retryBaseDelay = 1;
       (llm as any).config.maxRetries = 1;
 
-      const create = jest.fn()
+      const create = jest
+        .fn()
         .mockRejectedValueOnce(new Error('API_LIMIT'))
         .mockImplementationOnce(async function* () {
           yield {
@@ -405,8 +576,11 @@ describe('LLMService', () => {
       (llm as any).config.retryBaseDelay = 1;
       (llm as any).config.maxRetries = 3;
 
-      const create = jest.fn()
-        .mockRejectedValue(new Error('Xunfei request failed with Sid: abc code: 11210, msg: NotEnoughCvError'));
+      const create = jest
+        .fn()
+        .mockRejectedValue(
+          new Error('Xunfei request failed with Sid: abc code: 11210, msg: NotEnoughCvError')
+        );
 
       (llm as any).client = {
         chat: {
@@ -414,14 +588,12 @@ describe('LLMService', () => {
         },
       };
 
-      await expect(llm.chatStream([{ role: 'user', content: 'Hi' }]))
-        .rejects
-        .toMatchObject({
-          diagnostic: {
-            type: 'quota_or_credit_exhausted',
-            retryable: false,
-          },
-        });
+      await expect(llm.chatStream([{ role: 'user', content: 'Hi' }])).rejects.toMatchObject({
+        diagnostic: {
+          type: 'quota_or_credit_exhausted',
+          retryable: false,
+        },
+      });
       expect(create).toHaveBeenCalledTimes(1);
     });
 
@@ -433,7 +605,8 @@ describe('LLMService', () => {
       (llm as any).config.retryBaseDelay = 1;
       (llm as any).config.maxRetries = 3;
 
-      const create = jest.fn()
+      const create = jest
+        .fn()
         .mockRejectedValue(new Error('429 insufficient_quota: credit exhausted'));
 
       (llm as any).client = {
@@ -442,14 +615,12 @@ describe('LLMService', () => {
         },
       };
 
-      await expect(llm.chatStream([{ role: 'user', content: 'Hi' }]))
-        .rejects
-        .toMatchObject({
-          diagnostic: {
-            type: 'quota_or_credit_exhausted',
-            retryable: false,
-          },
-        });
+      await expect(llm.chatStream([{ role: 'user', content: 'Hi' }])).rejects.toMatchObject({
+        diagnostic: {
+          type: 'quota_or_credit_exhausted',
+          retryable: false,
+        },
+      });
       expect(create).toHaveBeenCalledTimes(1);
     });
 
@@ -461,8 +632,13 @@ describe('LLMService', () => {
       (llm as any).config.retryBaseDelay = 10000;
       (llm as any).config.maxRetries = 2;
 
-      const create = jest.fn()
-        .mockRejectedValue(new Error('Xunfei request failed with Sid: abc code: 10012, msg: EngineInternalError:The system is busy, please try again later.'));
+      const create = jest
+        .fn()
+        .mockRejectedValue(
+          new Error(
+            'Xunfei request failed with Sid: abc code: 10012, msg: EngineInternalError:The system is busy, please try again later.'
+          )
+        );
 
       (llm as any).client = {
         chat: {
@@ -471,12 +647,9 @@ describe('LLMService', () => {
       };
 
       const controller = new AbortController();
-      const response = llm.chatStream(
-        [{ role: 'user', content: 'Hi' }],
-        undefined,
-        undefined,
-        { abortSignal: controller.signal },
-      );
+      const response = llm.chatStream([{ role: 'user', content: 'Hi' }], undefined, undefined, {
+        abortSignal: controller.signal,
+      });
 
       await new Promise(resolve => setTimeout(resolve, 0));
       expect(create).toHaveBeenCalledTimes(1);
@@ -504,12 +677,10 @@ describe('LLMService', () => {
 
       const llm = new LLMService(config);
 
-      const messages: Message[] = [
-        { role: 'user', content: 'Say "test" and nothing else.' },
-      ];
+      const messages: Message[] = [{ role: 'user', content: 'Say "test" and nothing else.' }];
 
       const response = await llm.chatStream(messages, {
-        onChunk: (chunk) => {
+        onChunk: chunk => {
           // Just consume chunks
         },
       });
@@ -612,11 +783,17 @@ describe('LLMService', () => {
       // Cache control should NOT affect messages with tool_calls (those use their own format)
       await llm.chat([
         { role: 'system', content: 'System.', cacheControl: { type: 'ephemeral' } },
-        { role: 'assistant', content: '', tool_calls: [{
-          id: 'call-1',
-          type: 'function',
-          function: { name: 'read_file', arguments: '{"path":"x.ts"}' },
-        }] },
+        {
+          role: 'assistant',
+          content: '',
+          tool_calls: [
+            {
+              id: 'call-1',
+              type: 'function',
+              function: { name: 'read_file', arguments: '{"path":"x.ts"}' },
+            },
+          ],
+        },
       ]);
 
       const callArgs = ((llm as any).client.chat.completions.create as jest.Mock).mock.calls[0];

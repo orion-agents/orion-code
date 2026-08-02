@@ -14,10 +14,7 @@ import {
 } from './state';
 import { layoutTranscriptEntry, writeStyledRowToFrame } from './transcript-layout';
 
-export type TranscriptRecordLayout = (
-  entry: TuiTranscriptRecord,
-  width: number,
-) => StyledRow[];
+export type TranscriptRecordLayout = (entry: TuiTranscriptRecord, width: number) => StyledRow[];
 
 export interface TuiTranscriptLayoutOptions {
   /** Transcript content width; production uses the surface safe width. */
@@ -72,15 +69,18 @@ export interface TuiLayoutBudget {
  * scrollable history region. For a single-line prompt with no activity this
  * collapses to the original fixed layout (prompt = 3 rows at the bottom).
  */
-function computeBudget(height: number, promptValue: string, timelineCount: number): TuiLayoutBudget {
+function computeBudget(
+  height: number,
+  promptValue: string,
+  timelineCount: number
+): TuiLayoutBudget {
   const totalPromptLines = Math.max(1, promptValue.split('\n').length);
   const maxPromptLines = Math.max(1, height - PROMPT_BORDER_ROWS - STATUS_ROWS);
   const promptLineCount = Math.min(totalPromptLines, maxPromptLines);
   const promptRows = PROMPT_BORDER_ROWS + promptLineCount;
   const maxTimelineRows = Math.max(0, height - promptRows - STATUS_ROWS);
-  const timelineRows = timelineCount > 0
-    ? Math.min(MAX_TIMELINE_ROWS, timelineCount, maxTimelineRows)
-    : 0;
+  const timelineRows =
+    timelineCount > 0 ? Math.min(MAX_TIMELINE_ROWS, timelineCount, maxTimelineRows) : 0;
   const transcriptRows = Math.max(0, height - promptRows - STATUS_ROWS - timelineRows);
   return { promptLineCount, promptRows, timelineRows, transcriptRows };
 }
@@ -91,17 +91,17 @@ function countTimelineEntries(state: TuiUiState): number {
 
 function activeToolStarts(state: TuiUiState) {
   const finishedCallIds = new Set(
-    state.runtimeToolEvents
-      .filter(event => event.type === 'finished')
-      .map(event => event.callId),
+    state.runtimeToolEvents.filter(event => event.type === 'finished').map(event => event.callId)
   );
   return state.runtimeToolEvents.filter(
-    event => event.type === 'started' && !finishedCallIds.has(event.callId),
+    event => event.type === 'started' && !finishedCallIds.has(event.callId)
   );
 }
 
 function activeSubtaskTimelineEntries(state: TuiUiState) {
-  return state.subtaskTimeline.filter(entry => entry.state === 'queued' || entry.state === 'running');
+  return state.subtaskTimeline.filter(
+    entry => entry.state === 'queued' || entry.state === 'running'
+  );
 }
 
 /**
@@ -113,7 +113,7 @@ export function measureTuiLiveFrameHeight(
   state: TuiUiState,
   width: number,
   maxHeight: number,
-  options: TuiTranscriptLayoutOptions = {},
+  options: TuiTranscriptLayoutOptions = {}
 ): number {
   const safeWidth = Math.max(MIN_WIDTH, Math.floor(width));
   const transcriptWidth = resolveTranscriptWidth(safeWidth, options.transcriptWidth);
@@ -122,14 +122,14 @@ export function measureTuiLiveFrameHeight(
 
   const promptLines = Math.min(
     Math.max(1, state.prompt.value.split('\n').length),
-    Math.max(1, safeMaxHeight - PROMPT_BORDER_ROWS - STATUS_ROWS),
+    Math.max(1, safeMaxHeight - PROMPT_BORDER_ROWS - STATUS_ROWS)
   );
   const promptRows = PROMPT_BORDER_ROWS + promptLines;
   const timelineRows = Math.min(MAX_TIMELINE_ROWS, countTimelineEntries(state));
   const fixedRows = promptRows + STATUS_ROWS + timelineRows;
-  const transcriptRows = liveTuiTranscriptRecords(state)
-    .flatMap(entry => layoutRecord(entry, transcriptWidth, options))
-    .length;
+  const transcriptRows = liveTuiTranscriptRecords(state).flatMap(entry =>
+    layoutRecord(entry, transcriptWidth, options)
+  ).length;
 
   return Math.min(safeMaxHeight, Math.max(MIN_HEIGHT, fixedRows + transcriptRows));
 }
@@ -142,7 +142,10 @@ export function renderTuiUiFrame(state: TuiUiState, options: TuiLayoutOptions): 
   const budget = computeBudget(height, state.prompt.value, countTimelineEntries(state));
   // Honour an explicit cap on the transcript region (used by a test to pin a
   // small tail); otherwise the whole transcript region is used.
-  const transcriptRows = Math.max(0, Math.min(options.maxTranscriptRows ?? budget.transcriptRows, budget.transcriptRows));
+  const transcriptRows = Math.max(
+    0,
+    Math.min(options.maxTranscriptRows ?? budget.transcriptRows, budget.transcriptRows)
+  );
   const promptTop = height - budget.promptRows;
   const statusRow = promptTop - 1;
   const timelineTop = statusRow - budget.timelineRows;
@@ -194,11 +197,12 @@ function renderLiveTranscript(
   state: TuiUiState,
   startRow: number,
   maxRows: number,
-  options: TuiTranscriptLayoutOptions,
+  options: TuiTranscriptLayoutOptions
 ): void {
   const width = resolveTranscriptWidth(frame.width, options.transcriptWidth);
-  const rows = liveTuiTranscriptRecords(state)
-    .flatMap(entry => layoutRecord(entry, width, options));
+  const rows = liveTuiTranscriptRecords(state).flatMap(entry =>
+    layoutRecord(entry, width, options)
+  );
   const visible = rows.slice(Math.max(0, rows.length - maxRows));
 
   visible.forEach((row, index) => {
@@ -211,13 +215,10 @@ function renderTranscript(
   state: TuiUiState,
   startRow: number,
   maxRows: number,
-  options: TuiTranscriptLayoutOptions,
+  options: TuiTranscriptLayoutOptions
 ): void {
   const width = resolveTranscriptWidth(frame.width, options.transcriptWidth);
-  const records = [
-    ...staticTuiTranscriptRecords(state),
-    ...liveTuiTranscriptRecords(state),
-  ];
+  const records = [...staticTuiTranscriptRecords(state), ...liveTuiTranscriptRecords(state)];
   const rows = records.flatMap(entry => layoutRecord(entry, width, options));
   const visible = rows.slice(Math.max(0, rows.length - maxRows));
 
@@ -246,10 +247,45 @@ function renderTimeline(frame: TuiFrame, state: TuiUiState, top: number, maxRows
 function renderStatus(frame: TuiFrame, state: TuiUiState, row: number): void {
   if (row < 0) return;
   const left = state.processing ? 'working' : 'ready';
-  const right = state.statusMessage ? state.statusMessage : '';
+  const statusDuplicatesGoalSnapshot = Boolean(
+    state.goal &&
+    (state.statusMessage.startsWith('Goal restored ') ||
+      (state.goal.status !== 'complete' &&
+        state.statusMessage.startsWith(`Goal ${state.goal.status}:`)))
+  );
+  const right = statusDuplicatesGoalSnapshot ? '' : state.statusMessage || '';
   const activity: string[] = [];
+  if (state.goal) {
+    const criteria = state.goal.criteria;
+    const progress = criteria?.total ? ` ${criteria.passed}/${criteria.total}` : '';
+    const objective = ` ${truncateCells(state.goal.objective, 20)}`;
+    const phase = state.goal.planPhase ? ` ${state.goal.planPhase}` : '';
+    const turn = state.goal.continuationCount > 0 ? ` t${state.goal.continuationCount}` : '';
+    const budget = state.goal.tokenBudget
+      ? ` ${state.goal.tokensUsed}/${state.goal.tokenBudget}tok`
+      : '';
+    const statusAlreadyShowsAudit = state.statusMessage.startsWith('Goal audit failed (');
+    const audit =
+      !statusAlreadyShowsAudit && state.goal.auditRemaining?.[0]
+        ? ` audit:${truncateCells(state.goal.auditRemaining[0], 32)}`
+        : '';
+    const nextActionAlreadyShown = Boolean(
+      statusAlreadyShowsAudit &&
+      state.goal.nextAction &&
+      state.statusMessage.includes(state.goal.nextAction)
+    );
+    const next =
+      state.goal.nextAction && !nextActionAlreadyShown
+        ? ` next:${truncateCells(state.goal.nextAction, 24)}`
+        : '';
+    const stop = state.goal.stopReason ? ` resume:${truncateCells(state.goal.stopReason, 24)}` : '';
+    activity.push(
+      `goal:${state.goal.status}${progress}${audit}${objective}${phase}${turn}${budget}${next}${stop}`
+    );
+  }
   if (state.statusState.activeTools > 0) activity.push(`tools:${state.statusState.activeTools}`);
-  if (state.statusState.activeSubtasks > 0) activity.push(`sub:${state.statusState.activeSubtasks}`);
+  if (state.statusState.activeSubtasks > 0)
+    activity.push(`sub:${state.statusState.activeSubtasks}`);
   const activityStr = activity.length ? `[${activity.join(' ')}] ` : '';
   const rightFull = right ? `${right} ${activityStr}`.trimEnd() : activityStr.trimEnd();
   const available = Math.max(0, frame.width - stringWidth(left) - 1);
@@ -269,16 +305,13 @@ function renderPrompt(
   state: TuiUiState,
   top: number,
   width: number,
-  visibleLineCount: number,
+  visibleLineCount: number
 ): void {
   const value = state.prompt.value;
   const lines = value.split('\n');
   const innerWidth = Math.max(0, width - 2);
   const { line: cursorLine, col: cursorCol } = lineColOfCursor(value, state.prompt.cursor);
-  const viewportStart = Math.max(
-    0,
-    Math.min(cursorLine, lines.length - visibleLineCount),
-  );
+  const viewportStart = Math.max(0, Math.min(cursorLine, lines.length - visibleLineCount));
   const viewportLines = lines.slice(viewportStart, viewportStart + visibleLineCount);
 
   writeFrameText(frame, top, 0, `┌${'─'.repeat(innerWidth)}┐`);
@@ -287,9 +320,10 @@ function renderPrompt(
     const prefix = absoluteLine === 0 ? '› ' : '  ';
     const fixed = ` ${prefix}`;
     const bodyWidth = Math.max(0, innerWidth - stringWidth(fixed) - 1);
-    const viewport = absoluteLine === cursorLine
-      ? promptLineViewport(viewportLines[i], cursorCol, bodyWidth)
-      : { text: truncateCells(viewportLines[i], bodyWidth), cursorCells: 0 };
+    const viewport =
+      absoluteLine === cursorLine
+        ? promptLineViewport(viewportLines[i], cursorCol, bodyWidth)
+        : { text: truncateCells(viewportLines[i], bodyWidth), cursorCells: 0 };
     const content = `${fixed}${viewport.text}`;
     const padding = ' '.repeat(Math.max(0, innerWidth - stringWidth(content)));
     writeFrameText(frame, top + 1 + i, 0, `│${content}${padding}│`);
@@ -307,7 +341,7 @@ function renderPrompt(
 function promptLineViewport(
   value: string,
   cursor: number,
-  width: number,
+  width: number
 ): { text: string; cursorCells: number } {
   if (width <= 0) return { text: '', cursorCells: 0 };
 
@@ -346,12 +380,15 @@ function renderOverlay(frame: TuiFrame, state: TuiUiState, maxRows: number): voi
   if (state.overlay.type === 'sessions') {
     const overlay = state.overlay;
     const request = overlay.request;
-    const visibleCount = Math.max(0, Math.min(
-      maxRows - 1,
-      request.maxVisibleItems ?? maxRows - 1,
-      request.sessions.length,
-    ));
-    const start = sessionPickerStartIndex(state.overlay.selectedIndex, visibleCount, request.sessions.length);
+    const visibleCount = Math.max(
+      0,
+      Math.min(maxRows - 1, request.maxVisibleItems ?? maxRows - 1, request.sessions.length)
+    );
+    const start = sessionPickerStartIndex(
+      state.overlay.selectedIndex,
+      visibleCount,
+      request.sessions.length
+    );
     const visibleSessions = request.sessions.slice(start, start + visibleCount);
     const rows = [
       `Sessions: ${request.title} (${overlay.selectedIndex + 1}/${request.sessions.length})`,
@@ -379,11 +416,7 @@ function renderOverlay(frame: TuiFrame, state: TuiUiState, maxRows: number): voi
   if (state.overlay.type === 'edit') {
     const overlay = state.overlay;
     const req = overlay.request;
-    const visibleCount = Math.max(0, Math.min(
-      maxRows - 1,
-      10,
-      req.candidates.length,
-    ));
+    const visibleCount = Math.max(0, Math.min(maxRows - 1, 10, req.candidates.length));
     const start = pickerStartIndex(overlay.selectedIndex, visibleCount, req.candidates.length);
     const picker = createEditPreviewPickerState({
       request: req,
@@ -416,19 +449,20 @@ function renderOverlay(frame: TuiFrame, state: TuiUiState, maxRows: number): voi
     const visibleCount = Math.max(0, Math.min(maxRows - 2, 10, overlay.items.length || 1));
     const start = pickerStartIndex(overlay.selectedIndex, visibleCount, overlay.items.length);
     const visibleItems = overlay.items.slice(start, start + visibleCount);
-    const title = overlay.type === 'commands'
-      ? `Commands${overlay.query ? ` "${overlay.query}"` : ''}`
-      : `Files${overlay.query ? ` "${overlay.query}"` : ''}`;
+    const title =
+      overlay.type === 'commands'
+        ? `Commands${overlay.query ? ` "${overlay.query}"` : ''}`
+        : `Files${overlay.query ? ` "${overlay.query}"` : ''}`;
     const rows = [
       `${title} (${overlay.items.length} match${overlay.items.length === 1 ? '' : 'es'})`,
       ...(overlay.items.length === 0
         ? ['  No matching items']
         : visibleItems.map((item, offset) => {
-          const index = start + offset;
-          const marker = index === overlay.selectedIndex ? '›' : ' ';
-          const description = item.description ? `  ${item.description}` : '';
-          return `${marker} ${item.label}${description}`;
-        })),
+            const index = start + offset;
+            const marker = index === overlay.selectedIndex ? '›' : ' ';
+            const description = item.description ? `  ${item.description}` : '';
+            return `${marker} ${item.label}${description}`;
+          })),
     ].map(row => truncateCells(row, frame.width));
 
     rows.slice(0, maxRows).forEach((line, index) => {
@@ -448,10 +482,7 @@ function renderOverlay(frame: TuiFrame, state: TuiUiState, maxRows: number): voi
       `Tool Permission: ${overlay.request.name}`,
       ...picker.visibleItems.flatMap((item, index) => {
         const marker = index === overlay.selectedIndex ? '›' : ' ';
-        return [
-          `${marker} ${item.label}`,
-          ...(item.description ? [`  ${item.description}`] : []),
-        ];
+        return [`${marker} ${item.label}`, ...(item.description ? [`  ${item.description}`] : [])];
       }),
       'Enter select   y allow   n/Esc deny',
     ].map(row => truncateCells(row, frame.width));
@@ -480,7 +511,11 @@ function renderOverlay(frame: TuiFrame, state: TuiUiState, maxRows: number): voi
   }
 }
 
-function sessionPickerStartIndex(selectedIndex: number, visibleCount: number, total: number): number {
+function sessionPickerStartIndex(
+  selectedIndex: number,
+  visibleCount: number,
+  total: number
+): number {
   return pickerStartIndex(selectedIndex, visibleCount, total);
 }
 
@@ -494,14 +529,16 @@ function pickerStartIndex(selectedIndex: number, visibleCount: number, total: nu
 function layoutRecord(
   entry: TuiTranscriptRecord,
   width: number,
-  options: TuiTranscriptLayoutOptions,
+  options: TuiTranscriptLayoutOptions
 ): StyledRow[] {
-  return options.layoutTranscriptRecord?.(entry, width)
-    ?? layoutTranscriptEntry(entry, {
+  return (
+    options.layoutTranscriptRecord?.(entry, width) ??
+    layoutTranscriptEntry(entry, {
       width,
       theme: options.theme,
       toolOutputMode: options.toolOutputMode,
-    });
+    })
+  );
 }
 
 function resolveTranscriptWidth(frameWidth: number, requested?: number): number {
