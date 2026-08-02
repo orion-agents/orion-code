@@ -85,6 +85,7 @@ import {
   listModelCatalogEntries,
   resolveModelAlias,
 } from '../services/model-catalog';
+import { lookupProfile, type ResolvedModelProfile } from '../services/model-registry';
 import { collectWorkspaceDiff, formatWorkspaceDiff } from '../services/workspace-diff';
 import { createCommitPlan, formatCommitPlan } from '../services/commit-plan';
 import { findArtifact, listArtifacts, retrieveArtifact } from '../core/tool-artifacts';
@@ -170,8 +171,64 @@ function formatRendererStatus(ctx: CommandContext): string {
   return `${BRAND(snapshot.renderer.name)} ${status} ${DIM(snapshot.renderer.capabilityLabels.join(', '))}`;
 }
 
-function formatModelAliasHelp(): string {
-  return Object.keys(getModelCatalogAliases()).sort().join(', ');
+function getProfileByModelId(
+  registry: CommandContext['config']['modelRegistry'],
+  modelId: string
+): ResolvedModelProfile | undefined {
+  if (!registry) return undefined;
+
+  const normalized = modelId.trim();
+  if (!normalized) return undefined;
+
+  if (registry.profiles.has(normalized)) return registry.profiles.get(normalized)!;
+
+  for (const profile of registry.profiles.values()) {
+    if (modelId === profile.model) return profile;
+  }
+  return undefined;
+}
+
+function resolveModelFromRegistry(
+  config: CommandContext['config'],
+  selector: string
+): ResolvedModelProfile | undefined {
+  if (!config.modelRegistry) return undefined;
+
+  const trimmed = selector.trim();
+  if (!trimmed) return undefined;
+
+  return lookupProfile(config.modelRegistry, trimmed) ?? undefined;
+}
+
+function listConfiguredModelCatalogEntries(
+  registry: CommandContext['config']['modelRegistry']
+) {
+  if (!registry) return [];
+  return registry.enabledProfiles.map(profile => {
+    const provider = registry.providers.get(profile.provider);
+    return {
+      name: profile.id,
+      alias: profile.aliases?.[0],
+      provider: provider?.displayName ?? profile.provider,
+      contextWindow: profile.resolvedContextWindow,
+      maxOutputTokens: profile.resolvedMaxOutputTokens,
+      source: `${profile.contextSource}/${profile.outputSource}`,
+    };
+  });
+}
+
+function formatModelAliasHelp(config: CommandContext['config']): string {
+  const aliases = new Set<string>(Object.keys(getModelCatalogAliases()));
+
+  if (config.modelRegistry) {
+    for (const profile of config.modelRegistry.profiles.values()) {
+      if (profile.aliases) {
+        for (const alias of profile.aliases) aliases.add(alias);
+      }
+    }
+  }
+
+  return [...aliases].sort().join(', ');
 }
 
 function formatLoopBudgetSource(stats: LoopStats): string {
@@ -1626,14 +1683,28 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
   if (!args || trimmedArgs === '?' || trimmedArgs === 'info') {
     console.log();
     if (ctx.llm) {
-      const currentModel = ctx.llm.getModel();
+      const currentModel = ctx.store.getSnapshot().currentModel || ctx.llm.getModel();
+      const profile = getProfileByModelId(ctx.config.modelRegistry, currentModel);
       const aliasEntry = getModelCatalogEntry(currentModel);
-      const contextInfo = resolveModelContext(currentModel);
+      const contextInfo = profile
+        ? {
+            id: profile.model,
+            label: profile.displayName || profile.id,
+            contextWindow: profile.resolvedContextWindow,
+            maxOutputTokens: profile.resolvedMaxOutputTokens,
+            source: 'config',
+            matchedId: profile.model,
+          }
+        : resolveModelContext(currentModel);
       const compactStats = getCommandAutoCompact(ctx, currentModel).getStats();
       console.log(HEADER('Current Model'));
       console.log(DIM('─'.repeat(40)));
       console.log(`  Model    ${BRAND(currentModel)}`);
-      if (aliasEntry) {
+      if (profile) {
+        console.log(`  Alias    ${ACCENT(profile.aliases?.[0] ? `(${profile.aliases[0]})` : 'none')}`);
+        const provider = ctx.config.modelRegistry?.providers.get(profile.provider);
+        console.log(`  Provider ${DIM(provider?.displayName || profile.provider)}`);
+      } else if (aliasEntry) {
         console.log(`  Alias    ${ACCENT(aliasEntry.alias)}`);
         console.log(`  Provider ${DIM(aliasEntry.provider)}`);
       }
@@ -1659,18 +1730,22 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
     console.log();
     console.log(HEADER('Available Models'));
     console.log(DIM('─'.repeat(40)));
-    const currentModel = ctx.llm?.getModel() || '';
+    const currentModel = ctx.store.getSnapshot().currentModel || ctx.llm?.getModel() || '';
+    const configuredModels = listConfiguredModelCatalogEntries(ctx.config.modelRegistry);
     const modelPicker = createModelPickerState({
       currentModel,
-      models: listModelCatalogEntries().map(model => {
-        const contextInfo = resolveModelContext(model.name);
-        return {
-          ...model,
-          contextWindow: contextInfo.contextWindow,
-          maxOutputTokens: contextInfo.maxOutputTokens,
-          source: contextInfo.source,
-        };
-      }),
+      models:
+        configuredModels.length > 0
+          ? configuredModels
+          : listModelCatalogEntries().map(model => {
+              const contextInfo = resolveModelContext(model.name);
+              return {
+                ...model,
+                contextWindow: contextInfo.contextWindow,
+                maxOutputTokens: contextInfo.maxOutputTokens,
+                source: contextInfo.source,
+              };
+            }),
     });
     for (const item of modelPicker.visibleItems) {
       const marker = item.isCurrent ? SUCCESS('●') : DIM('○');
@@ -1697,7 +1772,7 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
     console.log(`  ${ACCENT('/model <name>')}    Switch to specific model`);
     console.log(`  ${ACCENT('/model <alias>')}   Switch using alias (opus, sonnet, haiku)`);
     console.log();
-    console.log(DIM(`Aliases: ${formatModelAliasHelp()}`));
+    console.log(DIM(`Aliases: ${formatModelAliasHelp(ctx.config)}`));
     console.log();
     return { success: true };
   }
@@ -1710,13 +1785,21 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
   }
 
   // 解析别名
-  const resolvedModel = resolveModelAlias(args);
+  const registryProfile = resolveModelFromRegistry(ctx.config, args);
+  const resolvedModel = registryProfile ? registryProfile.model : resolveModelAlias(args);
+  const resolvedProfileId = registryProfile ? registryProfile.id : resolvedModel;
 
   ctx.llm.setModel(resolvedModel);
   getCommandAutoCompact(ctx, resolvedModel);
-  ctx.store.setState({ currentModel: resolvedModel });
-  console.log(SUCCESS(`✔ Model changed to ${BRAND(resolvedModel)}`));
-  const contextInfo = resolveModelContext(resolvedModel);
+  ctx.store.setState({ currentModel: resolvedProfileId });
+  console.log(SUCCESS(`✔ Model changed to ${BRAND(resolvedProfileId)}`));
+  const contextInfo = registryProfile
+    ? {
+        contextWindow: registryProfile.resolvedContextWindow,
+        maxOutputTokens: registryProfile.resolvedMaxOutputTokens,
+        source: 'resolved',
+      }
+    : resolveModelContext(resolvedModel);
   console.log(
     DIM(
       `  Context window ${formatTokenCount(contextInfo.contextWindow)} tokens (${contextInfo.source})`

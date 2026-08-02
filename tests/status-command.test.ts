@@ -4,6 +4,7 @@ import { join } from 'path';
 import { findCommand } from '../src/commands';
 import { Store } from '../src/framework/store';
 import { loadConfig } from '../src/services/config';
+import { buildRegistry } from '../src/services/model-registry';
 import { appendSessionTraceEvent, createSession, readSessionTraceEvents } from '../src/services/session-storage';
 import { getProjectSessionTracePath } from '../src/services/config-dir';
 import { storeArtifact } from '../src/core/tool-artifacts';
@@ -184,6 +185,180 @@ describe('/status context diagnostics', () => {
     expect(rendered).toContain('claude-opus-4-8');
     expect(rendered).toContain('200K ctx');
     expect(rendered).not.toContain('claude-opus-4-7');
+  });
+
+  it('renders /model list from configured model profiles', async () => {
+    const cwd = join(root, 'packages', 'cli');
+    const registry = buildRegistry({
+      providers: [
+        {
+          id: 'huoshan',
+          displayName: '火山方舟',
+          baseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3',
+          apiKey: 'test-key',
+          protocol: 'openai-completions',
+        },
+      ],
+      models: [
+        {
+          id: 'ark-code-latest',
+          displayName: 'Ark Code Latest',
+          provider: 'huoshan',
+          model: 'ark-code-latest',
+          contextWindow: 1024000,
+          maxOutputTokens: 128000,
+          aliases: ['ark'],
+        },
+        {
+          id: 'glm-5.1',
+          provider: 'huoshan',
+          model: 'xopglm51',
+          contextWindow: 200000,
+          maxOutputTokens: 64000,
+          enabled: false,
+        },
+      ],
+      defaultModel: 'ark-code-latest',
+    });
+    expect(registry.valid).toBe(true);
+
+    const config = loadConfig({ apiKey: 'test-key', model: 'ark-code-latest' });
+    config.modelRegistry = registry.registry!;
+    const store = new Store({
+      config,
+      tools: TOOLS,
+      currentModel: 'ark-code-latest',
+    });
+    const ctx: CommandContext = {
+      cwd,
+      config,
+      store,
+      llm: {
+        getModel: jest.fn(() => 'ark-code-latest'),
+      } as any,
+      runtime: makeRuntime() as any,
+    };
+
+    const result = await findCommand('model')!.execute(ctx, 'list');
+    const rendered = stripAnsi(logs.join('\n'));
+
+    expect(result.success).toBe(true);
+    expect(rendered).toContain('Available Models');
+    expect(rendered).toContain('ark-code-latest');
+    expect(rendered).toContain('(ark)');
+    expect(rendered).toContain('(current)');
+    expect(rendered).toContain('1.0M ctx');
+    expect(rendered).toContain('火山方舟');
+    expect(rendered).not.toContain('claude-opus-4-8');
+  });
+
+  it('shows configured profile context in /model info', async () => {
+    const cwd = join(root, 'packages', 'cli');
+    const registry = buildRegistry({
+      providers: [
+        {
+          id: 'huoshan',
+          displayName: '火山方舟',
+          baseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3',
+          apiKey: 'test-key',
+          protocol: 'openai-completions',
+        },
+      ],
+      models: [
+        {
+          id: 'ark-code-latest',
+          displayName: 'Ark Code Latest',
+          provider: 'huoshan',
+          model: 'ark-code-latest',
+          contextWindow: 1024000,
+          maxOutputTokens: 128000,
+        },
+      ],
+      defaultModel: 'ark-code-latest',
+    });
+    expect(registry.valid).toBe(true);
+
+    const config = loadConfig({ apiKey: 'test-key', model: 'ark-code-latest' });
+    config.modelRegistry = registry.registry!;
+    const store = new Store({
+      config,
+      tools: TOOLS,
+      currentModel: 'ark-code-latest',
+    });
+    const ctx: CommandContext = {
+      cwd,
+      config,
+      store,
+      llm: {
+        getModel: jest.fn(() => 'ark-code-latest'),
+      } as any,
+      runtime: makeRuntime() as any,
+    };
+
+    const result = await findCommand('model')!.execute(ctx, '');
+    const rendered = stripAnsi(logs.join('\n'));
+
+    expect(result.success).toBe(true);
+    expect(rendered).toContain('Current Model');
+    expect(rendered).toContain('Model    ark-code-latest');
+    expect(rendered).toContain('Context  1.0M tokens');
+    expect(rendered).toContain('Source   config');
+    expect(rendered).toContain('Provider 火山方舟');
+  });
+
+  it('switches /model using registry alias and stores profile id', async () => {
+    const cwd = join(root, 'packages', 'cli');
+    const registry = buildRegistry({
+      providers: [
+        {
+          id: 'huoshan',
+          displayName: '火山方舟',
+          baseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3',
+          apiKey: 'test-key',
+          protocol: 'openai-completions',
+        },
+      ],
+      models: [
+        {
+          id: 'ark-code-latest',
+          displayName: 'Ark Code Latest',
+          provider: 'huoshan',
+          model: 'ark-code-latest',
+          contextWindow: 1024000,
+          maxOutputTokens: 128000,
+          aliases: ['ark'],
+        },
+      ],
+      defaultModel: 'ark-code-latest',
+    });
+    expect(registry.valid).toBe(true);
+    const config = loadConfig({ apiKey: 'test-key', model: 'glm-5' });
+    config.modelRegistry = registry.registry!;
+    const setModel = jest.fn();
+    const store = new Store({
+      config,
+      tools: TOOLS,
+      currentModel: 'glm-5',
+    });
+    const ctx: CommandContext = {
+      cwd,
+      config,
+      store,
+      llm: {
+        getModel: jest.fn(() => 'glm-5'),
+        setModel,
+      } as any,
+      runtime: makeRuntime() as any,
+    };
+
+    const result = await findCommand('model')!.execute(ctx, 'ark');
+    const rendered = stripAnsi(logs.join('\n'));
+
+    expect(result.success).toBe(true);
+    expect(setModel).toHaveBeenCalledWith('ark-code-latest');
+    expect(store.getSnapshot().currentModel).toBe('ark-code-latest');
+    expect(rendered).toContain('Model changed to ark-code-latest');
+    expect(rendered).toContain('Context window 1.0M tokens (resolved)');
   });
 
   it('switches /model aliases to known model ids', async () => {
