@@ -5,6 +5,7 @@ import {
 import { format as formatConsoleMessage } from 'util';
 import {
   resolveUiRendererCapabilities,
+  type ModelPickerRequest,
   type OpenHorseUiRuntime,
   type SessionPickerRequest,
   type UiEventSink,
@@ -333,7 +334,7 @@ export async function launchTuiUI(
   };
 
   const submit = (rawInput: string): void => {
-    const selectedInput = consumeSessionPickerSelection(rawInput);
+    const selectedInput = consumeModelPickerSelection(consumeSessionPickerSelection(rawInput));
     const runtimeInput: AgentRuntimeInput =
       typeof selectedInput === 'string'
         ? { type: 'submit', text: selectedInput.trim(), source: 'composer' }
@@ -344,6 +345,48 @@ export async function launchTuiUI(
     if (result.type === 'exit_requested') {
       void stop();
     }
+  };
+
+  const consumeModelPickerSelection = (inputValue: string | AgentRuntimeInput): string | AgentRuntimeInput => {
+    if (typeof inputValue !== 'string') return inputValue;
+    const overlay = runner.getState().overlay;
+    if (overlay?.type !== 'model') return inputValue;
+
+    runner.dispatch({ type: 'closeOverlay' });
+    const request: ModelPickerRequest = overlay.request;
+    const trimmed = inputValue.trim();
+    if (!trimmed) {
+      const selected = request.models[overlay.selectedIndex];
+      if (!selected) {
+        runner.events.append({ role: 'error', content: 'No model selected.' });
+        return '';
+      }
+      return `/model ${selected.name}`;
+    }
+
+    if (trimmed.startsWith('/')) return trimmed;
+
+    const numeric = trimmed.match(/^#?(\d+)$/);
+    if (numeric) {
+      const index = Number(numeric[1]) - 1;
+      const selected = request.models[index];
+      if (!selected) {
+        runner.events.append({ role: 'error', content: `No model at index ${numeric[1]}.` });
+        return '';
+      }
+      return `/model ${selected.name}`;
+    }
+
+    const normalized = trimmed.toLowerCase();
+    const exact = request.models.find(
+      m =>
+        m.name.toLowerCase() === normalized ||
+        (m.alias && m.alias.toLowerCase() === normalized)
+    );
+    if (exact) return `/model ${exact.name}`;
+
+    runner.events.append({ role: 'error', content: `No model matches "${trimmed}".` });
+    return '';
   };
 
   const handleCtrlC = (): void => {
@@ -446,6 +489,14 @@ export async function launchTuiUI(
           requestId,
           approved,
           source: 'keyboard',
+        });
+      },
+      initialPermissionMode: runtime.config.toolConfirmation,
+      onPermissionModeChange: value => {
+        controller.handle({
+          type: 'permission_mode_change',
+          value,
+          source: 'command',
         });
       },
       surface,

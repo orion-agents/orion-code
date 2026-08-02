@@ -1,5 +1,6 @@
 import type {
   EditPreviewRequest,
+  ModelPickerRequest,
   RuntimeLoopStats,
   RuntimeToolFinishedEvent,
   RuntimeToolStartedEvent,
@@ -14,6 +15,7 @@ import type {
   UiEventSink,
 } from './ui-events';
 import type { GoalControlAction, GoalControlInput, GoalRuntimeEvent } from './goals/types';
+import type { ToolConfirmationPolicy } from '../services/global-config';
 
 export type AgentRuntimeInput =
   | {
@@ -51,6 +53,11 @@ export type AgentRuntimeInput =
       action: GoalControlAction;
       payload?: GoalControlInput['payload'];
       source?: 'command' | 'programmatic';
+    }
+  | {
+      type: 'permission_mode_change';
+      value: ToolConfirmationPolicy;
+      source?: 'command' | 'programmatic';
     };
 
 export type AgentRuntimeSubmitResult =
@@ -71,7 +78,9 @@ export type AgentRuntimeInputResult =
   | AgentRuntimeInterruptResult
   | { type: 'exit_intent_cleared' }
   | { type: 'permission_decision_recorded' }
-  | { type: 'permission_decision_ignored' };
+  | { type: 'permission_decision_ignored' }
+  | { type: 'permission_mode_changed' }
+  | { type: 'permission_mode_invalid' };
 
 export type AgentRuntimeEvent =
   | { type: 'transcript_append'; entry: TranscriptAppendEntry }
@@ -82,6 +91,7 @@ export type AgentRuntimeEvent =
   | { type: 'transcript_clear' }
   | { type: 'status_changed'; message: string }
   | { type: 'session_picker_requested'; request: SessionPickerRequest }
+  | { type: 'model_picker_requested'; request: ModelPickerRequest }
   | { type: 'edit_preview_requested'; request: EditPreviewRequest }
   | { type: 'permission_requested'; request: ToolPermissionRequest }
   | { type: 'tool_started'; event: RuntimeToolStartedEvent }
@@ -124,6 +134,9 @@ export function emitToUiEventSink(events: UiEventSink, event: AgentRuntimeEvent)
       return undefined;
     case 'session_picker_requested':
       events.showSessionPicker(event.request);
+      return undefined;
+    case 'model_picker_requested':
+      events.showModelPicker?.(event.request);
       return undefined;
     case 'edit_preview_requested':
       events.showEditPreview(event.request);
@@ -195,6 +208,9 @@ export function createUiEventSinkFromAgentRuntimeEvents(sink: AgentRuntimeEventS
     },
     showSessionPicker: request => {
       sink.emit({ type: 'session_picker_requested', request });
+    },
+    showModelPicker: request => {
+      sink.emit({ type: 'model_picker_requested', request });
     },
     showEditPreview: request => {
       sink.emit({ type: 'edit_preview_requested', request });

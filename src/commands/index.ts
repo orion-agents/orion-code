@@ -15,7 +15,7 @@ import {
   type CommandResult,
   type PermissionMode,
 } from './types';
-import { createModelPickerState, createStatusSnapshot } from '../runtime/ui-view-model';
+import { createModelPickerState, createStatusSnapshot, type ModelPickerCandidate } from '../runtime/ui-view-model';
 import type { Task } from '../core/agent';
 import { TaskManager, CreateTaskOptions } from '../services/task-manager';
 import { AgentRunner } from '../services/agent-runner';
@@ -1708,6 +1708,10 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
         console.log(`  Alias    ${ACCENT(aliasEntry.alias)}`);
         console.log(`  Provider ${DIM(aliasEntry.provider)}`);
       }
+      const aliasHelp = formatModelAliasHelp(ctx.config);
+      if (aliasHelp) {
+        console.log(`  Aliases  ${DIM(aliasHelp)}`);
+      }
       console.log(`  Context  ${DIM(`${formatTokenCount(contextInfo.contextWindow)} tokens`)}`);
       if (contextInfo.maxOutputTokens) {
         console.log(`  Output   ${DIM(`${formatTokenCount(contextInfo.maxOutputTokens)} tokens`)}`);
@@ -1725,54 +1729,12 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
     return { success: true };
   }
 
-  // 显示模型列表
-  if (trimmedArgs === 'list' || trimmedArgs === 'ls') {
+  // /model list|ls|help 已移除，统一由 /models 承接（交互式选择切换）
+  if (trimmedArgs === 'list' || trimmedArgs === 'ls' || trimmedArgs === 'help') {
     console.log();
-    console.log(HEADER('Available Models'));
-    console.log(DIM('─'.repeat(40)));
-    const currentModel = ctx.store.getSnapshot().currentModel || ctx.llm?.getModel() || '';
-    const configuredModels = listConfiguredModelCatalogEntries(ctx.config.modelRegistry);
-    const modelPicker = createModelPickerState({
-      currentModel,
-      models:
-        configuredModels.length > 0
-          ? configuredModels
-          : listModelCatalogEntries().map(model => {
-              const contextInfo = resolveModelContext(model.name);
-              return {
-                ...model,
-                contextWindow: contextInfo.contextWindow,
-                maxOutputTokens: contextInfo.maxOutputTokens,
-                source: contextInfo.source,
-              };
-            }),
-    });
-    for (const item of modelPicker.visibleItems) {
-      const marker = item.isCurrent ? SUCCESS('●') : DIM('○');
-      const alias = item.alias ? `(${item.alias})` : '';
-      const context = `${formatTokenCount(item.contextWindow ?? 0)} ctx`;
-      const current = item.isCurrent ? BRAND('(current)') : '';
-      console.log(`  ${marker} ${ACCENT(item.name)} ${DIM(alias)} ${DIM(context)} ${current}`);
-      console.log(`      ${DIM(item.provider ?? 'unknown')}`);
-    }
-    console.log();
-    console.log(DIM('Use /model <name|alias> to switch, e.g. /model sonnet'));
-    console.log();
-    return { success: true };
-  }
-
-  // 显示帮助
-  if (trimmedArgs === 'help') {
-    console.log();
-    console.log(HEADER('/model Command Help'));
-    console.log(DIM('─'.repeat(40)));
-    console.log();
-    console.log(`  ${ACCENT('/model')}           Show current model`);
-    console.log(`  ${ACCENT('/model list')}      Show available models`);
-    console.log(`  ${ACCENT('/model <name>')}    Switch to specific model`);
-    console.log(`  ${ACCENT('/model <alias>')}   Switch using alias (opus, sonnet, haiku)`);
-    console.log();
-    console.log(DIM(`Aliases: ${formatModelAliasHelp(ctx.config)}`));
+    console.log(WARN(`/model ${trimmedArgs} was removed.`));
+    console.log(DIM('Use /models to switch models interactively,'));
+    console.log(DIM('or /model <name|alias> to switch directly, e.g. /model sonnet'));
     console.log();
     return { success: true };
   }
@@ -1805,6 +1767,62 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
       `  Context window ${formatTokenCount(contextInfo.contextWindow)} tokens (${contextInfo.source})`
     )
   );
+  console.log();
+  return { success: true };
+}
+
+/**
+ * /models — 交互式选择切换模型。
+ * 交互式渲染器返回结构化 modelPicker 请求（渲染器弹出选择层，选中即 /model <id>）；
+ * 非交互式渲染器直接打印候选列表并提示 /model <name|alias>。
+ */
+function handleModels(ctx: CommandContext, _args: string): CommandResult {
+  console.log();
+  const currentModel = ctx.store.getSnapshot().currentModel || ctx.llm?.getModel() || '';
+  const configuredModels = listConfiguredModelCatalogEntries(ctx.config.modelRegistry);
+
+  const candidates: ModelPickerCandidate[] =
+    configuredModels.length > 0
+      ? configuredModels
+      : listModelCatalogEntries().map(model => {
+          const contextInfo = resolveModelContext(model.name);
+          return {
+            name: model.name,
+            alias: model.alias,
+            provider: model.provider,
+            contextWindow: contextInfo.contextWindow,
+            maxOutputTokens: contextInfo.maxOutputTokens,
+            source: contextInfo.source,
+          };
+        });
+
+  const ui = commandUICapabilities(ctx);
+  if (ui.structuredPickers) {
+    return {
+      success: true,
+      modelPicker: {
+        models: candidates,
+        currentModel,
+        title: 'Switch Model',
+        maxVisibleItems: 12,
+      },
+    };
+  }
+
+  // 非交互式渲染器：打印候选列表
+  console.log(HEADER('Available Models'));
+  console.log(DIM('─'.repeat(40)));
+  const modelPicker = createModelPickerState({ currentModel, models: candidates });
+  for (const item of modelPicker.visibleItems) {
+    const marker = item.isCurrent ? SUCCESS('●') : DIM('○');
+    const alias = item.alias ? `(${item.alias})` : '';
+    const context = `${formatTokenCount(item.contextWindow ?? 0)} ctx`;
+    const current = item.isCurrent ? BRAND('(current)') : '';
+    console.log(`  ${marker} ${ACCENT(item.name)} ${DIM(alias)} ${DIM(context)} ${current}`);
+    console.log(`      ${DIM(item.provider ?? 'unknown')}`);
+  }
+  console.log();
+  console.log(DIM('Use /model <name|alias> to switch, e.g. /model sonnet'));
   console.log();
   return { success: true };
 }
@@ -3874,7 +3892,7 @@ const COMMANDS: SlashCommand[] = [
   {
     name: 'model',
     description: 'Show or change the current model',
-    argumentHint: '[model|list|help]',
+    argumentHint: '[model|info]',
     category: 'model',
     priority: 10,
     type: 'builtin',
@@ -3883,8 +3901,19 @@ const COMMANDS: SlashCommand[] = [
     execute: (ctx, args) => handleModel(ctx, args),
   },
   {
+    name: 'models',
+    description: 'Switch the current model interactively',
+    argumentHint: '',
+    category: 'model',
+    priority: 10,
+    type: 'builtin',
+    execution: 'builtin',
+    risk: 'state-write',
+    execute: (ctx, args) => handleModels(ctx, args),
+  },
+  {
     name: 'mode',
-    aliases: ['permissions', 'perm'],
+    aliases: ['perm'],
     description: 'Show or change tool permission mode',
     argumentHint: '[default|accept-edits|plan|auto|next]',
     category: 'model',
@@ -3951,6 +3980,18 @@ const COMMANDS: SlashCommand[] = [
     type: 'builtin',
     execution: 'renderer-local',
     risk: 'read-only',
+    rendererScope: ['tui'],
+    execute: () => ({ success: true }),
+  },
+  {
+    name: 'permissions',
+    description: 'Set the tool confirmation policy (TUI). No argument opens a picker; with an argument applies immediately.',
+    argumentHint: '[allow|ask|deny]',
+    category: 'system',
+    priority: 33,
+    type: 'builtin',
+    execution: 'renderer-local',
+    risk: 'state-write',
     rendererScope: ['tui'],
     execute: () => ({ success: true }),
   },

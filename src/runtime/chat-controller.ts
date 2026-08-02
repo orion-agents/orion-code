@@ -1490,6 +1490,11 @@ export class AgentChatController {
       return;
     }
 
+    if (result.modelPicker) {
+      this.events.showModelPicker?.(result.modelPicker);
+      return;
+    }
+
     if (result.editPreview) {
       this.events.showEditPreview(result.editPreview);
       return;

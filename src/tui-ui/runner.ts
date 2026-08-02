@@ -6,6 +6,7 @@ import type { ToolDetailRepository } from '../runtime/tool-detail-repository';
 import { getCommands } from '../commands';
 import { measureTuiLiveFrameHeight, renderTuiLiveFrame, renderTuiUiFrame } from './layout';
 import { getFileQuery, visibleCommandItems, visibleFileItems, type TuiPickerItem } from './pickers';
+import type { ToolConfirmationPolicy } from '../services/global-config';
 import {
   InlineTerminalSurface,
   type CommittedEntry,
@@ -65,6 +66,10 @@ export interface TuiRunnerOptions {
   onSubmit?: (input: string) => void | Promise<void>;
   onCtrlC?: () => void;
   onPermissionDecision?: (requestId: string, approved: boolean) => void | Promise<void>;
+  /** Called when the user changes the tool confirmation policy via /permissions. */
+  onPermissionModeChange?: (value: ToolConfirmationPolicy) => void | Promise<void>;
+  /** Initial tool confirmation policy, surfaced in the status bar until changed. */
+  initialPermissionMode?: ToolConfirmationPolicy;
   /** Inject scheduler deps for testing (fake timers). */
   schedulerDeps?: Partial<TuiRenderSchedulerDeps>;
   /** Inline surface for committed scrollback + live region rendering. */
@@ -105,7 +110,7 @@ export class TuiRunner {
   private commitSequence = 0;
   private commitInFlight = false;
   private commitMismatchRetries = 0;
-  private state: TuiUiState = initialTuiUiState;
+  private state: TuiUiState;
   private width: number;
   private height: number;
   private lastFrame: TuiFrame | null = null;
@@ -120,6 +125,10 @@ export class TuiRunner {
   };
 
   constructor(private readonly options: TuiRunnerOptions) {
+    this.state = {
+      ...initialTuiUiState,
+      permissionMode: options.initialPermissionMode ?? initialTuiUiState.permissionMode,
+    };
     this.width = options.width;
     this.height = options.height;
     this.surface = options.surface ?? null;
@@ -537,6 +546,36 @@ export class TuiRunner {
       }
     }
 
+    if (overlay?.type === 'model') {
+      switch (key) {
+        case 'up':
+          this.dispatch({ type: 'moveOverlaySelection', delta: -1 });
+          return;
+        case 'down':
+        case 'tab':
+          this.dispatch({ type: 'moveOverlaySelection', delta: 1 });
+          return;
+        case 'pageup':
+          this.dispatch({
+            type: 'moveOverlaySelection',
+            delta: -Math.max(1, overlay.request.maxVisibleItems ?? 10),
+          });
+          return;
+        case 'pagedown':
+          this.dispatch({
+            type: 'moveOverlaySelection',
+            delta: Math.max(1, overlay.request.maxVisibleItems ?? 10),
+          });
+          return;
+        case 'enter':
+          this.submitPrompt({ allowEmpty: true });
+          return;
+        case 'escape':
+          this.dispatch({ type: 'closeOverlay' });
+          return;
+      }
+    }
+
     if (overlay?.type === 'edit') {
       switch (key) {
         case 'up':
@@ -643,6 +682,28 @@ export class TuiRunner {
         case 'escape':
         case 'ctrl+c':
           this.answerPermission(false);
+          return;
+      }
+      return;
+    }
+
+    if (overlay?.type === 'toolConfirmation') {
+      switch (key) {
+        case 'up':
+          this.dispatch({ type: 'moveOverlaySelection', delta: -1 });
+          return;
+        case 'down':
+        case 'tab':
+          this.dispatch({ type: 'moveOverlaySelection', delta: 1 });
+          return;
+        case 'enter': {
+          const order: ToolConfirmationPolicy[] = ['allow', 'ask', 'deny'];
+          this.applyPermissionMode(order[overlay.selectedIndex]);
+          return;
+        }
+        case 'escape':
+        case 'ctrl+c':
+          this.dispatch({ type: 'closeOverlay' });
           return;
       }
       return;
@@ -825,6 +886,27 @@ export class TuiRunner {
       });
       return true;
     }
+    const permMatch = command.match(/^\/permissions(?:\s+(allow|ask|deny))?$/u);
+    if (permMatch) {
+      const value = permMatch[1] as ToolConfirmationPolicy | undefined;
+      if (value) {
+        this.applyPermissionMode(value);
+        this.dispatch({
+          type: 'setStatus',
+          message: `tool confirmation: ${value}`,
+        });
+      } else {
+        this.dispatch({ type: 'showToolConfirmation' });
+      }
+      return true;
+    }
+    if (command.startsWith('/permissions')) {
+      this.dispatch({
+        type: 'setStatus',
+        message: 'Usage: /permissions [allow|ask|deny]',
+      });
+      return true;
+    }
     return false;
   }
 
@@ -916,6 +998,12 @@ export class TuiRunner {
     if (overlay?.type !== 'permission') return;
     this.dispatch({ type: 'closeOverlay' });
     void this.options.onPermissionDecision?.(overlay.request.id, approved);
+  }
+
+  private applyPermissionMode(value: ToolConfirmationPolicy): void {
+    this.dispatch({ type: 'closeOverlay' });
+    this.dispatch({ type: 'setPermissionMode', value });
+    void this.options.onPermissionModeChange?.(value);
   }
 
   /** Restore any temporary Inspector terminal ownership before shutdown. */

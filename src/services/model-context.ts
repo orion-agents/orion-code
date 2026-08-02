@@ -188,6 +188,36 @@ export const BUILTIN_MODELS: Record<string, ModelContextInfo> = {
     provider: 'astroncodingplan',
   },
 
+  // 火山方舟 Ark (huoshan / volcengine)
+  'ark-code-latest': {
+    id: 'ark-code-latest',
+    label: 'Ark Code Latest',
+    contextWindow: 1024000,
+    maxOutputTokens: 128000,
+    provider: 'huoshan',
+  },
+  'glm-5.2': {
+    id: 'glm-5.2',
+    label: 'GLM 5.2',
+    contextWindow: 1024000,
+    maxOutputTokens: 128000,
+    provider: 'huoshan',
+  },
+  'kimi-k2.7-code': {
+    id: 'kimi-k2.7-code',
+    label: 'Kimi K2.7 Code',
+    contextWindow: 256000,
+    maxOutputTokens: 32768,
+    provider: 'huoshan',
+  },
+  'deepseek-v4-pro': {
+    id: 'deepseek-v4-pro',
+    label: 'DeepSeek V4 Pro',
+    contextWindow: 1000000,
+    maxOutputTokens: 384000,
+    provider: 'huoshan',
+  },
+
   // OpenAI
   'gpt-4o': {
     id: 'gpt-4o',
@@ -245,6 +275,13 @@ export const BUILTIN_MODELS: Record<string, ModelContextInfo> = {
   'deepseek-chat': {
     id: 'deepseek-chat',
     label: 'DeepSeek Chat',
+    contextWindow: 64000,
+    maxOutputTokens: 8192,
+    provider: 'deepseek',
+  },
+  'deepseek-coder': {
+    id: 'deepseek-coder',
+    label: 'DeepSeek Coder',
     contextWindow: 64000,
     maxOutputTokens: 8192,
     provider: 'deepseek',

@@ -1,5 +1,6 @@
 import type {
   EditPreviewRequest,
+  ModelPickerRequest,
   RuntimeSubtaskEvent,
   RuntimeSessionRestoredEvent,
   RuntimeToolFinishedEvent,
@@ -21,6 +22,7 @@ import {
   type SubtaskTimelineEntry,
 } from '../runtime/ui-view-model';
 import type { TuiPickerItem } from './pickers';
+import type { ToolConfirmationPolicy } from '../services/global-config';
 
 /** Maximum subtask timeline entries (bounded for long-session safety). */
 const MAX_SUBTASK_TIMELINE = 100;
@@ -49,8 +51,10 @@ export type TuiRuntimeToolEvent =
 
 export type TuiOverlayState =
   | { type: 'sessions'; request: SessionPickerRequest; selectedIndex: number }
+  | { type: 'model'; request: ModelPickerRequest; selectedIndex: number }
   | { type: 'edit'; request: EditPreviewRequest; selectedIndex: number }
   | { type: 'permission'; request: ToolPermissionRequest; selectedIndex: number }
+  | { type: 'toolConfirmation'; selectedIndex: number }
   | { type: 'commands'; query: string; items: TuiPickerItem[]; selectedIndex: number }
   | { type: 'files'; base: string; query: string; items: TuiPickerItem[]; selectedIndex: number }
   | { type: 'shortcuts' }
@@ -84,6 +88,8 @@ export interface TuiUiState {
   statusState: TuiStatusState;
   processing: boolean;
   overlay: TuiOverlayState;
+  /** Current tool confirmation policy, surfaced in the status bar (perm:<level>). */
+  permissionMode: ToolConfirmationPolicy;
   /** v0.2.23: Tool output view mode for adaptive collapse. */
   toolOutputViewMode: 'adaptive' | 'collapsed' | 'full';
   /** v0.2.23: Bounded recent tool detail summaries (max 512). */
@@ -121,8 +127,10 @@ export type TuiUiAction =
     }
   | { type: 'setProcessing'; processing: boolean }
   | { type: 'showSessionPicker'; request: SessionPickerRequest }
+  | { type: 'showModelPicker'; request: ModelPickerRequest }
   | { type: 'showEditPreview'; request: EditPreviewRequest }
   | { type: 'showPermissionRequest'; request: ToolPermissionRequest }
+  | { type: 'showToolConfirmation' }
   | { type: 'toolStarted'; event: RuntimeToolStartedEvent }
   | { type: 'toolFinished'; event: RuntimeToolFinishedEvent }
   | { type: 'subtaskEvent'; event: RuntimeSubtaskEvent }
@@ -132,6 +140,7 @@ export type TuiUiAction =
   | { type: 'showShortcuts' }
   | { type: 'moveOverlaySelection'; delta: number }
   | { type: 'closeOverlay' }
+  | { type: 'setPermissionMode'; value: ToolConfirmationPolicy }
   // --- v0.2.23: Tool Inspector actions ---
   | { type: 'setToolOutputViewMode'; mode: 'adaptive' | 'collapsed' | 'full' }
   | { type: 'openToolInspector' }
@@ -164,6 +173,7 @@ export const initialTuiUiState: TuiUiState = {
   },
   processing: false,
   overlay: null,
+  permissionMode: 'allow',
   // v0.2.23
   toolOutputViewMode: 'adaptive',
   recentToolDetails: [],
@@ -334,6 +344,12 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
         overlay: { type: 'sessions', request: action.request, selectedIndex: 0 },
       };
 
+    case 'showModelPicker':
+      return {
+        ...state,
+        overlay: { type: 'model', request: action.request, selectedIndex: 0 },
+      };
+
     case 'showEditPreview':
       return {
         ...state,
@@ -344,6 +360,21 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
       return {
         ...state,
         overlay: { type: 'permission', request: action.request, selectedIndex: 0 },
+      };
+
+    case 'showToolConfirmation': {
+      const order: ToolConfirmationPolicy[] = ['allow', 'ask', 'deny'];
+      const selectedIndex = Math.max(0, order.indexOf(state.permissionMode));
+      return {
+        ...state,
+        overlay: { type: 'toolConfirmation', selectedIndex },
+      };
+    }
+
+    case 'setPermissionMode':
+      return {
+        ...state,
+        permissionMode: action.value,
       };
 
     case 'toolStarted': {
@@ -653,6 +684,7 @@ export function createTuiUiEventSink(
     clearTranscript: () => dispatch({ type: 'clearTranscript' }),
     setStatus: message => dispatch({ type: 'setStatus', message }),
     showSessionPicker: request => dispatch({ type: 'showSessionPicker', request }),
+    showModelPicker: request => dispatch({ type: 'showModelPicker', request }),
     showEditPreview: request => dispatch({ type: 'showEditPreview', request }),
     showPermissionRequest: request => dispatch({ type: 'showPermissionRequest', request }),
     toolStarted: event => dispatch({ type: 'toolStarted', event }),
@@ -808,10 +840,21 @@ function stripRecord(entry: TuiTranscriptRecord): TranscriptEntry {
 }
 
 function overlayItemCount(overlay: Exclude<TuiOverlayState, null | { type: 'shortcuts' }>): number {
-  if (overlay.type === 'sessions') return overlay.request.sessions.length;
-  if (overlay.type === 'permission') return 2;
-  if (overlay.type === 'edit') return overlay.request.candidates.length;
-  return overlay.items.length;
+  switch (overlay.type) {
+    case 'sessions':
+      return overlay.request.sessions.length;
+    case 'model':
+      return overlay.request.models.length;
+    case 'edit':
+      return overlay.request.candidates.length;
+    case 'permission':
+      return 2;
+    case 'toolConfirmation':
+      return 3;
+    case 'commands':
+    case 'files':
+      return overlay.items.length;
+  }
 }
 
 function clampNumber(value: number, min: number, max: number): number {

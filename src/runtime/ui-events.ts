@@ -76,6 +76,24 @@ export interface SessionPickerRequest {
   moreCount?: number;
 }
 
+/** A single selectable model entry forwarded to renderer pickers. */
+export interface ModelPickerCandidate {
+  name: string;
+  alias?: string;
+  provider?: string;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  source?: string;
+}
+
+/** Structured request to render an interactive model switcher. */
+export interface ModelPickerRequest {
+  models: ModelPickerCandidate[];
+  currentModel?: string;
+  title?: string;
+  maxVisibleItems?: number;
+}
+
 export interface EditPreviewCandidate {
   index: number;
   line: number;
@@ -256,6 +274,7 @@ export interface UiEventSink {
   clearTranscript: () => void;
   setStatus: (message: string) => void;
   showSessionPicker: (request: SessionPickerRequest) => void;
+  showModelPicker?: (request: ModelPickerRequest) => void;
   showEditPreview: (request: EditPreviewRequest) => void;
   showPermissionRequest?: (request: ToolPermissionRequest) => void;
   toolStarted?: (event: RuntimeToolStartedEvent) => void;

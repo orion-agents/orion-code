@@ -37,12 +37,13 @@ import {
   staticTranscriptEntries,
   transcriptReducer,
 } from '../runtime/transcript-state';
-import type { OpenHorseUiRuntime, SessionPickerRequest, ToolPermissionRequest, TranscriptAppendEntry, TranscriptEntry, UiEventSink, EditPreviewRequest, RuntimeSubtaskEvent } from '../types';
+import type { OpenHorseUiRuntime, SessionPickerRequest, ModelPickerRequest, ToolPermissionRequest, TranscriptAppendEntry, TranscriptEntry, UiEventSink, EditPreviewRequest, RuntimeSubtaskEvent } from '../types';
 
 type Overlay =
   | { type: 'commands'; selectedIndex: number }
   | { type: 'files'; selectedIndex: number }
   | { type: 'sessions'; selectedIndex: number; request: SessionPickerRequest }
+  | { type: 'model'; selectedIndex: number; request: ModelPickerRequest }
   | { type: 'edit'; selectedIndex: number; request: EditPreviewRequest }
   | { type: 'permission'; selectedIndex: number; request: ToolPermissionRequest }
   | { type: 'shortcuts' }
@@ -104,6 +105,32 @@ export function sessionItems(request: SessionPickerRequest): SelectListItem[] {
       request.showProject ? session.projectPath : '',
     ].filter(Boolean).join('  '),
   }));
+}
+
+function formatModelTokenLabel(tokens: number): string {
+  if (tokens >= 1_000_000) return `${tokens / 1_000_000}M ctx`;
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}K ctx`;
+  return `${tokens} ctx`;
+}
+
+export function modelItems(request: ModelPickerRequest): SelectListItem[] {
+  const current = (request.currentModel ?? '').toLowerCase();
+  return request.models.map(model => {
+    const alias = model.alias ? ` (${model.alias})` : '';
+    const isCurrent =
+      Boolean(current) &&
+      (model.name.toLowerCase() === current ||
+        (model.alias ? model.alias.toLowerCase() === current : false));
+    const context = model.contextWindow ? formatModelTokenLabel(model.contextWindow) : '';
+    const output = model.maxOutputTokens
+      ? formatModelTokenLabel(model.maxOutputTokens).replace('ctx', 'out')
+      : '';
+    return {
+      value: model.name,
+      label: `${model.name}${alias}${isCurrent ? '  (current)' : ''}`,
+      description: [model.provider, context, output].filter(Boolean).join('  '),
+    };
+  });
 }
 
 export function permissionItems(request: ToolPermissionRequest): SelectListItem[] {
@@ -219,6 +246,7 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
     },
     setStatus: setStatusMessage,
     showSessionPicker: request => setOverlay({ type: 'sessions', selectedIndex: 0, request }),
+    showModelPicker: request => setOverlay({ type: 'model', selectedIndex: 0, request }),
     showEditPreview: request => setOverlay({ type: 'edit', selectedIndex: 0, request }),
     showPermissionRequest: request => setOverlay({ type: 'permission', selectedIndex: 0, request }),
     setProcessing,
@@ -382,6 +410,16 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
     }
   }, [agentController, shutdown]);
 
+  const selectModel = useCallback((request: ModelPickerRequest, index: number) => {
+    const model = request.models[index];
+    if (!model) return;
+    setOverlay(null);
+    const result = agentController.handle({ type: 'submit', text: `/model ${model.name}`, source: 'composer' });
+    if (result.type === 'exit_requested') {
+      void shutdown();
+    }
+  }, [agentController, shutdown]);
+
   useInput((value, key: any) => {
     const isReturn = key?.return || value === '\r' || value === '\n';
 
@@ -493,6 +531,34 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
       }
       if (isReturn) {
         selectSession(overlay.request, overlay.selectedIndex);
+        return;
+      }
+    }
+
+    if (overlay?.type === 'model') {
+      const total = overlay.request.models.length;
+      if (key?.escape) {
+        setOverlay(null);
+        return;
+      }
+      if (key?.upArrow) {
+        setOverlay({ ...overlay, selectedIndex: Math.max(0, overlay.selectedIndex - 1) });
+        return;
+      }
+      if (key?.downArrow) {
+        setOverlay({ ...overlay, selectedIndex: Math.min(Math.max(0, total - 1), overlay.selectedIndex + 1) });
+        return;
+      }
+      if (key?.pageUp) {
+        setOverlay({ ...overlay, selectedIndex: Math.max(0, overlay.selectedIndex - 10) });
+        return;
+      }
+      if (key?.pageDown) {
+        setOverlay({ ...overlay, selectedIndex: Math.min(Math.max(0, total - 1), overlay.selectedIndex + 10) });
+        return;
+      }
+      if (isReturn) {
+        selectModel(overlay.request, overlay.selectedIndex);
         return;
       }
     }
@@ -706,6 +772,17 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
           selectedIndex={overlay.selectedIndex}
           maxVisibleItems={Math.min(overlay.request.maxVisibleItems ?? maxOverlayItems, maxOverlayItems)}
           footer="↑↓ scroll  PgUp/PgDn  Enter resume  Esc cancel"
+          width={layoutWidth}
+        />
+      ) : null}
+
+      {overlay?.type === 'model' ? (
+        <SelectList
+          title={overlay.request.title ?? 'Switch Model'}
+          items={modelItems(overlay.request)}
+          selectedIndex={overlay.selectedIndex}
+          maxVisibleItems={Math.min(overlay.request.maxVisibleItems ?? maxOverlayItems, maxOverlayItems)}
+          footer="↑↓ scroll  PgUp/PgDn  Enter switch  Esc cancel"
           width={layoutWidth}
         />
       ) : null}

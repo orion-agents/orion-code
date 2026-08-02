@@ -118,6 +118,8 @@ function normalizeEvent(event: AgentRuntimeEvent): string {
       return 'clear_view';
     case 'shutdown_requested':
       return `shutdown_requested:${event.reason ?? ''}`;
+    case 'model_picker_requested':
+      return `model_picker:${event.request.title ?? ''}:${event.request.models.length}`;
   }
 }
 
