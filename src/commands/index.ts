@@ -80,7 +80,6 @@ import { collectDoctorReport, formatDoctorReport, hasDoctorFailures } from '../s
 import { createContextUsageSnapshot, resolveModelContext } from '../services/model-context';
 import { estimateMessagesTokens } from '../utils/token-estimate';
 import {
-  getModelCatalogAliases,
   getModelCatalogEntry,
   listModelCatalogEntries,
   resolveModelAlias,
@@ -215,20 +214,6 @@ function listConfiguredModelCatalogEntries(
       source: `${profile.contextSource}/${profile.outputSource}`,
     };
   });
-}
-
-function formatModelAliasHelp(config: CommandContext['config']): string {
-  const aliases = new Set<string>(Object.keys(getModelCatalogAliases()));
-
-  if (config.modelRegistry) {
-    for (const profile of config.modelRegistry.profiles.values()) {
-      if (profile.aliases) {
-        for (const alias of profile.aliases) aliases.add(alias);
-      }
-    }
-  }
-
-  return [...aliases].sort().join(', ');
 }
 
 function formatLoopBudgetSource(stats: LoopStats): string {
@@ -1707,10 +1692,6 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
       } else if (aliasEntry) {
         console.log(`  Alias    ${ACCENT(aliasEntry.alias)}`);
         console.log(`  Provider ${DIM(aliasEntry.provider)}`);
-      }
-      const aliasHelp = formatModelAliasHelp(ctx.config);
-      if (aliasHelp) {
-        console.log(`  Aliases  ${DIM(aliasHelp)}`);
       }
       console.log(`  Context  ${DIM(`${formatTokenCount(contextInfo.contextWindow)} tokens`)}`);
       if (contextInfo.maxOutputTokens) {
