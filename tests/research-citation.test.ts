@@ -164,4 +164,30 @@ describe('P0-R3 citation / conflict / evidence', () => {
     expect(c.verification).toBe('unverified');
     expect(res.evidenceCandidates).toHaveLength(0);
   });
+
+  it('marks a claim stale_only when every source it cites was superseded', () => {
+    // The claim cites the old revision exclusively. Its reference resolves, so
+    // it is not dangling - but nothing active backs it, which must not be
+    // allowed to read as `bound`.
+    const older = src('src-old', {
+      canonicalUrl: 'https://example.com/doc',
+      contentHash: 'hash-a',
+      retrievedAt: '2026-08-05T00:00:00.000Z',
+      kind: 'web_page',
+    });
+    const newer = src('src-new', {
+      canonicalUrl: 'https://example.com/doc',
+      contentHash: 'hash-b',
+      retrievedAt: '2026-08-05T01:00:00.000Z',
+      kind: 'web_page',
+    });
+    const c = claim('clm-1', { sourceIds: ['src-old'], evidenceKind: 'external' });
+    const res = resolveCitations(packet([c], [older, newer]));
+
+    const binding = res.bindings.find(b => b.claimId === 'clm-1')!;
+    expect(binding.status).toBe('stale_only');
+    expect(binding.sourceIds).toEqual([]);
+    expect(c.verification).toBe('unverified');
+    expect(res.evidenceCandidates).toHaveLength(0);
+  });
 });

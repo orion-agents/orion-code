@@ -3,44 +3,49 @@
 - 日期：2026-08-06
 - 分支：`v0.1.4`（HEAD `9cb8137`，与 `origin/v0.1.4` 同步；PR [#7](https://github.com/orion-agents/orion-code/pull/7) OPEN）
 - 范围：`src/runtime/subagents/research-*.ts` + `web-research-adapter.ts`（v0.1.4 全部新增产品代码）
-- 方法：覆盖率治理（jest + ts-jest）、失败路径补测、静态安全自检（SSRF / 失败闭合 / 密钥卫生 / 并发写入）
+- 方法：覆盖率治理（jest + ts-jest）、失败路径补测、静态安全自检（SSRF / 失败闭合 / 密钥卫生 / 并发写入）、缺陷修复与回归
 - 运行环境：Node v24.14.0，`NODE_OPTIONS="--use-system-ca"`（禁用沙箱 safe-delete 守卫，避免注入子进程）
 
 ---
 
 ## 1. 结论摘要
 
-**质量门禁：通过（有条件）。** v0.1.4 模块的行覆盖 98.51%、分支覆盖 88.37%，均高于核心模块门禁（行 ≥90% / 分支 ≥85%）。
-本轮补齐 11 条失败路径测试，把 4 个此前**完全未被测试的失败闭合分支**纳入回归网，其中包括 v0.1.4 的核心完整性不变量。
-另发现 1 项中等严重度的密钥外泄风险（F-1），不阻断本次合并，但应在 v0.1.5 单独修复。
+**质量门禁：通过。** v0.1.4 模块的行覆盖 98.77%、分支覆盖 90.36%，均高于核心模块门禁（行 ≥90% / 分支 ≥85%）。
+
+本轮分两步：
+
+1. **覆盖率治理** —— 补齐 11 条失败路径测试，把此前**完全未被测试的失败闭合分支**纳入回归网，其中包括 v0.1.4 的核心完整性不变量（inference 不得标记 observed）。
+2. **缺陷修复** —— 审计发现的密钥外泄风险 F-1（中危）与审计缺失 F-2（低危）**已在本分支修复**，并补 4 条回归测试；同时清掉 4 项 P3 测试债。
+
+无遗留未修缺陷。
 
 ---
 
 ## 2. 覆盖率报告
 
-### 2.1 补测前后对比
+### 2.1 治理前后对比
 
-| 指标 | 补测前 | 补测后 | 门禁 | 结论 |
-| --- | --- | --- | --- | --- |
-| 语句 Stmts | 92.58% | **96.82%** | — | ↑ 4.24 |
-| 分支 Branch | 83.38% | **88.37%** | ≥85% | ❌ → ✅ |
-| 函数 Funcs | 98.80% | **98.80%** | — | 持平 |
-| 行 Lines | 93.82% | **98.51%** | ≥90% | ✅ → ✅ |
-| 用例数 | 38 | **49** | — | +11 |
+| 指标 | 初始 | 补测后 | 修复+补债后 | 门禁 | 结论 |
+| --- | --- | --- | --- | --- | --- |
+| 语句 Stmts | 92.58% | 96.82% | **97.47%** | — | ↑ 4.89 |
+| 分支 Branch | 83.38% | 88.37% | **90.36%** | ≥85% | ❌ → ✅ |
+| 函数 Funcs | 98.80% | 98.80% | **98.80%** | — | 持平 |
+| 行 Lines | 93.82% | 98.51% | **98.77%** | ≥90% | ✅ |
+| 用例数 | 38 | 49 | **55** | — | +17 |
 
-### 2.2 分文件覆盖（补测后）
+### 2.2 分文件覆盖（最终）
 
 | 文件 | Stmts | Branch | Lines | 残余未覆盖行 |
 | --- | --- | --- | --- | --- |
 | `research-contract.ts` | 96.11% | 90.47% | **100%** | 60,145,157-171,204-205,213 |
-| `web-research-adapter.ts` | 96.77% | 86.79% | 97.70% | 100,294 |
-| `research-artifact.ts` | 94.44% | 90.00% | **100%** | 126,140,150 |
-| `research-citation.ts` | 98.01% | 87.50% | 97.50% | 30,134 |
+| `web-research-adapter.ts` | 96.90% | 88.67% | 97.80% | 100,321 |
+| `research-artifact.ts` | 98.14% | **100%** | **100%** | — |
+| `research-citation.ts` | 99.00% | 91.07% | 98.75% | 30 |
 | `research-quality.ts` | 95.52% | 87.27% | 96.61% | 34,141 |
 | `research-renderer.ts` | **100%** | 86.95% | **100%** | 68-95,154 |
 | `research-types.ts` | **100%** | **100%** | **100%** | — |
 
-`research-contract.ts` 与 `web-research-adapter.ts` 的分支覆盖此前分别只有 77.38% / 79.24%，是本轮治理的两个主要缺口来源。
+`research-contract.ts` 与 `web-research-adapter.ts` 的分支覆盖初始分别只有 77.38% / 79.24%，是本轮治理的两个主要缺口来源。残余未覆盖项均为 URL 解析 catch 一类的不可达纵深防御分支（见 §4.2 F-3）。
 
 ---
 
@@ -64,10 +69,23 @@
 
 | 用例 | 守护的行为 | 补测前状态 |
 | --- | --- | --- |
-| 从 displayUrl 剥离 `api_key` / `access_token` | URL 携带凭据时不写入展示字段；普通参数（`page=2`）保留以免引用失准 | 完全未测 |
+| 剥离 `api_key` / `access_token` | URL 携带凭据时不进入来源字段；普通参数（`page=2`）保留以免引用失准 | 完全未测 |
 | 无密钥参数时 URL 原样保留 | 脱敏不误伤 | 完全未测 |
 | search 依赖抛错 → 空结果 + note，不崩溃 | 搜索侧 MCP 掉线时降级 | 完全未测 |
 | fetch 依赖抛错 → `failed` 来源 + 原因，不外抛 | 网络异常不能变成"看起来已取回" | 完全未测 |
+
+### 缺陷修复后补充的回归（4 条）
+
+| 用例 | 守护的行为 |
+| --- | --- |
+| `canonicalUrl` 与 `displayUrl` 同时脱敏，且写入 `redactions` | F-1 / F-2 回归闸门 |
+| 重定向引入的凭据也被脱敏，且哈希基于安全 URL | 重定向是第二条注入路径 |
+| 无密钥 URL 字节级不变 | 保证脱敏不移动既有 `contentHash` |
+| `blocked` / `skipped` 诊断列表同样脱敏 | 堵住第二条泄漏路径 |
+
+### P3 测试债清理（6 条）
+
+`loadResearchPacket` 未写入 scope 返回 null、`resumeResearchState` 的 schema 闸门、`artifactHistory` 的完整 CAS 链与空历史、`research-citation` 的 `stale_only` 绑定状态。`research-artifact.ts` 分支覆盖因此达到 100%。
 
 ---
 
@@ -85,44 +103,55 @@
 
 **并发写入与作用域隔离** — `saveResearchPacket` 用内容哈希（剔除时间戳）作 CAS token；活跃 Goal 的 packet 必须携带显式 `expectedToken` 才能更新，否则抛 `CasMismatchError`，杜绝盲写覆盖；`loadResearchPacket` 遇旧 schema 抛 `UnsupportedSchemaError` 而非静默迁移；`resumeResearchState` 是纯派生，不重放外部副作用。
 
-### 4.2 风险发现
+### 4.2 缺陷发现与修复
 
-#### F-1 — URL 携带的密钥会随 `canonicalUrl` 进入证据产物（严重度：中，CWE-532 / 敏感信息写入产物）
+#### F-1 — URL 携带的密钥会随 `canonicalUrl` 进入证据产物 ✅ 已修复
 
-**证据链：**
+严重度：中（CWE-532 敏感信息写入产物）
 
-- `web-research-adapter.ts:246,269` — `canonicalUrl` 直接取原始 URL（`fetched.finalUrl ?? hit.url`），**未脱敏**。
-- `web-research-adapter.ts:247,270` — `stripSecretQuery` 只作用于 `displayUrl`。
-- `research-renderer.ts:102` — 渲染投影输出的是 `canonicalUrl`。
-- 全仓检索：`displayUrl` 在 `src/` 中只出现在类型定义与适配器赋值处，**没有任何消费方**；也就是说脱敏后的字段是"只写不读"，真正流向渲染与落盘的是未脱敏的那个。
+**证据链（修复前）：**
 
-**影响：** 当搜索命中形如 `https://host/doc?api_key=SECRET` 的 URL 时，密钥会被写入 research 证据产物并在渲染输出中显示。
+- `canonicalUrl` 直接取原始 URL（`fetched.finalUrl ?? hit.url`），**未脱敏**；`stripSecretQuery` 只作用于 `displayUrl`。
+- `research-renderer.ts:102` 渲染投影输出的是 `canonicalUrl`，持久化的 packet 同样存 `canonicalUrl`。
+- 全仓检索：`displayUrl` 在 `src/` 中只出现在类型定义与适配器赋值处，**没有任何消费方** —— 脱敏后的字段"只写不读"，真正流向渲染与落盘的是未脱敏的那一个。
+- 附带：`result.blocked` / `result.skipped` 两个诊断列表也直接压入原始 `hit.url`，构成第二条泄漏路径。
 
-**建议修复（v0.1.5，不建议塞进本次 PR）：** 两条路径二选一 ——（a）`canonicalUrl` 同样脱敏；（b）渲染与落盘改用 `displayUrl`。注意 `hashContent` 以 `canonicalUrl` 参与哈希（`web-research-adapter.ts:117-119`），走 (a) 会改变既有 `contentHash`，需配套加一条哈希稳定性测试并说明兼容影响。因涉及产物哈希语义，不适合在冻结边界内顺手改。
+**影响：** 搜索命中形如 `https://host/doc?api_key=SECRET` 的 URL 时，密钥被写入 research 证据产物并在渲染输出中显示。
 
-#### F-2 — `ResearchSource.redactions` 声明了却从未写入（严重度：低，CWE-778 审计不足）
+**修复方式：** 不再维护"原始 / 脱敏"双字段并寄望每个消费方选对，改为**在边界处脱敏一次，所有对外字段统一使用安全 URL**。新增 `redactUrl(url) -> { url, removed[] }` 取代 `stripSecretQuery`，`canonicalUrl`、`displayUrl`、`hashContent` 入参、`blocked`、`skipped` 全部消费它。重定向后的 `finalUrl` 同样处理（重定向可引入搜索命中不带的凭据）。
 
-`research-types.ts:81-82` 定义了 `redactions?: string[]`，注释写明"记录已实施的脱敏项（如 api_key）"，但全仓无任何赋值点。脱敏动作没有留下审计痕迹，事后无法判断某条来源是否被改写过。建议在 `stripSecretQuery` 返回被剥离的参数名并落到该字段。
+**哈希兼容性：** `redactUrl` 对无可剥离参数的 URL 返回原字符串（不重新序列化），因此干净 URL 的 `contentHash` **字节级不变**；只有本就在泄漏密钥的 URL 哈希会变，而这类记录原本就是缺陷产物。已加专项测试锁定该性质。
 
-#### F-3 — 两处 catch 分支在当前调用链下不可达（严重度：信息级）
+#### F-2 — `ResearchSource.redactions` 声明了却从未写入 ✅ 已修复
 
-`web-research-adapter.ts:100`（`hostOf` 的 catch）与 `:294`（`stripSecretQuery` 的 catch）只在 URL 解析失败时触发，而畸形 URL 在更早的词法 SSRF 闸门就已被判为 `Invalid URL format` 并 blocked。属合理的纵深防御，建议保留但不纳入覆盖率预期。
+严重度：低（CWE-778 审计不足）
+
+`research-types.ts:81-82` 定义了 `redactions?: string[]`，注释写明"记录已实施的脱敏项"，但全仓无赋值点 —— 被脱敏的 URL 与从未携带凭据的 URL 事后无法区分。现由 `redactUrl` 返回被剥离的参数名并落入该字段；搜索命中与重定向后 URL 的剥离结果取**并集**（搜索侧剥离过的事实，不因重定向后 URL 干净而消失）。无剥离时不写入该字段，避免伪造审计条目。
+
+#### F-3 — 两处 catch 分支在当前调用链下不可达（严重度：信息级，不修）
+
+`hostOf` 与 `redactUrl` 的 catch 只在 URL 解析失败时触发，而畸形 URL 在更早的词法 SSRF 闸门就已被判为 `Invalid URL format` 并 blocked。属合理的纵深防御，保留但不纳入覆盖率预期。
 
 ---
 
-## 5. 遗留测试债（P3，不阻断）
+## 5. 测试债
+
+初始识别的 P3 债务中，以下 4 项**已在本轮清理**（`research-artifact.ts` 分支覆盖因此达到 100%）：
+
+| 位置 | 内容 | 状态 |
+| --- | --- | --- |
+| `research-artifact.ts` | `loadResearchPacket` 未命中 scope 返回 null | ✅ 已补 |
+| `research-artifact.ts` | `resumeResearchState` 的 schema 版本闸门 | ✅ 已补 |
+| `research-artifact.ts` | `artifactHistory` 完整 CAS 链 + 空历史 | ✅ 已补 |
+| `research-citation.ts` | `stale_only` 绑定状态分支 | ✅ 已补 |
+
+剩余项均为展示层文案分支或不可达的防御性 catch，不构成风险：
 
 | 位置 | 未覆盖内容 | 性质 |
 | --- | --- | --- |
-| `research-artifact.ts:126` | `loadResearchPacket` 空存储早返回 | 公共路径，可补 |
-| `research-artifact.ts:140` | `resumeResearchState` 的 schema 版本闸门 | 公共路径，可补 |
-| `research-artifact.ts:150` | `artifactHistory` 整个函数无调用 | 公共 API 未测 |
-| `research-citation.ts:134` | `stale_only` 绑定状态分支 | 状态机分支未测 |
 | `research-quality.ts:141` | 超时/重定向补救提示分支 | 文案分支 |
 | `research-renderer.ts:154` | contentHash 缺省时的渲染分支 | 展示分支 |
-| `research-citation.ts:30` / `research-quality.ts:34` | URL 解析 catch | 纵深防御，不可达 |
-
-估算：补齐前 4 项约 6 条用例，可把分支覆盖再推高约 3-4 个百分点。
+| `research-citation.ts:30` / `research-quality.ts:34` / `web-research-adapter.ts:100,321` | URL 解析 catch | 纵深防御，不可达 |
 
 ---
 
@@ -130,16 +159,25 @@
 
 | 检查项 | 结果 |
 | --- | --- |
-| v0.1.4 模块用例 | 49 passed / 0 failed（6 套件） |
-| 行覆盖 ≥90% | ✅ 98.51% |
-| 分支覆盖 ≥85% | ✅ 88.37% |
-| `tsc --noEmit` | ✅ 0 错误 |
+| v0.1.4 模块用例 | **55 passed / 0 failed**（6 套件） |
+| 行覆盖 ≥90% | ✅ 98.77% |
+| 分支覆盖 ≥85% | ✅ 90.36% |
+| `tsc --noEmit`（全仓） | ✅ 0 错误 |
 | `eslint`（改动文件） | ✅ 0 告警 |
 | 高危安全缺陷（P0） | ✅ 无 |
-| 中危安全缺陷 | ⚠️ 1 项（F-1），已定级并转 v0.1.5 |
+| 中危安全缺陷 | ✅ F-1 已修复并加回归 |
+| 低危 / 审计缺陷 | ✅ F-2 已修复 |
 | e2e / PTY 套件（前序） | ✅ 5 passed / 2 skipped / 0 failed |
 
-**准出判定：v0.1.4 允许合并。** F-1 作为跟踪项进入 v0.1.5，理由是其修复会改变 `contentHash` 语义，属产物兼容性变更，不应在冻结边界内夹带。
+**准出判定：v0.1.4 允许合并，无遗留未修缺陷。**
+
+### 6.1 关于全量回归的可信度说明
+
+本机并行跑全量 jest **结果不可复现**：同一条 `npx jest --silent` 连跑两次，分别得到 7 failed 与 38 failed。差异集中在 spawn CLI 子进程的 PTY / UI / print-mode 类套件，属并行 worker 下的资源竞争超时，与被测逻辑无关。项目自身的发布流程（`prepublishOnly`）正是用 `npm test -- --runInBand` 串行执行，印证了这一点；判定回归状态应以串行结果为准。
+
+本次改动的影响面归因是确定的，不依赖全量结果：改动的产品代码只有 `web-research-adapter.ts` 一个文件，全仓仅 `tests/web-research-adapter.test.ts` 引用它（已检索确认），该套件 15/15 通过，且全仓 `tsc --noEmit` 无错误。
+
+> 另需注意：工作树中另有 13 个 `src/` 文件处于修改态（`tool-scheduler.ts`、`tools/web.ts`、`llm.ts`、`git.ts` 等），属 v0.1.4 冻结边界之外的既有改动，**不在本次提交范围内**，但会影响本机全量测试的观测结果。
 
 ---
 

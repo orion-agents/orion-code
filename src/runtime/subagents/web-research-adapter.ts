@@ -66,9 +66,9 @@ export interface WebResearchDeps {
 export interface WebResearchResult {
   /** Sources actually collected (retrieved / partial / failed / blocked). */
   sources: ResearchSource[];
-  /** URLs that passed selection but were skipped due to budget/timeout. */
+  /** URLs that passed selection but were skipped due to budget/timeout. Redacted. */
   skipped: string[];
-  /** URLs rejected by the security / domain gate. */
+  /** URLs rejected by the security / domain gate. Redacted. */
   blocked: string[];
   /** Provider recorded for the (last) successful search. */
   provider: string | null;
@@ -176,14 +176,14 @@ export async function runWebResearch(
     }
     const ssrf = isUrlSafeForSSRF(hit.url);
     if (!ssrf.safe) {
-      result.blocked.push(hit.url);
+      result.blocked.push(redactUrl(hit.url).url);
       result.sources.push(
         buildSource(hit, { rank: i, now: now(), override: { status: 'blocked', failureReason: ssrf.reason } }),
       );
       continue;
     }
     if (!domainAllowed(hit.url, deps.allowedDomains ?? request.scope.domains)) {
-      result.blocked.push(hit.url);
+      result.blocked.push(redactUrl(hit.url).url);
       result.sources.push(
         buildSource(hit, {
           rank: i,
@@ -206,14 +206,14 @@ export async function runWebResearch(
   const byteBudget = Math.max(0, request.maxFetchBytes);
   for (const { hit, rank } of selected) {
     if (result.timedOut) {
-      result.skipped.push(hit.url);
+      result.skipped.push(redactUrl(hit.url).url);
       continue;
     }
     // Byte budget: once exhausted, stop fetching (remaining become skipped, not
     // a failure - they can be retried, so status stays silent).
     if (byteBudget > 0 && result.bytesFetched >= byteBudget) {
       result.truncatedDueToBytes = true;
-      result.skipped.push(hit.url);
+      result.skipped.push(redactUrl(hit.url).url);
       continue;
     }
 
@@ -237,16 +237,24 @@ export async function runWebResearch(
     const bytes = fetched.bytes ?? (fetched.content ? Buffer.byteLength(fetched.content, 'utf8') : 0);
     result.bytesFetched += bytes;
 
+    // Redirects can introduce credentials the search hit never had, so the
+    // final URL gets the same treatment. Hashing the redacted URL keeps the
+    // content hash stable when only a rotating token in the query differs.
+    const finalRedacted = redactUrl(fetched.finalUrl ?? hit.url);
+    // The audit trail spans both URLs: a secret stripped from the search hit
+    // still happened even if the post-redirect URL was clean.
+    const removed = [...new Set([...redactUrl(hit.url).removed, ...finalRedacted.removed])];
     const source: ResearchSource = buildSource(hit, {
       rank,
       now: now(),
       override: {
         status,
         failureReason: fetched.failureReason,
-        canonicalUrl: fetched.finalUrl ?? hit.url,
-        displayUrl: stripSecretQuery(fetched.finalUrl ?? hit.url),
+        canonicalUrl: finalRedacted.url,
+        displayUrl: finalRedacted.url,
         excerpt: fetched.content ? fetched.content.slice(0, 4000) : hit.snippet,
-        contentHash: fetched.content ? hashContent(fetched.finalUrl ?? hit.url, fetched.content) : undefined,
+        contentHash: fetched.content ? hashContent(finalRedacted.url, fetched.content) : undefined,
+        ...(removed.length > 0 ? { redactions: removed } : {}),
       },
     });
     result.sources.push(source);
@@ -263,34 +271,53 @@ interface BuildOpts {
 }
 
 function buildSource(hit: RawSearchResult, opts: BuildOpts): ResearchSource {
+  // Redact once, at the boundary, and use the safe URL for every field that
+  // leaves this module. Keeping a raw `canonicalUrl` next to a redacted
+  // `displayUrl` only works if every consumer remembers to read the latter -
+  // and the persisted packet and the renderer both read `canonicalUrl`.
+  const redacted = redactUrl(hit.url);
   const base: ResearchSource = {
     id: `web-${opts.rank + 1}`,
     kind: 'search_result',
-    canonicalUrl: hit.url,
-    displayUrl: stripSecretQuery(hit.url),
+    canonicalUrl: redacted.url,
+    displayUrl: redacted.url,
     title: hit.title,
     excerpt: hit.snippet,
     provider: hit.provider,
     retrievedAt: opts.now.toISOString(),
     status: toSourceStatus(hit.status),
     failureReason: hit.failureReason,
+    ...(redacted.removed.length > 0 ? { redactions: redacted.removed } : {}),
   };
   return { ...base, ...opts.override };
 }
 
-/** Remove secret-bearing query params (?api_key=, ?token=, ?key=...) from a URL. */
-function stripSecretQuery(url: string): string {
+const SECRET_QUERY_PARAM = /^(api_?key|token|secret|access_?token|auth)$/i;
+
+/**
+ * Strip secret-bearing query params (?api_key=, ?token=, ...) from a URL and
+ * report which ones were removed.
+ *
+ * The removal list feeds `ResearchSource.redactions` so a reader can tell that
+ * a URL was rewritten - a silently redacted URL is indistinguishable from one
+ * that never carried a credential, which makes after-the-fact auditing
+ * impossible.
+ *
+ * A URL with nothing to strip is returned byte-identical (not re-serialised),
+ * so redaction never perturbs the content hash of a clean source.
+ */
+function redactUrl(url: string): { url: string; removed: string[] } {
   try {
     const u = new URL(url);
-    let changed = false;
+    const removed: string[] = [];
     for (const key of [...u.searchParams.keys()]) {
-      if (/^(api_?key|token|secret|access_?token|auth)$/i.test(key)) {
+      if (SECRET_QUERY_PARAM.test(key)) {
         u.searchParams.delete(key);
-        changed = true;
+        removed.push(key);
       }
     }
-    return changed ? u.toString() : url;
+    return removed.length > 0 ? { url: u.toString(), removed } : { url, removed: [] };
   } catch {
-    return url;
+    return { url, removed: [] };
   }
 }

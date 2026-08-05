@@ -105,4 +105,35 @@ describe('P1-R5 research artifact / resume / Goal', () => {
     // The record is preserved for traceability despite the load failure.
     expect(store.read(scopeKey({ projectPath: '/proj', sessionId: 's1' }))?.packet.schemaVersion).toBe(999);
   });
+
+  it('returns null for a scope that was never written', () => {
+    const store = createMemoryArtifactStore();
+    saveResearchPacket(store, basePacket(), { projectPath: '/proj', sessionId: 's1' });
+    // A miss must be an empty result, not a throw and not another scope's packet.
+    expect(loadResearchPacket(store, { projectPath: '/proj', sessionId: 'never-used' })).toBeNull();
+  });
+
+  it('rejects resuming from a packet on an unsupported schema', () => {
+    // The resume path can be handed a packet from any source, so it repeats the
+    // version gate instead of trusting the caller to have loaded it safely.
+    expect(() => resumeResearchState(basePacket({ schemaVersion: 999 as unknown as number }))).toThrow(
+      UnsupportedSchemaError,
+    );
+  });
+
+  it('exposes the full CAS token chain and an empty history for unknown scopes', () => {
+    const store = createMemoryArtifactStore();
+    const scope = { projectPath: '/proj', sessionId: 's1' };
+    expect(artifactHistory(store, scope)).toEqual([]);
+
+    const r1 = saveResearchPacket(store, basePacket({ summary: 'v1' }), scope);
+    // History records superseded tokens only, so it is still empty after one write.
+    expect(artifactHistory(store, scope)).toEqual([]);
+
+    const r2 = saveResearchPacket(store, basePacket({ summary: 'v2' }), scope, { expectedToken: r1.casToken });
+    expect(artifactHistory(store, scope)).toEqual([r1.casToken]);
+
+    saveResearchPacket(store, basePacket({ summary: 'v3' }), scope, { expectedToken: r2.casToken });
+    expect(artifactHistory(store, scope)).toEqual([r1.casToken, r2.casToken]);
+  });
 });

@@ -208,7 +208,9 @@ describe('P0-R2 web research adapter', () => {
  * into something that reads as retrieved, or leaks a credential into evidence.
  */
 describe('P0-R2 web research adapter resilience and redaction', () => {
-  it('redacts secret-bearing query params from the display URL', async () => {
+  it('redacts secret query params from every URL field that leaves the module', async () => {
+    // canonicalUrl is what the renderer projects and what the packet persists,
+    // so redacting only displayUrl would leak the credential into evidence.
     const secretUrl = 'https://example.com/doc?api_key=SECRET123&access_token=T0KEN&page=2';
     const deps: WebResearchDeps = {
       allowedDomains: ['example.com'],
@@ -219,20 +221,70 @@ describe('P0-R2 web research adapter resilience and redaction', () => {
 
     const source = res.sources[0];
     expect(source.status).toBe('retrieved');
-    expect(source.displayUrl).not.toContain('SECRET123');
-    expect(source.displayUrl).not.toContain('T0KEN');
-    // Ordinary params survive so the citation still points at the right page.
-    expect(source.displayUrl).toContain('page=2');
+    for (const field of [source.canonicalUrl, source.displayUrl]) {
+      expect(field).not.toContain('SECRET123');
+      expect(field).not.toContain('T0KEN');
+      // Ordinary params survive so the citation still points at the right page.
+      expect(field).toContain('page=2');
+    }
+    // The redaction is auditable rather than silent.
+    expect(source.redactions).toEqual(expect.arrayContaining(['api_key', 'access_token']));
   });
 
-  it('leaves a URL untouched when it carries no secret params', async () => {
+  it('redacts credentials introduced by a redirect and hashes the safe URL', async () => {
     const deps: WebResearchDeps = {
       allowedDomains: ['example.com'],
-      search: async () => [okHit('https://example.com/doc?page=2')],
+      search: async () => [okHit('https://example.com/start')],
+      fetch: async () => ({
+        url: 'https://example.com/start',
+        status: 'ok',
+        content: 'body',
+        finalUrl: 'https://example.com/final?token=REDIRECTSECRET',
+        bytes: 4,
+      }),
+    };
+    const res = await runWebResearch(webRequest(), deps);
+
+    const source = res.sources[0];
+    expect(source.canonicalUrl).not.toContain('REDIRECTSECRET');
+    expect(source.displayUrl).not.toContain('REDIRECTSECRET');
+    expect(source.redactions).toContain('token');
+    expect(source.contentHash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('keeps clean URLs byte-identical so redaction never moves the content hash', async () => {
+    const clean = 'https://example.com/doc?page=2';
+    const deps: WebResearchDeps = {
+      allowedDomains: ['example.com'],
+      search: async () => [okHit(clean)],
       fetch: async url => okFetch(url),
     };
     const res = await runWebResearch(webRequest(), deps);
-    expect(res.sources[0].displayUrl).toBe('https://example.com/doc?page=2');
+
+    const source = res.sources[0];
+    expect(source.displayUrl).toBe(clean);
+    expect(source.canonicalUrl).toBe(clean);
+    // No redaction happened, so no audit entry is fabricated.
+    expect(source.redactions).toBeUndefined();
+  });
+
+  it('redacts URLs recorded in the blocked and skipped diagnostics', async () => {
+    const deps: WebResearchDeps = {
+      allowedDomains: ['example.com'],
+      search: async () => [
+        okHit('https://evil.example.net/x?api_key=BLOCKEDSECRET'),
+        okHit('https://example.com/a'),
+        okHit('https://example.com/b?token=SKIPPEDSECRET'),
+      ],
+      fetch: async url => okFetch(url, 'x', 100),
+    };
+    const res = await runWebResearch(webRequest({ maxSources: 3, maxFetchBytes: 50 }), deps);
+
+    expect(res.blocked.join(' ')).not.toContain('BLOCKEDSECRET');
+    expect(res.skipped.join(' ')).not.toContain('SKIPPEDSECRET');
+    // The diagnostics still identify which URL was rejected/skipped.
+    expect(res.blocked.some(u => u.includes('evil.example.net'))).toBe(true);
+    expect(res.skipped.some(u => u.includes('/b'))).toBe(true);
   });
 
   it('degrades to an empty noted result when the search dependency throws', async () => {
