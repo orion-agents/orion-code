@@ -1,0 +1,123 @@
+import type { SubtaskResult } from '../src/runtime/subagents/types';
+import { EMPTY_SUBTASK_USAGE } from '../src/runtime/subagents/types';
+import type { ResearchPacket } from '../src/runtime/subagents/research-types';
+import {
+  createLocalResearchRequest,
+  hashPacket,
+  stableStringify,
+  subtaskResultToPacket,
+  validatePacket,
+  validateResearchRequest,
+} from '../src/runtime/subagents/research-contract';
+
+/** Deterministic completed research result with 2 file findings + 1 inference. */
+function completedResult(): SubtaskResult {
+  return {
+    id: 'task-1',
+    role: 'research',
+    status: 'completed',
+    summary: 'Provider fallback switches the request model once on a 429.',
+    findings: [
+      {
+        severity: 'high',
+        title: 'llm.resilience is wired in cli.ts',
+        evidence: 'src/cli.ts:234 assigns new ProviderResilienceCoordinator()',
+        file: 'src/cli.ts',
+        line: 234,
+      },
+      {
+        severity: 'medium',
+        title: 'coordinator switches model exactly once',
+        evidence: 'ProviderResilienceCoordinator retries with fallbackModel',
+        file: 'src/services/provider-resilience/coordinator.ts',
+        line: 20,
+      },
+      {
+        title: 'fallback covers rate-limit and timeout paths',
+        evidence: 'error-classifier maps 429 and ETIMEDOUT to retryable',
+      },
+    ],
+    files: ['src/cli.ts', 'src/services/provider-resilience/coordinator.ts'],
+    commands: [],
+    verification: ['unit test asserts single switch'],
+    risks: ['fallback provider must preserve source status'],
+    usage: EMPTY_SUBTASK_USAGE,
+  };
+}
+
+describe('research contract (P0-R1)', () => {
+  const request = createLocalResearchRequest('confirm provider fallback', '/repo');
+  const ctx = { sessionId: 'sess-1', projectPath: '/repo' };
+
+  it('maps a local-only completed result to a recoverable packet (POC-1)', () => {
+    const packet = subtaskResultToPacket(completedResult(), request, ctx);
+
+    expect(packet.schemaVersion).toBe(1);
+    expect(packet.sources).toHaveLength(2);
+    expect(packet.sources.every(s => s.kind === 'file' && s.provider === 'local')).toBe(true);
+
+    // 2 file findings -> observed; 1 inference finding -> unverified.
+    const observed = packet.claims.filter(c => c.verification === 'observed');
+    const inferred = packet.claims.filter(c => c.verification === 'unverified');
+    expect(observed).toHaveLength(2);
+    expect(inferred).toHaveLength(1);
+    expect(observed.every(c => c.sourceIds.length === 1)).toBe(true);
+    expect(inferred.every(c => c.sourceIds.length === 0)).toBe(true);
+
+    const validation = validatePacket(packet);
+    expect(validation.ok).toBe(true);
+    expect(validation.errors).toEqual([]);
+  });
+
+  it('produces a deterministic, serializable packet', () => {
+    const a = stableStringify(subtaskResultToPacket(completedResult(), request, ctx));
+    const b = stableStringify(subtaskResultToPacket(completedResult(), request, ctx));
+    expect(a).toBe(b);
+  });
+
+  it('content hash is stable across separate builds', () => {
+    const a = hashPacket(subtaskResultToPacket(completedResult(), request, ctx));
+    const b = hashPacket(subtaskResultToPacket(completedResult(), request, ctx));
+    expect(a).toBe(b);
+    expect(a).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('fails closed when summary is missing', () => {
+    const result = completedResult();
+    result.summary = '';
+    const packet = subtaskResultToPacket(result, request, ctx);
+    const validation = validatePacket(packet);
+    expect(validation.ok).toBe(false);
+    expect(validation.errors.some(e => e.includes('summary'))).toBe(true);
+  });
+
+  it('fails closed when an observed claim has no source binding', () => {
+    const packet = subtaskResultToPacket(completedResult(), request, ctx);
+    packet.claims[0].sourceIds = [];
+    const validation = validatePacket(packet);
+    expect(validation.ok).toBe(false);
+    expect(validation.errors.some(e => e.includes('source binding'))).toBe(true);
+  });
+
+  it('fails closed when sources exceed request budget', () => {
+    const tight = createLocalResearchRequest('confirm provider fallback', '/repo', { maxSources: 1 });
+    const packet = subtaskResultToPacket(completedResult(), tight, ctx);
+    const validation = validatePacket(packet);
+    expect(validation.ok).toBe(false);
+    expect(validation.errors.some(e => e.includes('maxSources'))).toBe(true);
+  });
+
+  it('never reports observed claims for non-completed results', () => {
+    const failed = completedResult();
+    failed.status = 'failed';
+    const packet: ResearchPacket = subtaskResultToPacket(failed, request, ctx);
+    expect(packet.claims.some(c => c.verification === 'observed')).toBe(false);
+    expect(packet.claims.every(c => c.verification === 'unverified')).toBe(true);
+  });
+
+  it('validates the research request contract', () => {
+    expect(validateResearchRequest(request).ok).toBe(true);
+    expect(validateResearchRequest({ ...request, mode: 'remote' as never }).ok).toBe(false);
+    expect(validateResearchRequest({ objective: '', scope: { projectRoot: '/x' }, mode: 'local', maxSources: 1, maxFetchBytes: 0, maxDurationMs: 1 } as never).ok).toBe(false);
+  });
+});
