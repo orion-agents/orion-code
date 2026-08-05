@@ -3,7 +3,7 @@
 > **Orion Code — 通用 Agent 驾驭框架**
 > 一个 CLI 驱动的编码 Agent，具备安全边界、工具编排、记忆系统和上下文管理。
 >
-> v0.1.3 — Goal 连续性、模型配置与命令沙箱 POC
+> v0.1.4 — Goal 连续性、模型配置与命令沙箱 POC
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20.0-green.svg)](https://nodejs.org)
@@ -104,15 +104,18 @@ npm start -- --print "review the current git diff"
 
 ### 全局安装
 
-固定安装 v0.1.3：
+固定安装 v0.1.4：
 
 ```bash
-npm install -g @orion-agents/orion-code@0.1.3
+npm install -g @orion-agents/orion-code@0.1.4
 # 任意目录运行
 orion
 ```
 
 也可以在源码工作树中使用 `npm ci && npm run build && npm start`。
+
+> **预发布说明**：`0.1.4` 是 `v0.1.4` 分支上的开发版本，尚未发布到 npm——当前已发布版本
+> 仍是 `0.1.3`。在 `v0.1.4` 打 tag 并发布之前，请从源码工作树安装。该说明将在发版时移除。
 
 公众体验、交互优化和新增工作流优先落在 TUI。`terminal-ui` 不作为与
 TUI 并行发展的公众产品；Ink 只保留迁移期兼容，不再增加产品能力。
@@ -462,7 +465,15 @@ orion-code/
 
 ## 版本历史
 
-### v0.1.3（当前版本）
+### v0.1.4（开发中，未发布）
+
+- 版本元数据对齐：`package.json` / `package-lock.json` 升至 `0.1.4`，`orion --version`、
+  出站 `User-Agent` 与崩溃/遥测上报不再误报 `0.1.3`；
+- 类型安全推进：外部边界（LLM provider、MCP wire、工具返回）由 `any` 收窄为 `unknown` +
+  类型守卫，顺带修复被 `any` 掩盖的真实缺陷；
+- 可靠性：持久化与鉴权路径不再静默吞掉异常，ESLint 启用 `no-empty` 门禁。
+
+### v0.1.3（最新已发布版本）
 
 - `/model` 与 `/models` 拆分：`/model` 只显示当前模型信息，`/models` 承接交互式切换；
 - `modelRegistry` 成为模型展示与切换的唯一事实源，静态 catalog 退为 legacy fallback；
