@@ -491,6 +491,25 @@ orion-code/
 
 ---
 
+## Research-to-Evidence（v0.1.4，实验性）
+
+> **状态标记：experimental（实验性）。** 把只读 `research` 子 agent 的结果转化为**可追踪、可恢复**的研究→证据闭环。
+
+核心保证（违反任一即 No-Go，绝不发布）：
+
+- **只接专用 WebSearch / WebFetch**，不暴露通用 MCP、不授予 write/exec。
+- **SSRF / DNS 重解析 / 重定向 / 响应大小 / 超时** 全部走既有守卫：选择期做 lexical SSRF 预检，逐跳防护委托给真实 WebFetch 工具。
+- **claim 必须有 source 绑定**才能进入 `observed`；无独立验证的 claim 永远停在 `partial`/`unmet`，绝不被算作已验证/完成。
+- **安全闸门失败 → `blocked`/`failed` + 结构化原因**，绝不伪装成命中；provider fallback 只换 provider，不降级 source status，也不把失败写成成功。
+- 研究证据（web）与执行验证证据（file / 测试 / 构建 / 文件事实）**明确区分**，web 摘要不能替代执行验证。
+- 包与源元数据**原子 CAS 保存**，project / session / Goal 作用域隔离；恢复只推导状态、不重放外部副作用；旧 schema 版本 fail-closed。
+
+模块：`src/runtime/subagents/{research-types,research-contract,research-citation,web-research-adapter,research-renderer,research-artifact,research-quality}.ts`。
+
+> 真实终端（PTY）与外部状态证据在 CI 中标记为 `not_run`；本地测试不视为发布完成。
+
+---
+
 ## 开发
 
 ```bash
