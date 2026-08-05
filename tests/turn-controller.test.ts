@@ -20,7 +20,7 @@ describe('TurnController', () => {
     expect(controller.getSnapshot()).toMatchObject({ status: 'idle' });
   });
 
-  test('revision aborts the active turn and keeps only the latest input', () => {
+  test('revision aborts the active turn and accumulates consecutive inputs', () => {
     const controller = new TurnController();
     const turn = controller.beginTurn('write tests');
 
@@ -28,12 +28,14 @@ describe('TurnController', () => {
     expect(controller.requestRevision('fix build')).toBe(true);
 
     expect(turn.abortSignal.aborted).toBe(true);
+    // v0.1.3 §8 G2: consecutive revisions accumulate (newline-joined) instead of
+    // overwriting, so no steering input is silently dropped.
     expect(controller.getSnapshot()).toMatchObject({
       status: 'aborting',
-      pendingRevision: 'fix build',
+      pendingRevision: 'add docs\nfix build',
     });
 
-    expect(controller.finishTurn(turn.id)).toBe('fix build');
+    expect(controller.finishTurn(turn.id)).toBe('add docs\nfix build');
     expect(controller.hasActiveTurn()).toBe(false);
   });
 

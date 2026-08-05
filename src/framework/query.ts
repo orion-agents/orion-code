@@ -22,6 +22,7 @@ import type { OpenHorseTool, ToolContext } from './tool';
 import type { PermissionMode } from '../commands/types';
 import type { CostTracker } from '../core/cost-tracker';
 import type { ToolConfirmationPolicy } from '../services/config';
+import type { ToolAllowlistEvaluator } from '../services/tool-allowlist';
 import { toOpenAITools } from './tool';
 import { createStrategyTracker, type StrategyTracker } from '../core/strategy-tracker';
 import { AutoCompact } from '../services/compact/auto-compact';
@@ -737,6 +738,8 @@ export interface QueryParams {
   permissionMode?: PermissionMode;
   /** Fallback for permission checks that would need an interactive prompt. */
   toolConfirmation?: ToolConfirmationPolicy;
+  /** Project-scoped allowlist rule engine applied on top of tool policy + mode. */
+  toolAllowlist?: ToolAllowlistEvaluator;
   /** Optional UI confirmation hook for tools whose permission check returns ask. */
   confirmToolUse?: (request: {
     name: string;
@@ -1127,6 +1130,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
         toolExecutor,
         permissionMode: params.permissionMode,
         toolConfirmation: params.toolConfirmation,
+        toolAllowlist: params.toolAllowlist,
         confirmToolUse: params.confirmToolUse,
         toolContext: params.toolContext,
         abortSignal,

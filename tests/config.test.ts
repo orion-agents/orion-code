@@ -347,7 +347,10 @@ describe('getConfigSummary', () => {
     });
 
     const summary = getConfigSummary(config);
-    expect(summary.apiKey).toBe('sk-test***');
+    // The provider prefix must never be printed: diagnostics output gets pasted
+    // into issues/chat logs. Only the last 4 chars + length are revealed.
+    expect(summary.apiKey).toBe('***2345 (len=13)');
+    expect(summary.apiKey).not.toContain('sk-test');
     expect(summary.model).toBe('gpt-4o');
     expect(summary.fallback).toBe('claude-sonnet-4-6');
     expect(summary.toolConfirmation).toBe('allow');

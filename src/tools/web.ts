@@ -27,6 +27,7 @@ import {
   shouldTryMcpFirst,
 } from '../services/web-search-adapters';
 import { ORION_USER_AGENT } from '../product/version';
+import { maskSecret } from '../utils/mask';
 
 // ============================================================================
 // SSRF Protection - Issue #32 #3.7
@@ -68,6 +69,19 @@ const MAX_CONTENT_LENGTH = 10 * 1024 * 1024;
 function isUrlSafeForSSRF(url: string): { safe: boolean; reason?: string } {
   try {
     const parsed = new URL(url);
+
+    // 协议白名单：只允许 http/https。
+    // file: / gopher: / ftp: / data: 等协议的 hostname 通常为空，会绕过下面所有
+    // 主机名与 IP 检查，必须在最前面拦掉。
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return { safe: false, reason: `Blocked protocol: ${parsed.protocol}` };
+    }
+
+    // 禁止 URL 内嵌凭据（http://user:pass@host），避免凭据外泄与解析歧义
+    if (parsed.username || parsed.password) {
+      return { safe: false, reason: 'Blocked URL with embedded credentials' };
+    }
+
     let hostname = parsed.hostname.toLowerCase();
     // URL.hostname keeps brackets around IPv6 literals (e.g. "[::1]"); strip them
     // so the BLOCKED_IP_PATTERNS anchors (^::1$, etc.) can match.
@@ -303,31 +317,86 @@ interface FetchResult {
   errorType?: string; // 错误类型
 }
 
-async function fetchUrl(url: string, _maxRedirects: number = 5): Promise<FetchResult> {
+/** HTTP status codes that carry a `Location` redirect. */
+const REDIRECT_STATUS = new Set([301, 302, 303, 307, 308]);
+
+/**
+ * Fetch a URL with per-hop SSRF validation.
+ *
+ * Previously this used `redirect: 'follow'`, so only the *first* URL was checked by
+ * `isUrlSafeForSSRF`. An attacker-controlled public URL could 302 to
+ * `http://169.254.169.254/` (cloud metadata) or `http://127.0.0.1:<port>/` and the
+ * agent would happily fetch it. We now follow redirects manually and re-run the SSRF
+ * check on every hop.
+ */
+async function fetchUrl(url: string, maxRedirects: number = 5): Promise<FetchResult> {
   const cached = cacheGet(url);
   if (cached) return { ...cached, url };
 
-  // Issue #32 #3.7: SSRF 检查
-  const ssrfCheck = isUrlSafeForSSRF(url);
-  if (!ssrfCheck.safe) {
-    return {
-      content: `SSRF blocked: ${ssrfCheck.reason}`,
-      code: 403,
-      contentType: 'text/plain',
-      errorType: 'SSRF_BLOCKED',
-    };
-  }
+  const redirects: string[] = [];
+  let currentUrl = url;
 
-  try {
-    // Issue #20 修复：启用 redirect: 'follow' 自动跟随重定向
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': ORION_USER_AGENT,
-        Accept: 'text/html,application/xhtml+xml,text/markdown,text/plain,*/*',
-      },
-      redirect: 'follow', // 自动跟随重定向（最多 20 次，由 fetch 内置限制）
-    });
+  for (let hop = 0; hop <= maxRedirects; hop++) {
+    // Issue #32 #3.7: SSRF 检查（每一跳都要检查，不能只查首个 URL）
+    const ssrfCheck = isUrlSafeForSSRF(currentUrl);
+    if (!ssrfCheck.safe) {
+      const chain = [url, ...redirects].join(' -> ');
+      return {
+        content:
+          hop === 0
+            ? `SSRF blocked: ${ssrfCheck.reason}`
+            : `SSRF blocked on redirect hop ${hop}: ${ssrfCheck.reason} (chain: ${chain})`,
+        code: 403,
+        contentType: 'text/plain',
+        url: currentUrl,
+        redirects,
+        errorType: 'SSRF_BLOCKED',
+      };
+    }
 
+    let response: Response;
+    try {
+      response = await fetch(currentUrl, {
+        headers: {
+          'User-Agent': ORION_USER_AGENT,
+          Accept: 'text/html,application/xhtml+xml,text/markdown,text/plain,*/*',
+        },
+        // 手动处理重定向，以便逐跳做 SSRF 校验
+        redirect: 'manual',
+      });
+    } catch (err: any) {
+      return {
+        content: `Fetch error: ${err.message}`,
+        code: 0,
+        contentType: 'text/plain',
+        url: currentUrl,
+        redirects,
+        errorType: 'NETWORK_ERROR',
+      };
+    }
+
+    // ---- redirect hop ----
+    const location = response.headers.get('location');
+    if (REDIRECT_STATUS.has(response.status) && location) {
+      let nextUrl: string;
+      try {
+        nextUrl = new URL(location, currentUrl).toString();
+      } catch {
+        return {
+          content: `Invalid redirect target: ${location}`,
+          code: response.status,
+          contentType: 'text/plain',
+          url: currentUrl,
+          redirects,
+          errorType: 'INVALID_REDIRECT',
+        };
+      }
+      redirects.push(nextUrl);
+      currentUrl = nextUrl;
+      continue;
+    }
+
+    // ---- terminal response ----
     // Issue #32 #3.7: Content-Length 检查
     const contentLength = response.headers.get('content-length');
     if (contentLength && parseInt(contentLength, 10) > MAX_CONTENT_LENGTH) {
@@ -335,31 +404,38 @@ async function fetchUrl(url: string, _maxRedirects: number = 5): Promise<FetchRe
         content: `Response too large: Content-Length ${contentLength} exceeds ${MAX_CONTENT_LENGTH} bytes`,
         code: 413,
         contentType: 'text/plain',
+        url: currentUrl,
+        redirects,
         errorType: 'CONTENT_TOO_LARGE',
       };
     }
 
     const contentType = response.headers.get('content-type') || 'text/plain';
-    const finalUrl = response.url;
-    const redirects: string[] = [];
-
-    // 记录重定向信息（如果发生了重定向）
-    if (response.redirected && finalUrl !== url) {
-      redirects.push(finalUrl);
-    }
 
     if (!response.ok) {
       return {
         content: `HTTP Error ${response.status}: ${response.statusText}`,
         code: response.status,
         contentType,
-        url: finalUrl,
+        url: currentUrl,
         redirects,
         errorType: 'HTTP_ERROR',
       };
     }
 
-    const text = await response.text();
+    let text: string;
+    try {
+      text = await response.text();
+    } catch (err: any) {
+      return {
+        content: `Fetch error: ${err.message}`,
+        code: 0,
+        contentType,
+        url: currentUrl,
+        redirects,
+        errorType: 'NETWORK_ERROR',
+      };
+    }
 
     // Convert to markdown if HTML
     let content = text;
@@ -372,23 +448,24 @@ async function fetchUrl(url: string, _maxRedirects: number = 5): Promise<FetchRe
       content = content.slice(0, MAX_MARKDOWN_LENGTH) + '\n\n[... content truncated]';
     }
 
-    const result: FetchResult = {
+    cacheSet(url, { content, code: response.status, contentType });
+    return {
       content,
       code: response.status,
       contentType,
-      url: finalUrl,
+      url: currentUrl,
       redirects,
     };
-    if (response.ok) cacheSet(url, { content, code: response.status, contentType });
-    return result;
-  } catch (err: any) {
-    return {
-      content: `Fetch error: ${err.message}`,
-      code: 0,
-      contentType: 'text/plain',
-      errorType: 'NETWORK_ERROR',
-    };
   }
+
+  return {
+    content: `Too many redirects (>${maxRedirects}): ${[url, ...redirects].join(' -> ')}`,
+    code: 310,
+    contentType: 'text/plain',
+    url: currentUrl,
+    redirects,
+    errorType: 'TOO_MANY_REDIRECTS',
+  };
 }
 
 /** Clear the fetch cache (test helper / debugging) */
@@ -543,7 +620,7 @@ function getWebSearchMcpClient(): WebSearchMcpClient {
   const key = JSON.stringify({
     provider: webSearch.provider,
     endpoint: webSearch.endpoint,
-    apiKey: webSearch.apiKey ? `${webSearch.apiKey.slice(0, 8)}...` : '',
+    apiKey: webSearch.apiKey ? maskSecret(webSearch.apiKey) : '',
     toolName: webSearch.toolName || '',
     timeoutMs: webSearch.timeoutMs || 0,
     authType: webSearch.authType || '',

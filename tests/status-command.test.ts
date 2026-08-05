@@ -4,6 +4,7 @@ import { join } from 'path';
 import { findCommand } from '../src/commands';
 import { Store } from '../src/framework/store';
 import { loadConfig } from '../src/services/config';
+import { buildRegistry } from '../src/services/model-registry';
 import { appendSessionTraceEvent, createSession, readSessionTraceEvents } from '../src/services/session-storage';
 import { getProjectSessionTracePath } from '../src/services/config-dir';
 import { storeArtifact } from '../src/core/tool-artifacts';
@@ -153,7 +154,41 @@ describe('/status context diagnostics', () => {
     expect(rendered).not.toContain('Renderer   terminal technical text-pickers');
   });
 
-  it('renders /model list from shared model picker state', async () => {
+  it('renders /models from shared model picker state (non-interactive)', async () => {
+    const cwd = join(root, 'packages', 'cli');
+    const config = loadConfig({ apiKey: 'test-key', model: 'glm-5' });
+    const store = new Store({
+      config,
+      tools: TOOLS,
+      currentModel: 'glm-5',
+    });
+    const ctx: CommandContext = {
+      cwd,
+      config,
+      store,
+      uiCapabilities: { structuredPickers: false },
+      llm: {
+        getModel: jest.fn(() => 'glm-5'),
+      } as any,
+      runtime: makeRuntime() as any,
+    };
+
+    const result = await findCommand('models')!.execute(ctx, '');
+    const rendered = stripAnsi(logs.join('\n'));
+
+    expect(result.success).toBe(true);
+    expect(rendered).toContain('Available Models');
+    expect(rendered).toContain('glm-5');
+    expect(rendered).toContain('(glm)');
+    expect(rendered).toContain('(current)');
+    expect(rendered).toContain('203K ctx');
+    expect(rendered).toContain('Bailian (Zhipu)');
+    expect(rendered).toContain('claude-opus-4-8');
+    expect(rendered).toContain('200K ctx');
+    expect(rendered).not.toContain('claude-opus-4-7');
+  });
+
+  it('returns structured modelPicker from /models (interactive)', async () => {
     const cwd = join(root, 'packages', 'cli');
     const config = loadConfig({ apiKey: 'test-key', model: 'glm-5' });
     const store = new Store({
@@ -171,19 +206,247 @@ describe('/status context diagnostics', () => {
       runtime: makeRuntime() as any,
     };
 
-    const result = await findCommand('model')!.execute(ctx, 'list');
+    const result = await findCommand('models')!.execute(ctx, '');
+
+    expect(result.success).toBe(true);
+    expect(result.modelPicker).toBeDefined();
+    expect(result.modelPicker!.currentModel).toBe('glm-5');
+    expect(Array.isArray(result.modelPicker!.models)).toBe(true);
+    expect(result.modelPicker!.models.length).toBeGreaterThan(0);
+    expect(result.modelPicker!.title).toBe('Switch Model');
+  });
+
+  it('shows only current model info for /model with no args', async () => {
+    const cwd = join(root, 'packages', 'cli');
+    const config = loadConfig({ apiKey: 'test-key', model: 'glm-5' });
+    const store = new Store({
+      config,
+      tools: TOOLS,
+      currentModel: 'glm-5',
+    });
+    const ctx: CommandContext = {
+      cwd,
+      config,
+      store,
+      llm: {
+        getModel: jest.fn(() => 'glm-5'),
+      } as any,
+      runtime: makeRuntime() as any,
+    };
+
+    const result = await findCommand('model')!.execute(ctx, '');
+    const rendered = stripAnsi(logs.join('\n'));
+
+    expect(result.success).toBe(true);
+    expect(rendered).toContain('Current Model');
+    expect(rendered).toContain('glm-5');
+    expect(rendered).toContain('Context');
+    expect(rendered).not.toContain('Available Models');
+  });
+
+  it('switches /model to a catalog model and applies builtin context fallback', async () => {
+    const cwd = join(root, 'packages', 'cli');
+    const config = loadConfig({ apiKey: 'test-key', model: 'glm-5.2' });
+    const store = new Store({
+      config,
+      tools: TOOLS,
+      currentModel: 'glm-5.2',
+    });
+    const setModel = jest.fn();
+    const ctx: CommandContext = {
+      cwd,
+      config,
+      store,
+      llm: {
+        getModel: jest.fn(() => 'glm-5.2'),
+        setModel,
+      } as any,
+      runtime: makeRuntime() as any,
+    };
+
+    const result = await findCommand('model')!.execute(ctx, 'glm-5.2');
+    const rendered = stripAnsi(logs.join('\n'));
+
+    expect(result.success).toBe(true);
+    expect(setModel).toHaveBeenCalledWith('glm-5.2');
+    expect(store.getSnapshot().currentModel).toBe('glm-5.2');
+    expect(rendered).toContain('Model changed to glm-5.2');
+    expect(rendered).toContain('Context window 1.0M tokens (builtin)');
+  });
+
+  it('renders /models from configured model profiles (non-interactive)', async () => {
+    const cwd = join(root, 'packages', 'cli');
+    const registry = buildRegistry({
+      providers: [
+        {
+          id: 'huoshan',
+          displayName: '火山方舟',
+          baseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3',
+          apiKey: 'test-key',
+          protocol: 'openai-completions',
+        },
+      ],
+      models: [
+        {
+          id: 'ark-code-latest',
+          displayName: 'Ark Code Latest',
+          provider: 'huoshan',
+          model: 'ark-code-latest',
+          contextWindow: 1024000,
+          maxOutputTokens: 128000,
+          aliases: ['ark'],
+        },
+        {
+          id: 'glm-5.1',
+          provider: 'huoshan',
+          model: 'xopglm51',
+          contextWindow: 200000,
+          maxOutputTokens: 64000,
+          enabled: false,
+        },
+      ],
+      defaultModel: 'ark-code-latest',
+    });
+    expect(registry.valid).toBe(true);
+
+    const config = loadConfig({ apiKey: 'test-key', model: 'ark-code-latest' });
+    config.modelRegistry = registry.registry!;
+    const store = new Store({
+      config,
+      tools: TOOLS,
+      currentModel: 'ark-code-latest',
+    });
+    const ctx: CommandContext = {
+      cwd,
+      config,
+      store,
+      uiCapabilities: { structuredPickers: false },
+      llm: {
+        getModel: jest.fn(() => 'ark-code-latest'),
+      } as any,
+      runtime: makeRuntime() as any,
+    };
+
+    const result = await findCommand('models')!.execute(ctx, '');
     const rendered = stripAnsi(logs.join('\n'));
 
     expect(result.success).toBe(true);
     expect(rendered).toContain('Available Models');
-    expect(rendered).toContain('glm-5');
-    expect(rendered).toContain('(glm)');
+    expect(rendered).toContain('ark-code-latest');
+    expect(rendered).toContain('(ark)');
     expect(rendered).toContain('(current)');
-    expect(rendered).toContain('203K ctx');
-    expect(rendered).toContain('Bailian (Zhipu)');
-    expect(rendered).toContain('claude-opus-4-8');
-    expect(rendered).toContain('200K ctx');
-    expect(rendered).not.toContain('claude-opus-4-7');
+    expect(rendered).toContain('1.0M ctx');
+    expect(rendered).toContain('火山方舟');
+    expect(rendered).not.toContain('claude-opus-4-8');
+  });
+
+  it('shows configured profile context in /model info', async () => {
+    const cwd = join(root, 'packages', 'cli');
+    const registry = buildRegistry({
+      providers: [
+        {
+          id: 'huoshan',
+          displayName: '火山方舟',
+          baseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3',
+          apiKey: 'test-key',
+          protocol: 'openai-completions',
+        },
+      ],
+      models: [
+        {
+          id: 'ark-code-latest',
+          displayName: 'Ark Code Latest',
+          provider: 'huoshan',
+          model: 'ark-code-latest',
+          contextWindow: 1024000,
+          maxOutputTokens: 128000,
+        },
+      ],
+      defaultModel: 'ark-code-latest',
+    });
+    expect(registry.valid).toBe(true);
+
+    const config = loadConfig({ apiKey: 'test-key', model: 'ark-code-latest' });
+    config.modelRegistry = registry.registry!;
+    const store = new Store({
+      config,
+      tools: TOOLS,
+      currentModel: 'ark-code-latest',
+    });
+    const ctx: CommandContext = {
+      cwd,
+      config,
+      store,
+      llm: {
+        getModel: jest.fn(() => 'ark-code-latest'),
+      } as any,
+      runtime: makeRuntime() as any,
+    };
+
+    const result = await findCommand('model')!.execute(ctx, '');
+    const rendered = stripAnsi(logs.join('\n'));
+
+    expect(result.success).toBe(true);
+    expect(rendered).toContain('Current Model');
+    expect(rendered).toContain('Model    ark-code-latest');
+    expect(rendered).toContain('Context  1.0M tokens');
+    expect(rendered).toContain('Source   config');
+    expect(rendered).toContain('Provider 火山方舟');
+  });
+
+  it('switches /model using registry alias and stores profile id', async () => {
+    const cwd = join(root, 'packages', 'cli');
+    const registry = buildRegistry({
+      providers: [
+        {
+          id: 'huoshan',
+          displayName: '火山方舟',
+          baseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3',
+          apiKey: 'test-key',
+          protocol: 'openai-completions',
+        },
+      ],
+      models: [
+        {
+          id: 'ark-code-latest',
+          displayName: 'Ark Code Latest',
+          provider: 'huoshan',
+          model: 'ark-code-latest',
+          contextWindow: 1024000,
+          maxOutputTokens: 128000,
+          aliases: ['ark'],
+        },
+      ],
+      defaultModel: 'ark-code-latest',
+    });
+    expect(registry.valid).toBe(true);
+    const config = loadConfig({ apiKey: 'test-key', model: 'glm-5' });
+    config.modelRegistry = registry.registry!;
+    const setModel = jest.fn();
+    const store = new Store({
+      config,
+      tools: TOOLS,
+      currentModel: 'glm-5',
+    });
+    const ctx: CommandContext = {
+      cwd,
+      config,
+      store,
+      llm: {
+        getModel: jest.fn(() => 'glm-5'),
+        setModel,
+      } as any,
+      runtime: makeRuntime() as any,
+    };
+
+    const result = await findCommand('model')!.execute(ctx, 'ark');
+    const rendered = stripAnsi(logs.join('\n'));
+
+    expect(result.success).toBe(true);
+    expect(setModel).toHaveBeenCalledWith('ark-code-latest');
+    expect(store.getSnapshot().currentModel).toBe('ark-code-latest');
+    expect(rendered).toContain('Model changed to ark-code-latest');
+    expect(rendered).toContain('Context window 1.0M tokens (resolved)');
   });
 
   it('switches /model aliases to known model ids', async () => {
@@ -216,7 +479,7 @@ describe('/status context diagnostics', () => {
     expect(rendered).toContain('Context window 200K tokens (builtin)');
   });
 
-  it('renders /model help aliases from the shared model catalog', async () => {
+  it('reports /model help was removed and points to /models', async () => {
     const cwd = join(root, 'packages', 'cli');
     const config = loadConfig({ apiKey: 'test-key', model: 'glm-5' });
     const store = new Store({
@@ -236,11 +499,32 @@ describe('/status context diagnostics', () => {
     const rendered = stripAnsi(logs.join('\n'));
 
     expect(result.success).toBe(true);
-    expect(rendered).toContain('Aliases:');
-    expect(rendered).toContain('codernext');
-    expect(rendered).toContain('gpt35');
-    expect(rendered).toContain('qwenplus');
-    expect(rendered).toContain('minimax');
+    expect(rendered).toContain('/model help was removed.');
+    expect(rendered).toContain('Use /models');
+  });
+
+  it('reports /model list was removed and points to /models', async () => {
+    const cwd = join(root, 'packages', 'cli');
+    const config = loadConfig({ apiKey: 'test-key', model: 'glm-5' });
+    const store = new Store({
+      config,
+      tools: TOOLS,
+      currentModel: 'glm-5',
+    });
+    const ctx: CommandContext = {
+      cwd,
+      config,
+      store,
+      llm: null,
+      runtime: makeRuntime() as any,
+    };
+
+    const result = await findCommand('model')!.execute(ctx, 'list');
+    const rendered = stripAnsi(logs.join('\n'));
+
+    expect(result.success).toBe(true);
+    expect(rendered).toContain('/model list was removed.');
+    expect(rendered).toContain('Use /models');
   });
 
   it('shows last agent-loop stats when available', async () => {

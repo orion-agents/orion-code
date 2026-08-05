@@ -160,7 +160,7 @@ export const gitStatusTool: OpenHorseTool = buildTool({
     // git status --porcelain
     const statusResult = await execGit('status --porcelain', cwd);
     if (!statusResult.success) {
-      return { success: false, output: '', error: `git status failed: ${statusResult.error}` };
+      return { success: false, output: `git status failed: ${statusResult.error}`, error: `git status failed: ${statusResult.error}` };
     }
 
     // 解析状态
@@ -186,12 +186,39 @@ export const gitStatusTool: OpenHorseTool = buildTool({
       }
     }
 
+    // Upstream divergence is best-effort: a detached HEAD or a branch without an
+    // upstream makes `rev-list` fail, and that must never turn a successful
+    // `git status` into an error.
+    let ahead = 0;
+    let behind = 0;
+    try {
+      const upstream = await execGitArgs(
+        ['rev-list', '--count', '--left-right', '@{upstream}...HEAD'],
+        cwd
+      );
+      if (upstream.success && upstream.output.includes('\t')) {
+        // `--left-right` prints "<left>\t<right>" for `@{upstream}...HEAD`:
+        // left  = commits in upstream but not HEAD  -> we are behind
+        // right = commits in HEAD but not upstream  -> we are ahead
+        const [behindCount, aheadCount] = upstream.output
+          .trim()
+          .split('\t')
+          .map(value => parseInt(value, 10) || 0);
+        behind = behindCount;
+        ahead = aheadCount;
+      }
+    } catch {
+      // no upstream / detached HEAD -> leave ahead=behind=0
+    }
+
     const summary = {
       clean: lines.length === 0,
       untracked,
       modified,
       staged,
       total: lines.length,
+      ahead,
+      behind,
     };
 
     const output = JSON.stringify(summary, null, 2);
@@ -619,7 +646,312 @@ Issue #18/#23 修复：不再在未验证的情况下声称成功。`,
 });
 
 // ============================================================================
+// git_commit 工具
+// ============================================================================
+
+export const gitCommitTool: OpenHorseTool = buildTool({
+  name: 'git_commit',
+  description: `提交工作区变更到本地仓库。
+
+工作流程：
+1. 检查 git status --porcelain
+2. 仅对显式 paths 暂存（或 all=true 暂存全部已追踪变更）
+3. git commit -m <message>
+4. 验证 commit 成功
+
+安全：要求明确 message；拒绝盲目暂存未受控文件。`,
+  parameters: {
+    type: 'object',
+    properties: {
+      message: { type: 'string', description: 'Commit message（必填）' },
+      paths: {
+        type: 'array',
+        items: { type: 'string' },
+        description: '要暂存的精确仓库相对文件路径；与 all 互斥',
+      },
+      all: {
+        type: 'boolean',
+        description: '暂存所有已追踪文件的变更（不含未追踪文件）',
+      },
+      cwd: { type: 'string', description: '工作目录（可选）' },
+    },
+    required: ['message'],
+  },
+  execute: async args => {
+    const message = args.message as string;
+    const rawPaths = args.paths;
+    const all = (args.all as boolean) ?? false;
+    const cwd = args.cwd as string | undefined;
+
+    if (!message || typeof message !== 'string') {
+      return {
+        success: false,
+        output: 'git_commit requires a commit message',
+        error: 'git_commit requires a commit message',
+      };
+    }
+    if (rawPaths !== undefined && !Array.isArray(rawPaths)) {
+      return {
+        success: false,
+        output: 'git_commit paths must be an array of strings',
+        error: 'git_commit paths must be an array of strings',
+      };
+    }
+    const paths = (rawPaths as unknown[] | undefined) ?? [];
+    if (paths.some(item => typeof item !== 'string')) {
+      return {
+        success: false,
+        output: 'git_commit paths must contain only strings',
+        error: 'git_commit paths must contain only strings',
+      };
+    }
+    const normalized = (paths as string[]).map(normalizeStagePath);
+    if (normalized.some(item => item === null)) {
+      return {
+        success: false,
+        output:
+          'git_commit paths must be exact repository-relative files without glob or pathspec syntax',
+        error:
+          'git_commit paths must be exact repository-relative files without glob or pathspec syntax',
+      };
+    }
+    const stagePaths = [...new Set(normalized as string[])];
+
+    const log: string[] = [];
+    log.push('🔍 Checking git status...');
+    const changes = await checkUncommittedChanges(cwd);
+    if (!changes.success) {
+      return { success: false, output: log.join('\n'), error: `git status failed: ${changes.error}` };
+    }
+    if (!changes.hasChanges && stagePaths.length === 0 && !all) {
+      return { success: true, output: '✓ Working directory clean, nothing to commit' };
+    }
+
+    if (all) {
+      log.push('📦 Staging all tracked changes...');
+      const addResult = await execGit('add -u', cwd);
+      if (!addResult.success) {
+        return { success: false, output: log.join('\n'), error: `git add -u failed: ${addResult.error}` };
+      }
+    } else if (stagePaths.length > 0) {
+      log.push(`📦 Staging ${stagePaths.length} explicit path(s)...`);
+      const addResult = await execGitArgs(['add', '--', ...stagePaths], cwd);
+      if (!addResult.success) {
+        return { success: false, output: log.join('\n'), error: `git add failed: ${addResult.error}` };
+      }
+    } else {
+      return {
+        success: false,
+        output: log.join('\n'),
+        error: 'No changes staged: provide paths or set all=true',
+      };
+    }
+
+    log.push(`📝 Committing: "${message.slice(0, 50)}..."`);
+    const commitResult = await execGitArgs(['commit', '-m', message], cwd);
+    if (!commitResult.success) {
+      await execGit('reset', cwd);
+      if (commitResult.output.includes('nothing to commit')) {
+        return { success: true, output: log.join('\n') + '\n  ⚠ Nothing new to commit' };
+      }
+      return { success: false, output: log.join('\n'), error: `git commit failed: ${commitResult.error}` };
+    }
+    log.push('  ✓ Commit successful');
+
+    const logResult = await execGit('log --oneline -1', cwd);
+    if (logResult.success) log.push(`  ✓ Latest commit: ${logResult.output.split('\n')[0]}`);
+
+    return { success: true, output: log.join('\n') };
+  },
+  isDestructive: () => false,
+  isConcurrencySafe: () => false,
+  checkPermissions: () => ({
+    behavior: 'ask',
+    reason: 'git commit will create a new commit in the local repository',
+  }),
+  userFacingName: args => `Git Commit: ${(args.message as string)?.slice(0, 30)}`,
+});
+
+// ============================================================================
+// git_diff 工具
+// ============================================================================
+
+export const gitDiffTool: OpenHorseTool = buildTool({
+  name: 'git_diff',
+  description: '显示 Git 差异。默认工作区 vs 暂存区；staged=true 显示已暂存 vs HEAD；可指定 paths。',
+  parameters: {
+    type: 'object',
+    properties: {
+      staged: { type: 'boolean', description: '显示已暂存变更（vs HEAD），默认 false' },
+      stat: { type: 'boolean', description: '仅显示统计摘要（默认 false）' },
+      paths: { type: 'array', items: { type: 'string' }, description: '限定路径（可选）' },
+      cwd: { type: 'string', description: '工作目录（可选）' },
+    },
+    required: [],
+  },
+  execute: async args => {
+    const staged = (args.staged as boolean) ?? false;
+    const stat = (args.stat as boolean) ?? false;
+    const rawPaths = args.paths;
+    const cwd = args.cwd as string | undefined;
+    const paths = Array.isArray(rawPaths) ? (rawPaths as string[]).map(String) : [];
+
+    const cmd = ['diff', '--no-color'];
+    if (stat) cmd.push('--stat');
+    if (staged) cmd.push('--cached');
+    if (paths.length) cmd.push('--', ...paths);
+
+    const result = await execGitArgs(cmd, cwd, 60000);
+    if (!result.success) {
+      return { success: false, output: `git diff failed: ${result.error}`, error: `git diff failed: ${result.error}` };
+    }
+    const MAX = 20000;
+    const out =
+      result.output.length > MAX
+        ? `${result.output.slice(0, MAX)}\n… (truncated, ${result.output.length} chars total)`
+        : result.output;
+    return { success: true, output: out || 'No differences' };
+  },
+  isReadOnly: () => true,
+  isConcurrencySafe: () => true,
+  checkPermissions: () => ({ behavior: 'allow' }),
+  userFacingName: () => 'Git Diff',
+});
+
+// ============================================================================
+// git_log 工具
+// ============================================================================
+
+export const gitLogTool: OpenHorseTool = buildTool({
+  name: 'git_log',
+  description: '显示提交历史。可指定条数与格式。',
+  parameters: {
+    type: 'object',
+    properties: {
+      max_count: { type: 'number', description: '返回的最大提交数（默认 20，上限 200）' },
+      oneline: { type: 'boolean', description: '单行精简格式（默认 true）' },
+      cwd: { type: 'string', description: '工作目录（可选）' },
+    },
+    required: [],
+  },
+  execute: async args => {
+    const maxCount =
+      typeof args.max_count === 'number' ? Math.min(Math.max(args.max_count, 1), 200) : 20;
+    const oneline = (args.oneline as boolean) ?? true;
+    const cwd = args.cwd as string | undefined;
+    const fmt = oneline ? '%h %s (%an, %ar)' : '%H%nAuthor: %an <%ae>%nDate: %ad%n%n%B';
+    const cmd = ['log', `--max-count=${maxCount}`, `--pretty=format:${fmt}`, '--no-color'];
+    if (!oneline) cmd.push('--date=iso');
+
+    const result = await execGitArgs(cmd, cwd, 30000);
+    if (!result.success) {
+      return { success: false, output: `git log failed: ${result.error}`, error: `git log failed: ${result.error}` };
+    }
+    return { success: true, output: result.output || 'No commits' };
+  },
+  isReadOnly: () => true,
+  isConcurrencySafe: () => true,
+  checkPermissions: () => ({ behavior: 'allow' }),
+  userFacingName: () => 'Git Log',
+});
+
+// ============================================================================
+// git_branch 工具
+// ============================================================================
+
+export const gitBranchTool: OpenHorseTool = buildTool({
+  name: 'git_branch',
+  description: `分支操作。
+
+action:
+- list（默认）: 列出本地分支，标记当前分支（*）与上游跟踪
+- create: 基于当前 HEAD 创建新分支（不切换）
+- switch: 切换到已有分支
+- delete: 删除本地分支（需 force 才允许未合并删除）`,
+  parameters: {
+    type: 'object',
+    properties: {
+      action: {
+        type: 'string',
+        enum: ['list', 'create', 'switch', 'delete'],
+        description: '操作类型（默认 list）',
+      },
+      name: { type: 'string', description: '分支名（create/switch/delete 必填）' },
+      force: { type: 'boolean', description: 'delete 时允许删除未合并分支（默认 false）' },
+      cwd: { type: 'string', description: '工作目录（可选）' },
+    },
+    required: [],
+  },
+  execute: async args => {
+    const action = (args.action as string) ?? 'list';
+    const name = args.name as string | undefined;
+    const force = (args.force as boolean) ?? false;
+    const cwd = args.cwd as string | undefined;
+    const log: string[] = [];
+
+    if (action === 'list') {
+      const result = await execGit('branch -vv', cwd);
+      if (!result.success) {
+        return { success: false, output: `git branch -vv failed: ${result.error}`, error: `git branch -vv failed: ${result.error}` };
+      }
+      return { success: true, output: result.output || 'No branches' };
+    }
+
+    if (!name || typeof name !== 'string') {
+      return { success: false, output: '', error: `git_branch ${action} requires a branch name` };
+    }
+
+    if (action === 'create') {
+      const result = await execGitArgs(['branch', name], cwd);
+      if (!result.success) {
+        return { success: false, output: log.join('\n'), error: `git branch create failed: ${result.error}` };
+      }
+      log.push(`✓ Created branch ${name}`);
+      return { success: true, output: log.join('\n') };
+    }
+
+    if (action === 'switch') {
+      const result = await execGitArgs(['checkout', name], cwd);
+      if (!result.success) {
+        return { success: false, output: log.join('\n'), error: `git checkout failed: ${result.error}` };
+      }
+      log.push(`✓ Switched to ${name}`);
+      return { success: true, output: log.join('\n') };
+    }
+
+    if (action === 'delete') {
+      const result = await execGitArgs(
+        force ? ['branch', '-D', name] : ['branch', '-d', name],
+        cwd
+      );
+      if (!result.success) {
+        return { success: false, output: log.join('\n'), error: `git branch delete failed: ${result.error}` };
+      }
+      log.push(`✓ Deleted branch ${name}`);
+      return { success: true, output: log.join('\n') };
+    }
+
+    return { success: false, output: `Unknown git_branch action: ${action}`, error: `Unknown git_branch action: ${action}` };
+  },
+  isDestructive: () => false,
+  isConcurrencySafe: () => false,
+  checkPermissions: args => {
+    const action = (args.action as string) ?? 'list';
+    if (action === 'list') return { behavior: 'allow' };
+    return { behavior: 'ask', reason: `git branch ${action} will modify local branch state` };
+  },
+  userFacingName: args => `Git Branch: ${args.action ?? 'list'}`,
+});
+
+// ============================================================================
 // 导出
 // ============================================================================
 
-export const GIT_TOOLS: OpenHorseTool[] = [gitStatusTool, gitPushTool];
+export const GIT_TOOLS: OpenHorseTool[] = [
+  gitStatusTool,
+  gitPushTool,
+  gitCommitTool,
+  gitDiffTool,
+  gitLogTool,
+  gitBranchTool,
+];

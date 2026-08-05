@@ -61,7 +61,9 @@ export class TurnController {
   requestRevision(input: string): boolean {
     if (!this.activeTurn) return false;
 
-    this.pendingRevision = input;
+    // v0.1.3: accumulate incremental steering inputs instead of overwriting,
+    // so multiple corrections typed while a turn runs are all preserved.
+    this.pendingRevision = this.pendingRevision ? `${this.pendingRevision}\n${input}` : input;
     this.status = 'aborting';
     if (!this.activeTurn.abortController.signal.aborted) {
       this.activeTurn.abortController.abort();

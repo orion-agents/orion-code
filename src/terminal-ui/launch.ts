@@ -8,6 +8,7 @@ import {
 import { emitToUiEventSink, type AgentRuntimeEventSink } from '../runtime/agent-runtime-protocol';
 import { resolveUiRendererCapabilities } from '../runtime/ui-events';
 import {
+  createModelPickerState,
   createPermissionPromptState,
   createRuntimeCapabilitySummary,
   createSessionRestoredView,
@@ -17,6 +18,7 @@ import {
   permissionRiskDisplayValue,
   permissionScopeDisplayValue,
   subtaskEventToTimelineEntry,
+  type ModelPickerItem,
   type SessionPickerItem,
   sessionPickerTitle,
   type SubtaskTimelineEntry,
@@ -29,6 +31,7 @@ import { RawTerminalEditor } from './raw-editor';
 import { TerminalOutputQueue, type TerminalOutputWriter } from './output-queue';
 import type {
   EditPreviewRequest,
+  ModelPickerRequest,
   OpenHorseUiRuntime,
   RuntimeSessionRestoredEvent,
   RuntimeSubtaskEvent,
@@ -148,6 +151,53 @@ export function resolveTerminalSessionPickerInput(
   return {
     type: 'error',
     message: `No session matches "${trimmed}". Type a number, #number, session id prefix, or /resume --last.`,
+  };
+}
+
+export type TerminalModelPickerSelection =
+  | { type: 'cancelled' }
+  | { type: 'slash'; input: string }
+  | { type: 'selected'; model: string }
+  | { type: 'error'; message: string };
+
+export function resolveTerminalModelPickerInput(
+  input: string,
+  request: ModelPickerRequest
+): TerminalModelPickerSelection {
+  const trimmed = input.trim();
+  if (!trimmed) return { type: 'cancelled' };
+  if (trimmed.startsWith('/')) return { type: 'slash', input: trimmed };
+
+  const explicitIndex = trimmed.match(/^#(\d+)$/);
+  if (explicitIndex) {
+    const index = Number(explicitIndex[1]) - 1;
+    const selected = request.models[index];
+    if (selected) return { type: 'selected', model: selected.name };
+    return { type: 'error', message: `No model at index ${explicitIndex[1]}.` };
+  }
+
+  const numeric = trimmed.match(/^(\d+)$/);
+  if (numeric) {
+    const index = Number(numeric[1]) - 1;
+    const selected = request.models[index];
+    if (selected) return { type: 'selected', model: selected.name };
+    return { type: 'error', message: `No model at index ${numeric[1]}.` };
+  }
+
+  const normalized = normalizePickerText(trimmed);
+  const exact = request.models.find(
+    m =>
+      normalizePickerText(m.name) === normalized ||
+      (m.alias && normalizePickerText(m.alias) === normalized)
+  );
+  if (exact) return { type: 'selected', model: exact.name };
+
+  const prefixMatches = request.models.filter(m => normalizePickerText(m.name).startsWith(normalized));
+  if (prefixMatches.length === 1) return { type: 'selected', model: prefixMatches[0].name };
+
+  return {
+    type: 'error',
+    message: `No model matches "${trimmed}". Type a number, #number, or the model name/alias.`,
   };
 }
 
@@ -406,6 +456,49 @@ function formatSessionPickerInstruction(width: number): string {
   return truncateTerminalText(text, Math.max(1, width));
 }
 
+function formatModelTokenCount(tokens: number | undefined): string {
+  if (!tokens) return '';
+  if (tokens >= 1_000_000) return `${tokens / 1_000_000}M ctx`;
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}K ctx`;
+  return `${tokens} ctx`;
+}
+
+export function formatTerminalModelPickerItem(
+  item: ModelPickerItem,
+  width = terminalContentWidth(120)
+): string {
+  const safeWidth = Math.max(1, width);
+  const marker = item.isCurrent ? ACCENT('●') : DIM('○');
+  const alias = item.alias ? ` (${item.alias})` : '';
+  const context = formatModelTokenCount(item.contextWindow);
+  const output = item.maxOutputTokens ? formatModelTokenCount(item.maxOutputTokens).replace('ctx', 'out') : '';
+  const provider = item.provider ?? 'unknown';
+  const description = [provider, context, output].filter(Boolean).join('  ');
+  const row = `${marker} ${ACCENT(`${item.name}${alias}`)}  ${DIM(description)}`;
+  return visibleLength(row) <= safeWidth ? row : truncateTerminalText(row, safeWidth);
+}
+
+export function formatTerminalModelPickerHeader(
+  title: string,
+  page: number,
+  pageCount: number,
+  width = terminalContentWidth(120)
+): string {
+  const safeWidth = Math.max(1, width);
+  const pageLabelPlain = ` page ${page}/${pageCount}`;
+  const titleBudget = safeWidth - visibleLength(pageLabelPlain);
+  if (titleBudget < 4) return truncateTerminalText(`${title}${pageLabelPlain}`, safeWidth);
+  return `${ACCENT(truncateTerminalText(title, titleBudget))}${DIM(pageLabelPlain)}`;
+}
+
+function formatModelPickerInstruction(width: number): string {
+  const text =
+    width < 72
+      ? 'Select number/name, n/p page, empty cancels.'
+      : 'Type number/#number, model name, or alias. Empty input cancels.';
+  return truncateTerminalText(text, Math.max(1, width));
+}
+
 function editPreviewKindLabel(request: EditPreviewRequest): string {
   return request.kind === 'fuzzy' ? `fuzzy (${request.strategy ?? 'match'})` : 'exact';
 }
@@ -455,6 +548,8 @@ export class TerminalEventSink implements UiEventSink {
   private idCounter = 0;
   private pendingPicker: SessionPickerRequest | null = null;
   private pickerOffset = 0;
+  private pendingModelPicker: ModelPickerRequest | null = null;
+  private modelPickerOffset = 0;
   private pendingEditPreview: EditPreviewRequest | null = null;
   private lastStatusMessage = '';
   /**
@@ -567,6 +662,12 @@ export class TerminalEventSink implements UiEventSink {
     this.printSessionPickerPage();
   }
 
+  showModelPicker(request: ModelPickerRequest): void {
+    this.pendingModelPicker = request;
+    this.modelPickerOffset = 0;
+    this.printModelPickerPage();
+  }
+
   showEditPreview(request: EditPreviewRequest): void {
     this.pendingEditPreview = request;
     const rowWidth = terminalContentWidth(120);
@@ -640,6 +741,41 @@ export class TerminalEventSink implements UiEventSink {
       }
     }
 
+    const modelPicker = this.pendingModelPicker;
+    if (modelPicker) {
+      const navigation = normalizePickerText(input);
+      const direction =
+        navigation === 'n' || navigation === 'next'
+          ? 1
+          : navigation === 'p' || navigation === 'prev' || navigation === 'previous'
+            ? -1
+            : 0;
+      if (direction !== 0) {
+        this.moveModelPickerPage(direction);
+        return '';
+      }
+
+      const selection = resolveTerminalModelPickerInput(input, modelPicker);
+      switch (selection.type) {
+        case 'cancelled':
+          this.pendingModelPicker = null;
+          this.modelPickerOffset = 0;
+          this.writer.write(`${DIM('Model picker cancelled.')}\n`);
+          return '';
+        case 'slash':
+          this.pendingModelPicker = null;
+          this.modelPickerOffset = 0;
+          return selection.input;
+        case 'selected':
+          this.pendingModelPicker = null;
+          this.modelPickerOffset = 0;
+          return `/model ${selection.model}`;
+        case 'error':
+          this.writer.write(`${ERROR(selection.message)}\n`);
+          return '';
+      }
+    }
+
     // Dismiss pending edit preview on any input
     if (this.pendingEditPreview) {
       this.pendingEditPreview = null;
@@ -650,7 +786,7 @@ export class TerminalEventSink implements UiEventSink {
   }
 
   hasPendingInteraction(): boolean {
-    return Boolean(this.pendingPicker || this.pendingEditPreview);
+    return Boolean(this.pendingPicker || this.pendingModelPicker || this.pendingEditPreview);
   }
 
   private printSessionPickerPage(): void {
@@ -695,6 +831,50 @@ export class TerminalEventSink implements UiEventSink {
     }
     this.pickerOffset = nextOffset;
     this.printSessionPickerPage();
+  }
+
+  private printModelPickerPage(): void {
+    const request = this.pendingModelPicker;
+    if (!request) return;
+
+    const state = createModelPickerState({ ...request, visibleStart: this.modelPickerOffset });
+    this.modelPickerOffset = state.visibleStart;
+
+    const rowWidth = terminalContentWidth(120);
+    this.writer.write(
+      `\n${formatTerminalModelPickerHeader(state.title, state.page, state.pageCount, rowWidth)}\n`
+    );
+    this.writer.write(`${BORDER('─'.repeat(terminalContentWidth(80)))}\n`);
+
+    if (state.visibleItems.length === 0) {
+      this.writer.write(`${DIM('No models available.')}\n`);
+    }
+
+    state.visibleItems.forEach(item => {
+      this.writer.write(`${formatTerminalModelPickerItem(item, rowWidth)}\n`);
+    });
+
+    if (state.totalItems > state.visibleLimit) {
+      this.writer.write(
+        `${DIM(truncateTerminalText(`Showing ${state.visibleStart + 1}-${state.visibleStart + state.visibleItems.length} of ${state.totalItems}. Type n/next or p/prev to page.`, rowWidth))}\n`
+      );
+    }
+    this.writer.write(`${DIM(formatModelPickerInstruction(rowWidth))}\n`);
+  }
+
+  private moveModelPickerPage(delta: -1 | 1): void {
+    const request = this.pendingModelPicker;
+    if (!request) return;
+    const state = createModelPickerState({ ...request, visibleStart: this.modelPickerOffset });
+    const nextOffset = movePickerPageOffset(state, delta);
+    if (nextOffset === this.modelPickerOffset) {
+      this.writer.write(
+        `${DIM(delta > 0 ? 'Already at last model page.' : 'Already at first model page.')}\n`
+      );
+      return;
+    }
+    this.modelPickerOffset = nextOffset;
+    this.printModelPickerPage();
   }
 
   private printEntry(entry: TranscriptEntry, finalized: boolean): void | Promise<boolean> {

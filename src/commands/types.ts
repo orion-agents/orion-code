@@ -13,6 +13,7 @@ import type { SessionMeta } from '../services/session-storage';
 import type { CompactCoordinator } from '../services/compact';
 import type {
   EditPreviewRequest,
+  ModelPickerRequest,
   RuntimeSessionRestoredEvent,
   SessionPickerRequest,
   UiRendererCapabilities,
@@ -70,6 +71,8 @@ export interface CommandResult {
   chatInput?: string;
   /** Structured session picker request forwarded to renderer adapters. */
   sessionPicker?: SessionPickerRequest;
+  /** Structured model picker request forwarded to renderer adapters (interactive switching). */
+  modelPicker?: ModelPickerRequest;
   /** Structured edit preview request forwarded to renderer adapters. */
   editPreview?: EditPreviewRequest;
 }

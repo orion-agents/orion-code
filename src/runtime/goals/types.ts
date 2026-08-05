@@ -367,6 +367,12 @@ export interface AgentTurnRequest {
   persistAsUserMessage: boolean;
   echoToTranscript: boolean;
   generation: number;
+  /**
+   * v0.1.3: when true, the transcript echo for this request was already
+   * performed at submission time (running-turn incremental steering). The
+   * run loop must skip its own echo to avoid duplicating the entry.
+   */
+  alreadyEchoed?: boolean;
 }
 
 export interface AgentTurnOutcome {

@@ -3,9 +3,11 @@ import { createTuiFrame, setFrameCursor, writeFrameText, type TuiFrame } from '.
 import type { StyledRow, TuiTheme } from '../tui-core/style';
 import {
   createEditPreviewPickerState,
+  createModelPickerState,
   createPermissionDecisionPickerState,
 } from '../runtime/ui-view-model';
 import { formatBytes } from '../services/format';
+import type { ToolConfirmationPolicy } from '../services/global-config';
 import {
   liveTuiTranscriptRecords,
   staticTuiTranscriptRecords,
@@ -286,6 +288,7 @@ function renderStatus(frame: TuiFrame, state: TuiUiState, row: number): void {
   if (state.statusState.activeTools > 0) activity.push(`tools:${state.statusState.activeTools}`);
   if (state.statusState.activeSubtasks > 0)
     activity.push(`sub:${state.statusState.activeSubtasks}`);
+  activity.push(`perm:${state.permissionMode}`);
   const activityStr = activity.length ? `[${activity.join(' ')}] ` : '';
   const rightFull = right ? `${right} ${activityStr}`.trimEnd() : activityStr.trimEnd();
   const available = Math.max(0, frame.width - stringWidth(left) - 1);
@@ -413,6 +416,46 @@ function renderOverlay(frame: TuiFrame, state: TuiUiState, maxRows: number): voi
     return;
   }
 
+  if (state.overlay.type === 'model') {
+    const overlay = state.overlay;
+    const request = overlay.request;
+    const pickerState = createModelPickerState({ ...request, visibleStart: 0 });
+    const visibleCount = Math.max(
+      0,
+      Math.min(maxRows - 1, request.maxVisibleItems ?? maxRows - 1, request.models.length)
+    );
+    const start = sessionPickerStartIndex(
+      state.overlay.selectedIndex,
+      visibleCount,
+      request.models.length
+    );
+    const visibleModels = request.models.slice(start, start + visibleCount);
+    const rows = [
+      `Models: ${request.title ?? 'Switch Model'} (${overlay.selectedIndex + 1}/${request.models.length})`,
+      ...visibleModels.map((model, offset) => {
+        const index = start + offset;
+        const marker = index === overlay.selectedIndex ? '›' : ' ';
+        const isCurrent = pickerState.visibleItems.some(
+          item => item.name === model.name && item.isCurrent
+        );
+        const currentTag = isCurrent ? ' *' : '';
+        const alias = model.alias ? ` (${model.alias})` : '';
+        const context = model.contextWindow ? `  ${formatModelTokens(model.contextWindow)}` : '';
+        const provider = model.provider ? `  ${model.provider}` : '';
+        return `${marker} ${String(index + 1).padStart(2, ' ')} ${model.name}${alias}${currentTag}${context}${provider}`;
+      }),
+    ].map(row => truncateCells(row, frame.width));
+
+    rows.slice(0, maxRows).forEach((line, index) => {
+      writeFrameText(frame, index, 0, line);
+    });
+    // Clear any remaining transcript rows below overlay content
+    for (let i = rows.length; i < maxRows; i++) {
+      writeFrameText(frame, i, 0, '');
+    }
+    return;
+  }
+
   if (state.overlay.type === 'edit') {
     const overlay = state.overlay;
     const req = overlay.request;
@@ -497,6 +540,33 @@ function renderOverlay(frame: TuiFrame, state: TuiUiState, maxRows: number): voi
     return;
   }
 
+  if (state.overlay.type === 'toolConfirmation') {
+    const overlay = state.overlay;
+    const order: ToolConfirmationPolicy[] = ['allow', 'ask', 'deny'];
+    const descriptions: Record<ToolConfirmationPolicy, string> = {
+      allow: 'auto-run ask-level commands (blocked still denied)',
+      ask: 'prompt interactively each time',
+      deny: 'deny all ask-level commands',
+    };
+    const rows = [
+      `Tool Confirmation (${overlay.selectedIndex + 1}/${order.length})`,
+      ...order.map((value, index) => {
+        const marker = index === overlay.selectedIndex ? '›' : ' ';
+        const current = value === state.permissionMode ? ' *' : '';
+        return `${marker} ${value}${current}  ${descriptions[value]}`;
+      }),
+      'Enter select   ↑/↓ move   Esc cancel',
+    ].map(row => truncateCells(row, frame.width));
+
+    rows.slice(0, maxRows).forEach((line, index) => {
+      writeFrameText(frame, index, 0, line);
+    });
+    for (let i = rows.length; i < maxRows; i++) {
+      writeFrameText(frame, i, 0, '');
+    }
+    return;
+  }
+
   if (state.overlay.type === 'shortcuts') {
     const rows = [
       'Shortcuts',
@@ -517,6 +587,12 @@ function sessionPickerStartIndex(
   total: number
 ): number {
   return pickerStartIndex(selectedIndex, visibleCount, total);
+}
+
+function formatModelTokens(tokens: number): string {
+  if (tokens >= 1_000_000) return `${tokens / 1_000_000}M ctx`;
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}K ctx`;
+  return `${tokens} ctx`;
 }
 
 function pickerStartIndex(selectedIndex: number, visibleCount: number, total: number): number {

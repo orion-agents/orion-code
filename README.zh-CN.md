@@ -3,7 +3,7 @@
 > **Orion Code — 通用 Agent 驾驭框架**
 > 一个 CLI 驱动的编码 Agent，具备安全边界、工具编排、记忆系统和上下文管理。
 >
-> v0.1.2 — Goal 连续性与证据审计
+> v0.1.3 — Goal 连续性、模型配置与命令沙箱 POC
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20.0-green.svg)](https://nodejs.org)
@@ -104,10 +104,10 @@ npm start -- --print "review the current git diff"
 
 ### 全局安装
 
-固定安装 v0.1.2：
+固定安装 v0.1.3：
 
 ```bash
-npm install -g @orion-agents/orion-code@0.1.2
+npm install -g @orion-agents/orion-code@0.1.3
 # 任意目录运行
 orion
 ```
@@ -172,6 +172,69 @@ v0.1.2 只覆盖单 Session、单 Active Goal，不承诺多 Goal 调度或无�
 ```
 CLI 参数 > ~/.orion-code/orion.json > 环境变量 > 内部默认
 ```
+
+### 项目级工具规则（`allowedTools`）
+
+权限规则写在 `projects["<项目绝对路径>"].allowedTools`，只作用于该仓库。规则叠加在
+工具自身的权限策略之上：**只能收紧，不能放宽**。
+
+```json
+{
+  "projects": {
+    "/Users/me/work/api": {
+      "allowedTools": [
+        "exec_command(git status*)",
+        "exec_command(npm test*)",
+        "ask:exec_command(git push*)",
+        "deny:read_file(*.env)"
+      ]
+    }
+  }
+}
+```
+
+- 语法：`[allow|ask|deny:]工具名[(参数通配)]`；`*` 匹配任意字符串，`?` 匹配单个字符，
+  工具名写 `*` 表示匹配所有工具。
+- 参数通配匹配的是调用参数中的 `command` / `file_path` / `path` / `url` / `pattern` /
+  `query`（按此顺序取第一个非空字符串）。
+- 冲突时按“最严格优先”解析：`deny` > `ask` > `allow`，与书写顺序无关。
+- `allow` 仅用于免去交互确认，**不会**覆盖工具自身的 `deny`、**不会**突破 plan 模式的
+  只读约束，也**不会**自动放行破坏性调用。
+- 无法解析的条目会被忽略而不是静默放行，可通过 `/config` 查看解析结果与非法条目。
+
+### 命令执行沙箱（`sandbox`）
+
+`exec_command` 可在操作系统级沙箱内执行。这是**安全 POC**：后端在运行
+时实测探测，已配置但不可用的沙箱会**fail closed**（拒绝执行），而不会静默降级为
+无沙箱执行。
+
+```json
+{
+  "sandbox": {
+    "profile": "none",
+    "backend": "auto",
+    "allowNetwork": false,
+    "writableRoots": [],
+    "image": "alpine:latest"
+  }
+}
+```
+
+- **归属** — `sandbox` 位于全局配置（`~/.orion-code/orion.json`），并可在项目级
+  `projects["<项目绝对路径>"].sandbox` 覆盖。项目级按 key 单独覆盖，缺省 key 继承全局。
+- **`profile`** — `none`（默认，不隔离，等价于旧版 `sh -c`）、`read-only`（任何位置不可写、无网络）、
+  `workspace-write`（写权限限定在工作区与临时目录，除非 `allowNetwork: true` 否则仍禁网）。
+  未知取值（如新版 Orion 写入的更严格值）一律硬失败，绝不降级为 `none`。
+- **`backend`** — `auto`（默认，自动选首个可用后端）、`seatbelt`（macOS `sandbox-exec`）、
+  `bubblewrap`（Linux `bwrap`）或 `docker`。每个后端都用真实执行探针校验，从不靠 `which` 推断。
+- **`image`** — 仅 `docker` 需要，指定运行所用的容器镜像。
+- **`writableRoots`** — `workspace-write` 可写入的额外宿主根目录（除工作区与临时目录外）。
+  非字符串 / 空项会被丢弃。
+- **迁移 / 回滚** — 新增 `sandbox` 完全向后兼容：默认 `profile: "none"` 与旧行为完全一致。
+  删除该 key（或回退到沙箱前的版本）是安全回滚；旧版 Orion 会忽略该未知字段。不涉及任何敏感信息，无需脱敏。
+- **已知限制** — `seatbelt` 不能嵌套在另一沙箱内（例如 Orion 自身运行在应用沙箱中时）；
+  `docker` 在独立进程树中运行命令，只约束被 bind-mount 的部分（镜像根文件系统已通过 `--read-only` 设为只读）；
+  各后端均不限制 CPU / 内存。
 
 ### 环境变量
 
@@ -399,7 +462,16 @@ orion-code/
 
 ## 版本历史
 
-### v0.1.2（当前版本）
+### v0.1.3（当前版本）
+
+- `/model` 与 `/models` 拆分：`/model` 只显示当前模型信息，`/models` 承接交互式切换；
+- `modelRegistry` 成为模型展示与切换的唯一事实源，静态 catalog 退为 legacy fallback；
+- 内置 catalog 补全（火山方舟 / xf-yun / deepseek 等），未配置上下文时正确回退；
+- 命令沙箱 POC、只读 Git 工具与工具 allowlist 的安全基线。
+
+> 完整变更与交付状态（已发布 / 已合并 / 候选）以 `CHANGELOG.md` 为准。
+
+### v0.1.2（已发布）
 
 - 单 Session、单 Active Goal 的 typed continuation；
 - restart/resume 后安全暂停，必须显式恢复；
@@ -439,6 +511,9 @@ npm run lint
 
 # 格式化
 npm run format
+
+# 发布前只读检查（不会 tag / push / publish）
+npm run release:check
 ```
 
 ---

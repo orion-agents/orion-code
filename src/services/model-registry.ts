@@ -156,6 +156,7 @@ interface CatalogEntry {
   reasoning?: boolean;
   temperatureMode?: 'supported' | 'unsupported';
   cost?: { input: number; output: number };
+  provider?: string;
 }
 
 const BUILTIN_CATALOG: Record<string, CatalogEntry> = {
@@ -195,6 +196,40 @@ const BUILTIN_CATALOG: Record<string, CatalogEntry> = {
     maxOutputTokens: 8192,
     temperatureMode: 'supported',
     cost: { input: 0.14, output: 0.28 },
+  },
+
+  // 火山方舟 Ark (huoshan / volcengine)
+  'ark-code-latest': {
+    contextWindow: 1024000,
+    maxOutputTokens: 128000,
+    provider: 'huoshan',
+  },
+  'glm-5.2': {
+    contextWindow: 1024000,
+    maxOutputTokens: 128000,
+    provider: 'huoshan',
+  },
+  'kimi-k2.7-code': {
+    contextWindow: 256000,
+    maxOutputTokens: 32768,
+    provider: 'huoshan',
+  },
+  'deepseek-v4-pro': {
+    contextWindow: 1000000,
+    maxOutputTokens: 384000,
+    provider: 'huoshan',
+  },
+
+  // 讯飞 MAAS (xf-yun)
+  'xopdeepseekv4pro': {
+    contextWindow: 1000000,
+    maxOutputTokens: 16384,
+    provider: 'astroncodingplan',
+  },
+  'xopglm51': {
+    contextWindow: 204800,
+    maxOutputTokens: 16384,
+    provider: 'astroncodingplan',
   },
 };
 

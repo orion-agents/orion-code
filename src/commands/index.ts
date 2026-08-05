@@ -15,11 +15,16 @@ import {
   type CommandResult,
   type PermissionMode,
 } from './types';
-import { createModelPickerState, createStatusSnapshot } from '../runtime/ui-view-model';
+import {
+  createModelPickerState,
+  createStatusSnapshot,
+  type ModelPickerCandidate,
+} from '../runtime/ui-view-model';
 import type { Task } from '../core/agent';
 import { TaskManager, CreateTaskOptions } from '../services/task-manager';
 import { AgentRunner } from '../services/agent-runner';
 import { isConfigured } from '../services/config';
+import { resolveProjectToolAllowlist } from '../services/tool-allowlist';
 import { createSpinner, toolLine } from '../ui/box';
 import { createStreamRenderer, type StreamMarkdownRenderer } from '../ui/stream-markdown';
 import { hideProgress, showToolProgress } from '../ui/progress';
@@ -79,12 +84,13 @@ import { refreshProjectInstructions } from '../services/prompt-context';
 import { collectDoctorReport, formatDoctorReport, hasDoctorFailures } from '../services/doctor';
 import { createContextUsageSnapshot, resolveModelContext } from '../services/model-context';
 import { estimateMessagesTokens } from '../utils/token-estimate';
+import { maskSecret } from '../utils/mask';
 import {
-  getModelCatalogAliases,
   getModelCatalogEntry,
   listModelCatalogEntries,
   resolveModelAlias,
 } from '../services/model-catalog';
+import { lookupProfile, type ResolvedModelProfile } from '../services/model-registry';
 import { collectWorkspaceDiff, formatWorkspaceDiff } from '../services/workspace-diff';
 import { createCommitPlan, formatCommitPlan } from '../services/commit-plan';
 import { findArtifact, listArtifacts, retrieveArtifact } from '../core/tool-artifacts';
@@ -170,8 +176,48 @@ function formatRendererStatus(ctx: CommandContext): string {
   return `${BRAND(snapshot.renderer.name)} ${status} ${DIM(snapshot.renderer.capabilityLabels.join(', '))}`;
 }
 
-function formatModelAliasHelp(): string {
-  return Object.keys(getModelCatalogAliases()).sort().join(', ');
+function getProfileByModelId(
+  registry: CommandContext['config']['modelRegistry'],
+  modelId: string
+): ResolvedModelProfile | undefined {
+  if (!registry) return undefined;
+
+  const normalized = modelId.trim();
+  if (!normalized) return undefined;
+
+  if (registry.profiles.has(normalized)) return registry.profiles.get(normalized)!;
+
+  for (const profile of registry.profiles.values()) {
+    if (modelId === profile.model) return profile;
+  }
+  return undefined;
+}
+
+function resolveModelFromRegistry(
+  config: CommandContext['config'],
+  selector: string
+): ResolvedModelProfile | undefined {
+  if (!config.modelRegistry) return undefined;
+
+  const trimmed = selector.trim();
+  if (!trimmed) return undefined;
+
+  return lookupProfile(config.modelRegistry, trimmed) ?? undefined;
+}
+
+function listConfiguredModelCatalogEntries(registry: CommandContext['config']['modelRegistry']) {
+  if (!registry) return [];
+  return registry.enabledProfiles.map(profile => {
+    const provider = registry.providers.get(profile.provider);
+    return {
+      name: profile.id,
+      alias: profile.aliases?.[0],
+      provider: provider?.displayName ?? profile.provider,
+      contextWindow: profile.resolvedContextWindow,
+      maxOutputTokens: profile.resolvedMaxOutputTokens,
+      source: `${profile.contextSource}/${profile.outputSource}`,
+    };
+  });
 }
 
 function formatLoopBudgetSource(stats: LoopStats): string {
@@ -1595,20 +1641,40 @@ function showConfig(ctx: CommandContext): CommandResult {
   console.log(HEADER('Configuration'));
   console.log(DIM('─'.repeat(40)));
 
+  const allowlist = resolveProjectToolAllowlist(ctx.cwd);
+  const allowlistSummary =
+    allowlist.rules.length === 0 && allowlist.invalid.length === 0
+      ? '(none)'
+      : `${allowlist.rules.length} rule(s)` +
+        (allowlist.invalid.length > 0 ? `, ${allowlist.invalid.length} invalid (ignored)` : '');
+
   const summary = {
     name: ctx.config.name,
     model: ctx.config.model,
     apiBaseUrl: ctx.config.apiBaseUrl || '(default OpenAI)',
-    apiKey: ctx.config.apiKey ? `${ctx.config.apiKey.slice(0, 7)}***` : '(not set)',
+    apiKey: maskSecret(ctx.config.apiKey),
     mode: ctx.config.mode,
     logLevel: ctx.config.logLevel,
     toolConfirmation: ctx.config.toolConfirmation,
+    allowedTools: allowlistSummary,
   };
 
   const llmSummary = ctx.llm?.getConfigSummary() ?? {};
 
   for (const [key, val] of Object.entries(summary)) {
     console.log(`  ${ACCENT(key.padEnd(16))} ${DIM(val)}`);
+  }
+  if (allowlist.rules.length > 0 || allowlist.invalid.length > 0) {
+    console.log();
+    console.log(HEADER('  Project allowedTools:'));
+    for (const rule of allowlist.rules) {
+      console.log(
+        `  ${ACCENT(rule.effect.padEnd(6))} ${DIM(rule.tool)}${DIM(rule.pattern ? `(${rule.pattern})` : '')}`
+      );
+    }
+    for (const entry of allowlist.invalid) {
+      console.log(`  ${WARN('invalid')} ${DIM(entry)}`);
+    }
   }
   console.log();
   console.log(HEADER('  LLM Settings:'));
@@ -1626,14 +1692,30 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
   if (!args || trimmedArgs === '?' || trimmedArgs === 'info') {
     console.log();
     if (ctx.llm) {
-      const currentModel = ctx.llm.getModel();
+      const currentModel = ctx.store.getSnapshot().currentModel || ctx.llm.getModel();
+      const profile = getProfileByModelId(ctx.config.modelRegistry, currentModel);
       const aliasEntry = getModelCatalogEntry(currentModel);
-      const contextInfo = resolveModelContext(currentModel);
+      const contextInfo = profile
+        ? {
+            id: profile.model,
+            label: profile.displayName || profile.id,
+            contextWindow: profile.resolvedContextWindow,
+            maxOutputTokens: profile.resolvedMaxOutputTokens,
+            source: 'config',
+            matchedId: profile.model,
+          }
+        : resolveModelContext(currentModel);
       const compactStats = getCommandAutoCompact(ctx, currentModel).getStats();
       console.log(HEADER('Current Model'));
       console.log(DIM('─'.repeat(40)));
       console.log(`  Model    ${BRAND(currentModel)}`);
-      if (aliasEntry) {
+      if (profile) {
+        console.log(
+          `  Alias    ${ACCENT(profile.aliases?.[0] ? `(${profile.aliases[0]})` : 'none')}`
+        );
+        const provider = ctx.config.modelRegistry?.providers.get(profile.provider);
+        console.log(`  Provider ${DIM(provider?.displayName || profile.provider)}`);
+      } else if (aliasEntry) {
         console.log(`  Alias    ${ACCENT(aliasEntry.alias)}`);
         console.log(`  Provider ${DIM(aliasEntry.provider)}`);
       }
@@ -1654,50 +1736,12 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
     return { success: true };
   }
 
-  // 显示模型列表
-  if (trimmedArgs === 'list' || trimmedArgs === 'ls') {
+  // /model list|ls|help 已移除，统一由 /models 承接（交互式选择切换）
+  if (trimmedArgs === 'list' || trimmedArgs === 'ls' || trimmedArgs === 'help') {
     console.log();
-    console.log(HEADER('Available Models'));
-    console.log(DIM('─'.repeat(40)));
-    const currentModel = ctx.llm?.getModel() || '';
-    const modelPicker = createModelPickerState({
-      currentModel,
-      models: listModelCatalogEntries().map(model => {
-        const contextInfo = resolveModelContext(model.name);
-        return {
-          ...model,
-          contextWindow: contextInfo.contextWindow,
-          maxOutputTokens: contextInfo.maxOutputTokens,
-          source: contextInfo.source,
-        };
-      }),
-    });
-    for (const item of modelPicker.visibleItems) {
-      const marker = item.isCurrent ? SUCCESS('●') : DIM('○');
-      const alias = item.alias ? `(${item.alias})` : '';
-      const context = `${formatTokenCount(item.contextWindow ?? 0)} ctx`;
-      const current = item.isCurrent ? BRAND('(current)') : '';
-      console.log(`  ${marker} ${ACCENT(item.name)} ${DIM(alias)} ${DIM(context)} ${current}`);
-      console.log(`      ${DIM(item.provider ?? 'unknown')}`);
-    }
-    console.log();
-    console.log(DIM('Use /model <name|alias> to switch, e.g. /model sonnet'));
-    console.log();
-    return { success: true };
-  }
-
-  // 显示帮助
-  if (trimmedArgs === 'help') {
-    console.log();
-    console.log(HEADER('/model Command Help'));
-    console.log(DIM('─'.repeat(40)));
-    console.log();
-    console.log(`  ${ACCENT('/model')}           Show current model`);
-    console.log(`  ${ACCENT('/model list')}      Show available models`);
-    console.log(`  ${ACCENT('/model <name>')}    Switch to specific model`);
-    console.log(`  ${ACCENT('/model <alias>')}   Switch using alias (opus, sonnet, haiku)`);
-    console.log();
-    console.log(DIM(`Aliases: ${formatModelAliasHelp()}`));
+    console.log(WARN(`/model ${trimmedArgs} was removed.`));
+    console.log(DIM('Use /models to switch models interactively,'));
+    console.log(DIM('or /model <name|alias> to switch directly, e.g. /model sonnet'));
     console.log();
     return { success: true };
   }
@@ -1710,18 +1754,82 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
   }
 
   // 解析别名
-  const resolvedModel = resolveModelAlias(args);
+  const registryProfile = resolveModelFromRegistry(ctx.config, args);
+  const resolvedModel = registryProfile ? registryProfile.model : resolveModelAlias(args);
+  const resolvedProfileId = registryProfile ? registryProfile.id : resolvedModel;
 
   ctx.llm.setModel(resolvedModel);
   getCommandAutoCompact(ctx, resolvedModel);
-  ctx.store.setState({ currentModel: resolvedModel });
-  console.log(SUCCESS(`✔ Model changed to ${BRAND(resolvedModel)}`));
-  const contextInfo = resolveModelContext(resolvedModel);
+  ctx.store.setState({ currentModel: resolvedProfileId });
+  console.log(SUCCESS(`✔ Model changed to ${BRAND(resolvedProfileId)}`));
+  const contextInfo = registryProfile
+    ? {
+        contextWindow: registryProfile.resolvedContextWindow,
+        maxOutputTokens: registryProfile.resolvedMaxOutputTokens,
+        source: 'resolved',
+      }
+    : resolveModelContext(resolvedModel);
   console.log(
     DIM(
       `  Context window ${formatTokenCount(contextInfo.contextWindow)} tokens (${contextInfo.source})`
     )
   );
+  console.log();
+  return { success: true };
+}
+
+/**
+ * /models — 交互式选择切换模型。
+ * 交互式渲染器返回结构化 modelPicker 请求（渲染器弹出选择层，选中即 /model <id>）；
+ * 非交互式渲染器直接打印候选列表并提示 /model <name|alias>。
+ */
+function handleModels(ctx: CommandContext, _args: string): CommandResult {
+  console.log();
+  const currentModel = ctx.store.getSnapshot().currentModel || ctx.llm?.getModel() || '';
+  const configuredModels = listConfiguredModelCatalogEntries(ctx.config.modelRegistry);
+
+  const candidates: ModelPickerCandidate[] =
+    configuredModels.length > 0
+      ? configuredModels
+      : listModelCatalogEntries().map(model => {
+          const contextInfo = resolveModelContext(model.name);
+          return {
+            name: model.name,
+            alias: model.alias,
+            provider: model.provider,
+            contextWindow: contextInfo.contextWindow,
+            maxOutputTokens: contextInfo.maxOutputTokens,
+            source: contextInfo.source,
+          };
+        });
+
+  const ui = commandUICapabilities(ctx);
+  if (ui.structuredPickers) {
+    return {
+      success: true,
+      modelPicker: {
+        models: candidates,
+        currentModel,
+        title: 'Switch Model',
+        maxVisibleItems: 12,
+      },
+    };
+  }
+
+  // 非交互式渲染器：打印候选列表
+  console.log(HEADER('Available Models'));
+  console.log(DIM('─'.repeat(40)));
+  const modelPicker = createModelPickerState({ currentModel, models: candidates });
+  for (const item of modelPicker.visibleItems) {
+    const marker = item.isCurrent ? SUCCESS('●') : DIM('○');
+    const alias = item.alias ? `(${item.alias})` : '';
+    const context = `${formatTokenCount(item.contextWindow ?? 0)} ctx`;
+    const current = item.isCurrent ? BRAND('(current)') : '';
+    console.log(`  ${marker} ${ACCENT(item.name)} ${DIM(alias)} ${DIM(context)} ${current}`);
+    console.log(`      ${DIM(item.provider ?? 'unknown')}`);
+  }
+  console.log();
+  console.log(DIM('Use /model <name|alias> to switch, e.g. /model sonnet'));
   console.log();
   return { success: true };
 }
@@ -2072,6 +2180,7 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
       costTracker: snapshot.costTracker,
       permissionMode: snapshot.permissionMode,
       toolConfirmation: ctx.config.toolConfirmation,
+      toolAllowlist: resolveProjectToolAllowlist(ctx.cwd).evaluator,
       toolContext: {
         cwd: ctx.cwd,
         config: {
@@ -3791,7 +3900,7 @@ const COMMANDS: SlashCommand[] = [
   {
     name: 'model',
     description: 'Show or change the current model',
-    argumentHint: '[model|list|help]',
+    argumentHint: '[model|info]',
     category: 'model',
     priority: 10,
     type: 'builtin',
@@ -3800,8 +3909,19 @@ const COMMANDS: SlashCommand[] = [
     execute: (ctx, args) => handleModel(ctx, args),
   },
   {
+    name: 'models',
+    description: 'Switch the current model interactively',
+    argumentHint: '',
+    category: 'model',
+    priority: 10,
+    type: 'builtin',
+    execution: 'builtin',
+    risk: 'state-write',
+    execute: (ctx, args) => handleModels(ctx, args),
+  },
+  {
     name: 'mode',
-    aliases: ['permissions', 'perm'],
+    aliases: ['perm'],
     description: 'Show or change tool permission mode',
     argumentHint: '[default|accept-edits|plan|auto|next]',
     category: 'model',
@@ -3868,6 +3988,19 @@ const COMMANDS: SlashCommand[] = [
     type: 'builtin',
     execution: 'renderer-local',
     risk: 'read-only',
+    rendererScope: ['tui'],
+    execute: () => ({ success: true }),
+  },
+  {
+    name: 'permissions',
+    description:
+      'Set the tool confirmation policy (TUI). No argument opens a picker; with an argument applies immediately.',
+    argumentHint: '[allow|ask|deny]',
+    category: 'system',
+    priority: 33,
+    type: 'builtin',
+    execution: 'renderer-local',
+    risk: 'state-write',
     rendererScope: ['tui'],
     execute: () => ({ success: true }),
   },

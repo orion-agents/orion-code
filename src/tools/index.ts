@@ -19,6 +19,7 @@ import {
   existsSync,
   createReadStream,
   lstatSync,
+  mkdirSync,
 } from 'fs';
 import { join, resolve, relative } from 'path';
 import { createInterface } from 'readline';
@@ -51,6 +52,12 @@ import { GIT_TOOLS } from './git';
 import { lspTools } from './lsp';
 import { GOAL_TOOLS } from '../runtime/goals/tools';
 import { assessCommandSecurity, isReadOnlyCommand } from './bash_security';
+import {
+  describeSandboxPlan,
+  planSandboxedCommand,
+  resolveSandboxSettings,
+  type SandboxConfig,
+} from './sandbox';
 
 export const BATCH_READ_ALLOWED_TOOLS = new Set([
   'git_status',
@@ -192,6 +199,7 @@ export const TOOLS: OpenHorseTool[] = [
       return writeFileSync_(path, content, context.cwd);
     },
     isDestructive: () => true,
+    isFileEdit: () => true,
     checkPermissions: (_args, _context) => {
       // Destructive operation - ask for confirmation in default mode
       return { behavior: 'ask', reason: 'Write operation may modify existing files' };
@@ -286,7 +294,7 @@ export const TOOLS: OpenHorseTool[] = [
       const cmd = (args.command as string) || '';
       return /(rm\s+-rf|mkfs|dd\s)/.test(cmd);
     },
-    checkPermissions: (args, _context) => {
+    checkPermissions: (args, context) => {
       const cmd = (args.command as string) || '';
 
       // Use the bash_security module for comprehensive checks
@@ -299,16 +307,35 @@ export const TOOLS: OpenHorseTool[] = [
         };
       }
 
+      // v0.1.3-2 §1.2: a configured-but-unusable sandbox is a hard deny, decided
+      // here so the user sees the reason instead of an opaque execution failure.
+      const workdir = context?.cwd ?? process.cwd();
+      const sandboxSettings = resolveSandboxSettings(workdir);
+      let sandboxNote = '';
+      if ((sandboxSettings.profile ?? 'none') !== 'none') {
+        const plan = planSandboxedCommand(cmd, { cwd: workdir, settings: sandboxSettings });
+        if (!plan.ok) {
+          return {
+            behavior: 'deny',
+            reason: `sandbox profile "${plan.profile}" is configured but cannot be applied — ${plan.reason}`,
+          };
+        }
+        sandboxNote = ` [${describeSandboxPlan(plan)}]`;
+      }
+
       if (security.level === 'safe' && security.isReadOnly) {
         return { behavior: 'allow' };
       }
 
       if (security.level === 'caution') {
-        return { behavior: 'ask', reason: security.reason || 'Command requires confirmation' };
+        return {
+          behavior: 'ask',
+          reason: (security.reason || 'Command requires confirmation') + sandboxNote,
+        };
       }
 
       // Default: ask for confirmation
-      return { behavior: 'ask', reason: 'Command requires confirmation' };
+      return { behavior: 'ask', reason: 'Command requires confirmation' + sandboxNote };
     },
     isReadOnly: args => {
       const cmd = (args.command as string) || '';
@@ -406,6 +433,7 @@ export const TOOLS: OpenHorseTool[] = [
       );
     },
     isDestructive: () => true,
+    isFileEdit: () => true,
     checkPermissions: (_args, _context) => {
       return { behavior: 'ask', reason: 'Edit operation modifies file contents' };
     },
@@ -1147,16 +1175,48 @@ async function execCommand_(
   timeout?: number,
   maxOutput?: number,
   abortSignal?: AbortSignal,
-  baseCwd?: string
+  baseCwd?: string,
+  sandbox?: SandboxConfig
 ): Promise<ToolResult> {
+  const workdir = cwd ? safePath(cwd, baseCwd) : (baseCwd ?? process.cwd());
+
+  // v0.1.3-2 §1.2: plan the (possibly sandboxed) argv before spawning. A
+  // configured sandbox that cannot be honoured must refuse the command rather
+  // than silently degrade into an unsandboxed run.
+  const plan = planSandboxedCommand(command, {
+    cwd: workdir,
+    settings: sandbox ?? resolveSandboxSettings(baseCwd ?? process.cwd()),
+  });
+  if (!plan.ok) {
+    return {
+      success: false,
+      output: '',
+      error:
+        `Refusing to run: sandbox profile "${plan.profile}" is configured but cannot be applied — ${plan.reason}. ` +
+        'Set sandbox.profile to "none" to run without isolation.',
+    };
+  }
+
   return new Promise(resolve => {
-    const workdir = cwd ? safePath(cwd, baseCwd) : (baseCwd ?? process.cwd());
     const timeoutMs = timeout ?? 30000;
     const maxBytes = maxOutput ?? 51200; // Default 50KB, Issue #28 fix
 
-    // Use spawn for streaming output with truncation support
+    // The docker backend bind-mounts `workdir` into the container; the host
+    // directory must exist at container-creation time or the mount fails with a
+    // confusing "nonexistent directory" error. Create it deterministically
+    // rather than relying on docker to materialise it.
+    if (plan.backend === 'docker') {
+      try {
+        mkdirSync(workdir, { recursive: true });
+      } catch {
+        // If it cannot be created we let the spawn fail with a clear error.
+      }
+    }
+
+    // Use spawn for streaming output with truncation support. The user command
+    // is a single argv element, so no intermediate shell re-parses it.
     const useProcessGroup = process.platform !== 'win32';
-    const child = spawn('sh', ['-c', command], {
+    const child = spawn(plan.file, plan.args, {
       cwd: workdir,
       detached: useProcessGroup,
     });

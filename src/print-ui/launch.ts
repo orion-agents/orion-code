@@ -3,6 +3,7 @@ import { emitToUiEventSink, type AgentRuntimeEventSink } from '../runtime/agent-
 import { resolveUiRendererCapabilities } from '../runtime/ui-events';
 import type {
   EditPreviewRequest,
+  ModelPickerRequest,
   OpenHorseUiRuntime,
   RuntimeToolFinishedEvent,
   RuntimeToolStartedEvent,
@@ -143,6 +144,14 @@ export class PrintEventSink implements UiEventSink {
 
   showSessionPicker(request: SessionPickerRequest): void {
     const message = `Session picker is not interactive in print mode. Use /resume <session-id> or /resume --last. (${request.sessions.length} sessions available)`;
+    this.errors.push(message);
+    if (this.outputFormat === 'text') {
+      stderrLine(message);
+    }
+  }
+
+  showModelPicker(request: ModelPickerRequest): void {
+    const message = `Model picker is not interactive in print mode. Use /model <name|alias> to switch. (${request.models.length} models available)`;
     this.errors.push(message);
     if (this.outputFormat === 'text') {
       stderrLine(message);

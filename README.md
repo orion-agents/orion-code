@@ -2,7 +2,7 @@
 
 > **Goal-driven coding agent for the terminal.**
 >
-> v0.1.2 — Goal continuity and evidence audit
+> v0.1.3 — Goal continuity, model config & shell sandbox POC
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20.0-green.svg)](https://nodejs.org)
@@ -35,8 +35,8 @@ Orion Code is a terminal-based coding agent. It wraps LLM APIs in a harness of s
 ### Install & Run
 
 ```bash
-# Install the v0.1.2 release:
-npm install -g @orion-agents/orion-code@0.1.2
+# Install the v0.1.3 release:
+npm install -g @orion-agents/orion-code@0.1.3
 
 # Or run from a checked-out source tree:
 npm ci
@@ -146,6 +146,78 @@ Configuration: `~/.orion-code/orion.json` | Priority: `CLI flags > config > env 
 
 The renderer is a runtime choice rather than a persisted setting: `orion` starts
 the TUI, while `--ui terminal` selects the technical renderer.
+
+### Project tool rules (`allowedTools`)
+
+Per-project permission rules live under `projects["<absolute path>"].allowedTools`.
+They are scoped to a single repository and are evaluated on top of each tool's own
+policy — they can tighten the gate, never loosen it.
+
+```json
+{
+  "projects": {
+    "/Users/me/work/api": {
+      "allowedTools": [
+        "exec_command(git status*)",
+        "exec_command(npm test*)",
+        "ask:exec_command(git push*)",
+        "deny:read_file(*.env)"
+      ]
+    }
+  }
+}
+```
+
+- Grammar: `[allow|ask|deny:]tool[(subject glob)]`; `*` matches any run of characters,
+  `?` a single one, and `*` as the tool name matches every tool.
+- The subject is the call's `command` / `file_path` / `path` / `url` / `pattern` / `query`
+  argument, whichever comes first.
+- Conflicts resolve most-restrictive-first (`deny` > `ask` > `allow`), independent of order.
+- `allow` only skips an interactive confirmation. It never overrides a tool's own `deny`,
+  never escapes plan mode, and never auto-approves a destructive invocation.
+- Malformed entries are ignored and listed by `/config` rather than silently applied.
+
+### Shell execution sandbox (`sandbox`)
+
+`exec_command` can run inside an OS-level sandbox. This is a **security POC**: the
+backend is probed at runtime and a configured-but-unusable sandbox **fails closed**
+(refuses to run) rather than silently degrading to an unsandboxed execution.
+
+```json
+{
+  "sandbox": {
+    "profile": "none",
+    "backend": "auto",
+    "allowNetwork": false,
+    "writableRoots": [],
+    "image": "alpine:latest"
+  }
+}
+```
+
+- **Ownership** — `sandbox` lives in the global config (`~/.orion-code/orion.json`)
+  and can be overridden per project under `projects["<path>"].sandbox`. Project
+  keys win individually; absent keys inherit the global value.
+- **`profile`** — `none` (default, no isolation, identical to the legacy `sh -c`),
+  `read-only` (no writes anywhere, no network), or `workspace-write` (writes
+  confined to the workspace + temp dirs, network still blocked unless
+  `allowNetwork: true`). An unknown value (e.g. written by a newer Orion) is a
+  hard failure, never a downgrade to `none`.
+- **`backend`** — `auto` (default, picks the first usable backend), `seatbelt`
+  (macOS `sandbox-exec`), `bubblewrap` (Linux `bwrap`), or `docker`. Each backend
+  is validated with a real execution probe; `which`-based guessing is never used.
+- **`image`** — required only for `docker`; names the container image to run in.
+- **`writableRoots`** — extra host roots the `workspace-write` profile may write
+  to (in addition to the cwd and temp). Non-string / empty entries are dropped.
+- **Migration / rollback** — adding the `sandbox` key is backward compatible: the
+  default `profile: "none"` reproduces the previous behaviour exactly. Removing the
+  key (or reverting to a pre-sandbox version) is a safe rollback; older Orion
+  simply ignores the unknown field. No secrets are stored, so no redaction is
+  required.
+- **Known limitations** — `seatbelt` cannot be nested inside another sandbox (e.g.
+  when Orion itself runs inside an app sandbox); `docker` runs the command in a
+  separate process tree and only constrains what is bind-mounted (the image rootfs
+  is made read-only via `--read-only`); none of the backends constrain CPU/memory.
 
 ## Interactive Commands
 

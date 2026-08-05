@@ -159,7 +159,7 @@ export const createGoalTool: OpenHorseTool = buildTool({
         : [],
     }));
     const result = coord.create(objective, { constraints, successCriteria });
-    if (!result.ok) return { success: false, output: '', error: result.error };
+    if (!result.ok) return { success: false, output: result.error, error: result.error };
 
     updateSessionGoalBinding(coord.boundSessionId, coord.goal);
 
@@ -221,12 +221,12 @@ export const updateGoalTool: OpenHorseTool = buildTool({
     const coord = context.coordinator;
     const status = args.status as 'complete' | 'blocked';
     const goal = coord.goal;
-    if (!goal) return { success: false, output: '', error: 'No active goal to update.' };
+    if (!goal) return { success: false, output: 'No active goal to update.', error: 'No active goal to update.' };
     if (goal.status !== 'active')
       return {
         success: false,
-        output: '',
-        error: `Goal is not active (current status: ${goal.status}).`,
+        output: `Goal is not active (current status: ${goal.status}). Run /target resume to reactivate, then retry.`,
+        error: `Goal is not active (current status: ${goal.status}). Run /target resume to reactivate, then retry.`,
       };
 
     let criterionEvidence: GoalCriterionEvidence[] | undefined;
@@ -256,7 +256,8 @@ export const updateGoalTool: OpenHorseTool = buildTool({
       if (!criterionEvidence || criterionEvidence.length !== criteria.length) {
         return {
           success: false,
-          output: '',
+          output:
+            'Completion requires an evidence mapping for every success criterion. Call get_goal after verification to read captured evidence IDs.',
           error:
             'Completion requires an evidence mapping for every success criterion. Call get_goal after verification to read captured evidence IDs.',
         };
@@ -272,7 +273,7 @@ export const updateGoalTool: OpenHorseTool = buildTool({
         ) {
           return {
             success: false,
-            output: '',
+            output: `Invalid or duplicate evidence mapping for criterion ${mapping.criterionId || '(empty)'}.`,
             error: `Invalid or duplicate evidence mapping for criterion ${mapping.criterionId || '(empty)'}.`,
           };
         }
@@ -281,7 +282,7 @@ export const updateGoalTool: OpenHorseTool = buildTool({
           if (seenEvidence.has(evidenceId)) {
             return {
               success: false,
-              output: '',
+              output: `Evidence ${evidenceId} cannot be reused across success criteria.`,
               error: `Evidence ${evidenceId} cannot be reused across success criteria.`,
             };
           }
@@ -289,7 +290,7 @@ export const updateGoalTool: OpenHorseTool = buildTool({
           if (!record || !criterion.requiredEvidenceKinds.includes(record.kind)) {
             return {
               success: false,
-              output: '',
+              output: `Evidence ${evidenceId} is unavailable or irrelevant to ${mapping.criterionId}.`,
               error: `Evidence ${evidenceId} is unavailable or irrelevant to ${mapping.criterionId}.`,
             };
           }
@@ -315,14 +316,14 @@ export const updateGoalTool: OpenHorseTool = buildTool({
       ) {
         return {
           success: false,
-          output: '',
+          output: 'Blocked requests require blocker category, resource, reason, and retryable.',
           error: 'Blocked requests require blocker category, resource, reason, and retryable.',
         };
       }
       if (retryable) {
         return {
           success: false,
-          output: '',
+          output: 'Retryable blockers cannot become terminal blocked; continue or pause instead.',
           error: 'Retryable blockers cannot become terminal blocked; continue or pause instead.',
         };
       }
@@ -401,7 +402,7 @@ export const updateGoalPlanTool: OpenHorseTool = buildTool({
     const context = requireContext();
     const goal = context.coordinator.goal;
     if (!goal || goal.status !== 'active') {
-      return { success: false, output: '', error: 'No active goal to plan.' };
+      return { success: false, output: 'No active goal to plan.', error: 'No active goal to plan.' };
     }
     const phase = String(args.phase ?? '').trim();
     const rawSteps = Array.isArray(args.steps)
@@ -410,7 +411,7 @@ export const updateGoalPlanTool: OpenHorseTool = buildTool({
     if (!phase || rawSteps.length > 50) {
       return {
         success: false,
-        output: '',
+        output: 'Plan phase is required and steps are limited to 50.',
         error: 'Plan phase is required and steps are limited to 50.',
       };
     }
@@ -419,7 +420,7 @@ export const updateGoalPlanTool: OpenHorseTool = buildTool({
       done: step.done === true,
     }));
     if (steps.some(step => !step.description)) {
-      return { success: false, output: '', error: 'Every plan step requires a description.' };
+      return { success: false, output: 'Every plan step requires a description.', error: 'Every plan step requires a description.' };
     }
     const rawCriteria = Array.isArray(args.derived_criteria)
       ? (args.derived_criteria as Array<Record<string, unknown>>)
@@ -437,7 +438,7 @@ export const updateGoalPlanTool: OpenHorseTool = buildTool({
       ) {
         return {
           success: false,
-          output: '',
+          output: 'Derived criteria require a statement and valid runtime evidence kinds.',
           error: 'Derived criteria require a statement and valid runtime evidence kinds.',
         };
       }

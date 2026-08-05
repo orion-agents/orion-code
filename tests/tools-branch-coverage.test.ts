@@ -160,7 +160,11 @@ describe('git tools branch behavior', () => {
       })
     );
 
-    scriptGit({ stdout: '?? new.txt\n M work.ts\nM  staged.ts\nAM both.ts\n D deleted.ts' });
+    // 1st reply = `git status --porcelain`, 2nd reply = upstream rev-list ("behind\tahead")
+    scriptGit(
+      { stdout: '?? new.txt\n M work.ts\nM  staged.ts\nAM both.ts\n D deleted.ts' },
+      { stdout: '2\t5\n' }
+    );
     const result = await gitStatusTool.execute({ cwd: '/repo' }, context);
     expect(result.success).toBe(true);
     expect(JSON.parse(result.output)).toEqual({
@@ -169,7 +173,17 @@ describe('git tools branch behavior', () => {
       modified: ['work.ts', 'both.ts', 'deleted.ts'],
       staged: ['staged.ts', 'both.ts'],
       total: 5,
+      behind: 2,
+      ahead: 5,
     });
+  });
+
+  test('git_status still succeeds when the branch has no upstream', async () => {
+    // Only the porcelain call is scripted; the upstream rev-list call throws.
+    scriptGit({ stdout: '' });
+    const result = await gitStatusTool.execute({ cwd: '/repo' }, context);
+    expect(result.success).toBe(true);
+    expect(JSON.parse(result.output)).toMatchObject({ clean: true, ahead: 0, behind: 0 });
   });
 
   test('git_push validates inputs and reports explicit-path staging failures', async () => {
@@ -646,16 +660,25 @@ describe('web tools branch behavior', () => {
     );
     expect(large.error).toContain('maximum allowed size');
 
-    (global.fetch as jest.Mock).mockResolvedValueOnce(
-      response({
-        ok: false,
-        status: 503,
-        statusText: 'Unavailable',
-        redirected: true,
-        url: 'https://example.net/final',
-        headers: new Headers(),
-      })
-    );
+    // Redirects are now followed manually (one fetch per hop) so every hop can be
+    // re-checked against the SSRF policy.
+    (global.fetch as jest.Mock)
+      .mockResolvedValueOnce(
+        response({
+          ok: false,
+          status: 302,
+          statusText: 'Found',
+          headers: new Headers({ location: 'https://example.net/final' }),
+        })
+      )
+      .mockResolvedValueOnce(
+        response({
+          ok: false,
+          status: 503,
+          statusText: 'Unavailable',
+          headers: new Headers(),
+        })
+      );
     const unavailable = await webFetchTool.execute(
       { url: 'https://example.net/start', prompt: 'read' },
       context
@@ -686,14 +709,21 @@ describe('web tools branch behavior', () => {
       '<a href="https://example.com">link</a><pre><code>let x = 1</code></pre><code>x</code>',
       '<ul><li>one</li></ul><ol><li>two</li></ol><div>block<br/>line</div><span>end</span>',
     ].join('');
-    (global.fetch as jest.Mock).mockResolvedValueOnce(
-      response({
-        redirected: true,
-        url: 'https://example.com/final',
-        headers: new Headers({ 'content-type': 'text/html' }),
-        bodyText: html,
-      })
-    );
+    (global.fetch as jest.Mock)
+      .mockResolvedValueOnce(
+        response({
+          ok: false,
+          status: 301,
+          statusText: 'Moved Permanently',
+          headers: new Headers({ location: '/final' }), // relative Location must resolve
+        })
+      )
+      .mockResolvedValueOnce(
+        response({
+          headers: new Headers({ 'content-type': 'text/html' }),
+          bodyText: html,
+        })
+      );
 
     const first = await webFetchTool.execute(
       { url: 'https://example.com/start', prompt: 'extract title and name' },
@@ -703,6 +733,9 @@ describe('web tools branch behavior', () => {
     expect((global.fetch as jest.Mock).mock.calls[0][1].headers['User-Agent']).toBe(
       ORION_USER_AGENT
     );
+    expect((global.fetch as jest.Mock).mock.calls[0][1].redirect).toBe('manual');
+    // hop 2 targets the resolved absolute URL
+    expect((global.fetch as jest.Mock).mock.calls[1][0]).toBe('https://example.com/final');
     expect(first.output).toContain('Title: Orion');
     expect(first.output).toContain('**bold**');
     expect(first.output).toContain('Final URL (after redirects)');
@@ -712,7 +745,7 @@ describe('web tools branch behavior', () => {
       context
     );
     expect(cached.success).toBe(true);
-    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(global.fetch).toHaveBeenCalledTimes(2); // cached second call, no new hop
   });
 
   test('summarizes long content, truncates oversized output, and covers default prompt rendering', async () => {

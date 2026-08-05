@@ -40,6 +40,8 @@ import { redactTraceText } from '../services/redaction';
 import { classifyGoalEvidenceKind, classifyGoalEvidenceResult } from './goals/evidence';
 import { appendSessionTraceEvent } from '../services/session-storage';
 import { externalAssertionMatchesInvocation } from '../framework/external-assertion';
+import { updateGlobalConfig } from '../services/global-config';
+import type { ToolConfirmationPolicy } from '../services/global-config';
 
 export type {
   AgentRuntimeInput,
@@ -467,6 +469,8 @@ export class AgentRuntimeController {
         return { type: 'exit_intent_cleared' };
       case 'goal_control':
         return this.handleGoalControl(input as unknown as import('./goals/types').GoalControlInput);
+      case 'permission_mode_change':
+        return this.applyPermissionModeChange(input.value);
     }
   }
 
@@ -522,8 +526,11 @@ export class AgentRuntimeController {
 
       this.turnController.clearExitIntent();
       this.turnController.requestRevision(submitted);
+      // v0.1.3 (G1): echo the incremental input to the transcript immediately,
+      // so the user sees their correction without waiting for the turn to abort.
+      this.emitAppend(submittedEntry(submitted));
       this.emitStatus(
-        this.options.revisionStatus ?? 'Revision received. Interrupting current response...'
+        this.options.revisionStatus ?? '已接收补充，正在中断当前轮…'
       );
       return { type: 'revision_requested' };
     }
@@ -1082,7 +1089,7 @@ export class AgentRuntimeController {
       const nextInput =
         request.text?.trim() ||
         'Continue pursuing the active goal from its persisted plan and evidence.';
-      if ((this.options.echoSubmittedInput ?? true) && request.echoToTranscript) {
+      if ((this.options.echoSubmittedInput ?? true) && request.echoToTranscript && !request.alreadyEchoed) {
         this.emitAppend(submittedEntry(nextInput));
       }
       this.options.beforeTurn?.(nextInput);
@@ -1152,7 +1159,7 @@ export class AgentRuntimeController {
             nextRequest = undefined;
           } else {
             this.emitStatus(
-              this.options.restartingStatus ?? 'Restarting with latest instruction...'
+              this.options.restartingStatus ?? '根据补充调整方向中…'
             );
             nextRequest = {
               inputKind: 'revision',
@@ -1167,6 +1174,8 @@ export class AgentRuntimeController {
                 : undefined,
               persistAsUserMessage: true,
               echoToTranscript: true,
+              // v0.1.3 (G1): the revision was already echoed at submission time.
+              alreadyEchoed: true,
               generation: currentCoord?.generation ?? 0,
             };
           }
@@ -1578,6 +1587,19 @@ export class AgentRuntimeController {
     if (!resolve) return { type: 'permission_decision_ignored' };
     resolve(approved);
     return { type: 'permission_decision_recorded' };
+  }
+
+  private applyPermissionModeChange(value: ToolConfirmationPolicy): AgentRuntimeInputResult {
+    const allowed: ToolConfirmationPolicy[] = ['allow', 'ask', 'deny'];
+    if (!allowed.includes(value)) return { type: 'permission_mode_invalid' };
+    // Persist to disk so the change survives restart...
+    updateGlobalConfig({ toolConfirmation: value });
+    // ...and mutate the live runtime config so the very next tool call uses it
+    // immediately (chat-controller passes this.runtime.config.toolConfirmation into
+    // the scheduler on every turn).
+    this.options.runtime.config.toolConfirmation = value;
+    this.emitStatus(`Tool confirmation → ${value}`);
+    return { type: 'permission_mode_changed' };
   }
 
   private rejectPendingPermissions(): void {
