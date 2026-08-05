@@ -304,7 +304,17 @@ describe('print mode event sink', () => {
         done?.();
         return true;
       });
-    let releaseStderr!: () => void;
+    // Every write onto the mocked stream has to be tracked, not just the most
+    // recent one. Node emits unrelated diagnostics (e.g. the DEP0040 punycode
+    // deprecation) asynchronously onto stderr, and a single-slot reference lets
+    // such a write overwrite flushStderr()'s callback -- releasing the wrong one
+    // leaves the launch promise pending until the test times out.
+    const pendingStderrWrites: Array<() => void> = [];
+    const releaseStderr = (): void => {
+      while (pendingStderrWrites.length > 0) {
+        pendingStderrWrites.shift()?.();
+      }
+    };
     const stderrSpy = jest
       .spyOn(process.stderr, 'write')
       .mockImplementation((_chunk, callbackOrEncoding?, callback?) => {
@@ -314,7 +324,9 @@ describe('print mode event sink', () => {
             : typeof callback === 'function'
               ? callback
               : undefined;
-        releaseStderr = () => done?.();
+        if (done) {
+          pendingStderrWrites.push(done);
+        }
         return false;
       });
 
