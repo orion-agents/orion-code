@@ -155,6 +155,15 @@ function extractStatus(error: unknown): number | undefined {
   return undefined;
 }
 
+/**
+ * Lower-cased `error.message` used for keyword matching below.
+ * Accepts any thrown value (including `null`/primitives) and never throws.
+ */
+function lowerMessage(error: unknown): string {
+  const e = error as Record<string, unknown> | undefined | null;
+  return String(e?.message ?? '').toLowerCase();
+}
+
 function isQuotaError(error: unknown): boolean {
   const e = error as Record<string, unknown> | undefined;
   if (!e) return false;
@@ -170,7 +179,7 @@ function isQuotaError(error: unknown): boolean {
 }
 
 function isContextOverflow(error: unknown): boolean {
-  const msg = String((error as any)?.message ?? '').toLowerCase();
+  const msg = lowerMessage(error);
   return (
     msg.includes('context') &&
     (msg.includes('overflow') || msg.includes('too long') || msg.includes('maximum context'))
@@ -178,7 +187,7 @@ function isContextOverflow(error: unknown): boolean {
 }
 
 function isContentPolicy(error: unknown): boolean {
-  const msg = String((error as any)?.message ?? '').toLowerCase();
+  const msg = lowerMessage(error);
   return (
     msg.includes('content') &&
     (msg.includes('policy') || msg.includes('safety') || msg.includes('moderation'))
@@ -186,22 +195,22 @@ function isContentPolicy(error: unknown): boolean {
 }
 
 function isConnectionReset(error: unknown): boolean {
-  const msg = String((error as any)?.message ?? '').toLowerCase();
+  const msg = lowerMessage(error);
   return msg.includes('reset') || msg.includes('econnreset') || msg.includes('epipe');
 }
 
 function isTimeout(error: unknown): boolean {
-  const msg = String((error as any)?.message ?? '').toLowerCase();
+  const msg = lowerMessage(error);
   return msg.includes('timeout') || msg.includes('timed out');
 }
 
 function isConnectTimeout(error: unknown): boolean {
-  const msg = String((error as any)?.message ?? '').toLowerCase();
+  const msg = lowerMessage(error);
   return msg.includes('connect') && msg.includes('timeout');
 }
 
 function isNetworkError(error: unknown): boolean {
-  const msg = String((error as any)?.message ?? '').toLowerCase();
+  const msg = lowerMessage(error);
   return (
     msg.includes('econnrefused') ||
     msg.includes('enotfound') ||
@@ -212,7 +221,7 @@ function isNetworkError(error: unknown): boolean {
 }
 
 function isMalformedResponse(error: unknown): boolean {
-  const msg = String((error as any)?.message ?? '').toLowerCase();
+  const msg = lowerMessage(error);
   return (
     msg.includes('malformed') || msg.includes('unexpected token') || msg.includes('parse error')
   );
