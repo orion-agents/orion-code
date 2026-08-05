@@ -30,7 +30,28 @@ interface AdapterHttpResponse {
   ok: boolean;
   status: number;
   text(): Promise<string>;
-  json(): Promise<any>;
+  /**
+   * Provider payloads have no shared schema, so the parsed body stays
+   * `unknown`. `extractHits` is the single place allowed to interpret it,
+   * and it narrows every field before use.
+   */
+  json(): Promise<unknown>;
+}
+
+/** A JSON object of unknown shape, as returned by an external provider. */
+type UnknownRecord = Record<string, unknown>;
+
+function isRecord(value: unknown): value is UnknownRecord {
+  return typeof value === 'object' && value !== null;
+}
+
+/** Return the first field of `keys` that holds a non-empty string. */
+function pickString(source: UnknownRecord, keys: readonly string[]): string | undefined {
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === 'string' && value) return value;
+  }
+  return undefined;
 }
 
 export type WebSearchMode =
@@ -61,8 +82,18 @@ function hasProxyEnv(): boolean {
   );
 }
 
+/**
+ * Detect a Jest-replaced `global.fetch`.
+ *
+ * Under test we must not divert through axios, or the mock never sees the
+ * request. Jest tags its mocks with `_isMockFunction`/`mock`, neither of
+ * which exists on the DOM `fetch` type — hence the structural probe.
+ */
 function isFetchMocked(): boolean {
-  return Boolean((global.fetch as any)?._isMockFunction || (global.fetch as any)?.mock);
+  const candidate = global.fetch as unknown as
+    | { _isMockFunction?: boolean; mock?: unknown }
+    | undefined;
+  return Boolean(candidate?._isMockFunction || candidate?.mock);
 }
 
 async function adapterFetch(url: string, init: RequestInit = {}): Promise<AdapterHttpResponse> {
@@ -169,28 +200,39 @@ function limitHits(hits: WebSearchHit[], limit: number): WebSearchHit[] {
   return out;
 }
 
-function normalizeHit(raw: any): WebSearchHit | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const title = raw.title || raw.name || raw.headline || raw.heading || raw.url || raw.link;
-  const url = raw.url || raw.link || raw.href || raw.uri;
-  if (typeof title !== 'string' || typeof url !== 'string') return null;
-  const description = raw.description || raw.snippet || raw.content || raw.summary || raw.text;
-  return { title, url, ...(typeof description === 'string' && description ? { description } : {}) };
+const TITLE_KEYS = ['title', 'name', 'headline', 'heading', 'url', 'link'] as const;
+const URL_KEYS = ['url', 'link', 'href', 'uri'] as const;
+const DESCRIPTION_KEYS = ['description', 'snippet', 'content', 'summary', 'text'] as const;
+
+function normalizeHit(raw: unknown): WebSearchHit | null {
+  if (!isRecord(raw)) return null;
+  const title = pickString(raw, TITLE_KEYS);
+  const url = pickString(raw, URL_KEYS);
+  if (!title || !url) return null;
+  const description = pickString(raw, DESCRIPTION_KEYS);
+  return { title, url, ...(description ? { description } : {}) };
 }
 
-function extractHits(payload: any): WebSearchHit[] {
-  const arrays = [
-    payload?.results,
-    payload?.web?.results,
-    payload?.organic_results,
-    payload?.data,
-    payload?.items,
-  ].filter(Array.isArray) as any[][];
-  for (const array of arrays) {
-    const hits = array.map(normalizeHit).filter(Boolean) as WebSearchHit[];
+function extractHits(payload: unknown): WebSearchHit[] {
+  const root = isRecord(payload) ? payload : undefined;
+  const web = root && isRecord(root.web) ? root.web : undefined;
+  const candidates: unknown[] = [
+    root?.results,
+    web?.results,
+    root?.organic_results,
+    root?.data,
+    root?.items,
+  ];
+  for (const candidate of candidates) {
+    if (!Array.isArray(candidate)) continue;
+    const hits = candidate
+      .map(normalizeHit)
+      .filter((hit): hit is WebSearchHit => hit !== null);
     if (hits.length > 0) return hits;
   }
-  if (Array.isArray(payload)) return payload.map(normalizeHit).filter(Boolean) as WebSearchHit[];
+  if (Array.isArray(payload)) {
+    return payload.map(normalizeHit).filter((hit): hit is WebSearchHit => hit !== null);
+  }
   return [];
 }
 
@@ -350,7 +392,7 @@ export async function runWebSearchAdapters(
       const result = await adapter.search(input);
       if (result.hits.length > 0 || mode !== 'auto') return result;
       errors.push(new Error(`${adapter.name} returned no results`));
-    } catch (err: any) {
+    } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
       errors.push(error);
       if (mode !== 'auto') throw error;
