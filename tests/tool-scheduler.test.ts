@@ -42,19 +42,55 @@ const askTool: OpenHorseTool = buildTool({
   checkPermissions: () => ({ behavior: 'ask', reason: 'External query' }),
 });
 
+/** File-edit tool that requires confirmation — the target of `acceptEdits`. */
+const askFileEditTool: OpenHorseTool = buildTool({
+  name: 'write_file',
+  description: 'Write a file',
+  parameters: {
+    type: 'object',
+    properties: { path: { type: 'string', description: 'File path' } },
+    required: ['path'],
+  },
+  execute: async () => ({ success: true, output: 'written' }),
+  isDestructive: () => true,
+  isFileEdit: () => true,
+  checkPermissions: () => ({ behavior: 'ask', reason: 'Write operation' }),
+});
+
+/** Concurrency-safe ask tool, used to assert scheduling stays consistent with execution. */
+const askConcurrentTool: OpenHorseTool = buildTool({
+  name: 'web_fetch',
+  description: 'Fetch a URL',
+  parameters: {
+    type: 'object',
+    properties: { url: { type: 'string', description: 'URL' } },
+    required: ['url'],
+  },
+  execute: async () => ({ success: true, output: 'fetched' }),
+  isConcurrencySafe: () => true,
+  checkPermissions: () => ({ behavior: 'ask', reason: 'External fetch' }),
+});
+
 const toolContext: ToolContext = {
   cwd: '/test',
   config: { name: 'orion-code', mode: 'development' },
+};
+
+const ARGS_BY_TOOL: Record<string, string> = {
+  read_file: '{"path":"a.ts"}',
+  edit_file: '{"path":"a.ts","old":"x","new":"y"}',
+  write_file: '{"path":"a.ts","content":"x"}',
+  web_fetch: '{"url":"https://example.com"}',
 };
 
 const toolCalls = (names: string[]): NonNullable<Message['tool_calls']> =>
   names.map((name, i) => ({
     id: `call-${i}`,
     type: 'function' as const,
-    function: { name, arguments: name === 'read_file' ? '{"path":"a.ts"}' : name === 'edit_file' ? '{"path":"a.ts","old":"x","new":"y"}' : '{"query":"q"}' },
+    function: { name, arguments: ARGS_BY_TOOL[name] ?? '{"query":"q"}' },
   }));
 
-const tools = [readOnlyTool, writeTool, askTool];
+const tools = [readOnlyTool, writeTool, askTool, askFileEditTool, askConcurrentTool];
 
 describe('prepareToolCalls', () => {
   test('marks read-only concurrent-safe tools as parallel', () => {
@@ -436,5 +472,198 @@ describe('executeToolCalls', () => {
       reason: 'External query',
     });
     expect(typeof results[0].permissionDecision.duration).toBe('number');
+  });
+});
+
+// ============================================================================
+// Permission mode semantics (regression: non-default modes used to bypass ask)
+// ============================================================================
+
+describe('permission mode semantics for ask tools', () => {
+  const runOne = async (
+    name: string,
+    opts: {
+      permissionMode?: string;
+      toolConfirmation?: string;
+      confirmToolUse?: (req: { name: string }) => Promise<boolean>;
+      onExec?: (name: string) => void;
+    }
+  ) => {
+    const toolExecutor = async (toolName: string) => {
+      opts.onExec?.(toolName);
+      return JSON.stringify({ success: true, output: 'executed' });
+    };
+    const base = {
+      toolCalls: toolCalls([name]),
+      tools,
+      toolExecutor,
+      toolContext,
+      permissionMode: opts.permissionMode,
+      toolConfirmation: opts.toolConfirmation,
+      confirmToolUse: opts.confirmToolUse,
+    };
+    const prepared = prepareToolCalls(base);
+    const results: any[] = [];
+    for await (const executed of executeToolCalls(prepared, {
+      toolExecutor,
+      permissionMode: opts.permissionMode,
+      toolConfirmation: opts.toolConfirmation,
+      confirmToolUse: opts.confirmToolUse,
+    })) {
+      results.push(executed);
+    }
+    return { results, prepared };
+  };
+
+  test('plan mode blocks ask tools and never executes them', async () => {
+    const executed: string[] = [];
+    const { results } = await runOne('web_search', {
+      permissionMode: 'plan',
+      toolConfirmation: 'allow',
+      onExec: n => executed.push(n),
+    });
+
+    expect(executed).toEqual([]);
+    expect(results[0].success).toBe(false);
+    expect(results[0].error).toContain('blocked in plan mode');
+    expect(results[0].permissionDecision).toMatchObject({
+      behavior: 'ask',
+      approved: false,
+      source: 'plan_mode',
+      reason: 'External query',
+    });
+  });
+
+  test('plan mode blocks file-edit tools too', async () => {
+    const executed: string[] = [];
+    const { results } = await runOne('write_file', {
+      permissionMode: 'plan',
+      onExec: n => executed.push(n),
+    });
+
+    expect(executed).toEqual([]);
+    expect(results[0].success).toBe(false);
+    expect(results[0].permissionDecision.source).toBe('plan_mode');
+  });
+
+  test('acceptEdits auto-approves file-edit tools without prompting', async () => {
+    const executed: string[] = [];
+    let prompted = 0;
+    const { results } = await runOne('write_file', {
+      permissionMode: 'acceptEdits',
+      toolConfirmation: 'ask',
+      confirmToolUse: async () => {
+        prompted++;
+        return false;
+      },
+      onExec: n => executed.push(n),
+    });
+
+    expect(prompted).toBe(0);
+    expect(executed).toEqual(['write_file']);
+    expect(results[0].success).toBe(true);
+    expect(results[0].permissionDecision).toMatchObject({
+      behavior: 'ask',
+      approved: true,
+      source: 'mode_accept_edits',
+      reason: 'Write operation',
+    });
+  });
+
+  test('acceptEdits still confirms non-edit ask tools (no blanket bypass)', async () => {
+    const executed: string[] = [];
+    let prompted = 0;
+    const { results } = await runOne('web_search', {
+      permissionMode: 'acceptEdits',
+      toolConfirmation: 'ask',
+      confirmToolUse: async () => {
+        prompted++;
+        return false;
+      },
+      onExec: n => executed.push(n),
+    });
+
+    expect(prompted).toBe(1);
+    expect(executed).toEqual([]);
+    expect(results[0].success).toBe(false);
+    expect(results[0].permissionDecision).toMatchObject({
+      approved: false,
+      source: 'user',
+    });
+  });
+
+  test('acceptEdits honours toolConfirmation=deny for non-edit ask tools', async () => {
+    const executed: string[] = [];
+    const { results } = await runOne('web_search', {
+      permissionMode: 'acceptEdits',
+      toolConfirmation: 'deny',
+      onExec: n => executed.push(n),
+    });
+
+    expect(executed).toEqual([]);
+    expect(results[0].success).toBe(false);
+    expect(results[0].permissionDecision.source).toBe('config_deny');
+  });
+
+  test('auto mode approves ask tools and records mode_auto', async () => {
+    const executed: string[] = [];
+    let prompted = 0;
+    const { results } = await runOne('web_search', {
+      permissionMode: 'auto',
+      toolConfirmation: 'ask',
+      confirmToolUse: async () => {
+        prompted++;
+        return false;
+      },
+      onExec: n => executed.push(n),
+    });
+
+    expect(prompted).toBe(0);
+    expect(executed).toEqual(['web_search']);
+    expect(results[0].success).toBe(true);
+    expect(results[0].permissionDecision).toMatchObject({
+      approved: true,
+      source: 'mode_auto',
+    });
+  });
+
+  test('scheduling matches execution: acceptEdits keeps confirmable ask tools serial', () => {
+    const confirmToolUse = async () => true;
+
+    const inAcceptEdits = prepareToolCalls({
+      toolCalls: toolCalls(['web_fetch']),
+      tools,
+      toolExecutor: async () => '',
+      toolContext,
+      permissionMode: 'acceptEdits',
+      toolConfirmation: 'ask',
+      confirmToolUse,
+    });
+    // Regression: used to be `true` because the check was gated on permissionMode==='default',
+    // which would have run an interactive prompt inside a parallel batch.
+    expect(inAcceptEdits[0].canRunConcurrently).toBe(false);
+
+    const inDefault = prepareToolCalls({
+      toolCalls: toolCalls(['web_fetch']),
+      tools,
+      toolExecutor: async () => '',
+      toolContext,
+      permissionMode: 'default',
+      toolConfirmation: 'ask',
+      confirmToolUse,
+    });
+    expect(inDefault[0].canRunConcurrently).toBe(false);
+
+    const inAuto = prepareToolCalls({
+      toolCalls: toolCalls(['web_fetch']),
+      tools,
+      toolExecutor: async () => '',
+      toolContext,
+      permissionMode: 'auto',
+      toolConfirmation: 'ask',
+      confirmToolUse,
+    });
+    // auto mode never prompts, so the tool can stay in the parallel batch.
+    expect(inAuto[0].canRunConcurrently).toBe(true);
   });
 });

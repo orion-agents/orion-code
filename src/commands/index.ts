@@ -15,11 +15,16 @@ import {
   type CommandResult,
   type PermissionMode,
 } from './types';
-import { createModelPickerState, createStatusSnapshot, type ModelPickerCandidate } from '../runtime/ui-view-model';
+import {
+  createModelPickerState,
+  createStatusSnapshot,
+  type ModelPickerCandidate,
+} from '../runtime/ui-view-model';
 import type { Task } from '../core/agent';
 import { TaskManager, CreateTaskOptions } from '../services/task-manager';
 import { AgentRunner } from '../services/agent-runner';
 import { isConfigured } from '../services/config';
+import { resolveProjectToolAllowlist } from '../services/tool-allowlist';
 import { createSpinner, toolLine } from '../ui/box';
 import { createStreamRenderer, type StreamMarkdownRenderer } from '../ui/stream-markdown';
 import { hideProgress, showToolProgress } from '../ui/progress';
@@ -79,6 +84,7 @@ import { refreshProjectInstructions } from '../services/prompt-context';
 import { collectDoctorReport, formatDoctorReport, hasDoctorFailures } from '../services/doctor';
 import { createContextUsageSnapshot, resolveModelContext } from '../services/model-context';
 import { estimateMessagesTokens } from '../utils/token-estimate';
+import { maskSecret } from '../utils/mask';
 import {
   getModelCatalogEntry,
   listModelCatalogEntries,
@@ -199,9 +205,7 @@ function resolveModelFromRegistry(
   return lookupProfile(config.modelRegistry, trimmed) ?? undefined;
 }
 
-function listConfiguredModelCatalogEntries(
-  registry: CommandContext['config']['modelRegistry']
-) {
+function listConfiguredModelCatalogEntries(registry: CommandContext['config']['modelRegistry']) {
   if (!registry) return [];
   return registry.enabledProfiles.map(profile => {
     const provider = registry.providers.get(profile.provider);
@@ -1637,20 +1641,40 @@ function showConfig(ctx: CommandContext): CommandResult {
   console.log(HEADER('Configuration'));
   console.log(DIM('─'.repeat(40)));
 
+  const allowlist = resolveProjectToolAllowlist(ctx.cwd);
+  const allowlistSummary =
+    allowlist.rules.length === 0 && allowlist.invalid.length === 0
+      ? '(none)'
+      : `${allowlist.rules.length} rule(s)` +
+        (allowlist.invalid.length > 0 ? `, ${allowlist.invalid.length} invalid (ignored)` : '');
+
   const summary = {
     name: ctx.config.name,
     model: ctx.config.model,
     apiBaseUrl: ctx.config.apiBaseUrl || '(default OpenAI)',
-    apiKey: ctx.config.apiKey ? `${ctx.config.apiKey.slice(0, 7)}***` : '(not set)',
+    apiKey: maskSecret(ctx.config.apiKey),
     mode: ctx.config.mode,
     logLevel: ctx.config.logLevel,
     toolConfirmation: ctx.config.toolConfirmation,
+    allowedTools: allowlistSummary,
   };
 
   const llmSummary = ctx.llm?.getConfigSummary() ?? {};
 
   for (const [key, val] of Object.entries(summary)) {
     console.log(`  ${ACCENT(key.padEnd(16))} ${DIM(val)}`);
+  }
+  if (allowlist.rules.length > 0 || allowlist.invalid.length > 0) {
+    console.log();
+    console.log(HEADER('  Project allowedTools:'));
+    for (const rule of allowlist.rules) {
+      console.log(
+        `  ${ACCENT(rule.effect.padEnd(6))} ${DIM(rule.tool)}${DIM(rule.pattern ? `(${rule.pattern})` : '')}`
+      );
+    }
+    for (const entry of allowlist.invalid) {
+      console.log(`  ${WARN('invalid')} ${DIM(entry)}`);
+    }
   }
   console.log();
   console.log(HEADER('  LLM Settings:'));
@@ -1686,7 +1710,9 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
       console.log(DIM('─'.repeat(40)));
       console.log(`  Model    ${BRAND(currentModel)}`);
       if (profile) {
-        console.log(`  Alias    ${ACCENT(profile.aliases?.[0] ? `(${profile.aliases[0]})` : 'none')}`);
+        console.log(
+          `  Alias    ${ACCENT(profile.aliases?.[0] ? `(${profile.aliases[0]})` : 'none')}`
+        );
         const provider = ctx.config.modelRegistry?.providers.get(profile.provider);
         console.log(`  Provider ${DIM(provider?.displayName || profile.provider)}`);
       } else if (aliasEntry) {
@@ -2154,6 +2180,7 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
       costTracker: snapshot.costTracker,
       permissionMode: snapshot.permissionMode,
       toolConfirmation: ctx.config.toolConfirmation,
+      toolAllowlist: resolveProjectToolAllowlist(ctx.cwd).evaluator,
       toolContext: {
         cwd: ctx.cwd,
         config: {
@@ -3966,7 +3993,8 @@ const COMMANDS: SlashCommand[] = [
   },
   {
     name: 'permissions',
-    description: 'Set the tool confirmation policy (TUI). No argument opens a picker; with an argument applies immediately.',
+    description:
+      'Set the tool confirmation policy (TUI). No argument opens a picker; with an argument applies immediately.',
     argumentHint: '[allow|ask|deny]',
     category: 'system',
     priority: 33,

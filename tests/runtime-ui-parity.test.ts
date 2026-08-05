@@ -249,9 +249,9 @@ describe('runtime/UI renderer parity contract', () => {
     expect(ui.events).toEqual([
       'append:user:first goal',
       'processing:true',
-      'status:Revision received. Interrupting current response...',
-      'status:Restarting with latest instruction...',
       'append:user:latest revision',
+      'status:已接收补充，正在中断当前轮…',
+      'status:根据补充调整方向中…',
       'processing:true',
       'processing:false',
     ]);

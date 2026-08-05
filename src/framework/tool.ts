@@ -90,6 +90,12 @@ export interface OrionCodeTool {
   isReadOnly?(args: Record<string, unknown>): boolean;
   /** Is this a potentially destructive operation */
   isDestructive?(args: Record<string, unknown>): boolean;
+  /**
+   * Does this tool mutate local workspace files?
+   * Used by permission mode `acceptEdits` to auto-approve file edits while
+   * still confirming other side-effecting tools (bash / network / git / MCP).
+   */
+  isFileEdit?(args: Record<string, unknown>): boolean;
 
   /** User-facing name for display */
   userFacingName?(args: Record<string, unknown>): string;
@@ -119,6 +125,7 @@ const TOOL_DEFAULTS = {
   isConcurrencySafe: () => false,
   isReadOnly: () => false,
   isDestructive: () => false,
+  isFileEdit: () => false,
   checkPermissions: (): PermissionResult => ({ behavior: 'allow' }),
 };
 
@@ -139,6 +146,7 @@ export function buildTool(def: OrionCodeTool): OrionCodeTool {
     isConcurrencySafe: TOOL_DEFAULTS.isConcurrencySafe,
     isReadOnly: TOOL_DEFAULTS.isReadOnly,
     isDestructive: TOOL_DEFAULTS.isDestructive,
+    isFileEdit: TOOL_DEFAULTS.isFileEdit,
     checkPermissions: TOOL_DEFAULTS.checkPermissions,
     ...def,
   };

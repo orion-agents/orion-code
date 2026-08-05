@@ -1944,7 +1944,7 @@ describe('AgentRuntimeController', () => {
     expect(controller.hasActiveTurn()).toBe(false);
   });
 
-  it('aborts an active turn and restarts only the latest revision', async () => {
+  it('aborts an active turn and restarts with accumulated consecutive revisions', async () => {
     const runtime = createRuntime();
     const { events, statuses } = createEvents();
     const runner = createDeferredRunner();
@@ -1959,13 +1959,13 @@ describe('AgentRuntimeController', () => {
 
     runner.calls[0].resolve();
     await Promise.resolve();
-    expect(runner.calls.map(call => call.input)).toEqual(['first goal', 'latest revision']);
+    expect(runner.calls.map(call => call.input)).toEqual(['first goal', 'older revision\nlatest revision']);
 
     runner.calls[1].resolve();
     await controller.waitForIdle();
 
-    expect(statuses).toContain('Revision received. Interrupting current response...');
-    expect(statuses).toContain('Restarting with latest instruction...');
+    expect(statuses).toContain('已接收补充，正在中断当前轮…');
+    expect(statuses).toContain('根据补充调整方向中…');
   });
 
   it('does not run slash commands concurrently during an active turn', () => {

@@ -17,10 +17,7 @@ import { FileToolDetailRepository } from '../runtime/tool-detail-repository';
 import { TranscriptInspectorSurface } from './transcript-inspector-surface';
 import { spawn } from 'child_process';
 import {
-  detectTerminalImageProtocol,
-  readTuiIcon,
   renderTuiStartupBanner,
-  resolveTuiIconPath,
 } from './terminal-image';
 
 const DISABLE_BRACKETED_PASTE = '\x1b[?2004l';
@@ -450,11 +447,6 @@ export async function launchTuiUI(
   try {
     // Primary-screen inline surface: no alternate screen (1049).
     const { width, height } = dimensions();
-    const protocol = detectTerminalImageProtocol({
-      env,
-      isTTY: true,
-    });
-    const image = readTuiIcon(resolveTuiIconPath(env));
     const startupSnapshot = runtime.store.getSnapshot();
     output.write(
       renderTuiStartupBanner({
@@ -462,8 +454,6 @@ export async function launchTuiUI(
         version: runtime.version,
         model: startupSnapshot.currentModel || runtime.config.model,
         terminalWidth: width,
-        protocol,
-        image,
         suppressColor:
           Object.prototype.hasOwnProperty.call(env, 'NO_COLOR') || env.FORCE_COLOR === '0',
       })

@@ -40,6 +40,7 @@ import { delimiter } from 'path';
 import { DEFAULT_SUBAGENT_CONFIG, type SubagentConfig } from '../runtime/subagents/types';
 import { clampSubagentConfig } from '../runtime/subagents/policy';
 import { ENV, webSearchEnv } from '../product/environment';
+import { maskSecret } from '../utils/mask';
 
 export type {
   ToolConfirmationPolicy,
@@ -484,7 +485,7 @@ export function getConfigSummary(config: OrionCodeCLIConfig): Record<string, str
     model: config.model,
     fallback: config.fallbackModel || '(none)',
     apiBaseUrl: config.apiBaseUrl || '(default)',
-    apiKey: config.apiKey ? `${config.apiKey.slice(0, 7)}***` : '(not set)',
+    apiKey: maskSecret(config.apiKey),
     mode: config.mode,
     logLevel: config.logLevel,
     toolConfirmation: config.toolConfirmation,

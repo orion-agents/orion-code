@@ -19,6 +19,11 @@ import type { ModelPricing } from '../core/cost-tracker';
 export interface ProjectConfig {
   /** 允许的工具列表 */
   allowedTools?: string[];
+  /**
+   * Project-level sandbox override, shallow-merged on top of `GlobalConfig.sandbox`.
+   * Absent keys inherit the global value; the effective default is `profile: 'none'`.
+   */
+  sandbox?: SandboxConfig;
   /** 最后会话 ID */
   lastSessionId?: string;
   /** 最后使用的模型 */
@@ -29,6 +34,33 @@ export interface ProjectConfig {
 
 /** How to handle tool permission checks that request interactive confirmation. */
 export type ToolConfirmationPolicy = 'ask' | 'allow' | 'deny';
+
+/**
+ * OS-level isolation requested for shell command execution.
+ * `none` is the default and reproduces pre-sandbox behaviour exactly.
+ */
+export type SandboxProfile = 'none' | 'read-only' | 'workspace-write';
+
+/** Concrete mechanism used to deliver a {@link SandboxProfile}. */
+export type SandboxBackend = 'seatbelt' | 'bubblewrap' | 'docker';
+
+/**
+ * Sandbox settings. Valid at global scope and, as an override, per project.
+ * See `src/tools/sandbox.ts` for the full contract (probing, fail-closed
+ * behaviour and backend selection).
+ */
+export interface SandboxConfig {
+  /** Defaults to `none`. Unknown values fail closed instead of downgrading. */
+  profile?: SandboxProfile;
+  /** Force a backend instead of auto-selecting the first available one. */
+  backend?: SandboxBackend | 'auto';
+  /** Allow outbound network. Defaults to false for every non-`none` profile. */
+  allowNetwork?: boolean;
+  /** Extra writable roots for `workspace-write`, beyond the cwd and temp dir. */
+  writableRoots?: string[];
+  /** Container image; required by (and only used for) the `docker` backend. */
+  image?: string;
+}
 
 /** Runtime-only UI renderer selection. TUI is the product default; Terminal is the technical fallback; Ink is deprecated (removed in v0.2.0). */
 export type UIRenderer = 'terminal' | 'tui' | 'ink';
@@ -147,6 +179,8 @@ export interface GlobalConfig {
   subagents?: SubagentUserConfig;
   /** Cost-accounting overrides for custom or routed models. */
   cost?: CostConfig;
+  /** OS-level sandbox for shell execution. Defaults to `{ profile: 'none' }`. */
+  sandbox?: SandboxConfig;
 
   // ---- 内部标识 ----
   userId?: string;

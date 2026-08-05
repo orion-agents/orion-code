@@ -15,6 +15,7 @@ import {
   type ToolExternalAssertion,
 } from './external-assertion';
 import type { Message } from '../services/llm';
+import type { ToolAllowlistEvaluator, ToolAllowlistMatch } from '../services/tool-allowlist';
 import type { DriftCheckResult } from '../harness/types';
 
 // ============================================================================
@@ -31,6 +32,11 @@ export interface PreparedToolCall {
   attemptId: string;
   drift: DriftCheckResult | undefined;
   permission: PermissionResult | undefined;
+  /**
+   * Winning project allowlist rule, if any.
+   * Optional so external callers constructing a PreparedToolCall stay source-compatible.
+   */
+  allowlist?: ToolAllowlistMatch;
   canRunConcurrently: boolean;
 }
 
@@ -55,7 +61,12 @@ export type PermissionDecisionSource =
   | 'config_deny'
   | 'user'
   | 'missing_confirmation'
-  | 'drift_guard';
+  | 'drift_guard'
+  | 'plan_mode'
+  | 'mode_auto'
+  | 'mode_accept_edits'
+  | 'allowlist_allow'
+  | 'allowlist_deny';
 
 export interface ToolPermissionDecision {
   behavior?: PermissionResult['behavior'];
@@ -85,6 +96,8 @@ export interface ToolSchedulerOptions {
   permissionMode?: string;
   /** Fallback for permission checks that would need an interactive prompt */
   toolConfirmation?: string;
+  /** Project-scoped allowlist rule engine (see services/tool-allowlist). */
+  toolAllowlist?: ToolAllowlistEvaluator;
   /** Optional UI confirmation hook for tools whose permission check returns ask */
   confirmToolUse?: (request: {
     name: string;
@@ -126,6 +139,130 @@ function parseToolArgs(tc: ToolCallRecord): Record<string, unknown> {
 }
 
 /**
+ * How a `behavior: 'ask'` permission should be resolved for the active permission mode.
+ * - `block`   : plan mode is read-only, the tool must not run at all.
+ * - `allow`   : the mode itself grants approval (auto / acceptEdits for file edits).
+ * - `confirm` : fall through to toolConfirmation policy / interactive confirmation.
+ */
+export type AskResolution = 'block' | 'allow' | 'confirm';
+
+/**
+ * Resolve an `ask` permission against the permission mode.
+ *
+ * Historically this logic was inlined as `permissionMode === 'default'`, which meant
+ * every non-default mode (plan / acceptEdits / auto) silently skipped confirmation and
+ * executed the tool. That defeated plan mode's read-only guarantee and widened
+ * acceptEdits from "auto-accept file edits" to "auto-accept everything".
+ */
+export function resolveAskPermission(
+  permissionMode: string | undefined,
+  tool: OpenHorseTool | undefined,
+  args: Record<string, unknown>
+): AskResolution {
+  switch (permissionMode) {
+    case 'plan':
+      return 'block';
+    case 'auto':
+      return 'allow';
+    case 'acceptEdits':
+      return tool?.isFileEdit?.(args) === true ? 'allow' : 'confirm';
+    default:
+      return 'confirm';
+  }
+}
+
+/**
+ * Outcome of the full permission gate, before the `toolConfirmation` fallback
+ * and interactive confirmation are considered.
+ *
+ * - `deny`    : hard refusal, `behavior: 'deny'` (tool policy or allowlist deny rule).
+ * - `block`   : the tool asked for confirmation but the mode forbids running it (plan mode).
+ * - `allow`   : approved without a prompt. `source` is set when the approval was
+ *               an explicit escalation decision worth auditing.
+ * - `confirm` : fall through to toolConfirmation / interactive confirmation.
+ */
+export interface EffectivePermission {
+  outcome: 'deny' | 'block' | 'allow' | 'confirm';
+  source?: PermissionDecisionSource;
+  reason?: string;
+}
+
+/**
+ * Resolve the tool policy, project allowlist and permission mode into one decision.
+ *
+ * Precedence (most restrictive first, see services/tool-allowlist for the contract):
+ *   1. tool `checkPermissions() === 'deny'`  — never overridable by config
+ *   2. allowlist `deny:` rule                — project can always tighten
+ *   3. neither the tool nor a rule asks      — plain allow
+ *   4. plan mode                             — read-only, block anything that asks
+ *   5. allowlist `ask:` rule                 — explicit escalation beats auto / acceptEdits
+ *   6. allowlist `allow:` rule               — only for non-destructive tools
+ *   7. permission mode (auto / acceptEdits)
+ *   8. otherwise confirm
+ */
+export function resolveEffectivePermission(input: {
+  toolName: string;
+  tool?: OpenHorseTool;
+  args: Record<string, unknown>;
+  permission?: PermissionResult;
+  permissionMode?: string;
+  allowlist?: ToolAllowlistMatch;
+}): EffectivePermission {
+  const { toolName, tool, args, permission, permissionMode, allowlist } = input;
+
+  if (permission?.behavior === 'deny') {
+    return {
+      outcome: 'deny',
+      source: 'tool_policy',
+      reason: permission.reason || 'Permission denied',
+    };
+  }
+
+  if (allowlist?.effect === 'deny') {
+    return {
+      outcome: 'deny',
+      source: 'allowlist_deny',
+      reason: `Tool ${toolName} is denied by project allowedTools rule "${allowlist.rule}"`,
+    };
+  }
+
+  const asks = permission?.behavior === 'ask' || allowlist?.effect === 'ask';
+  if (!asks) return { outcome: 'allow' };
+
+  const reason =
+    permission?.behavior === 'ask'
+      ? permission.reason
+      : `Confirmation required by project allowedTools rule "${allowlist?.rule}"`;
+
+  if (permissionMode === 'plan') {
+    return { outcome: 'block', source: 'plan_mode', reason };
+  }
+
+  if (allowlist?.effect === 'ask') {
+    return { outcome: 'confirm', reason };
+  }
+
+  if (allowlist?.effect === 'allow' && tool?.isDestructive?.(args) !== true) {
+    return {
+      outcome: 'allow',
+      source: 'allowlist_allow',
+      reason: `Auto-approved by project allowedTools rule "${allowlist.rule}"`,
+    };
+  }
+
+  const modeResolution = resolveAskPermission(permissionMode, tool, args);
+  if (modeResolution === 'allow') {
+    return {
+      outcome: 'allow',
+      source: permissionMode === 'auto' ? 'mode_auto' : 'mode_accept_edits',
+      reason,
+    };
+  }
+
+  return { outcome: 'confirm', reason };
+}
+
+/**
  * Prepare tool calls: parse args, check drift, check permissions, determine concurrency.
  * Re-serializes tc.function.arguments to ensure valid JSON.
  */
@@ -147,16 +284,22 @@ export function prepareToolCalls(options: ToolSchedulerOptions): PreparedToolCal
       tool?.checkPermissions && options.toolContext
         ? tool.checkPermissions(args, options.toolContext)
         : undefined;
+    const allowlist = options.toolAllowlist?.(tc.function.name, args);
+    const effective = resolveEffectivePermission({
+      toolName: tc.function.name,
+      tool,
+      args,
+      permission,
+      permissionMode: options.permissionMode,
+      allowlist,
+    });
     const confirmation = options.toolConfirmation ?? 'ask';
     const needsInteractiveConfirmation =
-      permission?.behavior === 'ask' &&
-      options.permissionMode === 'default' &&
-      confirmation === 'ask' &&
-      Boolean(options.confirmToolUse);
+      effective.outcome === 'confirm' && confirmation === 'ask' && Boolean(options.confirmToolUse);
     const canRunConcurrently =
       tool?.isConcurrencySafe?.(args) === true &&
       drift?.status !== 'block' &&
-      permission?.behavior !== 'deny' &&
+      effective.outcome !== 'deny' &&
       !needsInteractiveConfirmation;
 
     preparedCalls.push({
@@ -167,6 +310,7 @@ export function prepareToolCalls(options: ToolSchedulerOptions): PreparedToolCal
       attemptId,
       drift,
       permission,
+      allowlist,
       canRunConcurrently,
     });
   }
@@ -251,7 +395,7 @@ function executePreparedTool(
   harnessBlockedResult?: ToolSchedulerOptions['harnessBlockedResult']
 ): Promise<ExecutedToolCall> {
   const start = Date.now();
-  const { tc, args, drift, permission } = prepared;
+  const { tc, args, tool, drift, permission, allowlist } = prepared;
   let permissionDecision: ToolPermissionDecision | undefined;
 
   const exec = async (): Promise<string> => {
@@ -277,66 +421,101 @@ function executePreparedTool(
         ? harnessBlockedResult(drift)
         : JSON.stringify({ success: false, error: 'Blocked by Context Harness' });
     }
-    if (permission?.behavior === 'deny') {
+    // Resolve tool policy + project allowlist + permission mode in one place.
+    // Previously the `ask` branch was gated on `permissionMode === 'default'`, so
+    // plan / acceptEdits / auto fell through to exec() and bypassed confirmation.
+    const effective = resolveEffectivePermission({
+      toolName: tc.function.name,
+      tool,
+      args,
+      permission,
+      permissionMode,
+      allowlist,
+    });
+
+    if (effective.outcome === 'deny') {
       permissionDecision = {
         behavior: 'deny',
         approved: false,
-        source: 'tool_policy',
-        reason: permission.reason || 'Permission denied',
+        source: effective.source ?? 'tool_policy',
+        reason: effective.reason || 'Permission denied',
       };
       return JSON.stringify({
         success: false,
-        error: permission.reason || 'Permission denied',
+        error: effective.reason || 'Permission denied',
       });
     }
-    if (permission?.behavior === 'ask' && permissionMode === 'default') {
-      const confirmation = toolConfirmation ?? 'ask';
-      if (confirmation === 'allow') {
-        permissionDecision = {
-          behavior: 'ask',
-          approved: true,
-          source: 'config_allow',
-          reason: permission.reason,
-        };
-        return exec();
-      }
-      if (confirmToolUse && confirmation === 'ask') {
-        const permissionStart = Date.now();
-        const approved = await confirmToolUse({
-          name: tc.function.name,
-          args,
-          reason: permission.reason,
-          abortSignal,
-        });
-        permissionDecision = {
-          behavior: 'ask',
-          approved,
-          source: 'user',
-          reason: permission.reason,
-          duration: Date.now() - permissionStart,
-        };
-        return approved
-          ? await exec()
-          : JSON.stringify({
-              success: false,
-              error: `Tool ${tc.function.name} requires user confirmation and was denied by user.`,
-            });
-      }
+
+    if (effective.outcome === 'block') {
       permissionDecision = {
         behavior: 'ask',
         approved: false,
-        source: confirmation === 'deny' ? 'config_deny' : 'missing_confirmation',
-        reason: permission.reason,
+        source: effective.source ?? 'plan_mode',
+        reason: effective.reason,
       };
       return JSON.stringify({
         success: false,
-        error:
-          confirmation === 'deny'
-            ? `Tool ${tc.function.name} requires user confirmation and was denied by toolConfirmation=deny.`
-            : `Tool ${tc.function.name} requires user confirmation.`,
+        error: `Tool ${tc.function.name} requires confirmation and is blocked in plan mode (read-only).`,
       });
     }
-    return exec();
+
+    if (effective.outcome === 'allow') {
+      if (effective.source) {
+        permissionDecision = {
+          behavior: 'ask',
+          approved: true,
+          source: effective.source,
+          reason: effective.reason,
+        };
+      }
+      return exec();
+    }
+
+    const confirmation = toolConfirmation ?? 'ask';
+    if (confirmation === 'allow') {
+      permissionDecision = {
+        behavior: 'ask',
+        approved: true,
+        source: 'config_allow',
+        reason: effective.reason,
+      };
+      return exec();
+    }
+    if (confirmToolUse && confirmation === 'ask') {
+      const permissionStart = Date.now();
+      const approved = await confirmToolUse({
+        name: tc.function.name,
+        args,
+        reason: effective.reason,
+        abortSignal,
+      });
+      permissionDecision = {
+        behavior: 'ask',
+        approved,
+        source: 'user',
+        reason: effective.reason,
+        duration: Date.now() - permissionStart,
+      };
+      return approved
+        ? await exec()
+        : JSON.stringify({
+            success: false,
+            error: `Tool ${tc.function.name} requires user confirmation and was denied by user.`,
+          });
+    }
+    permissionDecision = {
+      behavior: 'ask',
+      approved: false,
+      source: confirmation === 'deny' ? 'config_deny' : 'missing_confirmation',
+      reason: effective.reason,
+    };
+    return JSON.stringify({
+      success: false,
+      error:
+        confirmation === 'deny'
+          ? `Tool ${tc.function.name} requires user confirmation and was denied by toolConfirmation=deny.`
+          : `Tool ${tc.function.name} requires user confirmation.`,
+    });
   };
 
   return run().then(result => {

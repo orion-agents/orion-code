@@ -1,6 +1,6 @@
 {
   "name": "@orion-agents/orion-code",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Orion Code - goal-driven coding agent for the terminal.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -25,6 +25,7 @@
     "test:ink-compat": "ORION_RUN_DEPRECATED_INK_PTY=1 jest tests/ink-ui-pty.test.ts --runInBand",
     "lint": "eslint src/",
     "format": "prettier --write src/",
+    "release:check": "node scripts/release-check.js",
     "prepack": "npm run build",
     "prepublishOnly": "npm run lint && npm run build && npm test -- --runInBand"
   },

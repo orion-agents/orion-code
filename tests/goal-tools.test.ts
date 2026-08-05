@@ -154,6 +154,7 @@ describe('Goal model tools', () => {
       const result = await execute(updateGoalTool, { status: 'complete' });
       expect(result.success).toBe(false);
       expect(result.error).toContain('evidence mapping');
+      expect(result.output).toContain('evidence mapping');
       expect(lastContext.pendingTerminalRequest).toBeUndefined();
     });
 

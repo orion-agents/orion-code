@@ -30,6 +30,10 @@ import {
 } from '../services/session-storage';
 import { isConfigured } from '../services/config';
 import {
+  resolveProjectToolAllowlist,
+  type ToolAllowlistEvaluator,
+} from '../services/tool-allowlist';
+import {
   query,
   buildSystemPrompt,
   QueryLoopError,
@@ -1320,6 +1324,20 @@ export class AgentChatController {
     this.goalCoordinator = coord;
   }
 
+  /**
+   * Project-scoped allowlist rules, compiled once per cwd (v0.1.3-2 §1.3).
+   * Rules can only tighten the permission gate; see services/tool-allowlist.
+   */
+  private toolAllowlistCache?: { cwd: string; evaluator?: ToolAllowlistEvaluator };
+
+  private resolveToolAllowlist(): ToolAllowlistEvaluator | undefined {
+    const cwd = this.runtime.cwd;
+    if (this.toolAllowlistCache?.cwd !== cwd) {
+      this.toolAllowlistCache = { cwd, evaluator: resolveProjectToolAllowlist(cwd).evaluator };
+    }
+    return this.toolAllowlistCache.evaluator;
+  }
+
   constructor(
     private readonly runtime: OpenHorseUiRuntime,
     private readonly events: UiEventSink,
@@ -2168,6 +2186,7 @@ export class AgentChatController {
         costTracker: snapshot.costTracker,
         permissionMode: snapshot.permissionMode,
         toolConfirmation: this.runtime.config.toolConfirmation,
+        toolAllowlist: this.resolveToolAllowlist(),
         confirmToolUse: this.controllerOptions.confirmToolUse,
         toolContext: {
           cwd: this.runtime.cwd,
