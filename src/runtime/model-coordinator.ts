@@ -11,7 +11,6 @@
 import { EventEmitter } from 'events';
 import type { ModelRegistry, ResolvedModelProfile } from '../services/model-registry';
 import type { ModelClientPool } from '../services/model-client-pool';
-import { buildRequestContext } from '../services/model-client-pool';
 
 // ============================================================================
 // Types

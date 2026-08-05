@@ -1272,7 +1272,12 @@ export function normalizeTerminalAnswer(input: string): string {
 export async function launchTerminalUI(runtime: OpenHorseUiRuntime): Promise<void> {
   printBanner(runtime);
 
+  // Definite assignment (`let x!: T`) is required here: the value is consumed by closures
+  // created below but only assigned further down. `const` without an initializer is a
+  // compile error (TS1155), so prefer-const is a false positive.
+  // eslint-disable-next-line prefer-const
   let agentController!: AgentRuntimeController;
+  // eslint-disable-next-line prefer-const -- same as above; assigned at the `writer = { ... }` block below.
   let writer!: TerminalWriter;
   const editor = new RawTerminalEditor({
     cwd: runtime.cwd,

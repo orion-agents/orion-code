@@ -97,7 +97,6 @@ export function updateProjectMetadata(projectPath: string, now: Date = new Date(
     return absolute;
   })();
 
-  const { getProjectsDir, encodeProjectPath } = require('../product/paths');
   const projectKey = _encodeProjectPath(resolvedPath);
   const projectDir = join(_getProjectsDir(), projectKey);
   if (!existsSync(projectDir)) {

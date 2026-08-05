@@ -1231,6 +1231,10 @@ async function execCommand_(
     let interrupted: 'aborted' | 'timeout' | null = null;
 
     // Issue #32 #3.2: AbortSignal 处理
+    // Declared uninitialized on purpose: `finish()` below closes over it before the
+    // `timeoutId = setTimeout(...)` assignment. `const` without an initializer is a compile
+    // error (TS1155), and inlining the assignment would put it in the closure's TDZ.
+    // eslint-disable-next-line prefer-const
     let timeoutId: NodeJS.Timeout | undefined;
     let killTimerId: NodeJS.Timeout | undefined;
     let settled = false;
