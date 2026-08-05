@@ -53,6 +53,7 @@ import { lspTools } from './lsp';
 import { GOAL_TOOLS } from '../runtime/goals/tools';
 import { assessCommandSecurity, isReadOnlyCommand } from './bash_security';
 import { debugError } from '../utils/debug-log';
+import { errorMessage } from '../utils/errors';
 import {
   describeSandboxPlan,
   planSandboxedCommand,
@@ -560,7 +561,7 @@ export const TOOLS: OpenHorseTool[] = [
         },
       },
       required: ['steps'],
-    } as any,
+    },
     execute: async (args, context) => executeBatchRead(args, context),
     isReadOnly: () => true,
     isConcurrencySafe: () => true,
@@ -643,8 +644,8 @@ export const TOOLS: OpenHorseTool[] = [
           saveMemory(entry, projectPath);
         }
         return { success: true, output: `Saved memory: ${name} (${type})` };
-      } catch (err: any) {
-        return { success: false, output: '', error: err.message };
+      } catch (err) {
+        return { success: false, output: '', error: errorMessage(err) };
       }
     },
     isReadOnly: () => false,
@@ -734,8 +735,8 @@ export const TOOLS: OpenHorseTool[] = [
         }
 
         return { success: true, output: lines.join('\n') };
-      } catch (err: any) {
-        return { success: false, output: '', error: err.message };
+      } catch (err) {
+        return { success: false, output: '', error: errorMessage(err) };
       }
     },
     isReadOnly: () => true,
@@ -788,8 +789,8 @@ export const TOOLS: OpenHorseTool[] = [
         }
 
         return { success: true, output: `Deleted memory: ${name}` };
-      } catch (err: any) {
-        return { success: false, output: '', error: err.message };
+      } catch (err) {
+        return { success: false, output: '', error: errorMessage(err) };
       }
     },
     isReadOnly: () => false,
@@ -901,8 +902,8 @@ export const TOOLS: OpenHorseTool[] = [
         }
 
         return { success: true, output: lines.join('\n') };
-      } catch (err: any) {
-        return { success: false, output: '', error: err.message };
+      } catch (err) {
+        return { success: false, output: '', error: errorMessage(err) };
       }
     },
     isReadOnly: () => true,
@@ -1114,8 +1115,8 @@ async function readFileSync_(
     }
 
     return { success: true, output: selected };
-  } catch (err: any) {
-    return { success: false, output: '', error: String(err.message) };
+  } catch (err) {
+    return { success: false, output: '', error: errorMessage(err) };
   }
 }
 
@@ -1128,8 +1129,8 @@ async function writeFileSync_(path: string, content: string, cwd?: string): Prom
       success: true,
       output: `Wrote ${content.split('\n').length} lines to ${normalizedPath}`,
     };
-  } catch (err: any) {
-    return { success: false, output: '', error: String(err.message) };
+  } catch (err) {
+    return { success: false, output: '', error: errorMessage(err) };
   }
 }
 
@@ -1697,8 +1698,8 @@ async function editFile_(
       success: true,
       output: `Replaced ${count} occurrence(s) of old_string with new_string in ${normalizedPath}`,
     };
-  } catch (err: any) {
-    return { success: false, output: '', error: String(err.message) };
+  } catch (err) {
+    return { success: false, output: '', error: errorMessage(err) };
   }
 }
 
@@ -1811,8 +1812,8 @@ async function glob_(pattern: string, basePath?: string, cwd?: string): Promise<
         : sorted.join('\n');
 
     return { success: true, output };
-  } catch (err: any) {
-    return { success: false, output: '', error: String(err.message) };
+  } catch (err) {
+    return { success: false, output: '', error: errorMessage(err) };
   }
 }
 
@@ -1958,8 +1959,8 @@ async function grep_(
     }
 
     return { success: true, output: results.slice(0, maxResults).join('\n') + symlinkWarning };
-  } catch (err: any) {
-    return { success: false, output: '', error: String(err.message) };
+  } catch (err) {
+    return { success: false, output: '', error: errorMessage(err) };
   }
 }
 
@@ -2143,13 +2144,13 @@ async function executeBatchRead(
         error: typeof envelope.error === 'string' ? envelope.error : undefined,
         output: truncateForContext(output, BATCH_READ_STEP_OUTPUT_MAX_BYTES),
       });
-    } catch (err: any) {
+    } catch (err) {
       stepResults.push({
         index: i + 1,
         tool: step.tool,
         args: step.args,
         success: false,
-        error: err?.message || String(err),
+        error: errorMessage(err),
         output: '',
       });
     }

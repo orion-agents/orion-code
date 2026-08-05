@@ -16,6 +16,9 @@ export interface ToolInputJSONSchemaProperty {
   properties?: Record<string, ToolInputJSONSchemaProperty>;
   required?: string[];
   items?: ToolInputJSONSchemaProperty;
+  /** Array bound, sent to the provider so it can cap generated arguments. */
+  maxItems?: number;
+  minItems?: number;
 }
 
 export interface ToolInputJSONSchema {
