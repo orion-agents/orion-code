@@ -1,6 +1,6 @@
 import type { OrionCodeCLIConfig } from './config';
 import axios from 'axios';
-import { ENV, webSearchEnv } from '../product/environment';
+import { webSearchEnv } from '../product/environment';
 import { PACKAGE_VERSION } from '../product/version';
 
 export interface WebSearchAdapterInput {

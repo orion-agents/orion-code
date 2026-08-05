@@ -1231,7 +1231,7 @@ async function execCommand_(
     let interrupted: 'aborted' | 'timeout' | null = null;
 
     // Issue #32 #3.2: AbortSignal 处理
-    let timeoutId: NodeJS.Timeout | undefined;
+    const timeoutId: NodeJS.Timeout | undefined;
     let killTimerId: NodeJS.Timeout | undefined;
     let settled = false;
 

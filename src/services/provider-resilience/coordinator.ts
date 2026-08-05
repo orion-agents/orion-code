@@ -35,7 +35,7 @@ export class ProviderResilienceCoordinator {
       usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
       providerRequestId?: string;
     }>,
-    options?: {
+    _options?: {
       onStreamChunk?: (text: string) => void;
       buildRecoveryRequest?: (partialText: string) => Promise<unknown>;
     }
@@ -55,7 +55,7 @@ export class ProviderResilienceCoordinator {
       unknownBilledAttemptCount: 0,
     };
 
-    let streamState: StreamAttemptState | null = null;
+    const streamState: StreamAttemptState | null = null;
     const startedAt = Date.now();
     let lastError: unknown;
 
@@ -156,7 +156,7 @@ export class ProviderResilienceCoordinator {
   private startAttempt(
     ctx: ProviderRequestContext,
     attempt: number,
-    diag: ProviderRequestDiagnosticsV2
+    _diag: ProviderRequestDiagnosticsV2
   ): ProviderAttemptRecord {
     return {
       attemptId: randomUUID().slice(0, 8),
@@ -185,7 +185,7 @@ export class ProviderResilienceCoordinator {
   }
 
   private sleep(ms: number, signal?: AbortSignal): Promise<void> {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve, _reject) => {
       if (signal?.aborted) {
         resolve();
         return;

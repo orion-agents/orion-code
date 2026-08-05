@@ -24,7 +24,6 @@
 
 import type { ProviderRequestGate } from '../../services/provider-resilience/request-gate';
 
-const NULL_PROVIDER_GATE: ProviderRequestGate | null = null;
 
 export interface ProviderGateOptions {
   /** Maximum children running concurrently. */

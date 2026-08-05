@@ -1272,8 +1272,8 @@ export function normalizeTerminalAnswer(input: string): string {
 export async function launchTerminalUI(runtime: OpenHorseUiRuntime): Promise<void> {
   printBanner(runtime);
 
-  let agentController!: AgentRuntimeController;
-  let writer!: TerminalWriter;
+  const agentController!: AgentRuntimeController;
+  const writer!: TerminalWriter;
   const editor = new RawTerminalEditor({
     cwd: runtime.cwd,
     onSubmit: input => handleInput(input),
