@@ -240,8 +240,11 @@ export class SessionManager {
     this.heartbeatTimer = setInterval(() => {
       this.updateActivity();
     }, this.config.heartbeatInterval);
-    if (this.heartbeatTimer && typeof (this.heartbeatTimer as any).unref === 'function') {
-      (this.heartbeatTimer as any).unref();
+    // `unref()` exists on Node's Timeout but not on the browser timer id that
+    // `setInterval` yields under a DOM lib, so probe for it instead of assuming.
+    const timer: { unref?: () => void } | null = this.heartbeatTimer;
+    if (timer && typeof timer.unref === 'function') {
+      timer.unref();
     }
   }
 

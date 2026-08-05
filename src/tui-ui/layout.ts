@@ -653,10 +653,10 @@ function lineColOfCursor(value: string, cursor: number): { line: number; col: nu
 
 /** Iterate by grapheme cluster (not code point) to preserve ZWJ emoji etc. */
 function* graphemeIterate(text: string): Generator<string> {
-  const Segmenter = (Intl as any).Segmenter;
+  const Segmenter = Intl.Segmenter;
   if (Segmenter) {
     const segmenter = new Segmenter(undefined, { granularity: 'grapheme' });
-    for (const part of segmenter.segment(text) as Iterable<{ segment: string }>) {
+    for (const part of segmenter.segment(text)) {
       yield part.segment;
     }
   } else {

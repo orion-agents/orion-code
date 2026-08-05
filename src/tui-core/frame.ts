@@ -134,8 +134,8 @@ function segmentText(text: string): string[] {
   return Array.from(text);
 }
 
-function getSegmenter(): { segment: (text: string) => Iterable<{ segment: string }> } | null {
-  const Segmenter = (Intl as any).Segmenter;
+function getSegmenter(): Intl.Segmenter | null {
+  const Segmenter = Intl.Segmenter;
   return Segmenter ? new Segmenter(undefined, { granularity: 'grapheme' }) : null;
 }
 
