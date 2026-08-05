@@ -12,28 +12,54 @@ import {
   type OpenHorseTool,
   type OrionCodeTool,
   type ToolInputJSONSchema,
+  type ToolInputJSONSchemaProperty,
   type ToolResult,
 } from '../framework/tool';
 import { getConfigHome } from '../services/config-dir';
 import { MCP_CLIENT_NAME } from '../product/identity';
 import { PACKAGE_VERSION } from '../product/version';
+import { errorMessage } from '../utils/errors';
 
 // ============================================================================
 // MCP Types
 // ============================================================================
+
+/**
+ * Everything crossing this boundary comes from a third-party server process we
+ * do not control, so it is typed `unknown` and narrowed with the guards below
+ * rather than asserted. A malformed response should degrade, not crash.
+ */
+type UnknownRecord = Record<string, unknown>;
+
+function isRecord(value: unknown): value is UnknownRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 interface MCPToolDefinition {
   name: string;
   description?: string;
   inputSchema?: {
     type: 'object';
-    properties?: Record<string, any>;
+    properties?: UnknownRecord;
     required?: string[];
   };
   annotations?: {
     readOnlyHint?: boolean;
     destructiveHint?: boolean;
   };
+}
+
+/**
+ * Keep only the entries a `tools/list` response can actually be used as.
+ * An entry without a string `name` cannot be registered — `buildMcpToolName`
+ * would produce `mcp__server__tool` for every one of them and they would
+ * collide — so drop it instead of letting it through.
+ */
+function parseToolDefinitions(payload: unknown): MCPToolDefinition[] {
+  if (!isRecord(payload) || !Array.isArray(payload.tools)) return [];
+  return payload.tools.filter(
+    (tool): tool is MCPToolDefinition => isRecord(tool) && typeof tool.name === 'string'
+  );
 }
 
 interface MCPServerConfig {
@@ -112,50 +138,59 @@ function expandServerConfig(config: MCPServerConfig): MCPServerConfig {
 }
 
 function normalizeMcpInputSchema(schema: MCPToolDefinition['inputSchema']): ToolInputJSONSchema {
-  const normalized: any =
-    schema?.type === 'object'
-      ? { ...schema, properties: { ...(schema.properties ?? {}) } }
-      : { type: 'object', properties: {} };
+  const rawProperties =
+    schema?.type === 'object' && isRecord(schema.properties) ? schema.properties : {};
 
-  for (const [name, raw] of Object.entries(normalized.properties)) {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-      normalized.properties[name] = { type: 'string', description: name };
+  const properties: Record<string, ToolInputJSONSchemaProperty> = {};
+
+  for (const [name, raw] of Object.entries(rawProperties)) {
+    if (!isRecord(raw)) {
+      properties[name] = { type: 'string', description: name };
       continue;
     }
-    const prop: any = { ...(raw as Record<string, unknown>) };
+
+    const prop: UnknownRecord = { ...raw };
+    // A property is usable as-is only if it declares a type or a composite
+    // (anyOf/oneOf/allOf); otherwise fall back to string so the provider does
+    // not reject the whole tool schema over one under-specified field.
     if (typeof prop.type !== 'string' && !prop.anyOf && !prop.oneOf && !prop.allOf) {
-      prop.type = Array.isArray(prop.enum) ? 'string' : 'string';
+      prop.type = 'string';
     }
     if (typeof prop.description !== 'string') {
       prop.description = name;
     }
-    normalized.properties[name] = prop;
+    properties[name] = prop as unknown as ToolInputJSONSchemaProperty;
   }
 
-  normalized.required = Array.isArray(normalized.required)
-    ? normalized.required.filter((value: unknown): value is string => typeof value === 'string')
+  const required = Array.isArray(schema?.required)
+    ? schema.required.filter((value: unknown): value is string => typeof value === 'string')
     : [];
-  normalized.type = 'object';
 
-  return normalized as ToolInputJSONSchema;
+  return { type: 'object', properties, required };
 }
 
-function formatMcpResult(result: any): ToolResult {
-  const textContent = Array.isArray(result?.content)
-    ? result.content
-        .filter((c: any) => c?.type === 'text' && typeof c.text === 'string')
-        .map((c: any) => c.text)
+function isTextContent(value: unknown): value is { type: 'text'; text: string } {
+  return isRecord(value) && value.type === 'text' && typeof value.text === 'string';
+}
+
+function formatMcpResult(result: unknown): ToolResult {
+  const record = isRecord(result) ? result : undefined;
+  const textContent = Array.isArray(record?.content)
+    ? record.content
+        .filter(isTextContent)
+        .map(c => c.text)
         .join('\n')
     : '';
   const output = textContent || JSON.stringify(result ?? {});
 
-  if (result?.isError) {
+  if (record?.isError) {
     return { success: false, output, error: output || 'MCP tool returned an error' };
   }
 
   const metadata: Record<string, unknown> = {};
-  if (result?.structuredContent !== undefined)
-    metadata.structuredContent = result.structuredContent;
+  if (record?.structuredContent !== undefined) {
+    metadata.structuredContent = record.structuredContent;
+  }
   return {
     success: true,
     output,
@@ -251,7 +286,7 @@ class SimpleMCPClient {
     this.sendNotification('notifications/initialized', {});
 
     const toolsResult = await this.sendRequest('tools/list', {});
-    this.state.tools = toolsResult.tools || [];
+    this.state.tools = parseToolDefinitions(toolsResult);
 
     this.state.connected = true;
     this.reconnectAttempts = 0;
@@ -343,7 +378,7 @@ class SimpleMCPClient {
     }
   }
 
-  private async sendRequest(method: string, params: any): Promise<any> {
+  private async sendRequest(method: string, params: unknown): Promise<unknown> {
     if (!this.state.process) {
       throw new Error('MCP client not connected');
     }
@@ -370,7 +405,7 @@ class SimpleMCPClient {
     });
   }
 
-  private sendNotification(method: string, params: any): void {
+  private sendNotification(method: string, params: unknown): void {
     if (!this.state.process) return;
 
     const notification =
@@ -383,7 +418,7 @@ class SimpleMCPClient {
     this.state.process.stdin?.write(notification);
   }
 
-  async callTool(name: string, args: Record<string, any>): Promise<ToolResult> {
+  async callTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {
     const result = await this.sendRequest('tools/call', {
       name,
       arguments: args,
@@ -445,8 +480,8 @@ class MCPServerManager {
         return null;
       }
       return { mcpServers: servers } as MCPServersConfig;
-    } catch (err: any) {
-      console.error('[MCP] Failed to load config:', err.message);
+    } catch (err) {
+      console.error('[MCP] Failed to load config:', errorMessage(err));
       return null;
     }
   }
@@ -482,8 +517,8 @@ class MCPServerManager {
         this.clients.set(name, client);
         this.dead.delete(name);
         console.log(`[MCP] connected to ${name}, tools: ${client.getTools().length}`);
-      } catch (err: any) {
-        console.error(`[MCP] failed to connect to ${name}:`, err.message);
+      } catch (err) {
+        console.error(`[MCP] failed to connect to ${name}:`, errorMessage(err));
         this.dead.add(name);
       }
     }
@@ -662,7 +697,7 @@ export const mcpCallTool: OpenHorseTool = buildTool({
   execute: async args => {
     const server = args.server as string;
     const tool = args.tool as string;
-    const toolArgs = (args.args || {}) as Record<string, any>;
+    const toolArgs = (args.args || {}) as Record<string, unknown>;
 
     if (!server) {
       return { success: false, output: '', error: 'mcp_call requires a server parameter' };
@@ -693,11 +728,11 @@ export const mcpCallTool: OpenHorseTool = buildTool({
     try {
       const result = await client.callTool(tool, toolArgs);
       return result;
-    } catch (err: any) {
+    } catch (err) {
       return {
         success: false,
         output: '',
-        error: `MCP tool call failed: ${err.message}`,
+        error: `MCP tool call failed: ${errorMessage(err)}`,
       };
     }
   },
