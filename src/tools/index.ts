@@ -52,6 +52,7 @@ import { GIT_TOOLS } from './git';
 import { lspTools } from './lsp';
 import { GOAL_TOOLS } from '../runtime/goals/tools';
 import { assessCommandSecurity, isReadOnlyCommand } from './bash_security';
+import { debugError } from '../utils/debug-log';
 import {
   describeSandboxPlan,
   planSandboxedCommand,
@@ -704,7 +705,11 @@ export const TOOLS: OpenHorseTool[] = [
               memories = searchMemories(query, projectPath);
               if (type) memories = memories.filter(m => m.type === type);
             }
-          } catch {
+          } catch (error) {
+            // Semantic search is degraded to keyword search silently, so a
+            // permanently broken embedding provider looks like "the index is
+            // just not very good" unless the failure is recorded.
+            debugError('tools.memory.semanticSearch', error, query);
             memories = searchMemories(query, projectPath);
             if (type) memories = memories.filter(m => m.type === type);
           }
@@ -775,8 +780,10 @@ export const TOOLS: OpenHorseTool[] = [
           try {
             const { getVectorStore } = require('../memory/vector-store');
             getVectorStore().delete(name, projectPath);
-          } catch {
-            // Vector store cleanup is best-effort
+          } catch (error) {
+            // Vector store cleanup is best-effort, but a failure leaves an
+            // orphaned embedding that keeps surfacing a deleted memory.
+            debugError('tools.memory.vectorDelete', error, name);
           }
         }
 
@@ -955,6 +962,8 @@ function normalizeToolPath(input: string): string {
     try {
       return decodeURIComponent(new URL(value).pathname);
     } catch {
+      // Malformed URL or bad percent-encoding: strip the scheme so the path
+      // still reaches the caller's own validation instead of vanishing.
       return value.replace(/^file:\/\//u, '');
     }
   }
@@ -993,7 +1002,10 @@ function safeReadFileSync(resolved: string): string | null {
     const st = safeStatSync(resolved);
     if (!st || st.isDirectory()) return null;
     return readFileSync(resolved, 'utf-8');
-  } catch {
+  } catch (error) {
+    // Permission denied or a binary that is not valid UTF-8; callers treat
+    // null as "no content", which otherwise hides a real read failure.
+    debugError('tools.safeReadFile', error, resolved);
     return null;
   }
 }

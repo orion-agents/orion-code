@@ -28,6 +28,7 @@ import type {
 } from '../runtime/goals/types';
 import { auditCompletion } from '../runtime/goals/completion-audit';
 import { isToolExternalAssertion } from '../framework/external-assertion';
+import { debugError } from '../utils/debug-log';
 
 // ============================================================================
 // Sidecar path
@@ -104,7 +105,11 @@ function readLockOwner(lockPath: string): GoalSidecarLockOwner | null {
       return null;
     }
     return parsed as GoalSidecarLockOwner;
-  } catch {
+  } catch (error) {
+    // An unreadable owner file makes the lock look ownerless, which feeds
+    // straight into stale-lock recovery — worth knowing when a lock is
+    // being reclaimed unexpectedly.
+    debugError('goal-storage.readLockOwner', error, lockPath);
     return null;
   }
 }
@@ -129,6 +134,8 @@ function recoverStaleLock(lockPath: string): boolean {
   try {
     stat = statSync(lockPath);
   } catch {
+    // The lock directory is already gone: nothing to recover, and the
+    // caller is free to acquire. A throw here *is* the success answer.
     return true;
   }
 
@@ -152,9 +159,10 @@ function recoverStaleLock(lockPath: string): boolean {
 
   try {
     rmSync(stalePath, { recursive: true, force: true });
-  } catch {
+  } catch (error) {
     // It is already outside the lock namespace. A later maintenance pass can
     // remove it without blocking safe writes.
+    debugError('goal-storage.removeStaleLock', error, stalePath);
   }
   return true;
 }
@@ -1308,11 +1316,15 @@ export function deleteGoal(
             { encoding: 'utf8', mode: 0o600 }
           );
           renameSync(compactPath, fencePath);
-        } catch {
+        } catch (error) {
+          // Compaction is post-commit hygiene; the renamed full sidecar is
+          // still a valid fence, so deletion stays successful either way.
+          debugError('goal-storage.compactDeletionFence', error, fencePath);
           try {
             unlinkSync(compactPath);
-          } catch {
+          } catch (cleanupError) {
             /* the atomically renamed full sidecar remains the fence */
+            debugError('goal-storage.compactCleanup', cleanupError, compactPath);
           }
         }
       }
@@ -1326,13 +1338,15 @@ export function deleteGoal(
           if (file.startsWith(`${sessionId}.goal.json.tmp-`)) {
             try {
               unlinkSync(join(dir, file));
-            } catch {
-              /* ok */
+            } catch (error) {
+              /* leftover temp file; the next delete retries the sweep */
+              debugError('goal-storage.sweepTempFile', error, file);
             }
           }
         }
-      } catch {
-        /* ok */
+      } catch (error) {
+        /* the sessions dir is unreadable; temp files are swept next time */
+        debugError('goal-storage.sweepTempDir', error, projectPath);
       }
       return { ok: true, value: undefined };
     } catch (err) {
