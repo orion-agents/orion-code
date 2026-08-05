@@ -33,7 +33,6 @@ import {
   isLegacyConfig,
   getLegacyMigrationHint,
   type ModelRegistry,
-  type ResolvedModelProfile,
 } from './model-registry';
 import { ModelClientPool } from './model-client-pool';
 import { delimiter } from 'path';

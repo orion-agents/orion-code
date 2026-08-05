@@ -68,7 +68,7 @@ export function reconcileStreamOverlap(
  * Build a stream recovery prompt fragment. This is injected into the
  * model request but NOT persisted as a user message.
  */
-export function buildRecoveryInstruction(partialText: string): string {
+export function buildRecoveryInstruction(_partialText: string): string {
   return `[Internal Stream Recovery]
 The previous assistant response was interrupted by a transport failure.
 Continue from the exact partial assistant content supplied above.

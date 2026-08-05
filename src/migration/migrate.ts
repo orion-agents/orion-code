@@ -16,9 +16,8 @@ import {
   statSync,
   writeFileSync,
   renameSync,
-  realpathSync,
 } from 'fs';
-import { join, resolve, basename } from 'path';
+import { join, resolve} from 'path';
 import { homedir } from 'os';
 import { createHash } from 'crypto';
 import type {
@@ -146,16 +145,6 @@ function copyDirRecursive(srcDir: string, destDir: string): FileMapping[] {
   return mappings;
 }
 
-function copyWithNestedDir(
-  srcDir: string,
-  destDir: string,
-  nestedDir: string,
-): FileMapping[] {
-  const srcNested = join(srcDir, nestedDir);
-  if (!existsSync(srcNested)) return [];
-  const destNested = join(destDir, nestedDir, NESTED_DIRS[nestedDir] || '');
-  return copyDirRecursive(srcNested, destNested);
-}
 
 // ── Config key remapping ─────────────────────────────────────────────────────
 
@@ -428,12 +417,7 @@ export function migrateBrand(options: MigrationOptions = {}): MigrationResult {
   }
 }
 
-function migrateConfigFiles(
-  sourceRoot: string,
-  destRoot: string,
-  options: MigrationOptions,
-  manifest: BrandMigrationManifestV1,
-): FileMapping[] {
+: FileMapping[] {
   const mappings: FileMapping[] = [];
 
   for (const [srcName, destName] of Object.entries(RENAME_MAP)) {
