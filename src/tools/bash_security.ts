@@ -208,11 +208,164 @@ export const POTENTIALLY_DESTRUCTIVE_PATTERNS = [
 ];
 
 /**
+ * Result of a quote-aware scan over a whole command line.
+ */
+export interface ShellCommandScan {
+  /** The individual commands on the line, split on unquoted separators. */
+  segments: string[];
+  /**
+   * False when the line uses a construct this scanner cannot reason about --
+   * command substitution, process substitution or an unbalanced quote. Such a
+   * line can hide an arbitrary command and must never be auto-approved.
+   */
+  supported: boolean;
+  /** True when the line redirects output somewhere other than /dev/null. */
+  writesFile: boolean;
+}
+
+/** The one redirect target that does not count as writing to the filesystem. */
+const DISCARD_REDIRECT_TARGET = '/dev/null';
+
+/**
+ * Split a command line into the individual commands it will actually run.
+ *
+ * The classifier below hands out "run without confirmation" verdicts, so it has
+ * to see every command on the line rather than just the leading token. Quote
+ * state is tracked so `echo "a && b"` stays one segment, and substitutions are
+ * reported as unsupported instead of being silently skipped over.
+ */
+export function scanShellCommand(cmd: string): ShellCommandScan {
+  const segments: string[] = [];
+  let current = '';
+  let supported = true;
+  let writesFile = false;
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+
+  const pushSegment = (): void => {
+    const segment = current.trim();
+    if (segment.length > 0) {
+      segments.push(segment);
+    }
+    current = '';
+  };
+
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i];
+    const next = cmd[i + 1];
+
+    if (ch === '\\' && !inSingleQuote && next !== undefined) {
+      current += ch + next;
+      i++;
+      continue;
+    }
+    if (ch === "'" && !inDoubleQuote) {
+      inSingleQuote = !inSingleQuote;
+      current += ch;
+      continue;
+    }
+    if (ch === '"' && !inSingleQuote) {
+      inDoubleQuote = !inDoubleQuote;
+      current += ch;
+      continue;
+    }
+    if (inSingleQuote || inDoubleQuote) {
+      current += ch;
+      continue;
+    }
+
+    // Command and process substitution can hide an arbitrary command inside an
+    // otherwise innocent-looking line, and neither is worth modelling here.
+    if (ch === '`' || (ch === '$' && next === '(') || ((ch === '<' || ch === '>') && next === '(')) {
+      supported = false;
+      current += ch;
+      continue;
+    }
+
+    if (ch === ';' || ch === '\n') {
+      pushSegment();
+      continue;
+    }
+    if ((ch === '&' && next === '&') || (ch === '|' && next === '|')) {
+      pushSegment();
+      i++;
+      continue;
+    }
+    if (ch === '&' || ch === '|') {
+      pushSegment();
+      continue;
+    }
+
+    if (ch === '>') {
+      let cursor = i + 1;
+      if (cmd[cursor] === '>') {
+        cursor++;
+      }
+      if (cmd[cursor] === '&') {
+        // `>&1` / `2>&1` duplicate a descriptor and `>&-` closes one; nothing
+        // reaches the filesystem. Consume the whole reference so its `&` is not
+        // mistaken for a background-job separator.
+        let end = cursor + 1;
+        while (end < cmd.length && cmd[end] >= '0' && cmd[end] <= '9') {
+          end++;
+        }
+        if (cmd[end] === '-') {
+          end++;
+        }
+        current += cmd.slice(i, end);
+        i = end - 1;
+        continue;
+      }
+      while (cursor < cmd.length && (cmd[cursor] === ' ' || cmd[cursor] === '\t')) {
+        cursor++;
+      }
+      const target = cmd.slice(cursor).split(/[\s;&|<>]/)[0];
+      if (target !== DISCARD_REDIRECT_TARGET) {
+        writesFile = true;
+      }
+      current += ch;
+      continue;
+    }
+
+    current += ch;
+  }
+
+  pushSegment();
+
+  return {
+    segments,
+    supported: supported && !inSingleQuote && !inDoubleQuote,
+    writesFile,
+  };
+}
+
+/**
+ * Require every command on the line to satisfy `predicate`.
+ *
+ * A single unrecognised segment is enough to withhold the auto-approval, which
+ * is what stops `echo hi && rm -rf ~` from inheriting `echo`'s verdict.
+ */
+function everySegmentSatisfies(cmd: string, predicate: (segment: string) => boolean): boolean {
+  const scan = scanShellCommand(cmd.trim());
+  if (!scan.supported || scan.writesFile || scan.segments.length === 0) {
+    return false;
+  }
+  return scan.segments.every(predicate);
+}
+
+/**
  * Check if a command is read-only and safe to execute without confirmation.
+ *
+ * Every command on the line must be independently read-only.
  */
 export function isReadOnlyCommand(cmd: string): boolean {
-  const trimmedCmd = cmd.trim();
+  return everySegmentSatisfies(cmd, isReadOnlySegment);
+}
 
+/**
+ * Check whether a single command -- with no separators left in it -- is read-only.
+ */
+function isReadOnlySegment(trimmedCmd: string): boolean {
   // Check exact matches first
   if (READ_ONLY_COMMANDS.includes(trimmedCmd)) {
     return true;
@@ -273,10 +426,15 @@ export function isReadOnlyCommand(cmd: string): boolean {
 
 /**
  * Check if a command is a bounded validation command.
+ *
+ * Segment-aware for the same reason as `isReadOnlyCommand`: without it,
+ * `npm test && rm -rf /tmp/x` matches the leading validation pattern and is
+ * auto-approved in full.
  */
 export function isValidationCommand(cmd: string): boolean {
-  const trimmedCmd = cmd.trim();
-  return VALIDATION_COMMAND_PATTERNS.some(pattern => pattern.test(trimmedCmd));
+  return everySegmentSatisfies(cmd, segment =>
+    VALIDATION_COMMAND_PATTERNS.some(pattern => pattern.test(segment))
+  );
 }
 
 /**
