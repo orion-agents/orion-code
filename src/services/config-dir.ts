@@ -9,6 +9,7 @@ import { readFileSync, existsSync, realpathSync, mkdirSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { join, resolve } from 'path';
 import { atomicWriteFileSync } from './atomic-write';
+import { debugError } from '../utils/debug-log';
 
 export {
   getConfigHome,
@@ -76,7 +77,10 @@ export function readProjectMetadata(projectPath: string): ProjectMetadata | null
       return null;
     }
     return parsed;
-  } catch {
+  } catch (error) {
+    // Unreadable or malformed metadata is treated as "no metadata" so the
+    // caller can regenerate it; the parse failure is still worth surfacing.
+    debugError('config-dir.readProjectMetadata', error, metadataPath);
     return null;
   }
 }
@@ -91,8 +95,17 @@ export function updateProjectMetadata(projectPath: string, now: Date = new Date(
           stdio: ['ignore', 'pipe', 'ignore'],
         }).trim();
         if (root) return realpathSync(root);
-      } catch {}
-      try { return realpathSync(absolute); } catch {}
+      } catch (error) {
+        // Not a git worktree, or git is unavailable: fall back to the path.
+        debugError('config-dir.resolveGitRoot', error, absolute);
+      }
+      try {
+        return realpathSync(absolute);
+      } catch (error) {
+        // Broken symlink or a race with a deletion; the literal path is
+        // still a usable project key.
+        debugError('config-dir.realpath', error, absolute);
+      }
     }
     return absolute;
   })();
@@ -110,7 +123,11 @@ export function updateProjectMetadata(projectPath: string, now: Date = new Date(
     if (typeof existing.createdAt === 'string' && existing.createdAt) {
       createdAt = existing.createdAt;
     }
-  } catch {}
+  } catch (error) {
+    // First run, or the previous metadata is unreadable. `createdAt` keeps
+    // its default of "now", which loses history but never blocks the write.
+    debugError('config-dir.readExistingMetadata', error, metadataPath);
+  }
 
   const metadata: ProjectMetadata = {
     schemaVersion: PROJECT_METADATA_SCHEMA_VERSION,

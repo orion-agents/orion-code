@@ -411,7 +411,15 @@ export function migrateBrand(options: MigrationOptions = {}): MigrationResult {
         const { rmSync } = require('fs');
         rmSync(stagingRoot, { recursive: true, force: true });
       }
-    } catch {}
+    } catch (cleanupErr) {
+      // A failed rollback leaves a half-written staging tree on disk, which
+      // the *next* migration would otherwise trip over with no explanation.
+      manifest.warnings.push(
+        `Failed to clean up staging directory ${stagingRoot}: ${
+          cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)
+        }`
+      );
+    }
     return { success: false, manifest };
   }
 }

@@ -247,7 +247,11 @@ function extractRetryAfterMs(error: unknown): number | undefined {
       try {
         const ms = Date.parse(date) - Date.now();
         if (ms > 0) return ms;
-      } catch {}
+      } catch {
+        // `Date.parse` returns NaN rather than throwing for junk input, so
+        // this only guards exotic header values. Falling through to the
+        // default backoff is the correct behaviour either way.
+      }
     }
   }
   return undefined;

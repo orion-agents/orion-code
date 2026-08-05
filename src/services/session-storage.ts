@@ -33,6 +33,7 @@ import {
 import { atomicWriteFileSync } from './atomic-write';
 import { deleteSessionIndex, updateSessionIndex } from './session-index';
 import { redactTraceText } from './redaction';
+import { debugError } from '../utils/debug-log';
 import { deleteGoal } from './goal-storage';
 import type { LoopContinuationAction, LoopFinishReason } from '../framework/query';
 import type { Message } from './llm';
@@ -460,14 +461,18 @@ export function resolveProjectPath(cwd: string = process.cwd()): string {
         evictOldest(resolvedProjectPathCache, MAX_CACHE_SIZE);
         return resolvedPath;
       }
-    } catch {
+    } catch (error) {
       // Not a git worktree, or git is unavailable.
+      debugError('session-storage.resolveGitRoot', error, absolute);
     }
   }
 
   try {
     resolvedPath = realpathSync(absolute);
-  } catch {
+  } catch (error) {
+    // Broken symlink or concurrent deletion; the literal path still works
+    // as a stable project key.
+    debugError('session-storage.realpath', error, absolute);
     resolvedPath = absolute;
   }
 
@@ -491,7 +496,10 @@ function getGitBranch(projectPath: string): string | undefined {
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
     return branch || undefined;
-  } catch {
+  } catch (error) {
+    // Detached HEAD, no git, or not a repository — branch metadata is
+    // optional, but "why is my branch missing" is a real support question.
+    debugError('session-storage.currentBranch', error, projectPath);
     return undefined;
   }
 }
@@ -563,7 +571,10 @@ function parseHarnessSidecarFile(path: string): HarnessSidecar | null {
     const content = readFileSync(path, 'utf-8');
     const parsed = JSON.parse(content) as HarnessSidecar;
     return parsed?.version === 2 && parsed.state ? parsed : null;
-  } catch {
+  } catch (error) {
+    // A corrupt sidecar silently drops resumable harness state, which the
+    // user experiences as "my session lost its context".
+    debugError('session-storage.parseHarnessSidecar', error, path);
     return null;
   }
 }
@@ -584,7 +595,10 @@ function parseCompactCheckpointFile(path: string): CompactCheckpointV1 | null {
       return null;
     }
     return parsed;
-  } catch {
+  } catch (error) {
+    // Losing a compact checkpoint means the next resume replays the full
+    // history instead of the summary — degraded, not fatal.
+    debugError('session-storage.parseCompactCheckpoint', error, path);
     return null;
   }
 }
@@ -606,7 +620,9 @@ function sortSessionsNewestFirst(sessions: SessionMeta[]): SessionMeta[] {
 function safeFileSize(path: string): number | null {
   try {
     return existsSync(path) ? statSync(path).size : null;
-  } catch {
+  } catch (error) {
+    // Size is only used for reporting; an unreadable file reports as unknown.
+    debugError('session-storage.safeFileSize', error, path);
     return null;
   }
 }
@@ -988,8 +1004,10 @@ export function updateSessionSummary(sessionId: string, messages: SessionMessage
             if (args.path) {
               filesModified.push(args.path);
             }
-          } catch {
-            // ignore parse errors
+          } catch (error) {
+            // Malformed tool arguments only affect the "files modified"
+            // summary, so the entry is skipped rather than failing the read.
+            debugError('session-storage.parseToolArgs', error, tc.function.name);
           }
         }
       }
@@ -1054,15 +1072,19 @@ export function readHistory(limit?: number): HistoryEntry[] {
     for (const line of lines) {
       try {
         entries.push(JSON.parse(line) as HistoryEntry);
-      } catch {
+      } catch (error) {
         // Skip corrupted line, preserve remaining valid entries.
+        debugError('session-storage.parseHistoryLine', error);
       }
     }
 
     // 从最新开始
     const reversed = entries.reverse();
     return limit ? reversed.slice(0, limit) : reversed;
-  } catch {
+  } catch (error) {
+    // An unreadable history file presents as "no history at all", which is
+    // indistinguishable from a fresh install without this signal.
+    debugError('session-storage.readHistory', error, path);
     return [];
   }
 }
@@ -1200,13 +1222,17 @@ export function readSessionMessages(sessionId: string): SessionMessage[] {
     for (let i = 0; i < lines.length; i++) {
       try {
         messages.push(JSON.parse(lines[i]) as SessionMessage);
-      } catch {
+      } catch (error) {
         // A missing turn can orphan later tool results, so only restore the valid prefix.
+        debugError('session-storage.parseMessageLine', error, `${path}:${i + 1}`);
         break;
       }
     }
     return messages;
-  } catch {
+  } catch (error) {
+    // Silent truncation of a session to zero messages is the single worst
+    // failure mode here — the user resumes into an apparently empty session.
+    debugError('session-storage.readMessages', error, path);
     return [];
   }
 }
@@ -1264,11 +1290,16 @@ export function readSessionTraceEvents(sessionId: string): SessionTraceEvent[] {
               turnId: String(sanitized.turnId),
             } as SessionTraceEvent,
           ];
-        } catch {
+        } catch (error) {
+          // Drop only the malformed trace line, keep the rest of the trace.
+          debugError('session-storage.parseTraceLine', error);
           return [];
         }
       });
-  } catch {
+  } catch (error) {
+    // An empty trace looks like "nothing happened" instead of "trace
+    // unreadable", which misleads anyone debugging a past run.
+    debugError('session-storage.readTraceEvents', error, path);
     return [];
   }
 }
