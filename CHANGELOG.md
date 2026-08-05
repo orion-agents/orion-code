@@ -19,12 +19,11 @@ Evidence labels follow `docs/plan/targets-v0.1.3-v0.1.3-2.md`:
 `met` / `partial` / `unmet` / `not_run` — where `not_run` means "blocked by environment",
 which is **not** a pass.
 
-## [0.1.3] — UNRELEASED (candidate)
+## [0.1.3] — 2026-08-05
 
-> **Status: not published.** No `v0.1.3` git tag exists and the work below is not yet
-> committed (see `docs/plan/v0.1.3-2-freeze-boundary.md`). The model-config subset
-> (`/model` / `/models`) is **merged** in HEAD; the security/tooling subset below is a
-> **candidate** in the worktree. Release gate verdict: **No-Go**.
+> **Status: published.** Tag `v0.1.3` exists and the package is on npm
+> (`@orion-agents/orion-code@0.1.3`). The model-config subset (`/model` / `/models`)
+> is merged; the security/tooling subset below shipped in this release.
 
 This release hardens the execution surface (sandbox POC, tool-allowlist ReDoS,
 plan-mode bypass, SSRF / API-key leakage) and rounds out developer-facing tooling
