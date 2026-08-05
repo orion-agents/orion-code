@@ -2,6 +2,7 @@ import type { SubtaskResult } from '../src/runtime/subagents/types';
 import { EMPTY_SUBTASK_USAGE } from '../src/runtime/subagents/types';
 import type { ResearchPacket } from '../src/runtime/subagents/research-types';
 import {
+  RESEARCH_HARD_LIMITS,
   createLocalResearchRequest,
   hashPacket,
   stableStringify,
@@ -132,5 +133,93 @@ describe('research contract (P0-R1)', () => {
     expect(validateResearchRequest(request).ok).toBe(true);
     expect(validateResearchRequest({ ...request, mode: 'remote' as never }).ok).toBe(false);
     expect(validateResearchRequest({ objective: '', scope: { projectRoot: '/x' }, mode: 'local', maxSources: 1, maxFetchBytes: 0, maxDurationMs: 1 } as never).ok).toBe(false);
+  });
+});
+
+/**
+ * Hard-limit and fail-closed branches the P0-R1 suite left unexercised. Every
+ * assertion here guards a rejection path: an untested branch in a validator is
+ * a validator that can silently fail open.
+ */
+describe('research contract hard limits and fail-closed branches', () => {
+  const request = createLocalResearchRequest('confirm provider fallback', '/repo');
+  const ctx = { sessionId: 'sess-1', projectPath: '/repo' };
+  const packet = (): ResearchPacket => subtaskResultToPacket(completedResult(), request, ctx);
+
+  it('rejects a packet built against an unsupported schema version', () => {
+    const p = packet();
+    p.schemaVersion = 99;
+    const validation = validatePacket(p);
+    expect(validation.ok).toBe(false);
+    expect(validation.errors).toContain('unsupported schemaVersion 99');
+  });
+
+  it('rejects a summary longer than the hard limit', () => {
+    const p = packet();
+    p.summary = 'x'.repeat(RESEARCH_HARD_LIMITS.maxSummaryLen + 1);
+    const validation = validatePacket(p);
+    expect(validation.ok).toBe(false);
+    expect(validation.errors).toContain('packet.summary exceeds max length');
+  });
+
+  it('rejects more claims than the hard limit', () => {
+    const p = packet();
+    const seed = p.claims[0];
+    p.claims = Array.from({ length: RESEARCH_HARD_LIMITS.maxClaims + 1 }, (_, i) => ({
+      ...seed,
+      id: `claim-${i}`,
+    }));
+    const validation = validatePacket(p);
+    expect(validation.ok).toBe(false);
+    expect(
+      validation.errors.some(e => e.includes(`exceed max ${RESEARCH_HARD_LIMITS.maxClaims}`)),
+    ).toBe(true);
+  });
+
+  it('rejects an inference claim that is marked observed', () => {
+    // The core integrity invariant of the packet: something the agent reasoned
+    // its way to can never be reported as directly observed, even when a source
+    // happens to be attached to it.
+    const p = packet();
+    const claim = p.claims.find(c => c.verification === 'observed');
+    expect(claim).toBeDefined();
+    claim!.evidenceKind = 'inference';
+    const validation = validatePacket(p);
+    expect(validation.ok).toBe(false);
+    expect(validation.errors.some(e => e.includes('is inference but marked observed'))).toBe(true);
+  });
+
+  it('rejects a request whose schema version is not the supported one', () => {
+    const validation = validateResearchRequest({ ...request, schemaVersion: 99 });
+    expect(validation.ok).toBe(false);
+    expect(validation.errors).toContain('unsupported schemaVersion 99');
+  });
+
+  it('rejects budgets that fall outside their hard floors', () => {
+    const validation = validateResearchRequest({
+      ...request,
+      maxSources: 0,
+      maxFetchBytes: -1,
+      maxDurationMs: 0,
+    });
+    expect(validation.ok).toBe(false);
+    expect(validation.errors).toEqual(
+      expect.arrayContaining([
+        `maxSources must be >= ${RESEARCH_HARD_LIMITS.maxSources.min}`,
+        'maxFetchBytes must be >= 0',
+        'maxDurationMs must be > 0',
+      ]),
+    );
+  });
+
+  it('rejects a goal binding that is missing its identifiers', () => {
+    const validation = validateResearchRequest({ ...request, goalBinding: {} as never });
+    expect(validation.ok).toBe(false);
+    expect(validation.errors).toEqual(
+      expect.arrayContaining([
+        'goalBinding.goalId is required',
+        'goalBinding.objectiveRevision is required',
+      ]),
+    );
   });
 });

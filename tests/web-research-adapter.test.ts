@@ -201,3 +201,71 @@ describe('P0-R2 web research adapter', () => {
     expect(res.notes.some(n => n.includes('local'))).toBe(true);
   });
 });
+
+/**
+ * The failure side of the adapter: dependency crashes and secret hygiene. A
+ * regression here is the dangerous kind - it turns a blocked or failed source
+ * into something that reads as retrieved, or leaks a credential into evidence.
+ */
+describe('P0-R2 web research adapter resilience and redaction', () => {
+  it('redacts secret-bearing query params from the display URL', async () => {
+    const secretUrl = 'https://example.com/doc?api_key=SECRET123&access_token=T0KEN&page=2';
+    const deps: WebResearchDeps = {
+      allowedDomains: ['example.com'],
+      search: async () => [okHit(secretUrl)],
+      fetch: async url => okFetch(url),
+    };
+    const res = await runWebResearch(webRequest(), deps);
+
+    const source = res.sources[0];
+    expect(source.status).toBe('retrieved');
+    expect(source.displayUrl).not.toContain('SECRET123');
+    expect(source.displayUrl).not.toContain('T0KEN');
+    // Ordinary params survive so the citation still points at the right page.
+    expect(source.displayUrl).toContain('page=2');
+  });
+
+  it('leaves a URL untouched when it carries no secret params', async () => {
+    const deps: WebResearchDeps = {
+      allowedDomains: ['example.com'],
+      search: async () => [okHit('https://example.com/doc?page=2')],
+      fetch: async url => okFetch(url),
+    };
+    const res = await runWebResearch(webRequest(), deps);
+    expect(res.sources[0].displayUrl).toBe('https://example.com/doc?page=2');
+  });
+
+  it('degrades to an empty noted result when the search dependency throws', async () => {
+    const deps: WebResearchDeps = {
+      search: async () => {
+        throw new Error('search mcp offline');
+      },
+      fetch: async () => {
+        throw new Error('fetch must not run');
+      },
+    };
+    const res = await runWebResearch(webRequest(), deps);
+
+    expect(res.sources).toHaveLength(0);
+    expect(res.blocked).toHaveLength(0);
+    expect(res.notes.some(n => n.includes('search dependency threw: search mcp offline'))).toBe(
+      true,
+    );
+  });
+
+  it('records a thrown fetch as a failed source rather than propagating', async () => {
+    const deps: WebResearchDeps = {
+      allowedDomains: ['example.com'],
+      search: async () => [okHit('https://example.com/a')],
+      fetch: async () => {
+        throw new Error('socket hang up');
+      },
+    };
+    const res = await runWebResearch(webRequest(), deps);
+
+    expect(res.sources).toHaveLength(1);
+    expect(res.sources[0].status).toBe('failed');
+    expect(res.sources[0].failureReason).toContain('fetch threw: socket hang up');
+    expect(res.sources[0].contentHash).toBeUndefined();
+  });
+});
