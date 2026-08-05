@@ -49,6 +49,19 @@ describe('research contract (P0-R1)', () => {
   const request = createLocalResearchRequest('confirm provider fallback', '/repo');
   const ctx = { sessionId: 'sess-1', projectPath: '/repo' };
 
+  // Freeze the clock so packet timestamps are identical across builds. The
+  // reproducibility contract lives in `hashPacket` (which strips timestamps);
+  // `stableStringify` only sorts keys, so without a fixed clock the two packets
+  // built below would differ by a millisecond and the determinism test would
+  // flicker.
+  beforeAll(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+  });
+  afterAll(() => {
+    jest.useRealTimers();
+  });
+
   it('maps a local-only completed result to a recoverable packet (POC-1)', () => {
     const packet = subtaskResultToPacket(completedResult(), request, ctx);
 
