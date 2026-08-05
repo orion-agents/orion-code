@@ -119,6 +119,71 @@ describe('bash_security read-only bypasses', () => {
     });
   });
 
+  // Issue #12: the bare driver commands were allow-listed, and git matched its
+  // sub-commands with startsWith.
+  describe('package-manager drivers execute arbitrary code', () => {
+    it.each([
+      'npx untrusted-pkg',
+      'npx tsx /tmp/payload.ts',
+      'npm run deploy:prod',
+      'npm exec -- rimraf /tmp/x',
+      'yarn build',
+      'pnpm run release',
+      'cargo run',
+      'pip install requests',
+    ])('must NOT be read-only: %j', command => {
+      expect(isReadOnlyCommand(command)).toBe(false);
+      expect(assessCommandSecurity(command).level).not.toBe('safe');
+    });
+
+    it('keeps the genuinely read-only sub-commands', () => {
+      expect(isReadOnlyCommand('npm list --depth=0')).toBe(true);
+      expect(isReadOnlyCommand('npm view react versions')).toBe(true);
+      expect(isReadOnlyCommand('pnpm outdated')).toBe(true);
+      expect(isReadOnlyCommand('cargo tree')).toBe(true);
+      expect(isReadOnlyCommand('pip list')).toBe(true);
+      expect(isReadOnlyCommand('npm --version')).toBe(true);
+    });
+
+    it('still routes the whitelisted validation commands to safe', () => {
+      expect(assessCommandSecurity('npm test').level).toBe('safe');
+      expect(assessCommandSecurity('npm run lint').level).toBe('safe');
+      expect(assessCommandSecurity('npx jest tests/x.test.ts').level).toBe('safe');
+    });
+  });
+
+  describe('git sub-commands matched by prefix', () => {
+    it.each([
+      'git branch -D main',
+      'git branch -m old new',
+      'git tag -d v1.0.0',
+      'git tag -a v1.0.0 -m release',
+      'git remote remove origin',
+      'git remote set-url origin http://evil.example/x.git',
+      'git remote add evil http://evil.example/x.git',
+      'git difftool --extcmd="rm -rf /tmp/x"',
+      'git log --output=/tmp/stolen.txt',
+    ])('must NOT be read-only: %j', command => {
+      expect(isReadOnlyCommand(command)).toBe(false);
+      expect(assessCommandSecurity(command).level).not.toBe('safe');
+    });
+
+    it('keeps the listing and inspection forms read-only', () => {
+      expect(isReadOnlyCommand('git branch')).toBe(true);
+      expect(isReadOnlyCommand('git branch -a')).toBe(true);
+      expect(isReadOnlyCommand('git branch -vv')).toBe(true);
+      expect(isReadOnlyCommand('git tag')).toBe(true);
+      expect(isReadOnlyCommand('git tag -l')).toBe(true);
+      expect(isReadOnlyCommand('git remote')).toBe(true);
+      expect(isReadOnlyCommand('git remote -v')).toBe(true);
+      expect(isReadOnlyCommand('git remote show origin')).toBe(true);
+      expect(isReadOnlyCommand('git remote get-url origin')).toBe(true);
+      expect(isReadOnlyCommand('git status --porcelain')).toBe(true);
+      expect(isReadOnlyCommand('git log --oneline -10')).toBe(true);
+      expect(isReadOnlyCommand('git rev-parse HEAD')).toBe(true);
+    });
+  });
+
   describe('validation commands are also chain-checked', () => {
     it('a validation command followed by a destructive one is not safe', () => {
       expect(isValidationCommand('npm test && rm -rf /tmp/x')).toBe(false);

@@ -112,16 +112,11 @@ export const READ_ONLY_COMMANDS = [
   'lsof',
   'pgrep',
 
-  // Package managers (checking/listing is read-only)
-  'npm',
-  'npx',
-  'yarn',
-  'pnpm',
-  'pip',
-  'pip3',
-  'cargo',
-  'top',
-  'htop',
+  // Job control
+  // NOTE: the package-manager drivers (npm/npx/yarn/pnpm/pip/cargo) are
+  // deliberately NOT listed here. Whether they read or execute depends entirely
+  // on the sub-command, so they are allow-listed per sub-command in
+  // READ_ONLY_SUBCOMMANDS instead.
   'jobs',
 
   // JSON/YAML processing (read-only when no file write)
@@ -138,6 +133,56 @@ export const READ_ONLY_COMMANDS = [
   '--version',
   '-V',
 ];
+
+/**
+ * Sub-commands that only read state, keyed by the driver that runs them.
+ *
+ * The drivers themselves must never appear in READ_ONLY_COMMANDS: `npm run`,
+ * `npm exec`, `yarn <script>`, `pnpm run`, `cargo run` and `npx <pkg>` all
+ * execute arbitrary project-defined or freshly downloaded code, so the safe
+ * surface has to be enumerated rather than subtracted.
+ */
+export const READ_ONLY_SUBCOMMANDS: Record<string, readonly string[]> = {
+  git: [
+    'status',
+    'log',
+    'diff',
+    'show',
+    'branch',
+    'tag',
+    'remote',
+    'rev-parse',
+    'ls-files',
+    'ls-tree',
+  ],
+  npm: ['list', 'ls', 'info', 'view', 'search', 'outdated', 'why'],
+  yarn: ['list', 'info', 'why'],
+  pnpm: ['list', 'ls', 'info', 'why', 'outdated'],
+  cargo: ['tree', 'metadata', 'search'],
+  pip: ['list', 'show', 'freeze'],
+  pip3: ['list', 'show', 'freeze'],
+};
+
+/**
+ * git options that hand execution to an external program or write a file,
+ * whichever sub-command they are attached to.
+ */
+const GIT_UNSAFE_OPTIONS =
+  /(^|\s)--(ext-diff|extcmd|output|exec-path|upload-pack|receive-pack)\b/;
+
+/**
+ * `git branch` / `git tag` only list when they are given nothing but these
+ * flags. Any other argument may create, move or delete a ref, so the allow-list
+ * is deliberately valueless flags only -- `git branch --contains HEAD` reads,
+ * but prompting for it is far cheaper than letting `git branch -D main` through.
+ */
+const GIT_LISTING_FLAGS: Record<string, RegExp> = {
+  branch: /^(-a|--all|-r|--remotes|-v|-vv|--verbose|-l|--list|--no-color|--color(=.+)?|--sort=.+|--format=.+)$/,
+  tag: /^(-l|--list|-n\d*|-i|--ignore-case|--no-color|--color(=.+)?|--sort=.+|--format=.+)$/,
+};
+
+/** `git remote` reads with no argument, or via these two sub-sub-commands. */
+const GIT_REMOTE_READ_ONLY_ACTIONS = new Set(['show', 'get-url']);
 
 /**
  * Validation commands that are safe enough to run without an interactive
@@ -397,31 +442,54 @@ function isReadOnlySegment(trimmedCmd: string): boolean {
     if (baseCmd === 'sort' && (/(^|\s)-o\b/.test(trimmedCmd) || trimmedCmd.includes('>'))) {
       return false; // sort -o / redirect writes a file
     }
-    // npm/pip/cargo/yarn install commands have side effects
-    if ((baseCmd === 'npm' || baseCmd === 'yarn' || baseCmd === 'pnpm') &&
-        /\b(install|add|remove|uninstall|publish|link|unlink|deprecate|audit fix|fund)\b/.test(trimmedCmd)) {
-      return false;
-    }
-    if ((baseCmd === 'pip' || baseCmd === 'pip3') && /\binstall\b/.test(trimmedCmd)) {
-      return false; // pip install modifies system
-    }
-    if (baseCmd === 'cargo' && /\b(install|publish|update|remove)\b/.test(trimmedCmd)) {
-      return false;
-    }
     return true;
   }
 
-  // Check for git read commands
-  if (trimmedCmd.startsWith('git ')) {
-    const gitCmd = trimmedCmd.slice(4).trim();
-    for (const roGitCmd of READ_ONLY_COMMANDS.filter(c => c.startsWith('git '))) {
-      if (gitCmd.startsWith(roGitCmd.slice(4))) {
-        return true;
-      }
-    }
+  // Driver commands are read-only only for an explicitly allow-listed
+  // sub-command, matched on the exact token.
+  return isReadOnlyDriverInvocation(trimmedCmd);
+}
+
+/**
+ * Classify `git`, `npm`, `cargo` and friends by their sub-command.
+ *
+ * Matching is on the exact sub-command token. The previous implementation used
+ * `startsWith`, which let `git difftool --extcmd=...` match the `git diff`
+ * entry and run an arbitrary program.
+ */
+function isReadOnlyDriverInvocation(segment: string): boolean {
+  const tokens = segment.split(/\s+/).filter(token => token.length > 0);
+  const driver = tokens[0];
+  const subcommand = tokens[1];
+  const allowed = driver ? READ_ONLY_SUBCOMMANDS[driver] : undefined;
+
+  if (!allowed || !subcommand || !allowed.includes(subcommand)) {
+    return false;
   }
 
-  return false;
+  if (driver !== 'git') {
+    return true;
+  }
+
+  if (GIT_UNSAFE_OPTIONS.test(segment)) {
+    return false;
+  }
+
+  const args = tokens.slice(2);
+
+  if (subcommand === 'remote') {
+    // `git remote [-v]` lists; `git remote show|get-url <name>` reads.
+    // Everything else -- add, remove, rename, set-url, prune -- mutates.
+    const positional = args.filter(arg => arg !== '-v' && arg !== '--verbose');
+    return positional.length === 0 || GIT_REMOTE_READ_ONLY_ACTIONS.has(positional[0]);
+  }
+
+  const listingFlags = GIT_LISTING_FLAGS[subcommand];
+  if (listingFlags) {
+    return args.every(arg => listingFlags.test(arg));
+  }
+
+  return true;
 }
 
 /**
