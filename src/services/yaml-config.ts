@@ -8,6 +8,7 @@ import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { load as loadYaml } from 'js-yaml';
 import { getConfigHome } from './config-dir';
+import { errorMessage } from '../utils/errors';
 
 // ============================================================================
 // Types
@@ -114,8 +115,8 @@ export class YAMLConfigLoader {
 
       // JSON format
       return JSON.parse(content) as YAMLConfig;
-    } catch (err: any) {
-      console.warn(`[YAMLConfig] Failed to load ${filePath}: ${err.message}`);
+    } catch (err) {
+      console.warn(`[YAMLConfig] Failed to load ${filePath}: ${errorMessage(err)}`);
       return null;
     }
   }

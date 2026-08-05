@@ -6,6 +6,7 @@
 
 import axios from 'axios';
 import { ENV } from '../product/environment';
+import { errorMessage } from '../utils/errors';
 
 // ============================================================================
 // Types
@@ -103,9 +104,9 @@ export class EmbeddingService {
       });
 
       return response.data.embedding;
-    } catch (err: any) {
+    } catch (err) {
       // Fallback: return zero vector if Ollama unavailable
-      console.warn(`[Embedding] Ollama unavailable: ${err.message}`);
+      console.warn(`[Embedding] Ollama unavailable: ${errorMessage(err)}`);
       return new Array(this.dimension).fill(0);
     }
   }
@@ -137,8 +138,8 @@ export class EmbeddingService {
       );
 
       return response.data.data[0].embedding;
-    } catch (err: any) {
-      console.warn(`[Embedding] OpenAI unavailable: ${err.message}`);
+    } catch (err) {
+      console.warn(`[Embedding] OpenAI unavailable: ${errorMessage(err)}`);
       return new Array(this.dimension).fill(0);
     }
   }

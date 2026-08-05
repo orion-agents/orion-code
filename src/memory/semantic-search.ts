@@ -7,6 +7,7 @@
 import { getVectorStore, type SearchResult, type VectorStoreConfig } from './vector-store';
 import { loadAllMemories, saveMemory, type MemoryEntry, type MemoryType } from './storage';
 import { ENV } from '../product/environment';
+import { errorMessage } from '../utils/errors';
 
 
 // ============================================================================
@@ -74,8 +75,8 @@ export class SemanticSearchService {
       try {
         await this.vectorStore.upsert(memory, projectPath);
         indexed++;
-      } catch (err: any) {
-        console.warn(`[SemanticSearch] Failed to index ${memory.name}: ${err.message}`);
+      } catch (err) {
+        console.warn(`[SemanticSearch] Failed to index ${memory.name}: ${errorMessage(err)}`);
       }
     }
 

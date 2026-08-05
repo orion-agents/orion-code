@@ -26,6 +26,7 @@ import type {
   MigrationResult,
   FileMapping,
 } from './types';
+import { errorMessage } from '../utils/errors';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -403,9 +404,9 @@ export function migrateBrand(options: MigrationOptions = {}): MigrationResult {
     }
 
     return { success: true, manifest };
-  } catch (err: any) {
+  } catch (err) {
     // Clean up staging on failure
-    manifest.warnings.push(`Migration failed: ${err.message}`);
+    manifest.warnings.push(`Migration failed: ${errorMessage(err)}`);
     try {
       if (existsSync(stagingRoot)) {
         const { rmSync } = require('fs');
@@ -481,8 +482,8 @@ export function migrateProjectFiles(
     if (!options.dryRun) {
       try {
         renameSync(srcPath, destPath);
-      } catch (err: any) {
-        warnings.push(`Failed to rename ${from} → ${to}: ${err.message}`);
+      } catch (err) {
+        warnings.push(`Failed to rename ${from} → ${to}: ${errorMessage(err)}`);
         continue;
       }
     }
