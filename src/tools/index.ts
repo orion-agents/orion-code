@@ -2262,7 +2262,5 @@ export {
   checkDangerousCommand,
   isPotentiallyDestructive,
   assessCommandSecurity,
-  wrapForSandbox,
-  type SandboxOptions,
-  DEFAULT_SANDBOX_OPTIONS,
+  findDestructiveRmTarget,
 } from './bash_security';

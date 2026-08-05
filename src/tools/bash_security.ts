@@ -202,7 +202,10 @@ export const VALIDATION_COMMAND_PATTERNS = [
  * Dangerous command patterns that should always be blocked or require confirmation.
  */
 export const DANGEROUS_PATTERNS = [
-  // Filesystem destruction
+  // Filesystem destruction.
+  // NOTE: these literal forms are a backstop only. Flag order, long options and
+  // trailing arguments all defeat them, so the authoritative check is the
+  // structured one in findDestructiveRmTarget(); see checkDangerousCommand().
   { pattern: /rm\s+-rf\s+\/$/, reason: 'Attempting to delete root directory' },
   { pattern: /rm\s+-rf\s+~$/, reason: 'Attempting to delete home directory' },
   { pattern: /rm\s+-rf\s+\*/, reason: 'Attempting to delete all files in current directory' },
@@ -505,11 +508,191 @@ export function isValidationCommand(cmd: string): boolean {
   );
 }
 
+/** Wrappers that may precede `rm` without changing what it deletes. */
+const COMMAND_WRAPPERS = new Set(['sudo', 'doas', 'command', 'builtin', 'nohup', 'time', 'exec']);
+
+/** A parsed `rm` invocation: the flags that matter, plus its operands. */
+interface RmInvocation {
+  recursive: boolean;
+  force: boolean;
+  noPreserveRoot: boolean;
+  targets: string[];
+}
+
+/**
+ * Targets whose deletion is never a legitimate agent action, in the normalised
+ * form produced by {@link normalizeRmTarget}.
+ */
+const CATASTROPHIC_RM_TARGETS = new Set([
+  '/',
+  '~',
+  '.',
+  '..',
+  '*',
+  // System roots: wiping any of these bricks the machine just as thoroughly as
+  // `/` does, and no build or cleanup step has a reason to touch them.
+  '/bin',
+  '/boot',
+  '/dev',
+  '/etc',
+  '/lib',
+  '/lib64',
+  '/opt',
+  '/proc',
+  '/root',
+  '/sbin',
+  '/srv',
+  '/sys',
+  '/usr',
+  '/var',
+  '/home',
+  '/Users',
+  '/System',
+  '/Library',
+  '/Applications',
+]);
+
+/**
+ * Reduce an `rm` operand to a canonical path so that every spelling of the same
+ * catastrophic target collapses onto one key: `/`, `/*`, `/**` and `///` all
+ * become `/`, and `~/`, `~/*`, `$HOME`, `${HOME}/` all become `~`.
+ */
+function normalizeRmTarget(raw: string): string {
+  let target = raw.trim();
+
+  const quote = target[0];
+  if ((quote === "'" || quote === '"') && target.endsWith(quote) && target.length > 1) {
+    target = target.slice(1, -1).trim();
+  }
+
+  target = target.replace(/^\$\{HOME\}/, '~').replace(/^\$HOME/, '~');
+  // A trailing glob deletes the directory's contents, which is the same disaster
+  // as deleting the directory itself.
+  target = target.replace(/\/\*+$/, '/');
+  target = target.replace(/\/{2,}/g, '/');
+
+  if (target.length > 1) {
+    target = target.replace(/\/+$/, '');
+  }
+
+  return target;
+}
+
+/**
+ * Parse a single command segment as an `rm` invocation.
+ *
+ * Returns null when the segment does not run `rm`. Flags are collected
+ * order-independently, so `-rf`, `-fr`, `-r -f` and `--recursive --force` are
+ * all recognised as the same request.
+ */
+function parseRmInvocation(segment: string): RmInvocation | null {
+  const tokens = segment.split(/\s+/).filter(token => token.length > 0);
+
+  let index = 0;
+  while (index < tokens.length && COMMAND_WRAPPERS.has(tokens[index])) {
+    index++;
+  }
+
+  const binary = tokens[index];
+  if (!binary || !/(^|\/)rm$/.test(binary)) {
+    return null;
+  }
+  index++;
+
+  const invocation: RmInvocation = {
+    recursive: false,
+    force: false,
+    noPreserveRoot: false,
+    targets: [],
+  };
+  let endOfOptions = false;
+
+  for (; index < tokens.length; index++) {
+    const token = tokens[index];
+
+    if (!endOfOptions && token === '--') {
+      endOfOptions = true;
+      continue;
+    }
+
+    if (!endOfOptions && token.startsWith('--')) {
+      if (token === '--recursive') invocation.recursive = true;
+      else if (token === '--force') invocation.force = true;
+      else if (token === '--no-preserve-root') invocation.noPreserveRoot = true;
+      continue;
+    }
+
+    if (!endOfOptions && token.length > 1 && token.startsWith('-')) {
+      for (const flag of token.slice(1)) {
+        if (flag === 'r' || flag === 'R') invocation.recursive = true;
+        else if (flag === 'f') invocation.force = true;
+      }
+      continue;
+    }
+
+    invocation.targets.push(token);
+  }
+
+  return invocation;
+}
+
+/**
+ * Structured replacement for the literal `rm -rf /` patterns.
+ *
+ * Returns the normalised target that makes the command catastrophic, or null.
+ * Matching on parsed flags and canonicalised operands closes the rewrites that
+ * defeat the anchored patterns: `rm -fr /`, `rm -r -f /`,
+ * `rm --recursive --force /`, `rm -rf /*` and, most importantly,
+ * `rm -rf / --no-preserve-root` -- the only form that actually deletes anything
+ * on GNU coreutils.
+ */
+export function findDestructiveRmTarget(cmd: string): string | null {
+  for (const segment of scanShellCommand(cmd).segments) {
+    const invocation = parseRmInvocation(segment);
+    if (!invocation) continue;
+
+    // `rm /` without -r or -f cannot remove a directory, so it is noise rather
+    // than a threat. Either flag turns the same operand into a real deletion.
+    if (!invocation.recursive && !invocation.force) continue;
+
+    for (const target of invocation.targets) {
+      if (CATASTROPHIC_RM_TARGETS.has(normalizeRmTarget(target))) {
+        return target;
+      }
+    }
+  }
+
+  return null;
+}
+
+/** Reported when the structured `rm` check fires rather than a literal pattern. */
+const DESTRUCTIVE_RM_PATTERN = /\brm\b/;
+
+/** Human-readable description of why a normalised target is off-limits. */
+function describeCatastrophicTarget(raw: string): string {
+  const normalized = normalizeRmTarget(raw);
+
+  if (normalized === '/') return 'the root directory';
+  if (normalized === '~') return 'the home directory';
+  if (normalized === '.' || normalized === '..' || normalized === '*') {
+    return 'the current directory contents';
+  }
+  return `the system directory ${normalized}`;
+}
+
 /**
  * Check if a command matches dangerous patterns.
  * Returns the first matched dangerous pattern, or null if safe.
  */
 export function checkDangerousCommand(cmd: string): { pattern: RegExp; reason: string } | null {
+  const rmTarget = findDestructiveRmTarget(cmd);
+  if (rmTarget) {
+    return {
+      pattern: DESTRUCTIVE_RM_PATTERN,
+      reason: `Attempting to delete ${describeCatastrophicTarget(rmTarget)} (${rmTarget})`,
+    };
+  }
+
   for (const { pattern, reason } of DANGEROUS_PATTERNS) {
     if (pattern.test(cmd)) {
       return { pattern, reason };
@@ -582,43 +765,18 @@ export function assessCommandSecurity(cmd: string): {
   };
 }
 
-/**
- * Sandbox execution options.
+/*
+ * The `SandboxOptions` / `DEFAULT_SANDBOX_OPTIONS` / `wrapForSandbox` trio that
+ * used to live here has been removed.
+ *
+ * `wrapForSandbox` advertised network isolation it never delivered: it emitted
+ * `docker exec --network none <container> sh -c '<cmd>'`, but `--network` is a
+ * `docker run` flag and `docker exec` rejects it with `unknown flag`. With
+ * `network: true` the flag was dropped altogether, so neither configuration
+ * isolated anything. Building the wrapper as a shell string was unsound anyway:
+ * every layer re-parses the command, so a quoting bug becomes a sandbox escape.
+ *
+ * `src/tools/sandbox.ts` supersedes it with an argv-based implementation that
+ * probes backend availability and fails closed. Use `planSandboxedCommand()`
+ * from there instead.
  */
-export interface SandboxOptions {
-  mode: 'none' | 'docker' | 'bubblewrap';
-  container?: string;
-  timeout?: number;
-  network?: boolean;
-}
-
-/**
- * Default sandbox options (disabled).
- */
-export const DEFAULT_SANDBOX_OPTIONS: SandboxOptions = {
-  mode: 'none',
-};
-
-/**
- * Wrap command for sandbox execution.
- * Returns the modified command for sandbox execution.
- */
-export function wrapForSandbox(cmd: string, options: SandboxOptions): string {
-  if (options.mode === 'none') {
-    return cmd;
-  }
-
-  if (options.mode === 'docker') {
-    const container = options.container || 'orion-code-sandbox';
-    const networkFlag = options.network ? '' : '--network none';
-    return `docker exec ${networkFlag} ${container} sh -c '${cmd.replace(/'/g, "'\\''")}'`;
-  }
-
-  if (options.mode === 'bubblewrap') {
-    // bubblewrap (bwrap) for Linux sandboxing
-    const networkFlag = options.network ? '' : '--unshare-net';
-    return `bwrap ${networkFlag} --ro-bind /usr /usr --ro-bind /lib /lib --ro-bind /bin /bin --bind /tmp /tmp --proc /proc --dev-bind /dev /dev sh -c '${cmd.replace(/'/g, "'\\''")}'`;
-  }
-
-  return cmd;
-}
