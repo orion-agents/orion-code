@@ -15,6 +15,11 @@ module.exports = {
     '@typescript-eslint/ban-ts-comment': 'warn',
     'prefer-const': 'warn',
     'no-console': 'off',
+    // A parameterless `catch {}` discards the error object outright, which is
+    // how persistence and auth failures used to become invisible (#9).
+    // `no-empty` still allows a catch block containing a comment, so the rule
+    // forces an explicit decision: log it, handle it, or justify ignoring it.
+    'no-empty': ['error', { allowEmptyCatch: false }],
   },
   ignorePatterns: ['dist/', 'node_modules/', '*.js'],
 };

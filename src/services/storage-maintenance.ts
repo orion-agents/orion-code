@@ -21,6 +21,7 @@ import {
   resolveProjectStoragePath,
 } from './config-dir';
 import { formatBytes } from './format';
+import { debugError } from '../utils/debug-log';
 
 export type StorageIssueKind =
   | 'legacy-global-sessions'
@@ -633,7 +634,10 @@ function inspectProjectMetadata(
       !!projectPath &&
       getCanonicalProjectKey(projectPath) === expectedProjectKey;
     return { exists: true, valid, repairable: true, fingerprint, projectPath };
-  } catch {
+  } catch (error) {
+    // Unparseable metadata is reported as invalid-but-repairable; the parse
+    // error itself explains *why* a repair was proposed.
+    debugError('storage-maintenance.inspectProjectMetadata', error);
     return { exists: true, valid: false, repairable: true, fingerprint };
   }
 }
@@ -652,7 +656,10 @@ function inspectProjectSessions(projectDir: string): ProjectSessionEvidence {
   let files: string[];
   try {
     files = readdirSync(sessionsDir).sort();
-  } catch {
+  } catch (error) {
+    // Marking the directory unsafe blocks every destructive action below,
+    // so the reason must be recoverable from a debug run.
+    debugError('storage-maintenance.readSessionsDir', error, sessionsDir);
     return { safe: false, fingerprint: fingerprintText('unreadable-directory'), projectPaths: [] };
   }
   for (const file of files) {
@@ -670,7 +677,11 @@ function inspectProjectSessions(projectDir: string): ProjectSessionEvidence {
       const parsed = JSON.parse(inspected.raw) as { projectPath?: unknown };
       const projectPath = normalizeProjectPath(parsed.projectPath);
       if (projectPath) projectPaths.push(projectPath);
-    } catch {}
+    } catch (error) {
+      // A session file that will not parse contributes no project path; the
+      // fingerprint above already recorded its raw content.
+      debugError('storage-maintenance.parseSessionFile', error, file);
+    }
   }
 
   return {
@@ -747,7 +758,10 @@ function quarantinePlannedPath(action: StoragePathCleanupAction): {
   try {
     if (pathExistsNoFollow(quarantinePath)) return { status: 'skipped' };
     renameSync(action.path, quarantinePath);
-  } catch {
+  } catch (error) {
+    // Reported to the user as a plain "skipped", which is indistinguishable
+    // from "nothing to do" unless the underlying rename error is kept.
+    debugError('storage-maintenance.quarantineRename', error, action.path);
     return { status: 'skipped' };
   }
 
@@ -757,7 +771,11 @@ function quarantinePlannedPath(action: StoragePathCleanupAction): {
       try {
         renameSync(quarantinePath, action.path);
         return { status: 'restored' };
-      } catch {}
+      } catch (error) {
+        // Worst case in this module: the user's data is now sitting under a
+        // hidden quarantine name and the rollback failed. Never lose this.
+        debugError('storage-maintenance.quarantineRestore', error, quarantinePath);
+      }
     }
     return {
       status: 'skipped',
@@ -880,6 +898,7 @@ function inspectPathTreeNoFollow(target: string): PathTreeState | undefined {
   try {
     before = lstatSync(target);
   } catch {
+    // Existence probe: a throw *is* the "path is absent" answer.
     return undefined;
   }
   if (before.isSymbolicLink()) return undefined;
@@ -898,7 +917,9 @@ function inspectPathTreeNoFollow(target: string): PathTreeState | undefined {
   let entries: string[];
   try {
     entries = readdirSync(target).sort();
-  } catch {
+  } catch (error) {
+    // `undefined` means "cannot fingerprint", which callers treat as unsafe.
+    debugError('storage-maintenance.inspectReaddir', error, target);
     return undefined;
   }
   const children: string[] = [];
@@ -914,6 +935,7 @@ function inspectPathTreeNoFollow(target: string): PathTreeState | undefined {
   try {
     after = lstatSync(target);
   } catch {
+    // The directory vanished mid-walk; the fingerprint is no longer valid.
     return undefined;
   }
   if (!after.isDirectory() || !sameStatIdentity(before, after)) return undefined;
@@ -1006,6 +1028,7 @@ function pathExistsNoFollow(path: string): boolean {
     lstatSync(path);
     return true;
   } catch {
+    // Existence probe: a throw *is* the "path is absent" answer.
     return false;
   }
 }
@@ -1014,6 +1037,7 @@ function safeIsFile(path: string): boolean {
   try {
     return lstatSync(path).isFile();
   } catch {
+    // Type probe: an unreachable path is by definition "not a file".
     return false;
   }
 }
@@ -1191,7 +1215,10 @@ function inspectVectorProjects(
       rows: row.rows,
       orphan: row.project !== 'global' && !validProjectKeys.has(row.project),
     }));
-  } catch {
+  } catch (error) {
+    // An empty result reads as "no vector rows" rather than "database
+    // unreadable", which would hide real corruption from the report.
+    debugError('storage-maintenance.readVectorProjects', error, dbPath);
     return [];
   } finally {
     db?.close();
@@ -1220,7 +1247,10 @@ function readVectorProjectSnapshot(
     const rows = readVectorRowsFromDatabase(db, project);
     if (!rows || databaseFileIdentity(dbPath) !== databaseIdentity) return undefined;
     return { databaseIdentity, rows };
-  } catch {
+  } catch (error) {
+    // Same trap as above: a locked or corrupt DB must not masquerade as an
+    // absent one, because the caller then skips maintenance entirely.
+    debugError('storage-maintenance.readVectorSnapshot', error, dbPath);
     return undefined;
   } finally {
     db?.close();
@@ -1302,6 +1332,7 @@ function databaseFileIdentity(path: string): string | undefined {
     if (!stat.isFile() || stat.isSymbolicLink()) return undefined;
     return fingerprintText(stableObjectIdentity(stat));
   } catch {
+    // No database file yet: identity is legitimately unknown, not an error.
     return undefined;
   }
 }
@@ -1334,6 +1365,7 @@ function dirSize(target: string): number {
   try {
     stat = lstatSync(target);
   } catch {
+    // Existence probe: a path that is not there occupies no bytes.
     return 0;
   }
   if (stat.isSymbolicLink()) return 0;
@@ -1341,7 +1373,9 @@ function dirSize(target: string): number {
   if (!stat.isDirectory()) return 0;
   try {
     return readdirSync(target).reduce((sum, entry) => sum + dirSize(join(target, entry)), 0);
-  } catch {
+  } catch (error) {
+    // Under-reporting a directory as 0 bytes skews the whole storage report.
+    debugError('storage-maintenance.dirSize', error, target);
     return 0;
   }
 }
@@ -1350,6 +1384,7 @@ function safeIsDirectory(target: string): boolean {
   try {
     return lstatSync(target).isDirectory();
   } catch {
+    // Type probe: an unreachable path is by definition "not a directory".
     return false;
   }
 }

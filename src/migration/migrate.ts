@@ -17,7 +17,7 @@ import {
   writeFileSync,
   renameSync,
 } from 'fs';
-import { join, resolve} from 'path';
+import { join, resolve } from 'path';
 import { homedir } from 'os';
 import { createHash } from 'crypto';
 import type {
@@ -26,6 +26,7 @@ import type {
   MigrationResult,
   FileMapping,
 } from './types';
+import { errorMessage } from '../utils/errors';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -404,20 +405,31 @@ export function migrateBrand(options: MigrationOptions = {}): MigrationResult {
     }
 
     return { success: true, manifest };
-  } catch (err: any) {
+  } catch (err) {
     // Clean up staging on failure
-    manifest.warnings.push(`Migration failed: ${err.message}`);
+    manifest.warnings.push(`Migration failed: ${errorMessage(err)}`);
     try {
       if (existsSync(stagingRoot)) {
         const { rmSync } = require('fs');
         rmSync(stagingRoot, { recursive: true, force: true });
       }
-    } catch {}
+    } catch (cleanupErr) {
+      manifest.warnings.push(
+        `Failed to clean up staging directory ${stagingRoot}: ${
+          cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)
+        }`
+      );
+    }
     return { success: false, manifest };
   }
 }
 
-: FileMapping[] {
+function migrateConfigFiles(
+  sourceRoot: string,
+  destRoot: string,
+  options: MigrationOptions,
+  _manifest: BrandMigrationManifestV1,
+): FileMapping[] {
   const mappings: FileMapping[] = [];
 
   for (const [srcName, destName] of Object.entries(RENAME_MAP)) {
@@ -469,8 +481,8 @@ export function migrateProjectFiles(
     if (!options.dryRun) {
       try {
         renameSync(srcPath, destPath);
-      } catch (err: any) {
-        warnings.push(`Failed to rename ${from} → ${to}: ${err.message}`);
+      } catch (err) {
+        warnings.push(`Failed to rename ${from} → ${to}: ${errorMessage(err)}`);
         continue;
       }
     }

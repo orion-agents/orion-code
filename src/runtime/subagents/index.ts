@@ -42,20 +42,9 @@ export {
   type ExecuteChildQuery,
   type RunSubtaskOutcome,
 } from './runner';
-export {
-  SubagentProviderGate,
-  type ProviderGateOptions,
-} from './provider-gate';
-export {
-  runSubtaskBatch,
-  type SubagentSupervisorDeps,
-  type RunBatchOutcome,
-} from './supervisor';
-export {
-  createSubtaskTool,
-  coerceSubtaskRequest,
-  summarizeBatchForModel,
-} from './tool';
+export { SubagentProviderGate, type ProviderGateOptions } from './provider-gate';
+export { runSubtaskBatch, type SubagentSupervisorDeps, type RunBatchOutcome } from './supervisor';
+export { createSubtaskTool, coerceSubtaskRequest, summarizeBatchForModel } from './tool';
 export {
   createProductionExecuteQuery,
   createChildLlmConfig,
@@ -68,3 +57,36 @@ export {
   type SubagentTurnInputs,
   type SubagentTurnBundle,
 } from './runtime-integration';
+export * from './research-types';
+export {
+  RESEARCH_HARD_LIMITS,
+  createLocalResearchRequest,
+  hashPacket,
+  stableStringify,
+  subtaskResultToPacket,
+  validatePacket,
+  validateResearchRequest,
+  type PacketContext,
+  type ValidationResult,
+} from './research-contract';
+export {
+  CasMismatchError,
+  UnsupportedSchemaError,
+  artifactHistory,
+  createFileArtifactStore,
+  createMemoryArtifactStore,
+  loadResearchPacket,
+  resumeResearchState,
+  saveResearchPacket,
+  scopeKey,
+  type ArtifactRecord,
+  type ResearchArtifactStore,
+  type ResearchResumeState,
+  type SaveOptions,
+  type SaveResult,
+  type ResearchScope as ResearchArtifactScope,
+} from './research-artifact';
+export * from './research-citation';
+export * from './research-quality';
+export * from './research-renderer';
+export * from './web-research-adapter';

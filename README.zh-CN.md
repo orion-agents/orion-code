@@ -3,7 +3,7 @@
 > **Orion Code — 通用 Agent 驾驭框架**
 > 一个 CLI 驱动的编码 Agent，具备安全边界、工具编排、记忆系统和上下文管理。
 >
-> v0.1.3 — Goal 连续性、模型配置与命令沙箱 POC
+> v0.1.4 — Goal 连续性、模型配置与命令沙箱 POC
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20.0-green.svg)](https://nodejs.org)
@@ -104,15 +104,18 @@ npm start -- --print "review the current git diff"
 
 ### 全局安装
 
-固定安装 v0.1.3：
+固定安装 v0.1.4：
 
 ```bash
-npm install -g @orion-agents/orion-code@0.1.3
+npm install -g @orion-agents/orion-code@0.1.4
 # 任意目录运行
 orion
 ```
 
 也可以在源码工作树中使用 `npm ci && npm run build && npm start`。
+
+> **预发布说明**：`0.1.4` 是 `v0.1.4` 分支上的开发版本，尚未发布到 npm——当前已发布版本
+> 仍是 `0.1.3`。在 `v0.1.4` 打 tag 并发布之前，请从源码工作树安装。该说明将在发版时移除。
 
 公众体验、交互优化和新增工作流优先落在 TUI。`terminal-ui` 不作为与
 TUI 并行发展的公众产品；Ink 只保留迁移期兼容，不再增加产品能力。
@@ -462,7 +465,15 @@ orion-code/
 
 ## 版本历史
 
-### v0.1.3（当前版本）
+### v0.1.4（开发中，未发布）
+
+- 版本元数据对齐：`package.json` / `package-lock.json` 升至 `0.1.4`，`orion --version`、
+  出站 `User-Agent` 与崩溃/遥测上报不再误报 `0.1.3`；
+- 类型安全推进：外部边界（LLM provider、MCP wire、工具返回）由 `any` 收窄为 `unknown` +
+  类型守卫，顺带修复被 `any` 掩盖的真实缺陷；
+- 可靠性：持久化与鉴权路径不再静默吞掉异常，ESLint 启用 `no-empty` 门禁。
+
+### v0.1.3（最新已发布版本）
 
 - `/model` 与 `/models` 拆分：`/model` 只显示当前模型信息，`/models` 承接交互式切换；
 - `modelRegistry` 成为模型展示与切换的唯一事实源，静态 catalog 退为 legacy fallback；
@@ -488,6 +499,25 @@ orion-code/
 - Orion Code 首个公开基线版本。
 
 详见 `docs/mvp/` 和 `docs/plan/`。
+
+---
+
+## Research-to-Evidence（v0.1.4，实验性）
+
+> **状态标记：experimental（实验性）。** 把只读 `research` 子 agent 的结果转化为**可追踪、可恢复**的研究→证据闭环。
+
+核心保证（违反任一即 No-Go，绝不发布）：
+
+- **只接专用 WebSearch / WebFetch**，不暴露通用 MCP、不授予 write/exec。
+- **SSRF / DNS 重解析 / 重定向 / 响应大小 / 超时** 全部走既有守卫：选择期做 lexical SSRF 预检，逐跳防护委托给真实 WebFetch 工具。
+- **claim 必须有 source 绑定**才能进入 `observed`；无独立验证的 claim 永远停在 `partial`/`unmet`，绝不被算作已验证/完成。
+- **安全闸门失败 → `blocked`/`failed` + 结构化原因**，绝不伪装成命中；provider fallback 只换 provider，不降级 source status，也不把失败写成成功。
+- 研究证据（web）与执行验证证据（file / 测试 / 构建 / 文件事实）**明确区分**，web 摘要不能替代执行验证。
+- 包与源元数据**原子 CAS 保存**，project / session / Goal 作用域隔离；恢复只推导状态、不重放外部副作用；旧 schema 版本 fail-closed。
+
+模块：`src/runtime/subagents/{research-types,research-contract,research-citation,web-research-adapter,research-renderer,research-artifact,research-quality}.ts`。
+
+> 真实终端（PTY）与外部状态证据在 CI 中标记为 `not_run`；本地测试不视为发布完成。
 
 ---
 

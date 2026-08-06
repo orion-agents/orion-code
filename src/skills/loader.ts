@@ -19,6 +19,7 @@ import {
 } from './types';
 import { getConfigHome } from '../services/config-dir';
 import { loadConfig } from '../services/config';
+import { errorMessage } from '../utils/errors';
 
 // ============================================================================
 // Skill Parser
@@ -66,10 +67,10 @@ export function parseSkillFile(content: string, sourcePath: string): SkillDefini
     };
 
     return skill;
-  } catch (err: any) {
+  } catch (err) {
     warnOnce(
       `skill-parse-fail:${normalizedSourcePath}`,
-      `Failed to parse ${normalizedSourcePath}: ${err.message}`,
+      `Failed to parse ${normalizedSourcePath}: ${errorMessage(err)}`,
     );
     return null;
   }
@@ -231,8 +232,8 @@ export function scanSkillsDirectory(dirPath: string, _type: SkillSource['type'])
         skills.push(skill);
       }
     }
-  } catch (err: any) {
-    warnOnce(`skill-scan-fail:${normalizedDirPath}`, `Failed to scan ${normalizedDirPath}: ${err.message}`);
+  } catch (err) {
+    warnOnce(`skill-scan-fail:${normalizedDirPath}`, `Failed to scan ${normalizedDirPath}: ${errorMessage(err)}`);
   }
 
   return skills;

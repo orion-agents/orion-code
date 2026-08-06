@@ -38,7 +38,7 @@ export interface TaskRecord {
   /** 当前状态 */
   status: TaskStatus;
   /** 附加参数 */
-  params?: Record<string, any>;
+  params?: Record<string, unknown>;
   /** 执行结果 */
   result?: TaskResult;
   /** 标签 */
@@ -63,7 +63,7 @@ export interface CreateTaskOptions {
   description: string;
   priority?: Priority;
   assignedTo?: string;
-  params?: Record<string, any>;
+  params?: Record<string, unknown>;
   tags?: string[];
   maxRetries?: number;
 }
@@ -74,7 +74,7 @@ export interface UpdateTaskOptions {
   description?: string;
   priority?: Priority;
   assignedTo?: string;
-  params?: Record<string, any>;
+  params?: Record<string, unknown>;
   tags?: string[];
   maxRetries?: number;
 }

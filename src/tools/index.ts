@@ -52,6 +52,8 @@ import { GIT_TOOLS } from './git';
 import { lspTools } from './lsp';
 import { GOAL_TOOLS } from '../runtime/goals/tools';
 import { assessCommandSecurity, isReadOnlyCommand } from './bash_security';
+import { debugError } from '../utils/debug-log';
+import { errorMessage } from '../utils/errors';
 import {
   describeSandboxPlan,
   planSandboxedCommand,
@@ -559,7 +561,7 @@ export const TOOLS: OpenHorseTool[] = [
         },
       },
       required: ['steps'],
-    } as any,
+    },
     execute: async (args, context) => executeBatchRead(args, context),
     isReadOnly: () => true,
     isConcurrencySafe: () => true,
@@ -642,8 +644,8 @@ export const TOOLS: OpenHorseTool[] = [
           saveMemory(entry, projectPath);
         }
         return { success: true, output: `Saved memory: ${name} (${type})` };
-      } catch (err: any) {
-        return { success: false, output: '', error: err.message };
+      } catch (err) {
+        return { success: false, output: '', error: errorMessage(err) };
       }
     },
     isReadOnly: () => false,
@@ -704,7 +706,8 @@ export const TOOLS: OpenHorseTool[] = [
               memories = searchMemories(query, projectPath);
               if (type) memories = memories.filter(m => m.type === type);
             }
-          } catch {
+          } catch (error) {
+            debugError('tools.memory.semanticSearch', error, query);
             memories = searchMemories(query, projectPath);
             if (type) memories = memories.filter(m => m.type === type);
           }
@@ -729,8 +732,8 @@ export const TOOLS: OpenHorseTool[] = [
         }
 
         return { success: true, output: lines.join('\n') };
-      } catch (err: any) {
-        return { success: false, output: '', error: err.message };
+      } catch (err) {
+        return { success: false, output: '', error: errorMessage(err) };
       }
     },
     isReadOnly: () => true,
@@ -775,14 +778,16 @@ export const TOOLS: OpenHorseTool[] = [
           try {
             const { getVectorStore } = require('../memory/vector-store');
             getVectorStore().delete(name, projectPath);
-          } catch {
-            // Vector store cleanup is best-effort
+          } catch (error) {
+            // Vector store cleanup is best-effort, but a failure leaves an
+            // orphaned embedding that keeps surfacing a deleted memory.
+            debugError('tools.memory.vectorDelete', error, name);
           }
         }
 
         return { success: true, output: `Deleted memory: ${name}` };
-      } catch (err: any) {
-        return { success: false, output: '', error: err.message };
+      } catch (err) {
+        return { success: false, output: '', error: errorMessage(err) };
       }
     },
     isReadOnly: () => false,
@@ -894,8 +899,8 @@ export const TOOLS: OpenHorseTool[] = [
         }
 
         return { success: true, output: lines.join('\n') };
-      } catch (err: any) {
-        return { success: false, output: '', error: err.message };
+      } catch (err) {
+        return { success: false, output: '', error: errorMessage(err) };
       }
     },
     isReadOnly: () => true,
@@ -954,7 +959,9 @@ function normalizeToolPath(input: string): string {
   if (value.startsWith('file://')) {
     try {
       return decodeURIComponent(new URL(value).pathname);
-    } catch {
+    } catch (error) {
+      // Malformed URL or bad percent-encoding: strip the scheme so the path
+      // still reaches the caller's own validation instead of vanishing.
       return value.replace(/^file:\/\//u, '');
     }
   }
@@ -993,7 +1000,10 @@ function safeReadFileSync(resolved: string): string | null {
     const st = safeStatSync(resolved);
     if (!st || st.isDirectory()) return null;
     return readFileSync(resolved, 'utf-8');
-  } catch {
+  } catch (error) {
+    // Permission denied or a binary that is not valid UTF-8; callers treat null
+    // as "no content", which otherwise hides a real read failure.
+    debugError('tools.safeReadFile', error, resolved);
     return null;
   }
 }
@@ -1102,8 +1112,8 @@ async function readFileSync_(
     }
 
     return { success: true, output: selected };
-  } catch (err: any) {
-    return { success: false, output: '', error: String(err.message) };
+  } catch (err) {
+    return { success: false, output: '', error: errorMessage(err) };
   }
 }
 
@@ -1116,8 +1126,8 @@ async function writeFileSync_(path: string, content: string, cwd?: string): Prom
       success: true,
       output: `Wrote ${content.split('\n').length} lines to ${normalizedPath}`,
     };
-  } catch (err: any) {
-    return { success: false, output: '', error: String(err.message) };
+  } catch (err) {
+    return { success: false, output: '', error: errorMessage(err) };
   }
 }
 
@@ -1231,7 +1241,11 @@ async function execCommand_(
     let interrupted: 'aborted' | 'timeout' | null = null;
 
     // Issue #32 #3.2: AbortSignal 处理
-    const timeoutId: NodeJS.Timeout | undefined;
+    // Declared uninitialized on purpose: `finish()` below closes over it before the
+    // `timeoutId = setTimeout(...)` assignment. `const` without an initializer is a
+    // compile error (TS1155), and inlining the assignment would put it in the closure's TDZ.
+    // eslint-disable-next-line prefer-const
+    let timeoutId: NodeJS.Timeout | undefined;
     let killTimerId: NodeJS.Timeout | undefined;
     let settled = false;
 
@@ -1681,8 +1695,8 @@ async function editFile_(
       success: true,
       output: `Replaced ${count} occurrence(s) of old_string with new_string in ${normalizedPath}`,
     };
-  } catch (err: any) {
-    return { success: false, output: '', error: String(err.message) };
+  } catch (err) {
+    return { success: false, output: '', error: errorMessage(err) };
   }
 }
 
@@ -1795,8 +1809,8 @@ async function glob_(pattern: string, basePath?: string, cwd?: string): Promise<
         : sorted.join('\n');
 
     return { success: true, output };
-  } catch (err: any) {
-    return { success: false, output: '', error: String(err.message) };
+  } catch (err) {
+    return { success: false, output: '', error: errorMessage(err) };
   }
 }
 
@@ -1942,8 +1956,8 @@ async function grep_(
     }
 
     return { success: true, output: results.slice(0, maxResults).join('\n') + symlinkWarning };
-  } catch (err: any) {
-    return { success: false, output: '', error: String(err.message) };
+  } catch (err) {
+    return { success: false, output: '', error: errorMessage(err) };
   }
 }
 
@@ -2127,13 +2141,13 @@ async function executeBatchRead(
         error: typeof envelope.error === 'string' ? envelope.error : undefined,
         output: truncateForContext(output, BATCH_READ_STEP_OUTPUT_MAX_BYTES),
       });
-    } catch (err: any) {
+    } catch (err) {
       stepResults.push({
         index: i + 1,
         tool: step.tool,
         args: step.args,
         success: false,
-        error: err?.message || String(err),
+        error: errorMessage(err),
         output: '',
       });
     }
@@ -2245,7 +2259,5 @@ export {
   checkDangerousCommand,
   isPotentiallyDestructive,
   assessCommandSecurity,
-  wrapForSandbox,
-  type SandboxOptions,
-  DEFAULT_SANDBOX_OPTIONS,
+  findDestructiveRmTarget,
 } from './bash_security';

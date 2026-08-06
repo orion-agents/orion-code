@@ -31,6 +31,29 @@ export interface VectorStoreConfig {
   embeddingConfig?: EmbeddingConfig;
 }
 
+/**
+ * Raw `memories` row as returned by better-sqlite3, using the snake_case
+ * column names from the SQL rather than the camelCase of `SearchResult`.
+ */
+interface MemoryRow {
+  id: string;
+  name: string;
+  type: string;
+  content: string;
+  description: string;
+  created_at: number;
+}
+
+/** A `MemoryRow` from a vector query, which additionally selects a distance. */
+interface MemoryVectorRow extends MemoryRow {
+  distance: number;
+}
+
+/** Extract a human-readable message from an unknown thrown value. */
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 export interface VectorProjectStats {
   project: string;
   rows: number;
@@ -113,9 +136,9 @@ export class VectorStore {
       `);
 
       this.initialized = true;
-    } catch (err: any) {
+    } catch (err) {
       // sqlite-vec may not be available - fall back to text search only
-      console.warn(`[VectorStore] sqlite-vec not available: ${err.message}`);
+      console.warn(`[VectorStore] sqlite-vec not available: ${errorMessage(err)}`);
       this.initialized = false;
     }
   }
@@ -188,8 +211,8 @@ export class VectorStore {
           memoryId,
           result.lastInsertRowid
         );
-      } catch (err: any) {
-        console.warn(`[VectorStore] Failed to store embedding: ${err.message}`);
+      } catch (err) {
+        console.warn(`[VectorStore] Failed to store embedding: ${errorMessage(err)}`);
         // embed 失败时不写入 memories 表（事务未执行）
         throw err;
       }
@@ -274,7 +297,7 @@ export class VectorStore {
         ? [JSON.stringify(queryVector), ...projectKeys, limit]
         : [JSON.stringify(queryVector), limit];
 
-      const rows = stmt.all(...params) as any[];
+      const rows = stmt.all(...params) as MemoryVectorRow[];
 
       return rows.map(row => ({
         id: row.id,
@@ -285,8 +308,8 @@ export class VectorStore {
         score: 1 - row.distance, // Convert distance to similarity score
         createdAt: row.created_at,
       }));
-    } catch (err: any) {
-      console.warn(`[VectorStore] Semantic search failed: ${err.message}`);
+    } catch (err) {
+      console.warn(`[VectorStore] Semantic search failed: ${errorMessage(err)}`);
       return this.textSearch(query, limit, projectKeys);
     }
   }
@@ -314,7 +337,7 @@ export class VectorStore {
       ? [...projectKeys, searchTerm, searchTerm, searchTerm, limit]
       : [searchTerm, searchTerm, searchTerm, limit];
 
-    const rows = stmt.all(...params) as any[];
+    const rows = stmt.all(...params) as MemoryRow[];
 
     return rows.map(row => ({
       id: row.id,
@@ -338,7 +361,7 @@ export class VectorStore {
 
     const stmt = this.db.prepare(sql);
     const params = projectKeys ?? [];
-    const rows = stmt.all(...params) as any[];
+    const rows = stmt.all(...params) as MemoryRow[];
 
     return rows.map(row => ({
       id: row.id,

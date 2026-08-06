@@ -19,6 +19,30 @@ Evidence labels follow `docs/plan/targets-v0.1.3-v0.1.3-2.md`:
 `met` / `partial` / `unmet` / `not_run` — where `not_run` means "blocked by environment",
 which is **not** a pass.
 
+## [0.1.4] — Unreleased
+
+> **Status: in development.** Committed on the `v0.1.4` release branch, **not yet
+> tagged or published** (`@orion-agents/orion-code@0.1.4` is not on npm). Work that
+> remains a worktree-only draft carries no release promise (see legend).
+
+Aligns `package.json` / `package-lock.json` with the in-flight `v0.1.4` branch so the
+CLI banner, HTTP `User-Agent`, and crash/telemetry reports stop misreporting `0.1.3`.
+
+### Changed
+
+- **Release metadata (#10):** bumped `package.json` and `package-lock.json` to
+  `0.1.4` so `orion --version` and the outbound `User-Agent` reflect the development line.
+- **Type safety (#5):** removed ~22 `any` usages (120 → 98 on the committed tree):
+  - native `Intl.Segmenter` typing via the `ES2022.Intl` `lib` (no more `(Intl as any)` casts);
+  - typed SQLite rows in `src/memory/vector-store.ts` (`MemoryRow` / `MemoryVectorRow`);
+  - `unknown`-typed task params in `src/services/task-manager.ts`;
+  - typed provider-error messages in `src/services/provider-resilience/error-classifier.ts`.
+
+### Fixed
+
+- **Lint (#6):** resolved unused-vars / prefer-const warnings and removed dead code
+  (17 ESLint `no-explicit-any` / unused-var alerts cleared).
+
 ## [0.1.3] — 2026-08-05
 
 > **Status: published.** Tag `v0.1.3` exists and the package is on npm

@@ -763,7 +763,7 @@ function nextBoundary(value: string, cursor: number): number {
 }
 
 function graphemeBoundaries(value: string): number[] {
-  const Segmenter = (Intl as any).Segmenter;
+  const Segmenter = Intl.Segmenter;
   if (!Segmenter) {
     const boundaries = [0];
     let index = 0;
@@ -776,7 +776,7 @@ function graphemeBoundaries(value: string): number[] {
 
   const segmenter = new Segmenter(undefined, { granularity: 'grapheme' });
   const boundaries = [0];
-  for (const part of segmenter.segment(value) as Iterable<{ index: number; segment: string }>) {
+  for (const part of segmenter.segment(value)) {
     boundaries.push(part.index + part.segment.length);
   }
   return Array.from(new Set(boundaries)).sort((left, right) => left - right);

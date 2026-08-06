@@ -6,8 +6,7 @@ import {
   isPotentiallyDestructive,
   isValidationCommand,
   assessCommandSecurity,
-  wrapForSandbox,
-  DEFAULT_SANDBOX_OPTIONS,
+  findDestructiveRmTarget,
 } from '../src/tools/bash_security';
 
 describe('bash_security', () => {
@@ -163,40 +162,59 @@ describe('bash_security', () => {
     });
   });
 
-  describe('wrapForSandbox', () => {
-    test('returns original command for none mode', () => {
-      const cmd = 'ls -la';
-      expect(wrapForSandbox(cmd, { mode: 'none' })).toBe(cmd);
+  // Regression: #13 -- the anchored `rm -rf /` patterns were defeated by any
+  // reordering of the flag cluster or any trailing argument.
+  describe('findDestructiveRmTarget', () => {
+    test.each([
+      ['rm -rf /', '/'],
+      ['rm -fr /', '/'],
+      ['rm -r -f /', '/'],
+      ['rm -f -r /', '/'],
+      ['rm --recursive --force /', '/'],
+      ['rm -rf / --no-preserve-root', '/'],
+      ['rm --no-preserve-root -rf /', '/'],
+      ['rm -rf //', '//'],
+      ['rm -rf /*', '/*'],
+      ['sudo rm -rf /', '/'],
+      ['/bin/rm -rf /', '/'],
+      ['rm -rf ~', '~'],
+      ['rm -rf ~/', '~/'],
+      ['rm -rf ~/*', '~/*'],
+      ['rm -rf $HOME', '$HOME'],
+      ['rm -rf ${HOME}/', '${HOME}/'],
+      ['rm -rf /usr', '/usr'],
+      ['rm -rf /etc/*', '/etc/*'],
+      ['rm -rf -- /', '/'],
+      ['rm -rf build /', '/'],
+    ])('flags %s as catastrophic', (cmd, target) => {
+      expect(findDestructiveRmTarget(cmd)).toBe(target);
     });
 
-    test('wraps command for docker mode', () => {
-      const cmd = 'ls -la';
-      const result = wrapForSandbox(cmd, { mode: 'docker' });
-      expect(result).toContain('docker exec');
-      expect(result).toContain('ls -la');
+    test.each([
+      'rm -rf ./build',
+      'rm -rf node_modules',
+      'rm -rf dist/*',
+      'rm -f ~/.cache/orion/session.json',
+      'rm -rf /tmp/orion-test',
+      'rm -rf /usr-local-backup',
+      'ls -la /',
+      'echo rm',
+    ])('leaves %s alone', cmd => {
+      expect(findDestructiveRmTarget(cmd)).toBeNull();
     });
 
-    test('wraps command for bubblewrap mode', () => {
-      const cmd = 'ls -la';
-      const result = wrapForSandbox(cmd, { mode: 'bubblewrap' });
-      expect(result).toContain('bwrap');
-      expect(result).toContain('ls -la');
+    test('rm without -r or -f cannot remove a directory, so it is not blocked', () => {
+      expect(findDestructiveRmTarget('rm /')).toBeNull();
     });
 
-    test('disables network in docker by default', () => {
-      const result = wrapForSandbox('curl http://example.com', { mode: 'docker' });
-      expect(result).toContain('--network none');
+    test('catches a destructive rm hidden later in a chain', () => {
+      expect(findDestructiveRmTarget('npm run build && rm -fr / --no-preserve-root')).toBe('/');
     });
 
-    test('enables network when specified', () => {
-      const result = wrapForSandbox('curl http://example.com', { mode: 'docker', network: true });
-      expect(result).not.toContain('--network none');
-    });
-  });
-
-  describe('DEFAULT_SANDBOX_OPTIONS', () => {
-    test('has mode none by default', () => {
-      expect(DEFAULT_SANDBOX_OPTIONS.mode).toBe('none');
+    test('assessCommandSecurity blocks every rewrite', () => {
+      for (const cmd of ['rm -rf /', 'rm -fr /', 'rm -rf / --no-preserve-root', 'rm -rf /*']) {
+        expect(assessCommandSecurity(cmd).level).toBe('blocked');
+      }
     });
   });
 });

@@ -172,6 +172,50 @@ describe('LLMService', () => {
     });
   });
 
+  describe('non-standard provider responses', () => {
+    test('falls back to the configured model when the response omits one', async () => {
+      // LLMResponse.model is declared `string`, but `model` is optional on the
+      // wire and some OpenAI-compatible gateways leave it out. Without a
+      // fallback the field silently becomes `undefined` while still typed as
+      // a string, which then shows up in usage accounting and the status line.
+      const llm = new LLMService({ apiKey: 'test-key', model: 'configured-model' });
+      (llm as any).client = {
+        chat: {
+          completions: {
+            create: jest.fn().mockResolvedValue({
+              id: 'no-model-1',
+              choices: [{ message: { content: 'ok' } }],
+            }),
+          },
+        },
+      };
+
+      const response = await llm.chat([{ role: 'user', content: 'Hi' }]);
+
+      expect(response.model).toBe('configured-model');
+      expect(response.content).toBe('ok');
+    });
+
+    test('prefers the model the provider actually routed to', async () => {
+      const llm = new LLMService({ apiKey: 'test-key', model: 'configured-model' });
+      (llm as any).client = {
+        chat: {
+          completions: {
+            create: jest.fn().mockResolvedValue({
+              id: 'routed-1',
+              model: 'actually-served-model',
+              choices: [{ message: { content: 'ok' } }],
+            }),
+          },
+        },
+      };
+
+      const response = await llm.chat([{ role: 'user', content: 'Hi' }]);
+
+      expect(response.model).toBe('actually-served-model');
+    });
+  });
+
   describe('usage accounting', () => {
     test('extracts provider cost and cached tokens from non-stream responses', async () => {
       const llm = new LLMService({ apiKey: 'test-key', model: 'routed-model' });

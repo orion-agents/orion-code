@@ -2,7 +2,7 @@
 
 > **Goal-driven coding agent for the terminal.**
 >
-> v0.1.3 — Goal continuity, model config & shell sandbox POC
+> v0.1.4 — Goal continuity, model config & shell sandbox POC
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20.0-green.svg)](https://nodejs.org)
@@ -35,8 +35,8 @@ Orion Code is a terminal-based coding agent. It wraps LLM APIs in a harness of s
 ### Install & Run
 
 ```bash
-# Install the v0.1.3 release:
-npm install -g @orion-agents/orion-code@0.1.3
+# Install the v0.1.4 release:
+npm install -g @orion-agents/orion-code@0.1.4
 
 # Or run from a checked-out source tree:
 npm ci
@@ -72,6 +72,10 @@ orion commit
 orion -p "review the current git diff"
 echo "summarize this project" | orion --print
 ```
+
+> **Pre-release note.** `0.1.4` is the in-development line on the `v0.1.4` branch and is
+> not on npm yet — `0.1.3` is the current published release. Until `v0.1.4` is tagged and
+> published, install from a source checkout. This note is removed at release.
 
 ### TUI startup banner
 
@@ -275,6 +279,23 @@ orion migrate openhorse --yes [--include-env]
 See the [v0.1.2 release notes](https://github.com/orion-agents/orion-code/blob/main/docs/mvp/v0.1.2.md),
 [Goal evidence and recovery guide](https://github.com/orion-agents/orion-code/blob/main/docs/goals/goal-evidence-and-recovery.md),
 and [execution plan](https://github.com/orion-agents/orion-code/blob/main/docs/plan/v0.1.2-execution-plan.md).
+
+## Research-to-Evidence (v0.1.4, experimental)
+
+> **Status: experimental.** Turns the read-only `research` subagent output into a **traceable, recoverable** research→evidence loop.
+
+Hard guarantees (any violation is a No-Go; never published):
+
+- **Only specialized WebSearch / WebFetch** — no generic MCP, no write/exec grant.
+- **SSRF / DNS-rebind / redirect / body-size / timeout** re-use the existing guards: a lexical SSRF pre-check at selection, and the full per-hop guard set delegated to the real WebFetch tool.
+- A **claim must bind a source** to reach `observed`; a claim with no independent verification stays `partial`/`unmet` and is never counted as verified/complete.
+- A **security-gate failure becomes `blocked`/`failed` with a structured reason** — never faked as a hit; provider fallback only swaps the provider, never downgrades a source status or writes a failure as a success.
+- Research evidence (web) and execution-verification evidence (file / test / build / file facts) are **kept distinct**; a web summary cannot stand in for execution verification.
+- Packet + source metadata are saved **atomically with a CAS token**; project / session / Goal scope isolation; resume only derives state and never replays external side effects; old schema versions fail closed.
+
+Modules: `src/runtime/subagents/{research-types,research-contract,research-citation,web-research-adapter,research-renderer,research-artifact,research-quality}.ts`.
+
+> Real-terminal (PTY) and external-state evidence are marked `not_run` in CI; local tests are not treated as release completion.
 
 ## Development
 

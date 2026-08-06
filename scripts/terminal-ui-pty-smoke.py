@@ -622,7 +622,7 @@ def main() -> int:
 
         os.write(master, b"\x15")
         os.write(master, b"revision target\r")
-        wait_for(master, output, "Revision received. Interrupting current response", timeout=8)
+        wait_for(master, output, "已接收补充，正在中断当前轮…", timeout=8)
         wait_for(master, output, "revision-final-response", timeout=10)
 
         # --- Multi-tool batch ordering test ---

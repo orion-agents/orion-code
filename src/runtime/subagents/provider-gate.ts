@@ -24,7 +24,6 @@
 
 import type { ProviderRequestGate } from '../../services/provider-resilience/request-gate';
 
-
 export interface ProviderGateOptions {
   /** Maximum children running concurrently. */
   maxConcurrent: number;

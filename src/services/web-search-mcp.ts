@@ -15,11 +15,16 @@ export const DEFAULT_WEBSEARCH_MCP_ENDPOINT = BAILIAN_WEBSEARCH_MCP_ENDPOINT;
 const MCP_PROTOCOL_VERSION = '2025-03-26';
 const DEFAULT_TIMEOUT_MS = 30_000;
 
+/**
+ * JSON-RPC payloads come off the wire, so `result` and `error.data` are
+ * genuinely unknown until a caller narrows them. `unknown` keeps that honest
+ * without pretending we know the provider's schema.
+ */
 interface JsonRpcMessage {
   jsonrpc: '2.0';
   id?: string | number;
-  result?: any;
-  error?: { code?: number; message?: string; data?: any };
+  result?: unknown;
+  error?: { code?: number; message?: string; data?: unknown };
 }
 
 interface McpToolDefinition {
@@ -27,9 +32,14 @@ interface McpToolDefinition {
   description?: string;
   inputSchema?: {
     type?: string;
-    properties?: Record<string, any>;
+    /** Raw JSON Schema fragment; shape is provider-defined. */
+    properties?: Record<string, unknown>;
     required?: string[];
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
 }
 
 interface ResolvedWebSearchMcpConfig {
@@ -122,17 +132,24 @@ function withTimeout(timeoutMs: number): { signal: AbortSignal; cleanup: () => v
   };
 }
 
-function normalizeMcpOutput(result: any): string {
-  if (Array.isArray(result?.content)) {
-    const text = result.content
-      .filter((item: any) => item?.type === 'text' && typeof item.text === 'string')
-      .map((item: any) => item.text)
+/** A `{ type: 'text', text: string }` entry in an MCP tool result. */
+function isTextContent(item: unknown): item is { type: 'text'; text: string } {
+  return isRecord(item) && item.type === 'text' && typeof item.text === 'string';
+}
+
+function normalizeMcpOutput(result: unknown): string {
+  const record = isRecord(result) ? result : undefined;
+
+  if (Array.isArray(record?.content)) {
+    const text = record.content
+      .filter(isTextContent)
+      .map(item => item.text)
       .join('\n');
     if (text) return text;
   }
 
-  if (result?.structuredContent) {
-    return JSON.stringify(result.structuredContent, null, 2);
+  if (record?.structuredContent) {
+    return JSON.stringify(record.structuredContent, null, 2);
   }
 
   return JSON.stringify(result, null, 2);
@@ -219,7 +236,7 @@ export class WebSearchMcpClient {
       arguments: buildSearchArgs(tool, query, limit),
     });
 
-    if (result?.isError) {
+    if (isRecord(result) && result.isError) {
       throw new WebSearchMcpError(
         'WEBSEARCH_MCP_TOOL_ERROR',
         normalizeMcpOutput(result),
@@ -260,7 +277,14 @@ export class WebSearchMcpClient {
     await this.notification('notifications/initialized', {});
 
     const toolsResult = await this.request('tools/list', {});
-    this.tools = toolsResult?.tools || [];
+    const advertised = isRecord(toolsResult) ? toolsResult.tools : undefined;
+    // Keep only entries that actually carry a tool name; a malformed entry
+    // would otherwise reach `selectSearchTool` and blow up on `tool.name`.
+    this.tools = Array.isArray(advertised)
+      ? advertised.filter(
+          (tool): tool is McpToolDefinition => isRecord(tool) && typeof tool.name === 'string'
+        )
+      : [];
     this.initialized = true;
   }
 
@@ -268,7 +292,7 @@ export class WebSearchMcpClient {
     await this.sendJsonRpc({ jsonrpc: '2.0', method, params });
   }
 
-  private async request(method: string, params: Record<string, unknown>): Promise<any> {
+  private async request(method: string, params: Record<string, unknown>): Promise<unknown> {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const message = { jsonrpc: '2.0', id, method, params };
     const messages = await this.sendJsonRpc(message);
@@ -333,11 +357,13 @@ export class WebSearchMcpClient {
         body: JSON.stringify(message),
         signal: timeout.signal,
       });
-    } catch (err: any) {
-      const message =
-        err?.name === 'AbortError'
-          ? `request timed out after ${this.config.timeoutMs}ms`
-          : err?.message || String(err);
+    } catch (err) {
+      const aborted = err instanceof Error && err.name === 'AbortError';
+      const message = aborted
+        ? `request timed out after ${this.config.timeoutMs}ms`
+        : err instanceof Error
+          ? err.message
+          : String(err);
       throw new WebSearchMcpError('WEBSEARCH_MCP_NETWORK_ERROR', message, this.config.endpoint);
     } finally {
       timeout.cleanup();
@@ -364,10 +390,10 @@ export class WebSearchMcpClient {
 
     try {
       return parseJsonRpcMessages(text, response.headers.get('content-type') || '');
-    } catch (err: any) {
+    } catch (err) {
       throw new WebSearchMcpError(
         'WEBSEARCH_MCP_PARSE_ERROR',
-        `Failed to parse MCP response: ${err.message}`,
+        `Failed to parse MCP response: ${err instanceof Error ? err.message : String(err)}`,
         this.config.endpoint
       );
     }

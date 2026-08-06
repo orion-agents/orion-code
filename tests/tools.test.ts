@@ -307,7 +307,15 @@ describe('exec_command tool', () => {
 
   test('isConcurrencySafe only for read-only commands', () => {
     expect(tool.isConcurrencySafe?.({ command: 'git status --short' })).toBe(true);
-    expect(tool.isConcurrencySafe?.({ command: 'npm test' })).toBe(true);
+    expect(tool.isConcurrencySafe?.({ command: 'npm list --depth=0' })).toBe(true);
+  });
+
+  test('isConcurrencySafe excludes script runners that mutate the workspace', () => {
+    // `npm test` / `npm run` execute project-defined scripts: they can write
+    // coverage output, bind ports, or touch build artifacts, so they must not
+    // be batched alongside other tool calls.
+    expect(tool.isConcurrencySafe?.({ command: 'npm test' })).toBe(false);
+    expect(tool.isConcurrencySafe?.({ command: 'npm run build' })).toBe(false);
   });
 
   test('executes simple command', async () => {

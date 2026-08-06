@@ -7,6 +7,7 @@
 import { writeFileSync, readFileSync, existsSync, unlinkSync, readdirSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { getCacheDir, ensureConfigDir } from './config-dir';
+import { debugError } from '../utils/debug-log';
 
 // ============================================================================
 // 类型定义
@@ -115,8 +116,10 @@ export class SessionManager {
       session.lastActivity = Date.now();
       session.status = 'active';
       writeFileSync(filePath, JSON.stringify(session, null, 2));
-    } catch {
-      // 忽略错误
+    } catch (error) {
+      // A failed heartbeat makes this session look dead to every other
+      // process, so it eventually gets reaped. Keep going, but record why.
+      debugError('concurrent-sessions.updateActivity', error, filePath);
     }
   }
 
@@ -132,8 +135,9 @@ export class SessionManager {
       const session = JSON.parse(content) as SessionInfo;
       session.status = 'idle';
       writeFileSync(filePath, JSON.stringify(session, null, 2));
-    } catch {
-      // 忽略错误
+    } catch (error) {
+      // The session stays marked 'active' and keeps occupying a slot.
+      debugError('concurrent-sessions.setIdle', error, filePath);
     }
   }
 
@@ -147,8 +151,9 @@ export class SessionManager {
     if (existsSync(filePath)) {
       try {
         unlinkSync(filePath);
-      } catch {
-        // 忽略错误
+      } catch (error) {
+        // Leaves a stale session file behind; `cleanup()` reaps it later.
+        debugError('concurrent-sessions.terminate', error, filePath);
       }
     }
   }
@@ -187,12 +192,15 @@ export class SessionManager {
           }
 
           sessions.push(session);
-        } catch {
-          // 忽略解析错误
+        } catch (error) {
+          // Corrupt record: skip this session rather than failing the listing.
+          debugError('concurrent-sessions.parseSession', error, filePath);
         }
       }
-    } catch {
-      // 忽略目录读取错误
+    } catch (error) {
+      // An unreadable directory reports "no active sessions", which silently
+      // disables the concurrency limit.
+      debugError('concurrent-sessions.listSessions', error, sessionsDir);
     }
 
     return sessions;
@@ -222,6 +230,8 @@ export class SessionManager {
       process.kill(pid, 0);
       return true;
     } catch {
+      // Intentional liveness probe: throwing *is* the "process is gone"
+      // answer (ESRCH), so there is no error to report here.
       return false;
     }
   }
@@ -240,8 +250,11 @@ export class SessionManager {
     this.heartbeatTimer = setInterval(() => {
       this.updateActivity();
     }, this.config.heartbeatInterval);
-    if (this.heartbeatTimer && typeof (this.heartbeatTimer as any).unref === 'function') {
-      (this.heartbeatTimer as any).unref();
+    // `unref()` exists on Node's Timeout but not on the browser timer id that
+    // `setInterval` yields under a DOM lib, so probe for it instead of assuming.
+    const timer: { unref?: () => void } | null = this.heartbeatTimer;
+    if (timer && typeof timer.unref === 'function') {
+      timer.unref();
     }
   }
 
@@ -283,18 +296,21 @@ export class SessionManager {
             unlinkSync(filePath);
             cleaned++;
           }
-        } catch {
+        } catch (parseError) {
           // 解析失败也清理
+          debugError('concurrent-sessions.cleanupParse', parseError, filePath);
           try {
             unlinkSync(filePath);
             cleaned++;
-          } catch {
-            // 忽略
+          } catch (unlinkError) {
+            // The corrupt file survives and will be retried next cleanup.
+            debugError('concurrent-sessions.cleanupUnlink', unlinkError, filePath);
           }
         }
       }
-    } catch {
-      // 忽略目录读取错误
+    } catch (error) {
+      // Cleanup silently does nothing, so stale sessions accumulate.
+      debugError('concurrent-sessions.cleanup', error, sessionsDir);
     }
 
     return cleaned;

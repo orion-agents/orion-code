@@ -7,6 +7,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { getConfigDir, ensureConfigDir } from '../config-dir';
+import { debugError } from '../../utils/debug-log';
 
 // ============================================================================
 // 类型定义
@@ -80,7 +81,10 @@ export class AuthService {
     try {
       const content = readFileSync(this.configPath, 'utf-8');
       this.config = JSON.parse(content);
-    } catch {
+    } catch (error) {
+      // A corrupt auth.json must not brick startup, but resetting to an empty
+      // config silently logs the user out — that needs to be diagnosable.
+      debugError('auth.load', error, this.configPath);
       this.config = {};
     }
   }
@@ -247,7 +251,10 @@ export class SecureStorage {
       writeFileSync(storagePath, JSON.stringify(content), { mode: 0o600 });
 
       return true;
-    } catch {
+    } catch (error) {
+      // The caller only sees `false`; without this the reason a credential
+      // failed to persist (permissions, disk full) is lost entirely.
+      debugError('auth.store', error, `${service}:${account}`);
       return false;
     }
   }
@@ -264,7 +271,10 @@ export class SecureStorage {
 
       const content = JSON.parse(readFileSync(storagePath, 'utf-8'));
       return content[`${service}:${account}`] || null;
-    } catch {
+    } catch (error) {
+      // A parse failure here is indistinguishable from "no credential
+      // stored" to the caller, which is exactly the confusing case.
+      debugError('auth.retrieve', error, `${service}:${account}`);
       return null;
     }
   }
@@ -284,7 +294,10 @@ export class SecureStorage {
       writeFileSync(storagePath, JSON.stringify(content), { mode: 0o600 });
 
       return true;
-    } catch {
+    } catch (error) {
+      // A failed delete leaves the secret on disk — the most security
+      // relevant of the three, so it must never be silent.
+      debugError('auth.delete', error, `${service}:${account}`);
       return false;
     }
   }

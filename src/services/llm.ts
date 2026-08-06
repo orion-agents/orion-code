@@ -8,7 +8,9 @@
  */
 
 import OpenAI from 'openai';
+import type { RequestOptions } from 'openai/core';
 import type {
+  ChatCompletionCreateParams,
   ChatCompletionMessageParam,
   ChatCompletionTool,
 } from 'openai/resources/chat/completions';
@@ -372,34 +374,108 @@ function toNonNegativeFiniteNumber(value: unknown): number | undefined {
   return undefined;
 }
 
+/**
+ * Read a property off a value that may not be an object at all.
+ *
+ * Usage and billing payloads are typed `unknown` here on purpose:
+ * "OpenAI-compatible" is a claim, not a guarantee, and the fields below are
+ * exactly the non-standard ones where gateways disagree with the spec.
+ */
+function readField(source: unknown, key: string): unknown {
+  if (typeof source !== 'object' || source === null) return undefined;
+  return (source as Record<string, unknown>)[key];
+}
+
 /** Extract non-standard billing fields used by OpenAI-compatible providers. */
-function extractProviderCost(usage: any, response: any): number | undefined {
+function extractProviderCost(usage: unknown, response: unknown): number | undefined {
   return [
-    usage?.cost,
-    usage?.total_cost,
-    usage?.cost_usd,
-    response?.cost,
-    response?.total_cost,
-    response?.cost_usd,
+    readField(usage, 'cost'),
+    readField(usage, 'total_cost'),
+    readField(usage, 'cost_usd'),
+    readField(response, 'cost'),
+    readField(response, 'total_cost'),
+    readField(response, 'cost_usd'),
   ]
     .map(toNonNegativeFiniteNumber)
     .find(value => value !== undefined);
 }
 
-function extractLLMUsage(usage: any, response: any, requestId?: string): LLMUsage {
+function extractLLMUsage(usage: unknown, response: unknown, requestId?: string): LLMUsage {
   const cachedPromptTokens = toNonNegativeFiniteNumber(
-    usage?.prompt_tokens_details?.cached_tokens ?? usage?.input_tokens_details?.cached_tokens
+    readField(readField(usage, 'prompt_tokens_details'), 'cached_tokens') ??
+      readField(readField(usage, 'input_tokens_details'), 'cached_tokens')
   );
   return {
-    promptTokens: toNonNegativeFiniteNumber(usage?.prompt_tokens ?? usage?.input_tokens) ?? 0,
+    promptTokens:
+      toNonNegativeFiniteNumber(
+        readField(usage, 'prompt_tokens') ?? readField(usage, 'input_tokens')
+      ) ?? 0,
     completionTokens:
-      toNonNegativeFiniteNumber(usage?.completion_tokens ?? usage?.output_tokens) ?? 0,
+      toNonNegativeFiniteNumber(
+        readField(usage, 'completion_tokens') ?? readField(usage, 'output_tokens')
+      ) ?? 0,
     ...(cachedPromptTokens !== undefined ? { cachedPromptTokens } : {}),
     ...(extractProviderCost(usage, response) !== undefined
       ? { costUsd: extractProviderCost(usage, response) }
       : {}),
     requestId: requestId || randomUUID(),
   };
+}
+
+/**
+ * A tool call as it arrives on the wire, which is not the same thing as a
+ * finished tool call: every field can be absent because the provider streams
+ * the name and the JSON arguments across many chunks.
+ */
+interface WireToolCallDelta {
+  index?: number;
+  id?: string;
+  type?: string;
+  function?: { name?: string; arguments?: string };
+}
+
+/**
+ * A streaming chunk as it actually arrives.
+ *
+ * The spec puts incremental output in `choices[].delta`, but several
+ * OpenAI-compatible gateways also emit a complete `choices[].message` on the
+ * final chunk instead — the SDK's `ChatCompletionChunk` does not model that,
+ * which is why this file used to fall back to `any`. Naming the real shape is
+ * strictly better: it documents the compatibility quirk and still type-checks
+ * the ~20 field accesses in the two stream loops below.
+ */
+interface WireStreamChunk {
+  id?: string;
+  model?: string;
+  usage?: unknown;
+  choices?: Array<{
+    delta?: {
+      content?: string | null;
+      tool_calls?: WireToolCallDelta[];
+    };
+    message?: {
+      content?: string | null;
+      tool_calls?: WireToolCallDelta[];
+    };
+    finish_reason?: string | null;
+  }>;
+}
+
+/** A non-streaming completion, same caveat as {@link WireStreamChunk}. */
+interface WireChatCompletion {
+  id?: string;
+  model?: string;
+  usage?: unknown;
+  choices?: Array<{
+    message?: {
+      content?: string | null;
+      tool_calls?: Array<{
+        id: string;
+        function: { name: string; arguments: string };
+      }>;
+    };
+    finish_reason?: string | null;
+  }>;
 }
 
 export class LLMService {
@@ -506,24 +582,67 @@ export class LLMService {
   }
 
   /**
+   * Switch to the configured fallback model before a retry, and record it.
+   *
+   * The resilience coordinator only retries errors it has already classified as
+   * retryable -- rate limiting, provider overload, transient transport faults --
+   * which is exactly the situation a fallback model exists for. So the first
+   * retry is the right moment to switch.
+   *
+   * The previous gate (`consecutive529Errors >= MAX_529_RETRIES`, i.e. 3) was
+   * unreachable in practice: that threshold is at least the coordinator's whole
+   * attempt budget, so the request was exhausted before the gate could open. It
+   * also only ever ran from the legacy `retryConfig.onRetry` path, which is
+   * skipped entirely whenever the coordinator is active.
+   *
+   * @returns true when the active model changed.
+   */
+  private applyFallbackForRetry(diagnostics: LLMRequestDiagnostics): boolean {
+    if (!this.config.fallbackModel || this.usingFallback) {
+      return false;
+    }
+
+    const originalModel = this.config.model;
+    this.triggerFallback();
+    if (this.config.model === originalModel) {
+      return false;
+    }
+
+    diagnostics.fallbackTriggered = true;
+    diagnostics.fallbackFromModel = originalModel;
+    diagnostics.fallbackToModel = this.config.model;
+    diagnostics.finalModel = this.config.model;
+    diagnostics.usingFallback = this.usingFallback;
+    return true;
+  }
+
+  /**
    * 非流式对话
    */
   async chat(messages: Message[], tools?: Tool[]): Promise<LLMResponse> {
     const requestDiagnostics = this.createRequestDiagnostics();
     this.lastRequestDiagnostics = requestDiagnostics;
-    const params: Record<string, unknown> = {
-      model: this.config.model,
-      messages: this.toOpenAIMessages(messages),
-      max_tokens: this.config.maxTokens,
-      temperature: this.config.temperature,
+
+    // Build the payload per attempt. Materialising it once would pin `model` to
+    // whatever was configured before the first request, so a fallback switch
+    // (which mutates this.config.model) would never reach the wire.
+    const buildParams = (): Record<string, unknown> => {
+      const params: Record<string, unknown> = {
+        model: this.config.model,
+        messages: this.toOpenAIMessages(messages),
+        max_tokens: this.config.maxTokens,
+        temperature: this.config.temperature,
+      };
+
+      if (tools && tools.length > 0) {
+        params.tools = tools as ChatCompletionTool[];
+      }
+
+      return params;
     };
 
-    if (tools && tools.length > 0) {
-      params.tools = tools as ChatCompletionTool[];
-    }
-
     // v0.2.25: Use resilience coordinator when available.
-    let response: any;
+    let response: WireChatCompletion;
     try {
       if (this.resilience) {
         const result = await this.resilience.execute(
@@ -535,14 +654,26 @@ export class LLMService {
           },
           async attempt => {
             await this.assertProviderRequestAllowed('chat', attempt, messages);
-            return { response: await this.client.chat.completions.create(params as any) };
+            // Any attempt past the first means the coordinator classified the
+            // previous failure as retryable, which is when the fallback model
+            // is supposed to take over.
+            if (attempt > 1) {
+              this.applyFallbackForRetry(requestDiagnostics);
+            }
+            return {
+              response: (await this.client.chat.completions.create(
+                buildParams() as unknown as ChatCompletionCreateParams
+              )) as unknown as WireChatCompletion,
+            };
           }
         );
         response = result.result;
         this.applyResilienceDiagnostics(requestDiagnostics, result.diagnostics);
       } else {
         await this.assertProviderRequestAllowed('chat', 1, messages);
-        response = await this.client.chat.completions.create(params as any);
+        response = (await this.client.chat.completions.create(
+          buildParams() as unknown as ChatCompletionCreateParams
+        )) as unknown as WireChatCompletion;
       }
     } catch (error) {
       if (error instanceof ProviderRetryExhaustedError) {
@@ -561,7 +692,7 @@ export class LLMService {
 
     const message = response.choices?.[0]?.message;
     const content = message?.content ?? '';
-    const toolCalls = message?.tool_calls?.map((tc: any) => ({
+    const toolCalls = message?.tool_calls?.map(tc => ({
       id: tc.id,
       type: 'function' as const,
       function: {
@@ -586,7 +717,7 @@ export class LLMService {
     return {
       content,
       usage,
-      model: response.model,
+      model: response.model ?? this.config.model,
       toolCalls,
     };
   }
@@ -625,18 +756,8 @@ export class LLMService {
           diagnostic.type === 'rate_limit'
         ) {
           this.consecutive529Errors++;
-          if (
-            this.consecutive529Errors >= MAX_529_RETRIES &&
-            this.config.fallbackModel &&
-            !this.usingFallback
-          ) {
-            const originalModel = this.config.model;
-            this.triggerFallback();
-            if (this.config.model !== originalModel) {
-              requestDiagnostics.fallbackTriggered = true;
-              requestDiagnostics.fallbackFromModel = originalModel;
-              requestDiagnostics.fallbackToModel = this.config.model;
-            }
+          if (this.consecutive529Errors >= MAX_529_RETRIES) {
+            this.applyFallbackForRetry(requestDiagnostics);
           }
         }
         requestDiagnostics.finalModel = this.config.model;
@@ -658,6 +779,12 @@ export class LLMService {
           async (attempt: number, signal?: AbortSignal) => {
             throwIfAborted(signal);
             await this.assertProviderRequestAllowed('chat_stream', attempt, messages);
+            // Same contract as chat(): the coordinator only re-enters this
+            // callback after a retryable failure, so switch models here rather
+            // than in retryConfig.onRetry, which the coordinator never calls.
+            if (attempt > 1) {
+              this.applyFallbackForRetry(requestDiagnostics);
+            }
 
             const params: Record<string, unknown> = {
               model: this.config.model,
@@ -676,16 +803,16 @@ export class LLMService {
 
             const requestOptions = signal ? { signal } : undefined;
             const stream = (await this.client.chat.completions.create(
-              params as any,
-              requestOptions as any
-            )) as unknown as AsyncIterable<any>;
+              params as unknown as ChatCompletionCreateParams,
+              requestOptions as RequestOptions
+            )) as unknown as AsyncIterable<WireStreamChunk>;
 
             let content = '';
             let usedModel = this.config.model;
             let usage: LLMUsage | undefined;
             let providerRequestId: string | undefined;
             const toolCallsMap = new Map<
-              string,
+              number,
               {
                 id: string;
                 type: 'function';
@@ -835,16 +962,16 @@ export class LLMService {
 
           const requestOptions = options?.abortSignal ? { signal: options.abortSignal } : undefined;
           const stream = (await this.client.chat.completions.create(
-            params as any,
-            requestOptions as any
-          )) as unknown as AsyncIterable<any>;
+            params as unknown as ChatCompletionCreateParams,
+            requestOptions as RequestOptions
+          )) as unknown as AsyncIterable<WireStreamChunk>;
 
           let content = '';
           let usedModel = this.config.model;
           let usage: LLMUsage | undefined;
           let providerRequestId: string | undefined;
           const toolCallsMap = new Map<
-            string,
+            number,
             {
               id: string;
               type: 'function';

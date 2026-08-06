@@ -6,11 +6,13 @@ import type { CompactCoordinator } from '../services/compact';
 import type { OpenHorseCLIConfig } from '../services/config';
 import type { SessionMeta, SessionTraceEvent } from '../services/session-storage';
 import type { RuntimeSubtaskEvent } from './subagents/types';
+import type { ResearchLifecycleEvent } from './subagents/research-renderer';
 import type { GoalRuntimeEvent } from './goals/types';
 import type { ToolExternalAssertion } from '../framework/external-assertion';
 
 /** Re-export so the runtime event protocol can reference subtask events. */
 export type { RuntimeSubtaskEvent } from './subagents/types';
+export type { ResearchLifecycleEvent } from './subagents/research-renderer';
 
 export type TranscriptRole =
   | 'user'
@@ -285,6 +287,8 @@ export interface UiEventSink {
   harnessDiagnosticsUpdated?: (diagnostics: RuntimeHarnessDiagnostics) => void;
   /** Subagent lifecycle event (queued/running/completed/...). Renderer-independent. */
   subtaskEvent?: (event: RuntimeSubtaskEvent) => void;
+  /** Research packet lifecycle; all renderers receive the same ordered stream. */
+  researchEvent?: (event: ResearchLifecycleEvent) => void;
   /** Shared Goal lifecycle event; renderers only project this event. */
   goalEvent?: (event: GoalRuntimeEvent) => void;
   setProcessing: (processing: boolean) => void;

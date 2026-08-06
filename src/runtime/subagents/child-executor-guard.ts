@@ -207,6 +207,9 @@ function normalizeKnownToolPath(input: string): string {
     try {
       return decodeURIComponent(new URL(value).pathname);
     } catch {
+      // Malformed URL or bad percent-encoding: fall back to stripping the
+      // scheme so the guard still sees a path to validate. Refusing here
+      // would let an unparseable URI bypass containment checks entirely.
       return value.replace(/^file:\/\//u, '');
     }
   }
@@ -323,6 +326,7 @@ function checkGrepDescendantSymlinks(
         // dangling and other non-file symlink targets are therefore skipped.
         if (!statSync(entryPath).isFile()) continue;
       } catch {
+        // Dangling symlink: `stat` throws, and real grep skips it too.
         continue;
       }
 

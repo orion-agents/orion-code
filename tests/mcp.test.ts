@@ -57,6 +57,22 @@ rl.on('line', (line) => {
   }
 
   if (msg.method === 'tools/list') {
+    if (process.env.MCP_TEST_MALFORMED_TOOLS === '1') {
+      respond(msg.id, {
+        tools: [
+          null,
+          'not-an-object',
+          { description: 'entry with no name' },
+          { name: 42 },
+          { name: 'echo', description: 'Echo test input', inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] } }
+        ]
+      });
+      return;
+    }
+    if (process.env.MCP_TEST_TOOLS_NOT_ARRAY === '1') {
+      respond(msg.id, { tools: { name: 'echo' } });
+      return;
+    }
     respond(msg.id, {
       tools: [{
         name: 'echo',
@@ -125,6 +141,46 @@ describe('MCP integration', () => {
     testRoot = '';
     configDir = '';
     serverPath = '';
+  });
+
+  test('drops tools/list entries that cannot be registered', async () => {
+    // A tool entry without a string `name` has no usable identity: every one of
+    // them would sanitize down to the same `mcp__sample__tool` and collide, so
+    // the client must discard them rather than register garbage.
+    writeMcpConfig({
+      mcpServers: {
+        sample: {
+          command: process.execPath,
+          args: [serverPath],
+          env: { MCP_TEST_MALFORMED_TOOLS: '1' },
+        },
+      },
+    });
+
+    await mcpManager.connectAll();
+
+    expect(mcpManager.getStatus()).toEqual([
+      expect.objectContaining({ name: 'sample', connected: true, toolCount: 1 }),
+    ]);
+    expect(mcpManager.getAllTools().map(entry => entry.tool.name)).toEqual(['echo']);
+  });
+
+  test('survives a tools/list response where tools is not an array', async () => {
+    writeMcpConfig({
+      mcpServers: {
+        sample: {
+          command: process.execPath,
+          args: [serverPath],
+          env: { MCP_TEST_TOOLS_NOT_ARRAY: '1' },
+        },
+      },
+    });
+
+    await mcpManager.connectAll();
+
+    expect(mcpManager.getStatus()).toEqual([
+      expect.objectContaining({ name: 'sample', connected: true, toolCount: 0 }),
+    ]);
   });
 
   test('connects configured stdio servers and exposes first-class MCP tools', async () => {
