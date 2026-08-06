@@ -317,7 +317,19 @@ export function scanShellCommand(cmd: string): ShellCommandScan {
       current += ch;
       continue;
     }
-    if (inSingleQuote || inDoubleQuote) {
+    if (inSingleQuote) {
+      // Single quotes disable every expansion, so the contents stay inert.
+      current += ch;
+      continue;
+    }
+    if (inDoubleQuote) {
+      // Double quotes only suppress globbing and word splitting -- bash still
+      // expands `$(...)` and backticks inside them. Skipping the substitution
+      // check here made `echo "$(rm -rf $HOME)"` classify as safe/read-only and
+      // auto-approve, i.e. a straight command-execution bypass.
+      if (ch === '`' || (ch === '$' && next === '(')) {
+        supported = false;
+      }
       current += ch;
       continue;
     }

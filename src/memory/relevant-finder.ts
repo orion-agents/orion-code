@@ -36,9 +36,13 @@ export interface KeywordMatchOptions {
 export function extractKeywords(text: string): string[] {
   if (!text) return [];
 
-  // 分词：按空格和标点分割
+  // 分词：按空格和标点分割。
+  //
+  // `-` 必须放在字符类末尾（或转义）。写成 `+-_` 会被正则引擎解析为 `+`(0x2B)
+  // 到 `_`(0x5F) 的**区间**，于是 0-9、A-Z、`_` 全被当成分隔符，`API_KEY_V2`
+  // / `port_8000` 这类标识符被切碎，关键词召回严重退化。
   const words = text.toLowerCase()
-    .split(/[\s\n\r\t,.;:!?'"(){}[\]<>=+-_|\\/@#$%^&*]+/)
+    .split(/[\s,.;:!?'"(){}[\]<>=+_|\\/@#$%^&*-]+/)
     .filter(w => w.length >= 2);
 
   // 去除常见停用词

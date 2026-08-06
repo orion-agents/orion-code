@@ -2134,6 +2134,10 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
       },
       sessionId,
       turnId: ctx.turnId,
+      // Tools that fan out to other tools (batch_read) have to re-run the
+      // permission gate per sub-step; they need the mode and the allowlist.
+      permissionMode: snapshot.permissionMode,
+      toolAllowlist: resolveProjectToolAllowlist(ctx.cwd).evaluator,
     });
     // 不在这里打印，让 tool_result 事件处理
     return result;

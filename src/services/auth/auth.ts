@@ -4,10 +4,20 @@
  * Supports OAuth + API Key + AWS STS.
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { getConfigDir, ensureConfigDir } from '../config-dir';
+import { atomicWriteFileSync } from '../atomic-write';
 import { debugError } from '../../utils/debug-log';
+
+/**
+ * Credential files are the least recoverable state Orion Code owns: a torn
+ * write makes `JSON.parse` fail, and the loaders fall back to `{}`, which
+ * silently logs the user out and drops every stored secret. Write them via
+ * temp-file + rename with an fsync, so a crash leaves either the previous file
+ * or the complete new one.
+ */
+const CREDENTIAL_WRITE_OPTS = { mode: 0o600, fsync: true } as const;
 
 // ============================================================================
 // 类型定义
@@ -93,9 +103,11 @@ export class AuthService {
    * 保存认证配置
    */
   private save(): void {
-    writeFileSync(this.configPath, JSON.stringify(this.config, null, 2), {
-      mode: 0o600,  // 仅用户可读写
-    });
+    atomicWriteFileSync(
+      this.configPath,
+      JSON.stringify(this.config, null, 2),
+      CREDENTIAL_WRITE_OPTS  // 0600，仅用户可读写；原子写避免半截文件
+    );
   }
 
   /**
@@ -248,7 +260,9 @@ export class SecureStorage {
         : {};
 
       content[`${service}:${account}`] = password;
-      writeFileSync(storagePath, JSON.stringify(content), { mode: 0o600 });
+      // Read-modify-write over the whole file: a torn write here loses *every*
+      // stored secret, not just the one being added.
+      atomicWriteFileSync(storagePath, JSON.stringify(content), CREDENTIAL_WRITE_OPTS);
 
       return true;
     } catch (error) {
@@ -291,7 +305,7 @@ export class SecureStorage {
 
       const content = JSON.parse(readFileSync(storagePath, 'utf-8'));
       delete content[`${service}:${account}`];
-      writeFileSync(storagePath, JSON.stringify(content), { mode: 0o600 });
+      atomicWriteFileSync(storagePath, JSON.stringify(content), CREDENTIAL_WRITE_OPTS);
 
       return true;
     } catch (error) {

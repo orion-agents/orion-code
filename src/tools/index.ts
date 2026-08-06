@@ -25,10 +25,12 @@ import { join, resolve, relative } from 'path';
 import { createInterface } from 'readline';
 import {
   buildTool,
+  getToolMetadataPresence,
   type OpenHorseTool,
   type ToolResult,
   type ToolContext,
 } from '../framework/tool';
+import { resolveEffectivePermission } from '../framework/tool-scheduler';
 import { deriveToolExternalAssertion } from '../framework/external-assertion';
 import { setToolState } from '../framework/tool-state';
 import { ARTIFACT_THRESHOLD, storeArtifact, truncateForContext } from '../core/tool-artifacts';
@@ -2117,6 +2119,43 @@ async function executeBatchRead(
         error
       );
     }
+
+    // The scheduler resolved permissions for `batch_read` itself, not for the
+    // tools it fans out to. Without re-running the gate here, a project
+    // `deny: read_file(*.env)` rule -- and the plan-mode block -- apply to the
+    // flat call but not to the batched one, so the model can read a denied path
+    // simply by wrapping it in `batch_read`.
+    const stepPermission =
+      getToolMetadataPresence(tool).hasPermissionCheck && tool.checkPermissions
+        ? tool.checkPermissions(step.args, context)
+        : undefined;
+    const effective = resolveEffectivePermission({
+      toolName: step.tool,
+      tool,
+      args: step.args,
+      permission: stepPermission,
+      permissionMode: context.permissionMode,
+      allowlist: context.toolAllowlist?.(step.tool, step.args),
+    });
+    if (effective.outcome === 'deny' || effective.outcome === 'block') {
+      const error =
+        effective.reason || `Tool ${step.tool} is not permitted (${effective.source ?? 'policy'})`;
+      return buildBatchReadPayload(
+        false,
+        error,
+        [
+          {
+            index: i + 1,
+            tool: step.tool,
+            args: step.args,
+            success: false,
+            error,
+            output: '',
+          },
+        ],
+        error
+      );
+    }
   }
 
   const stepResults: BatchReadStepOutput[] = [];
@@ -2194,6 +2233,10 @@ export async function executeTool(
     abortSignal, // Issue #32 #3.2: 透传 abortSignal
     sessionId: toolContext?.sessionId,
     turnId: toolContext?.turnId,
+    // Must survive the rebuild: batch_read re-runs the permission gate on its
+    // sub-steps and reads both of these off the context.
+    permissionMode: toolContext?.permissionMode,
+    toolAllowlist: toolContext?.toolAllowlist,
   };
 
   const result = await tool.execute(args, context);

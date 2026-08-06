@@ -330,11 +330,19 @@ export function migrateBrand(options: MigrationOptions = {}): MigrationResult {
       manifest.copiedFiles += mappings.length;
     }
 
-    // 4. Copy uncategorized files verbatim
+    // 4. Copy uncategorized files verbatim.
+    //
+    // Only list entries that an *earlier* step already handled. `settings.json`,
+    // `usage.json`, `history.jsonl`, `mcp.json` and `vector.db` used to be listed
+    // here, but no handler ever claimed them: they are root-level files, absent
+    // from RENAME_MAP / VERBATIM_DIRS / NESTED_DIRS. So they were "too known to
+    // auto-copy, unknown to every handler" and were silently dropped — taking
+    // the user's MCP servers, usage ledger, chat history and vector memory index
+    // with them, while the migration still reported success. Leaving them out of
+    // this set lets the loop below copy them verbatim, which is what the help
+    // text at the bottom of this file has always promised.
     const knownPaths = new Set([
-      'openhorse.json', 'OPENHORSE.md', 'OPENHORSE.local.md',
-      'settings.json', 'usage.json', 'history.jsonl', 'mcp.json',
-      'vector.db',
+      ...Object.keys(RENAME_MAP),
       ...VERBATIM_DIRS,
       ...Object.keys(NESTED_DIRS),
     ]);
