@@ -94,7 +94,11 @@ function matchesPattern(path: string, pattern?: string): boolean {
 
   // 简化 glob 匹配
   if (pattern.startsWith('**/*.')) {
-    const ext = pattern.slice(5);
+    // slice(4), not slice(5): keep the leading `.`. Without it the default
+    // trigger `**/*.ts` degraded into a suffix match, so writing an
+    // extensionless file such as `docs/requirements` kicked off the whole
+    // lint + build + test pipeline.
+    const ext = pattern.slice(4);
     return path.endsWith(ext);
   }
 
@@ -113,3 +117,8 @@ function matchesPattern(path: string, pattern?: string): boolean {
 // ============================================================================
 
 export { autoFixHook as postToolHook };
+
+/**
+ * Internals exposed for unit tests only. Not part of the public API.
+ */
+export const __testables = { matchesPattern };

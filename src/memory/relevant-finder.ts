@@ -31,9 +31,10 @@ export interface KeywordMatchOptions {
 /**
  * 从文本中提取关键词
  * @param text - 输入文本
+ * @param preserveCase - 保留原始大小写（供 caseSensitive 匹配使用），默认 false
  * @returns 关键词列表
  */
-export function extractKeywords(text: string): string[] {
+export function extractKeywords(text: string, preserveCase: boolean = false): string[] {
   if (!text) return [];
 
   // 分词：按空格和标点分割。
@@ -41,7 +42,10 @@ export function extractKeywords(text: string): string[] {
   // `-` 必须放在字符类末尾（或转义）。写成 `+-_` 会被正则引擎解析为 `+`(0x2B)
   // 到 `_`(0x5F) 的**区间**，于是 0-9、A-Z、`_` 全被当成分隔符，`API_KEY_V2`
   // / `port_8000` 这类标识符被切碎，关键词召回严重退化。
-  const words = text.toLowerCase()
+  //
+  // 大小写：默认小写化。此前**无条件**小写化，导致 caseSensitive 选项失效
+  // ——比较双方都来自本函数，两个分支恒等价。
+  const words = (preserveCase ? text : text.toLowerCase())
     .split(/[\s,.;:!?'"(){}[\]<>=+_|\\/@#$%^&*-]+/)
     .filter(w => w.length >= 2);
 
@@ -63,7 +67,8 @@ export function extractKeywords(text: string): string[] {
     'about', 'against', 'through', 'across', 'along', 'around', 'again',
   ]);
 
-  return words.filter(w => !stopWords.has(w));
+  // 停用词过滤始终大小写不敏感，否则 preserveCase 模式下 "The"/"And" 会漏过。
+  return words.filter(w => !stopWords.has(preserveCase ? w.toLowerCase() : w));
 }
 
 // ============================================================================
@@ -92,7 +97,7 @@ export function calculateKeywordMatch(
     memoryEntry.type,
   ].join(' ');
 
-  const memoryKeywords = extractKeywords(memoryText);
+  const memoryKeywords = extractKeywords(memoryText, caseSensitive);
 
   const matchedKeywords: string[] = [];
   let matchCount = 0;
@@ -140,8 +145,8 @@ export function findRelevantMemories(
 
   if (!query) return [];
 
-  // 提取查询关键词
-  const queryKeywords = extractKeywords(query);
+  // 提取查询关键词（caseSensitive 时保留原始大小写，两侧一致才有意义）
+  const queryKeywords = extractKeywords(query, caseSensitive);
   if (queryKeywords.length === 0) return [];
 
   // 加载所有记忆

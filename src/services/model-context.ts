@@ -233,11 +233,27 @@ export const BUILTIN_MODELS: Record<string, ModelContextInfo> = {
     maxOutputTokens: 16384,
     provider: 'openai',
   },
+  'gpt-4.1': {
+    id: 'gpt-4.1',
+    label: 'GPT-4.1',
+    contextWindow: 1047576,
+    maxOutputTokens: 32768,
+    provider: 'openai',
+  },
+  'gpt-4-turbo': {
+    id: 'gpt-4-turbo',
+    label: 'GPT-4 Turbo',
+    contextWindow: 128000,
+    maxOutputTokens: 4096,
+    provider: 'openai',
+  },
   'gpt-4': {
     id: 'gpt-4',
     label: 'GPT-4',
     contextWindow: 8192,
-    maxOutputTokens: 8192,
+    // 8k 版 GPT-4 的真实上限是 4096。此前写成 8192（== contextWindow），
+    // 使 contextWindow - reserved - margin 变成负数。
+    maxOutputTokens: 4096,
     provider: 'openai',
   },
   'gpt-3.5-turbo': {
@@ -303,6 +319,36 @@ export const AUTO_COMPACT_THRESHOLD = 0.95;
 
 /** Show a manual compact reminder before the automatic threshold is reached. */
 export const CONTEXT_WARNING_THRESHOLD = 0.8;
+
+/** 输出预留占上下文窗口的上限（避免 reserved 吃光整个窗口）。 */
+export const MAX_OUTPUT_RESERVE_RATIO = 0.5;
+
+/** 预算算出非正数时的按比例兜底。 */
+export const FALLBACK_INPUT_BUDGET_RATIO = 0.6;
+
+/** 同一模型只告警一次，避免每轮刷屏。 */
+const warnedUnusableBudget = new Set<string>();
+
+function warnUnusableBudgetOnce(modelId: string, contextWindow: number, fallback: number): void {
+  if (warnedUnusableBudget.has(modelId)) return;
+  warnedUnusableBudget.add(modelId);
+  // eslint-disable-next-line no-console -- 配置错误必须可见，否则只会表现为「每轮都在压缩」
+  console.warn(
+    `[model-context] "${modelId}" 的上下文预算不可用（contextWindow=${contextWindow}，` +
+      `输出预留 + 安全余量 已超出窗口）。回退到 ${fallback} tokens。请检查该模型的 ` +
+      'contextWindow / maxOutputTokens 配置。'
+  );
+}
+
+/** 仅供测试重置告警去重状态。 */
+export function __resetBudgetWarningsForTest(): void {
+  warnedUnusableBudget.clear();
+}
+
+/** 仅供测试注册一个模型条目（生产代码请走 discoverModels）。 */
+export function __registerModelForTest(info: ModelContextInfo): void {
+  registerDiscoveredModel(info);
+}
 
 // ============================================================================
 // 运行时发现模型（从 /models 端点）
@@ -377,6 +423,32 @@ export async function discoverModelContexts(
 }
 
 /**
+ * `needle` 是否以「模型 id 边界」的方式出现在 `haystack` 中。
+ *
+ * 裸 `includes` 会让 `gpt-4` 吞掉 `gpt-4.1`；这里要求：
+ *  - 前一个字符不是字母/数字（避免 `mygpt-4o` 命中 `gpt-4o`）；
+ *  - 后一个字符不是数字或 `.`（避免版本号被截断：`gpt-4` ⊄ `gpt-4.1`、
+ *    `glm-5` ⊄ `glm-5.2`），但允许 `-`（`gpt-4o-2024-05-13` 仍命中 `gpt-4o`）。
+ */
+function matchesAtBoundary(haystack: string, needle: string): boolean {
+  if (!needle || !haystack) return false;
+
+  let from = 0;
+  for (;;) {
+    const index = haystack.indexOf(needle, from);
+    if (index === -1) return false;
+
+    const before = index > 0 ? haystack[index - 1] : '';
+    const after = haystack[index + needle.length] ?? '';
+
+    if (!/[a-z0-9]/.test(before) && !/[0-9.]/.test(after)) {
+      return true;
+    }
+    from = index + 1;
+  }
+}
+
+/**
  * 解析模型上下文窗口
  * 优先级：动态发现 > 内置数据库 > 模糊/别名匹配 > 默认值
  */
@@ -396,10 +468,32 @@ export function resolveModelContext(modelId: string): ModelContextResolution {
   }
 
   // 3. 模糊匹配
-  for (const [id, model] of Object.entries(BUILTIN_MODELS)) {
-    if (normalized.includes(id) || id.includes(normalized.split(':')[0])) {
-      return { ...model, source: 'fuzzy', matchedId: id };
-    }
+  //
+  // 原实现按对象**声明顺序**做裸 `includes`，于是较短、较早声明的 id 会吃掉更长
+  // 的：`gpt-4.1` / `gpt-4-turbo` 全部落到 8k 的 `gpt-4` 条目（进而 safeInputBudget
+  // 退化到 1），`glm-5.2-air` 落到 `glm-5` 而不是 `glm-5.2`。
+  //
+  // 两轮，方向不同、排序也不同：
+  //   Pass 1（查询包含 id）：取**最长**命中 —— 越长越具体。
+  //   Pass 2（id 包含查询）：取**最短**命中 —— 最贴近的超集，避免
+  //                          `gpt-4o:latest` 被 `gpt-4o-mini` 抢走。
+  const candidateId = normalized.split(':')[0];
+  const ids = Object.keys(BUILTIN_MODELS);
+
+  const containedInQuery = ids
+    .filter(id => matchesAtBoundary(normalized, id))
+    .sort((a, b) => b.length - a.length);
+  if (containedInQuery.length > 0) {
+    const id = containedInQuery[0];
+    return { ...BUILTIN_MODELS[id], source: 'fuzzy', matchedId: id };
+  }
+
+  const containsQuery = ids
+    .filter(id => matchesAtBoundary(id, candidateId))
+    .sort((a, b) => a.length - b.length);
+  if (containsQuery.length > 0) {
+    const id = containsQuery[0];
+    return { ...BUILTIN_MODELS[id], source: 'fuzzy', matchedId: id };
   }
 
   // 4. 默认值
@@ -444,16 +538,33 @@ export function resolveContextBudget(
   const requested = Number.isFinite(requestedOutputTokens)
     ? Math.max(0, Math.round(requestedOutputTokens ?? 0))
     : model.maxOutputTokens ?? 8192;
-  const reservedOutputTokens = Math.min(requested, model.maxOutputTokens ?? requested);
+
+  // 输出预留最多占上下文窗口的一半：某些条目的 maxOutputTokens 等于（甚至接近）
+  // contextWindow，直接相减会把可用输入预算打到 0/负数。
+  const reservedCeiling = Math.max(1, Math.floor(model.contextWindow * MAX_OUTPUT_RESERVE_RATIO));
+  const reservedOutputTokens = Math.min(
+    requested,
+    model.maxOutputTokens ?? requested,
+    reservedCeiling
+  );
   const safetyMarginTokens = Math.max(1024, Math.ceil(model.contextWindow * 0.02));
+
+  // 兜底：`Math.max(1, …)` 会把配置错误伪装成一个「看起来合理」的 1，
+  // 而 safeInputBudget 是 auto-compact 与状态栏占比的分母 —— ratio = used / 1
+  // 恒 ≥ 阈值，于是从第一条消息起每轮都触发压缩、状态栏钉死 100%。
+  // 非正数时退回按窗口比例估算，并记录一次告警。
+  const rawBudget = model.contextWindow - reservedOutputTokens - safetyMarginTokens;
+  let safeInputBudget = rawBudget;
+  if (safeInputBudget <= 0) {
+    safeInputBudget = Math.max(1, Math.floor(model.contextWindow * FALLBACK_INPUT_BUDGET_RATIO));
+    warnUnusableBudgetOnce(model.matchedId || modelId, model.contextWindow, safeInputBudget);
+  }
+
   return {
     contextWindow: model.contextWindow,
     reservedOutputTokens,
     safetyMarginTokens,
-    safeInputBudget: Math.max(
-      1,
-      model.contextWindow - reservedOutputTokens - safetyMarginTokens
-    ),
+    safeInputBudget,
   };
 }
 

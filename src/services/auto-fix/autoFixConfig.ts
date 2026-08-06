@@ -53,34 +53,52 @@ export const DEFAULT_AUTOFIX_CONFIG: AutoFixConfig = {
 /**
  * 检测项目配置
  */
+/**
+ * Deep-ish copy of the default config.
+ *
+ * A bare `{ ...DEFAULT_AUTOFIX_CONFIG }` shares the `triggers` array between
+ * every caller, and returning the singleton itself let `AutoFixRunner.setEnabled`
+ * mutate the module-level default process-wide (every Runner constructed
+ * afterwards inherited the disabled state).
+ */
+function cloneDefaultConfig(): AutoFixConfig {
+  return {
+    ...DEFAULT_AUTOFIX_CONFIG,
+    triggers: DEFAULT_AUTOFIX_CONFIG.triggers.map(trigger => ({ ...trigger })),
+  };
+}
+
 export function detectAutoFixConfig(projectPath: string): AutoFixConfig {
   // 尝试读取 package.json
   try {
     const pkgPath = join(projectPath, 'package.json');
     const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
 
-    const config: AutoFixConfig = { ...DEFAULT_AUTOFIX_CONFIG };
+    const config: AutoFixConfig = cloneDefaultConfig();
+
+    // Detection must clear the command when the script is absent: the field is
+    // pre-populated from the defaults, so skipping the branch left
+    // `npm run lint` in place and the runner reported "Missing script: lint"
+    // as a lint failure for a linter the project does not have.
 
     // 检测 lint 命令
     if (pkg.scripts?.lint) {
       config.lintCommand = 'npm run lint';
     } else if (pkg.scripts?.eslint) {
       config.lintCommand = 'npm run eslint';
+    } else {
+      config.lintCommand = undefined;
     }
 
     // 检测 test 命令
-    if (pkg.scripts?.test) {
-      config.testCommand = 'npm test';
-    }
+    config.testCommand = pkg.scripts?.test ? 'npm test' : undefined;
 
     // 检测 build 命令
-    if (pkg.scripts?.build) {
-      config.buildCommand = 'npm run build';
-    }
+    config.buildCommand = pkg.scripts?.build ? 'npm run build' : undefined;
 
     return config;
   } catch {
-    return DEFAULT_AUTOFIX_CONFIG;
+    return cloneDefaultConfig();
   }
 }
 

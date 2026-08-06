@@ -5,7 +5,7 @@
  * 使用 Node.js 内置 fs 模块，无需额外依赖。
  */
 
-import { readdirSync, statSync, existsSync, readFileSync } from 'fs';
+import { readdirSync, statSync, lstatSync, existsSync, readFileSync } from 'fs';
 import { join, resolve } from 'path';
 
 // ============================================================================
@@ -59,7 +59,11 @@ function isIgnored(path: string, ignorePatterns: string[]): boolean {
 
   for (const pattern of ignorePatterns) {
     if (pattern.startsWith('*.')) {
-      const ext = pattern.slice(2);
+      // slice(1), not slice(2): the leading `.` must stay part of the
+      // extension. Dropping it turned `*.log` into a bare suffix match, so
+      // `changelog` / `catalog` / `backlog` were silently ignored (and a
+      // user `.gitignore` line like `*.ts` hid every path ending in "ts").
+      const ext = pattern.slice(1);
       if (name.endsWith(ext)) return true;
     } else if (pattern.endsWith('/**')) {
       const base = pattern.slice(0, -3);
@@ -125,7 +129,21 @@ export function matchFiles(query: string, cwd: string, options: FileMatchOptions
       }
 
       const fullPath = join(dirPath, entry);
-      const isDirectory = statSync(fullPath).isDirectory();
+      // statSync follows symlinks and throws ENOENT on a dangling link (or
+      // EACCES on an unreadable entry). The catch below sits outside this
+      // loop, so a single bad entry used to abort the whole scan and return a
+      // silently truncated completion list. Isolate it per entry and fall back
+      // to lstat (which describes the link itself) before giving up.
+      let isDirectory: boolean;
+      try {
+        isDirectory = statSync(fullPath).isDirectory();
+      } catch {
+        try {
+          isDirectory = lstatSync(fullPath).isDirectory();
+        } catch {
+          continue;
+        }
+      }
 
       results.push({
         path: entryPath,
