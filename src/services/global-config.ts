@@ -5,10 +5,11 @@
  * Environment variable overrides use ORION_CODE_ prefix.
  */
 
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { randomBytes } from 'crypto';
 import { join } from 'path';
 import { ensureConfigDir, getGlobalConfigPath, getConfigDir } from './config-dir';
+import { atomicWriteFileSync } from './atomic-write';
 import type { ModelPricing } from '../core/cost-tracker';
 
 // ============================================================================
@@ -257,7 +258,12 @@ export function loadGlobalConfig(): GlobalConfig {
 export function saveGlobalConfig(config: GlobalConfig & LegacyUsageFields): void {
   ensureConfigDir();
   const path = getGlobalConfigPath();
-  writeFileSync(path, JSON.stringify(sanitizeGlobalConfig(config), null, 2), { mode: 0o600 });
+  // orion.json holds provider credentials; an interrupted in-place write makes
+  // it unparseable and the loader falls back to defaults, wiping the config.
+  atomicWriteFileSync(path, JSON.stringify(sanitizeGlobalConfig(config), null, 2), {
+    mode: 0o600,
+    fsync: true,
+  });
 }
 
 /**
@@ -344,7 +350,7 @@ export function getInputHistory(): InputHistoryEntry[] {
 function saveInputHistory(history: InputHistoryEntry[]): void {
   ensureConfigDir();
   const path = getInputHistoryPath();
-  writeFileSync(path, JSON.stringify(history, null, 2), { mode: 0o600 });
+  atomicWriteFileSync(path, JSON.stringify(history, null, 2), { mode: 0o600 });
 }
 
 export function addToInputHistory(content: string): void {
