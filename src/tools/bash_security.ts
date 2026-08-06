@@ -34,7 +34,7 @@ export const READ_ONLY_COMMANDS = [
   'rg',
   'ag',
   'ack',
-  'sed',  // when without -i flag
+  'sed', // when without -i flag
   'awk',
   'cut',
   'sort',
@@ -48,8 +48,8 @@ export const READ_ONLY_COMMANDS = [
   'git log',
   'git diff',
   'git show',
-  'git branch',  // listing branches
-  'git tag',     // listing tags
+  'git branch', // listing branches
+  'git tag', // listing tags
   'git remote',
   'git rev-parse',
   'git ls-files',
@@ -82,7 +82,11 @@ export const READ_ONLY_COMMANDS = [
   // System info
   'echo',
   'printenv',
-  'env',
+  // NOTE: `env` is deliberately absent. It is a command wrapper
+  // (`env [NAME=VALUE]... COMMAND [ARG]...`), not a read-only command, so
+  // allow-listing it classified `env node -e '<anything>'` as safe and ran it
+  // without confirmation. A bare `env` (no wrapped command) still resolves to
+  // read-only through unwrapCommandWrappers().
   'whoami',
   'hostname',
   'date',
@@ -96,8 +100,8 @@ export const READ_ONLY_COMMANDS = [
 
   // Network info (read-only)
   'ping',
-  'curl',   // when without file output
-  'wget',   // when without file output
+  'curl', // when without file output
+  'wget', // when without file output
   'nslookup',
   'dig',
   'host',
@@ -167,8 +171,7 @@ export const READ_ONLY_SUBCOMMANDS: Record<string, readonly string[]> = {
  * git options that hand execution to an external program or write a file,
  * whichever sub-command they are attached to.
  */
-const GIT_UNSAFE_OPTIONS =
-  /(^|\s)--(ext-diff|extcmd|output|exec-path|upload-pack|receive-pack)\b/;
+const GIT_UNSAFE_OPTIONS = /(^|\s)--(ext-diff|extcmd|output|exec-path|upload-pack|receive-pack)\b/;
 
 /**
  * `git branch` / `git tag` only list when they are given nothing but these
@@ -177,7 +180,8 @@ const GIT_UNSAFE_OPTIONS =
  * but prompting for it is far cheaper than letting `git branch -D main` through.
  */
 const GIT_LISTING_FLAGS: Record<string, RegExp> = {
-  branch: /^(-a|--all|-r|--remotes|-v|-vv|--verbose|-l|--list|--no-color|--color(=.+)?|--sort=.+|--format=.+)$/,
+  branch:
+    /^(-a|--all|-r|--remotes|-v|-vv|--verbose|-l|--list|--no-color|--color(=.+)?|--sort=.+|--format=.+)$/,
   tag: /^(-l|--list|-n\d*|-i|--ignore-case|--no-color|--color(=.+)?|--sort=.+|--format=.+)$/,
 };
 
@@ -336,7 +340,11 @@ export function scanShellCommand(cmd: string): ShellCommandScan {
 
     // Command and process substitution can hide an arbitrary command inside an
     // otherwise innocent-looking line, and neither is worth modelling here.
-    if (ch === '`' || (ch === '$' && next === '(') || ((ch === '<' || ch === '>') && next === '(')) {
+    if (
+      ch === '`' ||
+      (ch === '$' && next === '(') ||
+      ((ch === '<' || ch === '>') && next === '(')
+    ) {
       supported = false;
       current += ch;
       continue;
@@ -431,6 +439,18 @@ function isReadOnlySegment(trimmedCmd: string): boolean {
     return true;
   }
 
+  // A wrapper decides nothing: `env`, `timeout`, `nice` and friends just hand
+  // control to whatever follows, so classify that instead. Without this,
+  // matching on the head token alone made `env node -e '<code>'` read-only.
+  const unwrapped = unwrapCommandWrappers(trimmedCmd.split(/\s+/).filter(Boolean));
+  if (unwrapped) {
+    // Running as another user is never read-only, however benign the payload.
+    if (unwrapped.privileged) return false;
+    // `env` / `printenv` with no wrapped command just prints the environment.
+    if (unwrapped.tokens.length === 0) return true;
+    return isReadOnlySegment(unwrapped.tokens.join(' '));
+  }
+
   // Check if command starts with a read-only command
   const baseCmd = trimmedCmd.split(' ')[0];
   if (READ_ONLY_COMMANDS.includes(baseCmd)) {
@@ -442,16 +462,31 @@ function isReadOnlySegment(trimmedCmd: string): boolean {
     if (baseCmd === 'sed' && trimmedCmd.includes('-i')) {
       return false; // sed -i modifies files
     }
-    if (baseCmd === 'curl' && (trimmedCmd.includes('>') || /(^|\s)-o\b/.test(trimmedCmd) || /(^|\s)--output\b/.test(trimmedCmd))) {
+    if (
+      baseCmd === 'curl' &&
+      (trimmedCmd.includes('>') ||
+        /(^|\s)-o\b/.test(trimmedCmd) ||
+        /(^|\s)--output\b/.test(trimmedCmd))
+    ) {
       return false; // curl with file output (-o/--output/>) writes a file
     }
-    if (baseCmd === 'wget' && (trimmedCmd.includes('>') || /(^|\s)-O\b/.test(trimmedCmd) || /(^|\s)--output-document\b/.test(trimmedCmd))) {
+    if (
+      baseCmd === 'wget' &&
+      (trimmedCmd.includes('>') ||
+        /(^|\s)-O\b/.test(trimmedCmd) ||
+        /(^|\s)--output-document\b/.test(trimmedCmd))
+    ) {
       return false; // wget with file output writes a file
     }
     if (baseCmd === 'find' && /(^|\s)-(exec|execdir|ok|okdir|delete)\b/.test(trimmedCmd)) {
       return false; // find -exec/-ok runs arbitrary commands; -delete removes files
     }
-    if (baseCmd === 'awk' && (/\bsystem\s*\(/.test(trimmedCmd) || /\bgetline\b/.test(trimmedCmd) || trimmedCmd.includes('>'))) {
+    if (
+      baseCmd === 'awk' &&
+      (/\bsystem\s*\(/.test(trimmedCmd) ||
+        /\bgetline\b/.test(trimmedCmd) ||
+        trimmedCmd.includes('>'))
+    ) {
       return false; // awk can exec (system/getline) or write files (>)
     }
     if (baseCmd === 'sort' && (/(^|\s)-o\b/.test(trimmedCmd) || trimmedCmd.includes('>'))) {
@@ -520,8 +555,170 @@ export function isValidationCommand(cmd: string): boolean {
   );
 }
 
+/**
+ * Wrappers that run another command with a modified environment, scheduling
+ * class or lifetime. They neither escalate privilege nor change what the
+ * wrapped command does, so the *wrapped* command decides the classification.
+ */
+const TRANSPARENT_WRAPPERS = [
+  'env',
+  'timeout',
+  'nice',
+  'ionice',
+  'stdbuf',
+  'setsid',
+  'nohup',
+  'time',
+  'command',
+  'builtin',
+  'exec',
+  'xargs',
+] as const;
+
+/**
+ * Wrappers that escalate privilege. The wrapped command may look read-only, but
+ * running it as another user never is, so these never inherit a `safe` verdict.
+ */
+const PRIVILEGE_WRAPPERS = new Set(['sudo', 'doas']);
+
 /** Wrappers that may precede `rm` without changing what it deletes. */
-const COMMAND_WRAPPERS = new Set(['sudo', 'doas', 'command', 'builtin', 'nohup', 'time', 'exec']);
+const COMMAND_WRAPPERS = new Set<string>([...PRIVILEGE_WRAPPERS, ...TRANSPARENT_WRAPPERS]);
+
+/**
+ * Flags that consume the *following* token as their value, per wrapper.
+ *
+ * Anything absent here is treated as self-contained, so a value that is
+ * attached with `=` (`--unset=PATH`) needs no entry. Getting this wrong in the
+ * conservative direction only costs a confirmation prompt; getting it wrong the
+ * other way would let a flag value be mistaken for the wrapped binary.
+ */
+const WRAPPER_VALUE_FLAGS: Record<string, ReadonlySet<string>> = {
+  env: new Set(['-u', '--unset', '-C', '--chdir', '-S', '--split-string']),
+  timeout: new Set(['-k', '--kill-after', '-s', '--signal']),
+  nice: new Set(['-n', '--adjustment']),
+  ionice: new Set(['-c', '--class', '-n', '--classdata', '-p', '--pid']),
+  stdbuf: new Set(['-i', '--input', '-o', '--output', '-e', '--error']),
+  time: new Set(['-f', '--format', '-o', '--output']),
+  exec: new Set(['-a']),
+  xargs: new Set([
+    '-I',
+    '-i',
+    '--replace',
+    '-n',
+    '--max-args',
+    '-P',
+    '--max-procs',
+    '-d',
+    '--delimiter',
+    '-a',
+    '--arg-file',
+    '-E',
+    '-e',
+    '--eof',
+    '-L',
+    '-l',
+    '--max-lines',
+    '-s',
+    '--max-chars',
+  ]),
+  sudo: new Set([
+    '-u',
+    '--user',
+    '-g',
+    '--group',
+    '-p',
+    '--prompt',
+    '-D',
+    '--chdir',
+    '-R',
+    '--chroot',
+  ]),
+  doas: new Set(['-u', '-C']),
+};
+
+/** Wrappers that take positional operands of their own before the command. */
+const WRAPPER_POSITIONAL_OPERANDS: Record<string, number> = {
+  // `timeout DURATION COMMAND ...`
+  timeout: 1,
+};
+
+/** `env env env ...` is pathological, not legitimate; bound the unwrapping. */
+const MAX_WRAPPER_DEPTH = 8;
+
+/** Outcome of peeling command wrappers off the head of a segment. */
+interface UnwrappedCommand {
+  /** Tokens of the real command. Empty when the wrapper had no command
+   *  (`env` on its own just prints the environment). */
+  tokens: string[];
+  /** True when `sudo`/`doas` was one of the peeled wrappers. */
+  privileged: boolean;
+}
+
+/**
+ * Peel `env`/`timeout`/`sudo`/... off the head of a segment and return the
+ * command that will actually run.
+ *
+ * Returns null when the segment does not start with a wrapper, so callers can
+ * cheaply tell "nothing to do" from "resolved to an empty command".
+ *
+ * Wrapper-specific operands are skipped so the resolution survives realistic
+ * spellings: `env -i FOO=bar node -e '...'`, `timeout -k 1s 5 rm -rf /` and
+ * `nice -10 ls` all resolve to `node`, `rm` and `ls` respectively.
+ */
+function unwrapCommandWrappers(tokens: readonly string[]): UnwrappedCommand | null {
+  let index = 0;
+  let privileged = false;
+  let unwrapped = false;
+
+  for (let depth = 0; depth < MAX_WRAPPER_DEPTH; depth++) {
+    const head = tokens[index];
+    if (head === undefined) break;
+
+    // Accept absolute paths: /usr/bin/env is the same wrapper as env.
+    const wrapper = head.slice(head.lastIndexOf('/') + 1);
+    if (!COMMAND_WRAPPERS.has(wrapper)) break;
+
+    unwrapped = true;
+    if (PRIVILEGE_WRAPPERS.has(wrapper)) privileged = true;
+    index++;
+
+    const valueFlags = WRAPPER_VALUE_FLAGS[wrapper];
+    let endOfOptions = false;
+
+    while (index < tokens.length) {
+      const token = tokens[index];
+
+      if (!endOfOptions && token === '--') {
+        endOfOptions = true;
+        index++;
+        continue;
+      }
+
+      if (!endOfOptions && token.length > 1 && token.startsWith('-')) {
+        const flag = token.split('=')[0];
+        index += valueFlags?.has(flag) && !token.includes('=') ? 2 : 1;
+        continue;
+      }
+
+      // `env` accepts any number of NAME=value assignments before the command.
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) {
+        index++;
+        continue;
+      }
+
+      break;
+    }
+
+    let operands = WRAPPER_POSITIONAL_OPERANDS[wrapper] ?? 0;
+    while (operands > 0 && index < tokens.length) {
+      index++;
+      operands--;
+    }
+  }
+
+  if (!unwrapped) return null;
+  return { tokens: tokens.slice(index), privileged };
+}
 
 /** A parsed `rm` invocation: the flags that matter, plus its operands. */
 interface RmInvocation {
@@ -598,13 +795,12 @@ function normalizeRmTarget(raw: string): string {
  * all recognised as the same request.
  */
 function parseRmInvocation(segment: string): RmInvocation | null {
-  const tokens = segment.split(/\s+/).filter(token => token.length > 0);
+  const rawTokens = segment.split(/\s+/).filter(token => token.length > 0);
+  // Wrappers hide the real binary from a head-token check: without unwrapping
+  // their own flags and operands, `timeout 5 rm -rf /` never parses as `rm`.
+  const tokens = unwrapCommandWrappers(rawTokens)?.tokens ?? rawTokens;
 
   let index = 0;
-  while (index < tokens.length && COMMAND_WRAPPERS.has(tokens[index])) {
-    index++;
-  }
-
   const binary = tokens[index];
   if (!binary || !/(^|\/)rm$/.test(binary)) {
     return null;

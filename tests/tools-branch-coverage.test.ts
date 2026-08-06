@@ -160,19 +160,28 @@ describe('git tools branch behavior', () => {
       })
     );
 
-    // 1st reply = `git status --porcelain`, 2nd reply = upstream rev-list ("behind\tahead")
+    // 1st reply = `git status --porcelain -z`, 2nd = upstream rev-list ("behind\tahead").
+    // `-z` records are NUL-separated; `R` carries the source path as an extra field.
     scriptGit(
-      { stdout: '?? new.txt\n M work.ts\nM  staged.ts\nAM both.ts\n D deleted.ts' },
+      {
+        stdout:
+          '?? new.txt\0 M work.ts\0M  staged.ts\0AM both.ts\0 D deleted.ts\0' +
+          'R  renamed.ts\0old.ts\0UU conflict.ts\0',
+      },
       { stdout: '2\t5\n' }
     );
     const result = await gitStatusTool.execute({ cwd: '/repo' }, context);
     expect(result.success).toBe(true);
     expect(JSON.parse(result.output)).toEqual({
       clean: false,
+      // A rename is staged work, an unmerged path is neither staged nor
+      // modified -- both used to be dropped while still counted in `total`.
+      conflicted: ['conflict.ts'],
+      hasConflicts: true,
       untracked: ['new.txt'],
       modified: ['work.ts', 'both.ts', 'deleted.ts'],
-      staged: ['staged.ts', 'both.ts'],
-      total: 5,
+      staged: ['staged.ts', 'both.ts', 'renamed.ts'],
+      total: 7,
       behind: 2,
       ahead: 5,
     });

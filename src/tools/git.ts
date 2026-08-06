@@ -52,6 +52,50 @@ function parseStagedPaths(output: string): string[] {
   return output.split('\0').filter(Boolean);
 }
 
+/** One entry of `git status --porcelain -z`: the XY code plus its path. */
+interface PorcelainEntry {
+  code: string;
+  path: string;
+}
+
+/**
+ * The XY codes of `git status` porcelain v1 that mean "unmerged".
+ *
+ * None of them carries an `M`/`A`/`D` in the position the previous parser
+ * inspected, so every conflicted file used to vanish from the tool output and
+ * the agent could not tell a merge conflict from a clean tree.
+ */
+const UNMERGED_CODES = new Set(['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU']);
+
+/**
+ * Parse `git status --porcelain -z` into entries.
+ *
+ * `-z` is what makes this safe: records are NUL-separated and paths are never
+ * quoted or backslash-escaped, so non-ASCII filenames survive `core.quotePath`
+ * (on by default). Rename and copy records carry a second NUL-terminated field
+ * -- the original path -- which must be consumed or it is read as a bogus entry.
+ */
+function parsePorcelainStatus(output: string): PorcelainEntry[] {
+  const records = output.split('\0');
+  const entries: PorcelainEntry[] = [];
+
+  for (let index = 0; index < records.length; index++) {
+    const record = records[index];
+    // A porcelain record is "XY <path>": two status columns, a space, the path.
+    if (record.length < 4) continue;
+
+    const code = record.slice(0, 2);
+    entries.push({ code, path: record.slice(3) });
+
+    // `R`/`C` are followed by the source path as its own NUL-terminated field.
+    if (code.includes('R') || code.includes('C')) {
+      index++;
+    }
+  }
+
+  return entries;
+}
+
 async function execGit(command: string, cwd?: string, timeout = 30000): Promise<ExecResult> {
   return execGitArgs(command.split(' '), cwd, timeout);
 }
@@ -157,32 +201,52 @@ export const gitStatusTool: OpenHorseTool = buildTool({
   execute: async args => {
     const cwd = args.cwd as string | undefined;
 
-    // git status --porcelain
-    const statusResult = await execGit('status --porcelain', cwd);
+    // `-z` gives NUL-separated records and, per git-status(1), disables path
+    // quoting entirely -- so a non-ASCII filename arrives verbatim instead of
+    // octal-escaped. `core.quotePath=false` is belt-and-braces for old builds.
+    const statusResult = await execGitArgs(
+      ['-c', 'core.quotePath=false', 'status', '--porcelain', '-z'],
+      cwd
+    );
     if (!statusResult.success) {
-      return { success: false, output: `git status failed: ${statusResult.error}`, error: `git status failed: ${statusResult.error}` };
+      return {
+        success: false,
+        output: `git status failed: ${statusResult.error}`,
+        error: `git status failed: ${statusResult.error}`,
+      };
     }
 
     // 解析状态
-    const lines = statusResult.output.split('\n').filter(l => l.trim());
+    const entries = parsePorcelainStatus(statusResult.output);
 
     const untracked: string[] = [];
     const modified: string[] = [];
     const staged: string[] = [];
+    const conflicted: string[] = [];
 
-    for (const line of lines) {
-      const code = line.slice(0, 2);
-      const file = line.slice(3).trim();
-
+    for (const { code, path: file } of entries) {
       if (code === '??') {
         untracked.push(file);
-      } else if (code.includes('M') || code.includes('A') || code.includes('D')) {
-        if (code[0] !== ' ' && code[0] !== '?') {
-          staged.push(file); // 已暂存
-        }
-        if (code[1] !== ' ') {
-          modified.push(file); // 工作区修改但未暂存
-        }
+        continue;
+      }
+
+      // Unmerged paths are neither "staged" nor "modified": committing them
+      // would commit conflict markers, so they get their own bucket and are
+      // surfaced first in the output.
+      if (UNMERGED_CODES.has(code)) {
+        conflicted.push(file);
+        continue;
+      }
+
+      if (code === '!!') continue; // ignored, only present with --ignored
+
+      // `R` (rename), `C` (copy) and `T` (typechange) used to match neither
+      // branch and were dropped silently while still inflating `total`.
+      if (code[0] !== ' ' && code[0] !== '?') {
+        staged.push(file); // 已暂存
+      }
+      if (code[1] !== ' ') {
+        modified.push(file); // 工作区修改但未暂存
       }
     }
 
@@ -212,11 +276,15 @@ export const gitStatusTool: OpenHorseTool = buildTool({
     }
 
     const summary = {
-      clean: lines.length === 0,
+      clean: entries.length === 0,
+      // Listed first so a conflict is impossible to miss: an agent that reads
+      // only the head of this object must still see that a merge is in progress.
+      conflicted,
+      hasConflicts: conflicted.length > 0,
       untracked,
       modified,
       staged,
-      total: lines.length,
+      total: entries.length,
       ahead,
       behind,
     };
@@ -900,6 +968,18 @@ action:
     if (!name || typeof name !== 'string') {
       return { success: false, output: '', error: `git_branch ${action} requires a branch name` };
     }
+    // A leading `-` would be parsed as an option rather than a branch name.
+    if (
+      name.startsWith('-') ||
+      name.includes('\0') ||
+      name.includes('\r') ||
+      name.includes('\n') ||
+      name.includes('..') ||
+      name.endsWith('/') ||
+      name.endsWith('.')
+    ) {
+      return { success: false, output: '', error: 'git_branch name is not a safe branch name' };
+    }
 
     if (action === 'create') {
       const result = await execGitArgs(['branch', name], cwd);
@@ -911,9 +991,24 @@ action:
     }
 
     if (action === 'switch') {
-      const result = await execGitArgs(['checkout', name], cwd);
+      // `git checkout <name>` treats a name that is not a branch as a
+      // *pathspec* and overwrites that working-tree file with the index
+      // content -- an unrecoverable loss of uncommitted work (no reflog entry,
+      // no stash, no dangling object). A path like `src/index.ts` is a
+      // perfectly well-formed branch name, so the guard has to be in the argv.
+      //
+      // `git switch` refuses pathspecs by design. `git checkout <name> --` is
+      // the equivalent for git < 2.23, where `switch` does not exist yet.
+      let result = await execGitArgs(['switch', name], cwd);
+      if (!result.success && /is not a git command|unknown option/i.test(result.error ?? '')) {
+        result = await execGitArgs(['checkout', name, '--'], cwd);
+      }
       if (!result.success) {
-        return { success: false, output: log.join('\n'), error: `git checkout failed: ${result.error}` };
+        return {
+          success: false,
+          output: log.join('\n'),
+          error: `git switch failed: ${result.error}`,
+        };
       }
       log.push(`✓ Switched to ${name}`);
       return { success: true, output: log.join('\n') };
@@ -938,7 +1033,16 @@ action:
   checkPermissions: args => {
     const action = (args.action as string) ?? 'list';
     if (action === 'list') return { behavior: 'allow' };
-    return { behavior: 'ask', reason: `git branch ${action} will modify local branch state` };
+    const name = typeof args.name === 'string' ? args.name : '<unnamed>';
+    // Spell out the consequence per action: "will modify local branch state"
+    // told the user nothing about a switch rewriting working-tree files.
+    const reason =
+      action === 'switch'
+        ? `git switch ${name} will change the checked-out branch and update working-tree files`
+        : action === 'delete'
+          ? `git branch delete will remove the local branch ${name}`
+          : `git branch ${action} will modify local branch state`;
+    return { behavior: 'ask', reason };
   },
   userFacingName: args => `Git Branch: ${args.action ?? 'list'}`,
 });
