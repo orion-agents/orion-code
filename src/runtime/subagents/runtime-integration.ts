@@ -54,7 +54,11 @@ export interface SubagentTurnInputs {
   /** Lifecycle event sink (runtime event + trace). */
   onSubtaskEvent?: (event: RuntimeSubtaskEvent) => void;
   /** Called once per finished task with its structured result, for artifact persistence. */
-  onSubtaskResult?: (result: import('./types').SubtaskResult, batchId: string) => void;
+  onSubtaskResult?: (
+    result: import('./types').SubtaskResult,
+    batchId: string,
+    objective?: string
+  ) => void;
   /**
    * R6: live permission state from the root runtime. Returns true when a
    * permission request is awaiting user decision. When provided, the policy

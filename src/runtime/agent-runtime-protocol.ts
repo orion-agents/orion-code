@@ -9,6 +9,7 @@ import type {
   RuntimeHarnessDiagnostics,
   RuntimeSessionRestoredEvent,
   RuntimeSubtaskEvent,
+  ResearchLifecycleEvent,
   ToolPermissionRequest,
   TranscriptAppendEntry,
   TranscriptEntry,
@@ -101,6 +102,7 @@ export type AgentRuntimeEvent =
   | { type: 'trace_event_recorded'; event: RuntimeTraceEvent }
   | { type: 'harness_diagnostics_updated'; diagnostics: RuntimeHarnessDiagnostics }
   | { type: 'subtask_event'; event: RuntimeSubtaskEvent }
+  | { type: 'research_event'; event: ResearchLifecycleEvent }
   | { type: 'goal_event'; event: GoalRuntimeEvent }
   | { type: 'processing_changed'; processing: boolean }
   | { type: 'clear_view' }
@@ -164,6 +166,9 @@ export function emitToUiEventSink(events: UiEventSink, event: AgentRuntimeEvent)
       return undefined;
     case 'subtask_event':
       events.subtaskEvent?.(event.event);
+      return undefined;
+    case 'research_event':
+      events.researchEvent?.(event.event);
       return undefined;
     case 'goal_event':
       events.goalEvent?.(event.event);
@@ -238,6 +243,9 @@ export function createUiEventSinkFromAgentRuntimeEvents(sink: AgentRuntimeEventS
     },
     subtaskEvent: event => {
       sink.emit({ type: 'subtask_event', event });
+    },
+    researchEvent: event => {
+      sink.emit({ type: 'research_event', event });
     },
     goalEvent: event => {
       sink.emit({ type: 'goal_event', event });

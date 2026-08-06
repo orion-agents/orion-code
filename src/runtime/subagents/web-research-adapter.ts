@@ -56,7 +56,7 @@ export interface WebResearchDeps {
   /** Search provider chain. May perform internal provider fallback. */
   search: (query: string, limit: number) => Promise<RawSearchResult[]>;
   /** Fetch a single URL. Default wraps the real WebFetch tool (full guard set). */
-  fetch: (url: string, prompt?: string) => Promise<RawFetchResult>;
+  fetch: (url: string, prompt?: string, signal?: AbortSignal) => Promise<RawFetchResult>;
   /** Selection-time domain allowlist; when set, only matching hosts pass. */
   allowedDomains?: string[];
   /** Overridable clock for deterministic tests. */
@@ -115,9 +115,7 @@ function domainAllowed(url: string, allowed?: string[]): boolean {
 }
 
 function hashContent(canonicalUrl: string, content: string): string {
-  return createHash('sha256')
-    .update(`${canonicalUrl}\n${content}`)
-    .digest('hex');
+  return createHash('sha256').update(`${canonicalUrl}\n${content}`).digest('hex');
 }
 
 /**
@@ -130,7 +128,7 @@ function hashContent(canonicalUrl: string, content: string): string {
  */
 export async function runWebResearch(
   request: ResearchRequest,
-  deps: WebResearchDeps,
+  deps: WebResearchDeps
 ): Promise<WebResearchResult> {
   const now = deps.now ?? (() => new Date());
   const startedAt = now();
@@ -167,7 +165,14 @@ export async function runWebResearch(
 
   // Select: security + domain gate, capped at maxSources.
   const selected: Array<{ hit: RawSearchResult; rank: number }> = [];
-  for (let i = 0; i < hits.length && selected.length < request.maxSources; i++) {
+  // Count blocked/failed search hits against maxSources as well. Otherwise a
+  // hostile provider can fill the packet with unbounded blocked records before
+  // the selected-source cap is reached.
+  for (
+    let i = 0;
+    i < hits.length && result.sources.length + selected.length < request.maxSources;
+    i++
+  ) {
     const hit = hits[i];
     if (hit.status !== 'ok') {
       // Search-level failure/block: record directly, never fetch.
@@ -178,7 +183,11 @@ export async function runWebResearch(
     if (!ssrf.safe) {
       result.blocked.push(redactUrl(hit.url).url);
       result.sources.push(
-        buildSource(hit, { rank: i, now: now(), override: { status: 'blocked', failureReason: ssrf.reason } }),
+        buildSource(hit, {
+          rank: i,
+          now: now(),
+          override: { status: 'blocked', failureReason: ssrf.reason },
+        })
       );
       continue;
     }
@@ -189,7 +198,7 @@ export async function runWebResearch(
           rank: i,
           now: now(),
           override: { status: 'blocked', failureReason: 'domain not in allowlist' },
-        }),
+        })
       );
       continue;
     }
@@ -202,62 +211,83 @@ export async function runWebResearch(
     return result;
   }
 
-  // Fetch each selected URL under byte + duration budgets.
+  // Fetch each selected URL under byte + duration budgets. The signal is
+  // best-effort because injected fetchers may ignore it, while the explicit
+  // clock check below still prevents subsequent requests after the deadline.
   const byteBudget = Math.max(0, request.maxFetchBytes);
-  for (const { hit, rank } of selected) {
-    if (result.timedOut) {
-      result.skipped.push(redactUrl(hit.url).url);
-      continue;
-    }
-    // Byte budget: once exhausted, stop fetching (remaining become skipped, not
-    // a failure - they can be retried, so status stays silent).
-    if (byteBudget > 0 && result.bytesFetched >= byteBudget) {
-      result.truncatedDueToBytes = true;
-      result.skipped.push(redactUrl(hit.url).url);
-      continue;
-    }
-
-    let fetched: RawFetchResult;
-    try {
-      fetched = await deps.fetch(hit.url);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      result.sources.push(
-        buildSource(hit, { rank, now: now(), override: { status: 'failed', failureReason: `fetch threw: ${msg}` } }),
-      );
-      continue;
-    }
-
-    // Duration budget: abort remaining fetches after the wall clock is exceeded.
-    if (now().getTime() - startedAt.getTime() > request.maxDurationMs) {
+  const timeoutController = new AbortController();
+  const timeoutHandle = setTimeout(
+    () => {
       result.timedOut = true;
+      timeoutController.abort();
+    },
+    Math.max(1, request.maxDurationMs)
+  );
+  try {
+    for (const { hit, rank } of selected) {
+      if (result.timedOut) {
+        result.skipped.push(redactUrl(hit.url).url);
+        continue;
+      }
+      // Byte budget: once exhausted, stop fetching (remaining become skipped, not
+      // a failure - they can be retried, so status stays silent).
+      if (byteBudget > 0 && result.bytesFetched >= byteBudget) {
+        result.truncatedDueToBytes = true;
+        result.skipped.push(redactUrl(hit.url).url);
+        continue;
+      }
+
+      let fetched: RawFetchResult;
+      try {
+        fetched = await deps.fetch(hit.url, undefined, timeoutController.signal);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        result.sources.push(
+          buildSource(hit, {
+            rank,
+            now: now(),
+            override: { status: 'failed', failureReason: `fetch threw: ${msg}` },
+          })
+        );
+        continue;
+      }
+
+      // Duration budget: abort remaining fetches after the wall clock is exceeded.
+      if (now().getTime() - startedAt.getTime() > request.maxDurationMs) {
+        result.timedOut = true;
+      }
+
+      const status = toSourceStatus(fetched.status);
+      const bytes =
+        fetched.bytes ?? (fetched.content ? Buffer.byteLength(fetched.content, 'utf8') : 0);
+      result.bytesFetched += bytes;
+
+      // Redirects can introduce credentials the search hit never had, so the
+      // final URL gets the same treatment. Hashing the redacted URL keeps the
+      // content hash stable when only a rotating token in the query differs.
+      const finalRedacted = redactUrl(fetched.finalUrl ?? hit.url);
+      // The audit trail spans both URLs: a secret stripped from the search hit
+      // still happened even if the post-redirect URL was clean.
+      const removed = [...new Set([...redactUrl(hit.url).removed, ...finalRedacted.removed])];
+      const source: ResearchSource = buildSource(hit, {
+        rank,
+        now: now(),
+        override: {
+          status,
+          failureReason: fetched.failureReason,
+          canonicalUrl: finalRedacted.url,
+          displayUrl: finalRedacted.url,
+          excerpt: fetched.content ? fetched.content.slice(0, 4000) : hit.snippet,
+          contentHash: fetched.content
+            ? hashContent(finalRedacted.url, fetched.content)
+            : undefined,
+          ...(removed.length > 0 ? { redactions: removed } : {}),
+        },
+      });
+      result.sources.push(source);
     }
-
-    const status = toSourceStatus(fetched.status);
-    const bytes = fetched.bytes ?? (fetched.content ? Buffer.byteLength(fetched.content, 'utf8') : 0);
-    result.bytesFetched += bytes;
-
-    // Redirects can introduce credentials the search hit never had, so the
-    // final URL gets the same treatment. Hashing the redacted URL keeps the
-    // content hash stable when only a rotating token in the query differs.
-    const finalRedacted = redactUrl(fetched.finalUrl ?? hit.url);
-    // The audit trail spans both URLs: a secret stripped from the search hit
-    // still happened even if the post-redirect URL was clean.
-    const removed = [...new Set([...redactUrl(hit.url).removed, ...finalRedacted.removed])];
-    const source: ResearchSource = buildSource(hit, {
-      rank,
-      now: now(),
-      override: {
-        status,
-        failureReason: fetched.failureReason,
-        canonicalUrl: finalRedacted.url,
-        displayUrl: finalRedacted.url,
-        excerpt: fetched.content ? fetched.content.slice(0, 4000) : hit.snippet,
-        contentHash: fetched.content ? hashContent(finalRedacted.url, fetched.content) : undefined,
-        ...(removed.length > 0 ? { redactions: removed } : {}),
-      },
-    });
-    result.sources.push(source);
+  } finally {
+    clearTimeout(timeoutHandle);
   }
 
   result.durationMs = now().getTime() - startedAt.getTime();

@@ -56,6 +56,14 @@ import { resolveSkillsForTurn, hasMatchingSkill } from '../skills';
 import {
   createSubagentBundleForTurn,
   deriveRootLlmConfig,
+  buildResearchView,
+  createFileArtifactStore,
+  createLocalResearchRequest,
+  resolveCitations,
+  saveResearchPacket,
+  subtaskResultToPacket,
+  toLifecycleEvents,
+  validatePacket,
   type RuntimeSubtaskEvent,
   type SubagentTurnBundle,
 } from './subagents';
@@ -2015,8 +2023,8 @@ export class AgentChatController {
             onSubtaskEvent: event => {
               this.handleSubtaskEvent(event, sessionId, turnId);
             },
-            onSubtaskResult: (result, _batchId) => {
-              if (!projectPath || result.status !== 'completed') return;
+            onSubtaskResult: (result, _batchId, objective) => {
+              if (!projectPath) return;
               const json = JSON.stringify(result);
               const artifact = storeArtifact(
                 projectPath,
@@ -2038,6 +2046,60 @@ export class AgentChatController {
                     argsBytes: artifact.outputBytes,
                   });
                 }
+              }
+
+              // v0.1.4 Research-to-Evidence integration: normalize every
+              // terminal research result (including partial/failure states),
+              // persist it under a packet-specific CAS scope, and forward the
+              // canonical lifecycle stream to every renderer.
+              if (result.role !== 'research' || !sessionId) return;
+              try {
+                const goal = this.goalCoordinator?.goal;
+                const objectiveRevision = goal?.contract?.objectiveRevision;
+                const hasGoalBinding =
+                  typeof goal?.goalId === 'string' && typeof objectiveRevision === 'number';
+                const request = createLocalResearchRequest(
+                  objective?.trim() || result.summary || 'repository research',
+                  projectPath,
+                  hasGoalBinding
+                    ? {
+                        goalBinding: {
+                          goalId: goal!.goalId,
+                          objectiveRevision,
+                        },
+                      }
+                    : undefined
+                );
+                const packet = subtaskResultToPacket(result, request, {
+                  projectPath,
+                  sessionId,
+                  ...(hasGoalBinding ? { goalId: goal!.goalId, objectiveRevision } : {}),
+                });
+                const validation = validatePacket(packet);
+                if (!validation.ok) return;
+
+                const saved = saveResearchPacket(createFileArtifactStore(projectPath), packet, {
+                  projectPath,
+                  sessionId,
+                  packetId: packet.packetId,
+                  ...(packet.goalId ? { goalId: packet.goalId } : {}),
+                });
+                const resolution = resolveCitations(packet);
+                const view = buildResearchView(packet, resolution);
+                for (const event of toLifecycleEvents(view, resolution)) {
+                  this.events.researchEvent?.(event);
+                }
+                recordTraceEvent(this.events, sessionId, {
+                  turnId: String(turnId),
+                  type: 'subtask_artifact_stored',
+                  name: `research:${packet.packetId}`,
+                  argsSummary: `${view.stage}/${view.auditStatus}: ${packet.summary}`.slice(0, 200),
+                  argsArtifactId: `research-${saved.casToken.slice(0, 16)}`,
+                  argsBytes: Buffer.byteLength(JSON.stringify(packet), 'utf8'),
+                });
+              } catch {
+                // Research persistence/rendering is observational. A storage
+                // failure must not alter the child result or root turn state.
               }
             },
             // R6: wire live permission state so the subagent policy gate can

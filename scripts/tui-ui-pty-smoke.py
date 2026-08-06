@@ -715,7 +715,7 @@ def main() -> int:
         os.write(master, "修正目标".encode("utf-8"))
         wait_for(master, output, "修正目标", timeout=5)
         os.write(master, b"\r")
-        wait_for(master, output, "Revision received. Interrupting current response", timeout=8)
+        wait_for(master, output, "已接收补充，正在中断当前轮…", timeout=8)
         wait_for(master, output, "revision-final-response", timeout=10)
         wait_for(
             master,

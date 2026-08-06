@@ -7,7 +7,12 @@
  * masquerade as retrieved hits, and budgets are enforced.
  */
 
-import { runWebResearch, type RawSearchResult, type RawFetchResult, type WebResearchDeps } from '../src/runtime/subagents/web-research-adapter';
+import {
+  runWebResearch,
+  type RawSearchResult,
+  type RawFetchResult,
+  type WebResearchDeps,
+} from '../src/runtime/subagents/web-research-adapter';
 import { createLocalResearchRequest } from '../src/runtime/subagents/research-contract';
 import { type ResearchRequest } from '../src/runtime/subagents/research-types';
 
@@ -72,7 +77,10 @@ describe('P0-R2 web research adapter', () => {
         return okFetch(url);
       },
     };
-    const res = await runWebResearch(webRequest({ scope: { projectRoot: '/proj', domains: ['example.com'] } }), deps);
+    const res = await runWebResearch(
+      webRequest({ scope: { projectRoot: '/proj', domains: ['example.com'] } }),
+      deps
+    );
 
     expect(fetched).toHaveLength(0);
     expect(res.blocked).toContain('https://evil.example.net/x');
@@ -83,8 +91,7 @@ describe('P0-R2 web research adapter', () => {
   it('caps fetched sources at maxSources and skips the rest', async () => {
     const fetched: string[] = [];
     const deps: WebResearchDeps = {
-      search: async () =>
-        Array.from({ length: 5 }, (_, i) => okHit(`https://example.com/${i}`)),
+      search: async () => Array.from({ length: 5 }, (_, i) => okHit(`https://example.com/${i}`)),
       fetch: async url => {
         fetched.push(url);
         return okFetch(url);
@@ -99,20 +106,36 @@ describe('P0-R2 web research adapter', () => {
     expect(res.skipped).toHaveLength(0);
   });
 
+  it('counts blocked search hits against maxSources', async () => {
+    const fetched: string[] = [];
+    const deps: WebResearchDeps = {
+      search: async () => [
+        { ...okHit('http://169.254.169.254/one'), title: 'blocked-1' },
+        { ...okHit('http://169.254.169.254/two'), title: 'blocked-2' },
+        okHit('https://example.com/allowed'),
+      ],
+      fetch: async url => {
+        fetched.push(url);
+        return okFetch(url);
+      },
+    };
+    const res = await runWebResearch(webRequest({ maxSources: 2 }), deps);
+
+    expect(fetched).toHaveLength(0);
+    expect(res.sources).toHaveLength(2);
+    expect(res.sources.every(source => source.status === 'blocked')).toBe(true);
+  });
+
   it('stops fetching once the byte budget is exhausted', async () => {
     const fetched: string[] = [];
     const deps: WebResearchDeps = {
-      search: async () =>
-        Array.from({ length: 3 }, (_, i) => okHit(`https://example.com/${i}`)),
+      search: async () => Array.from({ length: 3 }, (_, i) => okHit(`https://example.com/${i}`)),
       fetch: async url => {
         fetched.push(url);
         return okFetch(url, 'x', 100);
       },
     };
-    const res = await runWebResearch(
-      webRequest({ maxSources: 3, maxFetchBytes: 150 }),
-      deps,
-    );
+    const res = await runWebResearch(webRequest({ maxSources: 3, maxFetchBytes: 150 }), deps);
 
     expect(fetched).toHaveLength(2); // 100 + 100 = 200 > 150 after second fetch
     expect(res.truncatedDueToBytes).toBe(true);
@@ -125,8 +148,7 @@ describe('P0-R2 web research adapter', () => {
     const now = () => new Date(clock);
     const fetched: string[] = [];
     const deps: WebResearchDeps = {
-      search: async () =>
-        Array.from({ length: 3 }, (_, i) => okHit(`https://example.com/${i}`)),
+      search: async () => Array.from({ length: 3 }, (_, i) => okHit(`https://example.com/${i}`)),
       fetch: async url => {
         fetched.push(url);
         clock += 10_000; // advance past a 5s budget after the first fetch
@@ -134,10 +156,7 @@ describe('P0-R2 web research adapter', () => {
       },
       now,
     };
-    const res = await runWebResearch(
-      webRequest({ maxSources: 3, maxDurationMs: 5_000 }),
-      deps,
-    );
+    const res = await runWebResearch(webRequest({ maxSources: 3, maxDurationMs: 5_000 }), deps);
 
     expect(fetched).toHaveLength(1);
     expect(res.timedOut).toBe(true);
@@ -147,7 +166,11 @@ describe('P0-R2 web research adapter', () => {
   it('records a fetch failure as failed, never as a retrieved hit', async () => {
     const deps: WebResearchDeps = {
       search: async () => [okHit('https://example.com/a')],
-      fetch: async () => ({ url: 'https://example.com/a', status: 'error', failureReason: 'HTTP 503' }),
+      fetch: async () => ({
+        url: 'https://example.com/a',
+        status: 'error',
+        failureReason: 'HTTP 503',
+      }),
     };
     const res = await runWebResearch(webRequest(), deps);
 
@@ -163,7 +186,14 @@ describe('P0-R2 web research adapter', () => {
     const deps: WebResearchDeps = {
       search: async () => [
         { ...okHit('https://example.com/ok'), provider: 'ddg' },
-        { query: 'q', provider: 'tavily', title: 'Blocked', url: 'https://internal.example.com/x', status: 'blocked', failureReason: 'provider refused' },
+        {
+          query: 'q',
+          provider: 'tavily',
+          title: 'Blocked',
+          url: 'https://internal.example.com/x',
+          status: 'blocked',
+          failureReason: 'provider refused',
+        },
       ],
       fetch: async url => okFetch(url),
     };
@@ -190,10 +220,7 @@ describe('P0-R2 web research adapter', () => {
         return okFetch('https://example.com/a');
       },
     };
-    const res = await runWebResearch(
-      { ...webRequest(), mode: 'local' },
-      deps,
-    );
+    const res = await runWebResearch({ ...webRequest(), mode: 'local' }, deps);
 
     expect(called.search).toBe(false);
     expect(called.fetch).toBe(false);
@@ -301,7 +328,7 @@ describe('P0-R2 web research adapter resilience and redaction', () => {
     expect(res.sources).toHaveLength(0);
     expect(res.blocked).toHaveLength(0);
     expect(res.notes.some(n => n.includes('search dependency threw: search mcp offline'))).toBe(
-      true,
+      true
     );
   });
 

@@ -80,7 +80,7 @@ export interface SubagentSupervisorDeps {
   /** Lifecycle event sink (runtime event + trace). */
   onEvent?: (event: RuntimeSubtaskEvent) => void;
   /** Called once per task with its final SubtaskResult (for artifact persistence). */
-  onSubtaskResult?: (result: SubtaskResult, batchId: string) => void;
+  onSubtaskResult?: (result: SubtaskResult, batchId: string, objective?: string) => void;
 }
 
 let batchCounter = 0;
@@ -372,7 +372,7 @@ function finalizeTask(
 
   // Persist the structured result for trace/resume durability - isolated.
   try {
-    deps.onSubtaskResult?.(result, batchId);
+    deps.onSubtaskResult?.(result, batchId, task.objective);
   } catch {
     // An artifact/trace sink throwing cannot reject the batch.
   }

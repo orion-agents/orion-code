@@ -15,6 +15,10 @@
  * without disk.
  */
 
+import { createHash } from 'crypto';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
+import { join } from 'path';
+import { getProjectArtifactsDir } from '../../services/config-dir';
 import { hashPacket } from './research-contract';
 import { RESEARCH_SCHEMA_VERSION, type ResearchPacket } from './research-types';
 
@@ -22,6 +26,8 @@ export interface ResearchScope {
   projectPath: string;
   sessionId: string;
   goalId?: string;
+  /** Optional packet discriminator when several research tasks share a Goal. */
+  packetId?: string;
 }
 
 export interface ArtifactRecord {
@@ -51,13 +57,62 @@ export function createMemoryArtifactStore(): ResearchArtifactStore {
 }
 
 export function scopeKey(scope: ResearchScope): string {
-  return `${scope.projectPath}::${scope.sessionId}::${scope.goalId ?? '-'}`;
+  return `${scope.projectPath}::${scope.sessionId}::${scope.goalId ?? '-'}::${scope.packetId ?? '-'}`;
+}
+
+/**
+ * Durable project-scoped store used by the runtime integration.
+ *
+ * Each packet has a deterministic filename derived from its full scope. Writes
+ * use a sibling temporary file plus rename so a killed process cannot leave a
+ * partially-written JSON record that looks resumable.
+ */
+export function createFileArtifactStore(projectPath: string): ResearchArtifactStore {
+  const artifactDir = getProjectArtifactsDir(projectPath);
+  const fileFor = (key: string): string => {
+    const digest = createHash('sha256').update(key).digest('hex');
+    return join(artifactDir, `research-${digest}.json`);
+  };
+
+  return {
+    read: key => {
+      const file = fileFor(key);
+      if (!existsSync(file)) return null;
+      try {
+        const parsed = JSON.parse(readFileSync(file, 'utf8')) as ArtifactRecord;
+        if (
+          !parsed ||
+          typeof parsed.version !== 'number' ||
+          typeof parsed.casToken !== 'string' ||
+          !parsed.packet ||
+          typeof parsed.storedAt !== 'string' ||
+          !Array.isArray(parsed.previousTokens)
+        ) {
+          return null;
+        }
+        return parsed;
+      } catch {
+        return null;
+      }
+    },
+    write: (key, record) => {
+      mkdirSync(artifactDir, { recursive: true, mode: 0o700 });
+      const file = fileFor(key);
+      const temporary = `${file}.${process.pid}.${Date.now()}.tmp`;
+      writeFileSync(temporary, `${JSON.stringify(record)}\n`, { mode: 0o600 });
+      renameSync(temporary, file);
+    },
+  };
 }
 
 export type ResearchResumeState = 'completed' | 'partial' | 'failed';
 
 export class CasMismatchError extends Error {
-  constructor(public scopeKey: string, public expected: string, public actual: string) {
+  constructor(
+    public scopeKey: string,
+    public expected: string,
+    public actual: string
+  ) {
     super(`CAS mismatch for ${scopeKey}: expected ${expected}, found ${actual}`);
     this.name = 'CasMismatchError';
   }
@@ -95,7 +150,7 @@ export function saveResearchPacket(
   store: ResearchArtifactStore,
   packet: ResearchPacket,
   scope: ResearchScope,
-  opts: SaveOptions = {},
+  opts: SaveOptions = {}
 ): SaveResult {
   const key = scopeKey(scope);
   const now = opts.now ?? (() => new Date());
@@ -121,7 +176,10 @@ export function saveResearchPacket(
  * Load a packet. Fails closed on old/unsupported schema versions (never migrates
  * silently). Returns null when nothing is stored for the scope.
  */
-export function loadResearchPacket(store: ResearchArtifactStore, scope: ResearchScope): ResearchPacket | null {
+export function loadResearchPacket(
+  store: ResearchArtifactStore,
+  scope: ResearchScope
+): ResearchPacket | null {
   const rec = store.read(scopeKey(scope));
   if (!rec) return null;
   if (rec.packet.schemaVersion !== RESEARCH_SCHEMA_VERSION) {
@@ -137,7 +195,8 @@ export function loadResearchPacket(store: ResearchArtifactStore, scope: Research
  * failed only when there is nothing usable.
  */
 export function resumeResearchState(packet: ResearchPacket): ResearchResumeState {
-  if (packet.schemaVersion !== RESEARCH_SCHEMA_VERSION) throw new UnsupportedSchemaError(packet.schemaVersion);
+  if (packet.schemaVersion !== RESEARCH_SCHEMA_VERSION)
+    throw new UnsupportedSchemaError(packet.schemaVersion);
   if (packet.sources.length === 0) return 'failed';
   const hasFailures = packet.sources.some(s => s.status === 'failed' || s.status === 'blocked');
   const hasConflict = packet.risks.some(r => /conflict/i.test(r));
