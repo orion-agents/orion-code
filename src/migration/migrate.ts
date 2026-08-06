@@ -146,6 +146,7 @@ function copyDirRecursive(srcDir: string, destDir: string): FileMapping[] {
   return mappings;
 }
 
+
 // ── Config key remapping ─────────────────────────────────────────────────────
 
 function remapConfigKeys(content: string): string {
@@ -413,8 +414,6 @@ export function migrateBrand(options: MigrationOptions = {}): MigrationResult {
         rmSync(stagingRoot, { recursive: true, force: true });
       }
     } catch (cleanupErr) {
-      // A failed rollback leaves a half-written staging tree on disk, which
-      // the *next* migration would otherwise trip over with no explanation.
       manifest.warnings.push(
         `Failed to clean up staging directory ${stagingRoot}: ${
           cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)
