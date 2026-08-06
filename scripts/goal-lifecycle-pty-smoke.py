@@ -557,9 +557,6 @@ def run_renderer(repo: Path, renderer: str) -> None:
                 output.wait("›", timeout=10)
                 time.sleep(0.2)
 
-            send(master, "/mode accept-edits")
-            output.wait("Mode changed to acceptEdits", timeout=8)
-
             create_mark = output.mark()
             send(master, "/target Make lifecycle-test-check pass with durable evidence")
             output.wait("lifecycle-test-check", timeout=8, start=create_mark)

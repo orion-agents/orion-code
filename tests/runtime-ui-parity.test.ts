@@ -98,6 +98,8 @@ function normalizeEvent(event: AgentRuntimeEvent): string {
       return `harness:${event.diagnostics.taskEpoch ?? '?'}:${event.diagnostics.evidenceSize}:${event.diagnostics.turnSummaryCount}`;
     case 'subtask_event':
       return `subtask:${event.event.state}:${event.event.role}:${event.event.taskId}`;
+    case 'research_event':
+      return `research:${event.event.type}:${event.event.packetId}`;
     case 'goal_event':
       return `goal:${event.event.type}`;
     case 'session_picker_requested':

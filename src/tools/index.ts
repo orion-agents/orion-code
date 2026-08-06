@@ -709,9 +709,6 @@ export const TOOLS: OpenHorseTool[] = [
               if (type) memories = memories.filter(m => m.type === type);
             }
           } catch (error) {
-            // Semantic search is degraded to keyword search silently, so a
-            // permanently broken embedding provider looks like "the index is
-            // just not very good" unless the failure is recorded.
             debugError('tools.memory.semanticSearch', error, query);
             memories = searchMemories(query, projectPath);
             if (type) memories = memories.filter(m => m.type === type);
@@ -964,7 +961,7 @@ function normalizeToolPath(input: string): string {
   if (value.startsWith('file://')) {
     try {
       return decodeURIComponent(new URL(value).pathname);
-    } catch {
+    } catch (error) {
       // Malformed URL or bad percent-encoding: strip the scheme so the path
       // still reaches the caller's own validation instead of vanishing.
       return value.replace(/^file:\/\//u, '');
@@ -1006,8 +1003,8 @@ function safeReadFileSync(resolved: string): string | null {
     if (!st || st.isDirectory()) return null;
     return readFileSync(resolved, 'utf-8');
   } catch (error) {
-    // Permission denied or a binary that is not valid UTF-8; callers treat
-    // null as "no content", which otherwise hides a real read failure.
+    // Permission denied or a binary that is not valid UTF-8; callers treat null
+    // as "no content", which otherwise hides a real read failure.
     debugError('tools.safeReadFile', error, resolved);
     return null;
   }
@@ -1247,8 +1244,8 @@ async function execCommand_(
 
     // Issue #32 #3.2: AbortSignal 处理
     // Declared uninitialized on purpose: `finish()` below closes over it before the
-    // `timeoutId = setTimeout(...)` assignment. `const` without an initializer is a compile
-    // error (TS1155), and inlining the assignment would put it in the closure's TDZ.
+    // `timeoutId = setTimeout(...)` assignment. `const` without an initializer is a
+    // compile error (TS1155), and inlining the assignment would put it in the closure's TDZ.
     // eslint-disable-next-line prefer-const
     let timeoutId: NodeJS.Timeout | undefined;
     let killTimerId: NodeJS.Timeout | undefined;
