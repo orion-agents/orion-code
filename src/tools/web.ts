@@ -42,8 +42,15 @@ const BLOCKED_IP_PATTERNS = [
   /^172\.(1[6-9]|2\d|3[01])\.(\d{1,3})\.(\d{1,3})$/, // 172.16-31.x.x (private class B)
   /^0\.0\.0\.0$/, // 0.0.0.0
   /^::1$/, // IPv6 localhost
-  /^fc[0-9a-f]{2}:/i, // IPv6 unique local
+  // IPv6 unique local (RFC 4193, fc00::/7). The L bit must be 1, so every
+  // allocated ULA is in fd00::/8 — the previous `^fc[0-9a-f]{2}:` anchor only
+  // matched the reserved fc00::/8 half and let fd00::/8 through (issue #37, item 2).
+  /^f[cd][0-9a-f]{2}:/i,
   /^fe[8-9a-f][0-9a-f]:/i, // IPv6 link-local
+  // 100.64.0.0/10 (CGNAT / carrier-grade NAT) and 192.0.0.0/24 (IETF protocol
+  // assignments) are not globally routable and must be treated as internal.
+  /^100\.(6[4-9]|[7-9]\d|1\d{2}|2[0-4]\d|25[0-5])\.(\d{1,3})\.(\d{1,3})$/,
+  /^192\.0\.0\.(\d{1,3})$/,
 ];
 
 /** 禁止访问的主机名 */

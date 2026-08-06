@@ -16,7 +16,15 @@ const SECRET_PATTERNS: Array<[RegExp, string]> = [
     /(["'](?:gh_token|github_token|aws_access_key_id|aws_secret_access_key|aws_session_token)["']\s*:\s*)(["'])(?:[^"']+)(["'])/gi,
     '$1$2[REDACTED_SECRET]$3',
   ],
-  [/\b(authorization\s*[:=]\s*)(["']?)(?:Bearer\s+)?[^\s"',;]+/gi, '$1$2[REDACTED_SECRET]'],
+  [
+    // Earlier versions only matched the *scheme name* when it was `Bearer`, so
+    // `Authorization: Basic …` / `Token …` / `Digest …` / `ApiKey …` leaked the
+    // credential verbatim to disk (issue #37, item 1). Require the optional
+    // scheme token to be consumed as part of the match so the whole value is
+    // redacted regardless of scheme.
+    /\b((?:proxy-)?authorization\s*[:=]\s*)(["']?)(?:[A-Za-z][A-Za-z0-9_-]*\s+)?[^\s"',;]+/gi,
+    '$1$2[REDACTED_SECRET]',
+  ],
   [
     /\b((?:api[_-]?key|access[_-]?token|auth[_-]?token|password|secret)\s*[:=]\s*)(["']?)[^\s"',;]+/gi,
     '$1$2[REDACTED_SECRET]',
