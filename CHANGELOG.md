@@ -19,11 +19,11 @@ Evidence labels follow `docs/plan/targets-v0.1.3-v0.1.3-2.md`:
 `met` / `partial` / `unmet` / `not_run` — where `not_run` means "blocked by environment",
 which is **not** a pass.
 
-## [0.1.4] — Unreleased
+## [0.1.4] — 2026-08-06
 
-> **Status: in development.** Committed on the `v0.1.4` release branch, **not yet
-> tagged or published** (`@orion-agents/orion-code@0.1.4` is not on npm). Work that
-> remains a worktree-only draft carries no release promise (see legend).
+> **Status: published.** Tag `v0.1.4` exists and the package is on npm
+> (`@orion-agents/orion-code@0.1.4`, `latest` dist-tag). Released 2026-08-06.
+> Work that remains a worktree-only draft carries no release promise (see legend).
 
 Aligns `package.json` / `package-lock.json` with the in-flight `v0.1.4` branch so the
 CLI banner, HTTP `User-Agent`, and crash/telemetry reports stop misreporting `0.1.3`.
