@@ -620,7 +620,7 @@ describe('session-storage', () => {
       expect(messages[1].role).toBe('assistant');
     });
 
-    test('readSessionMessages stops at a corrupt line to avoid orphaning later messages', () => {
+    test('readSessionMessages skips a corrupt line and keeps the later messages (Issue #84)', () => {
       const session = createSession('/tmp/project-read-corrupt-messages', 'gpt-4o');
       appendSessionMessage(session.id, {
         role: 'user',
@@ -637,8 +637,11 @@ describe('session-storage', () => {
       const [first, second] = readFileSync(transcriptPath, 'utf-8').trim().split('\n');
       writeFileSync(transcriptPath, `${first}\n{not-json}\n${second}\n`, 'utf-8');
 
+      // A single corrupt line must NOT truncate the whole session (which would
+      // drop every later turn on resume). It is skipped and the rest is kept.
       expect(readSessionMessages(session.id).map(message => message.content)).toEqual([
         'before corruption',
+        'after corruption',
       ]);
     });
 
