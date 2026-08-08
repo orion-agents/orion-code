@@ -1154,7 +1154,15 @@ function findLastCompleteBoundary(messages: SessionMessage[]): number {
   }
 
   const tail = messages.slice(lastUserIndex + 1);
-  return tail.some(isFinalAssistantMessage) ? messages.length : lastUserIndex;
+  if (tail.some(isFinalAssistantMessage)) {
+    return messages.length;
+  }
+  // No final assistant answer follows the last user prompt: the turn is
+  // incomplete. Keep the user prompt itself (lastUserIndex + 1) and only drop
+  // the partial assistant/tool tail — an abort must not delete what the user
+  // actually typed (Issue #49: off-by-one previously returned lastUserIndex and
+  // sliced the prompt away).
+  return lastUserIndex + 1;
 }
 
 function overwriteSessionMessages(sessionId: string, messages: SessionMessage[]): void {
