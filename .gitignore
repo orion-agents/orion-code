@@ -1,8 +1,55 @@
+# Dependencies
 node_modules/
+
+# Build / generated output
 dist/
-.DS_Store
-test-output.txt
-.env
-tests/tmp/
 coverage/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Local data / scratch
+test-output.txt
+tests/tmp/
+
+# OS metadata files
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+
+# TypeScript incremental build info
+*.tsbuildinfo
+
+# Merge / patch backups
+*.orig
+*.rej
+
+# Misc
+*.bak
+
+# Local agent / tooling config (intentionally not committed)
+.claude/
 .workbuddy/
+skills-lock.json
