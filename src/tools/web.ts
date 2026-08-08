@@ -521,6 +521,19 @@ async function fetchUrl(url: string, maxRedirects: number = 5): Promise<FetchRes
   const redirects: string[] = [];
   let currentUrl = url;
 
+  // Issue #77: a pre-approved host (see isPreapprovedHost / checkPermissions) is
+  // auto-allowed without a permission prompt. An open redirect on that host could
+  // silently bounce the agent to an arbitrary external host and feed its content
+  // into the model context. Once the redirect chain leaves the pre-approved host
+  // set we drop the auto-approval and refuse to continue the fetch.
+  let startHostname = '';
+  try {
+    startHostname = new URL(url).hostname;
+  } catch {
+    // URL validity is enforced by the caller; ignore parse failures here.
+  }
+  const startedPreapproved = startHostname !== '' && isPreapprovedHost(startHostname, '');
+
   for (let hop = 0; hop <= maxRedirects; hop++) {
     // Issue #32 #3.7: SSRF 检查（每一跳都要检查，不能只查首个 URL）
     const ssrfCheck = await resolveAndValidateSsrf(currentUrl);
@@ -595,6 +608,29 @@ async function fetchUrl(url: string, maxRedirects: number = 5): Promise<FetchRes
           errorType: 'INVALID_REDIRECT',
         };
       }
+
+      // Issue #77: re-check the pre-approved exemption on every redirect hop. If we
+      // began on a pre-approved host but the chain now points at a different host
+      // that is NOT pre-approved, stop chasing the redirect and refuse to ingest
+      // content from the untrusted host under the trusted host's auto-approval.
+      let nextHostname = '';
+      try {
+        nextHostname = new URL(nextUrl).hostname;
+      } catch {
+        // nextUrl is already validated above; ignore.
+      }
+      if (startedPreapproved && nextHostname !== '' && !isPreapprovedHost(nextHostname, '')) {
+        const chain = [url, ...redirects, nextUrl].join(' -> ');
+        return {
+          content: `Redirect left pre-approved host ${startHostname} -> ${nextHostname}. Refusing to fetch untrusted host under auto-approval (chain: ${chain}).`,
+          code: 421,
+          contentType: 'text/plain',
+          url: nextUrl,
+          redirects: [...redirects, nextUrl],
+          errorType: 'REDIRECT_LEFT_PREAPPROVED_HOST',
+        };
+      }
+
       redirects.push(nextUrl);
       currentUrl = nextUrl;
       continue;
@@ -773,6 +809,13 @@ Before using this tool, check if the URL points to an authenticated service (e.g
           success: false,
           output: '',
           error: `Security policy blocked access to internal network address. ${content}`,
+        };
+      }
+      if (errorType === 'REDIRECT_LEFT_PREAPPROVED_HOST') {
+        return {
+          success: false,
+          output: '',
+          error: `Security policy: redirect left the pre-approved host. ${content}`,
         };
       }
       if (errorType === 'CONTENT_TOO_LARGE') {

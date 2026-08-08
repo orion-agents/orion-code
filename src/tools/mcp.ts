@@ -202,6 +202,53 @@ function formatMcpResult(result: unknown): ToolResult {
 // MCP Client
 // ============================================================================
 
+// Issue #78: a third-party MCP stdio server must not inherit the parent
+// process's full environment — that leaks API keys, cloud credentials
+// (AWS_*, GCP_*, AZURE_*), and any other secret exported into the shell. We
+// pass only a small set of infrastructure variables plus whatever the user
+// explicitly configures (config.env), never the secret-laden parent env.
+const MCP_SAFE_ENV_KEYS = new Set([
+  'PATH',
+  'HOME',
+  'USER',
+  'LOGNAME',
+  'SHELL',
+  'TERM',
+  'LANG',
+  'LC_ALL',
+  'TMPDIR',
+  'TEMP',
+  'TMP',
+  'XDG_CONFIG_HOME',
+  'XDG_CACHE_HOME',
+  'XDG_DATA_HOME',
+  'XDG_RUNTIME_DIR',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'NO_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'no_proxy',
+]);
+
+export function buildMcpChildEnv(configEnv?: Record<string, string>): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined) continue;
+    if (MCP_SAFE_ENV_KEYS.has(key) || key.startsWith('LC_')) {
+      env[key] = value;
+    }
+  }
+  // Explicitly configured variables win (and may intentionally include secrets
+  // the server needs), but they never come from the parent environment.
+  if (configEnv) {
+    for (const [key, value] of Object.entries(configEnv)) {
+      env[key] = expandEnvValue(value);
+    }
+  }
+  return env;
+}
+
 class SimpleMCPClient {
   private state: MCPClientState = {
     process: null,
@@ -248,7 +295,7 @@ class SimpleMCPClient {
       throw new Error('MCP stdio server requires a command');
     }
 
-    const env = { ...process.env, ...config.env };
+    const env = buildMcpChildEnv(config.env);
 
     this.state.process = spawn(config.command, config.args || [], {
       env,

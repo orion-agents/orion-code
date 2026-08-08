@@ -328,10 +328,21 @@ function decryptMap(blob: string, key: Buffer): Record<string, string> | null {
 function readCredentialMap(): Record<string, string> {
   const storagePath = join(getConfigDir(), SECURE_DATA_FILE);
   if (!existsSync(storagePath)) {
+    // No file yet: a fresh, empty map. Storing/deleting is safe to proceed.
     return {};
   }
   const key = loadOrCreateKey();
-  return decryptMap(readFileSync(storagePath, 'utf-8'), key) ?? {};
+  const map = decryptMap(readFileSync(storagePath, 'utf-8'), key);
+  if (map === null) {
+    // The file exists but cannot be decrypted (corrupt/tampered/wrong key).
+    // Distinguish this from "no credentials": if we returned {} here, store()
+    // and delete() would silently overwrite the file with an empty map and
+    // wipe every credential we couldn't read. Instead, surface the failure so
+    // the caller's try/catch returns false (safe failure) rather than erasing
+    // data. retrieve() still returns null, which is the correct "can't read".
+    throw new Error('secure storage file exists but is corrupt or unreadable');
+  }
+  return map;
 }
 
 function writeCredentialMap(map: Record<string, string>): void {

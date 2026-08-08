@@ -1754,6 +1754,31 @@ function escapeRegExp(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/**
+ * Validate a caller-supplied regular expression pattern before compiling it.
+ *
+ * Issue #79: `grep_` compiles user/model-supplied patterns with `new RegExp`
+ * directly. A pathological pattern with a quantified group that itself contains
+ * a quantifier (e.g. `(a+)+`, `(\d+)*`) triggers catastrophic backtracking
+ * (ReDoS) and can hang the process on adversarial input (prompt injection).
+ * Reject empty/oversized patterns and the classic nested-quantifier shapes.
+ */
+export function validateRegexPattern(pattern: string): string | null {
+  if (!pattern) return 'pattern must not be empty';
+  if (pattern.length > 2000) return 'pattern is too long (max 2000 characters)';
+  // A group containing an internal quantifier, then quantified again: the
+  // canonical exponential-backtracking construction.
+  if (/\([^()]*[*+?][^()]*\)\s*[*+?]/.test(pattern)) {
+    return 'pattern contains a quantified group with an internal quantifier — this risks catastrophic backtracking (ReDoS)';
+  }
+  try {
+    new RegExp(pattern);
+  } catch {
+    return 'pattern is not a valid regular expression';
+  }
+  return null;
+}
+
 // ============================================================================
 // Glob/Grep 工具实现
 // ============================================================================
@@ -1880,6 +1905,10 @@ async function grep_(
       return { success: false, output: '', error: `Path not found: ${normalizedBasePath}` };
     }
 
+    const patternError = validateRegexPattern(pattern);
+    if (patternError) {
+      return { success: false, output: '', error: `Invalid grep pattern: ${patternError}` };
+    }
     const regex = new RegExp(pattern);
     const context = contextLines ?? 0;
     const results: string[] = [];

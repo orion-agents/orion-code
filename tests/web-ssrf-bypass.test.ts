@@ -232,6 +232,105 @@ describe('SSRF redirect-chain enforcement', () => {
 });
 
 /**
+ * Issue #77: open redirect leaves a pre-approved host.
+ *
+ * A pre-approved host (see PREAPPROVED_HOSTS / checkPermissions) is auto-allowed
+ * without a permission prompt. Before this fix, only the *initial* URL's host was
+ * checked: a 302 on that trusted host could bounce the agent to an arbitrary
+ * external host and feed its content into the model context under the trusted
+ * host's auto-approval. The redirect chain must re-check the pre-approved
+ * exemption on every hop and refuse to continue once it leaves the trusted host.
+ */
+describe('open redirect leaves pre-approved host (Issue #77)', () => {
+  const originalFetch = global.fetch;
+  const context = { cwd: '/repo', config: { name: 'orion-code', mode: 'test' } } as ToolContext;
+
+  const okResponse = () =>
+    ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: new Headers({ 'content-type': 'text/plain' }),
+      text: jest.fn().mockResolvedValue('trusted content'),
+    }) as unknown as Response;
+
+  const redirectTo = (location: string, status = 302) =>
+    ({
+      ok: false,
+      status,
+      statusText: 'Found',
+      headers: new Headers({ location }),
+      text: jest.fn().mockResolvedValue(''),
+    }) as unknown as Response;
+
+  beforeEach(() => {
+    clearWebFetchCache();
+    setWebFetchDnsResolverForTests(async () => [{ address: '93.184.216.34', family: 4 }]);
+    global.fetch = jest.fn();
+  });
+
+  afterAll(() => {
+    setWebFetchDnsResolverForTests();
+    global.fetch = originalFetch;
+  });
+
+  it('checkPermissions auto-allows pre-approved hosts and asks for others', () => {
+    expect(
+      webFetchTool.checkPermissions!({ url: 'https://github.com/x', prompt: 'read' }, context)
+    ).toEqual({ behavior: 'allow', reason: 'Preapproved host' });
+    const other = webFetchTool.checkPermissions!(
+      { url: 'https://evil.example/x', prompt: 'read' },
+      context
+    );
+    expect(other.behavior).toBe('ask');
+  });
+
+  it('refuses a pre-approved host redirecting to an untrusted external host', async () => {
+    (global.fetch as jest.Mock).mockResolvedValueOnce(redirectTo('https://evil.example/phish'));
+
+    const result = await webFetchTool.execute(
+      { url: 'https://github.com/start', prompt: 'read' },
+      context
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('pre-approved host');
+    // the untrusted hop must never actually be requested
+    expect((global.fetch as jest.Mock).mock.calls).toHaveLength(1);
+  });
+
+  it('allows a redirect that stays within the pre-approved host set', async () => {
+    (global.fetch as jest.Mock)
+      .mockResolvedValueOnce(redirectTo('https://stackoverflow.com/step2'))
+      .mockResolvedValueOnce(okResponse());
+
+    const result = await webFetchTool.execute(
+      { url: 'https://github.com/start', prompt: 'read' },
+      context
+    );
+
+    expect(result.success).toBe(true);
+    expect((global.fetch as jest.Mock).mock.calls).toHaveLength(2);
+  });
+
+  it('still allows an untrusted host to redirect to another untrusted host', async () => {
+    // When the origin is NOT pre-approved the user is prompted (checkPermissions =>
+    // 'ask'); cross-host redirects are then a deliberate decision, not an escape.
+    (global.fetch as jest.Mock)
+      .mockResolvedValueOnce(redirectTo('https://other.example/step2'))
+      .mockResolvedValueOnce(okResponse());
+
+    const result = await webFetchTool.execute(
+      { url: 'https://evil.example/start', prompt: 'read' },
+      context
+    );
+
+    expect(result.success).toBe(true);
+    expect((global.fetch as jest.Mock).mock.calls).toHaveLength(2);
+  });
+});
+
+/**
  * Issue #37, item 3: DNS-rebinding TOCTOU.
  *
  * resolveAndValidateSsrf resolves + validates the hostname (validation #1). Node's
