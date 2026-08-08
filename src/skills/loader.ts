@@ -164,7 +164,9 @@ function toKebabName(input: string): string {
     .trim()
     .replace(/\.md$/i, '')
     .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
-    .replace(/[^a-zA-Z0-9]+/g, '-')
+    // Bug #33 A: preserve Unicode letters/numbers so non-ASCII (CJK) skill
+    // names keep a unique identity instead of all collapsing to "skill".
+    .replace(/[^\p{L}\p{N}]+/gu, '-')
     .replace(/^-+|-+$/g, '')
     .toLowerCase() || 'skill';
 }

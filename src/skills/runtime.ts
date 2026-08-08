@@ -7,12 +7,13 @@
 
 import { closeSync, fstatSync, openSync, readSync } from 'fs';
 import { homedir } from 'os';
-import { basename, dirname, resolve, relative } from 'path';
+import { basename, dirname, resolve, relative, isAbsolute } from 'path';
 import type { OpenHorseTool } from '../framework/tool';
 import { normalizeSkillSourcePath, parseSkillFile } from './loader';
 import { getSkillsRegistry } from './registry';
+import { getConfigHome } from '../services/config-dir';
 import type { SkillDefinition } from './types';
-import { MAX_AUTO_SKILLS } from './types';
+import { MAX_AUTO_SKILLS, SKILLS_DIR_NAMES } from './types';
 
 export interface SkillRuntimeContext {
   cwd: string;
@@ -136,7 +137,10 @@ export function parseSkillCommandInput(input: string): ParsedSkillCommandInput {
   const markdownReference = parseMarkdownSkillReference(directReference, true);
   if (markdownReference) return markdownReference;
 
-  const dollarReference = trimmed.match(/^\$([^\s]+)(?:\s+([\s\S]*))?$/u);
+  // Bug #33 C: only treat a `$`-token as a skill reference when it looks like a
+  // skill identifier (starts with a letter, then letters/digits/-/_). A `$500`
+  // budget or `$PATH` shell variable must NOT silently disable skill activation.
+  const dollarReference = trimmed.match(/^\$([A-Za-z\p{L}][\w\p{L}-]*)(?:\s+([\s\S]*))?$/u);
   if (!dollarReference) return { task: input };
   return {
     skillName: normalizeRequestedSkillName(dollarReference[1]),
@@ -151,7 +155,13 @@ export function loadExplicitSkillReference(
   const parsed = parseSkillCommandInput(input);
   if (!parsed.skillName || !parsed.skillPath) return undefined;
 
-  const sourcePath = resolveExplicitSkillPath(parsed.skillPath, cwd);
+  let sourcePath: string;
+  try {
+    sourcePath = resolveExplicitSkillPath(parsed.skillPath, cwd);
+  } catch {
+    // Path escaped the allowed roots (Bug #33 B) — treat as no such skill.
+    return undefined;
+  }
   if (basename(sourcePath).toLowerCase() !== 'skill.md') return undefined;
 
   try {
@@ -250,6 +260,14 @@ function parseMarkdownSkillReference(
   };
 }
 
+/**
+ * True when `path` is the root itself or lives inside `root` (no `..` escape).
+ */
+function isWithinRoot(path: string, root: string): boolean {
+  const rel = relative(root, path);
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
 function resolveExplicitSkillPath(input: string, cwd: string): string {
   const normalized = normalizeSkillSourcePath(input);
   const expanded = normalized === '~'
@@ -257,14 +275,29 @@ function resolveExplicitSkillPath(input: string, cwd: string): string {
     : normalized.startsWith('~/')
       ? resolve(homedir(), normalized.slice(2))
       : normalized;
-  return resolve(cwd, expanded);
+  const resolved = resolve(cwd, expanded);
+
+  // Bug #33 B: an explicit skill reference from chat input must not read an
+  // arbitrary SKILL.md anywhere on disk. Restrict to the project (cwd) and the
+  // user's skills directory. Anything else escapes the allowed roots.
+  const allowedRoots = [
+    resolve(cwd),
+    resolve(getConfigHome(), SKILLS_DIR_NAMES.USER),
+  ];
+  if (!allowedRoots.some(root => isWithinRoot(resolved, root))) {
+    throw new Error(`Explicit skill path escapes allowed roots: ${resolved}`);
+  }
+  return resolved;
 }
 
 function findExplicitSkillReferences(input: string, skills: SkillDefinition[]): SkillDefinition[] {
   const command = parseSkillCommandInput(input);
   if (command.skillName) {
-    return skills.filter(skill => skillActivationNames(skill)
+    const exact = skills.filter(skill => skillActivationNames(skill)
       .some(name => normalizeRequestedSkillName(name) === command.skillName));
+    // Bug #33 C: an exact-name lookup that finds nothing must fall through to
+    // natural-language matching instead of silently dropping all skill activation.
+    if (exact.length > 0) return exact;
   }
 
   return skills.filter(skill => skillActivationNames(skill)
