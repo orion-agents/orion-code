@@ -329,6 +329,17 @@ describe('exec_command tool', () => {
     expect(result.success).toBe(false);
   });
 
+  // Issue #53: the child's stdin must be closed so stdin-reading commands
+  // (cat, sort, grep, `python3 -`) receive EOF and return promptly instead of
+  // blocking until the timeout.
+  test('closes child stdin so stdin-reading commands return promptly', async () => {
+    const start = Date.now();
+    const result = await tool.execute({ command: 'cat', timeout: 3000 }, ctx);
+    const elapsed = Date.now() - start;
+    expect(result.success).toBe(true);
+    expect(elapsed).toBeLessThan(2500);
+  });
+
   test('isDestructive detects rm -rf', () => {
     expect(tool.isDestructive?.({ command: 'rm -rf /' })).toBe(true);
     expect(tool.isDestructive?.({ command: 'ls -la' })).toBe(false);

@@ -1232,6 +1232,12 @@ async function execCommand_(
       detached: useProcessGroup,
     });
 
+    // Issue #53: exec_command runs a complete command as a single argv element
+    // and never pipes input into it. If stdin stays open, stdin-reading commands
+    // (cat, sort, grep, `python3 -`, ...) block waiting for EOF until the timeout.
+    // Close it immediately so the child receives EOF and can proceed.
+    child.stdin?.end();
+
     let stdoutData = '';
     let stderrData = '';
     let stdoutTruncated = false;
