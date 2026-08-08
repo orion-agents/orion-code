@@ -34,8 +34,6 @@ const SOURCE_BRAND = 'openhorse';
 const TARGET_BRAND = 'orion-code';
 const SOURCE_DIR = '.openhorse';
 const TARGET_DIR = '.orion-code';
-const SOURCE_ENV_FILE = '.openhorse.env';
-const TARGET_ENV_FILE = '.orion-code.env';
 
 /** Files that are renamed during migration. */
 const RENAME_MAP: Record<string, string> = {
@@ -163,79 +161,6 @@ function remapConfigKeys(content: string): string {
   }
 }
 
-// ── Dotenv migration ─────────────────────────────────────────────────────────
-
-const ENV_KEY_MAP: Record<string, string> = {
-  OPENHORSE_CONFIG_DIR: 'ORION_CODE_CONFIG_DIR',
-  OPENHORSE_CONFIG_HOME: 'ORION_CODE_CONFIG_HOME',
-  OPENHORSE_API_KEY: 'ORION_CODE_API_KEY',
-  OPENHORSE_API_BASE_URL: 'ORION_CODE_API_BASE_URL',
-  OPENHORSE_BASE_URL: 'ORION_CODE_BASE_URL',
-  OPENHORSE_MODEL: 'ORION_CODE_MODEL',
-  OPENHORSE_FALLBACK_MODEL: 'ORION_CODE_FALLBACK_MODEL',
-  OPENHORSE_MODE: 'ORION_CODE_MODE',
-  OPENHORSE_NAME: 'ORION_CODE_NAME',
-  OPENHORSE_LOG_LEVEL: 'ORION_CODE_LOG_LEVEL',
-  OPENHORSE_TOOL_CONFIRMATION: 'ORION_CODE_TOOL_CONFIRMATION',
-  OPENHORSE_UI: 'ORION_CODE_UI',
-  OPENHORSE_UI_RENDERER: 'ORION_CODE_UI_RENDERER',
-  OPENHORSE_UI_CONFIRMATIONS: 'ORION_CODE_UI_CONFIRMATIONS',
-  OPENHORSE_SKILLS_PATHS: 'ORION_CODE_SKILLS_PATHS',
-  OPENHORSE_SUBAGENTS: 'ORION_CODE_SUBAGENTS',
-  OPENHORSE_SUBAGENT_MAX_PARALLEL: 'ORION_CODE_SUBAGENT_MAX_PARALLEL',
-  OPENHORSE_EMBEDDING_MODEL: 'ORION_CODE_EMBEDDING_MODEL',
-  OPENHORSE_EMBEDDING_PROVIDER: 'ORION_CODE_EMBEDDING_PROVIDER',
-  OPENHORSE_MAX_LLM_REQUESTS_PER_TURN: 'ORION_CODE_MAX_LLM_REQUESTS_PER_TURN',
-  OPENHORSE_MAX_TOOL_CALLS_PER_TURN: 'ORION_CODE_MAX_TOOL_CALLS_PER_TURN',
-  OPENHORSE_MAX_READ_ONLY_FRAGMENTATION: 'ORION_CODE_MAX_READ_ONLY_FRAGMENTATION',
-  OPENHORSE_MAX_MODEL_VISIBLE_TOOL_BYTES: 'ORION_CODE_MAX_MODEL_VISIBLE_TOOL_BYTES',
-  OPENHORSE_DEBUG_TOOLS: 'ORION_CODE_DEBUG_TOOLS',
-  OPENHORSE_WEBSEARCH_API_KEY: 'ORION_CODE_WEBSEARCH_API_KEY',
-  OPENHORSE_WEBSEARCH_PROVIDER: 'ORION_CODE_WEBSEARCH_PROVIDER',
-  OPENHORSE_WEBSEARCH_MCP_PROVIDER: 'ORION_CODE_WEBSEARCH_MCP_PROVIDER',
-  OPENHORSE_WEBSEARCH_MCP_ENDPOINT: 'ORION_CODE_WEBSEARCH_MCP_ENDPOINT',
-  OPENHORSE_WEBSEARCH_MCP_TOOL: 'ORION_CODE_WEBSEARCH_MCP_TOOL',
-  OPENHORSE_WEBSEARCH_MCP_TIMEOUT_MS: 'ORION_CODE_WEBSEARCH_MCP_TIMEOUT_MS',
-  OPENHORSE_WEBSEARCH_AUTH_TYPE: 'ORION_CODE_WEBSEARCH_AUTH_TYPE',
-  OPENHORSE_WEBSEARCH_API_KEY_HEADER: 'ORION_CODE_WEBSEARCH_API_KEY_HEADER',
-  OPENHORSE_WEBSEARCH_API_KEY_QUERY_PARAM: 'ORION_CODE_WEBSEARCH_API_KEY_QUERY_PARAM',
-};
-
-function migrateEnvFile(srcPath: string, destPath: string): FileMapping | null {
-  if (!existsSync(srcPath)) return null;
-  const content = readFileSync(srcPath, 'utf8');
-  const lines = content.split('\n');
-  const migrated: string[] = [];
-  let changed = false;
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) {
-      migrated.push(line);
-      continue;
-    }
-    const eqIdx = line.indexOf('=');
-    if (eqIdx === -1) {
-      migrated.push(line);
-      continue;
-    }
-    const key = line.substring(0, eqIdx).trim();
-    const rest = line.substring(eqIdx);
-    if (ENV_KEY_MAP[key]) {
-      migrated.push(`${ENV_KEY_MAP[key]}${rest}`);
-      changed = true;
-    } else {
-      migrated.push(line);
-    }
-  }
-
-  if (changed) {
-    writeFileSync(destPath, migrated.join('\n'), { mode: 0o600 });
-    return { from: srcPath, to: destPath };
-  }
-  return null;
-}
-
 // ── SQLite verification ──────────────────────────────────────────────────────
 
 function verifySqlite(path: string): boolean {
@@ -257,8 +182,6 @@ export function migrateBrand(options: MigrationOptions = {}): MigrationResult {
   const home = options.home ?? homedir();
   const sourceRoot = join(home, SOURCE_DIR);
   const targetRoot = join(home, TARGET_DIR);
-  const sourceEnvPath = join(home, SOURCE_ENV_FILE);
-  const targetEnvPath = join(home, TARGET_ENV_FILE);
 
   const manifest: BrandMigrationManifestV1 = {
     version: 1,
@@ -386,19 +309,6 @@ export function migrateBrand(options: MigrationOptions = {}): MigrationResult {
       manifest.verified = true;
     }
 
-    // ── Dotenv migration ──────────────────────────────────────────────────
-
-    if (options.includeEnv) {
-      const envMapping = migrateEnvFile(sourceEnvPath, targetEnvPath);
-      if (envMapping) {
-        manifest.renamedFiles.push(envMapping);
-      }
-    } else if (existsSync(sourceEnvPath)) {
-      manifest.warnings.push(
-        `${sourceEnvPath} exists but was not migrated. Use --include-env to migrate environment variables.`,
-      );
-    }
-
     // ── Write manifest ─────────────────────────────────────────────────────
 
     if (!options.dryRun) {
@@ -511,7 +421,6 @@ USAGE
 FLAGS
   --dry-run                  Preview migration without writing files (default)
   --yes                      Execute the migration after reviewing the preview
-  --include-env              Also migrate ~/.openhorse.env → ~/.orion-code.env
   --include-project-files    Rename .openhorse/ → .orion-code/ in project dirs
 
 DESCRIPTION

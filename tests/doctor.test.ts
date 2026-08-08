@@ -478,6 +478,14 @@ describe('openhorse doctor CLI', () => {
   });
 
   it('prints JSON diagnostics without entering the interactive UI', () => {
+    // orion.json is the sole configuration source: seed it with the API key
+    // and model instead of relying on ORION_CODE_* env overrides.
+    writeFileSync(
+      join(configDir, 'orion.json'),
+      JSON.stringify({ apiKey: 'sk-doctor', defaultModel: 'mock-doctor' }),
+      'utf-8'
+    );
+
     const result = spawnSync(
       'node',
       ['-r', 'ts-node/register', 'src/cli.ts', 'doctor', '--output-format', 'json'],
@@ -486,8 +494,6 @@ describe('openhorse doctor CLI', () => {
         env: {
           ...process.env,
           ORION_CODE_CONFIG_DIR: configDir,
-          ORION_CODE_API_KEY: 'sk-doctor',
-          ORION_CODE_MODEL: 'mock-doctor',
           NO_COLOR: '1',
           FORCE_COLOR: '0',
         },

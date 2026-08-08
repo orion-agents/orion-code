@@ -4,8 +4,12 @@
  * Config loading priority:
  *   1. CLI arguments
  *   2. ~/.orion-code/orion.json (GlobalConfig)
- *   3. ORION_CODE_* environment variables
- *   4. Agent internal defaults
+ *   3. Agent internal defaults
+ *
+ * orion.json is the single configuration source. Provider credentials
+ * (ANTHROPIC_API_KEY, OPENAI_API_KEY, DASHSCOPE_API_KEY, etc.) are still read
+ * from the process environment by the model/web-search clients at runtime;
+ * those are functional reads, not configuration overrides.
  *
  * UI renderer is intentionally not read from orion.json or env. TUI is the
  * public product default; --ui terminal selects the technical diagnostics
@@ -35,10 +39,8 @@ import {
   type ModelRegistry,
 } from './model-registry';
 import { ModelClientPool } from './model-client-pool';
-import { delimiter } from 'path';
 import { DEFAULT_SUBAGENT_CONFIG, type SubagentConfig } from '../runtime/subagents/types';
 import { clampSubagentConfig } from '../runtime/subagents/policy';
-import { ENV, webSearchEnv } from '../product/environment';
 import { maskSecret } from '../utils/mask';
 
 export type {
@@ -166,12 +168,6 @@ function normalizeUIConfirmationMode(value: unknown): UIConfirmationMode | undef
   return value === 'config' || value === 'interactive' ? value : undefined;
 }
 
-function parsePositiveInt(value: string | undefined): number | undefined {
-  if (!value) return undefined;
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
-}
-
 function toNonEmptyString(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
@@ -192,7 +188,6 @@ function loadSkillsConfig(
 ): SkillsConfig | undefined {
   const paths = normalizeStringList([
     ...normalizeStringList(globalConfig.skills?.paths),
-    ...(process.env[ENV.SKILLS_PATHS] ? process.env[ENV.SKILLS_PATHS]!.split(delimiter) : []),
     ...normalizeStringList(overrides.skills?.paths),
   ]);
 
@@ -208,31 +203,11 @@ function loadWebSearchConfig(
     ...overrides.webSearch,
   };
 
-  const endpoint = process.env[webSearchEnv('MCP_ENDPOINT')];
-  const apiKey = process.env[webSearchEnv('API_KEY')] ?? process.env.DASHSCOPE_API_KEY;
-  const provider =
-    process.env[webSearchEnv('PROVIDER')] ?? process.env[webSearchEnv('MCP_PROVIDER')];
-  const toolName = process.env[webSearchEnv('MCP_TOOL')];
-  const timeoutMs = parsePositiveInt(process.env[webSearchEnv('MCP_TIMEOUT_MS')]);
-  const authType = process.env[webSearchEnv('AUTH_TYPE')];
-  const apiKeyHeader = process.env[webSearchEnv('API_KEY_HEADER')];
-  const apiKeyQueryParam = process.env[webSearchEnv('API_KEY_QUERY_PARAM')];
-
-  if (provider) merged.provider = provider;
-  if (endpoint) merged.endpoint = endpoint;
+  // orion.json is the sole structured configuration source. The provider API
+  // key remains a functional read from the environment (DASHSCOPE_API_KEY) so
+  // the built-in DashScope web search keeps working without an explicit key.
+  const apiKey = merged.apiKey ?? process.env.DASHSCOPE_API_KEY;
   if (apiKey) merged.apiKey = apiKey;
-  if (toolName) merged.toolName = toolName;
-  if (timeoutMs) merged.timeoutMs = timeoutMs;
-  if (
-    authType === 'bearer' ||
-    authType === 'header' ||
-    authType === 'query' ||
-    authType === 'none'
-  ) {
-    merged.authType = authType;
-  }
-  if (apiKeyHeader) merged.apiKeyHeader = apiKeyHeader;
-  if (apiKeyQueryParam) merged.apiKeyQueryParam = apiKeyQueryParam;
 
   return Object.keys(merged).length > 0 ? merged : undefined;
 }
@@ -241,14 +216,11 @@ function loadUIConfig(
   globalConfig: GlobalConfig,
   overrides: Partial<OrionCodeCLIConfig>
 ): Required<UIConfig> {
-  const envConfirmations = process.env[ENV.UI_CONFIRMATIONS];
-
   return {
     renderer: resolveUIRenderer(overrides.ui?.renderer) ?? INTERNAL_DEFAULTS.ui.renderer,
     confirmations:
       normalizeUIConfirmationMode(overrides.ui?.confirmations) ??
       normalizeUIConfirmationMode(globalConfig.ui?.confirmations) ??
-      normalizeUIConfirmationMode(envConfirmations) ??
       INTERNAL_DEFAULTS.ui.confirmations,
   };
 }
@@ -261,18 +233,6 @@ function loadAgentLoopConfig(
     ...globalConfig.agentLoop?.budget,
     ...overrides.agentLoop?.budget,
   };
-
-  const envBudget: Array<[keyof AgentLoopBudgetConfig, string | undefined]> = [
-    ['maxLlmRequestsPerUserTurn', process.env[ENV.MAX_LLM_REQUESTS_PER_TURN]],
-    ['maxToolCallsPerUserTurn', process.env[ENV.MAX_TOOL_CALLS_PER_TURN]],
-    ['maxReadOnlyFragmentation', process.env[ENV.MAX_READ_ONLY_FRAGMENTATION]],
-    ['maxModelVisibleToolBytes', process.env[ENV.MAX_MODEL_VISIBLE_TOOL_BYTES]],
-  ];
-
-  for (const [key, value] of envBudget) {
-    const parsed = parsePositiveInt(value);
-    if (parsed) budget[key] = parsed;
-  }
 
   return Object.keys(budget).length > 0 ? { budget } : undefined;
 }
@@ -328,10 +288,6 @@ function loadCostConfig(
   };
 }
 
-function parseSubagentMode(value: unknown): SubagentMode | undefined {
-  return value === 'off' || value === 'explicit' || value === 'auto' ? value : undefined;
-}
-
 function loadSubagentConfig(
   globalConfig: GlobalConfig,
   overrides: Partial<OrionCodeCLIConfig>
@@ -340,12 +296,6 @@ function loadSubagentConfig(
     ...globalConfig.subagents,
     ...overrides.subagents,
   };
-
-  const envMode = parseSubagentMode(process.env[ENV.SUBAGENTS]);
-  if (envMode) merged.mode = envMode;
-
-  const envMaxParallel = parsePositiveInt(process.env[ENV.SUBAGENT_MAX_PARALLEL]);
-  if (envMaxParallel) merged.maxParallel = envMaxParallel;
 
   const resolved: SubagentConfig = {
     mode: merged.mode ?? DEFAULT_SUBAGENT_CONFIG.mode,
@@ -407,12 +357,10 @@ export function loadConfig(overrides: Partial<OrionCodeCLIConfig> = {}): OrionCo
     resolvedModel =
       toNonEmptyString(overrides.model) ??
       toNonEmptyString(globalConfig.defaultModel) ??
-      toNonEmptyString(process.env[ENV.MODEL]) ??
       'gpt-4o';
     resolvedFallback =
       toNonEmptyString(overrides.fallbackModel) ??
       toNonEmptyString(globalConfig.fallbackModel) ??
-      toNonEmptyString(process.env[ENV.FALLBACK_MODEL]) ??
       undefined;
   }
 
@@ -420,13 +368,10 @@ export function loadConfig(overrides: Partial<OrionCodeCLIConfig> = {}): OrionCo
     apiKey:
       toNonEmptyString(overrides.apiKey) ??
       globalConfig.apiKey ??
-      toNonEmptyString(process.env[ENV.API_KEY]) ??
       '',
     apiBaseUrl:
       toNonEmptyString(overrides.apiBaseUrl) ??
       globalConfig.apiBaseUrl ??
-      toNonEmptyString(process.env[ENV.API_BASE_URL]) ??
-      toNonEmptyString(process.env[ENV.BASE_URL]) ??
       undefined,
     model: resolvedModel,
     fallbackModel: resolvedFallback,
@@ -435,7 +380,6 @@ export function loadConfig(overrides: Partial<OrionCodeCLIConfig> = {}): OrionCo
     toolConfirmation:
       normalizeToolConfirmationPolicy(overrides.toolConfirmation) ??
       normalizeToolConfirmationPolicy(globalConfig.toolConfirmation) ??
-      normalizeToolConfirmationPolicy(process.env[ENV.TOOL_CONFIRMATION]) ??
       INTERNAL_DEFAULTS.toolConfirmation,
     webSearch: loadWebSearchConfig(globalConfig, overrides),
     ui: loadUIConfig(globalConfig, overrides),
@@ -444,13 +388,9 @@ export function loadConfig(overrides: Partial<OrionCodeCLIConfig> = {}): OrionCo
     subagents: loadSubagentConfig(globalConfig, overrides),
     cost: loadCostConfig(globalConfig, overrides),
 
-    name: overrides.name ?? process.env[ENV.NAME] ?? INTERNAL_DEFAULTS.name,
-    mode: (overrides.mode ?? process.env[ENV.MODE] ?? INTERNAL_DEFAULTS.mode) as
-      | 'development'
-      | 'production',
-    logLevel: (overrides.logLevel ??
-      process.env[ENV.LOG_LEVEL] ??
-      INTERNAL_DEFAULTS.logLevel) as OrionCodeCLIConfig['logLevel'],
+    name: overrides.name ?? INTERNAL_DEFAULTS.name,
+    mode: (overrides.mode ?? INTERNAL_DEFAULTS.mode) as 'development' | 'production',
+    logLevel: (overrides.logLevel ?? INTERNAL_DEFAULTS.logLevel) as OrionCodeCLIConfig['logLevel'],
   };
 
   return config;
@@ -472,7 +412,7 @@ export function getConfigErrors(config: OrionCodeCLIConfig): string[] {
   const errors: string[] = [];
   if (!isConfigured(config)) {
     errors.push(
-      'Missing ORION_CODE_API_KEY. Set it in ~/.orion-code/orion.json or environment variable.'
+      'Missing API key. Set it in ~/.orion-code/orion.json.'
     );
   }
   return errors;

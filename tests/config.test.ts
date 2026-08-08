@@ -12,7 +12,6 @@ import {
   DEFAULT_UI_RENDERER,
   SUPPORTED_UI_RENDERERS,
 } from '../src/services/config';
-import { delimiter } from 'path';
 
 const originalEnv = { ...process.env };
 
@@ -113,52 +112,30 @@ describe('loadConfig', () => {
     expect(config.cost?.modelPricing?.invalid).toBeUndefined();
   });
 
-  test('env vars are used when no overrides and no globalConfig', () => {
+  test('ignores ORION_CODE_* env vars; orion.json is the sole config source', () => {
     jest.spyOn(require('../src/services/global-config'), 'loadGlobalConfig').mockReturnValue({
-      defaultModel: undefined as any,
+      defaultModel: 'gpt-4o',
     });
 
+    // Legacy ORION_CODE_* vars that previously overrode config. They must now
+    // be ignored; only orion.json (globalConfig) and CLI overrides apply.
     process.env.ORION_CODE_API_KEY = 'env-key';
     process.env.ORION_CODE_MODEL = 'env-model';
     process.env.ORION_CODE_FALLBACK_MODEL = 'env-fallback';
     process.env.ORION_CODE_TOOL_CONFIRMATION = 'ask';
-    process.env.ORION_CODE_UI_RENDERER = 'ink';
-    process.env.ORION_CODE_UI_CONFIRMATIONS = 'interactive';
     process.env.ORION_CODE_WEBSEARCH_API_KEY = 'sk-websearch-env';
     process.env.ORION_CODE_WEBSEARCH_PROVIDER = 'tavily';
     process.env.ORION_CODE_WEBSEARCH_MCP_ENDPOINT = 'https://example.com/mcp';
-    process.env.ORION_CODE_WEBSEARCH_MCP_TOOL = 'search';
-    process.env.ORION_CODE_WEBSEARCH_MCP_TIMEOUT_MS = '12345';
-    process.env.ORION_CODE_WEBSEARCH_AUTH_TYPE = 'query';
-    process.env.ORION_CODE_WEBSEARCH_API_KEY_QUERY_PARAM = 'tavilyApiKey';
     process.env.ORION_CODE_MAX_LLM_REQUESTS_PER_TURN = '72';
-    process.env.ORION_CODE_MAX_TOOL_CALLS_PER_TURN = '240';
-    process.env.ORION_CODE_MAX_READ_ONLY_FRAGMENTATION = '4';
-    process.env.ORION_CODE_MAX_MODEL_VISIBLE_TOOL_BYTES = '131072';
 
     const config = loadConfig();
-    expect(config.apiKey).toBe('env-key');
-    expect(config.model).toBe('env-model');
-    expect(config.fallbackModel).toBe('env-fallback');
-    expect(config.toolConfirmation).toBe('ask');
-    expect(config.ui).toEqual({ renderer: 'tui', confirmations: 'interactive' });
-    expect(config.webSearch).toEqual({
-      apiKey: 'sk-websearch-env',
-      provider: 'tavily',
-      endpoint: 'https://example.com/mcp',
-      toolName: 'search',
-      timeoutMs: 12345,
-      authType: 'query',
-      apiKeyQueryParam: 'tavilyApiKey',
-    });
-    expect(config.agentLoop).toEqual({
-      budget: {
-        maxLlmRequestsPerUserTurn: 72,
-        maxToolCallsPerUserTurn: 240,
-        maxReadOnlyFragmentation: 4,
-        maxModelVisibleToolBytes: 131072,
-      },
-    });
+    // Without a matching orion.json or CLI override, config falls back to defaults.
+    expect(config.apiKey).toBe('');
+    expect(config.model).toBe('gpt-4o');
+    expect(config.fallbackModel).toBeUndefined();
+    expect(config.toolConfirmation).toBe('allow');
+    expect(config.webSearch).toBeUndefined();
+    expect(config.agentLoop).toBeUndefined();
   });
 
   test('globalConfig is used when no env or overrides', () => {
@@ -206,7 +183,7 @@ describe('loadConfig', () => {
     });
   });
 
-  test('loads additional skills paths from env and overrides', () => {
+  test('loads additional skills paths from overrides', () => {
     jest.spyOn(require('../src/services/global-config'), 'loadGlobalConfig').mockReturnValue({
       defaultModel: 'gpt-4o',
       skills: {
@@ -214,16 +191,14 @@ describe('loadConfig', () => {
       },
     });
 
-    process.env.ORION_CODE_SKILLS_PATHS = ['/env/skills-a', '/env/skills-b'].join(delimiter);
-
     const config = loadConfig({
       skills: {
-        paths: ['/override/skills', '/global/skills'],
+        paths: ['/override/skills', '/global/skills', '/extra/skills-a', '/extra/skills-b'],
       },
     });
 
     expect(config.skills).toEqual({
-      paths: ['/global/skills', '/env/skills-a', '/env/skills-b', '/override/skills'],
+      paths: ['/global/skills', '/override/skills', '/extra/skills-a', '/extra/skills-b'],
     });
   });
 
@@ -328,7 +303,7 @@ describe('getConfigErrors', () => {
     const config = loadConfig();
     const errors = getConfigErrors(config);
     expect(errors.length).toBeGreaterThan(0);
-    expect(errors[0]).toContain('ORION_CODE_API_KEY');
+    expect(errors[0]).toContain('orion.json');
   });
 
   test('returns empty when API key is set', () => {
