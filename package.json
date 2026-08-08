@@ -78,7 +78,8 @@
     "sqlite-vec": "^0.1.9",
     "string-width": "^4.2.3",
     "throttle": "^1.0.3",
-    "type-fest": "^5.6.0"
+    "type-fest": "^5.6.0",
+    "undici": "^6.28.0"
   },
   "devDependencies": {
     "@types/figlet": "^1.5.8",

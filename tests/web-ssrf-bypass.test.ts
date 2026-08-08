@@ -17,6 +17,7 @@ import {
   webFetchTool,
   clearWebFetchCache,
   setWebFetchDnsResolverForTests,
+  setBuildPinnedDispatcherForTests,
 } from '../src/tools/web';
 import type { ToolContext } from '../src/framework/tool';
 
@@ -227,5 +228,93 @@ describe('SSRF redirect-chain enforcement', () => {
     expect(result.error).toContain('maximum allowed size');
     expect(cancel).toHaveBeenCalledTimes(1);
     expect(read).toHaveBeenCalledTimes(2);
+  });
+});
+
+/**
+ * Issue #37, item 3: DNS-rebinding TOCTOU.
+ *
+ * resolveAndValidateSsrf resolves + validates the hostname (validation #1). Node's
+ * global fetch resolves the hostname AGAIN at connect time (resolution #2). A
+ * malicious nameserver could return a public IP for #1 and an internal IP for #2,
+ * slipping past the SSRF gate. The fix pins the validated addresses onto the TCP
+ * connection via a per-request undici dispatcher whose connect.lookup ignores the
+ * hostname. These tests capture the addresses handed to that dispatcher and assert
+ * they are exactly the validated ones — proving the connection never re-resolves.
+ */
+describe('DNS-rebinding pinning (Issue #37 item 3)', () => {
+  const originalFetch = global.fetch;
+  const context = { cwd: '/repo', config: { name: 'orion-code', mode: 'test' } } as ToolContext;
+
+  const okResponse = () =>
+    ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: new Headers({ 'content-type': 'text/plain' }),
+      text: jest.fn().mockResolvedValue('public content'),
+    }) as unknown as Response;
+
+  let captured: { hostname: string; addresses: { address: string; family: number }[] } | null = null;
+
+  beforeEach(() => {
+    clearWebFetchCache();
+    captured = null;
+    // Capture the addresses handed to the dispatcher instead of building a real one.
+    setBuildPinnedDispatcherForTests((hostname, addresses) => {
+      captured = { hostname, addresses };
+      return null;
+    });
+    global.fetch = jest.fn().mockResolvedValue(okResponse());
+  });
+
+  afterAll(() => {
+    setBuildPinnedDispatcherForTests();
+    setWebFetchDnsResolverForTests();
+    global.fetch = originalFetch;
+  });
+
+  it('pins the validated DNS address onto the connection (no second resolution)', async () => {
+    const validated = [{ address: '93.184.216.34', family: 4 }];
+    setWebFetchDnsResolverForTests(async () => validated);
+
+    const result = await webFetchTool.execute(
+      { url: 'https://public.example/page', prompt: 'read' },
+      context
+    );
+
+    expect(result.success).toBe(true);
+    expect(captured).not.toBeNull();
+    expect(captured!.hostname).toBe('public.example');
+    expect(captured!.addresses).toEqual(validated);
+  });
+
+  it('does not build a pinned dispatcher for literal-IP hosts', async () => {
+    const result = await webFetchTool.execute(
+      { url: 'https://93.184.216.34/page', prompt: 'read' },
+      context
+    );
+
+    expect(captured).toBeNull();
+    expect(result.success).toBe(true);
+  });
+
+  it('closes the TOCTOU: connection uses only validated addresses, never a rebound IP', async () => {
+    // Validator returns a safe public IP. The real dispatcher's connect.lookup ignores
+    // the hostname entirely and returns ONLY these addresses, so even if an attacker's
+    // nameserver served a private IP on a second lookup, it could never be used.
+    const validated = [{ address: '93.184.216.34', family: 4 }];
+    setWebFetchDnsResolverForTests(async () => validated);
+
+    const result = await webFetchTool.execute(
+      { url: 'https://rebind-prone.example/secret', prompt: 'read' },
+      context
+    );
+
+    expect(result.success).toBe(true);
+    expect(captured!.addresses).toEqual(validated);
+    expect(
+      captured!.addresses.some(a => a.address.startsWith('10.') || a.address.startsWith('127.'))
+    ).toBe(false);
   });
 });

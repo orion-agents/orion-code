@@ -9,6 +9,7 @@
 
 import { buildTool, type OpenHorseTool } from '../framework/tool';
 import { lookup as dnsLookup } from 'node:dns/promises';
+import { Agent, type Dispatcher } from 'undici';
 import { loadConfig } from '../services/config';
 import {
   WebSearchMcpClient,
@@ -212,7 +213,22 @@ function isIpLiteral(hostname: string): boolean {
   return hostname.includes(':') || parseIPv4Loose(hostname) !== null;
 }
 
-async function isResolvedUrlSafeForSSRF(url: string): Promise<{ safe: boolean; reason?: string }> {
+interface SsrfResult {
+  safe: boolean;
+  reason?: string;
+  /** Lowercased, bracket-stripped hostname (only set when safe and not a literal). */
+  hostname?: string;
+  /** DNS addresses that passed validation (only set when safe and not a literal). */
+  addresses?: ResolvedAddress[];
+}
+
+/**
+ * Validate a URL for SSRF and, for non-literal hostnames, resolve + validate its
+ * DNS addresses. Returns the validated addresses so the caller can *pin* the TCP
+ * connection to them (see createPinnedDispatcher) and close the DNS-rebinding
+ * TOCTOU window.
+ */
+async function resolveAndValidateSsrf(url: string): Promise<SsrfResult> {
   const lexicalCheck = isUrlSafeForSSRF(url);
   if (!lexicalCheck.safe) return lexicalCheck;
 
@@ -223,7 +239,7 @@ async function isResolvedUrlSafeForSSRF(url: string): Promise<{ safe: boolean; r
   }
 
   // Literal addresses have already been checked by the lexical guard.
-  if (isIpLiteral(hostname)) return lexicalCheck;
+  if (isIpLiteral(hostname)) return { ...lexicalCheck, hostname };
 
   let addresses: ResolvedAddress[];
   try {
@@ -250,8 +266,55 @@ async function isResolvedUrlSafeForSSRF(url: string): Promise<{ safe: boolean; r
     }
   }
 
-  return lexicalCheck;
+  return { ...lexicalCheck, hostname, addresses };
 }
+
+async function isResolvedUrlSafeForSSRF(url: string): Promise<{ safe: boolean; reason?: string }> {
+  const result = await resolveAndValidateSsrf(url);
+  return { safe: result.safe, reason: result.reason };
+}
+
+// ----------------------------------------------------------------------------
+// DNS-rebinding mitigation (Issue #37, item 3)
+//
+// resolveAndValidateSsrf resolves the hostname and validates every address
+// (validation #1). Node's global fetch / undici resolves the hostname *again*
+// at connect time (resolution #2). A malicious nameserver can return a public
+// IP for validation #1 and an internal IP for resolution #2, slipping past the
+// SSRF gate — a classic DNS-rebinding TOCTOU. We close the window by forcing
+// undici to connect to exactly the validated addresses via a per-request
+// dispatcher whose connect.lookup ignores the hostname and returns the pinned
+// addresses. The original hostname is still used for TLS SNI / Host, so cert
+// validation is unaffected.
+// ----------------------------------------------------------------------------
+
+function createPinnedDispatcher(hostname: string, addresses: ResolvedAddress[]): Dispatcher {
+  return new Agent({
+    connect: {
+      // Ignore the hostname at connect time and return only the addresses we
+      // already validated. undici's lookup callback accepts an array of
+      // { address, family } and will try each in order.
+      lookup: ((_lookupHostname: string, _opts: unknown, cb: (err: Error | null, res: unknown) => void) => {
+        cb(
+          null,
+          addresses.map(a => ({ address: a.address, family: a.family }))
+        );
+      }) as never,
+    } as never,
+  });
+}
+
+type PinnedDispatcherBuilder = (hostname: string, addresses: ResolvedAddress[]) => Dispatcher | null;
+
+let buildPinnedDispatcher: PinnedDispatcherBuilder = (hostname, addresses) =>
+  addresses.length > 0 ? createPinnedDispatcher(hostname, addresses) : null;
+
+/** Test seam: replace the pinned-dispatcher builder (e.g. to capture pinned addresses). */
+export function setBuildPinnedDispatcherForTests(builder?: PinnedDispatcherBuilder): void {
+  buildPinnedDispatcher = builder ?? ((hostname, addresses) =>
+    addresses.length > 0 ? createPinnedDispatcher(hostname, addresses) : null);
+}
+
 
 /**
  * 将各种 IPv4 编码形式归一化为点分十进制。
@@ -460,7 +523,7 @@ async function fetchUrl(url: string, maxRedirects: number = 5): Promise<FetchRes
 
   for (let hop = 0; hop <= maxRedirects; hop++) {
     // Issue #32 #3.7: SSRF 检查（每一跳都要检查，不能只查首个 URL）
-    const ssrfCheck = await isResolvedUrlSafeForSSRF(currentUrl);
+    const ssrfCheck = await resolveAndValidateSsrf(currentUrl);
     if (!ssrfCheck.safe) {
       const chain = [url, ...redirects].join(' -> ');
       return {
@@ -476,16 +539,26 @@ async function fetchUrl(url: string, maxRedirects: number = 5): Promise<FetchRes
       };
     }
 
+    // Issue #37 item 3: pin the TCP connection to the validated DNS addresses
+    // so a second resolution at connect time can't rebound to an internal IP.
+    let dispatcher: Dispatcher | undefined;
+    if (ssrfCheck.addresses && ssrfCheck.addresses.length > 0 && ssrfCheck.hostname) {
+      const built = buildPinnedDispatcher(ssrfCheck.hostname, ssrfCheck.addresses);
+      if (built) dispatcher = built;
+    }
+
     let response: Response;
     try {
-      response = await fetch(currentUrl, {
+      const init: RequestInit & { dispatcher?: Dispatcher } = {
         headers: {
           'User-Agent': ORION_USER_AGENT,
           Accept: 'text/html,application/xhtml+xml,text/markdown,text/plain,*/*',
         },
         // 手动处理重定向，以便逐跳做 SSRF 校验
         redirect: 'manual',
-      });
+      };
+      if (dispatcher) init.dispatcher = dispatcher;
+      response = await fetch(currentUrl, init);
     } catch (err: any) {
       return {
         content: `Fetch error: ${err.message}`,
@@ -495,6 +568,15 @@ async function fetchUrl(url: string, maxRedirects: number = 5): Promise<FetchRes
         redirects,
         errorType: 'NETWORK_ERROR',
       };
+    } finally {
+      // Release the undici Agent's sockets so the process/tests don't hang.
+      if (dispatcher) {
+        try {
+          await (dispatcher as unknown as { close: () => Promise<void> }).close().catch(() => {});
+        } catch {
+          // ignore close errors
+        }
+      }
     }
 
     // ---- redirect hop ----
