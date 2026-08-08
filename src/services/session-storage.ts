@@ -1231,9 +1231,12 @@ export function readSessionMessages(sessionId: string): SessionMessage[] {
       try {
         messages.push(JSON.parse(lines[i]) as SessionMessage);
       } catch (error) {
-        // A missing turn can orphan later tool results, so only restore the valid prefix.
+        // A single corrupted line must not silently truncate the whole session
+        // (which would drop every later turn on resume). Skip only the bad line
+        // and keep the rest, mirroring readHistory's behaviour. The corruption
+        // is still recorded for observability (#68).
         debugError('session-storage.parseMessageLine', error, `${path}:${i + 1}`);
-        break;
+        continue;
       }
     }
     return messages;

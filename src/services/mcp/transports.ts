@@ -97,10 +97,18 @@ export class SseTransport extends BaseTransport {
       this.eventSource.close();
     }
 
-    const url = this.buildUrl();
-    this.eventSource = new EventSource(url, {
-      // Node.js 环境可能需要额外配置
-    } as EventSourceInit);
+    const url = this.config.endpoint;
+    // Issue #67: never place auth headers in the URL query string — query
+    // strings are logged by servers/proxies/CDNs and leak tokens. Send them as
+    // request headers instead. The `eventsource` Node package honours the
+    // `headers` option here; the browser EventSource ignores it (auth must then
+    // use cookies/same-origin), but in neither case is the secret put in the
+    // URL.
+    const options: EventSourceInit & { headers?: Record<string, string> } = {};
+    if (this.config.headers) {
+      options.headers = this.config.headers;
+    }
+    this.eventSource = new EventSource(url, options as EventSourceInit);
 
     this.eventSource.onopen = () => {
       this.reconnectAttempts = 0;
@@ -151,16 +159,6 @@ export class SseTransport extends BaseTransport {
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
-  }
-
-  private buildUrl(): string {
-    const url = new URL(this.config.endpoint);
-    if (this.config.headers) {
-      Object.entries(this.config.headers).forEach(([key, value]) => {
-        url.searchParams.set(key, value);
-      });
-    }
-    return url.toString();
   }
 
   // Issue #32 #3.6: SSE 重连指数退避

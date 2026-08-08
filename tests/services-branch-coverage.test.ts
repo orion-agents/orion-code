@@ -1023,7 +1023,7 @@ describe('services branch coverage: MCP transports', () => {
     onmessage?: (event: { data: string }) => void;
     onerror?: () => void;
     close = jest.fn();
-    constructor(public url: string) {
+    constructor(public url: string, public options?: { headers?: Record<string, string> }) {
       FakeEventSource.instances.push(this);
     }
   }
@@ -1105,7 +1105,9 @@ describe('services branch coverage: MCP transports', () => {
     sse.on('reconnecting', attempt => reconnects.push(attempt));
     await sse.connect();
     const first = FakeEventSource.instances[0];
-    expect(first.url).toContain('token=x');
+    // Issue #67: auth must NOT be in the URL query string (leaks to logs).
+    expect(first.url).not.toContain('token=');
+    expect(first.options?.headers?.token).toBe('x');
     first.onopen?.();
     expect(sse.isConnected()).toBe(true);
     first.onmessage?.({ data: JSON.stringify({ type: 'notification', method: 'ok' }) });

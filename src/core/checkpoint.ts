@@ -10,6 +10,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { atomicWriteFileSync } from '../services/atomic-write';
 import { getProjectCheckpointsDir, getProjectSessionsDir } from '../services/config-dir';
 
 export const CHECKPOINT_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
@@ -89,9 +90,16 @@ export function createCheckpoint(
   if (!projectPath || filePaths.length === 0) return null;
 
   const dir = getTurnDir(projectPath, turnId);
-  if (fs.existsSync(dir)) return null; // Already exists
-
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  // Issue #83: avoid the existsSync -> mkdirSync TOCTOU. Creating the turn dir
+  // with a single non-recursive mkdir is atomic: if another process already
+  // created this checkpoint, mkdir throws EEXIST and we treat it as "already
+  // exists" rather than racing to overwrite it.
+  try {
+    fs.mkdirSync(dir, { mode: 0o700 });
+  } catch (err: any) {
+    if (err && err.code === 'EEXIST') return null; // checkpoint already created
+    throw err;
+  }
 
   const files: CheckpointFile[] = [];
   for (const filePath of filePaths) {
@@ -113,7 +121,9 @@ export function createCheckpoint(
       const checkpointPath = resolveCheckpointSourcePath(dir, target.relativePath);
       if (!checkpointPath) continue;
       fs.mkdirSync(path.dirname(checkpointPath), { recursive: true });
-      fs.writeFileSync(checkpointPath, content, { mode: 0o600 });
+      // Issue #83: atomic write (temp + rename) so a crash mid-write cannot
+      // leave a half-written snapshot that restore() can't read.
+      atomicWriteFileSync(checkpointPath, content, { mode: 0o600 });
 
       files.push({
         path: target.relativePath,
@@ -128,7 +138,11 @@ export function createCheckpoint(
 
   // Write checkpoint metadata
   const meta: Checkpoint = { turnId, createdAt: Date.now(), files };
-  fs.writeFileSync(path.join(dir, '.checkpoint.json'), JSON.stringify(meta, null, 2), { mode: 0o600 });
+  // Issue #83: atomic write so a crash between files and meta can never leave a
+  // meta referencing snapshots that aren't on disk yet.
+  atomicWriteFileSync(path.join(dir, '.checkpoint.json'), JSON.stringify(meta, null, 2), {
+    mode: 0o600,
+  });
 
   return meta;
 }
@@ -190,7 +204,9 @@ export function restoreCheckpoint(
       if (!fs.existsSync(checkpointFile)) continue;
       const content = fs.readFileSync(checkpointFile, 'utf8');
       fs.mkdirSync(path.dirname(target.absolutePath), { recursive: true });
-      fs.writeFileSync(target.absolutePath, content, { mode: 0o600 });
+      // Issue #83: atomic write so an interrupted restore cannot leave a torn
+      // file at the user's real path.
+      atomicWriteFileSync(target.absolutePath, content, { mode: 0o600 });
       restored.push(target.relativePath);
     } catch {
       // Skip files that can't be restored

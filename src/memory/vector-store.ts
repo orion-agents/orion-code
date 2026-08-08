@@ -5,8 +5,18 @@
  */
 
 import Database from 'better-sqlite3';
+import * as sqliteVec from 'sqlite-vec';
 import { join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
+
+// The installed better-sqlite3 (v12) supports `allowExtension`, but
+// @types/better-sqlite3 lags behind and omits it. Augment the Options type so
+// we can enable extension loading for sqlite-vec (#47).
+declare module 'better-sqlite3' {
+  interface Options {
+    allowExtension?: boolean;
+  }
+}
 import { createHash } from 'crypto';  // Issue #32 #3.4: 用于 hashProject
 import { getEmbeddingService, type EmbeddingConfig } from './embeddings';
 import type { MemoryEntry, MemoryType } from './types';
@@ -54,6 +64,22 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/**
+ * A usable embedding must have the expected dimension, be all-finite, and
+ * actually carry signal (not all zeros). Failed/empty embeddings from the
+ * provider come back as zero vectors; storing them makes them rank #1 at
+ * score 1.0 in semantic search and silently poisons results (#47 item 2).
+ */
+function isValidEmbedding(vector: number[], dimension: number): boolean {
+  if (!Array.isArray(vector) || vector.length !== dimension) return false;
+  let hasSignal = false;
+  for (const v of vector) {
+    if (typeof v !== 'number' || !Number.isFinite(v)) return false;
+    if (v !== 0) hasSignal = true;
+  }
+  return hasSignal;
+}
+
 export interface VectorProjectStats {
   project: string;
   rows: number;
@@ -83,8 +109,10 @@ export class VectorStore {
       mkdirSync(dbDir, { recursive: true });
     }
 
-    // Initialize database
-    this.db = new Database(dbPath);
+    // Initialize database. allowExtension is required so sqlite-vec (a
+    // loadable dylib) can be registered below — without it, db.loadExtension
+    // is a no-op and the vec0 virtual table can never be created (#47).
+    this.db = new Database(dbPath, { allowExtension: true });
 
     // Get embedding service
     this.embeddingService = getEmbeddingService(config?.embeddingConfig);
@@ -119,6 +147,12 @@ export class VectorStore {
 
     // Try to create vector column using sqlite-vec
     try {
+      // The vec0 module ships as a loadable extension that nobody loaded
+      // before (#47): `CREATE VIRTUAL TABLE ... USING vec0` always threw
+      // "no such module: vec0", so vector search silently fell back to LIKE.
+      // Load it explicitly (allowExtension was enabled in the constructor).
+      sqliteVec.load(this.db);
+
       const dimension = this.embeddingService.getDimension();
       this.db.exec(`
         CREATE VIRTUAL TABLE IF NOT EXISTS vec_memories USING vec0(
@@ -184,10 +218,13 @@ export class VectorStore {
 
     // Generate embedding first (before transaction)
     if (this.initialized) {
+      let vector: number[];
       try {
-        const vector = await this.embeddingService.embed(entry.content);
-
-        // Now execute transaction with the data
+        vector = await this.embeddingService.embed(entry.content);
+      } catch (err) {
+        // An embedding failure must not lose the memory entirely. Degrade to
+        // a text-only memory (search falls back to substring matching).
+        console.warn(`[VectorStore] Embedding failed; storing text-only: ${errorMessage(err)}`);
         upsertTransaction({
           id: memoryId,
           name: entry.name,
@@ -198,24 +235,55 @@ export class VectorStore {
           createdAt: entry.createdAt,
           updatedAt: entry.updatedAt,
         });
-
-        // Delete old vector if exists
-        this.deleteVectorsForMemoryIds([memoryId]);
-
-        // Insert new vector
-        const vectorStmt = this.db.prepare(`INSERT INTO vec_memories (embedding) VALUES (?)`);
-        const result = vectorStmt.run(JSON.stringify(vector));
-
-        // Link vector to memory
-        this.db.prepare('INSERT INTO memory_vectors (memory_id, vector_rowid) VALUES (?, ?)').run(
-          memoryId,
-          result.lastInsertRowid
-        );
-      } catch (err) {
-        console.warn(`[VectorStore] Failed to store embedding: ${errorMessage(err)}`);
-        // embed 失败时不写入 memories 表（事务未执行）
-        throw err;
+        return;
       }
+
+      // Reject degenerate embeddings (all-zero / NaN / wrong dimension).
+      // Storing them would make failed embeddings rank #1 at score 1.0 in
+      // semantic search and silently poison results (#47 item 2). Degrade
+      // to a text-only memory instead of writing a bogus vector.
+      if (!isValidEmbedding(vector, this.embeddingService.getDimension())) {
+        console.warn(
+          `[VectorStore] Skipping degenerate embedding for ${memoryId}; storing text-only`
+        );
+        upsertTransaction({
+          id: memoryId,
+          name: entry.name,
+          type: entry.type,
+          content: entry.content,
+          description: entry.description || entry.content.slice(0, 100),
+          projectKey,
+          createdAt: entry.createdAt,
+          updatedAt: entry.updatedAt,
+        });
+        return;
+      }
+
+      // Single transaction for the whole write so a vector-insert failure
+      // rolls back the memory row too — previously the memory row committed
+      // first and a later vec insert failure left an orphan with no vector,
+      // or a vector pointing at a rolled-back memory (#81).
+      const data = {
+        id: memoryId,
+        name: entry.name,
+        type: entry.type,
+        content: entry.content,
+        description: entry.description || entry.content.slice(0, 100),
+        projectKey,
+        createdAt: entry.createdAt,
+        updatedAt: entry.updatedAt,
+      };
+      const writeMemoryAndVector = this.db.transaction((d: typeof data, vec: number[]) => {
+        upsertTransaction(d);
+        this.deleteVectorsForMemoryIds([d.id]);
+        const result = this.db
+          .prepare(`INSERT INTO vec_memories (embedding) VALUES (?)`)
+          .run(JSON.stringify(vec));
+        this.db
+          .prepare('INSERT INTO memory_vectors (memory_id, vector_rowid) VALUES (?, ?)')
+          .run(d.id, result.lastInsertRowid);
+      });
+      writeMemoryAndVector(data, vector);
     } else {
       // No vector search - just write memory
       upsertTransaction({

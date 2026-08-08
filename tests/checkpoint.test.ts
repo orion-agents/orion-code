@@ -91,6 +91,37 @@ describe('checkpoint', () => {
     expect(createCheckpoint(TEST_PROJECT, 'turn-1', [filePath])).toBeNull();
   });
 
+  test('createCheckpoint writes atomically — no leftover .tmp file (Issue #83)', () => {
+    const filePath = path.join(TEST_PROJECT, 'atomic.txt');
+    fs.writeFileSync(filePath, 'atomic content', 'utf8');
+
+    const cpDir = getProjectCheckpointsDir(TEST_PROJECT);
+    expect(createCheckpoint(TEST_PROJECT, 'turn-atomic', [filePath])).not.toBeNull();
+
+    // The final checkpoint payload must exist and hold the content; the
+    // intermediate random-suffixed temp file must have been renamed away.
+    const payloadPath = path.join(cpDir, 'turn-atomic', 'atomic.txt');
+    expect(fs.existsSync(payloadPath)).toBe(true);
+    expect(fs.readFileSync(payloadPath, 'utf8')).toBe('atomic content');
+
+    const leftovers = fs.readdirSync(cpDir, { recursive: true }).filter(f => String(f).includes('.tmp'));
+    expect(leftovers).toHaveLength(0);
+  });
+
+  test('createCheckpoint handles a pre-existing checkpoint dir without throwing (mkdir TOCTOU, Issue #83)', () => {
+    const filePath = path.join(TEST_PROJECT, 'race.txt');
+    fs.writeFileSync(filePath, 'race content', 'utf8');
+
+    // Pre-create the turn directory (simulating a concurrent mkdir race) so the
+    // non-recursive mkdirSync hits EEXIST. The first create must still succeed.
+    const cpDir = getProjectCheckpointsDir(TEST_PROJECT);
+    fs.mkdirSync(path.join(cpDir, 'turn-race'), { recursive: true });
+
+    expect(() => createCheckpoint(TEST_PROJECT, 'turn-race', [filePath])).not.toThrow();
+    const result = createCheckpoint(TEST_PROJECT, 'turn-race', [filePath]);
+    expect(result).toBeNull(); // second call is idempotent, not an EEXIST crash
+  });
+
   test('restoreCheckpoint restores file content', () => {
     const filePath = path.join(TEST_PROJECT, 'restore.txt');
     fs.writeFileSync(filePath, 'original', 'utf8');

@@ -145,10 +145,16 @@ describe('bash_security read-only bypasses', () => {
       expect(isReadOnlyCommand('npm --version')).toBe(true);
     });
 
-    it('still routes the whitelisted validation commands to safe', () => {
-      expect(assessCommandSecurity('npm test').level).toBe('safe');
+    it('still routes the whitelisted local validation commands to safe', () => {
       expect(assessCommandSecurity('npm run lint').level).toBe('safe');
-      expect(assessCommandSecurity('npx jest tests/x.test.ts').level).toBe('safe');
+      expect(assessCommandSecurity('tsc --noEmit').level).toBe('safe');
+    });
+
+    it('treats network-pulling / script-executing commands as caution (issue #64)', () => {
+      expect(assessCommandSecurity('npm test').level).toBe('caution');
+      expect(assessCommandSecurity('npx jest tests/x.test.ts').level).toBe('caution');
+      expect(assessCommandSecurity('npx tsc --noEmit').level).toBe('caution');
+      expect(assessCommandSecurity('curl https://example.com').level).toBe('caution');
     });
   });
 
@@ -190,9 +196,9 @@ describe('bash_security read-only bypasses', () => {
       expect(assessCommandSecurity('npm test && rm -rf /tmp/x').level).not.toBe('safe');
     });
 
-    it('a plain validation command is unaffected', () => {
-      expect(isValidationCommand('npx tsc --noEmit')).toBe(true);
-      expect(isValidationCommand('npm test -- --no-coverage')).toBe(true);
+    it('a plain local validation command is unaffected', () => {
+      expect(isValidationCommand('tsc --noEmit')).toBe(true);
+      expect(isValidationCommand('npm run lint')).toBe(true);
     });
   });
 });

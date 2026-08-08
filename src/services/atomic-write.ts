@@ -7,6 +7,7 @@
  */
 
 import { writeFileSync, renameSync, unlinkSync, openSync, fsyncSync, closeSync, chmodSync } from 'fs';
+import { randomBytes } from 'crypto';
 import { dirname, basename, join } from 'path';
 
 export interface AtomicWriteOptions {
@@ -20,7 +21,12 @@ export interface AtomicWriteOptions {
 }
 
 export function atomicWriteFileSync(path: string, content: string, opts: AtomicWriteOptions = {}): void {
-  const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.${Date.now()}.tmp`);
+  // Issue #85: the temp name must be unpredictable. A predictable name
+  // (basename + pid + timestamp) lets a local attacker pre-create a symlink at
+  // that exact path and divert the rename (symlink TOCTOU). A random suffix
+  // makes pre-planting infeasible. The temp stays in the target's directory so
+  // `rename` remains atomic on a single filesystem.
+  const tmp = join(dirname(path), `.${basename(path)}.${randomBytes(12).toString('hex')}.tmp`);
   try {
     writeFileSync(tmp, content, opts.mode !== undefined ? { mode: opts.mode } : undefined);
     if (opts.mode !== undefined) {

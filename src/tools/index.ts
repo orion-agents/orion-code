@@ -21,7 +21,7 @@ import {
   lstatSync,
   mkdirSync,
 } from 'fs';
-import { join, resolve, relative } from 'path';
+import { join, resolve, relative, isAbsolute } from 'path';
 import { createInterface } from 'readline';
 import {
   buildTool,
@@ -1015,6 +1015,24 @@ function safePath(input: string, cwd = process.cwd()): string {
 }
 
 /**
+ * Contain a tool-resolved path inside the workspace root (cwd).
+ *
+ * Blocks `../` traversal and absolute paths outside the workspace, which would
+ * otherwise let `write_file`/`edit_file` scribble over `~/.bashrc`, SSH config
+ * or other projects — especially dangerous under `acceptEdits` auto-approval,
+ * where the write runs without a confirmation prompt (issue #65).
+ *
+ * Containment is path-based (not `realpath`-based) because the target file may
+ * not yet exist; it therefore does not follow symlink escapes. Symlink escapes
+ * remain a residual risk documented in the issue.
+ */
+function isWithinWorkspace(resolved: string, cwd: string): boolean {
+  const root = resolve(cwd);
+  const rel = relative(root, resolved);
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
+/**
  * Truncate text to at most maxBytes UTF-8 bytes, cutting on a character
  * boundary (never inside a multi-byte sequence or surrogate pair). Returns the
  * truncated text and the byte length it was cut at. String.slice counts UTF-16
@@ -1122,6 +1140,14 @@ async function writeFileSync_(path: string, content: string, cwd?: string): Prom
   try {
     const normalizedPath = normalizeToolPath(path);
     const resolved = safePath(path, cwd);
+    const workspaceRoot = cwd ?? process.cwd();
+    if (!isWithinWorkspace(resolved, workspaceRoot)) {
+      return {
+        success: false,
+        output: '',
+        error: `Refusing to write outside the workspace: ${normalizedPath}`,
+      };
+    }
     writeFileSync(resolved, content, 'utf-8');
     return {
       success: true,
@@ -1569,6 +1595,14 @@ async function editFile_(
   try {
     const normalizedPath = normalizeToolPath(path);
     const resolved = safePath(path, cwd);
+    const workspaceRoot = cwd ?? process.cwd();
+    if (!isWithinWorkspace(resolved, workspaceRoot)) {
+      return {
+        success: false,
+        output: '',
+        error: `Refusing to edit outside the workspace: ${normalizedPath}`,
+      };
+    }
     if (!existsSync(resolved)) {
       return { success: false, output: '', error: `File not found: ${normalizedPath}` };
     }
@@ -1720,6 +1754,31 @@ function escapeRegExp(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/**
+ * Validate a caller-supplied regular expression pattern before compiling it.
+ *
+ * Issue #79: `grep_` compiles user/model-supplied patterns with `new RegExp`
+ * directly. A pathological pattern with a quantified group that itself contains
+ * a quantifier (e.g. `(a+)+`, `(\d+)*`) triggers catastrophic backtracking
+ * (ReDoS) and can hang the process on adversarial input (prompt injection).
+ * Reject empty/oversized patterns and the classic nested-quantifier shapes.
+ */
+export function validateRegexPattern(pattern: string): string | null {
+  if (!pattern) return 'pattern must not be empty';
+  if (pattern.length > 2000) return 'pattern is too long (max 2000 characters)';
+  // A group containing an internal quantifier, then quantified again: the
+  // canonical exponential-backtracking construction.
+  if (/\([^()]*[*+?][^()]*\)\s*[*+?]/.test(pattern)) {
+    return 'pattern contains a quantified group with an internal quantifier — this risks catastrophic backtracking (ReDoS)';
+  }
+  try {
+    new RegExp(pattern);
+  } catch {
+    return 'pattern is not a valid regular expression';
+  }
+  return null;
+}
+
 // ============================================================================
 // Glob/Grep 工具实现
 // ============================================================================
@@ -1846,6 +1905,10 @@ async function grep_(
       return { success: false, output: '', error: `Path not found: ${normalizedBasePath}` };
     }
 
+    const patternError = validateRegexPattern(pattern);
+    if (patternError) {
+      return { success: false, output: '', error: `Invalid grep pattern: ${patternError}` };
+    }
     const regex = new RegExp(pattern);
     const context = contextLines ?? 0;
     const results: string[] = [];
