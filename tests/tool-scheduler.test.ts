@@ -582,6 +582,37 @@ describe('permission mode semantics for ask tools', () => {
     expect(results[0].permissionDecision.source).toBe('plan_mode');
   });
 
+  test('plan mode permits a local read-only exec_command even when it asks (Issue #19)', () => {
+    const execReadOnly: OpenHorseTool = buildTool({
+      name: 'exec_command',
+      description: 'Run a shell command',
+      parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] },
+      execute: async () => ({ success: true, output: '' }),
+      isReadOnly: () => true,
+      checkPermissions: () => ({ behavior: 'ask', reason: 'Command requires confirmation' }),
+    });
+    const perm = resolveEffectivePermission({
+      toolName: 'exec_command',
+      tool: execReadOnly,
+      args: { command: 'gh auth status' },
+      permission: { behavior: 'ask', reason: 'Command requires confirmation' },
+      permissionMode: 'plan',
+    });
+    expect(perm.outcome).toBe('allow');
+    expect(perm.risk).toBe('read_only');
+  });
+
+  test('plan mode still blocks external read-only tools (web/MCP) that ask', () => {
+    const perm = resolveEffectivePermission({
+      toolName: 'web_search',
+      tool: askTool,
+      args: { query: 'q' },
+      permission: { behavior: 'ask', reason: 'External query' },
+      permissionMode: 'plan',
+    });
+    expect(perm.outcome).toBe('block');
+  });
+
   test('acceptEdits auto-approves file-edit tools without prompting', async () => {
     const executed: string[] = [];
     let prompted = 0;

@@ -184,8 +184,12 @@ function assessToolRisk(
 
   if (isDestructive) return { risk: 'destructive', known: true, isFileEdit };
   // A read-only tool that asks is normally an external/caution operation
-  // (web/MCP are the important examples), not a safe local read.
-  if (isReadOnly && permission?.behavior === 'ask') {
+  // (web/MCP are the important examples), not a safe local read — plan mode
+  // must still block those. But a local read-only exec_command (e.g.
+  // `gh auth status`, `git status`) is a safe read and must be permitted in
+  // plan mode even though checkPermissions returns 'ask' for it (it is not in
+  // the explicit allowlist).
+  if (isReadOnly && permission?.behavior === 'ask' && tool?.name !== 'exec_command') {
     return { risk: 'external', known: true, isFileEdit };
   }
   if (isReadOnly) return { risk: 'read_only', known: true, isFileEdit };
