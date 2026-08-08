@@ -550,13 +550,14 @@ export class LLMService {
   private async assertProviderRequestAllowed(
     operation: ProviderRequestPreflightContext['operation'],
     attempt: number,
-    messages: Message[]
+    messages: Message[],
+    model = this.config.model
   ): Promise<void> {
     if (!this.providerRequestPreflight) return;
     const decision = await this.providerRequestPreflight({
       operation,
       attempt,
-      model: this.config.model,
+      model,
       estimatedPromptTokens: estimateMessagesTokens(messages),
     });
     if (!decision.available) {
@@ -582,65 +583,11 @@ export class LLMService {
   }
 
   /**
-   * Switch to the configured fallback model before a retry, and record it.
-   *
-   * The resilience coordinator only retries errors it has already classified as
-   * retryable -- rate limiting, provider overload, transient transport faults --
-   * which is exactly the situation a fallback model exists for. So the first
-   * retry is the right moment to switch.
-   *
-   * The previous gate (`consecutive529Errors >= MAX_529_RETRIES`, i.e. 3) was
-   * unreachable in practice: that threshold is at least the coordinator's whole
-   * attempt budget, so the request was exhausted before the gate could open. It
-   * also only ever ran from the legacy `retryConfig.onRetry` path, which is
-   * skipped entirely whenever the coordinator is active.
-   *
-   * @returns true when the active model changed.
-   */
-  private applyFallbackForRetry(diagnostics: LLMRequestDiagnostics): boolean {
-    if (!this.config.fallbackModel || this.usingFallback) {
-      return false;
-    }
-
-    const originalModel = this.config.model;
-    this.triggerFallback();
-    if (this.config.model === originalModel) {
-      return false;
-    }
-
-    diagnostics.fallbackTriggered = true;
-    diagnostics.fallbackFromModel = originalModel;
-    diagnostics.fallbackToModel = this.config.model;
-    diagnostics.finalModel = this.config.model;
-    diagnostics.usingFallback = this.usingFallback;
-    return true;
-  }
-
-  /**
    * 非流式对话
    */
   async chat(messages: Message[], tools?: Tool[]): Promise<LLMResponse> {
     const requestDiagnostics = this.createRequestDiagnostics();
     this.lastRequestDiagnostics = requestDiagnostics;
-
-    // Build the payload per attempt. Materialising it once would pin `model` to
-    // whatever was configured before the first request, so a fallback switch
-    // (which mutates this.config.model) would never reach the wire.
-    const buildParams = (): Record<string, unknown> => {
-      const params: Record<string, unknown> = {
-        model: this.config.model,
-        messages: this.toOpenAIMessages(messages),
-        max_tokens: this.config.maxTokens,
-        temperature: this.config.temperature,
-      };
-
-      if (tools && tools.length > 0) {
-        params.tools = tools as ChatCompletionTool[];
-      }
-
-      return params;
-    };
-
     // v0.2.25: Use resilience coordinator when available.
     let response: WireChatCompletion;
     try {
@@ -651,28 +598,38 @@ export class LLMService {
             operation: 'root_chat',
             providerKey: 'default',
             requestedModel: this.config.model,
+            fallbackModel: this.config.fallbackModel || undefined,
           },
-          async attempt => {
-            await this.assertProviderRequestAllowed('chat', attempt, messages);
-            // Any attempt past the first means the coordinator classified the
-            // previous failure as retryable, which is when the fallback model
-            // is supposed to take over.
-            if (attempt > 1) {
-              this.applyFallbackForRetry(requestDiagnostics);
-            }
+          async (attempt, signal, model = this.config.model) => {
+            await this.assertProviderRequestAllowed('chat', attempt, messages, model);
+            const params: Record<string, unknown> = {
+              model,
+              messages: this.toOpenAIMessages(messages),
+              max_tokens: this.config.maxTokens,
+              temperature: this.config.temperature,
+            };
+            if (tools && tools.length > 0) params.tools = tools as ChatCompletionTool[];
             return {
-              response: (await this.client.chat.completions.create(
-                buildParams() as unknown as ChatCompletionCreateParams
-              )) as unknown as WireChatCompletion,
+              response: await this.client.chat.completions.create(
+                params as unknown as ChatCompletionCreateParams,
+                signal ? ({ signal } as RequestOptions) : undefined
+              ),
             };
           }
         );
-        response = result.result;
+        response = result.result as unknown as WireChatCompletion;
         this.applyResilienceDiagnostics(requestDiagnostics, result.diagnostics);
       } else {
         await this.assertProviderRequestAllowed('chat', 1, messages);
+        const params: Record<string, unknown> = {
+          model: this.config.model,
+          messages: this.toOpenAIMessages(messages),
+          max_tokens: this.config.maxTokens,
+          temperature: this.config.temperature,
+        };
+        if (tools && tools.length > 0) params.tools = tools as ChatCompletionTool[];
         response = (await this.client.chat.completions.create(
-          buildParams() as unknown as ChatCompletionCreateParams
+          params as unknown as ChatCompletionCreateParams
         )) as unknown as WireChatCompletion;
       }
     } catch (error) {
@@ -756,8 +713,18 @@ export class LLMService {
           diagnostic.type === 'rate_limit'
         ) {
           this.consecutive529Errors++;
-          if (this.consecutive529Errors >= MAX_529_RETRIES) {
-            this.applyFallbackForRetry(requestDiagnostics);
+          if (
+            this.consecutive529Errors >= MAX_529_RETRIES &&
+            this.config.fallbackModel &&
+            !this.usingFallback
+          ) {
+            const originalModel = this.config.model;
+            this.triggerFallback();
+            if (this.config.model !== originalModel) {
+              requestDiagnostics.fallbackTriggered = true;
+              requestDiagnostics.fallbackFromModel = originalModel;
+              requestDiagnostics.fallbackToModel = this.config.model;
+            }
           }
         }
         requestDiagnostics.finalModel = this.config.model;
@@ -774,20 +741,15 @@ export class LLMService {
             operation: 'root_chat_stream',
             providerKey: 'default',
             requestedModel: this.config.model,
+            fallbackModel: this.config.fallbackModel || undefined,
             abortSignal: options?.abortSignal,
           },
-          async (attempt: number, signal?: AbortSignal) => {
+          async (attempt: number, signal?: AbortSignal, model = this.config.model) => {
             throwIfAborted(signal);
-            await this.assertProviderRequestAllowed('chat_stream', attempt, messages);
-            // Same contract as chat(): the coordinator only re-enters this
-            // callback after a retryable failure, so switch models here rather
-            // than in retryConfig.onRetry, which the coordinator never calls.
-            if (attempt > 1) {
-              this.applyFallbackForRetry(requestDiagnostics);
-            }
+            await this.assertProviderRequestAllowed('chat_stream', attempt, messages, model);
 
             const params: Record<string, unknown> = {
-              model: this.config.model,
+              model,
               messages: this.toOpenAIMessages(messages),
               max_tokens: this.config.maxTokens,
               temperature: this.config.temperature,
@@ -808,7 +770,7 @@ export class LLMService {
             )) as unknown as AsyncIterable<WireStreamChunk>;
 
             let content = '';
-            let usedModel = this.config.model;
+            let usedModel = model;
             let usage: LLMUsage | undefined;
             let providerRequestId: string | undefined;
             const toolCallsMap = new Map<
@@ -1252,13 +1214,11 @@ export class LLMService {
     }
 
     if (diagnostics.fallbackCount > 0) {
-      // The current coordinator records fallback dispositions but does not yet
-      // switch models. Surface the count through the legacy diagnostics contract
-      // so Goal accounting fails closed without claiming that a switch occurred.
       target.fallbackTriggered = true;
       target.fallbackFromModel = diagnostics.requestedModel;
       if (diagnostics.finalModel && diagnostics.finalModel !== diagnostics.requestedModel) {
         target.fallbackToModel = diagnostics.finalModel;
+        this.usingFallback = true;
       }
     }
 

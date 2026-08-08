@@ -30,6 +30,7 @@ import {
 import {
   clearWebFetchCache,
   isUrlSafeForSSRF,
+  setWebFetchDnsResolverForTests,
   webFetchTool,
   webSearchTool,
 } from '../src/tools/web';
@@ -608,10 +609,12 @@ describe('web tools branch behavior', () => {
 
   beforeEach(() => {
     clearWebFetchCache();
+    setWebFetchDnsResolverForTests(async () => [{ address: '93.184.216.34', family: 4 }]);
     global.fetch = jest.fn();
   });
 
   afterAll(() => {
+    setWebFetchDnsResolverForTests();
     global.fetch = originalFetch;
   });
 

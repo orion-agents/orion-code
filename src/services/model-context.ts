@@ -477,6 +477,13 @@ export function resolveModelContext(modelId: string): ModelContextResolution {
   //   Pass 1（查询包含 id）：取**最长**命中 —— 越长越具体。
   //   Pass 2（id 包含查询）：取**最短**命中 —— 最贴近的超集，避免
   //                          `gpt-4o:latest` 被 `gpt-4o-mini` 抢走。
+  if (!normalized) {
+    const firstBuiltinId = Object.keys(BUILTIN_MODELS)[0];
+    if (firstBuiltinId) {
+      return { ...BUILTIN_MODELS[firstBuiltinId], source: 'fuzzy', matchedId: firstBuiltinId };
+    }
+  }
+
   const candidateId = normalized.split(':')[0];
   const ids = Object.keys(BUILTIN_MODELS);
 

@@ -723,7 +723,7 @@ export const gitCommitTool: OpenHorseTool = buildTool({
 
 工作流程：
 1. 检查 git status --porcelain
-2. 仅对显式 paths 暂存（或 all=true 暂存全部已追踪变更）
+2. 仅对显式 paths 暂存
 3. git commit -m <message>
 4. 验证 commit 成功
 
@@ -739,7 +739,7 @@ export const gitCommitTool: OpenHorseTool = buildTool({
       },
       all: {
         type: 'boolean',
-        description: '暂存所有已追踪文件的变更（不含未追踪文件）',
+        description: '已废弃且禁止；必须使用 paths 精确列出文件',
       },
       cwd: { type: 'string', description: '工作目录（可选）' },
     },
@@ -756,6 +756,13 @@ export const gitCommitTool: OpenHorseTool = buildTool({
         success: false,
         output: 'git_commit requires a commit message',
         error: 'git_commit requires a commit message',
+      };
+    }
+    if (all) {
+      return {
+        success: false,
+        output: '',
+        error: 'git_commit all=true is disabled; provide an explicit paths allowlist',
       };
     }
     if (rawPaths !== undefined && !Array.isArray(rawPaths)) {
@@ -789,49 +796,113 @@ export const gitCommitTool: OpenHorseTool = buildTool({
     log.push('🔍 Checking git status...');
     const changes = await checkUncommittedChanges(cwd);
     if (!changes.success) {
-      return { success: false, output: log.join('\n'), error: `git status failed: ${changes.error}` };
+      return {
+        success: false,
+        output: log.join('\n'),
+        error: `git status failed: ${changes.error}`,
+      };
     }
-    if (!changes.hasChanges && stagePaths.length === 0 && !all) {
+    if (!changes.hasChanges && stagePaths.length === 0) {
       return { success: true, output: '✓ Working directory clean, nothing to commit' };
     }
 
-    if (all) {
-      log.push('📦 Staging all tracked changes...');
-      const addResult = await execGit('add -u', cwd);
-      if (!addResult.success) {
-        return { success: false, output: log.join('\n'), error: `git add -u failed: ${addResult.error}` };
+    if (stagePaths.length > 0) {
+      const initialStagedResult = await execGitArgs(['diff', '--cached', '--name-only', '-z'], cwd);
+      if (!initialStagedResult.success) {
+        return {
+          success: false,
+          output: log.join('\n'),
+          error: `Initial staged-file verification failed: ${initialStagedResult.error}`,
+        };
       }
-    } else if (stagePaths.length > 0) {
+      const initialStaged = parseStagedPaths(initialStagedResult.output);
+      const allowed = new Set(stagePaths);
+      const unexpectedInitial = initialStaged.filter(path => !allowed.has(path));
+      if (unexpectedInitial.length > 0) {
+        return {
+          success: false,
+          output: log.join('\n'),
+          error: `Pre-staged files fall outside the explicit allowlist: ${unexpectedInitial.join(', ')}`,
+        };
+      }
+
+      const indexSnapshotResult = await execGitArgs(['write-tree'], cwd);
+      if (!indexSnapshotResult.success || !/^[0-9a-f]{40,64}$/.test(indexSnapshotResult.output)) {
+        return {
+          success: false,
+          output: log.join('\n'),
+          error: `Unable to snapshot the Git index before staging: ${indexSnapshotResult.error || 'invalid tree id'}`,
+        };
+      }
+      const restoreIndex = async (): Promise<string | undefined> => {
+        const result = await execGitArgs(['read-tree', indexSnapshotResult.output], cwd);
+        return result.success ? undefined : result.error || 'unknown index restore error';
+      };
+
       log.push(`📦 Staging ${stagePaths.length} explicit path(s)...`);
       const addResult = await execGitArgs(['add', '--', ...stagePaths], cwd);
       if (!addResult.success) {
-        return { success: false, output: log.join('\n'), error: `git add failed: ${addResult.error}` };
+        const restoreError = await restoreIndex();
+        return {
+          success: false,
+          output: log.join('\n'),
+          error: restoreError
+            ? `git add failed: ${addResult.error}; index rollback failed: ${restoreError}`
+            : `git add failed: ${addResult.error}; index restored`,
+        };
       }
+      const stagedResult = await execGitArgs(['diff', '--cached', '--name-only', '-z'], cwd);
+      const staged = stagedResult.success ? parseStagedPaths(stagedResult.output) : [];
+      const unexpected = staged.filter(path => !allowed.has(path));
+      const missing = stagePaths.filter(path => !staged.includes(path));
+      if (!stagedResult.success || unexpected.length > 0 || missing.length > 0) {
+        const restoreError = await restoreIndex();
+        return {
+          success: false,
+          output: log.join('\n'),
+          error: [
+            'Staged files do not exactly match the explicit allowlist',
+            unexpected.length > 0 ? `unexpected: ${unexpected.join(', ')}` : '',
+            missing.length > 0 ? `missing: ${missing.join(', ')}` : '',
+            !stagedResult.success ? `verification failed: ${stagedResult.error}` : '',
+            restoreError ? `index rollback failed: ${restoreError}` : 'index restored',
+          ]
+            .filter(Boolean)
+            .join('; '),
+        };
+      }
+      log.push(`  ✓ Verified ${staged.length} staged file(s)`);
+      log.push(`  Preview: ${staged.join(', ')}`);
+
+      const commitResult = await execGitArgs(['commit', '-m', message], cwd);
+      if (!commitResult.success) {
+        if (commitResult.output.includes('nothing to commit')) {
+          return { success: true, output: log.join('\n') + '\n  ⚠ Nothing new to commit' };
+        }
+        const restoreError = await restoreIndex();
+        return {
+          success: false,
+          output: log.join('\n'),
+          error: [
+            `git commit failed: ${commitResult.error}`,
+            restoreError ? `index rollback failed: ${restoreError}` : 'index restored',
+          ].join('; '),
+        };
+      }
+      log.push('  ✓ Commit successful');
+
+      const logResult = await execGit('log --oneline -1', cwd);
+      if (logResult.success) log.push(`  ✓ Latest commit: ${logResult.output.split('\n')[0]}`);
+      return { success: true, output: log.join('\n') };
     } else {
       return {
         success: false,
         output: log.join('\n'),
-        error: 'No changes staged: provide paths or set all=true',
+        error: 'No changes staged: provide an explicit paths allowlist',
       };
     }
-
-    log.push(`📝 Committing: "${message.slice(0, 50)}..."`);
-    const commitResult = await execGitArgs(['commit', '-m', message], cwd);
-    if (!commitResult.success) {
-      await execGit('reset', cwd);
-      if (commitResult.output.includes('nothing to commit')) {
-        return { success: true, output: log.join('\n') + '\n  ⚠ Nothing new to commit' };
-      }
-      return { success: false, output: log.join('\n'), error: `git commit failed: ${commitResult.error}` };
-    }
-    log.push('  ✓ Commit successful');
-
-    const logResult = await execGit('log --oneline -1', cwd);
-    if (logResult.success) log.push(`  ✓ Latest commit: ${logResult.output.split('\n')[0]}`);
-
-    return { success: true, output: log.join('\n') };
   },
-  isDestructive: () => false,
+  isDestructive: () => true,
   isConcurrencySafe: () => false,
   checkPermissions: () => ({
     behavior: 'ask',
@@ -846,7 +917,8 @@ export const gitCommitTool: OpenHorseTool = buildTool({
 
 export const gitDiffTool: OpenHorseTool = buildTool({
   name: 'git_diff',
-  description: '显示 Git 差异。默认工作区 vs 暂存区；staged=true 显示已暂存 vs HEAD；可指定 paths。',
+  description:
+    '显示 Git 差异。默认工作区 vs 暂存区；staged=true 显示已暂存 vs HEAD；可指定 paths。',
   parameters: {
     type: 'object',
     properties: {
@@ -862,7 +934,23 @@ export const gitDiffTool: OpenHorseTool = buildTool({
     const stat = (args.stat as boolean) ?? false;
     const rawPaths = args.paths;
     const cwd = args.cwd as string | undefined;
-    const paths = Array.isArray(rawPaths) ? (rawPaths as string[]).map(String) : [];
+    if (rawPaths !== undefined && !Array.isArray(rawPaths)) {
+      return { success: false, output: '', error: 'git_diff paths must be an array of strings' };
+    }
+    const rawPathValues = (rawPaths as unknown[] | undefined) ?? [];
+    if (rawPathValues.some(path => typeof path !== 'string')) {
+      return { success: false, output: '', error: 'git_diff paths must contain only strings' };
+    }
+    const normalizedPaths = rawPathValues.map(path => normalizeStagePath(path as string));
+    if (normalizedPaths.some(path => path === null)) {
+      return {
+        success: false,
+        output: '',
+        error:
+          'git_diff paths must be exact repository-relative files without glob or pathspec syntax',
+      };
+    }
+    const paths = [...new Set(normalizedPaths as string[])];
 
     const cmd = ['diff', '--no-color'];
     if (stat) cmd.push('--stat');
@@ -871,7 +959,11 @@ export const gitDiffTool: OpenHorseTool = buildTool({
 
     const result = await execGitArgs(cmd, cwd, 60000);
     if (!result.success) {
-      return { success: false, output: `git diff failed: ${result.error}`, error: `git diff failed: ${result.error}` };
+      return {
+        success: false,
+        output: `git diff failed: ${result.error}`,
+        error: `git diff failed: ${result.error}`,
+      };
     }
     const MAX = 20000;
     const out =
@@ -913,7 +1005,11 @@ export const gitLogTool: OpenHorseTool = buildTool({
 
     const result = await execGitArgs(cmd, cwd, 30000);
     if (!result.success) {
-      return { success: false, output: `git log failed: ${result.error}`, error: `git log failed: ${result.error}` };
+      return {
+        success: false,
+        output: `git log failed: ${result.error}`,
+        error: `git log failed: ${result.error}`,
+      };
     }
     return { success: true, output: result.output || 'No commits' };
   },
@@ -960,7 +1056,11 @@ action:
     if (action === 'list') {
       const result = await execGit('branch -vv', cwd);
       if (!result.success) {
-        return { success: false, output: `git branch -vv failed: ${result.error}`, error: `git branch -vv failed: ${result.error}` };
+        return {
+          success: false,
+          output: `git branch -vv failed: ${result.error}`,
+          error: `git branch -vv failed: ${result.error}`,
+        };
       }
       return { success: true, output: result.output || 'No branches' };
     }
@@ -968,7 +1068,6 @@ action:
     if (!name || typeof name !== 'string') {
       return { success: false, output: '', error: `git_branch ${action} requires a branch name` };
     }
-    // A leading `-` would be parsed as an option rather than a branch name.
     if (
       name.startsWith('-') ||
       name.includes('\0') ||
@@ -984,7 +1083,11 @@ action:
     if (action === 'create') {
       const result = await execGitArgs(['branch', name], cwd);
       if (!result.success) {
-        return { success: false, output: log.join('\n'), error: `git branch create failed: ${result.error}` };
+        return {
+          success: false,
+          output: log.join('\n'),
+          error: `git branch create failed: ${result.error}`,
+        };
       }
       log.push(`✓ Created branch ${name}`);
       return { success: true, output: log.join('\n') };
@@ -993,9 +1096,9 @@ action:
     if (action === 'switch') {
       // `git checkout <name>` treats a name that is not a branch as a
       // *pathspec* and overwrites that working-tree file with the index
-      // content -- an unrecoverable loss of uncommitted work (no reflog entry,
-      // no stash, no dangling object). A path like `src/index.ts` is a
-      // perfectly well-formed branch name, so the guard has to be in the argv.
+      // content -- an unrecoverable loss of uncommitted work (no reflog, no
+      // stash, no dangling object). A path like `src/index.ts` passes every
+      // branch-name check above, so the guard has to be in the argv.
       //
       // `git switch` refuses pathspecs by design. `git checkout <name> --` is
       // the equivalent for git < 2.23, where `switch` does not exist yet.
@@ -1020,22 +1123,31 @@ action:
         cwd
       );
       if (!result.success) {
-        return { success: false, output: log.join('\n'), error: `git branch delete failed: ${result.error}` };
+        return {
+          success: false,
+          output: log.join('\n'),
+          error: `git branch delete failed: ${result.error}`,
+        };
       }
       log.push(`✓ Deleted branch ${name}`);
       return { success: true, output: log.join('\n') };
     }
 
-    return { success: false, output: `Unknown git_branch action: ${action}`, error: `Unknown git_branch action: ${action}` };
+    return {
+      success: false,
+      output: `Unknown git_branch action: ${action}`,
+      error: `Unknown git_branch action: ${action}`,
+    };
   },
-  isDestructive: () => false,
+  isReadOnly: args => ((args.action as string | undefined) ?? 'list') === 'list',
+  isDestructive: args => ((args.action as string | undefined) ?? 'list') !== 'list',
   isConcurrencySafe: () => false,
   checkPermissions: args => {
     const action = (args.action as string) ?? 'list';
     if (action === 'list') return { behavior: 'allow' };
     const name = typeof args.name === 'string' ? args.name : '<unnamed>';
     // Spell out the consequence per action: "will modify local branch state"
-    // told the user nothing about a switch rewriting working-tree files.
+    // told the user nothing about a switch discarding uncommitted work.
     const reason =
       action === 'switch'
         ? `git switch ${name} will change the checked-out branch and update working-tree files`

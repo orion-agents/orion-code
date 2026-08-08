@@ -158,6 +158,8 @@ export interface CostConfig {
  * maxTokens/temperature/retries 等由 Agent 智能控制
  */
 export interface GlobalConfig {
+  /** Persisted configuration schema version; absent in legacy files. */
+  schemaVersion?: number;
   /** LLM API Key */
   apiKey?: string;
   /** API Base URL */
@@ -196,14 +198,63 @@ export interface GlobalConfig {
 // ============================================================================
 
 const DEFAULT_CONFIG: GlobalConfig = {
+  schemaVersion: 1,
   defaultModel: 'gpt-4o',
   toolConfirmation: 'allow',
 };
+
+const CONFIG_SCHEMA_VERSION = 1;
 
 interface LegacyUsageFields {
   totalSessions?: unknown;
   totalTokens?: unknown;
   totalCost?: unknown;
+}
+
+function sanitizeSandboxConfig(value: unknown): SandboxConfig | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const sanitized: SandboxConfig = {};
+
+  // Preserve invalid enum values as strings so sandbox planning fails closed
+  // with an explicit diagnostic instead of silently downgrading to `none`.
+  if (raw.profile !== undefined) {
+    sanitized.profile = String(raw.profile) as SandboxConfig['profile'];
+  }
+  if (raw.backend !== undefined) {
+    sanitized.backend = String(raw.backend) as SandboxConfig['backend'];
+  }
+  if (raw.allowNetwork !== undefined && typeof raw.allowNetwork === 'boolean') {
+    sanitized.allowNetwork = raw.allowNetwork;
+  }
+  if (Array.isArray(raw.writableRoots)) {
+    sanitized.writableRoots = raw.writableRoots.filter(
+      (root): root is string => typeof root === 'string' && root.trim().length > 0
+    );
+  }
+  if (raw.image !== undefined && typeof raw.image === 'string') {
+    sanitized.image = raw.image;
+  }
+
+  return sanitized;
+}
+
+function sanitizeProjectConfig(value: unknown): ProjectConfig {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const raw = value as Record<string, unknown>;
+  const sanitized: ProjectConfig = {};
+
+  if (Array.isArray(raw.allowedTools) && raw.allowedTools.every(item => typeof item === 'string')) {
+    sanitized.allowedTools = [...(raw.allowedTools as string[])];
+  }
+  const sandbox = sanitizeSandboxConfig(raw.sandbox);
+  if (sandbox) sanitized.sandbox = sandbox;
+  if (typeof raw.lastSessionId === 'string') sanitized.lastSessionId = raw.lastSessionId;
+  if (typeof raw.lastModel === 'string') sanitized.lastModel = raw.lastModel;
+  if (typeof raw.hasTrustDialogAccepted === 'boolean') {
+    sanitized.hasTrustDialogAccepted = raw.hasTrustDialogAccepted;
+  }
+  return sanitized;
 }
 
 function sanitizeGlobalConfig(config: GlobalConfig & LegacyUsageFields): GlobalConfig {
@@ -217,7 +268,20 @@ function sanitizeGlobalConfig(config: GlobalConfig & LegacyUsageFields): GlobalC
   void _totalSessions;
   void _totalTokens;
   void _totalCost;
-  const sanitized: GlobalConfig = { ...rest };
+  const sanitized: GlobalConfig = { ...rest, schemaVersion: CONFIG_SCHEMA_VERSION };
+
+  const sandbox = sanitizeSandboxConfig(rest.sandbox);
+  if (sandbox) sanitized.sandbox = sandbox;
+  else delete sanitized.sandbox;
+
+  if (rest.projects && typeof rest.projects === 'object') {
+    sanitized.projects = Object.fromEntries(
+      Object.entries(rest.projects).map(([projectPath, projectConfig]) => [
+        projectPath,
+        sanitizeProjectConfig(projectConfig),
+      ])
+    );
+  }
 
   // UI renderer is a runtime choice, not persisted global configuration.
   if (ui?.confirmations && ui.confirmations !== 'config') {
@@ -282,7 +346,7 @@ export function updateGlobalConfig(updates: Partial<GlobalConfig>): GlobalConfig
 
 export function getProjectConfig(projectPath: string): ProjectConfig {
   const config = loadGlobalConfig();
-  return config.projects?.[projectPath] ?? {};
+  return sanitizeProjectConfig(config.projects?.[projectPath]);
 }
 
 export function saveProjectConfig(projectPath: string, projectConfig: ProjectConfig): void {

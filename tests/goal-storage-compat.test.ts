@@ -11,6 +11,7 @@ import {
   existsSync,
   mkdtempSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -915,6 +916,166 @@ describe('goal storage compatibility', () => {
   });
 
   describe('CAS revision enforcement', () => {
+    it.each([
+      { label: 'active', status: 'active' as const },
+      { label: 'paused', status: 'paused' as const },
+    ])(
+      'does not overwrite an existing $label Goal when expectedRevision is omitted',
+      ({ status }) => {
+        const sessionId = `sess-unversioned-${status}`;
+        const existing = v011Sidecar(`goal-${status}`, sessionId, `${status} authority`);
+        existing.status = status;
+        writeRawSidecar(project, sessionId, existing);
+        const sidecarPath = join(getProjectSessionsDir(project), `${sessionId}.goal.json`);
+        const beforeBytes = readFileSync(sidecarPath);
+        const beforeHash = createHash('sha256').update(beforeBytes).digest('hex');
+
+        const replacement = createGoal(project, sessionId, 'Unversioned replacement');
+
+        expect(replacement).toEqual(
+          expect.objectContaining({ ok: false, error: 'revision_stale' })
+        );
+        expect(readFileSync(sidecarPath)).toEqual(beforeBytes);
+        expect(createHash('sha256').update(readFileSync(sidecarPath)).digest('hex')).toBe(
+          beforeHash
+        );
+        expect(loadGoal(project, sessionId)).toEqual(
+          expect.objectContaining({
+            ok: true,
+            value: expect.objectContaining({
+              goalId: existing.goalId,
+              revision: existing.revision,
+              objective: existing.objective,
+            }),
+          })
+        );
+      }
+    );
+
+    it.each([
+      {
+        label: 'corrupt JSON',
+        payload: (_sessionId: string) => '{broken-goal-sidecar',
+        error: 'corrupt' as const,
+      },
+      {
+        label: 'metadata mismatch',
+        payload: (_sessionId: string) =>
+          JSON.stringify(v011Sidecar('goal-metadata', 'wrong-session', 'Metadata authority')),
+        error: 'metadata_mismatch' as const,
+      },
+      {
+        label: 'unknown status',
+        payload: (sessionId: string) =>
+          JSON.stringify({
+            ...v011Sidecar('goal-unknown-status', sessionId, 'Unknown status'),
+            status: 'unknown',
+          }),
+        error: 'corrupt' as const,
+      },
+    ])(
+      'preserves $label bytes when an unversioned create cannot establish disk state',
+      ({ payload, error }) => {
+        const sessionId = `sess-unversioned-${error}-${Math.random().toString(16).slice(2)}`;
+        const sidecarPath = join(getProjectSessionsDir(project), `${sessionId}.goal.json`);
+        mkdirSync(getProjectSessionsDir(project), { recursive: true });
+        writeFileSync(sidecarPath, payload(sessionId));
+        const beforeBytes = readFileSync(sidecarPath);
+        const beforeHash = createHash('sha256').update(beforeBytes).digest('hex');
+
+        const replacement = createGoal(project, sessionId, 'Must not hide disk state');
+
+        expect(replacement).toEqual(expect.objectContaining({ ok: false, error }));
+        expect(readFileSync(sidecarPath)).toEqual(beforeBytes);
+        expect(createHash('sha256').update(readFileSync(sidecarPath)).digest('hex')).toBe(
+          beforeHash
+        );
+        expect(readdirSync(getProjectSessionsDir(project))).not.toEqual(
+          expect.arrayContaining([expect.stringContaining(`${sessionId}.goal.json.corrupt-`)])
+        );
+      }
+    );
+
+    it('fails closed on an unreadable sidecar without replacing the directory', () => {
+      const sessionId = 'sess-unversioned-io-error';
+      const sidecarPath = join(getProjectSessionsDir(project), `${sessionId}.goal.json`);
+      mkdirSync(sidecarPath, { recursive: true });
+
+      const replacement = createGoal(project, sessionId, 'Must not hide IO state');
+
+      expect(replacement).toEqual(expect.objectContaining({ ok: false, error: 'io_error' }));
+      expect(statSync(sidecarPath).isDirectory()).toBe(true);
+    });
+
+    it('allows an unversioned replacement only for an explicit terminal Goal', () => {
+      const sessionId = 'sess-unversioned-terminal';
+      const terminal = createGoal(project, sessionId, 'Terminal authority', undefined, undefined, {
+        status: 'complete',
+        stopReason: { kind: 'user', message: 'Terminal fixture', at: 1_000 },
+      });
+      expect(terminal.ok).toBe(true);
+      if (!terminal.ok) throw new Error(terminal.message);
+
+      const replacement = createGoal(project, sessionId, 'Fresh after terminal');
+
+      expect(replacement.ok).toBe(true);
+      if (!replacement.ok) throw new Error(replacement.message);
+      expect(replacement.value.goalId).not.toBe(terminal.value.goalId);
+      expect(loadGoal(project, sessionId)).toEqual(
+        expect.objectContaining({
+          ok: true,
+          value: expect.objectContaining({
+            goalId: replacement.value.goalId,
+            objective: 'Fresh after terminal',
+            status: 'active',
+          }),
+        })
+      );
+    });
+
+    it('gates coordinator create and replace after a failed load while retaining quarantined bytes', () => {
+      const sessionId = 'sess-coordinator-load-recovery-gate';
+      const coordinator = new GoalCoordinator(project, sessionId);
+      expect(
+        coordinator.create('Preserve the loaded Goal', {
+          successCriteria: [{ statement: 'Human evidence', requiredEvidenceKinds: ['user'] }],
+        })
+      ).toEqual({ ok: true });
+      expect(coordinator.confirmCriterion('criterion:user:1')).toBe(true);
+
+      const sidecarPath = join(getProjectSessionsDir(project), `${sessionId}.goal.json`);
+      const diskGoal = structuredClone(coordinator.goal!);
+      const corruptedMetadata = { ...diskGoal, sessionId: 'wrong-session' };
+      writeFileSync(sidecarPath, JSON.stringify(corruptedMetadata));
+      const beforeBytes = readFileSync(sidecarPath);
+      const beforeHash = createHash('sha256').update(beforeBytes).digest('hex');
+
+      expect(coordinator.load()).toBe(false);
+      expect(coordinator.lastLoadIssue).toMatchObject({ code: 'metadata_mismatch' });
+      expect(coordinator.create('Must wait for recovery')).toEqual(
+        expect.objectContaining({ ok: false, error: expect.stringContaining('recovery') })
+      );
+      expect(coordinator.replace('Must also wait for recovery')).toBe(false);
+
+      const quarantineName = readdirSync(getProjectSessionsDir(project)).find(file =>
+        file.startsWith(`${sessionId}.goal.json.corrupt-`)
+      );
+      expect(quarantineName).toBeDefined();
+      const quarantinedBytes = readFileSync(
+        join(getProjectSessionsDir(project), quarantineName as string)
+      );
+      expect(quarantinedBytes).toEqual(beforeBytes);
+      expect(createHash('sha256').update(quarantinedBytes).digest('hex')).toBe(beforeHash);
+      expect(JSON.parse(quarantinedBytes.toString('utf8'))).toEqual(
+        expect.objectContaining({
+          goalId: diskGoal.goalId,
+          revision: diskGoal.revision,
+          evidenceLedger: diskGoal.evidenceLedger,
+        })
+      );
+      expect(existsSync(sidecarPath)).toBe(false);
+    });
+
     it('saveGoal with correct expectedRevision succeeds', () => {
       const result = createGoal(project, 'sess-cas', 'CAS goal');
       if (!result.ok) throw new Error('create failed');

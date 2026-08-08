@@ -14,6 +14,7 @@ const failTool: OpenHorseTool = buildTool({
     required: ['path'],
   },
   execute: async () => ({ success: false, output: '', error: 'simulated failure' }),
+  isReadOnly: () => true,
 });
 
 function makeMockLLM(responses: LLMResponse[]): jest.Mocked<LLMService> {
@@ -36,7 +37,11 @@ describe('strategy tracker integration with query()', () => {
         content: '',
         model: 'test-model',
         toolCalls: [
-          { id: 'c1', type: 'function', function: { name: 'flaky_tool', arguments: '{"path":"/a"}' } },
+          {
+            id: 'c1',
+            type: 'function',
+            function: { name: 'flaky_tool', arguments: '{"path":"/a"}' },
+          },
         ],
       },
       { content: 'tried it', model: 'test-model' },
@@ -52,7 +57,10 @@ describe('strategy tracker integration with query()', () => {
 
     const events: QueryEvent[] = [];
     for await (const ev of query({
-      messages, tools: [failTool], toolExecutor, llm,
+      messages,
+      tools: [failTool],
+      toolExecutor,
+      llm,
       strategyTracker: tracker,
     })) {
       events.push(ev);
@@ -73,9 +81,21 @@ describe('strategy tracker integration with query()', () => {
         content: '',
         model: 'test-model',
         toolCalls: [
-          { id: 'c1', type: 'function', function: { name: 'flaky_tool', arguments: '{"path":"/a"}' } },
-          { id: 'c2', type: 'function', function: { name: 'flaky_tool', arguments: '{"path":"/b"}' } },
-          { id: 'c3', type: 'function', function: { name: 'flaky_tool', arguments: '{"path":"/c"}' } },
+          {
+            id: 'c1',
+            type: 'function',
+            function: { name: 'flaky_tool', arguments: '{"path":"/a"}' },
+          },
+          {
+            id: 'c2',
+            type: 'function',
+            function: { name: 'flaky_tool', arguments: '{"path":"/b"}' },
+          },
+          {
+            id: 'c3',
+            type: 'function',
+            function: { name: 'flaky_tool', arguments: '{"path":"/c"}' },
+          },
         ],
       },
       { content: 'giving up', model: 'test-model' },
@@ -91,7 +111,10 @@ describe('strategy tracker integration with query()', () => {
 
     const events: QueryEvent[] = [];
     for await (const ev of query({
-      messages, tools: [failTool], toolExecutor, llm,
+      messages,
+      tools: [failTool],
+      toolExecutor,
+      llm,
       strategyTracker: tracker,
     })) {
       events.push(ev);
@@ -103,7 +126,10 @@ describe('strategy tracker integration with query()', () => {
 
     // The suggestion is added as a user message in the conversation
     const userSuggestionMsg = messages.find(
-      m => m.role === 'user' && typeof m.content === 'string' && /alternative|flaky_tool/i.test(m.content)
+      m =>
+        m.role === 'user' &&
+        typeof m.content === 'string' &&
+        /alternative|flaky_tool/i.test(m.content)
     );
     expect(userSuggestionMsg).toBeDefined();
   });
@@ -114,15 +140,14 @@ describe('strategy tracker integration with query()', () => {
       description: 'always works',
       parameters: { type: 'object', properties: {} },
       execute: async () => ({ success: true, output: 'ok' }),
+      isReadOnly: () => true,
     });
 
     const llm = makeMockLLM([
       {
         content: '',
         model: 'test-model',
-        toolCalls: [
-          { id: 'c1', type: 'function', function: { name: 'ok_tool', arguments: '{}' } },
-        ],
+        toolCalls: [{ id: 'c1', type: 'function', function: { name: 'ok_tool', arguments: '{}' } }],
       },
       { content: 'done', model: 'test-model' },
     ]);
@@ -137,7 +162,10 @@ describe('strategy tracker integration with query()', () => {
 
     const events: QueryEvent[] = [];
     for await (const ev of query({
-      messages, tools: [okTool], toolExecutor, llm,
+      messages,
+      tools: [okTool],
+      toolExecutor,
+      llm,
       strategyTracker: tracker,
     })) {
       events.push(ev);

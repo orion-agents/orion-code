@@ -197,9 +197,8 @@ export const VALIDATION_COMMAND_PATTERNS = [
   /^(npx\s+)?tsc\b.*--noEmit\b/,
   /^npx\s+(jest|vitest|eslint)\b/,
   /^(npm|pnpm|yarn)\s+test(\s|$)/,
-  /^(npm|pnpm|yarn)\s+run\s+(test|lint|typecheck|check)(\s|$)/,
-  /^pnpm\s+(test|lint|typecheck|check)(\s|$)/,
-  /^yarn\s+(test|lint|typecheck|check)(\s|$)/,
+  /^npm\s+run\s+(test|lint|typecheck|check|build)(\s|$)/,
+  /^(pnpm|yarn)\s+(test|lint|typecheck|check)(\s|$)/,
 ];
 
 /**

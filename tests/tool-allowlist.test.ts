@@ -76,6 +76,7 @@ const fetchTool: OpenHorseTool = buildTool({
     required: ['url'],
   },
   execute: async () => ({ success: true, output: 'fetched' }),
+  isReadOnly: () => true,
   isConcurrencySafe: () => true,
   checkPermissions: () => ({ behavior: 'ask', reason: 'External fetch' }),
 });
@@ -522,7 +523,7 @@ describe('tool scheduler with a project allowlist', () => {
     expect(executed[0].error).toContain('blocked in plan mode');
   });
 
-  test('scheduling matches execution: allowlisted concurrency-safe ask tools go parallel', () => {
+  test('allowlisted external ask tools remain confirmation-gated and serial', () => {
     const allowlist = createAllowlistEvaluator(parseAllowlistRules(['web_fetch']).rules);
 
     const prepared = prepareToolCalls({
@@ -538,7 +539,7 @@ describe('tool scheduler with a project allowlist', () => {
       confirmToolUse: async () => true,
     });
 
-    expect(prepared.every(p => p.canRunConcurrently)).toBe(true);
+    expect(prepared.every(p => p.canRunConcurrently)).toBe(false);
     expect(prepared[0].allowlist).toEqual({ effect: 'allow', rule: 'web_fetch' });
   });
 

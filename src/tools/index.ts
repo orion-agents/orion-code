@@ -205,7 +205,6 @@ export const TOOLS: OpenHorseTool[] = [
     isDestructive: () => true,
     isFileEdit: () => true,
     checkPermissions: (_args, _context) => {
-      // Destructive operation - ask for confirmation in default mode
       return { behavior: 'ask', reason: 'Write operation may modify existing files' };
     },
     userFacingName: args => `Write ${args.path as string}`,

@@ -8,6 +8,7 @@
  */
 
 import { buildTool, type OpenHorseTool } from '../framework/tool';
+import { lookup as dnsLookup } from 'node:dns/promises';
 import { loadConfig } from '../services/config';
 import {
   WebSearchMcpClient,
@@ -40,17 +41,14 @@ const BLOCKED_IP_PATTERNS = [
   /^192\.168\.(\d{1,3})\.(\d{1,3})$/, // 192.168.x.x (private class C)
   /^169\.254\.(\d{1,3})\.(\d{1,3})$/, // 169.254.x.x (link-local)
   /^172\.(1[6-9]|2\d|3[01])\.(\d{1,3})\.(\d{1,3})$/, // 172.16-31.x.x (private class B)
+  /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.(\d{1,3})\.(\d{1,3})$/, // 100.64.0.0/10
+  /^192\.0\.0\.(\d{1,3})$/, // 192.0.0.0/24
   /^0\.0\.0\.0$/, // 0.0.0.0
+  /^::$/, // IPv6 unspecified address
   /^::1$/, // IPv6 localhost
-  // IPv6 unique local (RFC 4193, fc00::/7). The L bit must be 1, so every
-  // allocated ULA is in fd00::/8 — the previous `^fc[0-9a-f]{2}:` anchor only
-  // matched the reserved fc00::/8 half and let fd00::/8 through (issue #37, item 2).
-  /^f[cd][0-9a-f]{2}:/i,
+  /^fc[0-9a-f]{2}:/i, // IPv6 unique local
+  /^fd[0-9a-f]{2}:/i, // IPv6 unique local second half (fd00::/8)
   /^fe[8-9a-f][0-9a-f]:/i, // IPv6 link-local
-  // 100.64.0.0/10 (CGNAT / carrier-grade NAT) and 192.0.0.0/24 (IETF protocol
-  // assignments) are not globally routable and must be treated as internal.
-  /^100\.(6[4-9]|[7-9]\d|1\d{2}|2[0-4]\d|25[0-5])\.(\d{1,3})\.(\d{1,3})$/,
-  /^192\.0\.0\.(\d{1,3})$/,
 ];
 
 /** 禁止访问的主机名 */
@@ -67,6 +65,72 @@ const BLOCKED_HOSTNAMES = [
 
 /** 最大响应内容长度 (10MB) */
 const MAX_CONTENT_LENGTH = 10 * 1024 * 1024;
+
+interface ResolvedAddress {
+  address: string;
+  family: number;
+}
+
+type DnsResolver = (hostname: string) => Promise<ResolvedAddress[]>;
+
+const defaultDnsResolver: DnsResolver = async hostname =>
+  dnsLookup(hostname, { all: true, verbatim: true });
+
+let resolveDnsAddresses: DnsResolver = defaultDnsResolver;
+
+/** Test seam for deterministic DNS-rebinding and private-address cases. */
+export function setWebFetchDnsResolverForTests(resolver?: DnsResolver): void {
+  resolveDnsAddresses = resolver ?? defaultDnsResolver;
+}
+
+/**
+ * Read a response without buffering more than the configured byte budget.
+ *
+ * `Response.text()` buffers the complete body before returning, so a response
+ * without Content-Length could previously bypass the SSRF response-size gate.
+ * ReadableStream chunks are counted as bytes (rather than JavaScript UTF-16
+ * code units) and the stream is cancelled as soon as the limit is crossed.
+ */
+async function readResponseTextWithLimit(
+  response: Response
+): Promise<{ text?: string; tooLarge: boolean; bytes: number }> {
+  if (!response.body) {
+    // This branch is mainly for lightweight Response mocks. Real fetch
+    // implementations expose a body stream, but still enforce the limit after
+    // text() so a non-streaming adapter cannot silently remove the guard.
+    const text = await response.text();
+    const bytes = Buffer.byteLength(text, 'utf8');
+    return {
+      text: bytes <= MAX_CONTENT_LENGTH ? text : undefined,
+      tooLarge: bytes > MAX_CONTENT_LENGTH,
+      bytes,
+    };
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const chunks: string[] = [];
+  let bytes = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      bytes += value.byteLength;
+      if (bytes > MAX_CONTENT_LENGTH) {
+        await reader.cancel('response body exceeds maximum size');
+        return { tooLarge: true, bytes };
+      }
+      chunks.push(decoder.decode(value, { stream: true }));
+    }
+
+    chunks.push(decoder.decode());
+    return { text: chunks.join(''), tooLarge: false, bytes };
+  } finally {
+    reader.releaseLock();
+  }
+}
 
 /**
  * 检查 URL 是否为内网地址
@@ -101,25 +165,9 @@ function isUrlSafeForSSRF(url: string): { safe: boolean; reason?: string } {
       return { safe: false, reason: `Blocked hostname: ${hostname}` };
     }
 
-    // 检查内网 IP 模式
-    for (const pattern of BLOCKED_IP_PATTERNS) {
-      if (pattern.test(hostname)) {
-        return { safe: false, reason: `Blocked IP range: ${hostname}` };
-      }
-    }
-
-    // 检查 IP 编码绕过（十进制/十六进制/八进制/IPv6-mapped IPv4）。
-    // 这些形式在 fetch 时会被解析为内网地址，但字符串正则无法识别。
-    const normalizedV4 = parseIPv4Loose(hostname);
-    if (normalizedV4) {
-      for (const pattern of BLOCKED_IP_PATTERNS) {
-        if (pattern.test(normalizedV4)) {
-          return {
-            safe: false,
-            reason: `Blocked IP range: ${hostname} (resolves to ${normalizedV4})`,
-          };
-        }
-      }
+    const blockedIpReason = getBlockedIpReason(hostname);
+    if (blockedIpReason) {
+      return { safe: false, reason: blockedIpReason };
     }
 
     // 检查以 .internal, .local, .localhost 结尾的主机名
@@ -136,6 +184,73 @@ function isUrlSafeForSSRF(url: string): { safe: boolean; reason?: string } {
     // URL 解析失败
     return { safe: false, reason: 'Invalid URL format' };
   }
+}
+
+function getBlockedIpReason(hostname: string): string | undefined {
+  // 检查内网 IP 模式
+  for (const pattern of BLOCKED_IP_PATTERNS) {
+    if (pattern.test(hostname)) {
+      return `Blocked IP range: ${hostname}`;
+    }
+  }
+
+  // 检查 IP 编码绕过（十进制/十六进制/八进制/IPv6-mapped IPv4）。
+  // 这些形式在 fetch 时会被解析为内网地址，但字符串正则无法识别。
+  const normalizedV4 = parseIPv4Loose(hostname);
+  if (normalizedV4) {
+    for (const pattern of BLOCKED_IP_PATTERNS) {
+      if (pattern.test(normalizedV4)) {
+        return `Blocked IP range: ${hostname} (resolves to ${normalizedV4})`;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function isIpLiteral(hostname: string): boolean {
+  return hostname.includes(':') || parseIPv4Loose(hostname) !== null;
+}
+
+async function isResolvedUrlSafeForSSRF(url: string): Promise<{ safe: boolean; reason?: string }> {
+  const lexicalCheck = isUrlSafeForSSRF(url);
+  if (!lexicalCheck.safe) return lexicalCheck;
+
+  const parsed = new URL(url);
+  let hostname = parsed.hostname.toLowerCase();
+  if (hostname.startsWith('[') && hostname.endsWith(']')) {
+    hostname = hostname.slice(1, -1);
+  }
+
+  // Literal addresses have already been checked by the lexical guard.
+  if (isIpLiteral(hostname)) return lexicalCheck;
+
+  let addresses: ResolvedAddress[];
+  try {
+    addresses = await resolveDnsAddresses(hostname);
+  } catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
+    return {
+      safe: false,
+      reason: `DNS lookup failed for ${hostname}${code ? ` (${code})` : ''}`,
+    };
+  }
+
+  if (addresses.length === 0) {
+    return { safe: false, reason: `DNS lookup returned no addresses for ${hostname}` };
+  }
+
+  for (const resolved of addresses) {
+    const blockedIpReason = getBlockedIpReason(resolved.address.toLowerCase());
+    if (blockedIpReason) {
+      return {
+        safe: false,
+        reason: `Blocked DNS result for ${hostname}: ${blockedIpReason}`,
+      };
+    }
+  }
+
+  return lexicalCheck;
 }
 
 /**
@@ -345,7 +460,7 @@ async function fetchUrl(url: string, maxRedirects: number = 5): Promise<FetchRes
 
   for (let hop = 0; hop <= maxRedirects; hop++) {
     // Issue #32 #3.7: SSRF 检查（每一跳都要检查，不能只查首个 URL）
-    const ssrfCheck = isUrlSafeForSSRF(currentUrl);
+    const ssrfCheck = await isResolvedUrlSafeForSSRF(currentUrl);
     if (!ssrfCheck.safe) {
       const chain = [url, ...redirects].join(' -> ');
       return {
@@ -432,7 +547,18 @@ async function fetchUrl(url: string, maxRedirects: number = 5): Promise<FetchRes
 
     let text: string;
     try {
-      text = await response.text();
+      const body = await readResponseTextWithLimit(response);
+      if (body.tooLarge) {
+        return {
+          content: `Response too large: body exceeded ${MAX_CONTENT_LENGTH} bytes after reading ${body.bytes} bytes`,
+          code: 413,
+          contentType,
+          url: currentUrl,
+          redirects,
+          errorType: 'CONTENT_TOO_LARGE',
+        };
+      }
+      text = body.text ?? '';
     } catch (err: any) {
       return {
         content: `Fetch error: ${err.message}`,

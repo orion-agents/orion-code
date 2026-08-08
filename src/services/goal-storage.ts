@@ -26,6 +26,7 @@ import type {
   GoalEvidenceRecord,
   GoalEvidenceLedgerTruncation,
 } from '../runtime/goals/types';
+import { GOAL_TERMINAL_STATES } from '../runtime/goals/types';
 import { auditCompletion } from '../runtime/goals/completion-audit';
 import { isToolExternalAssertion } from '../framework/external-assertion';
 import { debugError } from '../utils/debug-log';
@@ -988,7 +989,8 @@ function loadGoalInternal(
   projectPath: string,
   sessionId: string,
   lockHeld: boolean,
-  retriesRemaining: number
+  retriesRemaining: number,
+  quarantineInvalidSidecar: boolean
 ): GoalStorageResult<SessionGoalV1> {
   const path = goalSidecarPath(projectPath, sessionId);
   let raw: string;
@@ -1009,6 +1011,7 @@ function loadGoalInternal(
     failure: GoalStorageFailure,
     reason: string
   ): GoalStorageResult<SessionGoalV1> => {
+    if (!quarantineInvalidSidecar) return failure;
     const quarantined = quarantineSidecar(path, raw, reason, lockHeld);
     if (!quarantined.ok) return quarantined;
     if (quarantined.value === 'quarantined') return failure;
@@ -1022,7 +1025,13 @@ function loadGoalInternal(
         message: `Goal sidecar changed repeatedly while loading ${path}`,
       };
     }
-    return loadGoalInternal(projectPath, sessionId, lockHeld, retriesRemaining - 1);
+    return loadGoalInternal(
+      projectPath,
+      sessionId,
+      lockHeld,
+      retriesRemaining - 1,
+      quarantineInvalidSidecar
+    );
   };
 
   let parsed: unknown;
@@ -1080,7 +1089,7 @@ function loadGoalInternal(
 }
 
 export function loadGoal(projectPath: string, sessionId: string): GoalStorageResult<SessionGoalV1> {
-  return loadGoalInternal(projectPath, sessionId, false, GOAL_LOAD_RACE_RETRIES);
+  return loadGoalInternal(projectPath, sessionId, false, GOAL_LOAD_RACE_RETRIES, true);
 }
 
 interface GoalDeletionFence {
@@ -1172,7 +1181,7 @@ function saveGoalInternal(
     // second process cannot pass the comparison against a revision that the
     // first process is concurrently replacing.
     if (expectedRevision !== undefined) {
-      const existing = loadGoalInternal(projectPath, sessionId, true, GOAL_LOAD_RACE_RETRIES);
+      const existing = loadGoalInternal(projectPath, sessionId, true, GOAL_LOAD_RACE_RETRIES, true);
       if (existing.ok) {
         if (existing.value.revision !== expectedRevision) {
           return staleRevision(
@@ -1205,15 +1214,37 @@ function saveGoalInternal(
       } else if (existing.error !== 'corrupt' || expectedRevision !== 0) {
         return existing;
       }
-    } else if (!existsSync(path)) {
-      const fence = readGoalDeletionFence(path, sessionId);
-      if (fence.ok && fence.value.goalId === goal.goalId) {
-        return staleRevision(
-          `Goal ${fence.value.goalId} was deleted at revision ${fence.value.revision}`
-        );
-      }
-      if (!fence.ok && fence.error !== 'not_found') {
-        return fence;
+    } else {
+      // An unversioned write is a fresh create/replacement request, not an
+      // update. Re-read the sidecar while holding the writer lock so a stale
+      // in-memory Goal cannot overwrite an active or otherwise recoverable
+      // Goal after a failed reload. Do not quarantine failures here: this
+      // path must preserve the exact bytes that blocked the replacement.
+      const existing = loadGoalInternal(
+        projectPath,
+        sessionId,
+        true,
+        GOAL_LOAD_RACE_RETRIES,
+        false
+      );
+      if (existing.ok) {
+        if (!GOAL_TERMINAL_STATES.has(existing.value.status)) {
+          return staleRevision(
+            `Cannot replace non-terminal Goal ${existing.value.goalId} with an unversioned write`
+          );
+        }
+      } else if (existing.error !== 'not_found') {
+        return existing;
+      } else {
+        const fence = readGoalDeletionFence(path, sessionId);
+        if (fence.ok && fence.value.goalId === goal.goalId) {
+          return staleRevision(
+            `Goal ${fence.value.goalId} was deleted at revision ${fence.value.revision}`
+          );
+        }
+        if (!fence.ok && fence.error !== 'not_found') {
+          return fence;
+        }
       }
     }
 
@@ -1272,7 +1303,7 @@ export function deleteGoal(
 
   return withGoalSidecarLock(path, () => {
     if (expectedRevision !== undefined) {
-      const existing = loadGoalInternal(projectPath, sessionId, true, GOAL_LOAD_RACE_RETRIES);
+      const existing = loadGoalInternal(projectPath, sessionId, true, GOAL_LOAD_RACE_RETRIES, true);
       if (!existing.ok) return existing;
       if (existing.value.revision !== expectedRevision) {
         return {

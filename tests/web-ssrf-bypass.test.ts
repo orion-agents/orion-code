@@ -12,7 +12,12 @@
  *
  * Each of these must be reported unsafe.
  */
-import { isUrlSafeForSSRF, webFetchTool, clearWebFetchCache } from '../src/tools/web';
+import {
+  isUrlSafeForSSRF,
+  webFetchTool,
+  clearWebFetchCache,
+  setWebFetchDnsResolverForTests,
+} from '../src/tools/web';
 import type { ToolContext } from '../src/framework/tool';
 
 describe('SSRF IP-encoding bypass', () => {
@@ -34,6 +39,10 @@ describe('SSRF IP-encoding bypass', () => {
 
   it('blocks IPv6 localhost [::1] (bracketed form)', () => {
     expect(isUrlSafeForSSRF('http://[::1]/').safe).toBe(false);
+  });
+
+  it('blocks IPv6 unspecified address [::]', () => {
+    expect(isUrlSafeForSSRF('http://[::]/').safe).toBe(false);
   });
 
   it('blocks bare 0 (resolves to 0.0.0.0)', () => {
@@ -106,11 +115,26 @@ describe('SSRF redirect-chain enforcement', () => {
 
   beforeEach(() => {
     clearWebFetchCache();
+    setWebFetchDnsResolverForTests(async () => [{ address: '93.184.216.34', family: 4 }]);
     global.fetch = jest.fn();
   });
 
   afterAll(() => {
+    setWebFetchDnsResolverForTests();
     global.fetch = originalFetch;
+  });
+
+  it('blocks a public hostname whose DNS result is private', async () => {
+    setWebFetchDnsResolverForTests(async () => [{ address: '10.0.0.8', family: 4 }]);
+
+    const result = await webFetchTool.execute(
+      { url: 'https://public.example/dns-rebinding', prompt: 'read' },
+      context
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('SSRF');
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -175,5 +199,33 @@ describe('SSRF redirect-chain enforcement', () => {
     expect(result.error).toContain('Too many redirects');
     // maxRedirects = 5 -> at most 6 requests
     expect((global.fetch as jest.Mock).mock.calls.length).toBeLessThanOrEqual(6);
+  });
+
+  it('hard-stops a chunked response without Content-Length', async () => {
+    const firstChunk = new Uint8Array(10 * 1024 * 1024);
+    const secondChunk = new Uint8Array(1);
+    const cancel = jest.fn();
+    const read = jest
+      .fn()
+      .mockResolvedValueOnce({ done: false, value: firstChunk })
+      .mockResolvedValueOnce({ done: false, value: secondChunk });
+
+    (global.fetch as jest.Mock).mockResolvedValueOnce(
+      okResponse({
+        headers: new Headers({ 'content-type': 'text/plain' }),
+        body: { getReader: () => ({ read, cancel, releaseLock: jest.fn() }) },
+        text: jest.fn().mockRejectedValue(new Error('must not buffer the body')),
+      })
+    );
+
+    const result = await webFetchTool.execute(
+      { url: 'https://public.example/large', prompt: 'read' },
+      context
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('maximum allowed size');
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledTimes(2);
   });
 });
