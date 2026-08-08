@@ -296,3 +296,63 @@ describe('MCP integration', () => {
     }
   });
 });
+
+describe('MCP robustness (Issue #41)', () => {
+  let testRoot = '';
+  let configDir = '';
+  const originalConfigDir = process.env.ORION_CODE_CONFIG_DIR;
+
+  beforeEach(() => {
+    testRoot = fs.mkdtempSync(path.join(tmpdir(), 'orion-mcp-robust-'));
+    configDir = path.join(testRoot, 'config');
+    fs.mkdirSync(configDir, { recursive: true });
+    process.env.ORION_CODE_CONFIG_DIR = configDir;
+    mcpManager.disconnectAll();
+  });
+
+  afterEach(() => {
+    mcpManager.disconnectAll();
+    if (originalConfigDir === undefined) {
+      delete process.env.ORION_CODE_CONFIG_DIR;
+    } else {
+      process.env.ORION_CODE_CONFIG_DIR = originalConfigDir;
+    }
+  });
+
+  function writeConfig(payload: unknown): void {
+    fs.writeFileSync(path.join(configDir, 'mcp.json'), JSON.stringify(payload, null, 2), 'utf-8');
+  }
+
+  test('a missing server command (ENOENT) fails fast and does not crash the CLI', async () => {
+    const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    writeConfig({
+      mcpServers: { bad: { command: 'definitely-not-a-real-binary-xyz' } },
+    });
+
+    // connectAll must resolve (degrade) rather than hang on the 30s request
+    // timeout or crash on an unhandled spawn 'error'. The default 5s test
+    // timeout implicitly asserts the fast-fail path.
+    await mcpManager.connectAll();
+    expect(mcpManager.getClient('bad')).toBeUndefined();
+    expect(
+      mcpManager.getStatus().find(s => s.name === 'bad')?.connected,
+    ).toBe(false);
+    consoleError.mockRestore();
+  });
+
+  test('a server that closes its stdin immediately does not crash the CLI', async () => {
+    const serverPath = path.join(testRoot, 'close-stdin-server.js');
+    fs.writeFileSync(serverPath, 'process.stdin.destroy(); process.exit(0);\n', 'utf-8');
+
+    const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    writeConfig({
+      mcpServers: { clos: { command: process.execPath, args: [serverPath] } },
+    });
+
+    // The client writing to a destroyed pipe would emit an uncaught 'error' on
+    // stdin (EPIPE) and kill the whole process if unhandled. It must degrade
+    // instead. Just resolving here proves no crash occurred.
+    await expect(mcpManager.connectAll()).resolves.toBeUndefined();
+    consoleError.mockRestore();
+  });
+});

@@ -295,6 +295,12 @@ class SimpleMCPClient {
       throw new Error('MCP stdio server requires a command');
     }
 
+    // A fresh process must start from a clean line buffer. The previous
+    // connection may have died mid-frame, leaving a half-JSON fragment that
+    // would otherwise be prepended to the new process's first chunk and break
+    // JSON parsing of the initialize response (#41 item 2).
+    this.state.buffer = '';
+
     const env = buildMcpChildEnv(config.env);
 
     this.state.process = spawn(config.command, config.args || [], {
@@ -311,9 +317,29 @@ class SimpleMCPClient {
       console.error(`[MCP ${this.name} stderr]:`, data.toString().trim());
     });
 
+    // A destroyed/invalid pipe (spawn failed with ENOENT, or the child already
+    // exited) makes a later stdin.write emit 'error' asynchronously. An
+    // unhandled stream 'error' is rethrown as an uncaught exception and kills
+    // the whole CLI. Treat it like a disconnect: fail pending work and let the
+    // reconnect path (or graceful failure) take over instead of crashing (#41
+    // item 1).
+    this.state.process.stdin?.on('error', err => {
+      console.error(`[MCP ${this.name} stdin error]:`, err.message);
+      this.failPendingRequests(`MCP server stdin error: ${err.message}`);
+      this.state.connected = false;
+      if (!this.intentionallyDisconnected) {
+        this.scheduleReconnect();
+      }
+    });
+
     this.state.process.on('error', err => {
       console.error(`[MCP ${this.name} error]:`, err.message);
       this.state.connected = false;
+      // A spawn failure (e.g. ENOENT for a missing binary) would otherwise
+      // leave the in-flight initialize request hanging until its 30s timeout.
+      // Fail it now so connect() rejects promptly and degrades instead of
+      // blocking startup (#41 item 1).
+      this.failPendingRequests(`MCP server error: ${err.message}`);
     });
 
     this.state.process.on('close', () => {
@@ -448,8 +474,31 @@ class SimpleMCPClient {
       }, MCP_REQUEST_TIMEOUT_MS);
 
       this.state.pendingRequests.set(id, { resolve, reject, timer });
-      this.state.process!.stdin?.write(request);
+      if (!this.writeStdin(request)) {
+        clearTimeout(timer);
+        this.state.pendingRequests.delete(id);
+        reject(new Error('MCP server stdin is not writable (server disconnected)'));
+      }
     });
+  }
+
+  /**
+   * Write to the child's stdin, but never let a dead/destroyed pipe throw an
+   * uncaught error. Returns false if the stream was not writable so callers can
+   * surface a tool error instead of crashing the CLI (#41 item 1).
+   */
+  private writeStdin(data: string): boolean {
+    const stdin = this.state.process?.stdin;
+    if (!stdin || stdin.destroyed || !stdin.writable) {
+      return false;
+    }
+    try {
+      stdin.write(data);
+      return true;
+    } catch (err) {
+      console.error(`[MCP ${this.name} stdin write error]:`, errorMessage(err));
+      return false;
+    }
   }
 
   private sendNotification(method: string, params: unknown): void {
@@ -462,7 +511,7 @@ class SimpleMCPClient {
         params,
       }) + '\n';
 
-    this.state.process.stdin?.write(notification);
+    this.writeStdin(notification);
   }
 
   async callTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {
@@ -499,6 +548,8 @@ class SimpleMCPClient {
     }
     this.state.connected = false;
     this.state.tools = [];
+    // Drop any half-read JSON frame so a later reconnect starts clean (#41).
+    this.state.buffer = '';
   }
 }
 
