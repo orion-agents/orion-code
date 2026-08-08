@@ -27,13 +27,20 @@ export interface WorkerPoolConfig {
   defaultForkOptions?: Partial<ForkOptions>;
 }
 
+/** 队列中的任务：携带自身 resolver，确保只被执行一次。 */
+interface QueuedTask {
+  task: Task;
+  forkOptions?: Partial<ForkOptions>;
+  resolve: (result: ForkResult) => void;
+}
+
 // ============================================================================
 // Worker Pool 实现
 // ============================================================================
 
 export class WorkerPool {
   private workers: Map<string, WorkerInfo> = new Map();
-  private taskQueue: Task[] = [];
+  private taskQueue: QueuedTask[] = [];
   private results: Map<string, ForkResult> = new Map();
   private maxWorkers: number;
   private taskTimeout: number;
@@ -57,32 +64,31 @@ export class WorkerPool {
     if (idleWorkers.length > 0 || this.workers.size < this.maxWorkers) {
       // 有空闲 Worker 或未达到上限：直接执行
       const workerId = this.allocateWorker(task);
-      const result = await this.executeTask(workerId, task, forkOptions);
-      return result;
+      return this.executeTask(workerId, task, forkOptions);
     }
 
-    // 无空闲 Worker：加入队列
-    this.taskQueue.push(task);
+    // 无空闲 Worker：入队，待某个 Worker 完成任务后由 drainQueue 取出执行。
+    // 每个入队任务携带自己的 resolver，确保只被执行一次，避免重复执行。
+    return new Promise<ForkResult>((resolve) => {
+      let timer: NodeJS.Timeout | undefined;
+      const finish = (result: ForkResult) => {
+        if (timer) clearTimeout(timer);
+        resolve(result);
+      };
+      this.taskQueue.push({ task, forkOptions, resolve: finish });
 
-    // 等待有空闲 Worker
-    return new Promise((resolve) => {
-      const checkInterval = setInterval(() => {
-        if (this.getIdleWorkers().length > 0) {
-          clearInterval(checkInterval);
-          const workerId = this.allocateWorker(task);
-          this.executeTask(workerId, task, forkOptions).then(resolve);
+      // 超时保护：仍未被取出执行时才以超时失败结束。
+      timer = setTimeout(() => {
+        const idx = this.taskQueue.findIndex(q => q.task === task && q.resolve === finish);
+        if (idx !== -1) {
+          this.taskQueue.splice(idx, 1);
+          finish({
+            success: false,
+            content: '',
+            error: 'Task queue timeout',
+            duration: this.taskTimeout,
+          });
         }
-      }, 100);
-
-      // 超时处理
-      setTimeout(() => {
-        clearInterval(checkInterval);
-        resolve({
-          success: false,
-          content: '',
-          error: 'Task queue timeout',
-          duration: this.taskTimeout,
-        });
       }, this.taskTimeout);
     });
   }
@@ -163,7 +169,16 @@ export class WorkerPool {
         this.workers.set(workerId, { ...info, status: 'failed' });
       }
     }
-    this.taskQueue = [];
+    // 解除仍在队列中的任务，避免 submit 返回的 Promise 永远挂起。
+    while (this.taskQueue.length > 0) {
+      const item = this.taskQueue.shift()!;
+      item.resolve({
+        success: false,
+        content: '',
+        error: 'Worker pool stopped',
+        duration: 0,
+      });
+    }
   }
 
   // ============================================================================
@@ -226,14 +241,14 @@ export class WorkerPool {
       // 保存结果
       this.results.set(task.id, result);
 
-      // 处理队列中的下一个任务
+      // 处理队列中的下一个任务（每个任务只会被 shift 一次，保证只执行一次）
       if (this.taskQueue.length > 0) {
-        const nextTask = this.taskQueue.shift();
-        if (nextTask) {
-          this.executeTask(workerId, nextTask, forkOptions).catch(() => {
-            // Prevent unhandled rejection from recursive call.
-          });
-        }
+        const next = this.taskQueue.shift()!;
+        if (!next) return result;
+        const nextWorkerId = this.allocateWorker(next.task);
+        this.executeTask(nextWorkerId, next.task, next.forkOptions)
+          .then(next.resolve)
+          .catch(next.resolve);
       }
 
       return result;
