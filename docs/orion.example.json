@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "providers": [
+    {
+      "id": "my-provider",
+      "displayName": "My OpenAI-compatible Provider",
+      "baseUrl": "https://your-endpoint.example/v1",
+      "apiKey": "sk-REPLACE_WITH_YOUR_KEY",
+      "protocol": "openai-completions"
+    }
+  ],
+  "models": [
+    {
+      "id": "my-model",
+      "displayName": "My Model",
+      "provider": "my-provider",
+      "model": "model-name",
+      "contextWindow": 200000,
+      "maxOutputTokens": 8192
+    },
+    {
+      "id": "my-fallback",
+      "displayName": "My Fallback Model",
+      "provider": "my-provider",
+      "model": "fallback-model-name",
+      "contextWindow": 200000,
+      "maxOutputTokens": 8192
+    }
+  ],
+  "defaultModel": "my-model",
+  "fallbackModel": "my-fallback",
+  "toolConfirmation": "allow",
+  "ui": {
+    "confirmations": "config"
+  },
+  "subagents": {
+    "mode": "auto",
+    "maxParallel": 4
+  },
+  "webSearch": {
+    "provider": "auto",
+    "apiKey": "REPLACE_WITH_WEB_SEARCH_KEY"
+  },
+  "skills": {
+    "paths": []
+  },
+  "agentLoop": {
+    "budget": {
+      "maxLlmRequestsPerUserTurn": 200,
+      "maxToolCallsPerUserTurn": 400
+    }
+  },
+  "sandbox": {
+    "profile": "none"
+  }
+}
