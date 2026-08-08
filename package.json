@@ -22,6 +22,7 @@
     "clean": "node scripts/clean-dist.js",
     "build": "npm run clean && tsc",
     "test": "jest",
+    "test:coverage": "jest --coverage",
     "test:ink-compat": "ORION_RUN_DEPRECATED_INK_PTY=1 jest tests/ink-ui-pty.test.ts --runInBand",
     "lint": "eslint src/",
     "format": "prettier --write src/",
