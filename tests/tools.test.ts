@@ -403,6 +403,26 @@ describe('exec_command tool', () => {
     expect(result.output).not.toContain('[... output truncated');
   });
 
+  // Issue #30: truncation must bound UTF-8 bytes, not UTF-16 code units, or
+  // CJK/emoji output could exceed maxOutput by ~2x.
+  test('byte-bounds CJK output by maxOutput (Issue #30)', async () => {
+    const cjk = '中'.repeat(2000); // 6000 UTF-8 bytes, 2000 UTF-16 units
+    const result = await tool.execute(
+      {
+        command: `node -e "process.stdout.write('${cjk}')"`,
+        maxOutput: 1024, // 1KB limit
+      },
+      ctx
+    );
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('truncated');
+    const bytes = Buffer.byteLength(result.output, 'utf8');
+    // Body must be bounded near maxOutput (plus the truncation notice), not the
+    // ~3KB the old UTF-16 counting allowed.
+    expect(bytes).toBeLessThan(1024 + 200);
+    expect(bytes).toBeLessThan(cjk.length); // far below the untruncated size
+  });
+
   test('resolves relative cwd from ToolContext.cwd', async () => {
     const dir = fs.mkdtempSync(path.join(tmpdir(), 'orion-code-tool-exec-'));
     fs.mkdirSync(path.join(dir, 'child'));

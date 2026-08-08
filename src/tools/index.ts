@@ -1318,13 +1318,18 @@ async function execCommand_(
     child.stdout.on('data', (data: Buffer) => {
       if (!stdoutTruncated) {
         const chunk = data.toString();
-        stdoutBytes += chunk.length;
-
-        if (stdoutBytes > maxBytes) {
+        // Issue #30: count UTF-8 bytes, not UTF-16 code units, so CJK/emoji
+        // output is bounded by `maxBytes` (a UTF-16 count could exceed it ~2x).
+        const chunkBytes = Buffer.byteLength(chunk, 'utf8');
+        if (stdoutBytes + chunkBytes > maxBytes) {
           stdoutTruncated = true;
-          stdoutData += chunk.slice(0, maxBytes - stdoutData.length);
+          const room = Math.max(0, maxBytes - stdoutBytes);
+          // Byte-accurate truncation that respects multi-byte character boundaries.
+          stdoutData += truncateToBytes(chunk, room).text;
+          stdoutBytes = maxBytes;
         } else {
           stdoutData += chunk;
+          stdoutBytes += chunkBytes;
         }
       }
     });
@@ -1333,13 +1338,16 @@ async function execCommand_(
     child.stderr.on('data', (data: Buffer) => {
       if (!stderrTruncated) {
         const chunk = data.toString();
-        stderrBytes += chunk.length;
-
-        if (stderrBytes > maxBytes) {
+        // Issue #30: count UTF-8 bytes, not UTF-16 code units.
+        const chunkBytes = Buffer.byteLength(chunk, 'utf8');
+        if (stderrBytes + chunkBytes > maxBytes) {
           stderrTruncated = true;
-          stderrData += chunk.slice(0, maxBytes - stderrData.length);
+          const room = Math.max(0, maxBytes - stderrBytes);
+          stderrData += truncateToBytes(chunk, room).text;
+          stderrBytes = maxBytes;
         } else {
           stderrData += chunk;
+          stderrBytes += chunkBytes;
         }
       }
     });
@@ -1348,7 +1356,7 @@ async function execCommand_(
       if (interrupted === 'aborted') {
         finish({
           success: false,
-          output: stdoutData.slice(0, maxBytes),
+          output: truncateToBytes(stdoutData, maxBytes).text,
           error: 'Command aborted by user',
         });
         return;
@@ -1357,7 +1365,7 @@ async function execCommand_(
       if (interrupted === 'timeout') {
         finish({
           success: false,
-          output: stdoutData.slice(0, maxBytes),
+          output: truncateToBytes(stdoutData, maxBytes).text,
           error: `Command timed out after ${timeoutMs}ms`,
         });
         return;

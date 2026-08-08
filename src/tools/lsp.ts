@@ -44,7 +44,7 @@ interface LspHover {
   range?: { start: LspPosition; end: LspPosition };
 }
 
-class LspClient extends EventEmitter {
+export class LspClient extends EventEmitter {
   private process: ChildProcess | null = null;
   private requestId: number = 0;
   private pendingRequests: Map<number, { resolve: (...args: unknown[]) => unknown; reject: (...args: unknown[]) => unknown; timer: NodeJS.Timeout }> = new Map();
@@ -137,13 +137,29 @@ class LspClient extends EventEmitter {
 
   async stop(): Promise<void> {
     if (this.process) {
-      this.sendNotification('shutdown', {});
+      const proc = this.process;
       try {
-        await this.sendRequest('exit', {});
-      } catch {
-        // 忽略退出请求错误
+        // LSP spec: `shutdown` is a *request* — await the server's response.
+        await this.sendRequest('shutdown', null);
+      } catch (err) {
+        // Server may already be gone; proceed to exit/kill regardless.
+        console.warn(`[lsp] shutdown request failed: ${err instanceof Error ? err.message : String(err)}`);
       }
-      this.process.kill();
+      try {
+        // `exit` is a *notification* — fire and forget. Servers are not required
+        // to respond, so awaiting it (the old bug) waited the full 30s timeout.
+        this.sendNotification('exit', null);
+      } catch {
+        // ignore
+      }
+      // Give the server a brief grace period to exit on its own, then force-kill.
+      setTimeout(() => {
+        try {
+          proc.kill();
+        } catch {
+          // already gone
+        }
+      }, 500).unref?.();
       this.process = null;
     }
   }
