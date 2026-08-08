@@ -13,6 +13,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  rmSync,
   statSync,
   writeFileSync,
   renameSync,
@@ -223,11 +224,13 @@ export function migrateBrand(options: MigrationOptions = {}): MigrationResult {
   const stagingRoot = join(home, `.orion-code-staging-${manifest.migrationId}`);
 
   try {
-    if (!options.dryRun) {
-      ensureDir(stagingRoot);
-    }
-
-    const writeDest = options.dryRun ? targetRoot : stagingRoot;
+    // Issue #48: dry-run must never touch the real target directory. Always
+    // stage into a temporary directory; the real migration renames staging →
+    // target (step 6). A dry run writes into staging and then discards it, so
+    // the target stays untouched and a later real run is not blocked by a
+    // spurious "target already exists" conflict.
+    ensureDir(stagingRoot);
+    const writeDest = stagingRoot;
 
     // 1. Copy and rename config files
     const configMappings = migrateConfigFiles(sourceRoot, writeDest, options, manifest);
@@ -276,9 +279,7 @@ export function migrateBrand(options: MigrationOptions = {}): MigrationResult {
         if (knownPaths.has(entry.name)) continue;
         const srcPath = join(sourceRoot, entry.name);
         const destPath = join(writeDest, entry.name);
-        if (!options.dryRun) {
-          copyFileSafe(srcPath, destPath);
-        }
+        copyFileSafe(srcPath, destPath);
         manifest.renamedFiles.push({ from: srcPath, to: destPath });
         manifest.copiedFiles++;
       }
@@ -320,6 +321,20 @@ export function migrateBrand(options: MigrationOptions = {}): MigrationResult {
         JSON.stringify(manifest, null, 2),
         { mode: 0o600 },
       );
+    } else {
+      // Issue #48: a dry run only staged into `stagingRoot` for preview. Discard
+      // it so no real files are left behind and the target stays untouched.
+      try {
+        if (existsSync(stagingRoot)) {
+          rmSync(stagingRoot, { recursive: true, force: true });
+        }
+      } catch (cleanupErr) {
+        manifest.warnings.push(
+          `Failed to clean up dry-run staging directory ${stagingRoot}: ${
+            cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)
+          }`
+        );
+      }
     }
 
     return { success: true, manifest };
@@ -328,7 +343,6 @@ export function migrateBrand(options: MigrationOptions = {}): MigrationResult {
     manifest.warnings.push(`Migration failed: ${errorMessage(err)}`);
     try {
       if (existsSync(stagingRoot)) {
-        const { rmSync } = require('fs');
         rmSync(stagingRoot, { recursive: true, force: true });
       }
     } catch (cleanupErr) {
@@ -422,6 +436,9 @@ FLAGS
   --dry-run                  Preview migration without writing files (default)
   --yes                      Execute the migration after reviewing the preview
   --include-project-files    Rename .openhorse/ → .orion-code/ in project dirs
+
+  Note: environment variables are no longer migrated. Configure Orion Code via
+  ~/.orion-code/orion.json (see docs/orion.example.json).
 
 DESCRIPTION
   Copies ~/.openhorse → ~/.orion-code with filename and config-key

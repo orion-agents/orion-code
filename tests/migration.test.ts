@@ -46,6 +46,36 @@ describe('brand migration', () => {
     }
   });
 
+  test('dry-run does not block a later real migration (Issue #48)', () => {
+    const home = makeHome();
+    const sourceDir = join(home, '.openhorse');
+    mkdirSync(sourceDir, { recursive: true });
+    writeFileSync(join(sourceDir, 'openhorse.json'), JSON.stringify({ defaultModel: 'gpt-4o' }), 'utf-8');
+    writeFileSync(join(sourceDir, 'OPENHORSE.md'), '# User Instructions', 'utf-8');
+    // A verbatim directory: on the buggy code the dry run copied this straight
+    // into the target dir, which then blocked the real migration.
+    const skillsDir = join(sourceDir, 'skills');
+    mkdirSync(skillsDir, { recursive: true });
+    writeFileSync(join(skillsDir, 'SKILL.md'), '---\nname: demo\n---', 'utf-8');
+
+    try {
+      // Default (dry-run) must not touch the real target directory.
+      const dry = migrateBrand({ dryRun: true, home });
+      expect(dry.success).toBe(true);
+      expect(existsSync(join(home, '.orion-code'))).toBe(false);
+
+      // A subsequent real migration must now succeed (it was previously blocked
+      // because the dry run had written into the target dir).
+      const real = migrateBrand({ dryRun: false, home });
+      expect(real.success).toBe(true);
+      expect(real.manifest.verified).toBe(true);
+      expect(existsSync(join(home, '.orion-code', 'orion.json'))).toBe(true);
+      expect(existsSync(join(home, '.orion-code', 'skills', 'SKILL.md'))).toBe(true);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test('fails when target directory already exists', () => {
     const home = makeHome();
     const sourceDir = join(home, '.openhorse');
