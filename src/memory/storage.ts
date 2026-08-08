@@ -9,9 +9,10 @@
  */
 
 import { readFileSync, existsSync, readdirSync, mkdirSync, unlinkSync } from 'fs';
-import { join, basename } from 'path';
+import { join, basename, resolve, relative, isAbsolute } from 'path';
 import { createHash } from 'crypto';
 import type { MemoryEntry, MemoryType } from './types';
+import { sanitizePathKey } from './team-paths';
 import {
   getConfigHome,
   getLegacyProjectMemoryDir,
@@ -67,6 +68,63 @@ export function getMemoryDir(projectPath?: string): string {
   }
 
   return join(configHome, MEMORY_SUBDIR);
+}
+
+// ============================================================================
+// Entry Name Safety
+// ============================================================================
+
+/**
+ * Raised when a memory entry name cannot be turned into a safe file path.
+ */
+export class InvalidMemoryNameError extends Error {
+  constructor(name: string, reason: string) {
+    super(`Invalid memory name ${JSON.stringify(name)}: ${reason}`);
+    this.name = 'InvalidMemoryNameError';
+  }
+}
+
+/**
+ * Resolve `<dir>/<name>.md` while guaranteeing the result stays inside `dir`.
+ *
+ * `memory_save` / `memory_forget` are model-invoked and the entry name is
+ * model-controlled, so an unvalidated `join()` gave prompt injection an
+ * arbitrary file write **and** delete primitive (e.g. `../../../orion.json`,
+ * `../../.git/hooks/pre-commit`).
+ *
+ * Two independent layers:
+ *  1. `sanitizePathKey` rejects traversal / absolute / null-byte / control-char
+ *     names outright. We only use its *verdict* — never its rewritten key — so
+ *     legitimate non-ASCII names keep their original on-disk filename instead of
+ *     silently collapsing into underscores.
+ *  2. A `resolve` + `relative` containment assert as defence in depth, covering
+ *     anything the character checks miss (symlinked dirs, platform quirks).
+ */
+export function resolveMemoryEntryPath(dir: string, name: string): string {
+  if (typeof name !== 'string' || name.trim().length === 0) {
+    throw new InvalidMemoryNameError(String(name), 'name must be a non-empty string');
+  }
+
+  const check = sanitizePathKey(name);
+  if (!check.safe) {
+    throw new InvalidMemoryNameError(name, check.violations.join('; '));
+  }
+
+  // A single separator passes sanitizePathKey (it would be rewritten, not
+  // flagged). Reject rather than rewrite: such entries are never listed by
+  // listMemories anyway, and a clear error is more useful to the model.
+  if (/[\\/]/.test(name)) {
+    throw new InvalidMemoryNameError(name, 'path separators are not allowed');
+  }
+
+  const baseDir = resolve(dir);
+  const filePath = resolve(baseDir, `${name}.md`);
+  const rel = relative(baseDir, filePath);
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) {
+    throw new InvalidMemoryNameError(name, 'resolves outside the memory directory');
+  }
+
+  return filePath;
 }
 
 /** Legacy hash-based memory directory kept as a read fallback. */
@@ -205,7 +263,14 @@ export function loadMemory(name: string, projectPath?: string): MemoryEntry | nu
     : [getMemoryDir(projectPath)];
 
   for (const dir of dirs) {
-    const filePath = join(dir, `${name}.md`);
+    let filePath: string;
+    try {
+      filePath = resolveMemoryEntryPath(dir, name);
+    } catch {
+      // Unsafe name: nothing legitimate can live under it. Reads stay
+      // non-throwing so callers that probe by name keep working.
+      return null;
+    }
     if (!existsSync(filePath)) continue;
 
     try {
@@ -231,9 +296,11 @@ export function loadMemory(name: string, projectPath?: string): MemoryEntry | nu
  * Save memory entry to a project's memory directory.
  */
 export function saveMemory(entry: MemoryEntry, projectPath?: string): void {
-  ensureMemoryDir(projectPath);
   const dir = getMemoryDir(projectPath);
-  const filePath = join(dir, `${entry.name}.md`);
+  // Validate before creating the directory so a hostile name never has a
+  // side effect.
+  const filePath = resolveMemoryEntryPath(dir, entry.name);
+  ensureMemoryDir(projectPath);
 
   const now = Date.now();
   entry.createdAt = entry.createdAt || now;
@@ -255,8 +322,10 @@ export function deleteMemory(name: string, projectPath?: string): void {
     ? [getMemoryDir(projectPath), getLegacyMemoryDir(projectPath)]
     : [getMemoryDir(projectPath)];
 
-  const canonicalPath = join(dirs[0], `${name}.md`);
-  const legacyPath = dirs[1] ? join(dirs[1], `${name}.md`) : undefined;
+  // Throws on traversal: `memory_forget` is model-invoked, so an unvalidated
+  // name here is an arbitrary-delete primitive.
+  const canonicalPath = resolveMemoryEntryPath(dirs[0], name);
+  const legacyPath = dirs[1] ? resolveMemoryEntryPath(dirs[1], name) : undefined;
   const deletePath = existsSync(canonicalPath) ? canonicalPath : legacyPath;
 
   if (deletePath && existsSync(deletePath)) {

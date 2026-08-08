@@ -260,4 +260,27 @@ describe('CostTracker', () => {
       expect(last?.model).toBe('claude-sonnet-4-6');
     });
   });
+
+  describe('setBudget validation (Issue #30)', () => {
+    test('invalid limits fall back to no budget instead of corrupting checkBudget', () => {
+      tracker.setBudget(undefined);
+      expect(tracker.getBudget()).toBeNull();
+      expect(tracker.checkBudget().ok).toBe(true);
+      expect(tracker.checkBudget().remaining).toBe(Infinity);
+
+      tracker.setBudget(NaN);
+      expect(tracker.getBudget()).toBeNull();
+      expect(tracker.checkBudget().ok).toBe(true);
+
+      tracker.setBudget(-10);
+      expect(tracker.getBudget()).toBeNull();
+      expect(tracker.checkBudget().ok).toBe(true);
+    });
+
+    test('finite non-negative limits are accepted', () => {
+      tracker.setBudget(100);
+      expect(tracker.getBudget()).toBe(100);
+      expect(tracker.checkBudget().ok).toBe(true);
+    });
+  });
 });

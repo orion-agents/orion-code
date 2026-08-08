@@ -8,7 +8,12 @@
  * Output: execution results in original call order
  */
 
-import type { OpenHorseTool, PermissionResult, ToolContext } from './tool';
+import {
+  getToolMetadataPresence,
+  type OpenHorseTool,
+  type PermissionResult,
+  type ToolContext,
+} from './tool';
 import {
   externalAssertionMatchesInvocation,
   isToolExternalAssertion,
@@ -66,7 +71,11 @@ export type PermissionDecisionSource =
   | 'mode_auto'
   | 'mode_accept_edits'
   | 'allowlist_allow'
-  | 'allowlist_deny';
+  | 'allowlist_deny'
+  | 'allowlist_ask'
+  | 'missing_risk_metadata'
+  | 'risk_guard'
+  | 'config_allow_blocked';
 
 export interface ToolPermissionDecision {
   behavior?: PermissionResult['behavior'];
@@ -141,10 +150,56 @@ function parseToolArgs(tc: ToolCallRecord): Record<string, unknown> {
 /**
  * How a `behavior: 'ask'` permission should be resolved for the active permission mode.
  * - `block`   : plan mode is read-only, the tool must not run at all.
- * - `allow`   : the mode itself grants approval (auto / acceptEdits for file edits).
+ * - `allow`   : the mode itself grants approval (acceptEdits for file edits).
  * - `confirm` : fall through to toolConfirmation policy / interactive confirmation.
  */
 export type AskResolution = 'block' | 'allow' | 'confirm';
+
+export type ToolRisk =
+  | 'read_only'
+  | 'file_edit'
+  | 'state_write'
+  | 'destructive'
+  | 'external'
+  | 'unknown';
+
+interface ToolRiskAssessment {
+  risk: ToolRisk;
+  known: boolean;
+  isFileEdit: boolean;
+}
+
+function assessToolRisk(
+  tool: OpenHorseTool | undefined,
+  args: Record<string, unknown>,
+  permission: PermissionResult | undefined
+): ToolRiskAssessment {
+  const metadata = getToolMetadataPresence(tool);
+  const known = metadata.hasReadOnly || metadata.hasDestructive || metadata.hasFileEdit;
+  if (!tool || !known) return { risk: 'unknown', known: false, isFileEdit: false };
+
+  const isReadOnly = metadata.hasReadOnly && tool.isReadOnly?.(args) === true;
+  const isDestructive = metadata.hasDestructive && tool.isDestructive?.(args) === true;
+  const isFileEdit = metadata.hasFileEdit && tool.isFileEdit?.(args) === true;
+
+  if (isDestructive) return { risk: 'destructive', known: true, isFileEdit };
+  // A read-only tool that asks is normally an external/caution operation
+  // (web/MCP are the important examples), not a safe local read — plan mode
+  // must still block those. But a local read-only exec_command (e.g.
+  // `gh auth status`, `git status`) is a safe read and must be permitted in
+  // plan mode even though checkPermissions returns 'ask' for it (it is not in
+  // the explicit allowlist).
+  if (isReadOnly && permission?.behavior === 'ask' && tool?.name !== 'exec_command') {
+    return { risk: 'external', known: true, isFileEdit };
+  }
+  if (isReadOnly) return { risk: 'read_only', known: true, isFileEdit };
+  if (isFileEdit) return { risk: 'file_edit', known: true, isFileEdit };
+  return { risk: 'state_write', known: true, isFileEdit };
+}
+
+function isSafeReadOnly(risk: ToolRiskAssessment): boolean {
+  return risk.known && risk.risk === 'read_only';
+}
 
 /**
  * Resolve an `ask` permission against the permission mode.
@@ -163,7 +218,9 @@ export function resolveAskPermission(
     case 'plan':
       return 'block';
     case 'auto':
-      return 'allow';
+      // Auto mode is not a risk override. The caller must establish that the
+      // invocation is explicitly safe/read-only before allowing it.
+      return 'confirm';
     case 'acceptEdits':
       return tool?.isFileEdit?.(args) === true ? 'allow' : 'confirm';
     default:
@@ -185,6 +242,7 @@ export interface EffectivePermission {
   outcome: 'deny' | 'block' | 'allow' | 'confirm';
   source?: PermissionDecisionSource;
   reason?: string;
+  risk?: ToolRisk;
 }
 
 /**
@@ -193,12 +251,12 @@ export interface EffectivePermission {
  * Precedence (most restrictive first, see services/tool-allowlist for the contract):
  *   1. tool `checkPermissions() === 'deny'`  — never overridable by config
  *   2. allowlist `deny:` rule                — project can always tighten
- *   3. neither the tool nor a rule asks      — plain allow
- *   4. plan mode                             — read-only, block anything that asks
- *   5. allowlist `ask:` rule                 — explicit escalation beats auto / acceptEdits
- *   6. allowlist `allow:` rule               — only for non-destructive tools
- *   7. permission mode (auto / acceptEdits)
- *   8. otherwise confirm
+ *   3. plan mode                             — only explicit safe read-only metadata runs
+ *   4. allowlist `ask:` rule                 — explicit escalation beats modes
+ *   5. acceptEdits                           — only explicit file edits auto-run
+ *   6. allowlist `allow:` rule               — only known, non-destructive tools
+ *   7. safe read-only tools                  — auto-run in every non-plan mode
+ *   8. otherwise confirm (fail closed)
  */
 export function resolveEffectivePermission(input: {
   toolName: string;
@@ -207,14 +265,21 @@ export function resolveEffectivePermission(input: {
   permission?: PermissionResult;
   permissionMode?: string;
   allowlist?: ToolAllowlistMatch;
+  toolConfirmation?: string;
 }): EffectivePermission {
   const { toolName, tool, args, permission, permissionMode, allowlist } = input;
+  const risk = assessToolRisk(tool, args, permission);
+  const riskReason =
+    risk.risk === 'unknown'
+      ? `Tool ${toolName} is missing risk metadata; automatic approval is not allowed.`
+      : `Tool ${toolName} is ${risk.risk.replace('_', ' ')} and requires explicit confirmation.`;
 
   if (permission?.behavior === 'deny') {
     return {
       outcome: 'deny',
       source: 'tool_policy',
       reason: permission.reason || 'Permission denied',
+      risk: risk.risk,
     };
   }
 
@@ -223,43 +288,84 @@ export function resolveEffectivePermission(input: {
       outcome: 'deny',
       source: 'allowlist_deny',
       reason: `Tool ${toolName} is denied by project allowedTools rule "${allowlist.rule}"`,
+      risk: risk.risk,
     };
   }
-
-  const asks = permission?.behavior === 'ask' || allowlist?.effect === 'ask';
-  if (!asks) return { outcome: 'allow' };
 
   const reason =
     permission?.behavior === 'ask'
       ? permission.reason
-      : `Confirmation required by project allowedTools rule "${allowlist?.rule}"`;
+      : allowlist?.effect === 'ask'
+        ? `Confirmation required by project allowedTools rule "${allowlist.rule}"`
+        : riskReason;
 
   if (permissionMode === 'plan') {
-    return { outcome: 'block', source: 'plan_mode', reason };
+    if (isSafeReadOnly(risk) && allowlist?.effect !== 'ask') {
+      return { outcome: 'allow', risk: risk.risk };
+    }
+    return {
+      outcome: 'block',
+      source: 'plan_mode',
+      reason,
+      risk: risk.risk,
+    };
   }
 
   if (allowlist?.effect === 'ask') {
-    return { outcome: 'confirm', reason };
+    return { outcome: 'confirm', source: 'allowlist_ask', reason, risk: risk.risk };
   }
 
-  if (allowlist?.effect === 'allow' && tool?.isDestructive?.(args) !== true) {
+  // A tool's explicit policy may approve a bounded internal state transition.
+  // This is distinct from `toolConfirmation=allow`: the global fallback still
+  // should not auto-approve external/unknown tools, and non-file destructive
+  // calls continue to require an explicit confirmation path.
+  if (
+    permission?.behavior === 'allow' &&
+    risk.known &&
+    risk.risk !== 'external' &&
+    !(risk.risk === 'destructive' && !risk.isFileEdit)
+  ) {
+    return {
+      outcome: 'allow',
+      source: 'tool_policy',
+      reason: permission.reason,
+      risk: risk.risk,
+    };
+  }
+
+  if (
+    allowlist?.effect === 'allow' &&
+    risk.known &&
+    risk.risk !== 'destructive' &&
+    risk.risk !== 'external'
+  ) {
     return {
       outcome: 'allow',
       source: 'allowlist_allow',
       reason: `Auto-approved by project allowedTools rule "${allowlist.rule}"`,
+      risk: risk.risk,
     };
   }
 
-  const modeResolution = resolveAskPermission(permissionMode, tool, args);
-  if (modeResolution === 'allow') {
+  if (permissionMode === 'acceptEdits' && risk.isFileEdit && risk.risk !== 'external') {
     return {
       outcome: 'allow',
-      source: permissionMode === 'auto' ? 'mode_auto' : 'mode_accept_edits',
+      source: 'mode_accept_edits',
       reason,
+      risk: risk.risk,
     };
   }
 
-  return { outcome: 'confirm', reason };
+  // `auto` is deliberately not a blanket approval. It can only use the same
+  // explicit safe-read risk envelope as the regular mode.
+  if (isSafeReadOnly(risk)) return { outcome: 'allow', risk: risk.risk };
+
+  return {
+    outcome: 'confirm',
+    source: risk.known ? 'risk_guard' : 'missing_risk_metadata',
+    reason,
+    risk: risk.risk,
+  };
 }
 
 /**
@@ -280,8 +386,9 @@ export function prepareToolCalls(options: ToolSchedulerOptions): PreparedToolCal
     options.addToolToTracker?.(attemptId, tc.function.name);
     const tool = tools.find(t => t.name === tc.function.name);
     const drift = options.harnessDriftCheck?.({ name: tc.function.name, args });
+    const metadata = getToolMetadataPresence(tool);
     const permission =
-      tool?.checkPermissions && options.toolContext
+      metadata.hasPermissionCheck && tool?.checkPermissions && options.toolContext
         ? tool.checkPermissions(args, options.toolContext)
         : undefined;
     const allowlist = options.toolAllowlist?.(tc.function.name, args);
@@ -292,6 +399,7 @@ export function prepareToolCalls(options: ToolSchedulerOptions): PreparedToolCal
       permission,
       permissionMode: options.permissionMode,
       allowlist,
+      toolConfirmation: options.toolConfirmation,
     });
     const confirmation = options.toolConfirmation ?? 'ask';
     const needsInteractiveConfirmation =
@@ -431,6 +539,7 @@ function executePreparedTool(
       permission,
       permissionMode,
       allowlist,
+      toolConfirmation,
     });
 
     if (effective.outcome === 'deny') {
@@ -473,13 +582,34 @@ function executePreparedTool(
 
     const confirmation = toolConfirmation ?? 'ask';
     if (confirmation === 'allow') {
-      permissionDecision = {
-        behavior: 'ask',
-        approved: true,
-        source: 'config_allow',
-        reason: effective.reason,
-      };
-      return exec();
+      const risk = assessToolRisk(tool, args, permission);
+      const allowWithConfirmationBypass = risk.isFileEdit;
+      if (effective.source === 'allowlist_ask' || !allowWithConfirmationBypass) {
+        permissionDecision = {
+          behavior: 'ask',
+          approved: false,
+          source:
+            effective.source === 'missing_risk_metadata'
+              ? 'missing_risk_metadata'
+              : 'config_allow_blocked',
+          reason: effective.reason,
+        };
+      } else {
+        permissionDecision = {
+          behavior: 'ask',
+          approved: true,
+          source: 'config_allow',
+          reason: effective.reason,
+        };
+        return exec();
+      }
+      return JSON.stringify({
+        success: false,
+        error:
+          effective.source === 'missing_risk_metadata'
+            ? `Tool ${tc.function.name} is missing risk metadata; toolConfirmation=allow cannot approve it.`
+            : `toolConfirmation=allow cannot approve ${tc.function.name}; explicit confirmation is required for ${risk.risk.replace('_', ' ')} tools.`,
+      });
     }
     if (confirmToolUse && confirmation === 'ask') {
       const permissionStart = Date.now();

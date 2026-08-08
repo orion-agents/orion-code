@@ -10,6 +10,7 @@ import {
   GoalCoordinator,
   goalRequiresBoundaryConfirmation,
 } from '../src/runtime/goals/coordinator';
+import { randomUUID } from 'crypto';
 import { buildGoalContextFragment } from '../src/runtime/goals/prompt';
 import { goalTransition } from '../src/runtime/goals/types';
 import type { AgentTurnOutcome, SessionGoalV1, GoalContract } from '../src/runtime/goals/types';
@@ -20,9 +21,11 @@ import type { AgentTurnOutcome, SessionGoalV1, GoalContract } from '../src/runti
 
 describe('Goal contract creation', () => {
   let coord: GoalCoordinator;
+  let contractProject: string;
 
   beforeEach(() => {
-    coord = new GoalCoordinator('/tmp/test-contract-create', 'contract-create');
+    contractProject = `/tmp/test-contract-create-${randomUUID()}`;
+    coord = new GoalCoordinator(contractProject, 'contract-create');
   });
 
   it('create() builds a contract with originalObjective and a user-owned primary criterion', () => {
@@ -215,7 +218,7 @@ describe('Goal contract creation', () => {
     const id1 = coord.goal!.contract!.successCriteria[0].id;
 
     // Simulate a reload from sidecar (which triggers ensureContract).
-    const reloaded = new GoalCoordinator('/tmp/test-contract-create', 'contract-create');
+    const reloaded = new GoalCoordinator(contractProject, 'contract-create');
     reloaded.load();
     const id2 = reloaded.goal!.contract!.successCriteria[0].id;
 
@@ -347,7 +350,7 @@ describe('Goal contract creation', () => {
     expect(coord.goal!.stopReason?.message).toContain('turn-plan-1');
     expect(coord.goal!.stopReason?.message).toContain('evidence=0p/0f/0i');
 
-    const restarted = new GoalCoordinator('/tmp/test-contract-create', 'contract-create');
+    const restarted = new GoalCoordinator(contractProject, 'contract-create');
     expect(restarted.load()).toBe(true);
     expect(restarted.goal?.status).toBe('paused');
     expect(restarted.goal?.recentNoProgressTurns).toEqual(coord.goal!.recentNoProgressTurns);
@@ -681,7 +684,7 @@ describe('edit() preserves originalObjective', () => {
   let coord: GoalCoordinator;
 
   beforeEach(() => {
-    coord = new GoalCoordinator('/tmp/test-contract-edit', 'contract-edit');
+    coord = new GoalCoordinator(`/tmp/test-contract-edit-${randomUUID()}`, 'contract-edit');
     coord.create('Original objective wording');
   });
 
@@ -747,7 +750,7 @@ describe('replace() creates a fresh contract', () => {
   let coord: GoalCoordinator;
 
   beforeEach(() => {
-    coord = new GoalCoordinator('/tmp/test-contract-replace', 'contract-replace');
+    coord = new GoalCoordinator(`/tmp/test-contract-replace-${randomUUID()}`, 'contract-replace');
     coord.create('First goal');
   });
 

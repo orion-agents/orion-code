@@ -30,15 +30,3 @@ Use Conventional Commits, matching history: `feat:`, `fix:`, `docs:`, `test:`, `
 ## Security & Configuration Tips
 
 Do not commit `.env`, local config, generated databases, or secrets. Use `.env.example` and `docs/orion.example.json` as references for configuration. Review changes to `src/tools/bash_security.ts`, auth services, MCP transports, and file-writing utilities carefully because they affect command execution and local system access.
-
-OH_TERMINAL_AGENT_RULE_MARKER_20260619
-
-OH_TERMINAL_AGENT_RULE_MARKER_20260619
-
-OH_TERMINAL_AGENT_RULE_MARKER_20260619
-
-OH_TERMINAL_AGENT_RULE_MARKER_20260619
-
-OH_TERMINAL_AGENT_RULE_MARKER_20260619
-
-OC_TERMINAL_AGENT_RULE_MARKER_20260619

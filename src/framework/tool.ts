@@ -57,6 +57,17 @@ export interface ToolContext {
   sessionId?: string;
   /** Optional turn identifier for per-turn tool bookkeeping */
   turnId?: number | string;
+  /**
+   * Active permission mode for this turn.
+   *
+   * The scheduler resolves permissions once, at the *parent* tool call. Any
+   * tool that dispatches other tools (`batch_read`) therefore has to re-run the
+   * gate itself, otherwise the sub-steps run unchecked. These two fields are
+   * what makes that possible.
+   */
+  permissionMode?: string;
+  /** Project-scoped allowlist evaluator, for the same reason as `permissionMode`. */
+  toolAllowlist?: import('../services/tool-allowlist').ToolAllowlistEvaluator;
 }
 
 /** Minimal config needed by tools */
@@ -109,6 +120,44 @@ export interface OrionCodeTool {
 /** @deprecated Use OrionCodeTool instead. */
 export type OpenHorseTool = OrionCodeTool;
 
+/**
+ * Records which security-sensitive callbacks were declared by a tool.
+ *
+ * `buildTool()` still supplies compatibility defaults for the public API, but
+ * the scheduler must be able to distinguish an explicit `false` from a
+ * missing risk declaration. Missing declarations are not evidence that a
+ * tool is safe.
+ */
+export interface ToolMetadataPresence {
+  hasPermissionCheck: boolean;
+  hasReadOnly: boolean;
+  hasDestructive: boolean;
+  hasFileEdit: boolean;
+}
+
+const TOOL_METADATA = new WeakMap<OrionCodeTool, ToolMetadataPresence>();
+
+/** Return the declared security metadata for a tool, conservatively. */
+export function getToolMetadataPresence(tool: OrionCodeTool | undefined): ToolMetadataPresence {
+  if (!tool) {
+    return {
+      hasPermissionCheck: false,
+      hasReadOnly: false,
+      hasDestructive: false,
+      hasFileEdit: false,
+    };
+  }
+
+  return (
+    TOOL_METADATA.get(tool) ?? {
+      hasPermissionCheck: typeof tool.checkPermissions === 'function',
+      hasReadOnly: typeof tool.isReadOnly === 'function',
+      hasDestructive: typeof tool.isDestructive === 'function',
+      hasFileEdit: typeof tool.isFileEdit === 'function',
+    }
+  );
+}
+
 /** OpenAI function calling tool format */
 export interface OpenAITool {
   type: 'function';
@@ -145,7 +194,7 @@ const TOOL_DEFAULTS = {
  * });
  */
 export function buildTool(def: OrionCodeTool): OrionCodeTool {
-  return {
+  const tool: OrionCodeTool = {
     isConcurrencySafe: TOOL_DEFAULTS.isConcurrencySafe,
     isReadOnly: TOOL_DEFAULTS.isReadOnly,
     isDestructive: TOOL_DEFAULTS.isDestructive,
@@ -153,6 +202,15 @@ export function buildTool(def: OrionCodeTool): OrionCodeTool {
     checkPermissions: TOOL_DEFAULTS.checkPermissions,
     ...def,
   };
+
+  TOOL_METADATA.set(tool, {
+    hasPermissionCheck: typeof def.checkPermissions === 'function',
+    hasReadOnly: typeof def.isReadOnly === 'function',
+    hasDestructive: typeof def.isDestructive === 'function',
+    hasFileEdit: typeof def.isFileEdit === 'function',
+  });
+
+  return tool;
 }
 
 // ============================================================================

@@ -511,6 +511,8 @@ export class GoalCoordinator {
     code: 'corrupt' | 'metadata_mismatch' | 'incompatible_schema' | 'io_error';
     message: string;
   } | null = null;
+  /** A failed reload requires storage recovery before a fresh Goal may be written. */
+  private loadRecoveryRequired = false;
   /** Runtime-only dedupe for interrupted stale turns; in-flight turns do not survive restart. */
   private readonly accountedStaleTurnKeys = new Set<string>();
   /** Last disk-authoritative state, used when both a write and recovery read fail. */
@@ -561,6 +563,11 @@ export class GoalCoordinator {
     }
   }
 
+  private loadRecoveryMessage(): string {
+    const detail = this.loadIssue?.message ?? 'Goal storage state is not readable.';
+    return `Goal storage recovery is required before creating or replacing a Goal. ${detail}`;
+  }
+
   snapshot(): RuntimeGoalSnapshot | null {
     const g = this.state.goal;
     if (!g) return null;
@@ -597,6 +604,7 @@ export class GoalCoordinator {
     const result = loadGoal(this.projectPath, this.sessionId);
     if (result.ok) {
       this.loadIssue = null;
+      this.loadRecoveryRequired = false;
       // v0.1.2: normalize v0.1.1 sidecars (no contract) into a minimal pending
       // contract. This is in-memory only; it does not rewrite the sidecar
       // until the next real state update.
@@ -616,6 +624,7 @@ export class GoalCoordinator {
         if (existsSync(lockPath)) {
           const message = `Restart recovery could not persist a paused Goal because storage is temporarily locked at ${lockPath}. No continuation was started; resolve the lock, then use /target resume.`;
           this.loadIssue = { code: 'io_error', message };
+          this.loadRecoveryRequired = true;
           this.failClosedAfterPersistenceError(message);
           return true;
         }
@@ -637,6 +646,7 @@ export class GoalCoordinator {
           const detail = redactTraceText(error instanceof Error ? error.message : String(error));
           const message = `Restart recovery could not persist a paused Goal. No continuation was started; resolve the storage error, then use /target resume. ${detail}`;
           this.loadIssue = { code: 'io_error', message };
+          this.loadRecoveryRequired = true;
           this.failClosedAfterPersistenceError(message);
         }
       }
@@ -654,6 +664,10 @@ export class GoalCoordinator {
           message: result.message,
         }
       : null;
+    // A missing sidecar is an authoritative empty state and permits a fresh
+    // create. Every other load failure leaves the write path recovery-gated;
+    // otherwise create/replace could hide the unreadable sidecar.
+    this.loadRecoveryRequired = result.error !== 'not_found';
     // A failed repeat load makes the disk state authoritative and the previous
     // in-memory Goal unsafe to continue. Invalidate in-flight work and discard
     // both cached copies without attempting to write the stale Goal back.
@@ -668,6 +682,9 @@ export class GoalCoordinator {
     objective: string,
     contractInput: GoalCreationContractInput = {}
   ): { ok: true } | { ok: false; error: string } {
+    if (this.loadRecoveryRequired) {
+      return { ok: false, error: this.loadRecoveryMessage() };
+    }
     if (this.state.goal && !GOAL_TERMINAL_STATES.has(this.state.goal.status)) {
       return {
         ok: false,
@@ -912,6 +929,7 @@ export class GoalCoordinator {
   }
 
   replace(objective: string): boolean {
+    if (this.loadRecoveryRequired) return false;
     if (!objective.trim()) return false;
     // Create new goal with fresh goalId and fresh contract; old generation
     // invalidated. Does not reuse the old goal's completion state.
@@ -1555,12 +1573,14 @@ export class GoalCoordinator {
   private restoreDiskAuthorityAfterMutationFailure(): void {
     const persisted = loadGoal(this.projectPath, this.sessionId);
     if (persisted.ok) {
+      this.loadRecoveryRequired = false;
       this.state.goal = ensureContract(persisted.value);
       this.persistedGoalSnapshot = structuredClone(this.state.goal);
       this.state.continuationDeferred = true;
       return;
     }
     if (persisted.error === 'not_found') {
+      this.loadRecoveryRequired = false;
       this.state.goal = null;
       this.persistedGoalSnapshot = null;
       this.state.generation += 1;
@@ -1572,6 +1592,7 @@ export class GoalCoordinator {
     } else {
       this.state.goal = null;
     }
+    this.loadRecoveryRequired = true;
     this.state.continuationDeferred = true;
   }
 

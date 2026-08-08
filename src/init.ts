@@ -13,7 +13,6 @@ import { LeaderAgent } from './agents/leader';
 import { CoderAgent } from './agents/coder';
 import { SafetyChecker, SafetyPolicy } from './harness/safety';
 import { MemoryStore } from './memory/store';
-import { ENV } from './product/environment';
 
 // ============================================================================
 // 1. Config type definitions
@@ -289,8 +288,8 @@ export class MemorySystem extends EventEmitter {
 
 const DEFAULT_CONFIG: OrionCodeConfig = {
   name: 'orion-code',
-  mode: (process.env[ENV.MODE] as OrionCodeConfig['mode']) || 'development',
-  logLevel: (process.env[ENV.LOG_LEVEL] as OrionCodeConfig['logLevel']) || 'info',
+  mode: 'development' as OrionCodeConfig['mode'],
+  logLevel: 'info' as OrionCodeConfig['logLevel'],
   brain: { strategy: 'priority', maxConcurrent: 5 },
   harness: {
     goalConstraint: true,

@@ -32,7 +32,6 @@ export interface BrandMigrationManifestV1 {
 
 export interface MigrationOptions {
   dryRun?: boolean;
-  includeEnv?: boolean;
   includeProjectFiles?: boolean;
   /** Override home directory for testing. */
   home?: string;

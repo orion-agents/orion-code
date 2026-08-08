@@ -110,6 +110,32 @@ export function parseTargetCommand(rawInput: string): TargetParseResult {
     return { ok: true, input: { type: 'goal_control', action: 'clear', payload: { confirmed } } };
   }
 
+  // Reserved sub-commands must never fall through to `create`.
+  //
+  // Every branch above requires a trailing space, so a forgotten argument
+  // (`/target confirm`) used to be parsed as "create a goal whose objective is
+  // the word confirm" — and AgentRuntimeController then immediately issued a
+  // real, billed `submitGoalContinuation` call the user never asked for. With
+  // an active goal it instead produced the unrelated "An active goal already
+  // exists" error.
+  const RESERVED_SUBCOMMAND_USAGE: Record<string, string> = {
+    confirm: `${cmdPrefix} confirm <criterion-id>`,
+    edit: `${cmdPrefix} edit <objective>`,
+    replace: `${cmdPrefix} replace <objective>`,
+    budget: `${cmdPrefix} budget <tokens>|off`,
+  };
+  const bareSubcommandUsage = RESERVED_SUBCOMMAND_USAGE[rest.toLowerCase()];
+  if (bareSubcommandUsage) {
+    return { ok: false, error: `Usage: ${bareSubcommandUsage}` };
+  }
+
+  // `/target clear -y` / `--force`: a mistyped flag, not an objective. Only
+  // flag-looking arguments are rejected so a natural-language objective such
+  // as "clear the build cache" still creates a goal.
+  if (/^clear\s+-/u.test(rest)) {
+    return { ok: false, error: `Usage: ${cmdPrefix} clear [--yes]` };
+  }
+
   // Default: treat as create with objective
   if (rest.length > GOAL_INVARIANTS.maxObjectiveChars) {
     return {

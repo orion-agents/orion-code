@@ -56,20 +56,59 @@ function tryGit(args: string[], cwd: string): string {
 function unquoteGitPath(path: string): string {
   if (path.length < 2 || path[0] !== '"' || path[path.length - 1] !== '"') return path;
   const inner = path.slice(1, -1);
+
   // Decode octal escapes (\NNN) and standard C escapes.
-  return inner.replace(/\\(?:([0-7]{1,3})|(.))/g, (_, oct: string | undefined, ch: string | undefined) => {
-    if (oct !== undefined) {
-      return Buffer.from([parseInt(oct, 8)]).toString('utf8');
+  //
+  // Consecutive octal escapes must be accumulated into a byte buffer and
+  // decoded **once**: git emits one escape per UTF-8 byte, so decoding each
+  // byte on its own turned `uni\346\226\207.txt` into `uni<3x U+FFFD>.txt`
+  // instead of `uni文.txt`.
+  const out: string[] = [];
+  let pendingBytes: number[] = [];
+
+  const flushBytes = (): void => {
+    if (pendingBytes.length === 0) return;
+    out.push(Buffer.from(pendingBytes).toString('utf8'));
+    pendingBytes = [];
+  };
+
+  for (let i = 0; i < inner.length; i++) {
+    const char = inner[i];
+
+    if (char !== '\\') {
+      flushBytes();
+      out.push(char);
+      continue;
     }
-    switch (ch) {
-      case 'n': return '\n';
-      case 't': return '\t';
-      case 'r': return '\r';
-      case '"': return '"';
-      case '\\': return '\\';
-      default: return ch ?? '';
+
+    const escaped = inner[i + 1];
+    if (escaped === undefined) {
+      flushBytes();
+      out.push('\\');
+      break;
     }
-  });
+
+    const octal = /^[0-7]{1,3}/.exec(inner.slice(i + 1, i + 4));
+    if (octal) {
+      pendingBytes.push(parseInt(octal[0], 8) & 0xff);
+      i += octal[0].length;
+      continue;
+    }
+
+    flushBytes();
+    switch (escaped) {
+      case 'n': out.push('\n'); break;
+      case 't': out.push('\t'); break;
+      case 'r': out.push('\r'); break;
+      case '"': out.push('"'); break;
+      case '\\': out.push('\\'); break;
+      default: out.push(escaped); break;
+    }
+    i += 1;
+  }
+
+  flushBytes();
+  return out.join('');
 }
 
 function parseNameStatus(output: string): WorkspaceDiffFile[] {
@@ -189,3 +228,8 @@ export function formatWorkspaceDiff(report: WorkspaceDiffReport, options: { maxF
 
   return lines.join('\n');
 }
+
+/**
+ * Internals exposed for unit tests only. Not part of the public API.
+ */
+export const __testables = { unquoteGitPath };

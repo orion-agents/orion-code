@@ -95,7 +95,7 @@ describe('Session storage atomicity & consistency (Prompt 1)', () => {
     expect(meta.tokenCount).toBe(50);
   });
 
-  it('truncateSessionToLastComplete removes incomplete turns', () => {
+  it('truncateSessionToLastComplete keeps the user prompt but drops the incomplete tail', () => {
     const s = createSession('/tmp/test-project', model);
     // user → assistant (final, complete) → user → (no response)
     appendSessionMessages(s.id, [
@@ -109,10 +109,11 @@ describe('Session storage atomicity & consistency (Prompt 1)', () => {
     truncateSessionToLastComplete(s.id);
     const messages = readSessionMessages(s.id);
     // 5 messages: q1,a1,q2,a2(tool_calls),tool.
-    // Last complete turn = q1+a1 (2 messages). q2+a2+tool is incomplete.
-    expect(messages.length).toBe(2);
+    // Last complete turn = q1+a1 (2 messages). q2 is kept (the user prompt);
+    // the partial assistant/tool tail (a2+tool) is dropped. (Issue #49)
+    expect(messages.map(m => m.content)).toEqual(['q1', 'a1', 'q2']);
     const meta = loadSessionMeta(s.id)!;
-    expect(meta.messageCount).toBe(2);
+    expect(meta.messageCount).toBe(3);
   });
 
   it('meta file is written atomically (no partial reads)', () => {

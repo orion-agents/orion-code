@@ -303,7 +303,8 @@ export class CostTracker {
    * 检查预算
    */
   checkBudget(): { ok: boolean; remaining: number; used: number } {
-    if (this.budgetLimit === null) {
+    // Cover both `null` and `undefined` so an unset/invalid budget reads as "no budget".
+    if (this.budgetLimit == null) {
       return { ok: true, remaining: Infinity, used: 0 };
     }
     const stats = this.getSessionStats();
@@ -314,9 +315,17 @@ export class CostTracker {
 
   /**
    * 设置预算限制
+   *
+   * Accepts only finite, non-negative numbers. Anything else (undefined, NaN,
+   * Infinity, negatives) is treated as "no budget" (null) instead of corrupting
+   * checkBudget into `ok: false, remaining: NaN` (Issue #30).
    */
-  setBudget(limit: number): void {
-    this.budgetLimit = limit;
+  setBudget(limit: number | null | undefined): void {
+    if (typeof limit === 'number' && Number.isFinite(limit) && limit >= 0) {
+      this.budgetLimit = limit;
+    } else {
+      this.budgetLimit = null;
+    }
   }
 
   /**

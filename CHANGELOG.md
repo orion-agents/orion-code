@@ -21,8 +21,9 @@ which is **not** a pass.
 
 ## [0.1.4] — 2026-08-06
 
-> **Status: published.** Tag `v0.1.4` exists and
-> `@orion-agents/orion-code@0.1.4` is available on npm.
+> **Status: published.** Tag `v0.1.4` exists and the package is on npm
+> (`@orion-agents/orion-code@0.1.4`, `latest` dist-tag). Released 2026-08-06.
+> Work that remains a worktree-only draft carries no release promise (see legend).
 
 Aligns `package.json` / `package-lock.json` with the `v0.1.4` release so the
 CLI banner, HTTP `User-Agent`, and crash/telemetry reports stop misreporting `0.1.3`.

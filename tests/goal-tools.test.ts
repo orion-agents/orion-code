@@ -3,6 +3,8 @@
  * v0.1.2 — Runtime/session scoped Goal tool binding.
  */
 
+import { randomUUID } from 'crypto';
+
 import { GoalCoordinator } from '../src/runtime/goals/coordinator';
 import {
   getGoalTool,
@@ -19,7 +21,7 @@ describe('Goal model tools', () => {
   let lastContext: GoalToolExecutionContext;
 
   beforeEach(() => {
-    coordinator = new GoalCoordinator('/test/project', 'test-session');
+    coordinator = new GoalCoordinator(`/tmp/goal-tools-${randomUUID()}`, 'test-session');
   });
 
   async function execute(tool: OpenHorseTool, args: Record<string, unknown>): Promise<ToolResult> {

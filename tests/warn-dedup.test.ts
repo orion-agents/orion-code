@@ -35,12 +35,13 @@ describe('warn-dedup', () => {
     spy.mockRestore();
   });
 
-  test('warnOnce does not emit after flush', () => {
+  test('warnOnce emits again after flush (state resets, Issue #30)', () => {
     const spy = jest.spyOn(console, 'warn').mockImplementation(() => {});
     warnOnce('test-key', 'first warning');
     flushWarnings();
-    warnOnce('test-key', 'this should not emit');
-    expect(spy).toHaveBeenCalledTimes(1);
+    warnOnce('test-key', 'this should emit again');
+    // First occurrence before flush + a fresh occurrence after the flush cleared state.
+    expect(spy).toHaveBeenCalledTimes(2);
     spy.mockRestore();
   });
 

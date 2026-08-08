@@ -38,19 +38,12 @@ export function maskSecret(secret: string | undefined | null): string {
 /**
  * Redact secret-looking substrings from free-form text (log lines, error
  * messages, HTTP bodies) before it is shown to the user or written to disk.
+ *
+ * There used to be a second, weaker implementation here that missed GitHub
+ * PATs, AWS access key IDs, Google API keys and Slack tokens. It had no call
+ * sites, but it sat next to `maskSecret` — which *is* imported in three places
+ * — so the next contributor reaching for "the redactor in the file I already
+ * import from" would have silently picked the leaky one. There is now exactly
+ * one implementation, in `services/redaction`.
  */
-export function redactSecrets(text: string): string {
-  if (!text) return text;
-  return (
-    text
-      // Bearer tokens
-      .replace(/\b(Bearer\s+)[A-Za-z0-9._~+/-]{8,}=*/gi, '$1***')
-      // Common provider key prefixes (sk-, sk-ant-, sk-proj-, gsk_, xai-, ...)
-      .replace(/\b(sk|gsk|xai|pk|rk)[-_][A-Za-z0-9._-]{8,}/g, '$1-***')
-      // api_key=... / apiKey: "..." style assignments
-      .replace(
-        /\b(api[-_]?key\s*[:=]\s*["']?)([A-Za-z0-9._~+/-]{8,})(["']?)/gi,
-        (_m, prefix: string, _val: string, suffix: string) => `${prefix}***${suffix}`
-      )
-  );
-}
+export { redactTraceText as redactSecrets } from '../services/redaction';

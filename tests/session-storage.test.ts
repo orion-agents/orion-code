@@ -905,14 +905,17 @@ describe('session-storage', () => {
       const meta = loadSessionMeta(session.id);
       const index = loadSessionIndex(session.id, '/tmp/project-truncate-abort');
 
+      // The aborted user prompt is kept; only the dangling tail (its missing
+      // final answer) is dropped (Issue #49).
       expect(truncated.map(message => message.content)).toEqual([
         'complete topic',
         'complete answer',
+        'aborted topic',
       ]);
-      expect(persisted).toHaveLength(2);
-      expect(meta?.messageCount).toBe(2);
+      expect(persisted).toHaveLength(3);
+      expect(meta?.messageCount).toBe(3);
       expect(index?.topics).toContain('complete topic');
-      expect(index?.topics).not.toContain('aborted topic');
+      expect(index?.topics).toContain('aborted topic');
     });
 
     test('truncate: abort mid-tool-call (assistant has tool_calls, no tool result yet)', () => {
@@ -936,8 +939,10 @@ describe('session-storage', () => {
       ]);
 
       const truncated = truncateSessionToLastComplete(session.id);
-      expect(truncated.map(message => message.content)).toEqual(['first question', 'done']);
-      expect(readSessionMessages(session.id)).toHaveLength(2);
+      // The user prompt 'fix this bug' is kept; only the partial assistant
+      // tool-call is dropped (Issue #49).
+      expect(truncated.map(message => message.content)).toEqual(['first question', 'done', 'fix this bug']);
+      expect(readSessionMessages(session.id)).toHaveLength(3);
     });
 
     test('truncate: abort after tool result but before final assistant answer', () => {
@@ -967,19 +972,22 @@ describe('session-storage', () => {
       ]);
 
       const truncated = truncateSessionToLastComplete(session.id);
-      expect(truncated.map(message => message.content)).toEqual(['start', 'ok']);
-      expect(readSessionMessages(session.id)).toHaveLength(2);
+      // 'search for foo' (the user prompt) is kept; the partial assistant/tool
+      // tail is dropped (Issue #49).
+      expect(truncated.map(message => message.content)).toEqual(['start', 'ok', 'search for foo']);
+      expect(readSessionMessages(session.id)).toHaveLength(3);
     });
 
-    test('truncate: abort with only user message (no assistant response at all)', () => {
+    test('truncate: abort with only user message keeps the prompt (Issue #49)', () => {
       const session = createSession('/tmp/project-abort-only-user', 'gpt-4o');
       appendSessionMessages(session.id, [
         { role: 'user', content: 'hello', timestamp: Date.now() },
       ]);
 
       const truncated = truncateSessionToLastComplete(session.id);
-      expect(truncated).toHaveLength(0);
-      expect(readSessionMessages(session.id)).toHaveLength(0);
+      // The user prompt is preserved even with no assistant response yet.
+      expect(truncated.map(message => message.content)).toEqual(['hello']);
+      expect(readSessionMessages(session.id)).toHaveLength(1);
     });
 
     test('truncate: complete final answer is NOT removed', () => {
@@ -1055,8 +1063,9 @@ describe('session-storage', () => {
       ]);
 
       const truncated = truncateSessionToLastComplete(session.id);
-      expect(truncated.map(message => message.content)).toEqual(['task 1', 'done 1']);
-      expect(readSessionMessages(session.id)).toHaveLength(2);
+      // The user prompt 'task 2' is kept; only the partial tool tail is dropped (Issue #49).
+      expect(truncated.map(message => message.content)).toEqual(['task 1', 'done 1', 'task 2']);
+      expect(readSessionMessages(session.id)).toHaveLength(3);
     });
 
     test('searchSessions can search candidates across project indexes', () => {

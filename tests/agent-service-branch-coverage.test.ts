@@ -140,24 +140,18 @@ describe('agent/service branch coverage: WorkerPool', () => {
     });
   });
 
-  test('allocates an idle/completed worker to queued work', async () => {
-    jest.useFakeTimers();
+  test('drains a queued task onto the freed worker when a running task completes', async () => {
     jest.spyOn(forkModule, 'forkSubagent').mockResolvedValue(forkResult(true, 'queued done'));
     const pool = new WorkerPool({ maxWorkers: 1, taskTimeout: 1000 });
-    (pool as any).workers.set('worker-existing', {
-      id: 'worker-existing',
-      status: 'running',
-      task: task('busy'),
-    });
+    // Fill the only worker with a running task, then queue another.
+    const running = pool.submit(task('busy'));
     const queued = pool.submit(task('queued-success'));
-    (pool as any).workers.set('worker-existing', {
-      id: 'worker-existing',
-      status: 'completed',
-      task: task('busy'),
-    });
-    await jest.advanceTimersByTimeAsync(100);
+    await Promise.all([running, queued]);
+
     await expect(queued).resolves.toMatchObject({ success: true, content: 'queued done' });
-    expect((pool as any).workers.get('worker-existing')).toMatchObject({
+    expect(forkModule.forkSubagent).toHaveBeenCalledTimes(2);
+    const worker = Array.from((pool as any).workers.values())[0];
+    expect(worker).toMatchObject({
       status: 'completed',
       task: expect.objectContaining({ id: 'queued-success' }),
     });
@@ -171,7 +165,8 @@ describe('agent/service branch coverage: WorkerPool', () => {
       .mockResolvedValue(forkResult(true, 'third'));
     const pool = new WorkerPool();
     (pool as any).workers.set('worker', { id: 'worker', status: 'running' });
-    (pool as any).taskQueue.push(task('next'));
+    // Queue items are now { task, forkOptions, resolve } wrappers.
+    (pool as any).taskQueue.push({ task: task('next'), forkOptions: undefined, resolve: () => {} });
     await (pool as any).executeTask('worker', task('current'));
     await Promise.resolve();
     await Promise.resolve();

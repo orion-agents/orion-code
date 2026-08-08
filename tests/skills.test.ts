@@ -267,6 +267,17 @@ description: No trigger skill
 ---
 No trigger prompt`);
 
+    // A skill placed inside the project dir (cwd) is within the allowed roots,
+    // so an explicit SKILL.md reference to it still loads (#33 B positive case).
+    // It is deliberately NOT configured, so it can only be activated via the
+    // explicit reference — isolating the path-load behavior.
+    const inProjectDir = join(projectDir, 'linked-skill');
+    writeSkill(inProjectDir, 'linked-skill', `---
+name: linked-skill
+description: In-project explicit skill
+---
+In-project prompt`);
+
     resetSkillsRegistry();
     const resolution = resolveSkillsForTurn({
       cwd: projectDir,
@@ -282,17 +293,19 @@ No trigger prompt`);
     expect(resolution.promptInjection).toContain('No trigger prompt');
     expect(hasMatchingSkill('/no-trigger-skill do the task')).toBe(true);
 
-    const markdownReference = `[$no-trigger-skill](${externalRoot}/no-trigger-skill/SKILL.md) inspect it`;
-    expect(parseSkillCommandInput(markdownReference)).toEqual({
-      skillName: 'no-trigger-skill',
-      skillPath: `${externalRoot}/no-trigger-skill/SKILL.md`,
+    // Bug #33 B positive case: an explicit reference to a skill inside the
+    // project cwd (not in the registry) still loads via its SKILL.md path.
+    const inProjectReference = `[$linked-skill](${join(inProjectDir, 'linked-skill', 'SKILL.md')}) inspect it`;
+    expect(parseSkillCommandInput(inProjectReference)).toEqual({
+      skillName: 'linked-skill',
+      skillPath: join(inProjectDir, 'linked-skill', 'SKILL.md'),
       task: 'inspect it',
     });
     expect(resolveSkillsForTurn({
       cwd: projectDir,
-      input: markdownReference,
+      input: inProjectReference,
       tools: ['read_file', 'write_file'].map(makeTool),
-    }).skills.map(skill => skill.name)).toEqual(['no-trigger-skill']);
+    }).skills.map(skill => skill.name)).toEqual(['linked-skill']);
 
     process.chdir(originalCwd);
     rmSync(tempRoot, { recursive: true, force: true });
@@ -302,7 +315,11 @@ No trigger prompt`);
     const tempRoot = mkdtempSync(join(tmpdir(), 'openhorse-skills-linked-'));
     const configDir = join(tempRoot, 'home');
     const projectDir = join(tempRoot, 'project');
-    const externalRoot = join(tempRoot, 'external root)');
+    // The skill lives inside the project dir (cwd) but NOT in .orion-code/skills,
+    // so it is unconfigured (absent from the registry) and can only be activated
+    // via an explicit SKILL.md reference. Under #33 B such a reference is allowed
+    // because it stays within the project root.
+    const inProjectRoot = join(projectDir, 'external root)');
     mkdirSync(configDir, { recursive: true });
     mkdirSync(projectDir, { recursive: true });
 
@@ -311,14 +328,14 @@ No trigger prompt`);
     writeFileSync(join(configDir, 'orion.json'), JSON.stringify({
       defaultModel: 'gpt-4o',
     }), 'utf-8');
-    writeSkill(externalRoot, 'chronicle', `---
+    writeSkill(inProjectRoot, 'chronicle', `---
 name: chronicle
 description: Screen history
 ---
 Chronicle prompt`);
 
     resetSkillsRegistry();
-    const skillFile = join(externalRoot, 'chronicle', 'SKILL.md');
+    const skillFile = join(inProjectRoot, 'chronicle', 'SKILL.md');
     const input = `[$chronicle](<${skillFile}>) inspect recent work (today)`;
     const resolution = resolveSkillsForTurn({
       cwd: projectDir,
@@ -334,7 +351,7 @@ Chronicle prompt`);
     });
     expect(resolution.skills.map(skill => skill.name)).toEqual(['chronicle']);
     expect(resolution.promptInjection).toContain('Chronicle prompt');
-    expect(resolution.skills[0].resourceRoot).toBe(join(externalRoot, 'chronicle'));
+    expect(resolution.skills[0].resourceRoot).toBe(join(inProjectRoot, 'chronicle'));
     expect(resolveSkillsForTurn({
       cwd: projectDir,
       input: `/${input}`,
@@ -358,9 +375,27 @@ Chronicle prompt`);
       output: expect.stringContaining('Skill chronicle is loaded.'),
     }));
 
-    const relativeInput = '[$chronicle](<../external root)/chronicle/SKILL.md>) inspect';
+    // A relative reference that stays inside the project cwd still loads.
+    const relativeInside = '[$chronicle](<external root)/chronicle/SKILL.md>) inspect';
+    expect(hasMatchingSkill(relativeInside, projectDir)).toBe(true);
+
     process.chdir(originalCwd);
-    expect(hasMatchingSkill(relativeInput, projectDir)).toBe(true);
+
+    // Bug #33 B: a reference that escapes the project cwd is rejected and must
+    // not load a skill from outside the allowed roots.
+    const escapedRoot = join(tempRoot, 'escaped');
+    writeSkill(escapedRoot, 'escapist', `---
+name: escapist
+description: Escapes the project root
+---
+Escapist prompt`);
+    const escapedInput = `[$escapist](<${join(escapedRoot, 'escapist', 'SKILL.md')}>) inspect`;
+    expect(hasMatchingSkill(escapedInput, projectDir)).toBe(false);
+    expect(resolveSkillsForTurn({
+      cwd: projectDir,
+      input: escapedInput,
+      tools: ['read_file', 'write_file'].map(makeTool),
+    }).skills).toEqual([]);
 
     const oversizedRoot = join(tempRoot, 'oversized');
     writeSkill(oversizedRoot, 'oversized', `---

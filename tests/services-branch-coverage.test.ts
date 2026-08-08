@@ -387,12 +387,12 @@ describe('services branch coverage: model context', () => {
       reservedOutputTokens: 2000,
       safetyMarginTokens: 1024,
     });
-    expect(resolveContextBudget('gpt-4', 999999).reservedOutputTokens).toBe(8192);
+    expect(resolveContextBudget('gpt-4', 999999).reservedOutputTokens).toBe(4096);
     expect(resolveContextBudget('gpt-4', -4).reservedOutputTokens).toBe(0);
     expect(resolveContextBudget('gpt-4', 10.6).reservedOutputTokens).toBe(11);
-    expect(resolveContextBudget('gpt-4', Number.NaN).reservedOutputTokens).toBe(8192);
+    expect(resolveContextBudget('gpt-4', Number.NaN).reservedOutputTokens).toBe(4096);
     expect(resolveContextBudget('totally-unknown').reservedOutputTokens).toBe(8192);
-    expect(resolveContextBudget('gpt-4', 999999).safeInputBudget).toBe(1);
+    expect(resolveContextBudget('gpt-4', 999999).safeInputBudget).toBe(3072);
   });
 
   test('creates default and customized usage snapshots with clamping', () => {

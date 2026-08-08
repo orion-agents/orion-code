@@ -171,6 +171,7 @@ export const createGoalTool: OpenHorseTool = buildTool({
   },
   isReadOnly: () => false,
   isConcurrencySafe: () => false,
+  checkPermissions: () => ({ behavior: 'allow', reason: 'Internal Goal state update' }),
 });
 
 export const updateGoalTool: OpenHorseTool = buildTool({
@@ -221,7 +222,12 @@ export const updateGoalTool: OpenHorseTool = buildTool({
     const coord = context.coordinator;
     const status = args.status as 'complete' | 'blocked';
     const goal = coord.goal;
-    if (!goal) return { success: false, output: 'No active goal to update.', error: 'No active goal to update.' };
+    if (!goal)
+      return {
+        success: false,
+        output: 'No active goal to update.',
+        error: 'No active goal to update.',
+      };
     if (goal.status !== 'active')
       return {
         success: false,
@@ -351,6 +357,7 @@ export const updateGoalTool: OpenHorseTool = buildTool({
   },
   isReadOnly: () => false,
   isConcurrencySafe: () => false,
+  checkPermissions: () => ({ behavior: 'allow', reason: 'Internal Goal state update' }),
 });
 
 const ALLOWED_DERIVED_EVIDENCE = new Set<GoalEvidenceKind>([
@@ -402,7 +409,11 @@ export const updateGoalPlanTool: OpenHorseTool = buildTool({
     const context = requireContext();
     const goal = context.coordinator.goal;
     if (!goal || goal.status !== 'active') {
-      return { success: false, output: 'No active goal to plan.', error: 'No active goal to plan.' };
+      return {
+        success: false,
+        output: 'No active goal to plan.',
+        error: 'No active goal to plan.',
+      };
     }
     const phase = String(args.phase ?? '').trim();
     const rawSteps = Array.isArray(args.steps)
@@ -420,7 +431,11 @@ export const updateGoalPlanTool: OpenHorseTool = buildTool({
       done: step.done === true,
     }));
     if (steps.some(step => !step.description)) {
-      return { success: false, output: 'Every plan step requires a description.', error: 'Every plan step requires a description.' };
+      return {
+        success: false,
+        output: 'Every plan step requires a description.',
+        error: 'Every plan step requires a description.',
+      };
     }
     const rawCriteria = Array.isArray(args.derived_criteria)
       ? (args.derived_criteria as Array<Record<string, unknown>>)
@@ -457,6 +472,7 @@ export const updateGoalPlanTool: OpenHorseTool = buildTool({
   },
   isReadOnly: () => false,
   isConcurrencySafe: () => false,
+  checkPermissions: () => ({ behavior: 'allow', reason: 'Internal Goal state update' }),
 });
 
 export const GOAL_TOOLS: OpenHorseTool[] = [

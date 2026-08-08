@@ -29,7 +29,8 @@ export class ProviderResilienceCoordinator {
     ctx: ProviderRequestContext,
     transport: (
       attempt: number,
-      signal?: AbortSignal
+      signal?: AbortSignal,
+      model?: string
     ) => Promise<{
       response: T;
       usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
@@ -58,6 +59,8 @@ export class ProviderResilienceCoordinator {
     const streamState: StreamAttemptState | null = null;
     const startedAt = Date.now();
     let lastError: unknown;
+    let currentModel = ctx.requestedModel;
+    let fallbackUsed = false;
 
     for (let attempt = 1; attempt <= this.config.maxTotalAttempts; attempt++) {
       // Check elapsed budget
@@ -72,18 +75,18 @@ export class ProviderResilienceCoordinator {
         throw new ProviderRetryExhaustedError(diagnostics, 'aborted by signal');
       }
 
-      const attemptRecord = this.startAttempt(ctx, attempt, diagnostics);
+      const attemptRecord = this.startAttempt(ctx, attempt, diagnostics, currentModel);
       diagnostics.attempts.push(attemptRecord);
 
       try {
-        const result = await transport(attempt, ctx.abortSignal);
+        const result = await transport(attempt, ctx.abortSignal, currentModel);
 
         attemptRecord.outcome = 'succeeded';
         attemptRecord.endedAt = Date.now();
         if (result.usage) attemptRecord.usage = result.usage;
         if (result.providerRequestId) attemptRecord.providerRequestId = result.providerRequestId;
 
-        diagnostics.finalModel = ctx.requestedModel;
+        diagnostics.finalModel = currentModel;
         diagnostics.finalState = streamState ? 'recovered' : 'succeeded';
         if (result.usage) diagnostics.usageConfidence = 'exact';
 
@@ -95,11 +98,28 @@ export class ProviderResilienceCoordinator {
 
         const classification = classifyProviderError(error, attemptRecord.semanticDeltaSeen);
         attemptRecord.failureKind = classification.kind;
-        attemptRecord.retryDisposition = classification.disposition;
+        const shouldFallback =
+          !fallbackUsed &&
+          typeof ctx.fallbackModel === 'string' &&
+          ctx.fallbackModel.length > 0 &&
+          ctx.fallbackModel !== currentModel &&
+          [
+            'rate_limit',
+            'provider_overloaded',
+            'server_error',
+            'network_error',
+            'connect_timeout',
+            'read_timeout',
+            'connection_reset',
+            'quota_or_credit_exhausted',
+            'model_not_found',
+          ].includes(classification.kind);
+        const disposition = shouldFallback ? 'fallback_once' : classification.disposition;
+        attemptRecord.retryDisposition = disposition;
         attemptRecord.retryAfterMs = classification.retryAfterMs;
         attemptRecord.status = classification.status;
 
-        switch (classification.disposition) {
+        switch (disposition) {
           case 'fail_fast':
             diagnostics.finalState = 'failed_fast';
             throw new ProviderRetryExhaustedError(
@@ -123,7 +143,7 @@ export class ProviderResilienceCoordinator {
             diagnostics.totalBackoffMs += delay;
             diagnostics.retryCount++;
 
-            if (classification.disposition === 'recover_stream') {
+            if (disposition === 'recover_stream') {
               diagnostics.recoveryCount++;
             }
 
@@ -131,7 +151,9 @@ export class ProviderResilienceCoordinator {
             break;
 
           case 'fallback_once':
+            fallbackUsed = true;
             diagnostics.fallbackCount++;
+            currentModel = ctx.fallbackModel as string;
             break;
 
           case 'defer_until_cooldown':
@@ -156,13 +178,14 @@ export class ProviderResilienceCoordinator {
   private startAttempt(
     ctx: ProviderRequestContext,
     attempt: number,
-    _diag: ProviderRequestDiagnosticsV2
+    diag: ProviderRequestDiagnosticsV2,
+    model: string
   ): ProviderAttemptRecord {
     return {
       attemptId: randomUUID().slice(0, 8),
       logicalRequestId: ctx.logicalRequestId,
       attemptNumber: attempt,
-      model: ctx.requestedModel,
+      model,
       startedAt: Date.now(),
       endedAt: 0,
       semanticDeltaSeen: false,

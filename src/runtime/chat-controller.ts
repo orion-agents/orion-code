@@ -2195,6 +2195,10 @@ export class AgentChatController {
         },
         sessionId,
         turnId,
+        // Tools that fan out to other tools (batch_read) have to re-run the
+        // permission gate per sub-step; they need the mode and the allowlist.
+        permissionMode: snapshot.permissionMode,
+        toolAllowlist: this.resolveToolAllowlist(),
       });
     };
 

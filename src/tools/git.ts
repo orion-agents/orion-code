@@ -52,6 +52,50 @@ function parseStagedPaths(output: string): string[] {
   return output.split('\0').filter(Boolean);
 }
 
+/** One entry of `git status --porcelain -z`: the XY code plus its path. */
+interface PorcelainEntry {
+  code: string;
+  path: string;
+}
+
+/**
+ * The XY codes of `git status` porcelain v1 that mean "unmerged".
+ *
+ * None of them carries an `M`/`A`/`D` in the position the previous parser
+ * inspected, so every conflicted file used to vanish from the tool output and
+ * the agent could not tell a merge conflict from a clean tree.
+ */
+const UNMERGED_CODES = new Set(['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU']);
+
+/**
+ * Parse `git status --porcelain -z` into entries.
+ *
+ * `-z` is what makes this safe: records are NUL-separated and paths are never
+ * quoted or backslash-escaped, so non-ASCII filenames survive `core.quotePath`
+ * (on by default). Rename and copy records carry a second NUL-terminated field
+ * -- the original path -- which must be consumed or it is read as a bogus entry.
+ */
+function parsePorcelainStatus(output: string): PorcelainEntry[] {
+  const records = output.split('\0');
+  const entries: PorcelainEntry[] = [];
+
+  for (let index = 0; index < records.length; index++) {
+    const record = records[index];
+    // A porcelain record is "XY <path>": two status columns, a space, the path.
+    if (record.length < 4) continue;
+
+    const code = record.slice(0, 2);
+    entries.push({ code, path: record.slice(3) });
+
+    // `R`/`C` are followed by the source path as its own NUL-terminated field.
+    if (code.includes('R') || code.includes('C')) {
+      index++;
+    }
+  }
+
+  return entries;
+}
+
 async function execGit(command: string, cwd?: string, timeout = 30000): Promise<ExecResult> {
   return execGitArgs(command.split(' '), cwd, timeout);
 }
@@ -157,32 +201,52 @@ export const gitStatusTool: OpenHorseTool = buildTool({
   execute: async args => {
     const cwd = args.cwd as string | undefined;
 
-    // git status --porcelain
-    const statusResult = await execGit('status --porcelain', cwd);
+    // `-z` gives NUL-separated records and, per git-status(1), disables path
+    // quoting entirely -- so a non-ASCII filename arrives verbatim instead of
+    // octal-escaped. `core.quotePath=false` is belt-and-braces for old builds.
+    const statusResult = await execGitArgs(
+      ['-c', 'core.quotePath=false', 'status', '--porcelain', '-z'],
+      cwd
+    );
     if (!statusResult.success) {
-      return { success: false, output: `git status failed: ${statusResult.error}`, error: `git status failed: ${statusResult.error}` };
+      return {
+        success: false,
+        output: `git status failed: ${statusResult.error}`,
+        error: `git status failed: ${statusResult.error}`,
+      };
     }
 
     // 解析状态
-    const lines = statusResult.output.split('\n').filter(l => l.trim());
+    const entries = parsePorcelainStatus(statusResult.output);
 
     const untracked: string[] = [];
     const modified: string[] = [];
     const staged: string[] = [];
+    const conflicted: string[] = [];
 
-    for (const line of lines) {
-      const code = line.slice(0, 2);
-      const file = line.slice(3).trim();
-
+    for (const { code, path: file } of entries) {
       if (code === '??') {
         untracked.push(file);
-      } else if (code.includes('M') || code.includes('A') || code.includes('D')) {
-        if (code[0] !== ' ' && code[0] !== '?') {
-          staged.push(file); // 已暂存
-        }
-        if (code[1] !== ' ') {
-          modified.push(file); // 工作区修改但未暂存
-        }
+        continue;
+      }
+
+      // Unmerged paths are neither "staged" nor "modified": committing them
+      // would commit conflict markers, so they get their own bucket and are
+      // surfaced first in the output.
+      if (UNMERGED_CODES.has(code)) {
+        conflicted.push(file);
+        continue;
+      }
+
+      if (code === '!!') continue; // ignored, only present with --ignored
+
+      // `R` (rename), `C` (copy) and `T` (typechange) used to match neither
+      // branch and were dropped silently while still inflating `total`.
+      if (code[0] !== ' ' && code[0] !== '?') {
+        staged.push(file); // 已暂存
+      }
+      if (code[1] !== ' ') {
+        modified.push(file); // 工作区修改但未暂存
       }
     }
 
@@ -212,11 +276,15 @@ export const gitStatusTool: OpenHorseTool = buildTool({
     }
 
     const summary = {
-      clean: lines.length === 0,
+      clean: entries.length === 0,
+      // Listed first so a conflict is impossible to miss: an agent that reads
+      // only the head of this object must still see that a merge is in progress.
+      conflicted,
+      hasConflicts: conflicted.length > 0,
       untracked,
       modified,
       staged,
-      total: lines.length,
+      total: entries.length,
       ahead,
       behind,
     };
@@ -655,7 +723,7 @@ export const gitCommitTool: OpenHorseTool = buildTool({
 
 工作流程：
 1. 检查 git status --porcelain
-2. 仅对显式 paths 暂存（或 all=true 暂存全部已追踪变更）
+2. 仅对显式 paths 暂存
 3. git commit -m <message>
 4. 验证 commit 成功
 
@@ -671,7 +739,7 @@ export const gitCommitTool: OpenHorseTool = buildTool({
       },
       all: {
         type: 'boolean',
-        description: '暂存所有已追踪文件的变更（不含未追踪文件）',
+        description: '已废弃且禁止；必须使用 paths 精确列出文件',
       },
       cwd: { type: 'string', description: '工作目录（可选）' },
     },
@@ -688,6 +756,13 @@ export const gitCommitTool: OpenHorseTool = buildTool({
         success: false,
         output: 'git_commit requires a commit message',
         error: 'git_commit requires a commit message',
+      };
+    }
+    if (all) {
+      return {
+        success: false,
+        output: '',
+        error: 'git_commit all=true is disabled; provide an explicit paths allowlist',
       };
     }
     if (rawPaths !== undefined && !Array.isArray(rawPaths)) {
@@ -721,49 +796,113 @@ export const gitCommitTool: OpenHorseTool = buildTool({
     log.push('🔍 Checking git status...');
     const changes = await checkUncommittedChanges(cwd);
     if (!changes.success) {
-      return { success: false, output: log.join('\n'), error: `git status failed: ${changes.error}` };
+      return {
+        success: false,
+        output: log.join('\n'),
+        error: `git status failed: ${changes.error}`,
+      };
     }
-    if (!changes.hasChanges && stagePaths.length === 0 && !all) {
+    if (!changes.hasChanges && stagePaths.length === 0) {
       return { success: true, output: '✓ Working directory clean, nothing to commit' };
     }
 
-    if (all) {
-      log.push('📦 Staging all tracked changes...');
-      const addResult = await execGit('add -u', cwd);
-      if (!addResult.success) {
-        return { success: false, output: log.join('\n'), error: `git add -u failed: ${addResult.error}` };
+    if (stagePaths.length > 0) {
+      const initialStagedResult = await execGitArgs(['diff', '--cached', '--name-only', '-z'], cwd);
+      if (!initialStagedResult.success) {
+        return {
+          success: false,
+          output: log.join('\n'),
+          error: `Initial staged-file verification failed: ${initialStagedResult.error}`,
+        };
       }
-    } else if (stagePaths.length > 0) {
+      const initialStaged = parseStagedPaths(initialStagedResult.output);
+      const allowed = new Set(stagePaths);
+      const unexpectedInitial = initialStaged.filter(path => !allowed.has(path));
+      if (unexpectedInitial.length > 0) {
+        return {
+          success: false,
+          output: log.join('\n'),
+          error: `Pre-staged files fall outside the explicit allowlist: ${unexpectedInitial.join(', ')}`,
+        };
+      }
+
+      const indexSnapshotResult = await execGitArgs(['write-tree'], cwd);
+      if (!indexSnapshotResult.success || !/^[0-9a-f]{40,64}$/.test(indexSnapshotResult.output)) {
+        return {
+          success: false,
+          output: log.join('\n'),
+          error: `Unable to snapshot the Git index before staging: ${indexSnapshotResult.error || 'invalid tree id'}`,
+        };
+      }
+      const restoreIndex = async (): Promise<string | undefined> => {
+        const result = await execGitArgs(['read-tree', indexSnapshotResult.output], cwd);
+        return result.success ? undefined : result.error || 'unknown index restore error';
+      };
+
       log.push(`📦 Staging ${stagePaths.length} explicit path(s)...`);
       const addResult = await execGitArgs(['add', '--', ...stagePaths], cwd);
       if (!addResult.success) {
-        return { success: false, output: log.join('\n'), error: `git add failed: ${addResult.error}` };
+        const restoreError = await restoreIndex();
+        return {
+          success: false,
+          output: log.join('\n'),
+          error: restoreError
+            ? `git add failed: ${addResult.error}; index rollback failed: ${restoreError}`
+            : `git add failed: ${addResult.error}; index restored`,
+        };
       }
+      const stagedResult = await execGitArgs(['diff', '--cached', '--name-only', '-z'], cwd);
+      const staged = stagedResult.success ? parseStagedPaths(stagedResult.output) : [];
+      const unexpected = staged.filter(path => !allowed.has(path));
+      const missing = stagePaths.filter(path => !staged.includes(path));
+      if (!stagedResult.success || unexpected.length > 0 || missing.length > 0) {
+        const restoreError = await restoreIndex();
+        return {
+          success: false,
+          output: log.join('\n'),
+          error: [
+            'Staged files do not exactly match the explicit allowlist',
+            unexpected.length > 0 ? `unexpected: ${unexpected.join(', ')}` : '',
+            missing.length > 0 ? `missing: ${missing.join(', ')}` : '',
+            !stagedResult.success ? `verification failed: ${stagedResult.error}` : '',
+            restoreError ? `index rollback failed: ${restoreError}` : 'index restored',
+          ]
+            .filter(Boolean)
+            .join('; '),
+        };
+      }
+      log.push(`  ✓ Verified ${staged.length} staged file(s)`);
+      log.push(`  Preview: ${staged.join(', ')}`);
+
+      const commitResult = await execGitArgs(['commit', '-m', message], cwd);
+      if (!commitResult.success) {
+        if (commitResult.output.includes('nothing to commit')) {
+          return { success: true, output: log.join('\n') + '\n  ⚠ Nothing new to commit' };
+        }
+        const restoreError = await restoreIndex();
+        return {
+          success: false,
+          output: log.join('\n'),
+          error: [
+            `git commit failed: ${commitResult.error}`,
+            restoreError ? `index rollback failed: ${restoreError}` : 'index restored',
+          ].join('; '),
+        };
+      }
+      log.push('  ✓ Commit successful');
+
+      const logResult = await execGit('log --oneline -1', cwd);
+      if (logResult.success) log.push(`  ✓ Latest commit: ${logResult.output.split('\n')[0]}`);
+      return { success: true, output: log.join('\n') };
     } else {
       return {
         success: false,
         output: log.join('\n'),
-        error: 'No changes staged: provide paths or set all=true',
+        error: 'No changes staged: provide an explicit paths allowlist',
       };
     }
-
-    log.push(`📝 Committing: "${message.slice(0, 50)}..."`);
-    const commitResult = await execGitArgs(['commit', '-m', message], cwd);
-    if (!commitResult.success) {
-      await execGit('reset', cwd);
-      if (commitResult.output.includes('nothing to commit')) {
-        return { success: true, output: log.join('\n') + '\n  ⚠ Nothing new to commit' };
-      }
-      return { success: false, output: log.join('\n'), error: `git commit failed: ${commitResult.error}` };
-    }
-    log.push('  ✓ Commit successful');
-
-    const logResult = await execGit('log --oneline -1', cwd);
-    if (logResult.success) log.push(`  ✓ Latest commit: ${logResult.output.split('\n')[0]}`);
-
-    return { success: true, output: log.join('\n') };
   },
-  isDestructive: () => false,
+  isDestructive: () => true,
   isConcurrencySafe: () => false,
   checkPermissions: () => ({
     behavior: 'ask',
@@ -778,7 +917,8 @@ export const gitCommitTool: OpenHorseTool = buildTool({
 
 export const gitDiffTool: OpenHorseTool = buildTool({
   name: 'git_diff',
-  description: '显示 Git 差异。默认工作区 vs 暂存区；staged=true 显示已暂存 vs HEAD；可指定 paths。',
+  description:
+    '显示 Git 差异。默认工作区 vs 暂存区；staged=true 显示已暂存 vs HEAD；可指定 paths。',
   parameters: {
     type: 'object',
     properties: {
@@ -794,7 +934,23 @@ export const gitDiffTool: OpenHorseTool = buildTool({
     const stat = (args.stat as boolean) ?? false;
     const rawPaths = args.paths;
     const cwd = args.cwd as string | undefined;
-    const paths = Array.isArray(rawPaths) ? (rawPaths as string[]).map(String) : [];
+    if (rawPaths !== undefined && !Array.isArray(rawPaths)) {
+      return { success: false, output: '', error: 'git_diff paths must be an array of strings' };
+    }
+    const rawPathValues = (rawPaths as unknown[] | undefined) ?? [];
+    if (rawPathValues.some(path => typeof path !== 'string')) {
+      return { success: false, output: '', error: 'git_diff paths must contain only strings' };
+    }
+    const normalizedPaths = rawPathValues.map(path => normalizeStagePath(path as string));
+    if (normalizedPaths.some(path => path === null)) {
+      return {
+        success: false,
+        output: '',
+        error:
+          'git_diff paths must be exact repository-relative files without glob or pathspec syntax',
+      };
+    }
+    const paths = [...new Set(normalizedPaths as string[])];
 
     const cmd = ['diff', '--no-color'];
     if (stat) cmd.push('--stat');
@@ -803,7 +959,11 @@ export const gitDiffTool: OpenHorseTool = buildTool({
 
     const result = await execGitArgs(cmd, cwd, 60000);
     if (!result.success) {
-      return { success: false, output: `git diff failed: ${result.error}`, error: `git diff failed: ${result.error}` };
+      return {
+        success: false,
+        output: `git diff failed: ${result.error}`,
+        error: `git diff failed: ${result.error}`,
+      };
     }
     const MAX = 20000;
     const out =
@@ -845,7 +1005,11 @@ export const gitLogTool: OpenHorseTool = buildTool({
 
     const result = await execGitArgs(cmd, cwd, 30000);
     if (!result.success) {
-      return { success: false, output: `git log failed: ${result.error}`, error: `git log failed: ${result.error}` };
+      return {
+        success: false,
+        output: `git log failed: ${result.error}`,
+        error: `git log failed: ${result.error}`,
+      };
     }
     return { success: true, output: result.output || 'No commits' };
   },
@@ -892,7 +1056,11 @@ action:
     if (action === 'list') {
       const result = await execGit('branch -vv', cwd);
       if (!result.success) {
-        return { success: false, output: `git branch -vv failed: ${result.error}`, error: `git branch -vv failed: ${result.error}` };
+        return {
+          success: false,
+          output: `git branch -vv failed: ${result.error}`,
+          error: `git branch -vv failed: ${result.error}`,
+        };
       }
       return { success: true, output: result.output || 'No branches' };
     }
@@ -900,20 +1068,50 @@ action:
     if (!name || typeof name !== 'string') {
       return { success: false, output: '', error: `git_branch ${action} requires a branch name` };
     }
+    if (
+      name.startsWith('-') ||
+      name.includes('\0') ||
+      name.includes('\r') ||
+      name.includes('\n') ||
+      name.includes('..') ||
+      name.endsWith('/') ||
+      name.endsWith('.')
+    ) {
+      return { success: false, output: '', error: 'git_branch name is not a safe branch name' };
+    }
 
     if (action === 'create') {
       const result = await execGitArgs(['branch', name], cwd);
       if (!result.success) {
-        return { success: false, output: log.join('\n'), error: `git branch create failed: ${result.error}` };
+        return {
+          success: false,
+          output: log.join('\n'),
+          error: `git branch create failed: ${result.error}`,
+        };
       }
       log.push(`✓ Created branch ${name}`);
       return { success: true, output: log.join('\n') };
     }
 
     if (action === 'switch') {
-      const result = await execGitArgs(['checkout', name], cwd);
+      // `git checkout <name>` treats a name that is not a branch as a
+      // *pathspec* and overwrites that working-tree file with the index
+      // content -- an unrecoverable loss of uncommitted work (no reflog, no
+      // stash, no dangling object). A path like `src/index.ts` passes every
+      // branch-name check above, so the guard has to be in the argv.
+      //
+      // `git switch` refuses pathspecs by design. `git checkout <name> --` is
+      // the equivalent for git < 2.23, where `switch` does not exist yet.
+      let result = await execGitArgs(['switch', name], cwd);
+      if (!result.success && /is not a git command|unknown option/i.test(result.error ?? '')) {
+        result = await execGitArgs(['checkout', name, '--'], cwd);
+      }
       if (!result.success) {
-        return { success: false, output: log.join('\n'), error: `git checkout failed: ${result.error}` };
+        return {
+          success: false,
+          output: log.join('\n'),
+          error: `git switch failed: ${result.error}`,
+        };
       }
       log.push(`✓ Switched to ${name}`);
       return { success: true, output: log.join('\n') };
@@ -925,20 +1123,38 @@ action:
         cwd
       );
       if (!result.success) {
-        return { success: false, output: log.join('\n'), error: `git branch delete failed: ${result.error}` };
+        return {
+          success: false,
+          output: log.join('\n'),
+          error: `git branch delete failed: ${result.error}`,
+        };
       }
       log.push(`✓ Deleted branch ${name}`);
       return { success: true, output: log.join('\n') };
     }
 
-    return { success: false, output: `Unknown git_branch action: ${action}`, error: `Unknown git_branch action: ${action}` };
+    return {
+      success: false,
+      output: `Unknown git_branch action: ${action}`,
+      error: `Unknown git_branch action: ${action}`,
+    };
   },
-  isDestructive: () => false,
+  isReadOnly: args => ((args.action as string | undefined) ?? 'list') === 'list',
+  isDestructive: args => ((args.action as string | undefined) ?? 'list') !== 'list',
   isConcurrencySafe: () => false,
   checkPermissions: args => {
     const action = (args.action as string) ?? 'list';
     if (action === 'list') return { behavior: 'allow' };
-    return { behavior: 'ask', reason: `git branch ${action} will modify local branch state` };
+    const name = typeof args.name === 'string' ? args.name : '<unnamed>';
+    // Spell out the consequence per action: "will modify local branch state"
+    // told the user nothing about a switch discarding uncommitted work.
+    const reason =
+      action === 'switch'
+        ? `git switch ${name} will change the checked-out branch and update working-tree files`
+        : action === 'delete'
+          ? `git branch delete will remove the local branch ${name}`
+          : `git branch ${action} will modify local branch state`;
+    return { behavior: 'ask', reason };
   },
   userFacingName: args => `Git Branch: ${args.action ?? 'list'}`,
 });

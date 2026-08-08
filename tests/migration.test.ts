@@ -2,7 +2,7 @@
  * Migration tool tests.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -41,6 +41,36 @@ describe('brand migration', () => {
       expect(result.manifest.copiedFiles).toBeGreaterThan(0);
       expect(result.manifest.sourceSnapshot.fileCount).toBe(3);
       expect(existsSync(join(home, '.orion-code'))).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('dry-run does not block a later real migration (Issue #48)', () => {
+    const home = makeHome();
+    const sourceDir = join(home, '.openhorse');
+    mkdirSync(sourceDir, { recursive: true });
+    writeFileSync(join(sourceDir, 'openhorse.json'), JSON.stringify({ defaultModel: 'gpt-4o' }), 'utf-8');
+    writeFileSync(join(sourceDir, 'OPENHORSE.md'), '# User Instructions', 'utf-8');
+    // A verbatim directory: on the buggy code the dry run copied this straight
+    // into the target dir, which then blocked the real migration.
+    const skillsDir = join(sourceDir, 'skills');
+    mkdirSync(skillsDir, { recursive: true });
+    writeFileSync(join(skillsDir, 'SKILL.md'), '---\nname: demo\n---', 'utf-8');
+
+    try {
+      // Default (dry-run) must not touch the real target directory.
+      const dry = migrateBrand({ dryRun: true, home });
+      expect(dry.success).toBe(true);
+      expect(existsSync(join(home, '.orion-code'))).toBe(false);
+
+      // A subsequent real migration must now succeed (it was previously blocked
+      // because the dry run had written into the target dir).
+      const real = migrateBrand({ dryRun: false, home });
+      expect(real.success).toBe(true);
+      expect(real.manifest.verified).toBe(true);
+      expect(existsSync(join(home, '.orion-code', 'orion.json'))).toBe(true);
+      expect(existsSync(join(home, '.orion-code', 'skills', 'SKILL.md'))).toBe(true);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
@@ -100,39 +130,7 @@ describe('brand migration', () => {
     }
   });
 
-  test('migrates env file when --include-env is set', () => {
-    const home = makeHome();
-    const sourceDir = join(home, '.openhorse');
-    mkdirSync(sourceDir, { recursive: true });
-    writeFileSync(join(sourceDir, 'openhorse.json'), '{}', 'utf-8');
-
-    const envPath = join(home, '.openhorse.env');
-    writeFileSync(envPath, [
-      'OPENHORSE_API_KEY=sk-old-key',
-      'OPENHORSE_MODEL=gpt-4o',
-      'OTHER_VAR=keep-me',
-      '# comment line',
-    ].join('\n'), 'utf-8');
-
-    try {
-      const result = migrateBrand({ includeEnv: true, home });
-      expect(result.success).toBe(true);
-
-      const targetEnvPath = join(home, '.orion-code.env');
-      expect(existsSync(targetEnvPath)).toBe(true);
-      const migrated = readFileSync(targetEnvPath, 'utf8');
-      expect(migrated).toContain('ORION_CODE_API_KEY=sk-old-key');
-      expect(migrated).toContain('ORION_CODE_MODEL=gpt-4o');
-      expect(migrated).toContain('OTHER_VAR=keep-me');
-      expect(migrated).toContain('# comment line');
-      expect(migrated).not.toContain('OPENHORSE_API_KEY');
-      expect(migrated).not.toContain('OPENHORSE_MODEL');
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  test('warns when env file exists but --include-env is not set', () => {
+  test('does not migrate a legacy .openhorse.env file', () => {
     const home = makeHome();
     const sourceDir = join(home, '.openhorse');
     mkdirSync(sourceDir, { recursive: true });
@@ -142,9 +140,9 @@ describe('brand migration', () => {
     try {
       const result = migrateBrand({ home });
       expect(result.success).toBe(true);
-      const envWarning = result.manifest.warnings.find(w => w.includes('.openhorse.env'));
-      expect(envWarning).toBeDefined();
+      // .env migration was removed; the legacy env file is left untouched.
       expect(existsSync(join(home, '.orion-code.env'))).toBe(false);
+      expect(result.manifest.warnings.find(w => w.includes('.openhorse.env'))).toBeUndefined();
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

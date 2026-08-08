@@ -4,7 +4,12 @@
 
 import { buildTool } from '../src/framework/tool';
 import type { OpenHorseTool, ToolContext } from '../src/framework/tool';
-import { prepareToolCalls, executeToolCalls, inspectSchedule } from '../src/framework/tool-scheduler';
+import {
+  prepareToolCalls,
+  executeToolCalls,
+  inspectSchedule,
+  resolveEffectivePermission,
+} from '../src/framework/tool-scheduler';
 import type { Message } from '../src/services/llm';
 
 const readOnlyTool: OpenHorseTool = buildTool({
@@ -16,6 +21,7 @@ const readOnlyTool: OpenHorseTool = buildTool({
     required: ['path'],
   },
   execute: async () => ({ success: true, output: 'file content' }),
+  isReadOnly: () => true,
   isConcurrencySafe: () => true,
 });
 
@@ -28,6 +34,9 @@ const writeTool: OpenHorseTool = buildTool({
     required: ['path'],
   },
   execute: async () => ({ success: true, output: 'edited' }),
+  isDestructive: () => true,
+  isFileEdit: () => true,
+  checkPermissions: () => ({ behavior: 'ask', reason: 'Edit operation' }),
 });
 
 const askTool: OpenHorseTool = buildTool({
@@ -39,6 +48,7 @@ const askTool: OpenHorseTool = buildTool({
     required: ['query'],
   },
   execute: async () => ({ success: true, output: 'results' }),
+  isReadOnly: () => true,
   checkPermissions: () => ({ behavior: 'ask', reason: 'External query' }),
 });
 
@@ -67,6 +77,7 @@ const askConcurrentTool: OpenHorseTool = buildTool({
     required: ['url'],
   },
   execute: async () => ({ success: true, output: 'fetched' }),
+  isReadOnly: () => true,
   isConcurrencySafe: () => true,
   checkPermissions: () => ({ behavior: 'ask', reason: 'External fetch' }),
 });
@@ -92,6 +103,23 @@ const toolCalls = (names: string[]): NonNullable<Message['tool_calls']> =>
 
 const tools = [readOnlyTool, writeTool, askTool, askFileEditTool, askConcurrentTool];
 
+const stateWriteTool: OpenHorseTool = buildTool({
+  name: 'state_write',
+  description: 'Mutate application state',
+  parameters: { type: 'object', properties: {}, required: [] },
+  execute: async () => ({ success: true, output: 'written' }),
+  isReadOnly: () => false,
+});
+
+const dangerousTool: OpenHorseTool = buildTool({
+  name: 'dangerous_action',
+  description: 'Perform a destructive action',
+  parameters: { type: 'object', properties: {}, required: [] },
+  execute: async () => ({ success: true, output: 'destroyed' }),
+  isDestructive: () => true,
+  checkPermissions: () => ({ behavior: 'ask', reason: 'Dangerous operation' }),
+});
+
 describe('prepareToolCalls', () => {
   test('marks read-only concurrent-safe tools as parallel', () => {
     const prepared = prepareToolCalls({
@@ -99,6 +127,7 @@ describe('prepareToolCalls', () => {
       tools,
       toolExecutor: async () => '',
       toolContext,
+      permissionMode: 'acceptEdits',
     });
 
     expect(prepared).toHaveLength(2);
@@ -265,6 +294,7 @@ describe('executeToolCalls', () => {
       tools,
       toolExecutor: async () => '',
       toolContext,
+      permissionMode: 'acceptEdits',
     });
 
     const results: any[] = [];
@@ -278,6 +308,7 @@ describe('executeToolCalls', () => {
         log.push(`end:${label}`);
         return JSON.stringify({ success: true, output: label });
       },
+      permissionMode: 'acceptEdits',
     })) {
       results.push(executed);
     }
@@ -296,6 +327,7 @@ describe('executeToolCalls', () => {
       tools,
       toolExecutor: async () => JSON.stringify({ success: true, output: 'ok' }),
       toolContext,
+      permissionMode: 'acceptEdits',
     });
 
     const results: any[] = [];
@@ -304,6 +336,7 @@ describe('executeToolCalls', () => {
         executionOrder.push('exec');
         return JSON.stringify({ success: true, output: 'ok' });
       },
+      permissionMode: 'acceptEdits',
     })) {
       results.push(executed);
     }
@@ -360,23 +393,25 @@ describe('executeToolCalls', () => {
     const prepared = prepareToolCalls({
       toolCalls: toolCalls(['read_file']),
       tools,
-      toolExecutor: async () => JSON.stringify({
-        success: true,
-        output: 'artifact output',
-        outputBytes: 12,
-        artifactRef: { id: 'read_file-123', outputBytes: 1200 },
-      }),
+      toolExecutor: async () =>
+        JSON.stringify({
+          success: true,
+          output: 'artifact output',
+          outputBytes: 12,
+          artifactRef: { id: 'read_file-123', outputBytes: 1200 },
+        }),
       toolContext,
     });
 
     const results: any[] = [];
     for await (const executed of executeToolCalls(prepared, {
-      toolExecutor: async () => JSON.stringify({
-        success: true,
-        output: 'artifact output',
-        outputBytes: 12,
-        artifactRef: { id: 'read_file-123', outputBytes: 1200 },
-      }),
+      toolExecutor: async () =>
+        JSON.stringify({
+          success: true,
+          output: 'artifact output',
+          outputBytes: 12,
+          artifactRef: { id: 'read_file-123', outputBytes: 1200 },
+        }),
     })) {
       results.push(executed);
     }
@@ -434,13 +469,14 @@ describe('executeToolCalls', () => {
       results.push(executed);
     }
 
-    expect(results[0].success).toBe(true);
+    expect(results[0].success).toBe(false);
     expect(results[0].permissionDecision).toMatchObject({
       behavior: 'ask',
-      approved: true,
-      source: 'config_allow',
+      approved: false,
+      source: 'config_allow_blocked',
       reason: 'External query',
     });
+    expect(results[0].error).toContain('toolConfirmation=allow cannot approve');
   });
 
   test('records user permission decision for interactive confirmation', async () => {
@@ -546,6 +582,37 @@ describe('permission mode semantics for ask tools', () => {
     expect(results[0].permissionDecision.source).toBe('plan_mode');
   });
 
+  test('plan mode permits a local read-only exec_command even when it asks (Issue #19)', () => {
+    const execReadOnly: OpenHorseTool = buildTool({
+      name: 'exec_command',
+      description: 'Run a shell command',
+      parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] },
+      execute: async () => ({ success: true, output: '' }),
+      isReadOnly: () => true,
+      checkPermissions: () => ({ behavior: 'ask', reason: 'Command requires confirmation' }),
+    });
+    const perm = resolveEffectivePermission({
+      toolName: 'exec_command',
+      tool: execReadOnly,
+      args: { command: 'gh auth status' },
+      permission: { behavior: 'ask', reason: 'Command requires confirmation' },
+      permissionMode: 'plan',
+    });
+    expect(perm.outcome).toBe('allow');
+    expect(perm.risk).toBe('read_only');
+  });
+
+  test('plan mode still blocks external read-only tools (web/MCP) that ask', () => {
+    const perm = resolveEffectivePermission({
+      toolName: 'web_search',
+      tool: askTool,
+      args: { query: 'q' },
+      permission: { behavior: 'ask', reason: 'External query' },
+      permissionMode: 'plan',
+    });
+    expect(perm.outcome).toBe('block');
+  });
+
   test('acceptEdits auto-approves file-edit tools without prompting', async () => {
     const executed: string[] = [];
     let prompted = 0;
@@ -605,7 +672,7 @@ describe('permission mode semantics for ask tools', () => {
     expect(results[0].permissionDecision.source).toBe('config_deny');
   });
 
-  test('auto mode approves ask tools and records mode_auto', async () => {
+  test('auto mode does not approve external ask tools', async () => {
     const executed: string[] = [];
     let prompted = 0;
     const { results } = await runOne('web_search', {
@@ -618,12 +685,12 @@ describe('permission mode semantics for ask tools', () => {
       onExec: n => executed.push(n),
     });
 
-    expect(prompted).toBe(0);
-    expect(executed).toEqual(['web_search']);
-    expect(results[0].success).toBe(true);
+    expect(prompted).toBe(1);
+    expect(executed).toEqual([]);
+    expect(results[0].success).toBe(false);
     expect(results[0].permissionDecision).toMatchObject({
-      approved: true,
-      source: 'mode_auto',
+      approved: false,
+      source: 'user',
     });
   });
 
@@ -663,7 +730,106 @@ describe('permission mode semantics for ask tools', () => {
       toolConfirmation: 'ask',
       confirmToolUse,
     });
-    // auto mode never prompts, so the tool can stay in the parallel batch.
-    expect(inAuto[0].canRunConcurrently).toBe(true);
+    // auto mode does not bypass confirmation, so it must stay out of the
+    // parallel batch while the confirmation callback is pending.
+    expect(inAuto[0].canRunConcurrently).toBe(false);
+  });
+});
+
+describe('fail-closed permission matrix', () => {
+  const cases: Array<{
+    label: string;
+    tool: OpenHorseTool;
+    permission?: { behavior: 'allow' | 'ask' | 'deny'; reason?: string };
+    expected: Record<string, 'allow' | 'confirm' | 'block'>;
+  }> = [
+    {
+      label: 'safe/read-only',
+      tool: readOnlyTool,
+      expected: { default: 'allow', acceptEdits: 'allow', plan: 'allow', auto: 'allow' },
+    },
+    {
+      label: 'caution/external',
+      tool: askTool,
+      permission: { behavior: 'ask', reason: 'External query' },
+      expected: { default: 'confirm', acceptEdits: 'confirm', plan: 'block', auto: 'confirm' },
+    },
+    {
+      label: 'state-write',
+      tool: stateWriteTool,
+      expected: { default: 'confirm', acceptEdits: 'confirm', plan: 'block', auto: 'confirm' },
+    },
+    {
+      label: 'destructive',
+      tool: dangerousTool,
+      permission: { behavior: 'ask', reason: 'Dangerous operation' },
+      expected: { default: 'confirm', acceptEdits: 'confirm', plan: 'block', auto: 'confirm' },
+    },
+  ];
+
+  test.each(cases)('$label obeys every permission mode', ({ tool, permission, expected }) => {
+    for (const mode of ['default', 'acceptEdits', 'plan', 'auto']) {
+      const decision = resolveEffectivePermission({
+        toolName: tool.name,
+        tool,
+        args: {},
+        permission,
+        permissionMode: mode,
+      });
+      expect(decision.outcome).toBe(expected[mode]);
+    }
+  });
+
+  test('global allow cannot approve caution, state-write, destructive, or unknown tools', async () => {
+    const unknownTool: OpenHorseTool = buildTool({
+      name: 'unknown_risk',
+      description: 'No risk metadata',
+      parameters: { type: 'object', properties: {}, required: [] },
+      execute: async () => ({ success: true, output: 'must not run' }),
+    });
+    const matrixTools = [askTool, stateWriteTool, dangerousTool, unknownTool];
+    const executed: string[] = [];
+
+    for (const tool of matrixTools) {
+      const prepared = prepareToolCalls({
+        toolCalls: [
+          { id: tool.name, type: 'function', function: { name: tool.name, arguments: '{}' } },
+        ],
+        tools: matrixTools,
+        toolExecutor: async name => {
+          executed.push(name);
+          return JSON.stringify({ success: true, output: 'unexpected' });
+        },
+        toolContext,
+        toolConfirmation: 'allow',
+      });
+      for await (const result of executeToolCalls(prepared, {
+        toolExecutor: async name => {
+          executed.push(name);
+          return JSON.stringify({ success: true, output: 'unexpected' });
+        },
+        toolConfirmation: 'allow',
+      })) {
+        expect(result.success).toBe(false);
+        expect(result.permissionDecision?.approved).toBe(false);
+      }
+    }
+
+    expect(executed).toEqual([]);
+  });
+
+  test('allowlist allow does not auto-approve missing risk metadata', () => {
+    const decision = resolveEffectivePermission({
+      toolName: 'unknown_risk',
+      tool: buildTool({
+        name: 'unknown_risk',
+        description: 'No risk metadata',
+        parameters: { type: 'object', properties: {}, required: [] },
+        execute: async () => ({ success: true, output: 'must not run' }),
+      }),
+      args: {},
+      allowlist: { effect: 'allow', rule: 'unknown_risk' },
+    });
+    expect(decision).toMatchObject({ outcome: 'confirm', source: 'missing_risk_metadata' });
   });
 });

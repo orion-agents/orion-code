@@ -226,9 +226,24 @@ export function summarizeVerificationState(
   profile: VerificationProfile,
   results: VerificationCommandResult[],
 ): VerificationSummary {
-  const commandsRun = [...new Set(results.map(result => normalizeCommand(result.command)))];
-  const passedCommands = [...new Set(results.filter(result => result.success).map(result => normalizeCommand(result.command)))];
-  const failedCommands = [...new Set(results.filter(result => !result.success).map(result => normalizeCommand(result.command)))];
+  // `results` is a turn-scoped accumulator, not a per-command state map. Fold
+  // it down to the *latest* outcome per normalized command before deriving the
+  // gate: otherwise the ordinary build -> fail -> fix -> rebuild -> pass loop
+  // leaves the command in both `passedCommands` and `failedCommands`, and
+  // `claimAllowed` stays false for the rest of the turn even though everything
+  // now passes. The full history is still available to callers for display.
+  const latestByCommand = new Map<string, VerificationCommandResult>();
+  for (const result of results) {
+    latestByCommand.set(normalizeCommand(result.command), result);
+  }
+
+  const commandsRun = [...latestByCommand.keys()];
+  const passedCommands = [...latestByCommand.entries()]
+    .filter(([, result]) => result.success)
+    .map(([command]) => command);
+  const failedCommands = [...latestByCommand.entries()]
+    .filter(([, result]) => !result.success)
+    .map(([command]) => command);
   const expectedCommands = profile.commands.map(normalizeCommand);
   const missingCommands = expectedCommands.filter(command =>
     !passedCommands.some(passed => passedCommandCoversExpected(passed, command))
@@ -243,6 +258,11 @@ export function summarizeVerificationState(
     skippedReason = 'No expected verification command has been run yet.';
   } else if (missingCommands.length > 0) {
     skippedReason = 'Some expected verification commands have not passed yet.';
+  } else if (failedCommands.length > 0) {
+    // Every expected command passed but some other verification command is
+    // still red. Say so explicitly — the caller used to fall back to
+    // "verification checks not run", which contradicts what the user just saw.
+    skippedReason = `Verification command(s) still failing: ${failedCommands.join(', ')}.`;
   }
 
   return {

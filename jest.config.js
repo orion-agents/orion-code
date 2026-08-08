@@ -10,6 +10,14 @@ module.exports = {
   // Keep coverage denominators honest: files that tests never import must still
   // appear in the report instead of being silently excluded.
   collectCoverageFrom: ['<rootDir>/src/**/*.{ts,tsx}'],
+  // Enforce the project's documented 70% coverage guideline (AGENTS.md). Branch
+  // coverage is the strictest metric and currently sits at ~70.4%, so 70 is the
+  // real gate (previously nothing stopped it from sliding under). #42.
+  coverageThreshold: {
+    global: {
+      branches: 70,
+    },
+  },
   moduleFileExtensions: ['ts', 'tsx', 'js', 'json', 'node'],
   transform: {
     '^.+\\.tsx?$': [

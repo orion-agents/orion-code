@@ -29,7 +29,6 @@ export function handleMigrateCommand(ctx: CommandContext, args: string = ''): Co
 
   const options = {
     dryRun,
-    includeEnv: flags.has('--include-env'),
     includeProjectFiles: flags.has('--include-project-files'),
   };
 

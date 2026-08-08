@@ -19,7 +19,6 @@ interface WarningCount {
 }
 
 const _seen = new Map<string, WarningCount>();
-let _flushed = false;
 
 /**
  * Emit a warning only once per unique key. Subsequent calls with the same
@@ -29,8 +28,6 @@ let _flushed = false;
  * @param message Warning text (logged on first occurrence)
  */
 export function warnOnce(key: string, message: string): void {
-  if (_flushed) return;
-
   const existing = _seen.get(key);
   if (!existing) {
     _seen.set(key, { message, count: 1 });
@@ -44,10 +41,12 @@ export function warnOnce(key: string, message: string): void {
 /**
  * Flush accumulated warning summary. Call once at session exit or test
  * teardown. Returns the summary string (empty if no warnings were seen).
+ *
+ * Flushing snapshots and clears `_seen` so collection continues afterwards —
+ * a flush must not permanently disable future `warnOnce` calls (Issue #30).
  */
 export function flushWarnings(): string {
-  if (_flushed || _seen.size === 0) return '';
-  _flushed = true;
+  if (_seen.size === 0) return '';
 
   const lines: string[] = [];
   let suppressed = 0;
@@ -58,6 +57,9 @@ export function flushWarnings(): string {
       lines.push(`  [x${wc.count}] ${wc.message}`);
     }
   }
+
+  // Reset so subsequent warnings in the same process are collected again.
+  _seen.clear();
 
   if (suppressed > 0) {
     lines.unshift(chalk.yellow(`\n⚠ ${suppressed} duplicate warning(s) suppressed:`));
@@ -74,7 +76,6 @@ export function flushWarnings(): string {
  */
 export function resetWarnings(): void {
   _seen.clear();
-  _flushed = false;
 }
 
 /**

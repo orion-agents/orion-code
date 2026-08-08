@@ -13,6 +13,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  rmSync,
   statSync,
   writeFileSync,
   renameSync,
@@ -34,8 +35,6 @@ const SOURCE_BRAND = 'openhorse';
 const TARGET_BRAND = 'orion-code';
 const SOURCE_DIR = '.openhorse';
 const TARGET_DIR = '.orion-code';
-const SOURCE_ENV_FILE = '.openhorse.env';
-const TARGET_ENV_FILE = '.orion-code.env';
 
 /** Files that are renamed during migration. */
 const RENAME_MAP: Record<string, string> = {
@@ -163,79 +162,6 @@ function remapConfigKeys(content: string): string {
   }
 }
 
-// ── Dotenv migration ─────────────────────────────────────────────────────────
-
-const ENV_KEY_MAP: Record<string, string> = {
-  OPENHORSE_CONFIG_DIR: 'ORION_CODE_CONFIG_DIR',
-  OPENHORSE_CONFIG_HOME: 'ORION_CODE_CONFIG_HOME',
-  OPENHORSE_API_KEY: 'ORION_CODE_API_KEY',
-  OPENHORSE_API_BASE_URL: 'ORION_CODE_API_BASE_URL',
-  OPENHORSE_BASE_URL: 'ORION_CODE_BASE_URL',
-  OPENHORSE_MODEL: 'ORION_CODE_MODEL',
-  OPENHORSE_FALLBACK_MODEL: 'ORION_CODE_FALLBACK_MODEL',
-  OPENHORSE_MODE: 'ORION_CODE_MODE',
-  OPENHORSE_NAME: 'ORION_CODE_NAME',
-  OPENHORSE_LOG_LEVEL: 'ORION_CODE_LOG_LEVEL',
-  OPENHORSE_TOOL_CONFIRMATION: 'ORION_CODE_TOOL_CONFIRMATION',
-  OPENHORSE_UI: 'ORION_CODE_UI',
-  OPENHORSE_UI_RENDERER: 'ORION_CODE_UI_RENDERER',
-  OPENHORSE_UI_CONFIRMATIONS: 'ORION_CODE_UI_CONFIRMATIONS',
-  OPENHORSE_SKILLS_PATHS: 'ORION_CODE_SKILLS_PATHS',
-  OPENHORSE_SUBAGENTS: 'ORION_CODE_SUBAGENTS',
-  OPENHORSE_SUBAGENT_MAX_PARALLEL: 'ORION_CODE_SUBAGENT_MAX_PARALLEL',
-  OPENHORSE_EMBEDDING_MODEL: 'ORION_CODE_EMBEDDING_MODEL',
-  OPENHORSE_EMBEDDING_PROVIDER: 'ORION_CODE_EMBEDDING_PROVIDER',
-  OPENHORSE_MAX_LLM_REQUESTS_PER_TURN: 'ORION_CODE_MAX_LLM_REQUESTS_PER_TURN',
-  OPENHORSE_MAX_TOOL_CALLS_PER_TURN: 'ORION_CODE_MAX_TOOL_CALLS_PER_TURN',
-  OPENHORSE_MAX_READ_ONLY_FRAGMENTATION: 'ORION_CODE_MAX_READ_ONLY_FRAGMENTATION',
-  OPENHORSE_MAX_MODEL_VISIBLE_TOOL_BYTES: 'ORION_CODE_MAX_MODEL_VISIBLE_TOOL_BYTES',
-  OPENHORSE_DEBUG_TOOLS: 'ORION_CODE_DEBUG_TOOLS',
-  OPENHORSE_WEBSEARCH_API_KEY: 'ORION_CODE_WEBSEARCH_API_KEY',
-  OPENHORSE_WEBSEARCH_PROVIDER: 'ORION_CODE_WEBSEARCH_PROVIDER',
-  OPENHORSE_WEBSEARCH_MCP_PROVIDER: 'ORION_CODE_WEBSEARCH_MCP_PROVIDER',
-  OPENHORSE_WEBSEARCH_MCP_ENDPOINT: 'ORION_CODE_WEBSEARCH_MCP_ENDPOINT',
-  OPENHORSE_WEBSEARCH_MCP_TOOL: 'ORION_CODE_WEBSEARCH_MCP_TOOL',
-  OPENHORSE_WEBSEARCH_MCP_TIMEOUT_MS: 'ORION_CODE_WEBSEARCH_MCP_TIMEOUT_MS',
-  OPENHORSE_WEBSEARCH_AUTH_TYPE: 'ORION_CODE_WEBSEARCH_AUTH_TYPE',
-  OPENHORSE_WEBSEARCH_API_KEY_HEADER: 'ORION_CODE_WEBSEARCH_API_KEY_HEADER',
-  OPENHORSE_WEBSEARCH_API_KEY_QUERY_PARAM: 'ORION_CODE_WEBSEARCH_API_KEY_QUERY_PARAM',
-};
-
-function migrateEnvFile(srcPath: string, destPath: string): FileMapping | null {
-  if (!existsSync(srcPath)) return null;
-  const content = readFileSync(srcPath, 'utf8');
-  const lines = content.split('\n');
-  const migrated: string[] = [];
-  let changed = false;
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) {
-      migrated.push(line);
-      continue;
-    }
-    const eqIdx = line.indexOf('=');
-    if (eqIdx === -1) {
-      migrated.push(line);
-      continue;
-    }
-    const key = line.substring(0, eqIdx).trim();
-    const rest = line.substring(eqIdx);
-    if (ENV_KEY_MAP[key]) {
-      migrated.push(`${ENV_KEY_MAP[key]}${rest}`);
-      changed = true;
-    } else {
-      migrated.push(line);
-    }
-  }
-
-  if (changed) {
-    writeFileSync(destPath, migrated.join('\n'), { mode: 0o600 });
-    return { from: srcPath, to: destPath };
-  }
-  return null;
-}
-
 // ── SQLite verification ──────────────────────────────────────────────────────
 
 function verifySqlite(path: string): boolean {
@@ -257,8 +183,6 @@ export function migrateBrand(options: MigrationOptions = {}): MigrationResult {
   const home = options.home ?? homedir();
   const sourceRoot = join(home, SOURCE_DIR);
   const targetRoot = join(home, TARGET_DIR);
-  const sourceEnvPath = join(home, SOURCE_ENV_FILE);
-  const targetEnvPath = join(home, TARGET_ENV_FILE);
 
   const manifest: BrandMigrationManifestV1 = {
     version: 1,
@@ -300,11 +224,13 @@ export function migrateBrand(options: MigrationOptions = {}): MigrationResult {
   const stagingRoot = join(home, `.orion-code-staging-${manifest.migrationId}`);
 
   try {
-    if (!options.dryRun) {
-      ensureDir(stagingRoot);
-    }
-
-    const writeDest = options.dryRun ? targetRoot : stagingRoot;
+    // Issue #48: dry-run must never touch the real target directory. Always
+    // stage into a temporary directory; the real migration renames staging →
+    // target (step 6). A dry run writes into staging and then discards it, so
+    // the target stays untouched and a later real run is not blocked by a
+    // spurious "target already exists" conflict.
+    ensureDir(stagingRoot);
+    const writeDest = stagingRoot;
 
     // 1. Copy and rename config files
     const configMappings = migrateConfigFiles(sourceRoot, writeDest, options, manifest);
@@ -331,11 +257,19 @@ export function migrateBrand(options: MigrationOptions = {}): MigrationResult {
       manifest.copiedFiles += mappings.length;
     }
 
-    // 4. Copy uncategorized files verbatim
+    // 4. Copy uncategorized files verbatim.
+    //
+    // Only list entries that an *earlier* step already handled. `settings.json`,
+    // `usage.json`, `history.jsonl`, `mcp.json` and `vector.db` used to be listed
+    // here, but no handler ever claimed them: they are root-level files, absent
+    // from RENAME_MAP / VERBATIM_DIRS / NESTED_DIRS. So they were "too known to
+    // auto-copy, unknown to every handler" and were silently dropped — taking
+    // the user's MCP servers, usage ledger, chat history and vector memory index
+    // with them, while the migration still reported success. Leaving them out of
+    // this set lets the loop below copy them verbatim, which is what the help
+    // text at the bottom of this file has always promised.
     const knownPaths = new Set([
-      'openhorse.json', 'OPENHORSE.md', 'OPENHORSE.local.md',
-      'settings.json', 'usage.json', 'history.jsonl', 'mcp.json',
-      'vector.db',
+      ...Object.keys(RENAME_MAP),
       ...VERBATIM_DIRS,
       ...Object.keys(NESTED_DIRS),
     ]);
@@ -345,9 +279,7 @@ export function migrateBrand(options: MigrationOptions = {}): MigrationResult {
         if (knownPaths.has(entry.name)) continue;
         const srcPath = join(sourceRoot, entry.name);
         const destPath = join(writeDest, entry.name);
-        if (!options.dryRun) {
-          copyFileSafe(srcPath, destPath);
-        }
+        copyFileSafe(srcPath, destPath);
         manifest.renamedFiles.push({ from: srcPath, to: destPath });
         manifest.copiedFiles++;
       }
@@ -378,19 +310,6 @@ export function migrateBrand(options: MigrationOptions = {}): MigrationResult {
       manifest.verified = true;
     }
 
-    // ── Dotenv migration ──────────────────────────────────────────────────
-
-    if (options.includeEnv) {
-      const envMapping = migrateEnvFile(sourceEnvPath, targetEnvPath);
-      if (envMapping) {
-        manifest.renamedFiles.push(envMapping);
-      }
-    } else if (existsSync(sourceEnvPath)) {
-      manifest.warnings.push(
-        `${sourceEnvPath} exists but was not migrated. Use --include-env to migrate environment variables.`,
-      );
-    }
-
     // ── Write manifest ─────────────────────────────────────────────────────
 
     if (!options.dryRun) {
@@ -402,6 +321,20 @@ export function migrateBrand(options: MigrationOptions = {}): MigrationResult {
         JSON.stringify(manifest, null, 2),
         { mode: 0o600 },
       );
+    } else {
+      // Issue #48: a dry run only staged into `stagingRoot` for preview. Discard
+      // it so no real files are left behind and the target stays untouched.
+      try {
+        if (existsSync(stagingRoot)) {
+          rmSync(stagingRoot, { recursive: true, force: true });
+        }
+      } catch (cleanupErr) {
+        manifest.warnings.push(
+          `Failed to clean up dry-run staging directory ${stagingRoot}: ${
+            cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)
+          }`
+        );
+      }
     }
 
     return { success: true, manifest };
@@ -410,7 +343,6 @@ export function migrateBrand(options: MigrationOptions = {}): MigrationResult {
     manifest.warnings.push(`Migration failed: ${errorMessage(err)}`);
     try {
       if (existsSync(stagingRoot)) {
-        const { rmSync } = require('fs');
         rmSync(stagingRoot, { recursive: true, force: true });
       }
     } catch (cleanupErr) {
@@ -503,8 +435,10 @@ USAGE
 FLAGS
   --dry-run                  Preview migration without writing files (default)
   --yes                      Execute the migration after reviewing the preview
-  --include-env              Also migrate ~/.openhorse.env → ~/.orion-code.env
   --include-project-files    Rename .openhorse/ → .orion-code/ in project dirs
+
+  Note: environment variables are no longer migrated. Configure Orion Code via
+  ~/.orion-code/orion.json (see docs/orion.example.json).
 
 DESCRIPTION
   Copies ~/.openhorse → ~/.orion-code with filename and config-key

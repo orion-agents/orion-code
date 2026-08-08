@@ -6,7 +6,7 @@
  * 2. The process never crashes on async ENOENT
  */
 
-import { lspGetDefinitionTool, lspGetReferencesTool, lspGetHoverTool, lspGetDiagnosticsTool } from '../src/tools/lsp';
+import { LspClient, lspGetDefinitionTool, lspGetReferencesTool, lspGetHoverTool, lspGetDiagnosticsTool } from '../src/tools/lsp';
 
 // Mock the entire child_process module
 jest.mock('child_process', () => ({
@@ -129,6 +129,42 @@ describe('LSP crash prevention', () => {
       // detectLanguage defaults to typescript, so this goes through the
       // missing-binary path (typescript-language-server not installed)
       expect(result.success).toBe(false);
+    });
+  });
+
+  describe('LspClient.stop() shutdown/exit direction (Issue #30)', () => {
+    it('sends shutdown as a request and exit as a notification, then force-kills after grace', async () => {
+      jest.useFakeTimers();
+      const client = new LspClient('typescript', '/test');
+      const kill = jest.fn();
+      (client as any).process = {
+        pid: 1234,
+        kill,
+        stdin: { write: jest.fn() },
+        stdout: { on: jest.fn() },
+        stderr: { on: jest.fn() },
+        on: jest.fn(),
+      };
+      const sendRequest = jest
+        .spyOn(client as any, 'sendRequest')
+        .mockResolvedValue(undefined);
+      const sendNotification = jest
+        .spyOn(client as any, 'sendNotification')
+        .mockImplementation(() => {});
+
+      await client.stop();
+
+      // Per LSP spec: shutdown is a request (awaited); exit is a notification
+      // (fire-and-forget). The old code awaited `exit`, waiting the full 30s timeout.
+      expect(sendRequest).toHaveBeenCalledWith('shutdown', null);
+      expect(sendNotification).toHaveBeenCalledWith('exit', null);
+      expect((client as any).process).toBeNull();
+
+      // A grace-period kill is scheduled so the server is reaped even if it lingers.
+      jest.advanceTimersByTime(600);
+      expect(kill).toHaveBeenCalled();
+
+      jest.useRealTimers();
     });
   });
 });

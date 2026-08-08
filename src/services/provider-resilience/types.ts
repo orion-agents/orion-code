@@ -75,6 +75,8 @@ export interface ProviderRequestContext {
   operation: ProviderOperation;
   providerKey: string;
   requestedModel: string;
+  /** Optional model used once when the primary provider cannot serve the request. */
+  fallbackModel?: string;
   abortSignal?: AbortSignal;
   estimatedPromptTokens?: number;
 }

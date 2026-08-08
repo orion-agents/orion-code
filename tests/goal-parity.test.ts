@@ -9,6 +9,7 @@
  */
 
 import { GoalCoordinator } from '../src/runtime/goals/coordinator';
+import { randomUUID } from 'crypto';
 import { goalTransition, GOAL_INVARIANTS } from '../src/runtime/goals/types';
 import type { GoalContract, GoalEvidenceRecord, GoalStatus } from '../src/runtime/goals/types';
 import {
@@ -120,7 +121,7 @@ describe('Goal coordinator lifecycle', () => {
   let coord: GoalCoordinator;
 
   beforeEach(() => {
-    coord = new GoalCoordinator('/tmp/test-goal', 'test-session');
+    coord = new GoalCoordinator(`/tmp/test-goal-${randomUUID()}`, 'test-session');
   });
 
   it('starts with no active goal', () => {

@@ -25,10 +25,12 @@ import { join, resolve, relative } from 'path';
 import { createInterface } from 'readline';
 import {
   buildTool,
+  getToolMetadataPresence,
   type OpenHorseTool,
   type ToolResult,
   type ToolContext,
 } from '../framework/tool';
+import { resolveEffectivePermission } from '../framework/tool-scheduler';
 import { deriveToolExternalAssertion } from '../framework/external-assertion';
 import { setToolState } from '../framework/tool-state';
 import { ARTIFACT_THRESHOLD, storeArtifact, truncateForContext } from '../core/tool-artifacts';
@@ -203,7 +205,6 @@ export const TOOLS: OpenHorseTool[] = [
     isDestructive: () => true,
     isFileEdit: () => true,
     checkPermissions: (_args, _context) => {
-      // Destructive operation - ask for confirmation in default mode
       return { behavior: 'ask', reason: 'Write operation may modify existing files' };
     },
     userFacingName: args => `Write ${args.path as string}`,
@@ -1231,6 +1232,12 @@ async function execCommand_(
       detached: useProcessGroup,
     });
 
+    // Issue #53: exec_command runs a complete command as a single argv element
+    // and never pipes input into it. If stdin stays open, stdin-reading commands
+    // (cat, sort, grep, `python3 -`, ...) block waiting for EOF until the timeout.
+    // Close it immediately so the child receives EOF and can proceed.
+    child.stdin?.end();
+
     let stdoutData = '';
     let stderrData = '';
     let stdoutTruncated = false;
@@ -1311,13 +1318,18 @@ async function execCommand_(
     child.stdout.on('data', (data: Buffer) => {
       if (!stdoutTruncated) {
         const chunk = data.toString();
-        stdoutBytes += chunk.length;
-
-        if (stdoutBytes > maxBytes) {
+        // Issue #30: count UTF-8 bytes, not UTF-16 code units, so CJK/emoji
+        // output is bounded by `maxBytes` (a UTF-16 count could exceed it ~2x).
+        const chunkBytes = Buffer.byteLength(chunk, 'utf8');
+        if (stdoutBytes + chunkBytes > maxBytes) {
           stdoutTruncated = true;
-          stdoutData += chunk.slice(0, maxBytes - stdoutData.length);
+          const room = Math.max(0, maxBytes - stdoutBytes);
+          // Byte-accurate truncation that respects multi-byte character boundaries.
+          stdoutData += truncateToBytes(chunk, room).text;
+          stdoutBytes = maxBytes;
         } else {
           stdoutData += chunk;
+          stdoutBytes += chunkBytes;
         }
       }
     });
@@ -1326,13 +1338,16 @@ async function execCommand_(
     child.stderr.on('data', (data: Buffer) => {
       if (!stderrTruncated) {
         const chunk = data.toString();
-        stderrBytes += chunk.length;
-
-        if (stderrBytes > maxBytes) {
+        // Issue #30: count UTF-8 bytes, not UTF-16 code units.
+        const chunkBytes = Buffer.byteLength(chunk, 'utf8');
+        if (stderrBytes + chunkBytes > maxBytes) {
           stderrTruncated = true;
-          stderrData += chunk.slice(0, maxBytes - stderrData.length);
+          const room = Math.max(0, maxBytes - stderrBytes);
+          stderrData += truncateToBytes(chunk, room).text;
+          stderrBytes = maxBytes;
         } else {
           stderrData += chunk;
+          stderrBytes += chunkBytes;
         }
       }
     });
@@ -1341,7 +1356,7 @@ async function execCommand_(
       if (interrupted === 'aborted') {
         finish({
           success: false,
-          output: stdoutData.slice(0, maxBytes),
+          output: truncateToBytes(stdoutData, maxBytes).text,
           error: 'Command aborted by user',
         });
         return;
@@ -1350,7 +1365,7 @@ async function execCommand_(
       if (interrupted === 'timeout') {
         finish({
           success: false,
-          output: stdoutData.slice(0, maxBytes),
+          output: truncateToBytes(stdoutData, maxBytes).text,
           error: `Command timed out after ${timeoutMs}ms`,
         });
         return;
@@ -2114,6 +2129,43 @@ async function executeBatchRead(
         error
       );
     }
+
+    // The scheduler resolved permissions for `batch_read` itself, not for the
+    // tools it fans out to. Without re-running the gate here, a project
+    // `deny: read_file(*.env)` rule -- and the plan-mode block -- apply to the
+    // flat call but not to the batched one, so the model can read a denied path
+    // simply by wrapping it in `batch_read`.
+    const stepPermission =
+      getToolMetadataPresence(tool).hasPermissionCheck && tool.checkPermissions
+        ? tool.checkPermissions(step.args, context)
+        : undefined;
+    const effective = resolveEffectivePermission({
+      toolName: step.tool,
+      tool,
+      args: step.args,
+      permission: stepPermission,
+      permissionMode: context.permissionMode,
+      allowlist: context.toolAllowlist?.(step.tool, step.args),
+    });
+    if (effective.outcome === 'deny' || effective.outcome === 'block') {
+      const error =
+        effective.reason || `Tool ${step.tool} is not permitted (${effective.source ?? 'policy'})`;
+      return buildBatchReadPayload(
+        false,
+        error,
+        [
+          {
+            index: i + 1,
+            tool: step.tool,
+            args: step.args,
+            success: false,
+            error,
+            output: '',
+          },
+        ],
+        error
+      );
+    }
   }
 
   const stepResults: BatchReadStepOutput[] = [];
@@ -2191,6 +2243,10 @@ export async function executeTool(
     abortSignal, // Issue #32 #3.2: 透传 abortSignal
     sessionId: toolContext?.sessionId,
     turnId: toolContext?.turnId,
+    // Must survive the rebuild: batch_read re-runs the permission gate on its
+    // sub-steps and reads both of these off the context.
+    permissionMode: toolContext?.permissionMode,
+    toolAllowlist: toolContext?.toolAllowlist,
   };
 
   const result = await tool.execute(args, context);

@@ -1,8 +1,9 @@
 /**
  * Orion Code - environment variable definitions.
  *
- * Maps every OPENHORSE_* env var to its ORION_CODE_* replacement.
- * Normal runtime MUST NOT fall back to OPENHORSE_* names.
+ * Functional environment variable names used by the model/web-search/embedding
+ * clients at runtime. Structured configuration lives in ~/.orion-code/orion.json;
+ * these names are NOT configuration overrides.
  */
 
 import { ENV_PREFIX } from './identity';
@@ -35,40 +36,6 @@ export const ENV = {
   MAX_MODEL_VISIBLE_TOOL_BYTES: `${ENV_PREFIX}MAX_MODEL_VISIBLE_TOOL_BYTES`,
   DEBUG_TOOLS: `${ENV_PREFIX}DEBUG_TOOLS`,
 } as const;
-
-// ── Old → new env var mapping (for migration only) ──────────────────────────
-
-export const LEGACY_ENV_MAP: Record<string, string> = {
-  OPENHORSE_CONFIG_DIR: ENV.CONFIG_DIR,
-  OPENHORSE_CONFIG_HOME: ENV.CONFIG_HOME,
-  OPENHORSE_API_KEY: ENV.API_KEY,
-  OPENHORSE_API_BASE_URL: ENV.API_BASE_URL,
-  OPENHORSE_BASE_URL: ENV.BASE_URL,
-  OPENHORSE_MODEL: ENV.MODEL,
-  OPENHORSE_FALLBACK_MODEL: ENV.FALLBACK_MODEL,
-  OPENHORSE_MODE: ENV.MODE,
-  OPENHORSE_NAME: ENV.NAME,
-  OPENHORSE_LOG_LEVEL: ENV.LOG_LEVEL,
-  OPENHORSE_TOOL_CONFIRMATION: ENV.TOOL_CONFIRMATION,
-  OPENHORSE_UI: ENV.UI,
-  OPENHORSE_UI_RENDERER: ENV.UI_RENDERER,
-  OPENHORSE_UI_CONFIRMATIONS: ENV.UI_CONFIRMATIONS,
-  OPENHORSE_SKILLS_PATHS: ENV.SKILLS_PATHS,
-  OPENHORSE_SUBAGENTS: ENV.SUBAGENTS,
-  OPENHORSE_SUBAGENT_MAX_PARALLEL: ENV.SUBAGENT_MAX_PARALLEL,
-  OPENHORSE_EMBEDDING_MODEL: ENV.EMBEDDING_MODEL,
-  OPENHORSE_EMBEDDING_PROVIDER: ENV.EMBEDDING_PROVIDER,
-  OPENHORSE_MAX_LLM_REQUESTS_PER_TURN: ENV.MAX_LLM_REQUESTS_PER_TURN,
-  OPENHORSE_MAX_TOOL_CALLS_PER_TURN: ENV.MAX_TOOL_CALLS_PER_TURN,
-  OPENHORSE_MAX_READ_ONLY_FRAGMENTATION: ENV.MAX_READ_ONLY_FRAGMENTATION,
-  OPENHORSE_MAX_MODEL_VISIBLE_TOOL_BYTES: ENV.MAX_MODEL_VISIBLE_TOOL_BYTES,
-  OPENHORSE_DEBUG_TOOLS: ENV.DEBUG_TOOLS,
-};
-
-/** Reverse map for display purposes (new → old). */
-export const LEGACY_ENV_REVERSE_MAP: Record<string, string> = Object.fromEntries(
-  Object.entries(LEGACY_ENV_MAP).map(([k, v]) => [v, k]),
-);
 
 // ── WebSearch env helpers (the prefix is used in multiple tools) ────────────
 

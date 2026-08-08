@@ -129,13 +129,35 @@ maybeDescribe('git tools (real temp repo)', () => {
 
   it('git_commit / git_branch permission metadata', () => {
     expect(gitCommitTool.isReadOnly?.(ARGS)).not.toBe(true);
+    expect(gitCommitTool.isDestructive?.(ARGS)).toBe(true);
     expect(gitCommitTool.checkPermissions?.(ARGS, CTX)).toEqual({
       behavior: 'ask',
       reason: expect.any(String),
     });
-    expect(gitBranchTool.checkPermissions?.({ action: 'list' }, CTX)).toEqual({ behavior: 'allow' });
-    expect(
-      gitBranchTool.checkPermissions?.({ action: 'create', name: 'x' }, CTX)
-    ).toEqual({ behavior: 'ask', reason: expect.any(String) });
+    expect(gitBranchTool.checkPermissions?.({ action: 'list' }, CTX)).toEqual({
+      behavior: 'allow',
+    });
+    expect(gitBranchTool.checkPermissions?.({ action: 'create', name: 'x' }, CTX)).toEqual({
+      behavior: 'ask',
+      reason: expect.any(String),
+    });
+    expect(gitBranchTool.isDestructive?.({ action: 'create' })).toBe(true);
+  });
+
+  it('rejects broad commit staging and unsafe diff/branch arguments', async () => {
+    await expect(
+      gitCommitTool.execute({ message: 'unsafe', all: true, cwd: repo! }, CTX)
+    ).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining('all=true is disabled'),
+    });
+
+    await expect(
+      gitDiffTool.execute({ paths: ['../outside'], cwd: repo! }, CTX)
+    ).resolves.toMatchObject({ success: false, error: expect.stringContaining('exact') });
+
+    await expect(
+      gitBranchTool.execute({ action: 'create', name: '--help', cwd: repo! }, CTX)
+    ).resolves.toMatchObject({ success: false, error: expect.stringContaining('safe branch') });
   });
 });

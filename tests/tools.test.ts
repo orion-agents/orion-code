@@ -329,6 +329,17 @@ describe('exec_command tool', () => {
     expect(result.success).toBe(false);
   });
 
+  // Issue #53: the child's stdin must be closed so stdin-reading commands
+  // (cat, sort, grep, `python3 -`) receive EOF and return promptly instead of
+  // blocking until the timeout.
+  test('closes child stdin so stdin-reading commands return promptly', async () => {
+    const start = Date.now();
+    const result = await tool.execute({ command: 'cat', timeout: 3000 }, ctx);
+    const elapsed = Date.now() - start;
+    expect(result.success).toBe(true);
+    expect(elapsed).toBeLessThan(2500);
+  });
+
   test('isDestructive detects rm -rf', () => {
     expect(tool.isDestructive?.({ command: 'rm -rf /' })).toBe(true);
     expect(tool.isDestructive?.({ command: 'ls -la' })).toBe(false);
@@ -390,6 +401,26 @@ describe('exec_command tool', () => {
     expect(result.success).toBe(true);
     expect(result.output).toContain('small output');
     expect(result.output).not.toContain('[... output truncated');
+  });
+
+  // Issue #30: truncation must bound UTF-8 bytes, not UTF-16 code units, or
+  // CJK/emoji output could exceed maxOutput by ~2x.
+  test('byte-bounds CJK output by maxOutput (Issue #30)', async () => {
+    const cjk = '中'.repeat(2000); // 6000 UTF-8 bytes, 2000 UTF-16 units
+    const result = await tool.execute(
+      {
+        command: `node -e "process.stdout.write('${cjk}')"`,
+        maxOutput: 1024, // 1KB limit
+      },
+      ctx
+    );
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('truncated');
+    const bytes = Buffer.byteLength(result.output, 'utf8');
+    // Body must be bounded near maxOutput (plus the truncation notice), not the
+    // ~3KB the old UTF-16 counting allowed.
+    expect(bytes).toBeLessThan(1024 + 200);
+    expect(bytes).toBeLessThan(cjk.length); // far below the untruncated size
   });
 
   test('resolves relative cwd from ToolContext.cwd', async () => {

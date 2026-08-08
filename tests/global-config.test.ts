@@ -130,6 +130,41 @@ describe('global-config', () => {
       expect(parsed.totalTokens).toBeUndefined();
       expect(parsed.totalCost).toBeUndefined();
     });
+
+    test('sanitizes new sandbox and project fields while preserving fail-closed values', () => {
+      saveGlobalConfig({
+        ...loadGlobalConfig(),
+        sandbox: {
+          profile: 'future-profile' as any,
+          backend: 'future-backend' as any,
+          allowNetwork: true,
+          writableRoots: ['/workspace', 42 as any],
+          image: 'orion:test',
+          unknown: 'drop-me',
+        } as any,
+        projects: {
+          '/repo': {
+            allowedTools: ['read_file', 'write_file'],
+            sandbox: { profile: 'workspace-write' },
+            unknown: 'drop-me',
+          } as any,
+        },
+      });
+
+      const loaded = loadGlobalConfig();
+      expect(loaded.schemaVersion).toBe(1);
+      expect(loaded.sandbox).toEqual({
+        profile: 'future-profile',
+        backend: 'future-backend',
+        allowNetwork: true,
+        writableRoots: ['/workspace'],
+        image: 'orion:test',
+      });
+      expect(loaded.projects?.['/repo']).toEqual({
+        allowedTools: ['read_file', 'write_file'],
+        sandbox: { profile: 'workspace-write' },
+      });
+    });
   });
 
   describe('updateGlobalConfig', () => {

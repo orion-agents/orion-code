@@ -2,7 +2,6 @@
  * Orion Code - CLI entry point
  */
 
-import 'dotenv/config';
 import chalk from 'chalk';
 import { init, type OrionCodeRuntime } from './init';
 import { LLMService } from './services/llm';

@@ -312,6 +312,7 @@ describe('query generator', () => {
         required: ['command'],
       },
       execute: async () => ({ success: true, output: '0.1.2' }),
+      isReadOnly: () => true,
     });
     const llm = makeMockLLM([
       {
@@ -1657,7 +1658,7 @@ describe('query generator', () => {
     expect((requestStarts[1] as any).turn).toBe(2);
   });
 
-  test('allows ask-permission tools when toolConfirmation is allow', async () => {
+  test('does not let toolConfirmation=allow bypass external ask tools', async () => {
     const llm = makeMockLLM([
       {
         content: '',
@@ -1692,12 +1693,12 @@ describe('query generator', () => {
       events.push(event);
     }
 
-    expect(toolExecutor).toHaveBeenCalledWith('web_search', { query: 'openhorse' }, undefined);
+    expect(toolExecutor).not.toHaveBeenCalled();
     expect(events).toContainEqual(
       expect.objectContaining({
         type: 'tool_result',
         name: 'web_search',
-        success: true,
+        success: false,
       })
     );
   });

@@ -11,7 +11,7 @@ import type { LLMResponse, LLMService, Message } from '../src/services/llm';
 
 function makeMockLLM(
   responses: LLMResponse[],
-  onCall?: (messages: Message[]) => void,
+  onCall?: (messages: Message[]) => void
 ): jest.Mocked<LLMService> {
   let callIndex = 0;
   return {
@@ -37,6 +37,7 @@ const bashTool = buildTool({
     required: ['command'],
   },
   execute: async () => ({ success: true, output: '' }),
+  isReadOnly: () => true,
 });
 
 describe('Context Harness', () => {
@@ -96,16 +97,23 @@ describe('Context Harness', () => {
     harness.updateContractFromUserInput('请运行测试验证');
 
     const seenRequests: Message[][] = [];
-    const llm = makeMockLLM([
-      {
-        content: '',
-        model: 'gpt-4o',
-        toolCalls: [
-          { id: 'call-1', type: 'function', function: { name: 'bash', arguments: '{"command":"npm test -- --no-coverage"}' } },
-        ],
-      },
-      { content: 'Tests passed', model: 'gpt-4o' },
-    ], messages => seenRequests.push(messages));
+    const llm = makeMockLLM(
+      [
+        {
+          content: '',
+          model: 'gpt-4o',
+          toolCalls: [
+            {
+              id: 'call-1',
+              type: 'function',
+              function: { name: 'bash', arguments: '{"command":"npm test -- --no-coverage"}' },
+            },
+          ],
+        },
+        { content: 'Tests passed', model: 'gpt-4o' },
+      ],
+      messages => seenRequests.push(messages)
+    );
 
     const messages: Message[] = [
       { role: 'system', content: 'base' },
@@ -217,10 +225,15 @@ describe('Context Harness', () => {
 
     harness.ingestTurn({
       userInput: 'fix the bug',
-      assistantContent: 'I fixed the bug by editing src/index.ts. The previous implementation was flawed in how it handled edge cases.',
+      assistantContent:
+        'I fixed the bug by editing src/index.ts. The previous implementation was flawed in how it handled edge cases.',
       sessionMessages: [
         { role: 'user', content: 'fix the bug' },
-        { role: 'assistant', content: 'I fixed the bug by editing src/index.ts. The previous implementation was flawed in how it handled edge cases.' },
+        {
+          role: 'assistant',
+          content:
+            'I fixed the bug by editing src/index.ts. The previous implementation was flawed in how it handled edge cases.',
+        },
       ],
     });
 
