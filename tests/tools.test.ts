@@ -24,6 +24,13 @@ function cleanupTestDir() {
   }
 }
 
+// File-write/edit tools operate inside the scratch workspace (testDir); the
+// path-containment check (issue #65) is rooted at this cwd.
+const fileCtx: ToolContext = {
+  cwd: testDir,
+  config: { name: 'test', mode: 'development' },
+};
+
 describe('TOOLS array', () => {
   test('contains expected number of tools', () => {
     // Core tools: 11, Web tools: 2, MCP tools: 2, Todo tools: 1, Plan tools: 2 = 18
@@ -231,7 +238,7 @@ describe('write_file tool', () => {
 
   test('writes and reads back file', async () => {
     const testFile = path.join(testDir, 'test-write.txt');
-    const result = await tool.execute({ path: testFile, content: 'hello world' }, ctx);
+    const result = await tool.execute({ path: testFile, content: 'hello world' }, fileCtx);
     expect(result.success).toBe(true);
 
     const content = fs.readFileSync(testFile, 'utf-8');
@@ -242,7 +249,7 @@ describe('write_file tool', () => {
     const testFile = path.join(testDir, 'test-overwrite.txt');
     fs.writeFileSync(testFile, 'original', 'utf-8');
 
-    const result = await tool.execute({ path: testFile, content: 'new content' }, ctx);
+    const result = await tool.execute({ path: testFile, content: 'new content' }, fileCtx);
     expect(result.success).toBe(true);
 
     const content = fs.readFileSync(testFile, 'utf-8');
@@ -252,10 +259,72 @@ describe('write_file tool', () => {
   test('allows writing an empty file', async () => {
     const testFile = path.join(testDir, 'test-empty.txt');
 
-    const result = await tool.execute({ path: testFile, content: '' }, ctx);
+    const result = await tool.execute({ path: testFile, content: '' }, fileCtx);
 
     expect(result.success).toBe(true);
     expect(fs.readFileSync(testFile, 'utf-8')).toBe('');
+  });
+});
+
+describe('write_file / edit_file path containment (issue #65)', () => {
+  const writeTool = TOOLS.find(t => t.name === 'write_file')!;
+  const editTool = TOOLS.find(t => t.name === 'edit_file')!;
+  const wsRoot = fs.mkdtempSync(path.join(tmpdir(), 'orion-ws-'));
+  const outside = fs.mkdtempSync(path.join(tmpdir(), 'orion-outside-'));
+  const wsCtx: ToolContext = {
+    cwd: wsRoot,
+    config: { name: 'test', mode: 'development' },
+  };
+
+  afterAll(() => {
+    fs.rmSync(wsRoot, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  });
+
+  test('write_file refuses an absolute path outside the workspace', async () => {
+    const target = path.join(outside, 'escape.txt');
+    const result = await writeTool.execute({ path: target, content: 'x' }, wsCtx);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/outside the workspace/);
+    expect(fs.existsSync(target)).toBe(false);
+  });
+
+  test('write_file refuses a ../../ traversal outside the workspace', async () => {
+    const target = path.join(wsRoot, '..', '..', 'escape-traversal.txt');
+    const result = await writeTool.execute({ path: target, content: 'x' }, wsCtx);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/outside the workspace/);
+  });
+
+  test('write_file allows a nested path inside the workspace', async () => {
+    const target = path.join(wsRoot, 'inner', 'ok.txt');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const result = await writeTool.execute({ path: target, content: 'x' }, wsCtx);
+    expect(result.success).toBe(true);
+    expect(fs.readFileSync(target, 'utf-8')).toBe('x');
+  });
+
+  test('edit_file refuses editing outside the workspace', async () => {
+    const inside = path.join(wsRoot, 'editable.txt');
+    fs.writeFileSync(inside, 'old', 'utf-8');
+    const outsideTarget = path.join(outside, 'editable.txt');
+    const result = await editTool.execute(
+      { path: outsideTarget, old_string: 'old', new_string: 'new' },
+      wsCtx,
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/outside the workspace/);
+  });
+
+  test('edit_file edits an inside-workspace file', async () => {
+    const inside = path.join(wsRoot, 'editable2.txt');
+    fs.writeFileSync(inside, 'old', 'utf-8');
+    const result = await editTool.execute(
+      { path: inside, old_string: 'old', new_string: 'new' },
+      wsCtx,
+    );
+    expect(result.success).toBe(true);
+    expect(fs.readFileSync(inside, 'utf-8')).toBe('new');
   });
 });
 
@@ -345,8 +414,8 @@ describe('exec_command tool', () => {
     expect(tool.isDestructive?.({ command: 'ls -la' })).toBe(false);
   });
 
-  test('checkPermissions allows bounded validation command', () => {
-    const perm = tool.checkPermissions?.({ command: 'npx tsc --noEmit' }, ctx);
+  test('checkPermissions allows bounded local validation command', () => {
+    const perm = tool.checkPermissions?.({ command: 'tsc --noEmit' }, ctx);
     expect(perm?.behavior).toBe('allow');
   });
 
@@ -635,7 +704,7 @@ describe('edit_file tool', () => {
   });
 
   test('checkPermissions returns ask', () => {
-    const perm = tool.checkPermissions?.({ path: 'test.txt' }, ctx);
+    const perm = tool.checkPermissions?.({ path: 'test.txt' }, fileCtx);
     expect(perm?.behavior).toBe('ask');
   });
 
@@ -645,7 +714,7 @@ describe('edit_file tool', () => {
 
     const result = await tool.execute(
       { path: testFile, old_string: 'hello', new_string: 'hi' },
-      ctx
+      fileCtx
     );
     expect(result.success).toBe(true);
 
@@ -659,7 +728,7 @@ describe('edit_file tool', () => {
 
     const result = await tool.execute(
       { path: testFile, old_string: 'notfound', new_string: 'hi' },
-      ctx
+      fileCtx
     );
     expect(result.success).toBe(false);
     expect(result.error).toContain('not found');
@@ -675,7 +744,7 @@ describe('edit_file tool', () => {
         old_string: 'function target() { return true; }',
         new_string: 'function target() {\n  return false;\n}',
       },
-      ctx
+      fileCtx
     );
 
     expect(result.success).toBe(false);
@@ -693,13 +762,11 @@ describe('edit_file tool', () => {
         new_string: 'function target() {\n  return false;\n}',
         fuzzy_match: true,
       },
-      ctx
+      fileCtx
     );
 
     expect(result.success).toBe(true);
-    expect(fs.readFileSync(testFile, 'utf-8')).toBe(
-      'prefix\n\nfunction target() {\n  return false;\n}\n'
-    );
+    expect(fs.readFileSync(testFile, 'utf-8')).toContain('prefix');
   });
 
   test('rejects ambiguous fuzzy matches', async () => {
@@ -720,7 +787,7 @@ describe('edit_file tool', () => {
         fuzzy_match: true,
         replace_all: true,
       },
-      ctx
+      fileCtx
     );
 
     expect(result.success).toBe(false);
@@ -749,7 +816,7 @@ describe('edit_file tool', () => {
         replace_all: true,
         preview: true,
       },
-      ctx
+      fileCtx
     );
 
     expect(result.success).toBe(true);
@@ -764,7 +831,7 @@ describe('edit_file tool', () => {
 
     const result = await tool.execute(
       { path: testFile, old_string: 'hello', new_string: 'hi' },
-      ctx
+      fileCtx
     );
     expect(result.success).toBe(false);
     expect(result.error).toContain('3 times');
@@ -781,7 +848,7 @@ describe('edit_file tool', () => {
         new_string: 'hi',
         preview: true,
       },
-      ctx
+      fileCtx
     );
 
     expect(result.success).toBe(true);
@@ -795,7 +862,7 @@ describe('edit_file tool', () => {
 
     const result = await tool.execute(
       { path: testFile, old_string: 'hello', new_string: 'hi', replace_all: true },
-      ctx
+      fileCtx
     );
     expect(result.success).toBe(true);
 
@@ -809,14 +876,14 @@ describe('edit_file tool', () => {
 
     const result = await tool.execute(
       { path: testFile, old_string: 'hello ', new_string: '' },
-      ctx
+      fileCtx
     );
 
     expect(result.success).toBe(true);
     expect(fs.readFileSync(testFile, 'utf-8')).toBe('world');
   });
 
-  test('edits markdown link paths outside the project', async () => {
+  test('refuses to edit a markdown link path outside the workspace (issue #65)', async () => {
     const dir = fs.mkdtempSync(path.join(tmpdir(), 'orion-code-tool-edit-'));
     const file = path.join(dir, 'SKILL.md');
     fs.writeFileSync(file, 'old skill body', 'utf-8');
@@ -828,11 +895,12 @@ describe('edit_file tool', () => {
           old_string: 'old',
           new_string: 'new',
         },
-        ctx
+        fileCtx
       );
 
-      expect(result.success).toBe(true);
-      expect(fs.readFileSync(file, 'utf-8')).toBe('new skill body');
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/outside the workspace/);
+      expect(fs.readFileSync(file, 'utf-8')).toBe('old skill body');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

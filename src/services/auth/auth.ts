@@ -4,7 +4,8 @@
  * Supports OAuth + API Key + AWS STS.
  */
 
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { createCipheriv, createDecipheriv, randomBytes } from 'crypto';
 import { join } from 'path';
 import { getConfigDir, ensureConfigDir } from '../config-dir';
 import { atomicWriteFileSync } from '../atomic-write';
@@ -239,31 +240,117 @@ export class AuthService {
 }
 
 // ============================================================================
-// Secure Storage (macOS Keychain)
+// Encrypted-at-rest credential storage
 // ============================================================================
 
 /**
- * macOS Keychain 安全存储
- * 注意：这是简化实现，实际需要调用 security 命令
+ * Encrypted credential store (AES-256-GCM).
+ *
+ * The previous "SecureStorage" wrote credentials to `secure.json` in *plain
+ * text*, which is a confidentiality hole: a backup, a stray `cat`, or a leaked
+ * dotfile sync exposes every stored secret. Plaintext is never written to disk
+ * now — the credential map is sealed with AES-256-GCM before it touches the
+ * filesystem.
+ *
+ * Key management: a 256-bit key is generated once per config directory and kept
+ * in `secure.key` (mode 0600, alongside `secure.json`). This makes `secure.json`
+ * useless on its own (the realistic leak/backup scenario) — it cannot be
+ * decrypted without `secure.key`. The key file itself is not secret against an
+ * attacker who already owns the machine, so the strong option remains a real OS
+ * keychain (macOS Keychain / libsecret); this implementation is the portable,
+ * dependency-free improvement that closes the plaintext exposure (issue #66).
  */
+const SECURE_KEY_FILE = 'secure.key';
+const SECURE_DATA_FILE = 'secure.json';
+const KEY_BYTES = 32;
+
+interface EncryptedBlob {
+  v: 1;
+  iv: string;
+  tag: string;
+  data: string;
+}
+
+function secureKeyPath(): string {
+  return join(getConfigDir(), SECURE_KEY_FILE);
+}
+
+function loadOrCreateKey(): Buffer {
+  const keyPath = secureKeyPath();
+  if (existsSync(keyPath)) {
+    return readFileSync(keyPath);
+  }
+  const key = randomBytes(KEY_BYTES);
+  // Generated once; atomicity is not critical here. Keep it 0600 so it is not
+  // world-readable like a stray file might be.
+  writeFileSync(keyPath, key, { mode: 0o600 });
+  return key;
+}
+
+function encryptMap(plain: Record<string, string>, key: Buffer): string {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', key, iv);
+  const ciphertext = Buffer.concat([
+    cipher.update(JSON.stringify(plain), 'utf-8'),
+    cipher.final(),
+  ]);
+  const blob: EncryptedBlob = {
+    v: 1,
+    iv: iv.toString('base64'),
+    tag: cipher.getAuthTag().toString('base64'),
+    data: ciphertext.toString('base64'),
+  };
+  return JSON.stringify(blob);
+}
+
+function decryptMap(blob: string, key: Buffer): Record<string, string> | null {
+  try {
+    const parsed = JSON.parse(blob) as EncryptedBlob;
+    if (parsed.v !== 1) return null;
+    const decipher = createDecipheriv(
+      'aes-256-gcm',
+      key,
+      Buffer.from(parsed.iv, 'base64'),
+    );
+    decipher.setAuthTag(Buffer.from(parsed.tag, 'base64'));
+    const plaintext = Buffer.concat([
+      decipher.update(Buffer.from(parsed.data, 'base64')),
+      decipher.final(),
+    ]).toString('utf-8');
+    return JSON.parse(plaintext) as Record<string, string>;
+  } catch {
+    // A corrupt or tampered blob is indistinguishable from "no credentials"
+    // to the caller, which is the confusing case — log it upstream.
+    return null;
+  }
+}
+
+function readCredentialMap(): Record<string, string> {
+  const storagePath = join(getConfigDir(), SECURE_DATA_FILE);
+  if (!existsSync(storagePath)) {
+    return {};
+  }
+  const key = loadOrCreateKey();
+  return decryptMap(readFileSync(storagePath, 'utf-8'), key) ?? {};
+}
+
+function writeCredentialMap(map: Record<string, string>): void {
+  const storagePath = join(getConfigDir(), SECURE_DATA_FILE);
+  const key = loadOrCreateKey();
+  // Read-modify-write over the whole file: a torn write here loses *every*
+  // stored secret, not just the one being added.
+  atomicWriteFileSync(storagePath, encryptMap(map, key), CREDENTIAL_WRITE_OPTS);
+}
+
 export class SecureStorage {
   /**
-   * 存储到 Keychain
+   * Store a credential, encrypted at rest.
    */
   async store(service: string, account: string, password: string): Promise<boolean> {
-    // macOS: security add-generic-password
     try {
-      // 简化实现：存储到加密文件
-      const storagePath = join(getConfigDir(), 'secure.json');
-      const content = existsSync(storagePath)
-        ? JSON.parse(readFileSync(storagePath, 'utf-8'))
-        : {};
-
-      content[`${service}:${account}`] = password;
-      // Read-modify-write over the whole file: a torn write here loses *every*
-      // stored secret, not just the one being added.
-      atomicWriteFileSync(storagePath, JSON.stringify(content), CREDENTIAL_WRITE_OPTS);
-
+      const map = readCredentialMap();
+      map[`${service}:${account}`] = password;
+      writeCredentialMap(map);
       return true;
     } catch (error) {
       // The caller only sees `false`; without this the reason a credential
@@ -274,19 +361,14 @@ export class SecureStorage {
   }
 
   /**
-   * 从 Keychain 获取
+   * Retrieve a credential (decrypted from disk).
    */
   async retrieve(service: string, account: string): Promise<string | null> {
     try {
-      const storagePath = join(getConfigDir(), 'secure.json');
-      if (!existsSync(storagePath)) {
-        return null;
-      }
-
-      const content = JSON.parse(readFileSync(storagePath, 'utf-8'));
-      return content[`${service}:${account}`] || null;
+      const map = readCredentialMap();
+      return map[`${service}:${account}`] ?? null;
     } catch (error) {
-      // A parse failure here is indistinguishable from "no credential
+      // A parse/decrypt failure here is indistinguishable from "no credential
       // stored" to the caller, which is exactly the confusing case.
       debugError('auth.retrieve', error, `${service}:${account}`);
       return null;
@@ -294,19 +376,13 @@ export class SecureStorage {
   }
 
   /**
-   * 从 Keychain 删除
+   * Delete a credential.
    */
   async delete(service: string, account: string): Promise<boolean> {
     try {
-      const storagePath = join(getConfigDir(), 'secure.json');
-      if (!existsSync(storagePath)) {
-        return true;
-      }
-
-      const content = JSON.parse(readFileSync(storagePath, 'utf-8'));
-      delete content[`${service}:${account}`];
-      atomicWriteFileSync(storagePath, JSON.stringify(content), CREDENTIAL_WRITE_OPTS);
-
+      const map = readCredentialMap();
+      delete map[`${service}:${account}`];
+      writeCredentialMap(map);
       return true;
     } catch (error) {
       // A failed delete leaves the secret on disk — the most security

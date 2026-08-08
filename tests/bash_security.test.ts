@@ -53,14 +53,21 @@ describe('bash_security', () => {
   });
 
   describe('isValidationCommand', () => {
-    test('allows common bounded verification commands', () => {
-      expect(isValidationCommand('npx tsc --noEmit')).toBe(true);
-      expect(isValidationCommand('npm test -- --no-coverage')).toBe(true);
+    test('allows common bounded local verification commands', () => {
+      expect(isValidationCommand('tsc --noEmit')).toBe(true);
       expect(isValidationCommand('npm run lint')).toBe(true);
-      expect(isValidationCommand('npx jest tests/harness.test.ts --no-coverage')).toBe(true);
+      expect(isValidationCommand('npm run build')).toBe(true);
+      expect(isValidationCommand('pnpm typecheck')).toBe(true);
     });
 
-    test('does not allow arbitrary npx or install commands', () => {
+    test('does not allow network-pulling or script-executing commands', () => {
+      // npx fetches and runs an arbitrary registry package → RCE.
+      expect(isValidationCommand('npx tsc --noEmit')).toBe(false);
+      expect(isValidationCommand('npx jest tests/harness.test.ts --no-coverage')).toBe(false);
+      // npm test / yarn test run project scripts → silent code execution.
+      expect(isValidationCommand('npm test -- --no-coverage')).toBe(false);
+      expect(isValidationCommand('yarn test')).toBe(false);
+      // arbitrary npx / install still blocked.
       expect(isValidationCommand('npx some-random-package')).toBe(false);
       expect(isValidationCommand('npm install')).toBe(false);
       expect(isValidationCommand('npm run start')).toBe(false);
@@ -144,10 +151,31 @@ describe('bash_security', () => {
       expect(result.isReadOnly).toBe(true);
     });
 
-    test('returns safe for validation commands', () => {
-      const result = assessCommandSecurity('npx tsc --noEmit');
+    test('returns safe for local validation commands', () => {
+      const result = assessCommandSecurity('tsc --noEmit');
       expect(result.level).toBe('safe');
       expect(result.isReadOnly).toBe(true);
+    });
+
+    test('returns caution for network egress commands (issue #64)', () => {
+      for (const cmd of [
+        'curl https://example.com',
+        'wget https://example.com',
+        'nslookup example.com',
+        'dig example.com',
+        'host example.com',
+      ]) {
+        const result = assessCommandSecurity(cmd);
+        expect(result.level).toBe('caution');
+        expect(result.isReadOnly).toBe(false);
+      }
+    });
+
+    test('returns caution for npx / npm test (issue #64)', () => {
+      expect(assessCommandSecurity('npx tsc --noEmit').level).toBe('caution');
+      expect(assessCommandSecurity('npx jest tests/x.test.ts').level).toBe('caution');
+      expect(assessCommandSecurity('npm test').level).toBe('caution');
+      expect(assessCommandSecurity('yarn test').level).toBe('caution');
     });
 
     test('returns caution for potentially destructive commands', () => {
