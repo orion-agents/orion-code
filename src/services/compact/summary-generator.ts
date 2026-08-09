@@ -33,6 +33,36 @@ const DEFAULT_OPTIONS: SummaryOptions = {
   format: 'bullet',
 };
 
+function truncateSummary(value: string, maxLength: number): string {
+  if (maxLength <= 0) return '';
+  if (value.length <= maxLength) return value;
+  if (maxLength <= 3) return value.slice(0, maxLength);
+  return `${value.slice(0, maxLength - 3)}...`;
+}
+
+/**
+ * Reserve space for newly evicted context even when the prior durable summary
+ * already fills the entire summary budget.
+ */
+function mergeSummaries(
+  priorSummary: string | undefined,
+  freshSummary: string,
+  maxLength: number
+): string {
+  const prior = priorSummary?.trim() ?? '';
+  const fresh = freshSummary.trim();
+  if (!prior) return truncateSummary(fresh, maxLength);
+  if (!fresh) return truncateSummary(prior, maxLength);
+
+  const contentBudget = Math.max(0, maxLength - 1);
+  const freshBudget = Math.max(1, Math.ceil(contentBudget * 0.6));
+  const priorBudget = Math.max(0, contentBudget - freshBudget);
+  const parts = [truncateSummary(prior, priorBudget), truncateSummary(fresh, freshBudget)].filter(
+    Boolean
+  );
+  return truncateSummary(parts.join('\n'), maxLength);
+}
+
 // ============================================================================
 // 摘要生成
 // ============================================================================
@@ -110,8 +140,7 @@ export async function summaryGenerator(
       break;
   }
 
-  const combined = [prepared.priorSummary, freshSummary].filter(Boolean).join('\n');
-  return combined.length > maxLen ? `${combined.slice(0, maxLen - 3)}...` : combined;
+  return mergeSummaries(prepared.priorSummary, freshSummary, maxLen);
 }
 
 // ============================================================================
@@ -290,10 +319,9 @@ Summary:`;
   }
 
   const freshSummary = await summaryGenerator(prepared.messages, options);
-  const combined = [prepared.priorSummary, freshSummary].filter(Boolean).join('\n');
   const maxLength = opts.maxLength || 500;
   return {
-    text: combined.length > maxLength ? `${combined.slice(0, maxLength - 3)}...` : combined,
+    text: mergeSummaries(prepared.priorSummary, freshSummary, maxLength),
     source: 'heuristic',
   };
 }

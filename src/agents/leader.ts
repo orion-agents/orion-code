@@ -4,7 +4,12 @@
  * 负责任务分发、Agent 管理和整体协调
  */
 
-import { BaseAgent, AgentConfig, Task, TaskResult } from '../core/agent';
+import { BaseAgent, AgentConfig, Task, TaskResult, TaskResultData } from '../core/agent';
+
+interface CoordinationResult extends TaskResultData {
+  message: string;
+  timestamp: string;
+}
 
 export class LeaderAgent extends BaseAgent {
   constructor(config?: Partial<AgentConfig>) {
@@ -42,7 +47,7 @@ export class LeaderAgent extends BaseAgent {
     }
   }
 
-  private async coordinateTask(task: Task): Promise<any> {
+  private async coordinateTask(task: Task): Promise<CoordinationResult> {
     // Leader 协调逻辑
     return {
       message: `Task "${task.name}" coordinated by Leader`,

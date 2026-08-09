@@ -10,6 +10,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { atomicWriteFileSync } from '../services/atomic-write';
 import { getProjectCheckpointsDir, getProjectSessionsDir } from '../services/config-dir';
 
 export const CHECKPOINT_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
@@ -25,6 +26,19 @@ export interface Checkpoint {
   turnId: string;
   createdAt: number;
   files: CheckpointFile[];
+}
+
+export interface CheckpointRestoreFailure {
+  path: string;
+  error: string;
+}
+
+export interface CheckpointRestoreResult {
+  restored: string[];
+  error?: string;
+  failures?: CheckpointRestoreFailure[];
+  rolledBack?: string[];
+  rollbackFailures?: CheckpointRestoreFailure[];
 }
 
 function getCheckpointDir(projectPath: string): string {
@@ -59,7 +73,7 @@ function isInside(parentDir: string, candidatePath: string): boolean {
 
 function resolveCheckpointTarget(
   projectPath: string,
-  filePath: string,
+  filePath: string
 ): { absolutePath: string; relativePath: string } | null {
   const projectRoot = path.resolve(projectPath);
   const absolutePath = path.isAbsolute(filePath)
@@ -84,14 +98,28 @@ function resolveCheckpointSourcePath(turnDir: string, relativePath: string): str
 export function createCheckpoint(
   projectPath: string | undefined,
   turnId: string,
-  filePaths: string[],
+  filePaths: string[]
 ): Checkpoint | null {
   if (!projectPath || filePaths.length === 0) return null;
 
   const dir = getTurnDir(projectPath, turnId);
-  if (fs.existsSync(dir)) return null; // Already exists
-
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  // Issue #83: avoid the existsSync -> mkdirSync TOCTOU. Creating the turn dir
+  // with a single non-recursive mkdir is atomic: if another process already
+  // created this checkpoint, mkdir throws EEXIST and we treat it as "already
+  // exists" rather than racing to overwrite it.
+  try {
+    fs.mkdirSync(dir, { mode: 0o700 });
+  } catch (err: unknown) {
+    if (
+      err &&
+      typeof err === 'object' &&
+      'code' in err &&
+      (err as { code?: unknown }).code === 'EEXIST'
+    ) {
+      return null; // checkpoint already created
+    }
+    throw err;
+  }
 
   const files: CheckpointFile[] = [];
   for (const filePath of filePaths) {
@@ -109,16 +137,18 @@ export function createCheckpoint(
         continue;
       }
 
-      const content = fs.readFileSync(target.absolutePath, 'utf8');
+      const content = fs.readFileSync(target.absolutePath);
       const checkpointPath = resolveCheckpointSourcePath(dir, target.relativePath);
       if (!checkpointPath) continue;
       fs.mkdirSync(path.dirname(checkpointPath), { recursive: true });
-      fs.writeFileSync(checkpointPath, content, { mode: 0o600 });
+      // Issue #83: atomic write (temp + rename) so a crash mid-write cannot
+      // leave a half-written snapshot that restore() can't read.
+      atomicWriteFileSync(checkpointPath, content, { mode: 0o600 });
 
       files.push({
         path: target.relativePath,
-        content: content.slice(0, 200), // Preview only
-        sizeBytes: Buffer.byteLength(content, 'utf8'),
+        content: content.subarray(0, 150).toString('base64'), // Binary-safe preview only
+        sizeBytes: content.byteLength,
         existed: true,
       });
     } catch {
@@ -128,7 +158,11 @@ export function createCheckpoint(
 
   // Write checkpoint metadata
   const meta: Checkpoint = { turnId, createdAt: Date.now(), files };
-  fs.writeFileSync(path.join(dir, '.checkpoint.json'), JSON.stringify(meta, null, 2), { mode: 0o600 });
+  // Issue #83: atomic write so a crash between files and meta can never leave a
+  // meta referencing snapshots that aren't on disk yet.
+  atomicWriteFileSync(path.join(dir, '.checkpoint.json'), JSON.stringify(meta, null, 2), {
+    mode: 0o600,
+  });
 
   return meta;
 }
@@ -139,8 +173,8 @@ export function createCheckpoint(
  */
 export function restoreCheckpoint(
   projectPath: string | undefined,
-  turnId: string,
-): { restored: string[]; error?: string } {
+  turnId: string
+): CheckpointRestoreResult {
   if (!projectPath) return { restored: [], error: 'No project path' };
 
   const dir = getExistingTurnDir(projectPath, turnId);
@@ -164,36 +198,110 @@ export function restoreCheckpoint(
     return { restored: [], error: 'Checkpoint metadata missing files array' };
   }
 
-  const restored: string[] = [];
+  interface RestorePlan {
+    relativePath: string;
+    absolutePath: string;
+    snapshot?: Buffer;
+    previous?: Buffer;
+    previousMode?: number;
+  }
+
+  const plans: RestorePlan[] = [];
   for (const file of meta.files) {
     const target = resolveCheckpointTarget(projectPath, file.path);
     if (!target) {
-      return { restored, error: `Invalid checkpoint path: ${file.path}` };
+      return { restored: [], error: `Invalid checkpoint path: ${file.path}` };
     }
     const checkpointFile = resolveCheckpointSourcePath(dir, target.relativePath);
     if (!checkpointFile) {
-      return { restored, error: `Invalid checkpoint source path: ${file.path}` };
+      return { restored: [], error: `Invalid checkpoint source path: ${file.path}` };
     }
+
     try {
-      if (file.existed === false) {
-        if (fs.existsSync(target.absolutePath)) {
-          const stat = fs.statSync(target.absolutePath);
-          if (stat.isDirectory()) {
-            return { restored, error: `Refusing to remove directory from checkpoint restore: ${file.path}` };
-          }
-          fs.rmSync(target.absolutePath, { force: true });
+      let previous: Buffer | undefined;
+      let previousMode: number | undefined;
+      if (fs.existsSync(target.absolutePath)) {
+        const stat = fs.statSync(target.absolutePath);
+        if (stat.isDirectory()) {
+          return {
+            restored: [],
+            error: `Refusing to overwrite directory from checkpoint restore: ${file.path}`,
+          };
         }
-        restored.push(target.relativePath);
-        continue;
+        previous = fs.readFileSync(target.absolutePath);
+        previousMode = stat.mode & 0o777;
       }
 
-      if (!fs.existsSync(checkpointFile)) continue;
-      const content = fs.readFileSync(checkpointFile, 'utf8');
-      fs.mkdirSync(path.dirname(target.absolutePath), { recursive: true });
-      fs.writeFileSync(target.absolutePath, content, { mode: 0o600 });
-      restored.push(target.relativePath);
-    } catch {
-      // Skip files that can't be restored
+      if (file.existed !== false && !fs.existsSync(checkpointFile)) {
+        return { restored: [], error: `Checkpoint snapshot missing: ${file.path}` };
+      }
+      plans.push({
+        relativePath: target.relativePath,
+        absolutePath: target.absolutePath,
+        snapshot: file.existed === false ? undefined : fs.readFileSync(checkpointFile),
+        previous,
+        previousMode,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        restored: [],
+        error: `Unable to prepare checkpoint restore for ${file.path}: ${message}`,
+        failures: [{ path: file.path, error: message }],
+      };
+    }
+  }
+
+  const restored: string[] = [];
+  const applied: RestorePlan[] = [];
+  for (const plan of plans) {
+    try {
+      if (plan.snapshot) {
+        fs.mkdirSync(path.dirname(plan.absolutePath), { recursive: true });
+        // Issue #83: atomic write so an interrupted restore cannot leave a torn
+        // file at the user's real path.
+        atomicWriteFileSync(plan.absolutePath, plan.snapshot, { mode: 0o600 });
+      } else if (fs.existsSync(plan.absolutePath)) {
+        fs.rmSync(plan.absolutePath, { force: true });
+      }
+      applied.push(plan);
+      restored.push(plan.relativePath);
+    } catch (error) {
+      const failure = {
+        path: plan.relativePath,
+        error: error instanceof Error ? error.message : String(error),
+      };
+      const rolledBack: string[] = [];
+      const rollbackFailures: CheckpointRestoreFailure[] = [];
+      for (const completed of [...applied].reverse()) {
+        try {
+          if (completed.previous) {
+            fs.mkdirSync(path.dirname(completed.absolutePath), { recursive: true });
+            atomicWriteFileSync(completed.absolutePath, completed.previous, {
+              mode: completed.previousMode ?? 0o600,
+            });
+          } else if (fs.existsSync(completed.absolutePath)) {
+            fs.rmSync(completed.absolutePath, { force: true });
+          }
+          rolledBack.push(completed.relativePath);
+        } catch (rollbackError) {
+          rollbackFailures.push({
+            path: completed.relativePath,
+            error: rollbackError instanceof Error ? rollbackError.message : String(rollbackError),
+          });
+        }
+      }
+
+      const rollbackStatus = rollbackFailures.length
+        ? `; rollback also failed for ${rollbackFailures.map(item => item.path).join(', ')}`
+        : `; rolled back ${rolledBack.length} previously restored file(s)`;
+      return {
+        restored,
+        error: `Checkpoint restore failed for ${failure.path}: ${failure.error}${rollbackStatus}`,
+        failures: [failure],
+        rolledBack,
+        rollbackFailures,
+      };
     }
   }
 

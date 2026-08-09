@@ -9,6 +9,7 @@
 import { appendFileSync, existsSync, readFileSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { atomicWriteFileSync } from './atomic-write';
+import { withFileLockSync } from './file-lock';
 import {
   ensureConfigDir,
   getGlobalConfigPath,
@@ -16,6 +17,7 @@ import {
   getUsageStatePath,
 } from './config-dir';
 import type { CostSource, UsageRecord } from '../core/cost-tracker';
+import { debugError } from '../utils/debug-log';
 
 export interface UsageState {
   schemaVersion: 2;
@@ -58,6 +60,7 @@ export interface UsageLedgerSummary {
   providerCost: number;
   estimatedCost: number;
   recordCount: number;
+  droppedCorruptLines: number;
   bySource: Record<CostSource, { cost: number; count: number }>;
   byModel: Record<string, { tokens: number; cost: number; count: number }>;
 }
@@ -99,9 +102,9 @@ function hasLegacyUsageFields(value: unknown): value is LegacyUsageFields {
   if (!value || typeof value !== 'object') return false;
   const record = value as LegacyUsageFields;
   return (
-    record.totalSessions !== undefined
-    || record.totalTokens !== undefined
-    || record.totalCost !== undefined
+    record.totalSessions !== undefined ||
+    record.totalTokens !== undefined ||
+    record.totalCost !== undefined
   );
 }
 
@@ -114,6 +117,7 @@ function emptyLedgerSummary(): UsageLedgerSummary {
     providerCost: 0,
     estimatedCost: 0,
     recordCount: 0,
+    droppedCorruptLines: 0,
     bySource: {
       provider: { cost: 0, count: 0 },
       configured: { cost: 0, count: 0 },
@@ -125,10 +129,9 @@ function emptyLedgerSummary(): UsageLedgerSummary {
 }
 
 function isCostSource(value: unknown): value is CostSource {
-  return value === 'provider'
-    || value === 'configured'
-    || value === 'builtin'
-    || value === 'fallback';
+  return (
+    value === 'provider' || value === 'configured' || value === 'builtin' || value === 'fallback'
+  );
 }
 
 function normalizeLedgerEntry(value: unknown): UsageLedgerEntry | null {
@@ -156,31 +159,40 @@ function normalizeLedgerEntry(value: unknown): UsageLedgerEntry | null {
   };
 }
 
-export function loadUsageLedger(): UsageLedgerEntry[] {
+function readUsageLedger(): { entries: UsageLedgerEntry[]; droppedCorruptLines: number } {
   const path = getUsageLedgerPath();
-  if (!existsSync(path)) return [];
+  if (!existsSync(path)) return { entries: [], droppedCorruptLines: 0 };
 
   const entries: UsageLedgerEntry[] = [];
   const seen = new Set<string>();
-  for (const line of readFileSync(path, 'utf-8').split('\n')) {
+  let droppedCorruptLines = 0;
+  const lines = readFileSync(path, 'utf-8').split('\n');
+  for (const [index, line] of lines.entries()) {
     if (!line.trim()) continue;
     try {
       const entry = normalizeLedgerEntry(JSON.parse(line));
-      if (!entry) continue;
+      if (!entry) throw new Error('ledger entry failed validation');
       const dedupeKey = entry.requestId || entry.id;
       if (seen.has(dedupeKey)) continue;
       seen.add(dedupeKey);
       entries.push(entry);
-    } catch {
-      // Ignore a corrupt or interrupted trailing line; earlier records remain valid.
+    } catch (error) {
+      droppedCorruptLines++;
+      debugError('usage-state.ledgerLine', error, `${path}:${index + 1}`);
     }
   }
-  return entries;
+  return { entries, droppedCorruptLines };
 }
 
-export function summarizeUsageLedger(entries = loadUsageLedger()): UsageLedgerSummary {
+export function loadUsageLedger(): UsageLedgerEntry[] {
+  return readUsageLedger().entries;
+}
+
+export function summarizeUsageLedger(entries?: UsageLedgerEntry[]): UsageLedgerSummary {
+  const read = entries ? { entries, droppedCorruptLines: 0 } : readUsageLedger();
   const summary = emptyLedgerSummary();
-  for (const entry of entries) {
+  summary.droppedCorruptLines = read.droppedCorruptLines;
+  for (const entry of read.entries) {
     summary.promptTokens += entry.promptTokens;
     summary.completionTokens += entry.completionTokens;
     summary.totalTokens += entry.totalTokens;
@@ -260,60 +272,91 @@ function stripLegacyUsageFields(): void {
 export function loadUsageState(): UsageState {
   ensureConfigDir();
   const existing = readJsonFile(getUsageStatePath());
-  let stored = normalizeStoredUsage(existing);
+  if (existing) return buildUsageState(normalizeStoredUsage(existing));
 
-  if (!existing) {
-    const legacy = readJsonFile(getGlobalConfigPath());
-    if (hasLegacyUsageFields(legacy)) stored = normalizeStoredUsage(legacy);
-  }
+  const legacy = readJsonFile(getGlobalConfigPath());
+  if (!hasLegacyUsageFields(legacy)) return buildUsageState(normalizeStoredUsage(null));
 
-  const state = buildUsageState(stored);
-  writeUsageState(state);
-  stripLegacyUsageFields();
-  return state;
+  return withUsageStateLock(() => {
+    const current = readJsonFile(getUsageStatePath());
+    if (current) return buildUsageState(normalizeStoredUsage(current));
+    const state = buildUsageState(normalizeStoredUsage(legacy));
+    writeUsageState(state);
+    stripLegacyUsageFields();
+    return state;
+  });
 }
 
 export function saveUsageState(state: UsageState): void {
-  const normalized = buildUsageState({
-    totalSessions: toNonNegativeNumber(state.totalSessions),
-    baselineTokens: toNonNegativeNumber(state.baselineTokens),
-    baselineCost: toNonNegativeNumber(state.baselineCost),
-    updatedAt: nowIso(),
+  withUsageStateLock(() => {
+    const normalized = buildUsageState({
+      totalSessions: toNonNegativeNumber(state.totalSessions),
+      baselineTokens: toNonNegativeNumber(state.baselineTokens),
+      baselineCost: toNonNegativeNumber(state.baselineCost),
+      updatedAt: nowIso(),
+    });
+    writeUsageState(normalized);
   });
-  writeUsageState(normalized);
 }
 
-export function updateUsageState(
-  updates: Partial<Omit<UsageState, 'schemaVersion'>>,
-): UsageState {
-  const current = loadUsageState();
-  const next = buildUsageState({
-    totalSessions: toNonNegativeNumber(updates.totalSessions ?? current.totalSessions),
-    baselineTokens: toNonNegativeNumber(updates.baselineTokens ?? current.baselineTokens),
-    baselineCost: toNonNegativeNumber(updates.baselineCost ?? current.baselineCost),
-    updatedAt: nowIso(),
+export function updateUsageState(updates: Partial<Omit<UsageState, 'schemaVersion'>>): UsageState {
+  return withUsageStateLock(() => {
+    const current = buildUsageState(
+      normalizeStoredUsage(readJsonFile(getUsageStatePath()) ?? readJsonFile(getGlobalConfigPath()))
+    );
+    const next = buildUsageState({
+      totalSessions: toNonNegativeNumber(updates.totalSessions ?? current.totalSessions),
+      baselineTokens: toNonNegativeNumber(updates.baselineTokens ?? current.baselineTokens),
+      baselineCost: toNonNegativeNumber(updates.baselineCost ?? current.baselineCost),
+      updatedAt: nowIso(),
+    });
+    writeUsageState(next);
+    return next;
   });
-  writeUsageState(next);
-  return next;
 }
 
 export function incrementSessionCount(): void {
-  const state = loadUsageState();
-  updateUsageState({ totalSessions: state.totalSessions + 1 });
+  updateUsageBaseline(state => ({ totalSessions: state.totalSessions + 1 }));
 }
 
 /** Compatibility API: adds non-ledger counters to the pre-ledger baseline. */
 export function updateTokenStats(tokens: number, cost: number): void {
-  const state = loadUsageState();
-  updateUsageState({
+  updateUsageBaseline(state => ({
     baselineTokens: state.baselineTokens + Math.max(0, tokens),
     baselineCost: state.baselineCost + Math.max(0, cost),
+  }));
+}
+
+function withUsageStateLock<T>(operation: () => T): T {
+  ensureConfigDir();
+  return withFileLockSync(getUsageStatePath(), operation);
+}
+
+function updateUsageBaseline(
+  update: (
+    state: UsageState
+  ) => Partial<Pick<UsageState, 'totalSessions' | 'baselineTokens' | 'baselineCost'>>
+): UsageState {
+  return withUsageStateLock(() => {
+    const stored = normalizeStoredUsage(
+      readJsonFile(getUsageStatePath()) ?? readJsonFile(getGlobalConfigPath())
+    );
+    const current = buildUsageState(stored);
+    const changes = update(current);
+    const next = buildUsageState({
+      totalSessions: toNonNegativeNumber(changes.totalSessions ?? current.totalSessions),
+      baselineTokens: toNonNegativeNumber(changes.baselineTokens ?? current.baselineTokens),
+      baselineCost: toNonNegativeNumber(changes.baselineCost ?? current.baselineCost),
+      updatedAt: nowIso(),
+    });
+    writeUsageState(next);
+    return next;
   });
 }
 
 export function appendUsageRecord(
   record: UsageRecord,
-  context: { sessionId?: string; projectPath?: string } = {},
+  context: { sessionId?: string; projectPath?: string } = {}
 ): UsageLedgerEntry {
   ensureConfigDir();
   const entry: UsageLedgerEntry = {
@@ -333,6 +376,9 @@ export function appendUsageRecord(
     ...(record.agentId ? { agentId: record.agentId } : {}),
     ...(record.taskId ? { taskId: record.taskId } : {}),
   };
-  appendFileSync(getUsageLedgerPath(), `${JSON.stringify(entry)}\n`, { encoding: 'utf-8', mode: 0o600 });
+  appendFileSync(getUsageLedgerPath(), `${JSON.stringify(entry)}\n`, {
+    encoding: 'utf-8',
+    mode: 0o600,
+  });
   return entry;
 }

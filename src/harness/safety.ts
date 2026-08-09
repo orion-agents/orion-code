@@ -6,6 +6,8 @@
  */
 
 import { EventEmitter } from 'eventemitter3';
+import { existsSync, realpathSync } from 'fs';
+import { dirname, isAbsolute, relative, resolve } from 'path';
 
 // ============================================================================
 // 类型定义
@@ -24,6 +26,17 @@ export interface SafetyCheck {
   reason?: string;
   /** 建议操作 */
   suggestion?: string;
+}
+
+export interface SafetyContext {
+  path?: unknown;
+  cwd?: unknown;
+  output?: unknown;
+  fsOp?: unknown;
+  networkOp?: unknown;
+  url?: unknown;
+  /** True only when the downstream executor has actually applied isolation. */
+  sandboxed?: unknown;
 }
 
 /** 安全策略配置 */
@@ -116,8 +129,7 @@ export class SafetyChecker extends EventEmitter {
   constructor(policy: Partial<SafetyPolicy> = {}) {
     super();
     this.policy = cloneSafetyPolicy({ ...DEFAULT_POLICY, ...policy });
-    // Pre-compile regex patterns at construction time.
-    // Invalid patterns fall back to a never-matching regex.
+    // Invalid policy patterns match everything so malformed policy fails closed.
     this.compiledBlocked = this.policy.blocked.map(p => safeCompileRegex(p));
     this.compiledDangerous = this.policy.dangerousPatterns.map(p => safeCompileRegex(p));
   }
@@ -125,7 +137,7 @@ export class SafetyChecker extends EventEmitter {
   /**
    * 检查一个操作是否安全
    */
-  check(action: string, context?: Record<string, any>): SafetyCheck {
+  check(action: string, context: SafetyContext = {}): SafetyCheck {
     if (!this.policy.enabled) {
       return { passed: true, level: 'safe' };
     }
@@ -154,10 +166,31 @@ export class SafetyChecker extends EventEmitter {
       });
     }
 
-    // 3. 检查被禁止的路径
-    if (context?.path) {
+    // 3. sandboxMode 必须由实际执行器证明已应用，不能只显示为 on。
+    if (this.policy.sandboxMode && context.sandboxed !== true) {
+      return this.record({
+        passed: false,
+        level: 'blocked',
+        reason: 'Sandbox mode is required but no active sandbox was confirmed',
+        suggestion: 'Run this operation through an executor that reports sandboxed=true.',
+        action,
+      });
+    }
+
+    // 4. 规范化路径并按路径段比较，避免 `..`/`.`/symlink 绕过和前缀误报。
+    if (context.path !== undefined) {
+      if (typeof context.path !== 'string' || context.path.trim() === '') {
+        return this.record({
+          passed: false,
+          level: 'blocked',
+          reason: 'Path safety check failed: path must be a non-empty string',
+          action,
+        });
+      }
+      const cwd = typeof context.cwd === 'string' ? context.cwd : process.cwd();
+      const targetPath = canonicalPath(context.path, cwd);
       const blockedPath = this.policy.blockedPaths.find(bp =>
-        (context.path as string).startsWith(bp)
+        isPathContained(canonicalPath(bp, cwd), targetPath)
       );
       if (blockedPath) {
         return this.record({
@@ -170,8 +203,8 @@ export class SafetyChecker extends EventEmitter {
       }
     }
 
-    // 4. 检查输出长度
-    if (context?.output && typeof context.output === 'string') {
+    // 5. 检查输出长度
+    if (context.output && typeof context.output === 'string') {
       if (context.output.length > this.policy.maxOutputLength) {
         return this.record({
           passed: false,
@@ -183,8 +216,13 @@ export class SafetyChecker extends EventEmitter {
       }
     }
 
-    // 5. 检查文件系统操作权限
-    if (context?.fsOp && !this.policy.allowedFileSystemOps.includes(context.fsOp as any)) {
+    // 6. 检查文件系统操作权限
+    if (
+      context.fsOp !== undefined &&
+      !this.policy.allowedFileSystemOps.includes(
+        context.fsOp as SafetyPolicy['allowedFileSystemOps'][number]
+      )
+    ) {
       return this.record({
         passed: false,
         level: 'blocked',
@@ -194,9 +232,30 @@ export class SafetyChecker extends EventEmitter {
       });
     }
 
-    // 6. 检查是否在白名单中
+    // 7. 网络操作必须完整解析协议；无法解析时 fail closed。
     const actionBase = action.split(' ')[0];
-    if (this.policy.allowed[0] !== '*' && !this.policy.allowed.includes(actionBase)) {
+    const networkRequested =
+      actionBase === 'network' ||
+      context.networkOp !== undefined ||
+      context.url !== undefined ||
+      /\b(?:https?|wss?):\/\//i.test(action);
+    if (networkRequested) {
+      const networkOp = resolveNetworkOp(action, context);
+      if (!networkOp || !this.policy.allowedNetworkOps.includes(networkOp)) {
+        return this.record({
+          passed: false,
+          level: 'blocked',
+          reason: networkOp
+            ? `Network operation "${networkOp}" is not allowed`
+            : 'Network operation could not be parsed safely',
+          suggestion: `Allowed network operations: ${this.policy.allowedNetworkOps.join(', ')}`,
+          action,
+        });
+      }
+    }
+
+    // 8. 通配符在 allowlist 任意位置均生效。
+    if (!this.policy.allowed.includes('*') && !this.policy.allowed.includes(actionBase)) {
       return this.record({
         passed: true,
         level: 'warning',
@@ -285,18 +344,75 @@ export class SafetyChecker extends EventEmitter {
 
 /**
  * Safely compile a user-provided regex pattern.
- * Invalid patterns return a never-matching regex instead of throwing.
+ * Invalid patterns match every action (fail closed) instead of throwing.
  * Patterns longer than 500 chars are rejected to mitigate ReDoS.
  */
 function safeCompileRegex(pattern: string): RegExp {
   if (pattern.length > 500) {
     // Overly long pattern — likely malicious or malformed.
-    return /^$/; // matches empty string only (effectively never matches actions)
+    return /[\s\S]*/;
   }
   try {
     return new RegExp(pattern, 'i');
   } catch {
-    // Invalid regex syntax — return never-matching pattern.
-    return /^$/;
+    return /[\s\S]*/;
+  }
+}
+
+function canonicalPath(input: string, cwd: string): string {
+  const absolute = resolve(cwd, input);
+  if (existsSync(absolute)) {
+    try {
+      return realpathSync.native(absolute);
+    } catch {
+      return absolute;
+    }
+  }
+
+  // Resolve the nearest existing ancestor so non-existent children below a symlink
+  // receive the same containment decision.
+  const suffix: string[] = [];
+  let cursor = absolute;
+  while (!existsSync(cursor)) {
+    const parent = dirname(cursor);
+    if (parent === cursor) return absolute;
+    suffix.unshift(relative(parent, cursor));
+    cursor = parent;
+  }
+  try {
+    return resolve(realpathSync.native(cursor), ...suffix);
+  } catch {
+    return absolute;
+  }
+}
+
+function isPathContained(parent: string, target: string): boolean {
+  const rel = relative(parent, target);
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
+function asNetworkOp(value: unknown): SafetyPolicy['allowedNetworkOps'][number] | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim().toLowerCase().replace(/:$/, '');
+  return ['http', 'https', 'ws', 'wss'].includes(normalized)
+    ? normalized as SafetyPolicy['allowedNetworkOps'][number]
+    : undefined;
+}
+
+function resolveNetworkOp(
+  action: string,
+  context: SafetyContext
+): SafetyPolicy['allowedNetworkOps'][number] | undefined {
+  const explicit = asNetworkOp(context.networkOp);
+  if (explicit) return explicit;
+
+  const candidate = typeof context.url === 'string'
+    ? context.url
+    : action.match(/\b(?:https?|wss?):\/\/[^\s]+/i)?.[0];
+  if (!candidate) return undefined;
+  try {
+    return asNetworkOp(new URL(candidate).protocol);
+  } catch {
+    return undefined;
   }
 }

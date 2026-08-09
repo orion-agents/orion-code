@@ -9,7 +9,7 @@
  *   - git_push: 安全推送（验证 + commit）
  */
 
-import { buildTool, type OpenHorseTool } from '../framework/tool';
+import { buildTool, type OrionCodeTool } from '../framework/tool';
 import { execFile } from 'child_process';
 import { posix } from 'path';
 
@@ -185,7 +185,7 @@ async function checkRemoteAuth(cwd?: string): Promise<{ authenticated: boolean; 
 // git_status 工具
 // ============================================================================
 
-export const gitStatusTool: OpenHorseTool = buildTool({
+export const gitStatusTool: OrionCodeTool = buildTool({
   name: 'git_status',
   description: '检查 Git 工作区状态，返回未暂存和未提交的文件列表。',
   parameters: {
@@ -306,7 +306,7 @@ export const gitStatusTool: OpenHorseTool = buildTool({
 // git_push 工具
 // ============================================================================
 
-export const gitPushTool: OpenHorseTool = buildTool({
+export const gitPushTool: OrionCodeTool = buildTool({
   name: 'git_push',
   description: `安全执行 git push，自动验证 git status、显式 staging 边界和认证状态。
 
@@ -717,7 +717,7 @@ Issue #18/#23 修复：不再在未验证的情况下声称成功。`,
 // git_commit 工具
 // ============================================================================
 
-export const gitCommitTool: OpenHorseTool = buildTool({
+export const gitCommitTool: OrionCodeTool = buildTool({
   name: 'git_commit',
   description: `提交工作区变更到本地仓库。
 
@@ -915,7 +915,7 @@ export const gitCommitTool: OpenHorseTool = buildTool({
 // git_diff 工具
 // ============================================================================
 
-export const gitDiffTool: OpenHorseTool = buildTool({
+export const gitDiffTool: OrionCodeTool = buildTool({
   name: 'git_diff',
   description:
     '显示 Git 差异。默认工作区 vs 暂存区；staged=true 显示已暂存 vs HEAD；可指定 paths。',
@@ -982,7 +982,7 @@ export const gitDiffTool: OpenHorseTool = buildTool({
 // git_log 工具
 // ============================================================================
 
-export const gitLogTool: OpenHorseTool = buildTool({
+export const gitLogTool: OrionCodeTool = buildTool({
   name: 'git_log',
   description: '显示提交历史。可指定条数与格式。',
   parameters: {
@@ -1023,7 +1023,7 @@ export const gitLogTool: OpenHorseTool = buildTool({
 // git_branch 工具
 // ============================================================================
 
-export const gitBranchTool: OpenHorseTool = buildTool({
+export const gitBranchTool: OrionCodeTool = buildTool({
   name: 'git_branch',
   description: `分支操作。
 
@@ -1163,7 +1163,7 @@ action:
 // 导出
 // ============================================================================
 
-export const GIT_TOOLS: OpenHorseTool[] = [
+export const GIT_TOOLS: OrionCodeTool[] = [
   gitStatusTool,
   gitPushTool,
   gitCommitTool,

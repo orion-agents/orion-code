@@ -12,10 +12,11 @@ import type {
   ProviderAttemptRecord,
   ProviderRequestDiagnosticsV2,
   ProviderResilienceConfig,
-  StreamAttemptState,
+  ProviderAttemptReporter,
 } from './types';
 import { DEFAULT_PROVIDER_RESILIENCE_CONFIG } from './types';
 import { classifyProviderError } from './error-classifier';
+import { incrementDiagnosticMetric } from '../../utils/observability';
 
 export class ProviderResilienceCoordinator {
   private readonly config: ProviderResilienceConfig;
@@ -30,7 +31,8 @@ export class ProviderResilienceCoordinator {
     transport: (
       attempt: number,
       signal?: AbortSignal,
-      model?: string
+      model?: string,
+      reporter?: ProviderAttemptReporter
     ) => Promise<{
       response: T;
       usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
@@ -56,11 +58,11 @@ export class ProviderResilienceCoordinator {
       unknownBilledAttemptCount: 0,
     };
 
-    const streamState: StreamAttemptState | null = null;
     const startedAt = Date.now();
     let lastError: unknown;
     let currentModel = ctx.requestedModel;
     let fallbackUsed = false;
+    let recoveredStream = false;
 
     for (let attempt = 1; attempt <= this.config.maxTotalAttempts; attempt++) {
       // Check elapsed budget
@@ -79,7 +81,12 @@ export class ProviderResilienceCoordinator {
       diagnostics.attempts.push(attemptRecord);
 
       try {
-        const result = await transport(attempt, ctx.abortSignal, currentModel);
+        const result = await transport(
+          attempt,
+          ctx.abortSignal,
+          currentModel,
+          this.createAttemptReporter(attemptRecord)
+        );
 
         attemptRecord.outcome = 'succeeded';
         attemptRecord.endedAt = Date.now();
@@ -87,8 +94,12 @@ export class ProviderResilienceCoordinator {
         if (result.providerRequestId) attemptRecord.providerRequestId = result.providerRequestId;
 
         diagnostics.finalModel = currentModel;
-        diagnostics.finalState = streamState ? 'recovered' : 'succeeded';
-        if (result.usage) diagnostics.usageConfidence = 'exact';
+        diagnostics.finalState = recoveredStream ? 'recovered' : 'succeeded';
+        if (result.usage) {
+          diagnostics.usageConfidence =
+            diagnostics.unknownBilledAttemptCount > 0 ? 'partial' : 'exact';
+        }
+        incrementDiagnosticMetric('provider.request.succeeded');
 
         return { result: result.response, diagnostics };
       } catch (error) {
@@ -98,6 +109,11 @@ export class ProviderResilienceCoordinator {
 
         const classification = classifyProviderError(error, attemptRecord.semanticDeltaSeen);
         attemptRecord.failureKind = classification.kind;
+        if (attemptRecord.semanticDeltaSeen && !attemptRecord.usage) {
+          diagnostics.unknownBilledAttemptCount++;
+          diagnostics.usageConfidence = 'partial';
+          recoveredStream = true;
+        }
         const shouldFallback =
           !fallbackUsed &&
           typeof ctx.fallbackModel === 'string' &&
@@ -122,6 +138,8 @@ export class ProviderResilienceCoordinator {
         switch (disposition) {
           case 'fail_fast':
             diagnostics.finalState = 'failed_fast';
+            incrementDiagnosticMetric(`provider.failure.${classification.kind}`);
+            incrementDiagnosticMetric('provider.request.failed_fast');
             throw new ProviderRetryExhaustedError(
               diagnostics,
               `fail fast: ${classification.kind}`,
@@ -138,13 +156,26 @@ export class ProviderResilienceCoordinator {
                 error
               );
             }
-            const delay = this.computeBackoff(attempt, classification.retryAfterMs);
+            if (
+              disposition === 'recover_stream' &&
+              diagnostics.recoveryCount >= this.config.maxStreamRecoveries
+            ) {
+              diagnostics.finalState = 'retry_exhausted';
+              throw new ProviderRetryExhaustedError(
+                diagnostics,
+                `max stream recoveries (${this.config.maxStreamRecoveries}) reached`,
+                error
+              );
+            }
+            const delay = computeProviderBackoff(this.config, attempt, classification.retryAfterMs);
             attemptRecord.backoffMs = delay;
             diagnostics.totalBackoffMs += delay;
             diagnostics.retryCount++;
+            incrementDiagnosticMetric('provider.retry');
 
             if (disposition === 'recover_stream') {
               diagnostics.recoveryCount++;
+              incrementDiagnosticMetric('provider.stream_recovery');
             }
 
             await this.sleep(delay, ctx.abortSignal);
@@ -153,11 +184,13 @@ export class ProviderResilienceCoordinator {
           case 'fallback_once':
             fallbackUsed = true;
             diagnostics.fallbackCount++;
+            incrementDiagnosticMetric('provider.fallback');
             currentModel = ctx.fallbackModel as string;
             break;
 
           case 'defer_until_cooldown':
             diagnostics.finalState = 'retry_exhausted';
+            incrementDiagnosticMetric('provider.cooldown');
             throw new ProviderRetryExhaustedError(diagnostics, 'provider cooldown active', error);
         }
       }
@@ -196,15 +229,24 @@ export class ProviderResilienceCoordinator {
     };
   }
 
-  private computeBackoff(attempt: number, retryAfterMs?: number): number {
-    if (retryAfterMs && retryAfterMs > 0 && retryAfterMs <= this.config.maxRetryAfterMs) {
-      return Math.max(retryAfterMs, this.config.minRateLimitDelayMs);
-    }
-    const cap = Math.min(
-      this.config.maxDelayMs,
-      this.config.baseDelayMs * Math.pow(2, attempt - 1)
-    );
-    return cap / 2 + Math.floor(Math.random() * (cap / 2));
+  private createAttemptReporter(attempt: ProviderAttemptRecord): ProviderAttemptReporter {
+    return {
+      onTextDelta: text => {
+        if (!text) return;
+        attempt.semanticDeltaSeen = true;
+        attempt.visibleTextBytes += Buffer.byteLength(text, 'utf8');
+      },
+      onToolCallDelta: () => {
+        attempt.semanticDeltaSeen = true;
+        attempt.toolCallDeltaSeen = true;
+      },
+      onFinishReason: finishReason => {
+        const normalized = finishReason.trim();
+        if (!normalized) return;
+        attempt.terminalFinishReasonSeen = true;
+        attempt.finishReason = normalized;
+      },
+    };
   }
 
   private sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -222,6 +264,27 @@ export class ProviderResilienceCoordinator {
       signal?.addEventListener('abort', onAbort, { once: true });
     });
   }
+}
+
+/**
+ * Equal-jitter retry delay with Retry-After taking precedence. Provider waits
+ * above the configured cap are clamped to the cap instead of discarded.
+ */
+export function computeProviderBackoff(
+  config: ProviderResilienceConfig,
+  attempt: number,
+  retryAfterMs?: number,
+  random: () => number = Math.random
+): number {
+  if (typeof retryAfterMs === 'number' && Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
+    const cappedRetryAfter = Math.min(retryAfterMs, config.maxRetryAfterMs);
+    return Math.min(config.maxRetryAfterMs, Math.max(cappedRetryAfter, config.minRateLimitDelayMs));
+  }
+  const cap = Math.max(
+    0,
+    Math.min(config.maxDelayMs, config.baseDelayMs * Math.pow(2, Math.max(0, attempt - 1)))
+  );
+  return cap / 2 + Math.floor(random() * (cap / 2));
 }
 
 export class ProviderRetryExhaustedError extends Error {

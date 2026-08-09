@@ -11,9 +11,17 @@ import {
   goalRequiresBoundaryConfirmation,
 } from '../src/runtime/goals/coordinator';
 import { randomUUID } from 'crypto';
-import { buildGoalContextFragment } from '../src/runtime/goals/prompt';
+import {
+  buildContinuationInstruction,
+  buildGoalContextFragment,
+} from '../src/runtime/goals/prompt';
 import { goalTransition } from '../src/runtime/goals/types';
-import type { AgentTurnOutcome, SessionGoalV1, GoalContract } from '../src/runtime/goals/types';
+import type {
+  AgentTurnOutcome,
+  GoalContract,
+  GoalCreationContractInput,
+  SessionGoalV1,
+} from '../src/runtime/goals/types';
 
 // ---------------------------------------------------------------------------
 // Contract creation
@@ -141,6 +149,45 @@ describe('Goal contract creation', () => {
       })
     ).toBe(true);
     expect(replaced.goal?.status).toBe('active');
+  });
+
+  it.each<{ label: string; input: GoalCreationContractInput }>([
+    {
+      label: 'retained constraint',
+      input: { constraints: ['Publish the package when verification passes'] },
+    },
+    {
+      label: 'retained success criterion',
+      input: {
+        successCriteria: [
+          {
+            statement: 'Deploy the verified package',
+            requiredEvidenceKinds: ['external'],
+          },
+        ],
+      },
+    },
+  ])('re-confirms the boundary after edit because of a $label', ({ input }) => {
+    const project = `/tmp/test-boundary-retained-${Date.now()}-${Math.random()}`;
+    const retained = new GoalCoordinator(project, `boundary-retained-${Math.random()}`);
+    expect(retained.create('Prepare a release', input)).toEqual({ ok: true });
+    expect(retained.goal?.status).toBe('paused');
+    expect(
+      retained.resume({
+        confirmBoundary: true,
+        expectedGoalId: retained.goal?.goalId,
+        expectedRevision: retained.goal?.revision,
+      })
+    ).toBe(true);
+
+    expect(retained.edit('Verify the local binary thoroughly')).toBe(true);
+
+    expect(retained.goal?.status).toBe('paused');
+    expect(retained.goal?.boundaryConfirmation).toMatchObject({
+      reason: 'external_destructive_or_high_impact',
+      objectiveRevision: 1,
+    });
+    expect(retained.buildContinuationRequest()).toBeNull();
   });
 
   it('checks contract text while ignoring prohibitive boundary constraints', () => {
@@ -991,6 +1038,11 @@ describe('compact-safe Goal context', () => {
     expect(after).toContain('criterion:derived:1:1');
     expect(after).toContain('Plan: revision 1; phase verification');
     expect(after).toContain('Next action: Run the focused Goal suites');
+    expect(after).toMatch(/Blocked gate: same eligible blocker 0\/3; no-progress \d+\/3/u);
+    expect(after).toContain('Both must reach the threshold');
+    expect(after).toContain('>= 3 consecutive Goal turns');
+    expect(buildContinuationInstruction()).toContain('same eligible non-retryable blocker');
+    expect(buildContinuationInstruction()).toContain('no progress persisted for >= 3');
   });
 });
 

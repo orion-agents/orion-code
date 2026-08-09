@@ -13,7 +13,7 @@ import {
   resolveContextBudget,
   resolveModelContext,
 } from '../src/services/model-context';
-import { TaskManager, type TaskRecord } from '../src/services/task-manager';
+import { TaskCapacityError, TaskManager, type TaskRecord } from '../src/services/task-manager';
 import {
   formatAdapterOutput,
   getWebSearchMode,
@@ -199,6 +199,8 @@ describe('services branch coverage: task manager', () => {
       completedAt: expect.any(Number),
     });
     expect(manager.cancel(completed.id)).toBeUndefined();
+    expect(manager.retry(completed.id)).toBeUndefined();
+    expect(completed.retries).toBe(0);
 
     const failedDefault = manager.create({ name: 'failed-default', description: 'failed' });
     manager.start(failedDefault.id);
@@ -305,11 +307,20 @@ describe('services branch coverage: task manager', () => {
       expect(manager.get(old.id)).toBeUndefined();
       expect(manager.get(pending.id)).toBeDefined();
 
+      const cancelled = new TaskManager();
+      const cancelledTask = cancelled.create({ name: 'cancelled', description: 'cancelled' });
+      cancelled.cancel(cancelledTask.id);
+      cancelled.create({ name: 'pending', description: 'pending' });
+      cancelled.create({ name: 'replacement', description: 'replacement' });
+      expect(cancelled.get(cancelledTask.id)).toBeUndefined();
+
       const noTerminal = new TaskManager();
       noTerminal.create({ name: 'one', description: 'one' });
       noTerminal.create({ name: 'two', description: 'two' });
-      noTerminal.create({ name: 'three', description: 'three' });
-      expect(noTerminal.getStats().total).toBe(3);
+      expect(() => noTerminal.create({ name: 'three', description: 'three' })).toThrow(
+        TaskCapacityError
+      );
+      expect(noTerminal.getStats().total).toBe(2);
     } finally {
       (TaskManager as any).MAX_TASKS = originalMax;
     }
@@ -1023,7 +1034,10 @@ describe('services branch coverage: MCP transports', () => {
     onmessage?: (event: { data: string }) => void;
     onerror?: () => void;
     close = jest.fn();
-    constructor(public url: string) {
+    constructor(
+      public url: string,
+      public options?: { headers?: Record<string, string> }
+    ) {
       FakeEventSource.instances.push(this);
     }
   }
@@ -1105,7 +1119,9 @@ describe('services branch coverage: MCP transports', () => {
     sse.on('reconnecting', attempt => reconnects.push(attempt));
     await sse.connect();
     const first = FakeEventSource.instances[0];
-    expect(first.url).toContain('token=x');
+    // Issue #67: auth must NOT be in the URL query string (leaks to logs).
+    expect(first.url).not.toContain('token=');
+    expect(first.options?.headers?.token).toBe('x');
     first.onopen?.();
     expect(sse.isConnected()).toBe(true);
     first.onmessage?.({ data: JSON.stringify({ type: 'notification', method: 'ok' }) });

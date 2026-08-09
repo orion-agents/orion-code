@@ -6,8 +6,9 @@
 
 import { getVectorStore, type SearchResult, type VectorStoreConfig } from './vector-store';
 import { loadAllMemories, saveMemory, type MemoryEntry, type MemoryType } from './storage';
-import { ENV } from '../product/environment';
 import { errorMessage } from '../utils/errors';
+
+export { isSemanticEnabled } from './semantic-config';
 
 
 // ============================================================================
@@ -107,20 +108,6 @@ export class SemanticSearchService {
     // Return unique suggestions
     return [...new Set(terms)].slice(0, 10);
   }
-}
-
-// ============================================================================
-// Feature Detection
-// ============================================================================
-
-/**
- * Whether semantic search is explicitly enabled via ORION_CODE_EMBEDDING_PROVIDER.
- * We require an explicit opt-in so the vector store + sqlite-vec are only
- * initialised when the user wants embeddings.
- */
-export function isSemanticEnabled(): boolean {
-  const provider = process.env[ENV.EMBEDDING_PROVIDER];
-  return provider === 'ollama' || provider === 'openai';
 }
 
 // ============================================================================

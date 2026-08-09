@@ -13,7 +13,7 @@ import {
   isDeprecatedUIRenderer,
   isProductUIRenderer,
   isConfigured,
-  type OpenHorseCLIConfig,
+  type OrionCodeCLIConfig,
 } from './config';
 import { getMcpConfigPath, mcpManager } from '../tools/mcp';
 import { getRuntimeTools } from '../tools';
@@ -51,7 +51,7 @@ export interface DoctorReport {
 
 export interface DoctorContext {
   cwd: string;
-  config: OpenHorseCLIConfig;
+  config: OrionCodeCLIConfig;
   store: Store;
   llm: LLMService | null;
   runtime: OrionCodeRuntime;
@@ -496,7 +496,7 @@ function summarizeStorageLayout(projectPath: string): DoctorCheck {
 function summarizePromptCache(ctx: DoctorContext): DoctorCheck {
   const snapshot = ctx.store.getSnapshot();
   const history = snapshot.conversationHistory;
-  const hasCacheMarked = history.some(m => m.role === 'system' && (m as any).cacheControl);
+  const hasCacheMarked = history.some(m => m.role === 'system' && m.cacheControl);
   return {
     id: 'prompt-cache',
     status: hasCacheMarked ? 'ok' : 'warn',

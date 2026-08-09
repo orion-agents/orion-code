@@ -20,13 +20,14 @@ import {
   createReadStream,
   lstatSync,
   mkdirSync,
+  realpathSync,
 } from 'fs';
-import { join, resolve, relative } from 'path';
+import { join, resolve, relative, isAbsolute, dirname } from 'path';
 import { createInterface } from 'readline';
 import {
   buildTool,
   getToolMetadataPresence,
-  type OpenHorseTool,
+  type OrionCodeTool,
   type ToolResult,
   type ToolContext,
 } from '../framework/tool';
@@ -41,10 +42,9 @@ import {
   loadAllMemories,
   searchMemories,
   deleteMemory,
-  type MemoryEntry,
-  type MemoryType,
-} from '../memory';
-import { getSemanticSearchService, isSemanticEnabled } from '../memory/semantic-search';
+} from '../memory/storage';
+import type { MemoryEntry, MemoryType } from '../memory/types';
+import { isSemanticEnabled } from '../memory/semantic-config';
 import { readSessionMessages, loadSessionMeta, listSessions } from '../services/session-storage';
 import { WEB_TOOLS } from './web';
 import { MCP_TOOLS, mcpManager } from './mcp';
@@ -101,7 +101,7 @@ function summarizeFailedToolResult(result: ToolResult): string {
 // 工具集
 // ============================================================================
 
-export const TOOLS: OpenHorseTool[] = [
+export const TOOLS: OrionCodeTool[] = [
   // Web tools (P0)
   ...WEB_TOOLS,
 
@@ -640,6 +640,7 @@ export const TOOLS: OpenHorseTool[] = [
 
         if (isSemanticEnabled()) {
           // saveAndIndex internally calls saveMemory + vectorStore.upsert
+          const { getSemanticSearchService } = await import('../memory/semantic-search');
           await getSemanticSearchService().saveAndIndex(entry, projectPath);
         } else {
           saveMemory(entry, projectPath);
@@ -690,6 +691,7 @@ export const TOOLS: OpenHorseTool[] = [
           // Semantic path: ask the vector store, then fall back to keywords if it
           // returns nothing (e.g. embedding provider unreachable, empty index)
           try {
+            const { getSemanticSearchService } = await import('../memory/semantic-search');
             const result = await getSemanticSearchService().search({
               query,
               projectPath,
@@ -924,7 +926,7 @@ export const TOOLS: OpenHorseTool[] = [
  * exposed as first-class tools named mcp__<server>__<tool>, matching the
  * convention used by Claude Code, Codex, and OpenClaude.
  */
-export function getRuntimeTools(): OpenHorseTool[] {
+export function getRuntimeTools(): OrionCodeTool[] {
   return [...TOOLS, ...mcpManager.getOrionCodeTools()];
 }
 
@@ -1012,6 +1014,54 @@ function safeReadFileSync(resolved: string): string | null {
 /** Resolve tool path parameters relative to the current tool cwd. */
 function safePath(input: string, cwd = process.cwd()): string {
   return resolve(cwd, normalizeToolPath(input));
+}
+
+/**
+ * Return true when `p` resolves (after following symlinks) to a location at or
+ * under `rootReal`. Used to enforce that a realpath is still inside the
+ * workspace even when directories along the path are themselves symlinks.
+ */
+function isUnderRealRoot(p: string, rootReal: string): boolean {
+  const rel = relative(rootReal, p);
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
+/**
+ * Contain a tool-resolved path inside the workspace root (cwd).
+ *
+ * Blocks `../` traversal and absolute paths outside the workspace, which would
+ * otherwise let `write_file`/`edit_file` scribble over `~/.bashrc`, SSH config
+ * or other projects — especially dangerous under `acceptEdits` auto-approval,
+ * where the write runs without a confirmation prompt (issue #65).
+ *
+ * Containment is lexical first, then re-checked after resolving symlinks
+ * (issue #99): a workspace symlink that points outside the workspace must not
+ * be followed into an arbitrary write target. We resolve the realpath of the
+ * parent directory (which also collapses any intermediate symlinked dirs) and,
+ * if the target already exists, the target itself; if either escapes the
+ * workspace we refuse. The workspace root is also realpath-resolved so a
+ * symlinked cwd does not produce false rejections. Fail-closed on any
+ * filesystem error.
+ */
+function isWithinWorkspace(resolved: string, cwd: string): boolean {
+  const root = resolve(cwd);
+  const rel = relative(root, resolved);
+  if (!(rel === '' || (!rel.startsWith('..') && !isAbsolute(rel)))) return false;
+  try {
+    const rootReal = realpathSync(root);
+    const realParent = realpathSync(dirname(resolved));
+    if (!isUnderRealRoot(realParent, rootReal)) return false;
+    // Only the existing target needs its own realpath check; a brand-new file
+    // inherits the (already-validated) containment of its parent directory.
+    if (existsSync(resolved)) {
+      const realTarget = realpathSync(resolved);
+      if (!isUnderRealRoot(realTarget, rootReal)) return false;
+    }
+  } catch {
+    // A missing/unknowable realpath means we cannot prove containment — refuse.
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -1122,6 +1172,14 @@ async function writeFileSync_(path: string, content: string, cwd?: string): Prom
   try {
     const normalizedPath = normalizeToolPath(path);
     const resolved = safePath(path, cwd);
+    const workspaceRoot = cwd ?? process.cwd();
+    if (!isWithinWorkspace(resolved, workspaceRoot)) {
+      return {
+        success: false,
+        output: '',
+        error: `Refusing to write outside the workspace: ${normalizedPath}`,
+      };
+    }
     writeFileSync(resolved, content, 'utf-8');
     return {
       success: true,
@@ -1569,6 +1627,14 @@ async function editFile_(
   try {
     const normalizedPath = normalizeToolPath(path);
     const resolved = safePath(path, cwd);
+    const workspaceRoot = cwd ?? process.cwd();
+    if (!isWithinWorkspace(resolved, workspaceRoot)) {
+      return {
+        success: false,
+        output: '',
+        error: `Refusing to edit outside the workspace: ${normalizedPath}`,
+      };
+    }
     if (!existsSync(resolved)) {
       return { success: false, output: '', error: `File not found: ${normalizedPath}` };
     }
@@ -1720,6 +1786,31 @@ function escapeRegExp(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/**
+ * Validate a caller-supplied regular expression pattern before compiling it.
+ *
+ * Issue #79: `grep_` compiles user/model-supplied patterns with `new RegExp`
+ * directly. A pathological pattern with a quantified group that itself contains
+ * a quantifier (e.g. `(a+)+`, `(\d+)*`) triggers catastrophic backtracking
+ * (ReDoS) and can hang the process on adversarial input (prompt injection).
+ * Reject empty/oversized patterns and the classic nested-quantifier shapes.
+ */
+export function validateRegexPattern(pattern: string): string | null {
+  if (!pattern) return 'pattern must not be empty';
+  if (pattern.length > 2000) return 'pattern is too long (max 2000 characters)';
+  // A group containing an internal quantifier, then quantified again: the
+  // canonical exponential-backtracking construction.
+  if (/\([^()]*[*+?][^()]*\)\s*[*+?]/.test(pattern)) {
+    return 'pattern contains a quantified group with an internal quantifier — this risks catastrophic backtracking (ReDoS)';
+  }
+  try {
+    new RegExp(pattern);
+  } catch {
+    return 'pattern is not a valid regular expression';
+  }
+  return null;
+}
+
 // ============================================================================
 // Glob/Grep 工具实现
 // ============================================================================
@@ -1846,6 +1937,10 @@ async function grep_(
       return { success: false, output: '', error: `Path not found: ${normalizedBasePath}` };
     }
 
+    const patternError = validateRegexPattern(pattern);
+    if (patternError) {
+      return { success: false, output: '', error: `Invalid grep pattern: ${patternError}` };
+    }
     const regex = new RegExp(pattern);
     const context = contextLines ?? 0;
     const results: string[] = [];
@@ -2286,7 +2381,7 @@ export async function executeTool(
 }
 
 function summarizeToolResult(
-  tool: OpenHorseTool,
+  tool: OrionCodeTool,
   args: Record<string, unknown>,
   result: ToolResult
 ): string | undefined {

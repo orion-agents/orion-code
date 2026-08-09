@@ -54,6 +54,8 @@
  * Known limitations (recorded, not hidden)
  * ----------------------------------------
  * - seatbelt cannot be applied from inside another sandbox (see above);
+ * - macOS seatbelt is filesystem-only here. Its deprecated network filters are
+ *   not treated as enforcement, so a network-blocked plan must use another backend;
  * - `docker` runs the command in a *different* process tree, so Orion's
  *   process-group SIGTERM/SIGKILL only reaches the client. `--rm` bounds the
  *   leak, but abort semantics are weaker than the in-process backends;
@@ -76,11 +78,7 @@ import type { SandboxBackend, SandboxConfig, SandboxProfile } from '../services/
 // so callers can import the whole sandbox vocabulary from one place.
 export type { SandboxBackend, SandboxConfig, SandboxProfile };
 
-export const SANDBOX_PROFILES: readonly SandboxProfile[] = [
-  'none',
-  'read-only',
-  'workspace-write',
-];
+export const SANDBOX_PROFILES: readonly SandboxProfile[] = ['none', 'read-only', 'workspace-write'];
 
 export const SANDBOX_BACKENDS: readonly SandboxBackend[] = ['seatbelt', 'bubblewrap', 'docker'];
 
@@ -214,11 +212,7 @@ function probeSeatbelt(platform: NodeJS.Platform): SandboxBackendStatus {
   }
   // A trivial policy is enough: if `sandbox_apply` is refused (e.g. Orion is
   // itself running inside an app sandbox) it fails here too.
-  const res = probe('/usr/bin/sandbox-exec', [
-    '-p',
-    '(version 1)(allow default)',
-    '/usr/bin/true',
-  ]);
+  const res = probe('/usr/bin/sandbox-exec', ['-p', '(version 1)(allow default)', '/usr/bin/true']);
   if (!res.ok) {
     return {
       backend: 'seatbelt',
@@ -226,7 +220,11 @@ function probeSeatbelt(platform: NodeJS.Platform): SandboxBackendStatus {
       reason: `sandbox-exec probe failed: ${res.detail ?? 'unknown error'}`,
     };
   }
-  return { backend: 'seatbelt', available: true, detail: '/usr/bin/sandbox-exec' };
+  return {
+    backend: 'seatbelt',
+    available: true,
+    detail: '/usr/bin/sandbox-exec (filesystem-only; network isolation unsupported)',
+  };
 }
 
 function probeBubblewrap(platform: NodeJS.Platform): SandboxBackendStatus {
@@ -318,7 +316,11 @@ function sbplString(value: string): string {
  * developer toolchain needs, and each omission looks like a mysterious crash
  * rather than a security decision.
  */
-export function buildSeatbeltPolicy(writableRoots: string[], allowNetwork: boolean): string {
+export function buildSeatbeltPolicy(
+  writableRoots: string[],
+  allowNetwork: boolean,
+  projectRoot: string = process.cwd()
+): string {
   const lines = ['(version 1)', '(allow default)', '(deny file-write*)'];
   for (const root of writableRoots) {
     lines.push(`(allow file-write* (subpath ${sbplString(root)}))`);
@@ -328,6 +330,20 @@ export function buildSeatbeltPolicy(writableRoots: string[], allowNetwork: boole
   lines.push(
     '(allow file-write-data (literal "/dev/null") (literal "/dev/stdout") (literal "/dev/stderr") (literal "/dev/tty") (literal "/dev/dtracehelper"))'
   );
+  const home = os.homedir();
+  for (const sensitive of [
+    path.join(home, '.ssh'),
+    path.join(home, '.aws'),
+    path.join(home, '.gnupg'),
+    path.join(home, '.azure'),
+    path.join(home, '.config', 'gcloud'),
+    path.join(home, 'Library', 'Keychains'),
+  ]) {
+    lines.push(`(deny file-read* (subpath ${sbplString(sensitive)}))`);
+  }
+  for (const sensitive of ['.env', '.env.local', '.env.production', '.npmrc', '.netrc']) {
+    lines.push(`(deny file-read* (literal ${sbplString(path.join(projectRoot, sensitive))}))`);
+  }
   lines.push(allowNetwork ? '(allow network*)' : '(deny network*)');
   return lines.join('\n');
 }
@@ -340,12 +356,12 @@ export function buildSeatbeltPolicy(writableRoots: string[], allowNetwork: boole
  * Extra requirements a backend has beyond "the probe passed".
  * Returns the blocking reason, or undefined when the backend is usable as-is.
  */
-function missingRequirement(
-  backend: SandboxBackend,
-  settings: SandboxConfig
-): string | undefined {
+function missingRequirement(backend: SandboxBackend, settings: SandboxConfig): string | undefined {
   if (backend === 'docker' && !settings.image?.trim()) {
     return 'the docker sandbox backend requires `sandbox.image` to be configured';
+  }
+  if (backend === 'seatbelt' && settings.allowNetwork !== true) {
+    return 'macOS seatbelt cannot verify network isolation; choose docker or explicitly set sandbox.allowNetwork=true';
   }
   return undefined;
 }
@@ -442,7 +458,7 @@ export function planSandboxedCommand(
       : [];
 
   if (selected.backend === 'seatbelt') {
-    const policy = buildSeatbeltPolicy(writableRoots, allowNetwork);
+    const policy = buildSeatbeltPolicy(writableRoots, allowNetwork, options.cwd);
     return {
       ok: true,
       profile: rawProfile,

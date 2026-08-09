@@ -70,16 +70,17 @@ function evidenceFromLedger(entry: ContextLedgerEntry): EvidenceRecord {
         ? 'failed'
         : 'unknown'
     : undefined;
+  const content = compact(entry.content);
 
   return {
     id: `ledger:${entry.id}`,
     kind,
-    content: compact(entry.content),
+    content,
     source: 'ledger',
     sourceId: entry.id,
     importance: entry.importance,
     createdAt: entry.createdAt,
-    tokenEstimate: estimateTokens(entry.content),
+    tokenEstimate: estimateTokens(content),
     tags: tagsFor(entry.content, [entry.type, entry.source.ref ?? '', toolName ?? '', path ?? '']),
     path,
     toolName,

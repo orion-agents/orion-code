@@ -103,9 +103,6 @@ export interface OrionCodeCLIConfig {
   logLevel: 'debug' | 'info' | 'warn' | 'error';
 }
 
-/** @deprecated Use OrionCodeCLIConfig instead. */
-export type OpenHorseCLIConfig = OrionCodeCLIConfig;
-
 // ============================================================================
 // Agent internal defaults
 // ============================================================================

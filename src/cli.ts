@@ -246,7 +246,7 @@ async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OrionCodeUiRunt
 
   const runtime: OrionCodeRuntime = await init({
     name: config.name,
-    mode: config.mode as any,
+    mode: config.mode,
     logLevel: config.logLevel,
   });
   await runtime.start();

@@ -14,7 +14,7 @@ import {
 import { AgentChatController, createToolEventPresenter } from '../src/runtime/chat-controller';
 import {
   resolveUiRendererCapabilities,
-  type OpenHorseUiRuntime,
+  type OrionCodeUiRuntime,
   type TranscriptAppendEntry,
   type UiEventSink,
 } from '../src/runtime/ui-events';
@@ -56,16 +56,16 @@ import {
 const stripAnsi = (text: string): string =>
   text.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
 
-function createRuntime(overrides: Partial<OpenHorseUiRuntime> = {}): OpenHorseUiRuntime {
+function createRuntime(overrides: Partial<OrionCodeUiRuntime> = {}): OrionCodeUiRuntime {
   return {
     cwd: '/tmp/openhorse',
     version: 'test',
-    config: { model: 'test-model' } as OpenHorseUiRuntime['config'],
+    config: { model: 'test-model' } as OrionCodeUiRuntime['config'],
     store: {
       setProcessing: jest.fn(),
-    } as unknown as OpenHorseUiRuntime['store'],
+    } as unknown as OrionCodeUiRuntime['store'],
     llm: null,
-    runtime: {} as OpenHorseUiRuntime['runtime'],
+    runtime: {} as OrionCodeUiRuntime['runtime'],
     isConfigured: true,
     ensureSession: jest.fn(),
     setSession: jest.fn(),
@@ -1796,7 +1796,7 @@ describe('AgentRuntimeController', () => {
           store: {
             getStats: () => ({ working: 0, 'short-term': 0, 'long-term': 0 }),
           },
-        } as unknown as OpenHorseUiRuntime['runtime'],
+        } as unknown as OrionCodeUiRuntime['runtime'],
       });
       const { events, appended } = createEvents();
       const controller = new AgentRuntimeController({
@@ -1838,7 +1838,7 @@ describe('AgentRuntimeController', () => {
           store: {
             getStats: () => ({ working: 0, 'short-term': 0, 'long-term': 0 }),
           },
-        } as unknown as OpenHorseUiRuntime['runtime'],
+        } as unknown as OrionCodeUiRuntime['runtime'],
       });
       const { events, appended } = createEvents();
       const controller = new AgentRuntimeController({
@@ -2510,7 +2510,7 @@ describe('AgentRuntimeController', () => {
           expect.objectContaining({
             role: 'status',
             title: 'recovery',
-            content: expect.stringContaining('Checkpoints: turn-failed-edit'),
+            content: expect.stringMatching(/Checkpoints: turn-failed-edit-1-[0-9a-f-]+/),
           }),
         ])
       );
@@ -2521,7 +2521,7 @@ describe('AgentRuntimeController', () => {
           expect.objectContaining({
             type: 'checkpoint',
             turnId: 'turn-failed-edit',
-            checkpointId: 'turn-failed-edit',
+            checkpointId: expect.stringMatching(/^turn-failed-edit-1-[0-9a-f-]+$/),
             checkpointFiles: ['src/target.ts'],
           }),
           expect.objectContaining({
@@ -2546,7 +2546,7 @@ describe('AgentRuntimeController', () => {
       expect(listCheckpoints(projectDir)).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            turnId: 'turn-failed-edit',
+            turnId: expect.stringMatching(/^turn-failed-edit-1-[0-9a-f-]+$/),
             files: [expect.objectContaining({ path: 'src/target.ts' })],
           }),
         ])
@@ -3335,7 +3335,7 @@ describe('AgentRuntimeController', () => {
       expect(traceEvents[checkpointIndex]).toMatchObject({
         type: 'checkpoint',
         turnId: 'turn-checkpoint',
-        checkpointId: 'turn-checkpoint',
+        checkpointId: expect.stringMatching(/^turn-checkpoint-1-[0-9a-f-]+$/),
         checkpointFileCount: 2,
         checkpointFiles: ['src/a.ts', 'src/b.ts'],
         workspaceFiles: ['src/a.ts', 'src/b.ts'],
@@ -3344,10 +3344,10 @@ describe('AgentRuntimeController', () => {
       const checkpoints = listCheckpoints(projectDir);
       expect(checkpoints).toHaveLength(1);
       expect(checkpoints[0]).toMatchObject({
-        turnId: 'turn-checkpoint',
+        turnId: expect.stringMatching(/^turn-checkpoint-1-[0-9a-f-]+$/),
         files: [
-          expect.objectContaining({ path: 'src/a.ts', content: 'export const a = 1;\n' }),
-          expect.objectContaining({ path: 'src/b.ts', content: 'export const b = 1;\n' }),
+          expect.objectContaining({ path: 'src/a.ts', sizeBytes: 20 }),
+          expect.objectContaining({ path: 'src/b.ts', sizeBytes: 20 }),
         ],
       });
     });
@@ -5654,7 +5654,7 @@ describe('AgentRuntimeController', () => {
             tokenUsage: { promptTokens: 0, completionTokens: 0 },
             lastLoopStats: undefined,
           })),
-        } as unknown as OpenHorseUiRuntime['store'],
+        } as unknown as OrionCodeUiRuntime['store'],
       });
       const { events, appended } = createEvents();
       const runner = createDeferredRunner();

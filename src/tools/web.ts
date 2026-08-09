@@ -7,7 +7,7 @@
  * Issue #32 #3.7: SSRF 拦截 - 拒绝访问内网地址 + Content-Length 上限
  */
 
-import { buildTool, type OpenHorseTool } from '../framework/tool';
+import { buildTool, type OrionCodeTool } from '../framework/tool';
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { Agent, type Dispatcher } from 'undici';
 import { loadConfig } from '../services/config';
@@ -29,6 +29,7 @@ import {
   shouldTryMcpFirst,
 } from '../services/web-search-adapters';
 import { ORION_USER_AGENT } from '../product/version';
+import { errorMessage } from '../utils/errors';
 import { maskSecret } from '../utils/mask';
 
 // ============================================================================
@@ -267,11 +268,6 @@ async function resolveAndValidateSsrf(url: string): Promise<SsrfResult> {
   }
 
   return { ...lexicalCheck, hostname, addresses };
-}
-
-async function isResolvedUrlSafeForSSRF(url: string): Promise<{ safe: boolean; reason?: string }> {
-  const result = await resolveAndValidateSsrf(url);
-  return { safe: result.safe, reason: result.reason };
 }
 
 // ----------------------------------------------------------------------------
@@ -521,6 +517,19 @@ async function fetchUrl(url: string, maxRedirects: number = 5): Promise<FetchRes
   const redirects: string[] = [];
   let currentUrl = url;
 
+  // Issue #77: a pre-approved host (see isPreapprovedHost / checkPermissions) is
+  // auto-allowed without a permission prompt. An open redirect on that host could
+  // silently bounce the agent to an arbitrary external host and feed its content
+  // into the model context. Once the redirect chain leaves the pre-approved host
+  // set we drop the auto-approval and refuse to continue the fetch.
+  let startHostname = '';
+  try {
+    startHostname = new URL(url).hostname;
+  } catch {
+    // URL validity is enforced by the caller; ignore parse failures here.
+  }
+  const startedPreapproved = startHostname !== '' && isPreapprovedHost(startHostname, '');
+
   for (let hop = 0; hop <= maxRedirects; hop++) {
     // Issue #32 #3.7: SSRF 检查（每一跳都要检查，不能只查首个 URL）
     const ssrfCheck = await resolveAndValidateSsrf(currentUrl);
@@ -559,9 +568,9 @@ async function fetchUrl(url: string, maxRedirects: number = 5): Promise<FetchRes
       };
       if (dispatcher) init.dispatcher = dispatcher;
       response = await fetch(currentUrl, init);
-    } catch (err: any) {
+    } catch (err) {
       return {
-        content: `Fetch error: ${err.message}`,
+        content: `Fetch error: ${errorMessage(err)}`,
         code: 0,
         contentType: 'text/plain',
         url: currentUrl,
@@ -595,6 +604,29 @@ async function fetchUrl(url: string, maxRedirects: number = 5): Promise<FetchRes
           errorType: 'INVALID_REDIRECT',
         };
       }
+
+      // Issue #77: re-check the pre-approved exemption on every redirect hop. If we
+      // began on a pre-approved host but the chain now points at a different host
+      // that is NOT pre-approved, stop chasing the redirect and refuse to ingest
+      // content from the untrusted host under the trusted host's auto-approval.
+      let nextHostname = '';
+      try {
+        nextHostname = new URL(nextUrl).hostname;
+      } catch {
+        // nextUrl is already validated above; ignore.
+      }
+      if (startedPreapproved && nextHostname !== '' && !isPreapprovedHost(nextHostname, '')) {
+        const chain = [url, ...redirects, nextUrl].join(' -> ');
+        return {
+          content: `Redirect left pre-approved host ${startHostname} -> ${nextHostname}. Refusing to fetch untrusted host under auto-approval (chain: ${chain}).`,
+          code: 421,
+          contentType: 'text/plain',
+          url: nextUrl,
+          redirects: [...redirects, nextUrl],
+          errorType: 'REDIRECT_LEFT_PREAPPROVED_HOST',
+        };
+      }
+
       redirects.push(nextUrl);
       currentUrl = nextUrl;
       continue;
@@ -641,9 +673,9 @@ async function fetchUrl(url: string, maxRedirects: number = 5): Promise<FetchRes
         };
       }
       text = body.text ?? '';
-    } catch (err: any) {
+    } catch (err) {
       return {
-        content: `Fetch error: ${err.message}`,
+        content: `Fetch error: ${errorMessage(err)}`,
         code: 0,
         contentType,
         url: currentUrl,
@@ -712,7 +744,7 @@ function applyPromptToContent(content: string, prompt: string): string {
   return `Prompt: "${prompt}"\n\nContent:\n${content}`;
 }
 
-export const webFetchTool: OpenHorseTool = buildTool({
+export const webFetchTool: OrionCodeTool = buildTool({
   name: 'web_fetch',
   description: `Fetch content from a URL and process with a prompt.
 IMPORTANT: WebFetch WILL FAIL for authenticated or private URLs.
@@ -773,6 +805,13 @@ Before using this tool, check if the URL points to an authenticated service (e.g
           success: false,
           output: '',
           error: `Security policy blocked access to internal network address. ${content}`,
+        };
+      }
+      if (errorType === 'REDIRECT_LEFT_PREAPPROVED_HOST') {
+        return {
+          success: false,
+          output: '',
+          error: `Security policy: redirect left the pre-approved host. ${content}`,
         };
       }
       if (errorType === 'CONTENT_TOO_LARGE') {
@@ -858,7 +897,7 @@ export function resetWebSearchMcpClientForTests(): void {
   cachedWebSearchClient = null;
 }
 
-export const webSearchTool: OpenHorseTool = buildTool({
+export const webSearchTool: OrionCodeTool = buildTool({
   name: 'web_search',
   description: `Search the web through the built-in WebSearch provider chain.
 Orion Code tries provider-native MCP first in auto mode, then falls back to configured search adapters such as Tavily, Brave, custom search, or DuckDuckGo.
@@ -906,14 +945,14 @@ You MUST include the Sources section with markdown hyperlinks in your response.`
             tool: result.toolName,
           },
         };
-      } catch (err: any) {
+      } catch (err) {
         const resolvedConfig = resolveWebSearchMcpConfig(config);
         mcpError =
           err instanceof WebSearchMcpError
             ? err
             : new WebSearchMcpError(
                 'WEBSEARCH_MCP_ERROR',
-                err.message || String(err),
+                errorMessage(err),
                 resolvedConfig.endpoint || DEFAULT_WEBSEARCH_MCP_ENDPOINT
               );
 
@@ -952,7 +991,7 @@ You MUST include the Sources section with markdown hyperlinks in your response.`
           mcpError: mcpError?.type,
         },
       };
-    } catch (adapterErr: any) {
+    } catch (adapterErr) {
       const resolvedConfig = resolveWebSearchMcpConfig(config);
       return {
         success: false,
@@ -968,7 +1007,7 @@ You MUST include the Sources section with markdown hyperlinks in your response.`
                 message: mcpError.message,
               }
             : undefined,
-          adapter: adapterErr?.message || String(adapterErr),
+          adapter: errorMessage(adapterErr),
           suggestion: [
             getWebSearchMcpErrorSuggestion(resolvedConfig),
             'Or set ORION_CODE_WEBSEARCH_PROVIDER=ddg/tavily/brave/custom with the matching adapter configuration.',
@@ -994,4 +1033,4 @@ You MUST include the Sources section with markdown hyperlinks in your response.`
 // Export
 // ============================================================================
 
-export const WEB_TOOLS: OpenHorseTool[] = [webFetchTool, webSearchTool];
+export const WEB_TOOLS: OrionCodeTool[] = [webFetchTool, webSearchTool];

@@ -56,6 +56,7 @@ const STREAM_ACTIONS: ReadonlySet<string> = new Set([
   'toolStarted',
   'toolFinished',
   'subtaskEvent',
+  'researchEvent',
 ]);
 
 export interface TuiRunnerOptions {

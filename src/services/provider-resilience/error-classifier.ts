@@ -227,31 +227,41 @@ function isMalformedResponse(error: unknown): boolean {
   );
 }
 
-function extractRetryAfterMs(error: unknown): number | undefined {
+export function extractRetryAfterMs(error: unknown): number | undefined {
   const e = error as Record<string, unknown> | undefined;
   if (!e) return undefined;
-  const headers = e.headers as Record<string, string> | undefined;
-  if (headers) {
-    const ms = headers['retry-after-ms'];
-    if (ms) {
-      const n = Number(ms);
-      if (Number.isFinite(n) && n > 0) return n;
-    }
-    const sec = headers['retry-after'];
-    if (sec) {
-      const n = Number(sec);
-      if (Number.isFinite(n) && n > 0) return n * 1000;
-    }
-    const date = headers['retry-after'];
-    if (date && !Number(date)) {
-      try {
-        const ms = Date.parse(date) - Date.now();
-        if (ms > 0) return ms;
-      } catch {
-        // `Date.parse` returns NaN rather than throwing for junk input, so
-        // this only guards exotic header values. Falling through to the
-        // default backoff is the correct behaviour either way.
-      }
+  const response = e.response as Record<string, unknown> | undefined;
+  const headers = e.headers ?? response?.headers;
+  const milliseconds = readHeader(headers, 'retry-after-ms');
+  if (milliseconds !== undefined) {
+    const value = Number(milliseconds);
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+
+  const retryAfter = readHeader(headers, 'retry-after');
+  if (retryAfter === undefined) return undefined;
+  const seconds = Number(retryAfter);
+  if (Number.isFinite(seconds) && seconds > 0) return seconds * 1000;
+
+  const dateMs = Date.parse(retryAfter) - Date.now();
+  if (Number.isFinite(dateMs) && dateMs > 0) return dateMs;
+  return undefined;
+}
+
+function readHeader(headers: unknown, name: string): string | undefined {
+  if (!headers || typeof headers !== 'object') return undefined;
+  const get = (headers as { get?: unknown }).get;
+  if (typeof get === 'function') {
+    const value = get.call(headers, name) as unknown;
+    return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+  }
+
+  for (const [key, value] of Object.entries(headers as Record<string, unknown>)) {
+    if (key.toLowerCase() !== name) continue;
+    const scalar = Array.isArray(value) ? value[0] : value;
+    if (typeof scalar === 'string' || typeof scalar === 'number') {
+      const text = String(scalar).trim();
+      return text || undefined;
     }
   }
   return undefined;

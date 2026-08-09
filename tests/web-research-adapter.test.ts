@@ -126,7 +126,7 @@ describe('P0-R2 web research adapter', () => {
     expect(res.sources.every(source => source.status === 'blocked')).toBe(true);
   });
 
-  it('stops fetching once the byte budget is exhausted', async () => {
+  it('enforces a hard byte budget and rejects oversized sources (#101)', async () => {
     const fetched: string[] = [];
     const deps: WebResearchDeps = {
       search: async () => Array.from({ length: 3 }, (_, i) => okHit(`https://example.com/${i}`)),
@@ -137,10 +137,29 @@ describe('P0-R2 web research adapter', () => {
     };
     const res = await runWebResearch(webRequest({ maxSources: 3, maxFetchBytes: 150 }), deps);
 
-    expect(fetched).toHaveLength(2); // 100 + 100 = 200 > 150 after second fetch
+    // First 100B source fits; the second (100B > 50B remaining) is rejected as
+    // oversized and no further sources are fetched. The oversized source is NOT
+    // stored as a retrieved hit.
+    expect(fetched).toHaveLength(2);
     expect(res.truncatedDueToBytes).toBe(true);
-    expect(res.bytesFetched).toBe(200);
-    expect(res.skipped).toContain('https://example.com/2');
+    expect(res.bytesFetched).toBe(100);
+    expect(res.sources).toHaveLength(1);
+    expect(res.skipped).toEqual(
+      expect.arrayContaining(['https://example.com/1', 'https://example.com/2'])
+    );
+  });
+
+  it('ingests multiple sources that fit within the byte budget', async () => {
+    const deps: WebResearchDeps = {
+      search: async () => Array.from({ length: 3 }, (_, i) => okHit(`https://example.com/${i}`)),
+      fetch: async url => okFetch(url, 'x', 50),
+    };
+    const res = await runWebResearch(webRequest({ maxSources: 3, maxFetchBytes: 200 }), deps);
+
+    expect(res.bytesFetched).toBe(150);
+    expect(res.sources).toHaveLength(3);
+    expect(res.truncatedDueToBytes).toBe(false);
+    expect(res.skipped).toHaveLength(0);
   });
 
   it('aborts remaining fetches after the duration budget elapses', async () => {
@@ -277,6 +296,56 @@ describe('P0-R2 web research adapter resilience and redaction', () => {
     expect(source.displayUrl).not.toContain('REDIRECTSECRET');
     expect(source.redactions).toContain('token');
     expect(source.contentHash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('blocks a redirect whose final URL leaves the approved domain scope (#103)', async () => {
+    const deps: WebResearchDeps = {
+      allowedDomains: ['example.com'],
+      search: async () => [okHit('https://example.com/start')],
+      fetch: async () => ({
+        url: 'https://example.com/start',
+        status: 'ok',
+        content: 'off-policy body',
+        finalUrl: 'https://evil.example.net/final',
+        bytes: 15,
+      }),
+    };
+    const res = await runWebResearch(
+      webRequest({ scope: { projectRoot: '/proj', domains: ['example.com'] } }),
+      deps
+    );
+
+    expect(res.blocked).toContain('https://evil.example.net/final');
+    expect(res.sources).toHaveLength(1);
+    expect(res.sources[0]).toEqual(
+      expect.objectContaining({
+        status: 'blocked',
+        canonicalUrl: 'https://evil.example.net/final',
+        failureReason: 'redirected domain not in allowlist',
+      })
+    );
+    expect(res.sources[0].excerpt).toBeUndefined();
+    expect(res.sources[0].contentHash).toBeUndefined();
+  });
+
+  it('blocks an SSRF-unsafe effective final URL even when the search hit was safe (#103)', async () => {
+    const deps: WebResearchDeps = {
+      search: async () => [okHit('https://example.com/start')],
+      fetch: async () => ({
+        url: 'https://example.com/start',
+        status: 'ok',
+        content: 'private body',
+        finalUrl: 'http://169.254.169.254/latest/meta-data/',
+        bytes: 12,
+      }),
+    };
+    const res = await runWebResearch(webRequest(), deps);
+
+    expect(res.blocked).toContain('http://169.254.169.254/latest/meta-data/');
+    expect(res.sources[0].status).toBe('blocked');
+    expect(res.sources[0].failureReason).toMatch(/SSRF|Blocked|internal/i);
+    expect(res.sources[0].excerpt).toBeUndefined();
+    expect(res.sources[0].contentHash).toBeUndefined();
   });
 
   it('keeps clean URLs byte-identical so redaction never moves the content hash', async () => {

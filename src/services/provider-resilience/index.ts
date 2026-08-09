@@ -2,8 +2,12 @@
  * v0.2.25 — Provider Resilience Module Index.
  */
 
-export { ProviderResilienceCoordinator, ProviderRetryExhaustedError } from './coordinator';
-export { classifyProviderError } from './error-classifier';
+export {
+  ProviderResilienceCoordinator,
+  ProviderRetryExhaustedError,
+  computeProviderBackoff,
+} from './coordinator';
+export { classifyProviderError, extractRetryAfterMs } from './error-classifier';
 export { ProviderCircuitBreaker } from './circuit-breaker';
 export { ProviderRequestGate } from './request-gate';
 export {
@@ -22,6 +26,7 @@ export {
   type ProviderOperation,
   type ProviderRequestContext,
   type ProviderAttemptRecord,
+  type ProviderAttemptReporter,
   type ProviderRequestDiagnosticsV2,
   type StreamAttemptState,
   type ProviderResilienceConfig,

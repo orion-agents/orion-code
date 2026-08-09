@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from 'fs';
+import { appendFileSync, existsSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { CostTracker } from '../src/core/cost-tracker';
@@ -36,7 +36,7 @@ describe('durable usage ledger', () => {
         costUsd: 0.0042,
         requestId: 'provider-request',
       },
-      { model: 'routed-model' },
+      { model: 'routed-model' }
     );
 
     const second = new CostTracker({
@@ -45,7 +45,7 @@ describe('durable usage ledger', () => {
     });
     second.record(
       { promptTokens: 1_000, completionTokens: 500, requestId: 'estimated-request' },
-      { model: 'custom-model' },
+      { model: 'custom-model' }
     );
 
     const state = loadUsageState();
@@ -63,7 +63,7 @@ describe('durable usage ledger', () => {
     const tracker = new CostTracker();
     const record = tracker.record(
       { promptTokens: 10, completionTokens: 5, costUsd: 0.001, requestId: 'same-id' },
-      { model: 'provider-model' },
+      { model: 'provider-model' }
     );
     appendUsageRecord(record);
     appendUsageRecord(record);
@@ -72,5 +72,27 @@ describe('durable usage ledger', () => {
     expect(summary.recordCount).toBe(1);
     expect(summary.totalTokens).toBe(15);
     expect(summary.totalCost).toBeCloseTo(0.001);
+  });
+
+  test('does not rewrite derived usage state during a read', () => {
+    const usagePath = join(configDir, 'usage.json');
+    expect(existsSync(usagePath)).toBe(false);
+    expect(loadUsageState().totalTokens).toBe(0);
+    expect(existsSync(usagePath)).toBe(false);
+  });
+
+  test('reports corrupt ledger lines while preserving valid records', () => {
+    const tracker = new CostTracker();
+    appendUsageRecord(
+      tracker.record(
+        { promptTokens: 3, completionTokens: 2, requestId: 'valid-request' },
+        { model: 'valid-model' }
+      )
+    );
+    appendFileSync(join(configDir, 'cost', 'usage-ledger.jsonl'), '{broken-json\n');
+
+    const summary = summarizeUsageLedger();
+    expect(summary.recordCount).toBe(1);
+    expect(summary.droppedCorruptLines).toBe(1);
   });
 });

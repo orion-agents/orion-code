@@ -10,7 +10,7 @@
  * 支持 tsserver, pyright
  */
 
-import { buildTool, type OpenHorseTool, type ToolResult, type ToolContext } from '../framework/tool';
+import { buildTool, type OrionCodeTool, type ToolResult, type ToolContext } from '../framework/tool';
 import { spawn, spawnSync, ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
 
@@ -440,7 +440,7 @@ function validatePositionArgs(filePath: unknown, line: unknown, character: unkno
 // 工具注册
 // ============================================================================
 
-export const lspGetDefinitionTool: OpenHorseTool = buildTool({
+export const lspGetDefinitionTool: OrionCodeTool = buildTool({
   name: 'lsp_get_definition',
   description: 'Get definition location for a symbol at a position. Supports TypeScript, JavaScript, Python.',
   parameters: {
@@ -489,7 +489,7 @@ export const lspGetDefinitionTool: OpenHorseTool = buildTool({
   isReadOnly: () => true,
 });
 
-export const lspGetReferencesTool: OpenHorseTool = buildTool({
+export const lspGetReferencesTool: OrionCodeTool = buildTool({
   name: 'lsp_get_references',
   description: 'Get all references to a symbol at a position. Supports TypeScript, JavaScript, Python.',
   parameters: {
@@ -543,7 +543,7 @@ export const lspGetReferencesTool: OpenHorseTool = buildTool({
   isReadOnly: () => true,
 });
 
-export const lspGetHoverTool: OpenHorseTool = buildTool({
+export const lspGetHoverTool: OrionCodeTool = buildTool({
   name: 'lsp_get_hover',
   description: 'Get hover information (type, docs) for a symbol at a position. Supports TypeScript, JavaScript, Python.',
   parameters: {
@@ -592,7 +592,7 @@ export const lspGetHoverTool: OpenHorseTool = buildTool({
   isReadOnly: () => true,
 });
 
-export const lspGetDiagnosticsTool: OpenHorseTool = buildTool({
+export const lspGetDiagnosticsTool: OrionCodeTool = buildTool({
   name: 'lsp_get_diagnostics',
   description: 'Get diagnostics (errors, warnings) for a file. Supports TypeScript, JavaScript, Python.',
   parameters: {
@@ -647,7 +647,7 @@ export const lspGetDiagnosticsTool: OpenHorseTool = buildTool({
 });
 
 // 导出所有 LSP 工具
-export const lspTools: OpenHorseTool[] = [
+export const lspTools: OrionCodeTool[] = [
   lspGetDefinitionTool,
   lspGetReferencesTool,
   lspGetHoverTool,

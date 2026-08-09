@@ -5,6 +5,7 @@ import {
   createEditPreviewPickerState,
   createModelPickerState,
   createPermissionDecisionPickerState,
+  researchProjectionLabel,
 } from '../runtime/ui-view-model';
 import { formatBytes } from '../services/format';
 import type { ToolConfirmationPolicy } from '../services/global-config';
@@ -288,6 +289,7 @@ function renderStatus(frame: TuiFrame, state: TuiUiState, row: number): void {
   if (state.statusState.activeTools > 0) activity.push(`tools:${state.statusState.activeTools}`);
   if (state.statusState.activeSubtasks > 0)
     activity.push(`sub:${state.statusState.activeSubtasks}`);
+  if (state.research) activity.push(researchProjectionLabel(state.research));
   activity.push(`perm:${state.permissionMode}`);
   const activityStr = activity.length ? `[${activity.join(' ')}] ` : '';
   const rightFull = right ? `${right} ${activityStr}`.trimEnd() : activityStr.trimEnd();

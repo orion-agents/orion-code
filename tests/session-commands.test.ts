@@ -151,21 +151,25 @@ describe('session commands', () => {
 
     expect(result.success).toBe(true);
     expect(restored[0]?.id).toBe(session.id);
-    expect(sessionRestored).toEqual([
-      expect.objectContaining({
-        sessionId: session.id,
-        projectPath: session.projectPath,
-        model: 'gpt-4o',
-        restoredMessages: 2,
-        summary: 'Tools: read_file',
-      }),
-    ]);
+    expect(sessionRestored).toHaveLength(1);
+    expect(sessionRestored[0]).toMatchObject({
+      sessionId: session.id,
+      projectPath: session.projectPath,
+      model: 'gpt-4o',
+      messageCount: 2,
+      restoredMessages: 3,
+      transcriptMessages: 2,
+      summaryCoveredMessages: 2,
+      summarySource: 'resume_heuristic',
+      summary: 'Tools: read_file',
+    });
     expect(sessionRestored[0].summary).not.toContain('restore this exact session');
     expect(sessionRestored[0].summary).not.toContain('sk-testsecret');
     const printed = logSpy.mock.calls.flat().join('\n');
     expect(printed).toContain('apiKey=[REDACTED_SECRET]');
     expect(printed).not.toContain('sk-testsecret');
-    expect(store.getSnapshot().conversationHistory).toEqual([
+    const restoredHistory = store.getSnapshot().conversationHistory;
+    expect(restoredHistory.slice(0, 2)).toEqual([
       { role: 'user', content: 'restore this exact session apiKey=sk-testsecret123456' },
       {
         role: 'assistant',
@@ -179,6 +183,12 @@ describe('session commands', () => {
         ],
       },
     ]);
+    expect(restoredHistory).toHaveLength(3);
+    expect(restoredHistory[2]).toMatchObject({ role: 'tool', tool_call_id: 'call-read' });
+    expect(JSON.parse(restoredHistory[2].content)).toMatchObject({
+      success: false,
+      status: 'cancelled',
+    });
   });
 
   test('/resume reports persisted compact summary provenance and restore counts', async () => {

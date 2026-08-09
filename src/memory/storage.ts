@@ -19,7 +19,6 @@ import {
   getProjectMemoryDir,
 } from '../services/config-dir';
 import { atomicWriteFileSync } from '../services/atomic-write';
-import { getVectorStore } from './vector-store'; // Issue #32 #3.8
 
 // Re-export types for convenience
 export type { MemoryEntry, MemoryType } from './types';
@@ -420,6 +419,10 @@ export async function searchMemoriesAsync(
   limit: number = 50
 ): Promise<MemoryEntry[]> {
   try {
+    // Vector storage is optional and native. Load it only when this async
+    // semantic path is invoked so text-only memory remains available when a
+    // native binding is missing or was built for another Node ABI.
+    const { getVectorStore } = await import('./vector-store');
     const store = getVectorStore();
     if (store.isVectorSearchAvailable()) {
       const results = await store.search(query, limit, projectPath);

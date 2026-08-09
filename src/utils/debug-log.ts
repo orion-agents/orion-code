@@ -8,9 +8,9 @@
  * diagnosis — once the exception is gone there is nothing left to explain why
  * a session failed to persist or why a provider silently fell back.
  *
- * `debugError` keeps the tolerant behaviour but preserves the signal: the
- * error is routed to stderr only when the user opts in via `ORION_CODE_DEBUG`.
- * Default runs stay completely silent, so the TUI is never polluted.
+ * `debugError` keeps the tolerant behaviour but preserves the signal in the
+ * structured diagnostic log. Stderr remains opt-in via `ORION_CODE_DEBUG`, so
+ * default runs are observable without polluting the TUI.
  *
  * Usage:
  *
@@ -22,6 +22,8 @@
  * }
  * ```
  */
+
+import { recordStructuredDiagnostic } from './observability';
 
 /** Environment variable that opts into diagnostic output. */
 export const DEBUG_ENV_VAR = 'ORION_CODE_DEBUG';
@@ -72,10 +74,12 @@ export function formatError(error: unknown): string {
  * @param detail  Optional extra context (a path, an id, a provider name).
  */
 export function debugError(scope: string, error: unknown, detail?: string): void {
+  const formatted = formatError(error);
+  recordStructuredDiagnostic('error', scope, formatted, detail);
   if (!isDebugEnabled()) return;
   try {
     const suffix = detail ? ` [${detail}]` : '';
-    console.error(`${LOG_PREFIX} ${scope}${suffix}: ${formatError(error)}`);
+    console.error(`${LOG_PREFIX} ${scope}${suffix}: ${formatted}`);
   } catch {
     // Writing diagnostics must never escalate into a real failure (closed
     // stderr, EPIPE on a killed pager). Dropping the line is the correct

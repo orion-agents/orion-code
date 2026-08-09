@@ -42,6 +42,9 @@ export function parseTargetCommand(rawInput: string): TargetParseResult {
   }
 
   // Sub-commands
+  if (rest === 'status') {
+    return { ok: true, input: { type: 'goal_control', action: 'show' } };
+  }
   if (rest === 'pause') {
     return { ok: true, input: { type: 'goal_control', action: 'pause' } };
   }
@@ -66,7 +69,7 @@ export function parseTargetCommand(rawInput: string): TargetParseResult {
     if (objective.length > GOAL_INVARIANTS.maxObjectiveChars) {
       return {
         ok: false,
-        error: `Objective too long (${objective.length} chars, max ${GOAL_INVARIANTS.maxObjectiveChars}). Use /target --file <path> for long objectives.`,
+        error: `Objective too long (${objective.length} chars, max ${GOAL_INVARIANTS.maxObjectiveChars}).`,
       };
     }
     return { ok: true, input: { type: 'goal_control', action: 'edit', payload: { objective } } };
@@ -140,7 +143,7 @@ export function parseTargetCommand(rawInput: string): TargetParseResult {
   if (rest.length > GOAL_INVARIANTS.maxObjectiveChars) {
     return {
       ok: false,
-      error: `Objective too long (${rest.length} chars, max ${GOAL_INVARIANTS.maxObjectiveChars}). Use /target --file <path> for long objectives.`,
+      error: `Objective too long (${rest.length} chars, max ${GOAL_INVARIANTS.maxObjectiveChars}).`,
     };
   }
   return {

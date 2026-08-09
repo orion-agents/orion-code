@@ -70,15 +70,14 @@ export class WorkerPool {
     // 无空闲 Worker：入队，待某个 Worker 完成任务后由 drainQueue 取出执行。
     // 每个入队任务携带自己的 resolver，确保只被执行一次，避免重复执行。
     return new Promise<ForkResult>((resolve) => {
-      let timer: NodeJS.Timeout | undefined;
       const finish = (result: ForkResult) => {
-        if (timer) clearTimeout(timer);
+        clearTimeout(timer);
         resolve(result);
       };
       this.taskQueue.push({ task, forkOptions, resolve: finish });
 
       // 超时保护：仍未被取出执行时才以超时失败结束。
-      timer = setTimeout(() => {
+      const timer = setTimeout(() => {
         const idx = this.taskQueue.findIndex(q => q.task === task && q.resolve === finish);
         if (idx !== -1) {
           this.taskQueue.splice(idx, 1);
@@ -252,7 +251,7 @@ export class WorkerPool {
       }
 
       return result;
-    } catch (err: any) {
+    } catch (err) {
       this.workers.set(workerId, {
         id: workerId,
         status: 'failed',
@@ -263,7 +262,7 @@ export class WorkerPool {
       const result: ForkResult = {
         success: false,
         content: '',
-        error: err.message,
+        error: err instanceof Error ? err.message : String(err),
         duration: Date.now() - (this.workers.get(workerId)?.startTime || Date.now()),
       };
       this.results.set(task.id, result);

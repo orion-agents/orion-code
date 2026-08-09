@@ -7,7 +7,9 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { atomicWriteFileSync } from './atomic-write';
 import { getProjectSessionsDir } from './config-dir';
+import { withFileLockSync } from './file-lock';
 import { redactTraceText } from './redaction';
 
 // ============================================================================
@@ -16,9 +18,9 @@ import { redactTraceText } from './redaction';
 
 export interface SessionIndex {
   sessionId: string;
-  files: string[];            // All file paths referenced in tool calls
+  files: string[]; // All file paths referenced in tool calls
   tools: Record<string, number>; // Tool call counts: {read_file: 5, exec_command: 3}
-  topics: string[];            // User message topics (first 50 chars)
+  topics: string[]; // User message topics (first 50 chars)
   updatedAt: number;
 }
 
@@ -44,47 +46,54 @@ export function updateSessionIndex(
     tool_calls?: Array<{ function: { name: string; arguments: string } }>;
   }
 ): void {
-  const index = loadSessionIndex(sessionId, projectPath) ?? createEmptyIndex(sessionId);
+  try {
+    const indexPath = ensureIndexPath(sessionId, projectPath);
+    withFileLockSync(indexPath, () => {
+      const index = loadSessionIndex(sessionId, projectPath) ?? createEmptyIndex(sessionId);
 
-  // Track user topics
-  if (message.role === 'user' && message.content) {
-    const topic = redactTraceText(message.content).slice(0, 50).trim();
-    if (topic && !index.topics.includes(topic)) {
-      index.topics.push(topic);
-      // Keep only last 20 topics
-      if (index.topics.length > 20) {
-        index.topics = index.topics.slice(-20);
-      }
-    }
-  }
-
-  // Track tool calls and file paths
-  if (message.role === 'assistant' && message.tool_calls) {
-    for (const tc of message.tool_calls) {
-      const toolName = tc.function.name;
-      index.tools[toolName] = (index.tools[toolName] || 0) + 1;
-
-      // Extract file paths from common file tools
-      try {
-        const args = JSON.parse(tc.function.arguments);
-        const filePath = args.path || args.file || args.file_path;
-        if (filePath && typeof filePath === 'string') {
-          const safeFilePath = redactTraceText(filePath);
-          if (index.files.includes(safeFilePath)) continue;
-          index.files.push(safeFilePath);
-          // Keep only last 100 files
-          if (index.files.length > 100) {
-            index.files = index.files.slice(-100);
+      // Track user topics
+      if (message.role === 'user' && message.content) {
+        const topic = redactTraceText(message.content).slice(0, 50).trim();
+        if (topic && !index.topics.includes(topic)) {
+          index.topics.push(topic);
+          // Keep only last 20 topics
+          if (index.topics.length > 20) {
+            index.topics = index.topics.slice(-20);
           }
         }
-      } catch {
-        // Invalid JSON arguments — skip
       }
-    }
-  }
 
-  index.updatedAt = Date.now();
-  saveSessionIndex(sessionId, projectPath, index);
+      // Track tool calls and file paths
+      if (message.role === 'assistant' && message.tool_calls) {
+        for (const tc of message.tool_calls) {
+          const toolName = tc.function.name;
+          index.tools[toolName] = (index.tools[toolName] || 0) + 1;
+
+          // Extract file paths from common file tools
+          try {
+            const args = JSON.parse(tc.function.arguments);
+            const filePath = args.path || args.file || args.file_path;
+            if (filePath && typeof filePath === 'string') {
+              const safeFilePath = redactTraceText(filePath);
+              if (index.files.includes(safeFilePath)) continue;
+              index.files.push(safeFilePath);
+              // Keep only last 100 files
+              if (index.files.length > 100) {
+                index.files = index.files.slice(-100);
+              }
+            }
+          } catch {
+            // Invalid JSON arguments — skip
+          }
+        }
+      }
+
+      index.updatedAt = Date.now();
+      writeSessionIndex(indexPath, index);
+    });
+  } catch {
+    // Best-effort index maintenance must not fail the main transcript write.
+  }
 }
 
 /**
@@ -96,7 +105,22 @@ export function loadSessionIndex(sessionId: string, projectPath: string): Sessio
     const indexPath = path.join(dir, `${sessionId}.index.json`);
     if (!fs.existsSync(indexPath)) return null;
     const data = fs.readFileSync(indexPath, 'utf8');
-    return JSON.parse(data);
+    const parsed = JSON.parse(data) as Partial<SessionIndex>;
+    if (
+      parsed.sessionId !== sessionId ||
+      !Array.isArray(parsed.files) ||
+      !parsed.files.every(file => typeof file === 'string') ||
+      !Array.isArray(parsed.topics) ||
+      !parsed.topics.every(topic => typeof topic === 'string') ||
+      !parsed.tools ||
+      typeof parsed.tools !== 'object' ||
+      !Object.values(parsed.tools).every(count => Number.isSafeInteger(count) && count >= 0) ||
+      typeof parsed.updatedAt !== 'number' ||
+      !Number.isFinite(parsed.updatedAt)
+    ) {
+      return null;
+    }
+    return parsed as SessionIndex;
   } catch {
     return null;
   }
@@ -105,17 +129,27 @@ export function loadSessionIndex(sessionId: string, projectPath: string): Sessio
 /**
  * Save session index to disk.
  */
-export function saveSessionIndex(sessionId: string, projectPath: string, index: SessionIndex): void {
+export function saveSessionIndex(
+  sessionId: string,
+  projectPath: string,
+  index: SessionIndex
+): void {
   try {
-    const dir = getProjectSessionsDir(projectPath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    }
-    const indexPath = path.join(dir, `${sessionId}.index.json`);
-    fs.writeFileSync(indexPath, JSON.stringify(index, null, 2), { mode: 0o600 });
+    const indexPath = ensureIndexPath(sessionId, projectPath);
+    withFileLockSync(indexPath, () => writeSessionIndex(indexPath, index));
   } catch {
     // Best-effort — don't fail the main flow
   }
+}
+
+function ensureIndexPath(sessionId: string, projectPath: string): string {
+  const dir = getProjectSessionsDir(projectPath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return path.join(dir, `${sessionId}.index.json`);
+}
+
+function writeSessionIndex(indexPath: string, index: SessionIndex): void {
+  atomicWriteFileSync(indexPath, JSON.stringify(index, null, 2), { mode: 0o600 });
 }
 
 /**
@@ -125,9 +159,10 @@ export function deleteSessionIndex(sessionId: string, projectPath: string): void
   try {
     const dir = getProjectSessionsDir(projectPath);
     const indexPath = path.join(dir, `${sessionId}.index.json`);
-    if (fs.existsSync(indexPath)) {
-      fs.unlinkSync(indexPath);
-    }
+    if (!fs.existsSync(dir)) return;
+    withFileLockSync(indexPath, () => {
+      if (fs.existsSync(indexPath)) fs.unlinkSync(indexPath);
+    });
   } catch {
     // Best-effort
   }
@@ -137,15 +172,8 @@ export function deleteSessionIndex(sessionId: string, projectPath: string): void
  * Search sessions by query (file path, tool name, or topic keyword).
  * Returns matching session IDs sorted by relevance.
  */
-export function searchSessions(
-  query: string,
-  projectPath: string,
-  sessionIds: string[]
-): string[];
-export function searchSessions(
-  query: string,
-  candidates: SessionSearchCandidate[]
-): string[];
+export function searchSessions(query: string, projectPath: string, sessionIds: string[]): string[];
+export function searchSessions(query: string, candidates: SessionSearchCandidate[]): string[];
 export function searchSessions(
   query: string,
   projectPathOrCandidates: string | SessionSearchCandidate[],

@@ -23,15 +23,31 @@ export interface GateSnapshot {
   cooldownReason: string | null;
 }
 
+export interface ProviderRequestGateOptions {
+  /** Maximum number of in-flight provider requests. */
+  maxConcurrent?: number;
+}
+
+interface GateWaiter {
+  request: GateRequest;
+  resolve: (lease: GateLease) => void;
+  reject: (error: Error) => void;
+  onAbort?: () => void;
+}
+
 export class ProviderRequestGate {
+  private readonly maxConcurrent: number;
   private activeCount = 0;
-  private waiters: Array<{
-    request: GateRequest;
-    resolve: (lease: GateLease) => void;
-    reject: (error: Error) => void;
-  }> = [];
+  private waiters: GateWaiter[] = [];
   private cooldownUntil = 0;
   private cooldownReason = '';
+
+  constructor(options: ProviderRequestGateOptions = {}) {
+    const configured = Number(options.maxConcurrent ?? 6);
+    this.maxConcurrent = Number.isFinite(configured) && configured >= 1
+      ? Math.floor(configured)
+      : 1;
+  }
 
   /**
    * Acquire a gate lease. If cooldown is active, waits until it expires.
@@ -43,20 +59,24 @@ export class ProviderRequestGate {
     }
 
     return new Promise((resolve, reject) => {
-      this.waiters.push({ request, resolve, reject });
-      // Sort by priority (lower = higher priority).
-      this.waiters.sort((a, b) => a.request.priority - b.request.priority);
-      this.tryDispatch();
-
+      const waiter: GateWaiter = { request, resolve, reject };
       if (request.abortSignal) {
-        request.abortSignal.addEventListener('abort', () => {
-          const idx = this.waiters.findIndex(w => w.resolve === resolve);
+        const onAbort = (): void => {
+          const idx = this.waiters.indexOf(waiter);
           if (idx >= 0) {
             this.waiters.splice(idx, 1);
             reject(new Error('aborted'));
           }
-        }, { once: true });
+          request.abortSignal?.removeEventListener('abort', onAbort);
+        };
+        waiter.onAbort = onAbort;
+        request.abortSignal.addEventListener('abort', onAbort, { once: true });
       }
+
+      this.waiters.push(waiter);
+      // Sort by priority (lower = higher priority).
+      this.waiters.sort((a, b) => a.request.priority - b.request.priority);
+      this.tryDispatch();
     });
   }
 
@@ -82,7 +102,7 @@ export class ProviderRequestGate {
   }
 
   private tryDispatch(): void {
-    while (this.waiters.length > 0) {
+    while (this.waiters.length > 0 && this.activeCount < this.maxConcurrent) {
       // Check cooldown.
       if (Date.now() < this.cooldownUntil) {
         // Still in cooldown — dispatch after cooldown expires.
@@ -92,9 +112,15 @@ export class ProviderRequestGate {
       }
 
       const next = this.waiters.shift()!;
+      if (next.request.abortSignal && next.onAbort) {
+        next.request.abortSignal.removeEventListener('abort', next.onAbort);
+      }
       this.activeCount++;
+      let released = false;
       next.resolve({
         release: () => {
+          if (released) return;
+          released = true;
           this.activeCount = Math.max(0, this.activeCount - 1);
           this.tryDispatch();
         },

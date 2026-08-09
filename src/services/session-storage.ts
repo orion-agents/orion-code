@@ -32,6 +32,7 @@ import {
 } from './config-dir';
 import { atomicWriteFileSync } from './atomic-write';
 import { deleteSessionIndex, updateSessionIndex } from './session-index';
+import { sealToolCallGroups } from './compact/tool-call-groups';
 import { redactTraceText } from './redaction';
 import { debugError } from '../utils/debug-log';
 import { deleteGoal } from './goal-storage';
@@ -526,6 +527,15 @@ function normalizeSessionMeta(session: SessionMeta): SessionMeta {
   };
 }
 
+function tryNormalizeSessionMeta(session: SessionMeta, sourcePath: string): SessionMeta | null {
+  try {
+    return normalizeSessionMeta(session);
+  } catch (error) {
+    debugError('session-storage.normalizeSessionMeta', error, sourcePath);
+    return null;
+  }
+}
+
 function uniquePaths(paths: string[]): string[] {
   return [...new Set(paths)];
 }
@@ -689,7 +699,8 @@ export function loadSessionMeta(sessionId: string): SessionMeta | null {
 
       const session = parseSessionMetaFile(path);
       if (session) {
-        return normalizeSessionMeta(session);
+        const normalized = tryNormalizeSessionMeta(session, path);
+        if (normalized) return normalized;
       }
     }
   }
@@ -1214,6 +1225,23 @@ export function removeLastIncompleteAssistantMessage(sessionId: string): Session
 }
 
 /**
+ * Remove the trailing user message from a failed turn so a provider/tool
+ * failure does not leave a dangling prompt in the persisted session that would
+ * be replayed on resume. The caller must guarantee the trailing message was
+ * appended by the turn that just failed (i.e. `persistAsUserMessage !== false`);
+ * this is a no-op when the last message is not a user message.
+ */
+export function removeTrailingSessionUserMessage(sessionId: string): SessionMessage[] {
+  const messages = readSessionMessages(sessionId);
+  if (messages.length === 0) return messages;
+  if (messages[messages.length - 1].role !== 'user') return messages;
+
+  const truncated = messages.slice(0, -1);
+  overwriteSessionMessages(sessionId, truncated);
+  return truncated;
+}
+
+/**
  * 读取会话消息
  */
 export function readSessionMessages(sessionId: string): SessionMessage[] {
@@ -1231,9 +1259,12 @@ export function readSessionMessages(sessionId: string): SessionMessage[] {
       try {
         messages.push(JSON.parse(lines[i]) as SessionMessage);
       } catch (error) {
-        // A missing turn can orphan later tool results, so only restore the valid prefix.
+        // A single corrupted line must not silently truncate the whole session
+        // (which would drop every later turn on resume). Skip only the bad line
+        // and keep the rest, mirroring readHistory's behaviour. The corruption
+        // is still recorded for observability (#68).
         debugError('session-storage.parseMessageLine', error, `${path}:${i + 1}`);
-        break;
+        continue;
       }
     }
     return messages;
@@ -1320,10 +1351,10 @@ export function loadSessionHistory(sessionId: string): Message[] {
   const messages = readSessionMessages(sessionId);
   const checkpoint = loadSessionCompactCheckpoint(sessionId);
   if (checkpoint) {
-    return [
+    return sealToolCallGroups([
       ...checkpoint.modelHistory.map(message => ({ ...message })),
       ...messages.slice(checkpoint.sourceMessageCount).map(sessionMessageToModelMessage),
-    ];
+    ]);
   }
   const session = loadSessionMeta(sessionId);
   const displayStartTime = session?.transcriptDisplayStartTime;
@@ -1337,7 +1368,7 @@ export function loadSessionHistory(sessionId: string): Message[] {
       : messages;
   }
 
-  return modelVisibleMessages.map(sessionMessageToModelMessage);
+  return sealToolCallGroups(modelVisibleMessages.map(sessionMessageToModelMessage));
 }
 
 function sessionMessageToModelMessage(message: SessionMessage): Message {
@@ -1370,9 +1401,10 @@ export function listSessions(limit?: number): SessionMeta[] {
       const files = readdirSync(projectSessionsDir).filter(isSessionMetaFile);
       for (const file of files) {
         const rawSession = parseSessionMetaFile(join(projectSessionsDir, file));
-        if (rawSession) {
-          upsertNewestSession(sessionsById, normalizeSessionMeta(rawSession));
-        }
+        if (!rawSession) continue;
+        const sourcePath = join(projectSessionsDir, file);
+        const normalized = tryNormalizeSessionMeta(rawSession, sourcePath);
+        if (normalized) upsertNewestSession(sessionsById, normalized);
       }
     }
   }
@@ -1393,9 +1425,10 @@ export function listProjectSessions(projectPath: string, limit?: number): Sessio
     const files = readdirSync(projectSessionsDir).filter(isSessionMetaFile);
     for (const file of files) {
       const rawSession = parseSessionMetaFile(join(projectSessionsDir, file));
-      if (rawSession) {
-        upsertNewestSession(sessionsById, normalizeSessionMeta(rawSession));
-      }
+      if (!rawSession) continue;
+      const sourcePath = join(projectSessionsDir, file);
+      const normalized = tryNormalizeSessionMeta(rawSession, sourcePath);
+      if (normalized) upsertNewestSession(sessionsById, normalized);
     }
   }
 

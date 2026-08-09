@@ -91,6 +91,39 @@ describe('checkpoint', () => {
     expect(createCheckpoint(TEST_PROJECT, 'turn-1', [filePath])).toBeNull();
   });
 
+  test('createCheckpoint writes atomically — no leftover .tmp file (Issue #83)', () => {
+    const filePath = path.join(TEST_PROJECT, 'atomic.txt');
+    fs.writeFileSync(filePath, 'atomic content', 'utf8');
+
+    const cpDir = getProjectCheckpointsDir(TEST_PROJECT);
+    expect(createCheckpoint(TEST_PROJECT, 'turn-atomic', [filePath])).not.toBeNull();
+
+    // The final checkpoint payload must exist and hold the content; the
+    // intermediate random-suffixed temp file must have been renamed away.
+    const payloadPath = path.join(cpDir, 'turn-atomic', 'atomic.txt');
+    expect(fs.existsSync(payloadPath)).toBe(true);
+    expect(fs.readFileSync(payloadPath, 'utf8')).toBe('atomic content');
+
+    const leftovers = fs
+      .readdirSync(cpDir, { recursive: true })
+      .filter(f => String(f).includes('.tmp'));
+    expect(leftovers).toHaveLength(0);
+  });
+
+  test('createCheckpoint handles a pre-existing checkpoint dir without throwing (mkdir TOCTOU, Issue #83)', () => {
+    const filePath = path.join(TEST_PROJECT, 'race.txt');
+    fs.writeFileSync(filePath, 'race content', 'utf8');
+
+    // Pre-create the turn directory (simulating a concurrent mkdir race) so the
+    // non-recursive mkdirSync hits EEXIST. The first create must still succeed.
+    const cpDir = getProjectCheckpointsDir(TEST_PROJECT);
+    fs.mkdirSync(path.join(cpDir, 'turn-race'), { recursive: true });
+
+    expect(() => createCheckpoint(TEST_PROJECT, 'turn-race', [filePath])).not.toThrow();
+    const result = createCheckpoint(TEST_PROJECT, 'turn-race', [filePath]);
+    expect(result).toBeNull(); // second call is idempotent, not an EEXIST crash
+  });
+
   test('restoreCheckpoint restores file content', () => {
     const filePath = path.join(TEST_PROJECT, 'restore.txt');
     fs.writeFileSync(filePath, 'original', 'utf8');
@@ -107,6 +140,40 @@ describe('checkpoint', () => {
     expect(result.restored).toHaveLength(1);
     expect(result.restored[0]).toBe('restore.txt');
     expect(fs.readFileSync(filePath, 'utf8')).toBe('original');
+  });
+
+  test('restoreCheckpoint preserves binary file bytes exactly', () => {
+    const filePath = path.join(TEST_PROJECT, 'image.bin');
+    const original = Buffer.from([0x00, 0xff, 0xfe, 0x80, 0x41, 0x42]);
+    fs.writeFileSync(filePath, original);
+    createCheckpoint(TEST_PROJECT, 'turn-binary', [filePath]);
+
+    fs.writeFileSync(filePath, Buffer.from('modified'));
+    const result = restoreCheckpoint(TEST_PROJECT, 'turn-binary');
+
+    expect(result.error).toBeUndefined();
+    expect(fs.readFileSync(filePath)).toEqual(original);
+  });
+
+  test('restoreCheckpoint reports failure and rolls back files already restored', () => {
+    const first = path.join(TEST_PROJECT, 'first.txt');
+    const readOnlyDir = path.join(TEST_PROJECT, 'read-only');
+    const second = path.join(readOnlyDir, 'second.txt');
+    fs.mkdirSync(readOnlyDir);
+    fs.writeFileSync(first, 'checkpoint-first');
+    fs.writeFileSync(second, 'checkpoint-second');
+    createCheckpoint(TEST_PROJECT, 'turn-rollback', [first, second]);
+    fs.writeFileSync(first, 'current-first');
+    fs.writeFileSync(second, 'current-second');
+
+    fs.chmodSync(readOnlyDir, 0o500);
+    const result = restoreCheckpoint(TEST_PROJECT, 'turn-rollback');
+    fs.chmodSync(readOnlyDir, 0o700);
+
+    expect(result.error).toContain('Checkpoint restore failed');
+    expect(result.rolledBack).toEqual(['first.txt']);
+    expect(fs.readFileSync(first, 'utf8')).toBe('current-first');
+    expect(fs.readFileSync(second, 'utf8')).toBe('current-second');
   });
 
   test('restoreCheckpoint deletes files that did not exist when checkpoint was created', () => {

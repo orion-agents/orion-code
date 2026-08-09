@@ -29,7 +29,11 @@ const argv = process.argv.slice(2);
 const hasFlag = flag => argv.includes(flag);
 
 if (hasFlag('--help') || hasFlag('-h')) {
-  console.log(readFileSync(__filename, 'utf8').split('*/')[0].replace(/^[\s\S]*?\/\*\*/, ''));
+  console.log(
+    readFileSync(__filename, 'utf8')
+      .split('*/')[0]
+      .replace(/^[\s\S]*?\/\*\*/, '')
+  );
   process.exit(0);
 }
 
@@ -75,6 +79,59 @@ function readJson(relativePath) {
 function readTextIfPresent(relativePath) {
   const absolute = join(projectRoot, relativePath);
   return existsSync(absolute) ? readFileSync(absolute, 'utf8') : null;
+}
+
+function releaseTag(version) {
+  const ref = `refs/tags/v${version}`;
+  const resolved = run('git', ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
+  return {
+    ref,
+    exists: resolved.code === 0 && resolved.stdout.trim().length > 0,
+    commit: resolved.code === 0 ? resolved.stdout.trim() : null,
+  };
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function versionSection(changelog, version) {
+  const escaped = version.replace(/\./g, '\\.');
+  const lines = changelog.split('\n');
+  const headingIndex = lines.findIndex(line =>
+    new RegExp(`^#{1,3}\\s*\\[?${escaped}\\]?(?:\\s|$)`).test(line.trim())
+  );
+  if (headingIndex < 0) return null;
+
+  let endIndex = lines.length;
+  for (let index = headingIndex + 1; index < lines.length; index++) {
+    if (/^#{1,3}\s+/.test(lines[index].trim())) {
+      endIndex = index;
+      break;
+    }
+  }
+
+  const heading = lines[headingIndex].trim();
+  const text = lines.slice(headingIndex, endIndex).join('\n');
+  const marksUnreleased =
+    /status\s*:\s*(?:unreleased|candidate|merged|in development)|\bunreleased\b|\bcandidate\b|\bin development\b|not (?:yet )?(?:tagged|published)|候选|已合并|未发布/i.test(
+      text
+    );
+  const claimsPublished =
+    /status\s*:\s*published|status[^\n]*(?:已发布|已发[布佈])|已发布|已发[布佈]/i.test(text) ||
+    (!marksUnreleased && /\bpublished\b/i.test(text));
+  return {
+    heading,
+    text,
+    claimsPublished,
+    marksUnreleased,
+    hasReleaseDate: /\d{4}-\d{2}-\d{2}/.test(heading),
+  };
+}
+
+function readGitFile(commit, relativePath) {
+  const outcome = run('git', ['show', `${commit}:${relativePath}`]);
+  return outcome.code === 0 ? outcome.stdout : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -141,6 +198,42 @@ function checkVersionConsistency() {
     }
   }
 
+  // Once the version tag exists, README status prose must not still describe
+  // that version as unreleased or name an older release as the latest/current.
+  if (releaseTag(version).exists) {
+    const escapedVersion = escapeRegExp(version);
+    const unreleasedPattern = new RegExp(
+      `(?:v)?${escapedVersion}[^\\n]{0,160}` +
+        '(?:not on npm yet|not yet published|in-development|in development|开发中|尚未发布|未发布)',
+      'i'
+    );
+
+    for (const readme of ['README.md', 'README.zh-CN.md']) {
+      const text = readTextIfPresent(readme);
+      if (!text) continue;
+      if (unreleasedPattern.test(text)) {
+        mismatches.push(
+          `${readme}: contradicts refs/tags/v${version} by describing ${version} as unreleased`
+        );
+      }
+
+      const olderLatestClaims = [
+        ...text.matchAll(
+          /v?(\d+\.\d+\.\d+)[^\n]{0,120}(?:is the current published release|(?:latest|current) published version)/gi
+        ),
+        ...text.matchAll(/v?(\d+\.\d+\.\d+)\s*[（(](?:最新|当前)已发布版本[）)]/g),
+        ...text.matchAll(/当前已发布版本[\s\S]{0,80}?v?(\d+\.\d+\.\d+)/g),
+      ];
+      for (const claim of olderLatestClaims) {
+        if (claim[1] !== version) {
+          mismatches.push(
+            `${readme}: claims ${claim[1]} is the latest/current published release; expected ${version}`
+          );
+        }
+      }
+    }
+  }
+
   // The runtime banner/help must derive the version from package.json, never hardcode it.
   const versionSource = readTextIfPresent('src/product/version.ts');
   if (versionSource && !versionSource.includes("resolve(__dirname, '../../package.json')")) {
@@ -179,59 +272,162 @@ function checkChangelog() {
     );
   }
 
-  // A version that is not tagged must not be presented as a published release.
-  const tagLookup = run('git', ['tag', '--list', `v${version}`]);
-  const tagged = tagLookup.stdout.trim().length > 0;
+  const section = versionSection(changelog, version);
+  if (!section) {
+    return record(
+      'changelog',
+      'CHANGELOG.md entry',
+      STATUS.FAIL,
+      `CHANGELOG has no standard heading for ${version} (expected e.g. "## [${version}] — UNRELEASED")`
+    );
+  }
 
-  if (!tagged) {
-    const escaped = version.replace(/\./g, '\\.');
-    const headingLine = changelog
-      .split('\n')
-      .find(line => new RegExp(`^#{1,3}\\s*\\[?${escaped}\\]?`).test(line.trim()));
-
-    if (!headingLine) {
-      return record(
-        'changelog',
-        'CHANGELOG.md entry',
-        STATUS.FAIL,
-        `CHANGELOG has no heading for ${version} (expected e.g. "## [${version}] — UNRELEASED")`
-      );
-    }
-
+  const tag = releaseTag(version);
+  if (!tag.exists) {
     // Claiming published status, or stamping a release date, requires a tag.
-    const claimsPublished = /published|已发布|已发[布佈]/i.test(headingLine);
-    const hasReleaseDate = /\d{4}-\d{2}-\d{2}/.test(headingLine);
-    const marksUnreleased = /unreleased|candidate|merged|候选|已合并|未发布/i.test(headingLine);
-
-    if (claimsPublished || (hasReleaseDate && !marksUnreleased)) {
+    if (section.claimsPublished || (section.hasReleaseDate && !section.marksUnreleased)) {
       return record(
         'changelog',
         'CHANGELOG.md entry',
         STATUS.FAIL,
-        `CHANGELOG presents ${version} as released ("${headingLine.trim()}") but no git tag ` +
-          `v${version} exists.\nMark it UNRELEASED / candidate / merged until the tag is created.`
+        `CHANGELOG presents ${version} as released ("${section.heading}") but ${tag.ref} does not ` +
+          'exist.\nMark it UNRELEASED / candidate / merged until the tag is created.'
       );
     }
-    if (!marksUnreleased) {
+    if (!section.marksUnreleased) {
       return record(
         'changelog',
         'CHANGELOG.md entry',
         STATUS.WARN,
-        `"${headingLine.trim()}" does not state a delivery state; ` +
+        `"${section.heading}" does not state a delivery state; ` +
           'add UNRELEASED / candidate / merged so readers cannot mistake it for a release.'
       );
     }
+  } else {
+    if (section.marksUnreleased) {
+      return record(
+        'changelog',
+        'CHANGELOG.md entry',
+        STATUS.FAIL,
+        `${tag.ref} exists, but the ${version} section still claims an unreleased/candidate state ` +
+          `("${section.heading}"). Mark the current release evidence as published.`
+      );
+    }
+    if (!section.claimsPublished || !section.hasReleaseDate) {
+      return record(
+        'changelog',
+        'CHANGELOG.md entry',
+        STATUS.FAIL,
+        `${tag.ref} exists, but the ${version} section does not contain both an explicit published ` +
+          `state and a release date ("${section.heading}").`
+      );
+    }
   }
+
   record(
     'changelog',
     'CHANGELOG.md entry',
     STATUS.PASS,
-    `mentions ${version}; tag v${version} ${tagged ? 'exists' : 'not created yet (candidate/merged)'}`
+    `${section.heading}; ${tag.exists ? `${tag.ref} exists and state is published` : `${tag.ref} not created (candidate/merged)`}`
   );
 }
 
 // ---------------------------------------------------------------------------
-// 3. Whitespace / conflict-marker hygiene
+// 3. Release tag target and current checkout relationship
+// ---------------------------------------------------------------------------
+
+function checkReleaseRef() {
+  const { version } = readJson('package.json');
+  const tag = releaseTag(version);
+  if (!tag.exists || !tag.commit) {
+    return record(
+      'release-ref',
+      `Release ref (${tag.ref})`,
+      STATUS.SKIP,
+      `${tag.ref} not created; candidate/merged CHANGELOG rules apply`
+    );
+  }
+
+  const taggedPackageText = readGitFile(tag.commit, 'package.json');
+  let taggedVersion = null;
+  try {
+    taggedVersion = taggedPackageText ? JSON.parse(taggedPackageText).version : null;
+  } catch {
+    taggedVersion = null;
+  }
+  if (taggedVersion !== version) {
+    return record(
+      'release-ref',
+      `Release ref (${tag.ref})`,
+      STATUS.FAIL,
+      `${tag.ref} resolves to ${tag.commit}, whose package.json version is ` +
+        `${taggedVersion ?? '<missing/unreadable>'}; expected ${version}`
+    );
+  }
+
+  const taggedChangelog = readGitFile(tag.commit, 'CHANGELOG.md');
+  const taggedSection = taggedChangelog ? versionSection(taggedChangelog, version) : null;
+  if (!taggedSection) {
+    return record(
+      'release-ref',
+      `Release ref (${tag.ref})`,
+      STATUS.FAIL,
+      `${tag.ref} resolves to ${tag.commit}, but that tree has no standard CHANGELOG heading for ${version}`
+    );
+  }
+
+  const headLookup = run('git', ['rev-parse', '--verify', 'HEAD']);
+  if (headLookup.code !== 0) {
+    return record(
+      'release-ref',
+      `Release ref (${tag.ref})`,
+      STATUS.FAIL,
+      `cannot resolve HEAD: ${headLookup.stderr.trim() || 'unknown git error'}`
+    );
+  }
+  const head = headLookup.stdout.trim();
+  const details = [`${tag.ref} -> ${tag.commit}`, `tagged package version=${taggedVersion}`];
+  let status = STATUS.PASS;
+
+  if (!taggedSection.claimsPublished || taggedSection.marksUnreleased) {
+    status = STATUS.WARN;
+    details.push(
+      `tagged CHANGELOG is stale ("${taggedSection.heading}"); current-tree CHANGELOG carries the post-publish evidence`
+    );
+  }
+
+  if (head === tag.commit) {
+    details.push('checkout=release tree (HEAD equals tag commit)');
+  } else {
+    const tagIsAncestor = run('git', ['merge-base', '--is-ancestor', tag.commit, head]);
+    const headIsAncestor = run('git', ['merge-base', '--is-ancestor', head, tag.commit]);
+    if (tagIsAncestor.code === 0) {
+      status = STATUS.WARN;
+      details.push(
+        `checkout=post-release commits (${head.slice(0, 12)} is ahead of the immutable release tag); HEAD is not published by ${tag.ref}`
+      );
+    } else if (headIsAncestor.code === 0) {
+      return record(
+        'release-ref',
+        `Release ref (${tag.ref})`,
+        STATUS.FAIL,
+        `HEAD ${head} is behind the release tag ${tag.commit}; check out the release tree or a post-release maintenance branch`
+      );
+    } else {
+      const mergeBase = run('git', ['merge-base', tag.commit, head]);
+      status = STATUS.WARN;
+      details.push(
+        `checkout=post-release branch drift (HEAD ${head.slice(0, 12)} and tag diverge at ` +
+          `${mergeBase.stdout.trim().slice(0, 12) || '<unknown>'}); validate the tag tree as the published artifact`
+      );
+    }
+  }
+
+  record('release-ref', `Release ref (${tag.ref})`, status, details.join('\n'));
+}
+
+// ---------------------------------------------------------------------------
+// 4. Whitespace / conflict-marker hygiene
 // ---------------------------------------------------------------------------
 
 function checkGitHygiene() {
@@ -242,13 +438,18 @@ function checkGitHygiene() {
     .join('\n')
     .trim();
   if (problems) {
-    return record('git-hygiene', 'git diff --check', STATUS.FAIL, problems.split('\n').slice(0, 20).join('\n'));
+    return record(
+      'git-hygiene',
+      'git diff --check',
+      STATUS.FAIL,
+      problems.split('\n').slice(0, 20).join('\n')
+    );
   }
   record('git-hygiene', 'git diff --check', STATUS.PASS, 'no whitespace or conflict-marker errors');
 }
 
 // ---------------------------------------------------------------------------
-// 4. Dirty worktree
+// 5. Dirty worktree
 // ---------------------------------------------------------------------------
 
 function checkWorktreeClean() {
@@ -272,19 +473,29 @@ function checkWorktreeClean() {
 }
 
 // ---------------------------------------------------------------------------
-// 5-7. Lint / typecheck / tests
+// 6-8. Lint / typecheck / tests
 // ---------------------------------------------------------------------------
 
 function checkLint() {
   const eslint = localBin('eslint');
   if (!eslint) {
-    return record('lint', 'ESLint', STATUS.WARN, 'node_modules/.bin/eslint not found; run npm install');
+    return record(
+      'lint',
+      'ESLint',
+      STATUS.WARN,
+      'node_modules/.bin/eslint not found; run npm install'
+    );
   }
   const outcome = run(eslint, ['src/']);
   const combined = `${outcome.stdout}${outcome.stderr}`;
   const summary = combined.match(/\d+ problems? \(\d+ errors?, \d+ warnings?\)/);
   if (outcome.code !== 0) {
-    return record('lint', 'ESLint', STATUS.FAIL, (summary && summary[0]) || combined.trim().slice(-1500));
+    return record(
+      'lint',
+      'ESLint',
+      STATUS.FAIL,
+      (summary && summary[0]) || combined.trim().slice(-1500)
+    );
   }
   record('lint', 'ESLint', STATUS.PASS, (summary && summary[0]) || '0 errors');
 }
@@ -292,7 +503,12 @@ function checkLint() {
 function checkTypes() {
   const tsc = localBin('tsc');
   if (!tsc) {
-    return record('typecheck', 'tsc --noEmit', STATUS.WARN, 'node_modules/.bin/tsc not found; run npm install');
+    return record(
+      'typecheck',
+      'tsc --noEmit',
+      STATUS.WARN,
+      'node_modules/.bin/tsc not found; run npm install'
+    );
   }
   const outcome = run(tsc, ['--noEmit']);
   if (outcome.code !== 0) {
@@ -314,7 +530,12 @@ function checkTests() {
   }
   const jest = localBin('jest');
   if (!jest) {
-    return record('tests', 'Jest suite', STATUS.WARN, 'node_modules/.bin/jest not found; run npm install');
+    return record(
+      'tests',
+      'Jest suite',
+      STATUS.WARN,
+      'node_modules/.bin/jest not found; run npm install'
+    );
   }
   const outcome = run(jest, ['--runInBand', '--ci']);
   const combined = `${outcome.stdout}${outcome.stderr}`;
@@ -333,7 +554,7 @@ function checkTests() {
 }
 
 // ---------------------------------------------------------------------------
-// 8. Package dry-run
+// 9. Package dry-run
 // ---------------------------------------------------------------------------
 
 function checkPack() {
@@ -355,11 +576,21 @@ function checkPack() {
   try {
     parsed = JSON.parse(outcome.stdout);
   } catch {
-    return record('pack', 'npm pack --dry-run', STATUS.WARN, 'could not parse npm pack JSON output');
+    return record(
+      'pack',
+      'npm pack --dry-run',
+      STATUS.WARN,
+      'could not parse npm pack JSON output'
+    );
   }
   const tarball = Array.isArray(parsed) ? parsed[0] : parsed;
   if (!tarball) {
-    return record('pack', 'npm pack --dry-run', STATUS.WARN, 'npm pack returned no tarball metadata');
+    return record(
+      'pack',
+      'npm pack --dry-run',
+      STATUS.WARN,
+      'npm pack returned no tarball metadata'
+    );
   }
 
   const entryNames = (tarball.files || []).map(file => file.path);
@@ -421,7 +652,9 @@ function report() {
       `PASS — ${results.length} checks, 0 failures` +
         (warned.length ? `, ${warned.length} warning(s)` : '')
     );
-    console.log('\nNote: this script does not tag, push, or publish. Those need explicit authorization.');
+    console.log(
+      '\nNote: this script does not tag, push, or publish. Those need explicit authorization.'
+    );
     return 0;
   }
 
@@ -433,6 +666,7 @@ function report() {
 function main() {
   checkVersionConsistency();
   checkChangelog();
+  checkReleaseRef();
   checkGitHygiene();
   checkWorktreeClean();
   checkLint();

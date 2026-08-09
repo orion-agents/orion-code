@@ -10,7 +10,7 @@ import {
 } from '../src/skills/runtime';
 import { findCommand } from '../src/commands';
 import type { SkillDefinition } from '../src/skills/types';
-import { buildTool, type OpenHorseTool } from '../src/framework/tool';
+import { buildTool, type OrionCodeTool } from '../src/framework/tool';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -18,7 +18,7 @@ import { tmpdir } from 'os';
 const originalCwd = process.cwd();
 const originalConfigDir = process.env.ORION_CODE_CONFIG_DIR;
 
-function makeTool(name: string): OpenHorseTool {
+function makeTool(name: string): OrionCodeTool {
   return buildTool({
     name,
     description: name,

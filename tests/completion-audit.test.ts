@@ -1517,6 +1517,20 @@ describe('completion audit', () => {
         noProgressCount: 3,
       }).allowed
     ).toBe(false);
+    const insufficientNoProgress = auditBlocked({
+      blocker: {
+        category: 'permission',
+        retryable: false,
+        fingerprint: 'fp1',
+        summary: 'Test',
+        consecutiveTurns: 3,
+        firstSeenAt: 1,
+        lastSeenAt: 2,
+      },
+      noProgressCount: 2,
+    });
+    expect(insufficientNoProgress.allowed).toBe(false);
+    expect(insufficientNoProgress.reason).toContain('2/3');
   });
 
   it('rejects retryable and non-allowlisted terminal blockers', () => {

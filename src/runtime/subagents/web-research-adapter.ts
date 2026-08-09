@@ -54,7 +54,7 @@ export interface RawFetchResult {
 
 export interface WebResearchDeps {
   /** Search provider chain. May perform internal provider fallback. */
-  search: (query: string, limit: number) => Promise<RawSearchResult[]>;
+  search: (query: string, limit: number, signal?: AbortSignal) => Promise<RawSearchResult[]>;
   /** Fetch a single URL. Default wraps the real WebFetch tool (full guard set). */
   fetch: (url: string, prompt?: string, signal?: AbortSignal) => Promise<RawFetchResult>;
   /** Selection-time domain allowlist; when set, only matching hosts pass. */
@@ -76,6 +76,8 @@ export interface WebResearchResult {
   durationMs: number;
   truncatedDueToBytes: boolean;
   timedOut: boolean;
+  /** Parent turn cancellation, distinct from the adapter's own deadline. */
+  aborted: boolean;
   notes: string[];
 }
 
@@ -114,6 +116,17 @@ function domainAllowed(url: string, allowed?: string[]): boolean {
   return allowed.some(d => matchesDomain(url, d));
 }
 
+function allowedByDomainPolicies(
+  url: string,
+  dependencyDomains?: string[],
+  requestDomains?: string[]
+): boolean {
+  // Both policies are independent upper bounds. An injected adapter allowlist
+  // must not widen the request scope, and a request must not widen the adapter's
+  // deployment policy.
+  return domainAllowed(url, dependencyDomains) && domainAllowed(url, requestDomains);
+}
+
 function hashContent(canonicalUrl: string, content: string): string {
   return createHash('sha256').update(`${canonicalUrl}\n${content}`).digest('hex');
 }
@@ -128,7 +141,8 @@ function hashContent(canonicalUrl: string, content: string): string {
  */
 export async function runWebResearch(
   request: ResearchRequest,
-  deps: WebResearchDeps
+  deps: WebResearchDeps,
+  parentAbortSignal?: AbortSignal
 ): Promise<WebResearchResult> {
   const now = deps.now ?? (() => new Date());
   const startedAt = now();
@@ -143,13 +157,28 @@ export async function runWebResearch(
     durationMs: 0,
     truncatedDueToBytes: false,
     timedOut: false,
+    aborted: Boolean(parentAbortSignal?.aborted),
     notes,
   };
 
-  if (request.mode !== 'web' && request.mode !== 'mixed') {
-    notes.push(`web research skipped: mode is '${request.mode}'`);
+  const onParentAbort = () => {
+    result.aborted = true;
+  };
+  parentAbortSignal?.addEventListener('abort', onParentAbort, { once: true });
+  const finish = (): WebResearchResult => {
+    parentAbortSignal?.removeEventListener('abort', onParentAbort);
     result.durationMs = now().getTime() - startedAt.getTime();
     return result;
+  };
+
+  if (result.aborted) {
+    notes.push('web research cancelled before search');
+    return finish();
+  }
+
+  if (request.mode !== 'web' && request.mode !== 'mixed') {
+    notes.push(`web research skipped: mode is '${request.mode}'`);
+    return finish();
   }
 
   const query = request.objective.trim();
@@ -157,10 +186,15 @@ export async function runWebResearch(
 
   let hits: RawSearchResult[] = [];
   try {
-    hits = await deps.search(query, limit);
+    hits = await deps.search(query, limit, parentAbortSignal);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     notes.push(`search dependency threw: ${msg}`);
+  }
+
+  if (result.aborted) {
+    notes.push('web research cancelled after search');
+    return finish();
   }
 
   // Select: security + domain gate, capped at maxSources.
@@ -191,7 +225,7 @@ export async function runWebResearch(
       );
       continue;
     }
-    if (!domainAllowed(hit.url, deps.allowedDomains ?? request.scope.domains)) {
+    if (!allowedByDomainPolicies(hit.url, deps.allowedDomains, request.scope.domains)) {
       result.blocked.push(redactUrl(hit.url).url);
       result.sources.push(
         buildSource(hit, {
@@ -207,8 +241,7 @@ export async function runWebResearch(
   }
 
   if (selected.length === 0) {
-    result.durationMs = now().getTime() - startedAt.getTime();
-    return result;
+    return finish();
   }
 
   // Fetch each selected URL under byte + duration budgets. The signal is
@@ -224,6 +257,10 @@ export async function runWebResearch(
     Math.max(1, request.maxDurationMs)
   );
   try {
+    // Issue #101: once a single source blows the remaining byte budget we stop
+    // fetching entirely — the budget is a hard boundary, not a warning. Without
+    // this, every later source is still fetched and only rejected after the fact.
+    let byteBudgetExhausted = false;
     for (const { hit, rank } of selected) {
       if (result.timedOut) {
         result.skipped.push(redactUrl(hit.url).url);
@@ -231,7 +268,7 @@ export async function runWebResearch(
       }
       // Byte budget: once exhausted, stop fetching (remaining become skipped, not
       // a failure - they can be retried, so status stays silent).
-      if (byteBudget > 0 && result.bytesFetched >= byteBudget) {
+      if (byteBudget > 0 && (result.bytesFetched >= byteBudget || byteBudgetExhausted)) {
         result.truncatedDueToBytes = true;
         result.skipped.push(redactUrl(hit.url).url);
         continue;
@@ -239,7 +276,10 @@ export async function runWebResearch(
 
       let fetched: RawFetchResult;
       try {
-        fetched = await deps.fetch(hit.url, undefined, timeoutController.signal);
+        const fetchSignal = parentAbortSignal
+          ? AbortSignal.any([timeoutController.signal, parentAbortSignal])
+          : timeoutController.signal;
+        fetched = await deps.fetch(hit.url, undefined, fetchSignal);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         result.sources.push(
@@ -253,6 +293,7 @@ export async function runWebResearch(
       }
 
       // Duration budget: abort remaining fetches after the wall clock is exceeded.
+      if (parentAbortSignal?.aborted) result.aborted = true;
       if (now().getTime() - startedAt.getTime() > request.maxDurationMs) {
         result.timedOut = true;
       }
@@ -260,15 +301,60 @@ export async function runWebResearch(
       const status = toSourceStatus(fetched.status);
       const bytes =
         fetched.bytes ?? (fetched.content ? Buffer.byteLength(fetched.content, 'utf8') : 0);
+
+      // Issue #101: a single fetched source must not exceed the remaining byte
+      // budget. If it does, it is rejected as oversized instead of being stored
+      // as a normal retrieved source, and the budget is marked exhausted so no
+      // further sources are fetched.
+      if (byteBudget > 0) {
+        const remaining = byteBudget - result.bytesFetched;
+        if (bytes > remaining) {
+          result.truncatedDueToBytes = true;
+          result.skipped.push(redactUrl(hit.url).url);
+          byteBudgetExhausted = true;
+          continue;
+        }
+      }
+
       result.bytesFetched += bytes;
 
-      // Redirects can introduce credentials the search hit never had, so the
-      // final URL gets the same treatment. Hashing the redacted URL keeps the
-      // content hash stable when only a rotating token in the query differs.
-      const finalRedacted = redactUrl(fetched.finalUrl ?? hit.url);
+      // Redirects can introduce credentials or leave the root-approved domain
+      // scope. The generic fetcher enforces per-hop network safety, while the
+      // research adapter owns the narrower citation/domain invariant and must
+      // therefore revalidate the effective final URL before persisting content.
+      const finalUrl = fetched.finalUrl ?? hit.url;
+      const finalRedacted = redactUrl(finalUrl);
       // The audit trail spans both URLs: a secret stripped from the search hit
       // still happened even if the post-redirect URL was clean.
       const removed = [...new Set([...redactUrl(hit.url).removed, ...finalRedacted.removed])];
+      const finalSsrf = isUrlSafeForSSRF(finalUrl);
+      const finalDomainAllowed = allowedByDomainPolicies(
+        finalUrl,
+        deps.allowedDomains,
+        request.scope.domains
+      );
+      if (!finalSsrf.safe || !finalDomainAllowed) {
+        result.blocked.push(finalRedacted.url);
+        result.sources.push(
+          buildSource(hit, {
+            rank,
+            now: now(),
+            override: {
+              status: 'blocked',
+              failureReason: finalSsrf.safe
+                ? 'redirected domain not in allowlist'
+                : finalSsrf.reason,
+              canonicalUrl: finalRedacted.url,
+              displayUrl: finalRedacted.url,
+              excerpt: undefined,
+              contentHash: undefined,
+              ...(removed.length > 0 ? { redactions: removed } : {}),
+            },
+          })
+        );
+        continue;
+      }
+
       const source: ResearchSource = buildSource(hit, {
         rank,
         now: now(),
@@ -290,8 +376,7 @@ export async function runWebResearch(
     clearTimeout(timeoutHandle);
   }
 
-  result.durationMs = now().getTime() - startedAt.getTime();
-  return result;
+  return finish();
 }
 
 interface BuildOpts {

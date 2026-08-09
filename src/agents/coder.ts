@@ -4,7 +4,12 @@
  * 负责代码编写、审查和自动化开发任务
  */
 
-import { BaseAgent, AgentConfig, Task, TaskResult } from '../core/agent';
+import { BaseAgent, AgentConfig, Task, TaskResult, TaskResultData } from '../core/agent';
+
+interface CodingResult extends TaskResultData {
+  message: string;
+  timestamp: string;
+}
 
 export class CoderAgent extends BaseAgent {
   constructor(config?: Partial<AgentConfig>) {
@@ -41,7 +46,7 @@ export class CoderAgent extends BaseAgent {
     }
   }
 
-  private async performCoding(task: Task): Promise<any> {
+  private async performCoding(task: Task): Promise<CodingResult> {
     // 编码逻辑
     return {
       message: `Coding task "${task.name}" completed`,

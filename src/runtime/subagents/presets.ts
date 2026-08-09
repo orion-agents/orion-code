@@ -8,7 +8,7 @@
  */
 
 import type { SubagentRole } from './types';
-import type { OpenHorseTool } from '../../framework/tool';
+import type { OrionCodeTool } from '../../framework/tool';
 
 /** Read-only investigation tools available to children in v0.2.20. */
 export const READ_ONLY_INVESTIGATION_TOOLS = [
@@ -121,7 +121,7 @@ export function systemPromptForRole(role: SubagentRole): string {
 export function filterToolsForRole(
   availableToolNames: readonly string[],
   role: SubagentRole,
-  _runtimeTools?: readonly OpenHorseTool[]
+  _runtimeTools?: readonly OrionCodeTool[]
 ): string[] {
   const allowed = new Set(toolsForRole(role));
   const denied = new Set<string>(SUBAGENT_FORBIDDEN_TOOLS);

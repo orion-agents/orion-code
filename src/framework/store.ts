@@ -6,8 +6,8 @@
  */
 
 import type { Message } from '../services/llm';
-import type { OpenHorseTool } from './tool';
-import type { OpenHorseCLIConfig } from '../services/config';
+import type { OrionCodeTool } from './tool';
+import type { OrionCodeCLIConfig } from '../services/config';
 import type { PermissionMode } from '../commands/types';
 import { CostTracker } from '../core/cost-tracker';
 import type { TodoItem } from './tool-state';
@@ -20,8 +20,8 @@ import type { ContextUsageSnapshot } from '../services/model-context';
 // ============================================================================
 
 export interface AppState {
-  config: OpenHorseCLIConfig;
-  tools: OpenHorseTool[];
+  config: OrionCodeCLIConfig;
+  tools: OrionCodeTool[];
   conversationHistory: Message[];
   isProcessing: boolean;
   currentModel: string;

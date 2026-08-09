@@ -29,7 +29,7 @@ Orion Code is a terminal-based coding agent. It wraps LLM APIs in a harness of s
 
 ### Requirements
 
-- Node.js >= 20.0
+- Node.js 20, 22, or 24 LTS
 - npm >= 9.0
 
 ### Install & Run
@@ -73,9 +73,9 @@ orion -p "review the current git diff"
 echo "summarize this project" | orion --print
 ```
 
-> **Pre-release note.** `0.1.4` is the in-development line on the `v0.1.4` branch and is
-> not on npm yet — `0.1.3` is the current published release. Until `v0.1.4` is tagged and
-> published, install from a source checkout. This note is removed at release.
+> **Release status.** `0.1.4` is published on npm and tagged as `v0.1.4`. The
+> `v0.1.4` branch may contain newer maintenance fixes that are not part of the
+> immutable tag or npm artifact until a later release is published.
 
 ### TUI startup banner
 

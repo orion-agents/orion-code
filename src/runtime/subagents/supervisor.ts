@@ -21,6 +21,9 @@ import {
   type SubagentRunnerDeps,
 } from './runner';
 import type { ScopeHolder } from './child-executor-guard';
+import { createResearchRequestForSubtask, validateResearchRequest } from './research-contract';
+import type { ResearchRequest } from './research-types';
+import type { WebResearchResult } from './web-research-adapter';
 import {
   sumSubtaskUsage,
   type RuntimeSubtaskEvent,
@@ -79,8 +82,29 @@ export interface SubagentSupervisorDeps {
   modelLabel?: string;
   /** Lifecycle event sink (runtime event + trace). */
   onEvent?: (event: RuntimeSubtaskEvent) => void;
+  /**
+   * Root-owned external capability. It is invoked only for a typed web/mixed
+   * request after the parent `subtask` permission gate has approved execution.
+   * Dedicated adapter deps live behind this callback; they are never placed in
+   * the child tool allowlist.
+   */
+  runWebResearch?: (
+    request: ResearchRequest,
+    parentAbortSignal?: AbortSignal
+  ) => Promise<WebResearchResult>;
   /** Called once per task with its final SubtaskResult (for artifact persistence). */
-  onSubtaskResult?: (result: SubtaskResult, batchId: string, objective?: string) => void;
+  onSubtaskResult?: (
+    result: SubtaskResult,
+    batchId: string,
+    objective?: string,
+    research?: SubtaskResearchResultContext
+  ) => void;
+}
+
+/** Full research contract delivered to persistence/rendering sinks. */
+export interface SubtaskResearchResultContext {
+  request: ResearchRequest;
+  web?: WebResearchResult;
 }
 
 let batchCounter = 0;
@@ -114,6 +138,35 @@ export async function runSubtaskBatch(
   request: SubtaskRequest,
   deps: SubagentSupervisorDeps
 ): Promise<RunBatchOutcome> {
+  // Validate the authoritative ResearchRequest before policy/budget/provider
+  // work. An external request without the dedicated root capability must fail
+  // closed instead of silently degrading to local-only research.
+  const researchRequests = request.tasks.map(task =>
+    task.role === 'research' ? createResearchRequestForSubtask(task, deps.cwd) : undefined
+  );
+  const invalidResearch = researchRequests.some(
+    research => research !== undefined && !validateResearchRequest(research).ok
+  );
+  const externalRequested = researchRequests.some(
+    research => research?.mode === 'web' || research?.mode === 'mixed'
+  );
+  if (invalidResearch || (externalRequested && !deps.runWebResearch)) {
+    const reason: PolicyRejectReason = invalidResearch
+      ? 'invalid_research_request'
+      : 'external_research_unavailable';
+    const batchId = nextBatchId();
+    const results = request.tasks.map(packet => {
+      const result = buildRejectedResult(packet, reason);
+      finalizeTask(deps, batchId, result.id, packet, result);
+      return result;
+    });
+    return {
+      result: { batchId, results, aggregateUsage: sumSubtaskUsage([]) },
+      rejected: true,
+      rejectReason: reason,
+    };
+  }
+
   const policyCtx: PolicyContext = {
     depth: 0,
     cwd: deps.cwd,
@@ -320,11 +373,32 @@ async function runOne(
   try {
     const execute = async () => {
       emit(deps, { batchId, taskId, role: task.role, state: 'running', objective: task.objective });
+      const request =
+        task.role === 'research' ? createResearchRequestForSubtask(task, deps.cwd) : undefined;
+      const webPromise =
+        request && (request.mode === 'web' || request.mode === 'mixed')
+          ? deps.runWebResearch!(request, deps.parentAbortSignal)
+          : undefined;
       const outcome = await runSubtask(task, runnerDeps, taskId);
+      let web: WebResearchResult | undefined;
+      if (webPromise) {
+        try {
+          web = await webPromise;
+        } catch (error) {
+          web = failedWebResearchResult(error, Boolean(deps.parentAbortSignal?.aborted));
+        }
+      }
       // R7: single finalize path - terminal event + result callback + usage
       // callback all happen here, exactly once, with errors isolated so a
       // throwing sink cannot reject the batch or corrupt sibling aggregation.
-      finalizeTask(deps, batchId, taskId, task, outcome.result);
+      finalizeTask(
+        deps,
+        batchId,
+        taskId,
+        task,
+        outcome.result,
+        request ? { request, ...(web ? { web } : {}) } : undefined
+      );
       return outcome;
     };
 
@@ -352,7 +426,8 @@ function finalizeTask(
   batchId: string,
   taskId: string,
   task: SubtaskPacket,
-  result: SubtaskResult
+  result: SubtaskResult,
+  researchContext?: SubtaskResearchResultContext
 ): void {
   // Terminal lifecycle event - isolated.
   try {
@@ -372,7 +447,12 @@ function finalizeTask(
 
   // Persist the structured result for trace/resume durability - isolated.
   try {
-    deps.onSubtaskResult?.(result, batchId, task.objective);
+    const research =
+      researchContext ??
+      (task.role === 'research'
+        ? { request: createResearchRequestForSubtask(task, deps.cwd) }
+        : undefined);
+    deps.onSubtaskResult?.(result, batchId, task.objective, research);
   } catch {
     // An artifact/trace sink throwing cannot reject the batch.
   }
@@ -383,6 +463,22 @@ function finalizeTask(
   } catch {
     // CostTracker failure must not affect the result.
   }
+}
+
+function failedWebResearchResult(error: unknown, aborted: boolean): WebResearchResult {
+  const message = error instanceof Error ? error.message : String(error);
+  return {
+    sources: [],
+    skipped: [],
+    blocked: [],
+    provider: null,
+    bytesFetched: 0,
+    durationMs: 0,
+    truncatedDueToBytes: false,
+    timedOut: false,
+    aborted,
+    notes: [`external research dependency threw: ${message}`],
+  };
 }
 
 function toEventState(status: SubtaskResult['status']): RuntimeSubtaskEvent['state'] {

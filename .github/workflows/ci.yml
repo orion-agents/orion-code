@@ -22,11 +22,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Native modules (better-sqlite3, sqlite-vec) only ship prebuilds for the
-        # Node version documented as required (20). Node 22/24 currently fail with
-        # native ABI mismatches (NODE_MODULE_VERSION) on sqlite-backed tests, so the
-        # matrix is pinned to 20 until those prebuilds land.
-        node-version: ['20']
+        # Keep package.json engines and the native sqlite verification matrix in
+        # lockstep. npm ci must install a working binding on every supported LTS.
+        node-version: ['20', '22', '24']
 
     steps:
       - name: Check out repository
@@ -52,3 +50,103 @@ jobs:
         # --coverage turns on the coverageThreshold gate from jest.config.js so
         # the documented 70% guideline is actually enforced in CI. #42
         run: npm test -- --coverage --runInBand
+
+  typecheck:
+    # Independent type-check dimension. The `verify` job's `tsc` build also
+    # catches type errors, but a dedicated, fast job makes the type-safety
+    # gate (issue #5) explicit and isolates it from the test matrix.
+    name: TypeScript type-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: tsc --noEmit
+        run: npx tsc --noEmit
+
+  security-audit:
+    # Dependency vulnerability dimension (issues #71 / #62). Blocks on
+    # high-severity advisories; the non-test `dep-health` job below reports
+    # lower-severity / deprecated-package drift without failing the build.
+    name: Dependency security audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: npm audit (high severity)
+        run: npm audit --audit-level=high
+
+  release-gate:
+    # Read-only release gate (issue #86). Verifies version/CHANGELOG
+    # consistency, git hygiene, and that the package packs correctly. Tests
+    # are skipped here because the `verify` job already runs the full suite.
+    name: Release gate (release:check)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          # release:check inspects git tags (e.g. v0.1.4) for the CHANGELOG gate.
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (npm pack --dry-run needs dist/)
+        run: npm run build
+
+      - name: release:check
+        run: npm run release:check -- --skip-tests
+
+  dep-health:
+    # Reporting dimension for deprecated / outdated transitive packages
+    # (issues #86 / #62). This script prints findings and exits 0, so it
+    # surfaces drift without blocking the merge.
+    name: Dependency health report
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: dep-health-check
+        run: bash scripts/dep-health-check.sh

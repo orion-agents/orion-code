@@ -1,15 +1,15 @@
 /**
  * v0.2.24 — Goal Model Tools.
  *
- * get_goal, create_goal, update_goal tool definitions for the Agent.
+ * get_goal, create_goal, update_goal, abandon_goal tool definitions for the Agent.
  * These tools allow the model to read and request changes to the
  * persistent goal. Actual state changes go through GoalCoordinator.
  *
- * v0.2.26 fix: converted to OpenHorseTool format and wired into the
+ * v0.2.26 fix: converted to OrionCodeTool format and wired into the
  * tool pipeline via GOAL_TOOLS export.
  */
 
-import { buildTool, type OpenHorseTool, type ToolResult } from '../../framework/tool';
+import { buildTool, type OrionCodeTool, type ToolResult } from '../../framework/tool';
 import { AsyncLocalStorage } from 'async_hooks';
 import type {
   AgentTurnRequest,
@@ -21,6 +21,7 @@ import type {
   GoalTerminalRequest,
   RuntimeGoalSnapshot,
 } from './types';
+import { GOAL_INVARIANTS } from './types';
 import type { GoalCoordinator } from './coordinator';
 import { updateSessionGoalBinding } from '../../services/session-storage';
 
@@ -63,11 +64,47 @@ function requireContext(): GoalToolExecutionContext {
   return context;
 }
 
+type GoalAbandonmentAuthorization = { authorized: true } | { authorized: false; reason: string };
+
+/**
+ * Abandonment is destructive and must originate in the latest human-authored
+ * turn input. Model-generated continuations and ambiguous discussion fail closed.
+ */
+export function authorizeGoalAbandonment(request: AgentTurnRequest): GoalAbandonmentAuthorization {
+  if (!['user', 'revision'].includes(request.inputKind) || typeof request.text !== 'string') {
+    return {
+      authorized: false,
+      reason: 'The latest runtime input is not an explicit user message or revision.',
+    };
+  }
+
+  const text = request.text.normalize('NFKC').replace(/\s+/gu, ' ').trim();
+  if (!text || /[?？]/u.test(text)) {
+    return { authorized: false, reason: 'The latest user message is not an explicit instruction.' };
+  }
+
+  const englishIntent =
+    /^(?:(?:ok(?:ay)?|alright)[,!]?\s+)?(?:please\s+)?(?:(?:let(?:'|’)s|we should|i (?:want|would like) to|can you)\s+)?(?:just\s+)?(?:(?:abandon|cancel|drop|delete|clear|withdraw)\s+(?:(?:this|the|our)\s+)?(?:(?:current|active)\s+)?(?:goal|target|objective)|(?:stop|cease)\s+pursuing\s+(?:(?:this|the|our)\s+)?(?:(?:current|active)\s+)?(?:goal|target|objective)|give\s+up\s+on\s+(?:(?:this|the|our)\s+)?(?:(?:current|active)\s+)?(?:goal|target|objective))(?:\s+(?:now|entirely|completely))?(?:\s+because\s+.+)?[.!]*$/iu;
+  const chineseIntent =
+    /^(?:好的?|好吧|行)?[，,\s]*(?:我们|我)?(?:请)?(?:现在)?(?:放弃|取消|删除|清除|终止)(?:这个|当前|该|本)?(?:目标|Goal|Target)(?:吧|了|即可)?(?:[，,]\s*(?:因为|原因是).+)?[。！!]*$/iu;
+  const chineseStopIntent =
+    /^(?:好的?|好吧|行)?[，,\s]*(?:我们|我)?(?:请)?不要再?继续(?:这个|当前|该|本)?(?:目标|Goal|Target)(?:吧|了)?[。！!]*$/iu;
+
+  if (!englishIntent.test(text) && !chineseIntent.test(text) && !chineseStopIntent.test(text)) {
+    return {
+      authorized: false,
+      reason: 'The latest user message does not explicitly instruct abandoning the current Goal.',
+    };
+  }
+
+  return { authorized: true };
+}
+
 // ---------------------------------------------------------------------------
 // Tool definitions
 // ---------------------------------------------------------------------------
 
-export const getGoalTool: OpenHorseTool = buildTool({
+export const getGoalTool: OrionCodeTool = buildTool({
   name: 'get_goal',
   description:
     'Read the current persistent goal for this session. Returns null if no goal is active.',
@@ -111,7 +148,7 @@ export const getGoalTool: OpenHorseTool = buildTool({
   isConcurrencySafe: () => true,
 });
 
-export const createGoalTool: OpenHorseTool = buildTool({
+export const createGoalTool: OrionCodeTool = buildTool({
   name: 'create_goal',
   description:
     'Create a persistent goal for this session. Only use when the user explicitly requests a long-running goal. If the objective is ambiguous, high-risk, or requires external state changes, first ask the user to confirm the objective, constraints, success criteria, and external-action boundary. Rejects if a goal already exists.',
@@ -174,18 +211,16 @@ export const createGoalTool: OpenHorseTool = buildTool({
   checkPermissions: () => ({ behavior: 'allow', reason: 'Internal Goal state update' }),
 });
 
-export const updateGoalTool: OpenHorseTool = buildTool({
+export const updateGoalTool: OrionCodeTool = buildTool({
   name: 'update_goal',
-  description:
-    'Request a status change for the current goal. The request is audited before the change takes effect.',
+  description: `Request an audited Goal status change. Blocked requires the same eligible non-retryable blocker for >= ${GOAL_INVARIANTS.maxConsecutiveBlockerTurns} consecutive Goal turns and no progress for >= ${GOAL_INVARIANTS.maxConsecutiveNoProgressTurns} consecutive Goal turns.`,
   parameters: {
     type: 'object',
     properties: {
       status: {
         type: 'string',
         enum: ['complete', 'blocked'],
-        description:
-          'The requested target status: "complete" when all requirements are verified; "blocked" when the same blocker persisted for 3+ turns.',
+        description: `The requested target status: "complete" when all requirements are verified; "blocked" only when the same eligible non-retryable blocker persisted for >= ${GOAL_INVARIANTS.maxConsecutiveBlockerTurns} consecutive Goal turns and no progress persisted for >= ${GOAL_INVARIANTS.maxConsecutiveNoProgressTurns} consecutive Goal turns.`,
       },
       criterion_evidence: {
         type: 'array',
@@ -202,7 +237,7 @@ export const updateGoalTool: OpenHorseTool = buildTool({
       },
       blocker: {
         type: 'object',
-        description: 'Required for blocked: the same external blocker must persist for 3 turns.',
+        description: `Required for blocked: the same eligible non-retryable external blocker must persist for >= ${GOAL_INVARIANTS.maxConsecutiveBlockerTurns} consecutive Goal turns, and no progress must persist for >= ${GOAL_INVARIANTS.maxConsecutiveNoProgressTurns} consecutive Goal turns.`,
         properties: {
           category: {
             type: 'string',
@@ -352,12 +387,105 @@ export const updateGoalTool: OpenHorseTool = buildTool({
 
     return {
       success: true,
-      output: `Goal ${status} request recorded. Audit will verify before applying.`,
+      output:
+        status === 'blocked'
+          ? `Goal blocked request recorded; this does not mean blocked was applied. Audit requires the same eligible blocker for >= ${GOAL_INVARIANTS.maxConsecutiveBlockerTurns} consecutive Goal turns and no progress for >= ${GOAL_INVARIANTS.maxConsecutiveNoProgressTurns} consecutive Goal turns. Current persisted counts: blocker ${goal.blocker?.consecutiveTurns ?? 0}, no progress ${goal.noProgressCount}.`
+          : 'Goal complete request recorded. Audit will verify before applying.',
     };
   },
   isReadOnly: () => false,
   isConcurrencySafe: () => false,
   checkPermissions: () => ({ behavior: 'allow', reason: 'Internal Goal state update' }),
+});
+
+export const abandonGoalTool: OrionCodeTool = buildTool({
+  name: 'abandon_goal',
+  description:
+    'Permanently abandon and delete the current persistent Goal only when the latest user message explicitly instructs abandoning that Goal. Never infer authorization from age, blockers, failures, or model judgment.',
+  parameters: {
+    type: 'object',
+    properties: {
+      reason: {
+        type: 'string',
+        description: 'A concise audit reason for the user-authorized abandonment.',
+      },
+    },
+    required: ['reason'],
+  },
+  execute: async (args): Promise<ToolResult> => {
+    const context = requireContext();
+    const authorization = authorizeGoalAbandonment(context.request);
+    if (!authorization.authorized) {
+      const error = `Goal abandonment denied: ${authorization.reason}`;
+      return { success: false, output: error, error };
+    }
+    if (context.request.sessionId !== context.coordinator.boundSessionId) {
+      const error = 'Goal abandonment denied: runtime session does not own this Goal.';
+      return { success: false, output: error, error };
+    }
+
+    const reason = typeof args.reason === 'string' ? args.reason.replace(/\s+/gu, ' ').trim() : '';
+    if (!reason || reason.length > 500) {
+      const error = 'Goal abandonment requires a non-empty reason of at most 500 characters.';
+      return { success: false, output: error, error };
+    }
+
+    const goal = context.coordinator.goal;
+    if (!goal) {
+      const error = 'No persistent Goal is available to abandon.';
+      return { success: false, output: error, error };
+    }
+
+    const audit = {
+      action: 'abandon_goal' as const,
+      goalId: goal.goalId,
+      goalRevision: goal.revision,
+      turnId: context.turnId,
+      reason,
+      authorizedBy: 'latest_user_explicit_intent' as const,
+      abandonedAt: Date.now(),
+    };
+    try {
+      if (!context.coordinator.clear()) {
+        const error = 'Goal abandonment failed because the Goal was no longer active.';
+        return { success: false, output: error, error };
+      }
+      updateSessionGoalBinding(context.coordinator.boundSessionId, null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        success: false,
+        output: `Goal abandonment could not be completed: ${message}`,
+        error: `Goal abandonment could not be completed: ${message}`,
+      };
+    }
+
+    return {
+      success: true,
+      output: JSON.stringify(audit, null, 2),
+      summary: `Abandoned Goal ${goal.goalId.slice(0, 8)}: ${reason}`,
+      metadata: audit,
+    };
+  },
+  isReadOnly: () => false,
+  isConcurrencySafe: () => false,
+  isDestructive: () => true,
+  checkPermissions: () => {
+    const context = currentGoalToolContext();
+    if (!context) {
+      return { behavior: 'deny', reason: 'Goal runtime context is unavailable' };
+    }
+    const authorization = authorizeGoalAbandonment(context.request);
+    return authorization.authorized
+      ? {
+          behavior: 'allow',
+          reason: 'Explicit Goal abandonment instruction from latest user input',
+        }
+      : {
+          behavior: 'deny',
+          reason: authorization.reason,
+        };
+  },
 });
 
 const ALLOWED_DERIVED_EVIDENCE = new Set<GoalEvidenceKind>([
@@ -369,7 +497,7 @@ const ALLOWED_DERIVED_EVIDENCE = new Set<GoalEvidenceKind>([
   'external',
 ]);
 
-export const updateGoalPlanTool: OpenHorseTool = buildTool({
+export const updateGoalPlanTool: OrionCodeTool = buildTool({
   name: 'update_goal_plan',
   description:
     'Update the current Goal execution plan and add derived success criteria. The runtime applies it atomically when the current turn finalizes.',
@@ -475,9 +603,10 @@ export const updateGoalPlanTool: OpenHorseTool = buildTool({
   checkPermissions: () => ({ behavior: 'allow', reason: 'Internal Goal state update' }),
 });
 
-export const GOAL_TOOLS: OpenHorseTool[] = [
+export const GOAL_TOOLS: OrionCodeTool[] = [
   getGoalTool,
   createGoalTool,
   updateGoalPlanTool,
   updateGoalTool,
+  abandonGoalTool,
 ];

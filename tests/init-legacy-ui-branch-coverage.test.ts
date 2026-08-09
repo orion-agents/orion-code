@@ -35,7 +35,7 @@ import {
   truncateVisual,
   type ParsedToolActivity,
 } from '../src/ink-ui/components/ToolActivity';
-import type { OpenHorseUiRuntime, TranscriptEntry } from '../src/ink-ui/types';
+import type { OrionCodeUiRuntime, TranscriptEntry } from '../src/ink-ui/types';
 import { renderEditPreview } from '../src/ui-v2/components/edit-preview-picker';
 import { mcpManager } from '../src/tools/mcp';
 
@@ -76,7 +76,7 @@ function fakeUiRuntime(
     tokenUsage?: { promptTokens: number; completionTokens: number } | null;
     sessionId?: string;
   } = {}
-): OpenHorseUiRuntime {
+): OrionCodeUiRuntime {
   const currentModel = options.currentModel ?? 'deepseek-v4';
   const configModel = options.configModel ?? 'fallback-model';
   return {
@@ -93,9 +93,9 @@ function fakeUiRuntime(
     },
     getSession: () =>
       options.sessionId
-        ? ({ id: options.sessionId } as ReturnType<OpenHorseUiRuntime['getSession']>)
+        ? ({ id: options.sessionId } as ReturnType<OrionCodeUiRuntime['getSession']>)
         : null,
-  } as unknown as OpenHorseUiRuntime;
+  } as unknown as OrionCodeUiRuntime;
 }
 
 describe('init branch coverage', () => {

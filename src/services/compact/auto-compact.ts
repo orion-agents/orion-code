@@ -80,6 +80,8 @@ export class AutoCompact {
   private lastCtxPercent: number = 0;
   private preCompactArmed: boolean = false;
   private lastCompactFingerprint: string | null = null;
+  private lastRejectedFingerprint: string | null = null;
+  private lastRejectedAt: number = 0;
   private lastCompactMode: 'predictive' | 'threshold' | 'manual' | null = null;
   private lastCompactResult: CompactResult | null = null;
   private providerCorrection = 0;
@@ -215,7 +217,10 @@ export class AutoCompact {
     // can push context back over 95% within seconds.
     const now = Date.now();
     const fingerprint = this.getMessagesFingerprint(messages);
-    if (fingerprint === this.lastCompactFingerprint && now - this.lastCompactTime < 30000) {
+    if (
+      (fingerprint === this.lastCompactFingerprint && now - this.lastCompactTime < 30000) ||
+      (fingerprint === this.lastRejectedFingerprint && now - this.lastRejectedAt < 30000)
+    ) {
       return messages;
     }
 
@@ -228,10 +233,22 @@ export class AutoCompact {
       compactMode: 'auto_pre_turn',
     });
 
+    // Automatic compaction must strictly reduce the model-visible prompt.
+    // Otherwise a summary/capsule can grow the context and re-trigger forever.
+    const originalTokens = estimateMessagesTokens(messages);
+    const compactedTokens = estimateMessagesTokens(result.messages);
+    if (compactedTokens >= originalTokens) {
+      this.lastRejectedFingerprint = fingerprint;
+      this.lastRejectedAt = now;
+      return messages;
+    }
+
     // 更新状态
     this.lastCompactTime = now;
     this.compactCount++;
     this.lastCompactFingerprint = this.getMessagesFingerprint(result.messages);
+    this.lastRejectedFingerprint = null;
+    this.lastRejectedAt = 0;
     this.lastCompactMode = mode;
     this.lastCompactResult = result;
 

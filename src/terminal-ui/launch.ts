@@ -14,13 +14,17 @@ import {
   createSessionRestoredView,
   createSessionPickerState,
   contextUsageStatusText,
+  formatResearchLifecycleEvent,
   movePickerPageOffset,
   permissionRiskDisplayValue,
   permissionScopeDisplayValue,
+  appendResearchEventHistory,
+  projectResearchLifecycleEvent,
   subtaskEventToTimelineEntry,
   type ModelPickerItem,
   type SessionPickerItem,
   sessionPickerTitle,
+  type ResearchStatusProjection,
   type SubtaskTimelineEntry,
 } from '../runtime/ui-view-model';
 import { formatBytes } from '../services/format';
@@ -32,7 +36,7 @@ import { TerminalOutputQueue, type TerminalOutputWriter } from './output-queue';
 import type {
   EditPreviewRequest,
   ModelPickerRequest,
-  OpenHorseUiRuntime,
+  OrionCodeUiRuntime,
   RuntimeSessionRestoredEvent,
   RuntimeSubtaskEvent,
   SessionPickerRequest,
@@ -41,6 +45,7 @@ import type {
   ToolPermissionRequest,
   UiEventSink,
 } from '../runtime/ui-events';
+import type { ResearchLifecycleEvent } from '../runtime/subagents/research-renderer';
 import type { GoalRuntimeEvent } from '../runtime/goals/types';
 import { formatGoalRuntimeEvent } from '../runtime/goals/presentation';
 
@@ -389,7 +394,7 @@ function bannerRow(content: string, width: number): string {
   return `${BORDER('│')}${safeContent}${padding}${BORDER('│')}`;
 }
 
-export function renderTerminalCapabilitySummary(runtime: OpenHorseUiRuntime): string {
+export function renderTerminalCapabilitySummary(runtime: OrionCodeUiRuntime): string {
   const snapshot = runtime.store.getSnapshot();
   return createRuntimeCapabilitySummary({
     projectInstructionsContent: snapshot.projectInstructionsContent,
@@ -559,6 +564,8 @@ export class TerminalEventSink implements UiEventSink {
    * future timeline rendering.
    */
   private readonly subtaskTimeline = new Map<string, SubtaskTimelineEntry>();
+  private researchEvents: ResearchLifecycleEvent[] = [];
+  private researchProjection: ResearchStatusProjection | null = null;
 
   // --- v0.2.23: bounded state configuration ---
   private static readonly MAX_FINALIZED_METADATA = 512;
@@ -566,7 +573,7 @@ export class TerminalEventSink implements UiEventSink {
   private static readonly MAX_SUBTASK_TIMELINE = 100;
 
   constructor(
-    private readonly runtime: OpenHorseUiRuntime,
+    private readonly runtime: OrionCodeUiRuntime,
     private readonly writer: TerminalWriter = new DirectTerminalWriter()
   ) {}
 
@@ -941,6 +948,27 @@ export class TerminalEventSink implements UiEventSink {
     return Array.from(this.subtaskTimeline.values());
   }
 
+  /** Consume and visibly render the shared research lifecycle stream. */
+  researchEvent(event: ResearchLifecycleEvent): void {
+    this.researchEvents = appendResearchEventHistory(this.researchEvents, event);
+    this.researchProjection = projectResearchLifecycleEvent(this.researchProjection, event);
+    this.writer.write(`${DIM(formatResearchLifecycleEvent(event, 'terminal'))}\n`);
+  }
+
+  /** Ordered, bounded research audit history for parity and renderer diagnostics. */
+  getResearchEvents(): ResearchLifecycleEvent[] {
+    return [...this.researchEvents];
+  }
+
+  getResearchProjection(): ResearchStatusProjection | null {
+    if (!this.researchProjection) return null;
+    return {
+      ...this.researchProjection,
+      sources: [...this.researchProjection.sources],
+      conflictClaimIds: [...this.researchProjection.conflictClaimIds],
+    };
+  }
+
   // --- v0.2.23: bounded state helpers ---
 
   /**
@@ -983,7 +1011,7 @@ export class TerminalEventSink implements UiEventSink {
   }
 }
 
-export function renderTerminalBanner(runtime: OpenHorseUiRuntime): string {
+export function renderTerminalBanner(runtime: OrionCodeUiRuntime): string {
   const width = Math.max(2, terminalContentWidth(88));
   const line = '─'.repeat(Math.max(0, width - 2));
   const firstLine = ` ${ACCENT.bold('ORION CODE | 猎户座')} ${DIM(`v${runtime.version}`)} ${DIM('technical terminal UI')}`;
@@ -1015,18 +1043,18 @@ export function renderTerminalBanner(runtime: OpenHorseUiRuntime): string {
   ].join('\n');
 }
 
-function printBanner(runtime: OpenHorseUiRuntime): void {
+function printBanner(runtime: OrionCodeUiRuntime): void {
   process.stdout.write(renderTerminalBanner(runtime));
 }
 
-export function renderTerminalContextStatus(runtime: OpenHorseUiRuntime): string {
+export function renderTerminalContextStatus(runtime: OrionCodeUiRuntime): string {
   const usage = runtime.store.getSnapshot().contextUsage;
   const status = contextUsageStatusText(usage);
   if (!status) return '';
   return usage && usage.percent >= usage.warningThresholdPercent ? WARNING(status) : DIM(status);
 }
 
-export function promptText(runtime: OpenHorseUiRuntime): string {
+export function promptText(runtime: OrionCodeUiRuntime): string {
   const session = runtime.getSession()?.id.slice(0, 8) ?? 'new';
   const context = renderTerminalContextStatus(runtime);
   return `${DIM(`[${session}]`)}${context ? ` ${context}` : ''} ${ACCENT('›')} `;
@@ -1269,7 +1297,7 @@ export function normalizeTerminalAnswer(input: string): string {
   return output;
 }
 
-export async function launchTerminalUI(runtime: OpenHorseUiRuntime): Promise<void> {
+export async function launchTerminalUI(runtime: OrionCodeUiRuntime): Promise<void> {
   printBanner(runtime);
 
   // Definite assignment (`let x!: T`) is required here: the value is consumed by closures

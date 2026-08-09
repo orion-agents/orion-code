@@ -24,11 +24,12 @@
     "test": "jest",
     "test:coverage": "jest --coverage",
     "test:ink-compat": "ORION_RUN_DEPRECATED_INK_PTY=1 jest tests/ink-ui-pty.test.ts --runInBand",
+    "deps:check": "bash scripts/dep-health-check.sh",
     "lint": "eslint src/",
     "format": "prettier --write src/",
     "release:check": "node scripts/release-check.js",
     "prepack": "npm run build",
-    "prepublishOnly": "npm run lint && npm run build && npm test -- --runInBand"
+    "prepublishOnly": "npm run lint && npm run build && npm run release:check -- --skip-tests && npm test -- --runInBand"
   },
   "keywords": [
     "agent",
@@ -59,7 +60,6 @@
   },
   "dependencies": {
     "@clack/prompts": "^0.7.0",
-    "@types/better-sqlite3": "^7.6.13",
     "auto-bind": "^5.0.1",
     "axios": "^1.6.0",
     "better-sqlite3": "^12.10.0",
@@ -70,19 +70,18 @@
     "figlet": "^1.11.0",
     "ink": "^3.2.0",
     "js-yaml": "^4.3.0",
-    "lodash-es": "^4.18.1",
     "marked": "^11.2.0",
     "marked-terminal": "^6.2.0",
-    "openai": "^4.0.0",
+    "openai": "^6.49.0",
     "react": "^17.0.2",
     "signal-exit": "^4.1.0",
     "sqlite-vec": "^0.1.9",
     "string-width": "^4.2.3",
     "throttle": "^1.0.3",
-    "type-fest": "^5.6.0",
     "undici": "^6.28.0"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/figlet": "^1.5.8",
     "@types/jest": "^30.0.0",
     "@types/js-yaml": "^4.0.9",
@@ -103,6 +102,6 @@
     "shell-quote": "^1.10.0"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": "^20.0.0 || ^22.0.0 || ^24.0.0"
   }
 }

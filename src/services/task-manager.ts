@@ -99,6 +99,14 @@ export interface TaskStats {
   cancelled: number;
 }
 
+/** Raised when the bounded task registry has no terminal work available to evict. */
+export class TaskCapacityError extends Error {
+  constructor(readonly capacity: number) {
+    super(`Task capacity reached (${capacity}); wait for or cancel an active task before retrying`);
+    this.name = 'TaskCapacityError';
+  }
+}
+
 // ============================================================================
 // 有效状态转换
 // ============================================================================
@@ -118,7 +126,7 @@ const VALID_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
 export class TaskManager extends EventEmitter {
   private tasks: Map<string, TaskRecord> = new Map();
 
-  /** Evict oldest completed/failed tasks when map exceeds this size. */
+  /** Evict oldest terminal tasks when map reaches this size. */
   private static readonly MAX_TASKS = 1000;
 
   // ==========================================================================
@@ -132,11 +140,15 @@ export class TaskManager extends EventEmitter {
     // Evict oldest terminal tasks if at capacity.
     if (this.tasks.size >= TaskManager.MAX_TASKS) {
       const terminal = [...this.tasks.values()]
-        .filter(t => t.status === 'completed' || t.status === 'failed')
+        .filter(t => ['completed', 'failed', 'cancelled'].includes(t.status))
         .sort((a, b) => a.updatedAt - b.updatedAt);
       for (const t of terminal) {
         if (this.tasks.size < TaskManager.MAX_TASKS) break;
         this.tasks.delete(t.id);
+      }
+
+      if (this.tasks.size >= TaskManager.MAX_TASKS) {
+        throw new TaskCapacityError(TaskManager.MAX_TASKS);
       }
     }
 
@@ -259,8 +271,10 @@ export class TaskManager extends EventEmitter {
       return undefined;
     }
 
-    task.retries++;
     const updated = this.transition(id, 'pending');
+    if (updated) {
+      updated.retries++;
+    }
     return updated;
   }
 

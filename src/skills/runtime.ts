@@ -8,7 +8,7 @@
 import { closeSync, fstatSync, openSync, readSync } from 'fs';
 import { homedir } from 'os';
 import { basename, dirname, resolve, relative, isAbsolute } from 'path';
-import type { OpenHorseTool } from '../framework/tool';
+import type { OrionCodeTool } from '../framework/tool';
 import { normalizeSkillSourcePath, parseSkillFile } from './loader';
 import { getSkillsRegistry } from './registry';
 import { getConfigHome } from '../services/config-dir';
@@ -18,7 +18,7 @@ import { MAX_AUTO_SKILLS, SKILLS_DIR_NAMES } from './types';
 export interface SkillRuntimeContext {
   cwd: string;
   input: string;
-  tools: OpenHorseTool[];
+  tools: OrionCodeTool[];
   projectPath?: string;
   sessionId?: string;
 }
@@ -37,7 +37,7 @@ export interface AppliedSkill {
 export interface SkillResolution {
   skills: AppliedSkill[];
   promptInjection: string;
-  tools: OpenHorseTool[];
+  tools: OrionCodeTool[];
   scopedToolNames: string[];
   toolScopeActive: boolean;
 }

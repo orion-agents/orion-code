@@ -8,7 +8,7 @@
  */
 
 import chalk from 'chalk';
-import { marked } from 'marked';
+import { marked, type MarkedOptions } from 'marked';
 // @ts-expect-error - marked-terminal 没有 TypeScript 类型定义
 import TerminalRenderer from 'marked-terminal';
 
@@ -28,7 +28,7 @@ const CYAN = chalk.cyan;
 const DEFAULT_MAX_WIDTH = 80;
 
 // 初始化 marked-terminal renderer
-let terminalRenderer: any = null;
+let terminalRenderer: MarkedOptions['renderer'] = null;
 
 function initRenderer(): void {
   if (terminalRenderer) return;

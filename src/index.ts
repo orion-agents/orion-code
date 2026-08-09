@@ -29,11 +29,6 @@ export type {
   MemoryTier as InitMemoryTier,
 } from './init';
 
-// @deprecated — use OrionCodeConfig instead
-export type { OrionCodeConfig as OpenHorseConfig } from './init';
-// @deprecated — use OrionCodeRuntime instead
-export type { OrionCodeRuntime as OpenHorseRuntime } from './init';
-
 // Harness safety module
 export { SafetyChecker } from './harness/safety';
 export type { SafetyPolicy, SafetyCheck, SecurityLevel, AuditLogEntry } from './harness/safety';
@@ -86,7 +81,7 @@ export type {
 
 // Config module
 export { loadConfig, isConfigured, getConfigErrors, getConfigSummary } from './services/config';
-export type { OrionCodeCLIConfig, OpenHorseCLIConfig } from './services/config';
+export type { OrionCodeCLIConfig } from './services/config';
 
 // Framework module
 export {
@@ -106,9 +101,6 @@ export type {
   ContextCapsule, ContextLedgerEntry, EvidenceRecord, HarnessConfig as ContextHarnessConfig,
   HarnessState, IntentKind, IntentUpdate, PromptAssemblyStats, TaskContract, TurnSummary,
 } from './framework';
-
-// @deprecated — use OrionCodeTool instead
-export type { OrionCodeTool as OpenHorseTool } from './framework';
 
 export type {
   ContextUsageSnapshot,

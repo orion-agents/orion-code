@@ -19,7 +19,7 @@ import {
 } from './chat-controller';
 import { resolveUiRendererCapabilities } from './ui-events';
 import type {
-  OpenHorseUiRuntime,
+  OrionCodeUiRuntime,
   ToolPermissionRequest,
   TranscriptAppendEntry,
   UiEventSink,
@@ -63,7 +63,7 @@ export interface AgentRuntimeToolPermissionRequest {
 }
 
 export interface AgentRuntimeControllerOptions extends TurnControllerOptions {
-  runtime: OpenHorseUiRuntime;
+  runtime: OrionCodeUiRuntime;
   events?: UiEventSink;
   eventSink?: AgentRuntimeEventSink;
   runner?: AgentRuntimeRunner;
@@ -1253,7 +1253,7 @@ export class AgentRuntimeController {
   }
 
   private verificationSummary(
-    loopStats: ReturnType<OpenHorseUiRuntime['store']['getSnapshot']>['lastLoopStats']
+    loopStats: ReturnType<OrionCodeUiRuntime['store']['getSnapshot']>['lastLoopStats']
   ): string {
     if (!loopStats) return 'No loop statistics were recorded.';
     const passed = loopStats.verificationPassedCommands ?? [];

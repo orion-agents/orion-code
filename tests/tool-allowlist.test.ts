@@ -20,7 +20,7 @@ import {
 } from '../src/services/tool-allowlist';
 import { saveProjectConfig } from '../src/services/global-config';
 import { buildTool } from '../src/framework/tool';
-import type { OpenHorseTool, ToolContext } from '../src/framework/tool';
+import type { OrionCodeTool, ToolContext } from '../src/framework/tool';
 import {
   prepareToolCalls,
   executeToolCalls,
@@ -33,7 +33,7 @@ import type { Message } from '../src/services/llm';
 // Fixtures
 // ============================================================================
 
-const execTool: OpenHorseTool = buildTool({
+const execTool: OrionCodeTool = buildTool({
   name: 'exec_command',
   description: 'Run a shell command',
   parameters: {
@@ -46,7 +46,7 @@ const execTool: OpenHorseTool = buildTool({
   checkPermissions: () => ({ behavior: 'ask', reason: 'Command requires confirmation' }),
 });
 
-const readTool: OpenHorseTool = buildTool({
+const readTool: OrionCodeTool = buildTool({
   name: 'read_file',
   description: 'Read a file',
   parameters: {
@@ -59,7 +59,7 @@ const readTool: OpenHorseTool = buildTool({
   isConcurrencySafe: () => true,
 });
 
-const blockedTool: OpenHorseTool = buildTool({
+const blockedTool: OrionCodeTool = buildTool({
   name: 'danger_tool',
   description: 'Always denied by policy',
   parameters: { type: 'object', properties: {}, required: [] },
@@ -67,7 +67,7 @@ const blockedTool: OpenHorseTool = buildTool({
   checkPermissions: () => ({ behavior: 'deny', reason: 'Blocked by safety policy' }),
 });
 
-const fetchTool: OpenHorseTool = buildTool({
+const fetchTool: OrionCodeTool = buildTool({
   name: 'web_fetch',
   description: 'Fetch a URL',
   parameters: {

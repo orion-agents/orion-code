@@ -13,11 +13,16 @@ import type {
 } from '../runtime/ui-events';
 import type { GoalRuntimeEvent, RuntimeGoalSnapshot } from '../runtime/goals/types';
 import { formatGoalRuntimeEvent } from '../runtime/goals/presentation';
+import type { ResearchLifecycleEvent } from '../runtime/subagents/research-renderer';
 import {
+  appendResearchEventHistory,
   createPromptState,
   createSessionRestoredView,
+  formatResearchLifecycleEvent,
+  projectResearchLifecycleEvent,
   subtaskEventToTimelineEntry,
   type PromptState,
+  type ResearchStatusProjection,
   type StatusSnapshot,
   type SubtaskTimelineEntry,
 } from '../runtime/ui-view-model';
@@ -78,6 +83,10 @@ export interface TuiUiState {
   runtimeToolEvents: TuiRuntimeToolEvent[];
   /** R8: typed subagent timeline, keyed by taskId (last write wins). */
   subtaskTimeline: SubtaskTimelineEntry[];
+  /** Ordered, bounded lifecycle audit consumed from the shared runtime protocol. */
+  researchEvents: ResearchLifecycleEvent[];
+  /** Renderer-neutral projection of the latest research packet. */
+  research: ResearchStatusProjection | null;
   committableTranscriptCount: number;
   queuedTranscriptCount: number;
   committedTranscriptCount: number;
@@ -134,6 +143,7 @@ export type TuiUiAction =
   | { type: 'toolStarted'; event: RuntimeToolStartedEvent }
   | { type: 'toolFinished'; event: RuntimeToolFinishedEvent }
   | { type: 'subtaskEvent'; event: RuntimeSubtaskEvent }
+  | { type: 'researchEvent'; event: ResearchLifecycleEvent }
   | { type: 'goalEvent'; event: GoalRuntimeEvent }
   | { type: 'showCommandPalette'; query: string; items: TuiPickerItem[] }
   | { type: 'showFilePicker'; base: string; query: string; items: TuiPickerItem[] }
@@ -158,6 +168,8 @@ export const initialTuiUiState: TuiUiState = {
   transcript: [],
   runtimeToolEvents: [],
   subtaskTimeline: [],
+  researchEvents: [],
+  research: null,
   committableTranscriptCount: 0,
   queuedTranscriptCount: 0,
   committedTranscriptCount: 0,
@@ -415,6 +427,17 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
       }
       const next = { ...state, subtaskTimeline: timeline };
       return updateStatusCounts(next);
+    }
+
+    case 'researchEvent': {
+      const statusMessage = formatResearchLifecycleEvent(action.event, 'tui');
+      return {
+        ...state,
+        researchEvents: appendResearchEventHistory(state.researchEvents, action.event),
+        research: projectResearchLifecycleEvent(state.research, action.event),
+        statusMessage,
+        statusState: { ...state.statusState, message: statusMessage },
+      };
     }
 
     case 'showCommandPalette':
@@ -716,6 +739,7 @@ export function createTuiUiEventSink(
       });
     },
     subtaskEvent: event => dispatch({ type: 'subtaskEvent', event }),
+    researchEvent: event => dispatch({ type: 'researchEvent', event }),
     goalEvent: event => dispatch({ type: 'goalEvent', event }),
     setProcessing: processing => dispatch({ type: 'setProcessing', processing }),
     clearView: () => dispatch({ type: 'clearTranscript' }),

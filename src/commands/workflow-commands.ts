@@ -1,0 +1,92 @@
+/** Command definitions extracted from the stable slash-command registry. */
+
+import type { SlashCommand } from './types';
+import { handleDiff, handleCommitPlan, continueAsSlashChat } from './workflow-command-handlers';
+import { handleTodos } from './context-tool-command-handlers';
+
+export const WORKFLOW_COMMANDS: SlashCommand[] = [
+  {
+    name: 'target',
+    aliases: ['goal'],
+    description: 'Create, view, pause, resume, or clear a persistent goal target',
+    argumentHint:
+      '[objective | pause | resume | clear --yes | status | edit <text> | replace <text> | confirm <criterion-id> | budget <tokens>]',
+    category: 'workflow',
+    priority: 3,
+    type: 'builtin',
+    execution: 'builtin',
+    risk: 'state-write',
+    execute: () => ({
+      success: false,
+      error: '/target must be routed through the shared AgentRuntimeController.',
+    }),
+  },
+  {
+    name: 'diff',
+    description: 'Summarize current git workspace changes and touched files',
+    argumentHint: '[--max-files N]',
+    category: 'workflow',
+    priority: 5,
+    type: 'builtin',
+    execution: 'builtin',
+    risk: 'read-only',
+    execute: (ctx, args) => handleDiff(ctx, args),
+  },
+  {
+    name: 'commit',
+    description: 'Create a read-only commit plan and suggested message for current changes',
+    argumentHint: '[--max-files N]',
+    category: 'workflow',
+    priority: 8,
+    type: 'builtin',
+    execution: 'builtin',
+    risk: 'read-only',
+    execute: (ctx, args) => handleCommitPlan(ctx, args),
+  },
+  {
+    name: 'review',
+    description: 'Review the current change or requested files',
+    argumentHint: '[scope]',
+    category: 'workflow',
+    priority: 10,
+    type: 'chat',
+    execution: 'agent-workflow',
+    risk: 'read-only',
+    execute: (_ctx, args) => continueAsSlashChat('review', args),
+  },
+  {
+    name: 'security',
+    aliases: ['audit'],
+    description: 'Review code or dependencies for security risks',
+    argumentHint: '[scope]',
+    category: 'workflow',
+    priority: 20,
+    type: 'chat',
+    execution: 'agent-workflow',
+    risk: 'read-only',
+    execute: (_ctx, args) => continueAsSlashChat('security', args),
+  },
+  {
+    name: 'test-gen',
+    aliases: ['tests'],
+    description: 'Generate or improve tests for a target area',
+    argumentHint: '[scope]',
+    category: 'workflow',
+    priority: 30,
+    type: 'chat',
+    execution: 'agent-workflow',
+    risk: 'state-write',
+    execute: (_ctx, args) => continueAsSlashChat('test-gen', args),
+  },
+  {
+    name: 'todos',
+    aliases: ['todo'],
+    description: 'Show current agent todo state',
+    category: 'workflow',
+    priority: 40,
+    type: 'builtin',
+    execution: 'builtin',
+    risk: 'read-only',
+    execute: ctx => handleTodos(ctx),
+  },
+];

@@ -7,9 +7,10 @@ import { launchPrintMode, PrintEventSink } from '../src/print-ui/launch';
 import { AgentRuntimeController } from '../src/runtime/agent-runtime-controller';
 import { loadConfig } from '../src/services/config';
 import { loadGoal } from '../src/services/goal-storage';
-import type { OpenHorseUiRuntime } from '../src/runtime/ui-events';
+import type { OrionCodeUiRuntime } from '../src/runtime/ui-events';
 import { appendSessionMessage, createSession } from '../src/services/session-storage';
 import { TOOLS } from '../src/tools';
+import { canRunCliSmoke } from './support/env';
 import {
   makeToolStartedEvent,
   makeToolFinishedEvent,
@@ -27,7 +28,10 @@ function findPython(): string | null {
 describe('print mode smoke', () => {
   const python = findPython();
   const smokeScript = join(__dirname, '..', 'scripts', 'print-mode-smoke.py');
-  const maybeIt = python && existsSync(smokeScript) && process.platform !== 'win32' ? it : it.skip;
+  const maybeIt =
+    python && existsSync(smokeScript) && process.platform !== 'win32' && canRunCliSmoke
+      ? it
+      : it.skip;
 
   maybeIt(
     'runs text, json, and piped stdin prompts without interactive UI',
@@ -53,17 +57,17 @@ describe('print mode smoke', () => {
 describe('print mode event sink', () => {
   beforeEach(() => resetToolEventSequence());
 
-  function runtime(cwd = '/tmp/openhorse'): OpenHorseUiRuntime {
+  function runtime(cwd = '/tmp/openhorse'): OrionCodeUiRuntime {
     return {
       cwd,
       version: 'test',
-      config: { model: 'test-model' } as OpenHorseUiRuntime['config'],
+      config: { model: 'test-model' } as OrionCodeUiRuntime['config'],
       store: {
         getSnapshot: () => ({ currentModel: 'test-model' }),
         setProcessing: jest.fn(),
-      } as unknown as OpenHorseUiRuntime['store'],
+      } as unknown as OrionCodeUiRuntime['store'],
       llm: null,
-      runtime: {} as OpenHorseUiRuntime['runtime'],
+      runtime: {} as OrionCodeUiRuntime['runtime'],
       isConfigured: true,
       ensureSession: jest.fn(),
       setSession: jest.fn(),
@@ -536,7 +540,7 @@ describe('print mode event sink', () => {
       model: 'test-model',
       usage: { promptTokens: 7, completionTokens: 3 },
     }));
-    const printRuntime: OpenHorseUiRuntime = {
+    const printRuntime: OrionCodeUiRuntime = {
       cwd: projectDir,
       version: 'test',
       config,
@@ -544,8 +548,8 @@ describe('print mode event sink', () => {
       llm: {
         getModel: jest.fn(() => 'test-model'),
         chatStream,
-      } as unknown as OpenHorseUiRuntime['llm'],
-      runtime: {} as OpenHorseUiRuntime['runtime'],
+      } as unknown as OrionCodeUiRuntime['llm'],
+      runtime: {} as OrionCodeUiRuntime['runtime'],
       isConfigured: true,
       getSession: jest.fn(() => session),
       ensureSession: jest.fn(() => session),

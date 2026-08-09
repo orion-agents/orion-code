@@ -24,7 +24,7 @@ import type {
   GoalRuntimeEvent,
   RuntimeGoalSnapshot,
 } from '../src/runtime/goals/types';
-import type { OpenHorseUiRuntime } from '../src/runtime/ui-events';
+import type { OrionCodeUiRuntime } from '../src/runtime/ui-events';
 import { PrintEventSink } from '../src/print-ui/launch';
 import { formatTerminalStatusMessage, TerminalEventSink } from '../src/terminal-ui/launch';
 import { renderFrameRows } from '../src/tui-core/frame';
@@ -35,12 +35,12 @@ function runtime(
   projectPath: string,
   sessionId: string,
   renderer: 'tui' | 'terminal' = 'tui'
-): OpenHorseUiRuntime {
+): OrionCodeUiRuntime {
   const session = { id: sessionId, projectPath, model: 'test-model' };
   return {
     cwd: projectPath,
     version: 'test',
-    config: { model: 'test-model', ui: { renderer } } as OpenHorseUiRuntime['config'],
+    config: { model: 'test-model', ui: { renderer } } as OrionCodeUiRuntime['config'],
     store: {
       getSnapshot: jest.fn(() => ({
         currentModel: 'test-model',
@@ -54,15 +54,15 @@ function runtime(
         },
       })),
       setProcessing: jest.fn(),
-    } as unknown as OpenHorseUiRuntime['store'],
+    } as unknown as OrionCodeUiRuntime['store'],
     llm: null,
-    runtime: {} as OpenHorseUiRuntime['runtime'],
+    runtime: {} as OrionCodeUiRuntime['runtime'],
     isConfigured: true,
     ensureSession: jest.fn(
-      () => session as unknown as ReturnType<OpenHorseUiRuntime['ensureSession']>
+      () => session as unknown as ReturnType<OrionCodeUiRuntime['ensureSession']>
     ),
     setSession: jest.fn(),
-    getSession: jest.fn(() => session as unknown as ReturnType<OpenHorseUiRuntime['getSession']>),
+    getSession: jest.fn(() => session as unknown as ReturnType<OrionCodeUiRuntime['getSession']>),
     shutdown: jest.fn(),
   };
 }

@@ -839,7 +839,14 @@ export class GoalCoordinator {
       // cannot permanently block the edited objective.
       evidenceLedgerTruncation: undefined,
     };
-    this.state.goal = goalRequiresBoundaryConfirmation(nextObjective)
+    const preservedContractInput: GoalCreationContractInput = {
+      constraints: contract.constraints.map(constraint => constraint.statement),
+      successCriteria: contract.successCriteria.map(criterion => ({
+        statement: criterion.statement,
+        requiredEvidenceKinds: criterion.requiredEvidenceKinds,
+      })),
+    };
+    this.state.goal = goalRequiresBoundaryConfirmation(nextObjective, preservedContractInput)
       ? { ...pauseForBoundaryConfirmation(edited, changedAt), revision: edited.revision }
       : { ...edited, boundaryConfirmation: undefined };
     this.persist();
@@ -1417,7 +1424,7 @@ export class GoalCoordinator {
       const recent = updated.recentNoProgressTurns ?? [];
       updated.stopReason = {
         kind: 'user',
-        message: `Auto-paused: no progress for 3 consecutive turns. Recent turns: ${formatNoProgressTurns(recent)}.`,
+        message: `Auto-paused: no progress for ${GOAL_INVARIANTS.maxConsecutiveNoProgressTurns} consecutive turns. Recent turns: ${formatNoProgressTurns(recent)}.`,
         at: Date.now(),
       };
       this.state.continuationDeferred = true;

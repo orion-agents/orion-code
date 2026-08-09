@@ -9,6 +9,7 @@
 
 import { EventEmitter } from 'eventemitter3';
 import { BaseAgent, Task, TaskResult } from '../core/agent';
+import { extractJsonObject } from '../utils/json';
 import { LLMService, Message } from './llm';
 
 // ============================================================================
@@ -43,6 +44,20 @@ export interface AgentRunnerEvents {
   'execute-complete': (task: Task, result: AgentRunnerResult) => void;
   'execute-failed': (task: Task, error: Error) => void;
   'stream-chunk': (chunk: string) => void;
+}
+
+export type AgentResponseData = Record<string, unknown> | { summary: string };
+
+/** Parse the first balanced JSON object without consuming later prose or objects. */
+export function parseAgentResponse(content: string): AgentResponseData {
+  const parsed = extractJsonObject(content);
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    return parsed as Record<string, unknown>;
+  }
+  if (content.includes('{')) {
+    console.warn('[AgentRunner] Unable to parse JSON response; preserving raw text as summary');
+  }
+  return { summary: content };
 }
 
 // ============================================================================
@@ -100,7 +115,7 @@ export class AgentRunner extends EventEmitter {
         const duration = Date.now() - startTime;
         const result: AgentRunnerResult = {
           success: true,
-          data: this.parseResponse(response.content),
+          data: parseAgentResponse(response.content),
           llmContent: response.content,
           tokenUsage: response.usage,
           model: response.model,
@@ -110,7 +125,7 @@ export class AgentRunner extends EventEmitter {
 
         this.emit('execute-complete', task, result);
         return result;
-      } catch (error: any) {
+      } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
         console.warn(`[AgentRunner] Attempt ${attempt + 1} failed: ${lastError.message}`);
       }
@@ -149,10 +164,7 @@ export class AgentRunner extends EventEmitter {
   /**
    * 流式执行 — 适合需要实时反馈的场景
    */
-  async runStream(
-    task: Task,
-    onChunk?: (chunk: string) => void,
-  ): Promise<AgentRunnerResult> {
+  async runStream(task: Task, onChunk?: (chunk: string) => void): Promise<AgentRunnerResult> {
     const startTime = Date.now();
     this.emit('execute-start', task);
 
@@ -167,7 +179,7 @@ export class AgentRunner extends EventEmitter {
       const duration = Date.now() - startTime;
       const result: AgentRunnerResult = {
         success: true,
-        data: this.parseResponse(response.content),
+        data: parseAgentResponse(response.content),
         llmContent: response.content,
         tokenUsage: response.usage,
         model: response.model,
@@ -177,16 +189,17 @@ export class AgentRunner extends EventEmitter {
 
       this.emit('execute-complete', task, result);
       return result;
-    } catch (error: any) {
+    } catch (error) {
       const duration = Date.now() - startTime;
+      const resolvedError = error instanceof Error ? error : new Error(String(error));
       const errorResult: AgentRunnerResult = {
         success: false,
-        error: error.message ?? 'Stream execution failed',
+        error: resolvedError.message || 'Stream execution failed',
         duration,
         retries: 0,
       };
 
-      this.emit('execute-failed', task, error instanceof Error ? error : new Error(String(error)));
+      this.emit('execute-failed', task, resolvedError);
       return errorResult;
     }
   }
@@ -229,19 +242,5 @@ export class AgentRunner extends EventEmitter {
       { role: 'system', content: this.config.systemPrompt },
       { role: 'user', content: userContent.join('\n') },
     ];
-  }
-
-  /** 解析 LLM 响应 */
-  private parseResponse(content: string): any {
-    // 尝试提取 JSON
-    const jsonMatch = content.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      try {
-        return JSON.parse(jsonMatch[0]);
-      } catch {
-        // fall through to raw text
-      }
-    }
-    return { summary: content };
   }
 }

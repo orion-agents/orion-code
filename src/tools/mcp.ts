@@ -9,7 +9,6 @@ import { readFileSync, existsSync } from 'fs';
 import { join, resolve } from 'path';
 import {
   buildTool,
-  type OpenHorseTool,
   type OrionCodeTool,
   type ToolInputJSONSchema,
   type ToolInputJSONSchemaProperty,
@@ -202,6 +201,53 @@ function formatMcpResult(result: unknown): ToolResult {
 // MCP Client
 // ============================================================================
 
+// Issue #78: a third-party MCP stdio server must not inherit the parent
+// process's full environment — that leaks API keys, cloud credentials
+// (AWS_*, GCP_*, AZURE_*), and any other secret exported into the shell. We
+// pass only a small set of infrastructure variables plus whatever the user
+// explicitly configures (config.env), never the secret-laden parent env.
+const MCP_SAFE_ENV_KEYS = new Set([
+  'PATH',
+  'HOME',
+  'USER',
+  'LOGNAME',
+  'SHELL',
+  'TERM',
+  'LANG',
+  'LC_ALL',
+  'TMPDIR',
+  'TEMP',
+  'TMP',
+  'XDG_CONFIG_HOME',
+  'XDG_CACHE_HOME',
+  'XDG_DATA_HOME',
+  'XDG_RUNTIME_DIR',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'NO_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'no_proxy',
+]);
+
+export function buildMcpChildEnv(configEnv?: Record<string, string>): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined) continue;
+    if (MCP_SAFE_ENV_KEYS.has(key) || key.startsWith('LC_')) {
+      env[key] = value;
+    }
+  }
+  // Explicitly configured variables win (and may intentionally include secrets
+  // the server needs), but they never come from the parent environment.
+  if (configEnv) {
+    for (const [key, value] of Object.entries(configEnv)) {
+      env[key] = expandEnvValue(value);
+    }
+  }
+  return env;
+}
+
 class SimpleMCPClient {
   private state: MCPClientState = {
     process: null,
@@ -248,7 +294,13 @@ class SimpleMCPClient {
       throw new Error('MCP stdio server requires a command');
     }
 
-    const env = { ...process.env, ...config.env };
+    // A fresh process must start from a clean line buffer. The previous
+    // connection may have died mid-frame, leaving a half-JSON fragment that
+    // would otherwise be prepended to the new process's first chunk and break
+    // JSON parsing of the initialize response (#41 item 2).
+    this.state.buffer = '';
+
+    const env = buildMcpChildEnv(config.env);
 
     this.state.process = spawn(config.command, config.args || [], {
       env,
@@ -264,9 +316,29 @@ class SimpleMCPClient {
       console.error(`[MCP ${this.name} stderr]:`, data.toString().trim());
     });
 
+    // A destroyed/invalid pipe (spawn failed with ENOENT, or the child already
+    // exited) makes a later stdin.write emit 'error' asynchronously. An
+    // unhandled stream 'error' is rethrown as an uncaught exception and kills
+    // the whole CLI. Treat it like a disconnect: fail pending work and let the
+    // reconnect path (or graceful failure) take over instead of crashing (#41
+    // item 1).
+    this.state.process.stdin?.on('error', err => {
+      console.error(`[MCP ${this.name} stdin error]:`, err.message);
+      this.failPendingRequests(`MCP server stdin error: ${err.message}`);
+      this.state.connected = false;
+      if (!this.intentionallyDisconnected) {
+        this.scheduleReconnect();
+      }
+    });
+
     this.state.process.on('error', err => {
       console.error(`[MCP ${this.name} error]:`, err.message);
       this.state.connected = false;
+      // A spawn failure (e.g. ENOENT for a missing binary) would otherwise
+      // leave the in-flight initialize request hanging until its 30s timeout.
+      // Fail it now so connect() rejects promptly and degrades instead of
+      // blocking startup (#41 item 1).
+      this.failPendingRequests(`MCP server error: ${err.message}`);
     });
 
     this.state.process.on('close', () => {
@@ -401,8 +473,31 @@ class SimpleMCPClient {
       }, MCP_REQUEST_TIMEOUT_MS);
 
       this.state.pendingRequests.set(id, { resolve, reject, timer });
-      this.state.process!.stdin?.write(request);
+      if (!this.writeStdin(request)) {
+        clearTimeout(timer);
+        this.state.pendingRequests.delete(id);
+        reject(new Error('MCP server stdin is not writable (server disconnected)'));
+      }
     });
+  }
+
+  /**
+   * Write to the child's stdin, but never let a dead/destroyed pipe throw an
+   * uncaught error. Returns false if the stream was not writable so callers can
+   * surface a tool error instead of crashing the CLI (#41 item 1).
+   */
+  private writeStdin(data: string): boolean {
+    const stdin = this.state.process?.stdin;
+    if (!stdin || stdin.destroyed || !stdin.writable) {
+      return false;
+    }
+    try {
+      stdin.write(data);
+      return true;
+    } catch (err) {
+      console.error(`[MCP ${this.name} stdin write error]:`, errorMessage(err));
+      return false;
+    }
   }
 
   private sendNotification(method: string, params: unknown): void {
@@ -415,7 +510,7 @@ class SimpleMCPClient {
         params,
       }) + '\n';
 
-    this.state.process.stdin?.write(notification);
+    this.writeStdin(notification);
   }
 
   async callTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {
@@ -452,6 +547,8 @@ class SimpleMCPClient {
     }
     this.state.connected = false;
     this.state.tools = [];
+    // Drop any half-read JSON frame so a later reconnect starts clean (#41).
+    this.state.buffer = '';
   }
 }
 
@@ -617,7 +714,7 @@ export const mcpManager = new MCPServerManager();
 // MCP Tools for Orion Code
 // ============================================================================
 
-export const mcpListTool: OpenHorseTool = buildTool({
+export const mcpListTool: OrionCodeTool = buildTool({
   name: 'mcp_list',
   description: 'List available MCP tools from connected MCP servers.',
   parameters: {
@@ -673,7 +770,7 @@ export const mcpListTool: OpenHorseTool = buildTool({
   userFacingName: () => 'List MCP tools',
 });
 
-export const mcpCallTool: OpenHorseTool = buildTool({
+export const mcpCallTool: OrionCodeTool = buildTool({
   name: 'mcp_call',
   description: 'Call an MCP tool from a connected MCP server.',
   parameters: {
@@ -742,4 +839,4 @@ export const mcpCallTool: OpenHorseTool = buildTool({
   userFacingName: args => `Call ${args.server as string}/${args.tool as string}`,
 });
 
-export const MCP_TOOLS: OpenHorseTool[] = [mcpListTool, mcpCallTool];
+export const MCP_TOOLS: OrionCodeTool[] = [mcpListTool, mcpCallTool];

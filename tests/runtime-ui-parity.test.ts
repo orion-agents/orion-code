@@ -7,8 +7,9 @@ import type {
   AgentRuntimeEventSink,
 } from '../src/runtime/agent-runtime-protocol';
 import type { AgentTurnRequest } from '../src/runtime/goals/types';
+import type { ResearchLifecycleEvent } from '../src/runtime/subagents/research-renderer';
 import type {
-  OpenHorseUiRuntime,
+  OrionCodeUiRuntime,
   RuntimeToolFinishedEvent,
   RuntimeSessionRestoredEvent,
   RuntimeToolStartedEvent,
@@ -19,17 +20,17 @@ import type {
 
 type SinkMode = 'ui-events' | 'runtime-events';
 
-function createRuntime(): OpenHorseUiRuntime {
-  let session: ReturnType<OpenHorseUiRuntime['getSession']> = null;
+function createRuntime(): OrionCodeUiRuntime {
+  let session: ReturnType<OrionCodeUiRuntime['getSession']> = null;
   return {
     cwd: `/tmp/orion-parity-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     version: 'test',
-    config: { model: 'test-model', ui: { renderer: 'terminal' } } as OpenHorseUiRuntime['config'],
+    config: { model: 'test-model', ui: { renderer: 'terminal' } } as OrionCodeUiRuntime['config'],
     store: {
       setProcessing: jest.fn(),
-    } as unknown as OpenHorseUiRuntime['store'],
+    } as unknown as OrionCodeUiRuntime['store'],
     llm: null,
-    runtime: {} as OpenHorseUiRuntime['runtime'],
+    runtime: {} as OrionCodeUiRuntime['runtime'],
     isConfigured: true,
     ensureSession: jest.fn(() => {
       session ??= { id: 'session-parity' } as NonNullable<typeof session>;
@@ -99,7 +100,9 @@ function normalizeEvent(event: AgentRuntimeEvent): string {
     case 'subtask_event':
       return `subtask:${event.event.state}:${event.event.role}:${event.event.taskId}`;
     case 'research_event':
-      return `research:${event.event.type}:${event.event.packetId}`;
+      return event.event.type === 'research_source'
+        ? `research:${event.event.type}:${event.event.packetId}:${event.event.sourceId}:${event.event.kind ?? ''}:${event.event.displayUrl ?? event.event.canonicalUrl ?? ''}:${event.event.contentHash ?? ''}`
+        : `research:${event.event.type}:${event.event.packetId}`;
     case 'goal_event':
       return `goal:${event.event.type}`;
     case 'session_picker_requested':
@@ -179,6 +182,7 @@ function createRecordingController(mode: SinkMode): {
     harnessDiagnosticsUpdated: diagnostics =>
       events.push(normalizeEvent({ type: 'harness_diagnostics_updated', diagnostics })),
     goalEvent: event => events.push(normalizeEvent({ type: 'goal_event', event })),
+    researchEvent: event => events.push(normalizeEvent({ type: 'research_event', event })),
     setProcessing: processing =>
       events.push(normalizeEvent({ type: 'processing_changed', processing })),
     clearView: () => events.push(normalizeEvent({ type: 'clear_view' })),
@@ -486,6 +490,37 @@ describe('runtime/UI renderer parity contract', () => {
     expect(ui.events).toEqual([
       'tool_started:call-123:read_file',
       'tool_finished:call-123:read_file:true',
+    ]);
+  });
+
+  it('preserves typed research_source payload across runtime and UI sink adapters', () => {
+    const ui = createRecordingController('ui-events');
+    const runtime = createRecordingController('runtime-events');
+    const event: ResearchLifecycleEvent = {
+      type: 'research_source',
+      packetId: 'pkt-parity',
+      sourceId: 'src-1',
+      status: 'retrieved',
+      provider: 'ddg',
+      kind: 'web_page',
+      displayUrl: 'https://example.com/doc',
+      contentHash: 'abcdef1234567890',
+    };
+
+    ui.events.length = 0;
+    runtime.events.length = 0;
+    (ui.controller as unknown as { eventSink: AgentRuntimeEventSink }).eventSink.emit({
+      type: 'research_event',
+      event,
+    });
+    (runtime.controller as unknown as { eventSink: AgentRuntimeEventSink }).eventSink.emit({
+      type: 'research_event',
+      event,
+    });
+
+    expect(ui.events).toEqual(runtime.events);
+    expect(ui.events).toEqual([
+      'research:research_source:pkt-parity:src-1:web_page:https://example.com/doc:abcdef1234567890',
     ]);
   });
 

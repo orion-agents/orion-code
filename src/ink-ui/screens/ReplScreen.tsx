@@ -37,7 +37,7 @@ import {
   staticTranscriptEntries,
   transcriptReducer,
 } from '../runtime/transcript-state';
-import type { OpenHorseUiRuntime, SessionPickerRequest, ModelPickerRequest, ToolPermissionRequest, TranscriptAppendEntry, TranscriptEntry, UiEventSink, EditPreviewRequest, RuntimeSubtaskEvent } from '../types';
+import type { OrionCodeUiRuntime, SessionPickerRequest, ModelPickerRequest, ToolPermissionRequest, TranscriptAppendEntry, TranscriptEntry, UiEventSink, EditPreviewRequest, RuntimeSubtaskEvent } from '../types';
 
 type Overlay =
   | { type: 'commands'; selectedIndex: number }
@@ -170,7 +170,7 @@ export function isMultilinePasteValue(value: string | undefined): boolean {
 }
 
 export interface ReplScreenProps {
-  runtime: OpenHorseUiRuntime;
+  runtime: OrionCodeUiRuntime;
   cursorController: NativeCursorController;
   resizeEpoch?: number;
 }
@@ -420,7 +420,7 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
     }
   }, [agentController, shutdown]);
 
-  useInput((value, key: any) => {
+  useInput((value, key) => {
     const isReturn = key?.return || value === '\r' || value === '\n';
 
     if (key?.ctrl && value === 'c') {

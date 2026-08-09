@@ -4,12 +4,12 @@
  * This is the bridge between {@link AgentChatController} and the subagent
  * runtime. It resolves the child tool set from the global runtime tools, builds
  * the production executeQuery, the budget ledger, the provider gate and the
- * Supervisor, and returns the `subtask` OpenHorseTool to merge into the root
+ * Supervisor, and returns the `subtask` OrionCodeTool to merge into the root
  * turn's tool list. Returns null when subagents are off or the LLM is absent,
  * so the root loop is unchanged.
  */
 
-import type { OpenHorseTool, ToolContext } from '../../framework/tool';
+import type { OrionCodeTool, ToolContext } from '../../framework/tool';
 import { SubagentBudgetLedger, budgetLimitsFromConfig, TurnTaskState } from './budget';
 import { SubagentProviderGate } from './provider-gate';
 import { createProductionExecuteQuery } from './production';
@@ -21,7 +21,14 @@ import type { RuntimeSubtaskEvent, SubagentConfig, SubtaskUsage } from './types'
 import type { LLMConfig } from '../../services/llm';
 import type { ProviderResilienceCoordinator } from '../../services/provider-resilience';
 import type { ProviderRequestPreflight } from '../../services/llm';
-import type { OpenHorseCLIConfig } from '../../services/config';
+import type { OrionCodeCLIConfig } from '../../services/config';
+import type { ProviderRequestGate } from '../../services/provider-resilience/request-gate';
+import {
+  runWebResearch,
+  type RawFetchResult,
+  type RawSearchResult,
+  type WebResearchDeps,
+} from './web-research-adapter';
 
 /**
  * Lazy accessor for the runtime tool pool.
@@ -57,7 +64,8 @@ export interface SubagentTurnInputs {
   onSubtaskResult?: (
     result: import('./types').SubtaskResult,
     batchId: string,
-    objective?: string
+    objective?: string,
+    research?: import('./supervisor').SubtaskResearchResultContext
   ) => void;
   /**
    * R6: live permission state from the root runtime. Returns true when a
@@ -81,6 +89,105 @@ export interface SubagentTurnInputs {
   resilience?: ProviderResilienceCoordinator;
   /** Shared Goal token-budget preflight for every child provider attempt. */
   beforeProviderRequest?: ProviderRequestPreflight;
+  /** Shared root/child provider cooldown gate. */
+  sharedGate?: ProviderRequestGate;
+  /** Test/deployment seam for the dedicated, parent-approved web adapter. */
+  webResearchDeps?: WebResearchDeps;
+}
+
+function parseSearchOutput(
+  output: string,
+  query: string,
+  provider: string,
+  limit: number
+): RawSearchResult[] {
+  const results: RawSearchResult[] = [];
+  const seen = new Set<string>();
+  const markdownLink = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)(?:\s*-\s*([^\n]+))?/giu;
+  for (const match of output.matchAll(markdownLink)) {
+    const url = match[2];
+    if (seen.has(url)) continue;
+    seen.add(url);
+    results.push({
+      query,
+      provider,
+      title: match[1].trim() || url,
+      url,
+      ...(match[3]?.trim() ? { snippet: match[3].trim() } : {}),
+      status: 'ok',
+    });
+    if (results.length >= limit) break;
+  }
+  return results;
+}
+
+/**
+ * Adapt only the first-class WebSearch/WebFetch tools. They remain outside the
+ * child allowlist; this root-owned dependency is reached only after the
+ * scheduler approves an external `subtask` request.
+ */
+function createDedicatedWebResearchDeps(
+  runtimeTools: readonly OrionCodeTool[],
+  cwd: string
+): WebResearchDeps | undefined {
+  const searchTool = runtimeTools.find(tool => tool.name === 'web_search');
+  const fetchTool = runtimeTools.find(tool => tool.name === 'web_fetch');
+  if (!searchTool || !fetchTool) return undefined;
+
+  const context = (signal?: AbortSignal): ToolContext => ({
+    cwd,
+    config: { name: 'orion-code-research', mode: 'root-approved-web-research' },
+    abortSignal: signal,
+  });
+
+  return {
+    search: async (query, limit, signal) => {
+      if (signal?.aborted) throw new Error('web search cancelled by parent');
+      const result = await searchTool.execute({ query, limit }, context(signal));
+      if (!result.success) throw new Error(result.error || 'web search failed');
+      const provider =
+        typeof result.metadata?.provider === 'string'
+          ? result.metadata.provider
+          : typeof result.metadata?.source === 'string'
+            ? result.metadata.source
+            : 'web_search';
+      return parseSearchOutput(result.output, query, provider, limit);
+    },
+    fetch: async (url, prompt, signal): Promise<RawFetchResult> => {
+      if (signal?.aborted) {
+        return {
+          url,
+          status: 'error',
+          failureReason: 'web fetch cancelled by parent or deadline',
+        };
+      }
+      const result = await fetchTool.execute(
+        { url, prompt: prompt ?? 'extract relevant facts and citations' },
+        context(signal)
+      );
+      if (!result.success) {
+        const failureReason = result.error || 'web fetch failed';
+        return {
+          url,
+          status: /security|blocked|ssrf|internal network/iu.test(failureReason)
+            ? 'blocked'
+            : 'error',
+          failureReason,
+        };
+      }
+      const finalUrlMatch = result.output.match(/\n\nFinal URL \(after redirects\):\s*(\S+)\s*$/u);
+      const content = finalUrlMatch
+        ? result.output.slice(0, finalUrlMatch.index).trimEnd()
+        : result.output;
+      return {
+        url,
+        status: 'ok',
+        content,
+        ...(finalUrlMatch ? { finalUrl: finalUrlMatch[1] } : {}),
+        bytes: Buffer.byteLength(content, 'utf8'),
+      };
+    },
+  };
 }
 
 /**
@@ -103,13 +210,13 @@ export function createSubagentBundleForTurn(inputs: SubagentTurnInputs): Subagen
   const runtimeTools = getRuntimeTools();
   const availableNames = runtimeTools.map(t => t.name);
   const allowedNames = new Set(filterToolsForRole(availableNames, 'research', runtimeTools));
-  const childTools: OpenHorseTool[] = runtimeTools.filter(t => allowedNames.has(t.name));
+  const childTools: OrionCodeTool[] = runtimeTools.filter(t => allowedNames.has(t.name));
   assertNoForbiddenTools(childTools.map(t => t.name));
 
   // Defense-in-depth: map tool name -> definition so the executor can re-verify
   // isReadOnly() on every call. A tool that is not read-only must never execute
   // in a child context, regardless of what the allowlist says at construction.
-  const childToolByName = new Map<string, OpenHorseTool>();
+  const childToolByName = new Map<string, OrionCodeTool>();
   for (const t of childTools) childToolByName.set(t.name, t);
 
   // R3: the async-context scope holder lets the supervisor bind each child to
@@ -152,7 +259,7 @@ export function createSubagentBundleForTurn(inputs: SubagentTurnInputs): Subagen
 
   const providerGate = new SubagentProviderGate({
     maxConcurrent: config.maxParallel,
-    sharedGate: inputs.resilience ? ((inputs as any).sharedGate ?? undefined) : undefined,
+    sharedGate: inputs.sharedGate,
   });
   const budget = new SubagentBudgetLedger(
     budgetLimitsFromConfig({
@@ -190,6 +297,12 @@ export function createSubagentBundleForTurn(inputs: SubagentTurnInputs): Subagen
     modelLabel: inputs.modelLabel,
     onEvent: onSubtaskEvent,
     onSubtaskResult: inputs.onSubtaskResult,
+    runWebResearch: (() => {
+      const deps = inputs.webResearchDeps ?? createDedicatedWebResearchDeps(runtimeTools, cwd);
+      return deps
+        ? (request, parentSignal) => runWebResearch(request, deps, parentSignal)
+        : undefined;
+    })(),
   };
 
   const tool = createSubtaskTool(supervisorDeps);
@@ -207,14 +320,14 @@ export function createSubagentBundleForTurn(inputs: SubagentTurnInputs): Subagen
  * {@link createSubagentBundleForTurn} when the root loop needs to fold child
  * usage into its stats.
  */
-export function createSubagentToolForTurn(inputs: SubagentTurnInputs): OpenHorseTool | null {
+export function createSubagentToolForTurn(inputs: SubagentTurnInputs): OrionCodeTool | null {
   const bundle = createSubagentBundleForTurn(inputs);
   return bundle ? bundle.tool : null;
 }
 
 /** A subtask turn bundle: the tool plus usage accessors for the root loop. */
 export interface SubagentTurnBundle {
-  tool: OpenHorseTool;
+  tool: OrionCodeTool;
   /** Reconciled aggregate usage across all children that ran this turn. */
   getAggregateUsage: () => SubtaskUsage;
   /** Best-effort count of subtasks that ran this turn. */
@@ -223,8 +336,28 @@ export interface SubagentTurnBundle {
 
 /** Derive the root LLM config slice from the runtime config. */
 export function deriveRootLlmConfig(
-  config: OpenHorseCLIConfig
+  config: OrionCodeCLIConfig
 ): Pick<LLMConfig, 'apiKey' | 'baseUrl' | 'model' | 'fallbackModel'> {
+  const registry = config.modelRegistry;
+  const profile = registry?.defaultProfile;
+  const provider = profile ? registry?.providers.get(profile.provider) : undefined;
+  if (profile && provider) {
+    const apiKey = provider.apiKey.startsWith('$')
+      ? (process.env[provider.apiKey.slice(1)] ?? '')
+      : provider.apiKey;
+    return {
+      apiKey,
+      baseUrl: provider.baseUrl,
+      model: profile.model,
+      // LLMConfig has one base URL/key. A cross-provider fallback would send
+      // the fallback model to the default provider, so fail closed until child
+      // fallback becomes provider-aware.
+      fallbackModel:
+        registry?.fallbackProfile?.provider === profile.provider
+          ? registry.fallbackProfile.model
+          : undefined,
+    };
+  }
   return {
     apiKey: config.apiKey,
     baseUrl: config.apiBaseUrl,

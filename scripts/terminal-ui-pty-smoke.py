@@ -29,6 +29,8 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from pty_test_config import write_mock_orion_config
+
 
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b[()][A-Za-z0-9]")
 CONFIRM_APPROVE_TARGET = ".orion-code-terminal-confirm-approved.txt"
@@ -249,8 +251,15 @@ class MockOpenAIHandler(BaseHTTPRequestHandler):
 
         try:
             if "check referenced context" in last_user:
-                has_context = CONTEXT_FILE_MARKER in all_text and CONTEXT_RULE_MARKER in all_text
-                self.write_text_stream(["context-fixture-seen " if has_context else "context-fixture-missing "], delay=0.05)
+                has_file_context = CONTEXT_FILE_MARKER in all_text
+                has_rule_context = CONTEXT_RULE_MARKER in all_text
+                has_context = has_file_context and has_rule_context
+                result = (
+                    "context-fixture-seen "
+                    if has_context
+                    else f"context-fixture-missing:file={has_file_context}:rule={has_rule_context} "
+                )
+                self.write_text_stream([result], delay=0.05)
             elif "multi tool batch" in last_user and has_tool_result:
                 self.write_text_stream(["multi-tool-batch-complete "], delay=0.05)
             elif CONFIRM_DENY_TARGET in all_text and has_tool_result:
@@ -413,7 +422,7 @@ def seed_resume_sessions(config_dir: str, repo: Path) -> list[str]:
     return session_ids
 
 
-def spawn_orion(repo: Path, base_url: str, config_dir: str, rows: int = 24, cols: int = 100) -> tuple[subprocess.Popen[bytes], int]:
+def spawn_orion(repo: Path, config_dir: str, rows: int = 24, cols: int = 100) -> tuple[subprocess.Popen[bytes], int]:
     master, slave = pty.openpty()
     set_window_size(slave, rows=rows, cols=cols)
     env = os.environ.copy()
@@ -424,9 +433,6 @@ def spawn_orion(repo: Path, base_url: str, config_dir: str, rows: int = 24, cols
             "NO_COLOR": "1",
             "FORCE_COLOR": "0",
             "ORION_CODE_API_KEY": "sk-orion-code-terminal-pty",
-            "ORION_CODE_API_BASE_URL": base_url,
-            "ORION_CODE_MODEL": "mock-terminal",
-            "ORION_CODE_TOOL_CONFIRMATION": "allow",
             # Renderer selection is command-line only. Stale .env values must
             # not override the explicit stable-terminal selection.
             "ORION_CODE_UI": "ink",
@@ -493,15 +499,14 @@ def main() -> int:
     )
     mock_server, mock_base_url = start_mock_openai_server()
     config_dir = tempfile.mkdtemp(prefix="orion-code-terminal-pty-")
-    Path(config_dir, "orion.json").write_text(json.dumps({
-        "defaultModel": "mock-terminal",
-        "toolConfirmation": "ask",
-        "totalSessions": 0,
-        "totalTokens": 0,
-        "totalCost": 0,
-    }), encoding="utf-8")
+    write_mock_orion_config(
+        config_dir,
+        base_url=mock_base_url,
+        model="mock-terminal",
+        tool_confirmation="ask",
+    )
     seed_resume_sessions(config_dir, repo)
-    process, master = spawn_orion(repo, mock_base_url, config_dir)
+    process, master = spawn_orion(repo, config_dir)
     output: list[bytes] = []
     model = TerminalModel(rows=24, cols=100)
     consumed = 0

@@ -5,6 +5,7 @@
  */
 
 import { writeFileSync, readFileSync, existsSync, unlinkSync, readdirSync, mkdirSync } from 'fs';
+import { randomUUID } from 'crypto';
 import { join } from 'path';
 import { getCacheDir, ensureConfigDir } from './config-dir';
 import { debugError } from '../utils/debug-log';
@@ -66,9 +67,10 @@ export class SessionManager {
    * 生成会话 ID
    */
   private generateSessionId(): string {
-    const timestamp = Date.now().toString(36);
-    const random = Math.random().toString(36).slice(2, 6);
-    return `${timestamp}-${random}`;
+    // randomUUID is collision-resistant across processes and time, unlike the
+    // previous Date.now()+random scheme that collided within the same
+    // millisecond and let one process overwrite another's session file.
+    return randomUUID();
   }
 
   /**
@@ -84,6 +86,15 @@ export class SessionManager {
    * 注册当前会话
    */
   register(options?: { model?: string }): SessionInfo {
+    // Enforce the concurrency limit up front. canStartNewSession() counts live
+    // sessions (reaping expired/dead ones), so we fail closed instead of
+    // letting maxSessions be silently bypassed.
+    if (!this.canStartNewSession()) {
+      throw new Error(
+        `Cannot start new session: the concurrent session limit (${this.config.maxSessions}) has been reached.`,
+      );
+    }
+
     const session: SessionInfo = {
       id: this.sessionId,
       pid: process.pid,
@@ -95,12 +106,40 @@ export class SessionManager {
     };
 
     const filePath = this.getSessionFilePath(this.sessionId);
-    writeFileSync(filePath, JSON.stringify(session, null, 2), { mode: 0o600 });
+    // Exclusive-create so a (now statistically impossible) ID collision fails
+    // loudly instead of overwriting another process's session file, which
+    // would corrupt its heartbeat and mis-count it in getActiveSessions().
+    this.writeSessionFileExclusive(filePath, session);
 
     // 启动心跳
     this.startHeartbeat();
 
     return session;
+  }
+
+  /**
+   * 以排他方式写入会话文件；若 ID 冲突（EEXIST）则重新生成并重试。
+   */
+  private writeSessionFileExclusive(filePath: string, session: SessionInfo): void {
+    const data = JSON.stringify(session, null, 2);
+    const MAX_RETRIES = 3;
+    let targetPath = filePath;
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      try {
+        writeFileSync(targetPath, data, { mode: 0o600, flag: 'wx' });
+        return;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+          // Statistically near-impossible with randomUUID, but regenerate and
+          // retry rather than clobbering the existing session.
+          this.sessionId = this.generateSessionId();
+          targetPath = this.getSessionFilePath(this.sessionId);
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw new Error(`Failed to create exclusive session file after ${MAX_RETRIES} attempts: ${targetPath}`);
   }
 
   /**
@@ -198,9 +237,12 @@ export class SessionManager {
         }
       }
     } catch (error) {
-      // An unreadable directory reports "no active sessions", which silently
-      // disables the concurrency limit.
+      // An unreadable directory must NOT be reported as "no active sessions":
+      // that silently disables the concurrency limit and lets maxSessions be
+      // bypassed. Fail closed so the caller (e.g. register -> canStartNewSession)
+      // refuses to start rather than assuming the slot is free.
       debugError('concurrent-sessions.listSessions', error, sessionsDir);
+      throw error;
     }
 
     return sessions;

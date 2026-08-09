@@ -30,9 +30,6 @@ export interface OrionCodeConfig {
   agents: AgentRegistryEntry[];
 }
 
-/** @deprecated Use OrionCodeConfig instead. */
-export type OpenHorseConfig = OrionCodeConfig;
-
 /** Harness system configuration */
 export interface HarnessConfig {
   goalConstraint: boolean;
@@ -154,7 +151,7 @@ export class Harness extends EventEmitter {
 
 export interface MemoryEntry {
   id: string;
-  content: any;
+  content: unknown;
   createdAt: number;
   lastAccessedAt: number;
   accessCount: number;
@@ -179,7 +176,7 @@ export class MemorySystem extends EventEmitter {
     };
   }
 
-  writeToWorking(content: any, tags?: string[]): MemoryEntry {
+  writeToWorking(content: unknown, tags?: string[]): MemoryEntry {
     const entry = this.createEntry(content, tags);
     this.workingMemory.push(entry);
     if (this.workingMemory.length > this.config.workingCapacity) {
@@ -205,7 +202,7 @@ export class MemorySystem extends EventEmitter {
     this.emit('cleared', { tier: 'working' });
   }
 
-  writeToShortTerm(content: any, tags?: string[]): MemoryEntry {
+  writeToShortTerm(content: unknown, tags?: string[]): MemoryEntry {
     const entry = this.createEntry(content, tags);
     this.addToShortTerm(entry);
     this.emit('write', { tier: 'short-term', id: entry.id });
@@ -217,7 +214,7 @@ export class MemorySystem extends EventEmitter {
     return [...this.shortTermMemory];
   }
 
-  writeToLongTerm(content: any, tags?: string[]): MemoryEntry {
+  writeToLongTerm(content: unknown, tags?: string[]): MemoryEntry {
     const entry = this.createEntry(content, tags);
     this.longTermMemory.set(entry.id, entry);
     this.emit('write', { tier: 'long-term', id: entry.id });
@@ -238,7 +235,8 @@ export class MemorySystem extends EventEmitter {
     const lowerQuery = query.toLowerCase();
     const searchTier = (entries: MemoryEntry[]) => {
       entries.forEach(e => {
-        const content = JSON.stringify(e.content).toLowerCase();
+        const serialized = JSON.stringify(e.content);
+        const content = (serialized ?? String(e.content)).toLowerCase();
         const tags = (e.tags ?? []).join(' ').toLowerCase();
         if (content.includes(lowerQuery) || tags.includes(lowerQuery)) results.push(e);
       });
@@ -257,7 +255,7 @@ export class MemorySystem extends EventEmitter {
     };
   }
 
-  private createEntry(content: any, tags?: string[]): MemoryEntry {
+  private createEntry(content: unknown, tags?: string[]): MemoryEntry {
     const now = Date.now();
     return { id: randomUUID(), content, createdAt: now, lastAccessedAt: now, accessCount: 0, tags };
   }
@@ -324,9 +322,6 @@ export interface OrionCodeRuntime {
   start: () => Promise<void>;
   shutdown: () => Promise<void>;
 }
-
-/** @deprecated Use OrionCodeRuntime instead. */
-export type OpenHorseRuntime = OrionCodeRuntime;
 
 export async function init(userConfig: Partial<OrionCodeConfig> = {}): Promise<OrionCodeRuntime> {
   const logger = createLogger(userConfig.logLevel ?? DEFAULT_CONFIG.logLevel);

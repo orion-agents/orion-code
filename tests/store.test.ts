@@ -1,9 +1,9 @@
 import { Store } from '../src/framework/store';
 import type { AppState } from '../src/framework/store';
 import { buildTool } from '../src/framework/tool';
-import type { OpenHorseTool } from '../src/framework/tool';
+import type { OrionCodeTool } from '../src/framework/tool';
 
-const mockTool: OpenHorseTool = buildTool({
+const mockTool: OrionCodeTool = buildTool({
   name: 'test_tool',
   description: 'A test tool',
   parameters: { type: 'object', properties: {} },
@@ -25,7 +25,7 @@ function makeConfig(overrides = {}) {
 
 const defaultStoreInit = {
   config: makeConfig(),
-  tools: [] as OpenHorseTool[],
+  tools: [] as OrionCodeTool[],
   currentModel: 'test-model',
 };
 

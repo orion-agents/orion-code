@@ -13,7 +13,8 @@
  */
 
 import { createHash } from 'crypto';
-import type { SubtaskResult, SubtaskUsage } from './types';
+import { isAbsolute, posix, relative, resolve, sep, win32 } from 'path';
+import type { SubtaskPacket, SubtaskResult, SubtaskUsage } from './types';
 import {
   RESEARCH_SCHEMA_VERSION,
   type EvidenceKind,
@@ -45,31 +46,65 @@ export interface PacketContext {
   objectiveRevision?: number;
 }
 
+export interface ResearchPacketInputs {
+  /** Sources produced by the root-approved dedicated web adapter. */
+  externalSources?: readonly ResearchSource[];
+  /** Adapter diagnostics that should survive persistence/resume. */
+  externalNotes?: readonly string[];
+  externalTimedOut?: boolean;
+  externalAborted?: boolean;
+}
+
 function nowIso(): string {
   return new Date().toISOString();
 }
 
+function validateIntegerBudget(
+  name: string,
+  value: unknown,
+  limits: { readonly min: number; readonly max: number },
+  errors: string[]
+): void {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value)) {
+    errors.push(`${name} must be a safe integer`);
+    return;
+  }
+  if (value < limits.min) errors.push(`${name} must be >= ${limits.min}`);
+  if (value > limits.max) errors.push(`${name} must be <= ${limits.max}`);
+}
+
 /** Validate a research request before scheduling any work. */
-export function validateResearchRequest(req: Partial<ResearchRequest>): ValidationResult {
+export function validateResearchRequest(
+  req: Partial<ResearchRequest> | null | undefined
+): ValidationResult {
   const errors: string[] = [];
+  if (!req || typeof req !== 'object') {
+    return { ok: false, errors: ['request is required'] };
+  }
   if (typeof req.schemaVersion !== 'number') errors.push('schemaVersion is required');
   if (req.schemaVersion !== undefined && req.schemaVersion !== RESEARCH_SCHEMA_VERSION) {
     errors.push(`unsupported schemaVersion ${req.schemaVersion}`);
   }
-  if (typeof req.objective !== 'string' || !req.objective.trim()) errors.push('objective is required');
-  if (!req.scope || typeof req.scope.projectRoot !== 'string') errors.push('scope.projectRoot is required');
+  if (typeof req.objective !== 'string' || !req.objective.trim())
+    errors.push('objective is required');
+  if (!req.scope || typeof req.scope.projectRoot !== 'string')
+    errors.push('scope.projectRoot is required');
   if (req.mode !== 'local' && req.mode !== 'web' && req.mode !== 'mixed') {
     errors.push('mode must be local | web | mixed');
   }
-  if (typeof req.maxSources !== 'number' || req.maxSources < RESEARCH_HARD_LIMITS.maxSources.min) {
-    errors.push(`maxSources must be >= ${RESEARCH_HARD_LIMITS.maxSources.min}`);
-  }
-  if (typeof req.maxFetchBytes !== 'number' || req.maxFetchBytes < 0) {
-    errors.push('maxFetchBytes must be >= 0');
-  }
-  if (typeof req.maxDurationMs !== 'number' || req.maxDurationMs <= 0) {
-    errors.push('maxDurationMs must be > 0');
-  }
+  validateIntegerBudget('maxSources', req.maxSources, RESEARCH_HARD_LIMITS.maxSources, errors);
+  validateIntegerBudget(
+    'maxFetchBytes',
+    req.maxFetchBytes,
+    RESEARCH_HARD_LIMITS.maxFetchBytes,
+    errors
+  );
+  validateIntegerBudget(
+    'maxDurationMs',
+    req.maxDurationMs,
+    RESEARCH_HARD_LIMITS.maxDurationMs,
+    errors
+  );
   if (req.goalBinding) {
     if (typeof req.goalBinding.goalId !== 'string') errors.push('goalBinding.goalId is required');
     if (typeof req.goalBinding.objectiveRevision !== 'number') {
@@ -83,7 +118,7 @@ export function validateResearchRequest(req: Partial<ResearchRequest>): Validati
 export function createLocalResearchRequest(
   objective: string,
   projectRoot: string,
-  overrides: Partial<ResearchRequest> = {},
+  overrides: Partial<ResearchRequest> = {}
 ): ResearchRequest {
   return {
     schemaVersion: RESEARCH_SCHEMA_VERSION,
@@ -97,10 +132,92 @@ export function createLocalResearchRequest(
   };
 }
 
+/**
+ * Materialize the model-facing capability into the authoritative request.
+ * Project root/objective/path scope are always runtime-owned; the model can
+ * only narrow external domains and budgets. Missing capability means local.
+ */
+export function createResearchRequestForSubtask(
+  packet: SubtaskPacket,
+  projectRoot: string,
+  overrides: Partial<ResearchRequest> = {}
+): ResearchRequest {
+  const capability = packet.research;
+  const mode = capability?.mode ?? 'local';
+  return createLocalResearchRequest(packet.objective, projectRoot, {
+    mode,
+    scope: {
+      projectRoot,
+      ...(packet.scope?.paths ? { paths: [...packet.scope.paths] } : {}),
+      ...(capability?.domains ? { domains: [...capability.domains] } : {}),
+      ...(capability?.freshness ? { freshness: capability.freshness } : {}),
+      ...(capability?.asOf ? { asOf: capability.asOf } : {}),
+    },
+    maxSources: capability?.maxSources ?? 50,
+    maxFetchBytes: capability?.maxFetchBytes ?? (mode === 'local' ? 0 : 2 * 1024 * 1024),
+    maxDurationMs: capability?.maxDurationMs ?? 120_000,
+    ...(packet.expectedOutput ? { expectedOutput: packet.expectedOutput } : {}),
+    ...overrides,
+  });
+}
+
 function deriveVerification(status: SubtaskResult['status'], hasFile: boolean): Verification {
   // Fail closed: a non-completed result can never produce an `observed` claim.
   if (status !== 'completed') return 'unverified';
   return hasFile ? 'observed' : 'unverified';
+}
+
+function hasUnsafePathSyntax(value: string): boolean {
+  const hasUrlScheme = /^[a-z][a-z\d+.-]*:/iu.test(value) && !/^[a-z]:\//iu.test(value);
+  return (
+    /[\u0000-\u001f\u007f]/u.test(value) ||
+    hasUrlScheme ||
+    (win32.isAbsolute(value) && !isAbsolute(value))
+  );
+}
+
+/**
+ * Normalize an untrusted result path against the runtime-owned project root.
+ * Absolute paths are accepted only when native path resolution proves they are
+ * inside the project; the packet always receives a portable relative path.
+ */
+function normalizeProjectSourcePath(rawPath: unknown, projectRoot: string): string | null {
+  if (typeof rawPath !== 'string') return null;
+  const candidateInput = rawPath.trim().replace(/\\/gu, '/');
+  if (!candidateInput || hasUnsafePathSyntax(candidateInput)) return null;
+
+  const resolvedRoot = resolve(projectRoot);
+  const resolvedCandidate = isAbsolute(candidateInput)
+    ? resolve(candidateInput)
+    : resolve(resolvedRoot, candidateInput);
+  const projectRelative = relative(resolvedRoot, resolvedCandidate);
+  if (
+    !projectRelative ||
+    projectRelative === '..' ||
+    projectRelative.startsWith(`..${sep}`) ||
+    isAbsolute(projectRelative)
+  ) {
+    return null;
+  }
+
+  const portable = projectRelative.split(sep).join('/');
+  return isNormalizedProjectSourcePath(portable) ? portable : null;
+}
+
+/** Persisted/replayed file sources must already satisfy the canonical schema. */
+function isNormalizedProjectSourcePath(projectPath: unknown): projectPath is string {
+  if (typeof projectPath !== 'string' || !projectPath || projectPath !== projectPath.trim()) {
+    return false;
+  }
+  if (projectPath.includes('\\') || hasUnsafePathSyntax(projectPath)) return false;
+  const normalized = posix.normalize(projectPath);
+  return (
+    normalized === projectPath &&
+    normalized !== '.' &&
+    normalized !== '..' &&
+    !normalized.startsWith('../') &&
+    !posix.isAbsolute(normalized)
+  );
 }
 
 /**
@@ -115,11 +232,14 @@ export function subtaskResultToPacket(
   result: SubtaskResult,
   request: ResearchRequest,
   ctx: PacketContext,
+  inputs: ResearchPacketInputs = {}
 ): ResearchPacket {
   const sources: ResearchSource[] = [];
   const sourceByPath = new Map<string, ResearchSource>();
 
-  const ensureFileSource = (projectPath: string): ResearchSource => {
+  const ensureFileSource = (rawPath: unknown): ResearchSource | undefined => {
+    const projectPath = normalizeProjectSourcePath(rawPath, ctx.projectPath);
+    if (!projectPath) return undefined;
     const existing = sourceByPath.get(projectPath);
     if (existing) return existing;
     const source: ResearchSource = {
@@ -137,9 +257,21 @@ export function subtaskResultToPacket(
 
   for (const filePath of result.files) ensureFileSource(filePath);
 
+  // The source budget covers local and external sources together. Web sources
+  // are already normalized/redacted by the dedicated adapter; clone and
+  // re-key collisions so persisted packets remain internally referential.
+  for (const external of inputs.externalSources ?? []) {
+    if (sources.length >= request.maxSources) break;
+    const usedIds = new Set(sources.map(source => source.id));
+    let id = external.id;
+    let suffix = 1;
+    while (usedIds.has(id)) id = `${external.id}-${suffix++}`;
+    sources.push({ ...external, id });
+  }
+
   const claims: ResearchClaim[] = result.findings.map((finding, i) => {
-    const hasFile = typeof finding.file === 'string' && finding.file.length > 0;
-    const bound = hasFile ? ensureFileSource(finding.file as string) : undefined;
+    const bound = ensureFileSource(finding.file);
+    const hasFile = bound !== undefined;
     const evidenceKind: EvidenceKind = hasFile ? 'file' : 'inference';
     const verification = deriveVerification(result.status, hasFile);
     const text = finding.evidence ? `${finding.title}: ${finding.evidence}` : finding.title;
@@ -173,8 +305,12 @@ export function subtaskResultToPacket(
     summary: result.summary,
     claims,
     sources,
-    gaps: [],
-    risks: result.risks,
+    gaps: [...(inputs.externalNotes ?? [])],
+    risks: [
+      ...result.risks,
+      ...(inputs.externalTimedOut ? ['external research timed out'] : []),
+      ...(inputs.externalAborted ? ['external research cancelled by parent'] : []),
+    ],
     usage: result.usage as SubtaskUsage,
     createdAt: nowIso(),
   };
@@ -187,7 +323,8 @@ export function subtaskResultToPacket(
  * `observed`; source counts must respect the request budget.
  */
 export function validatePacket(packet: ResearchPacket): ValidationResult {
-  const errors: string[] = [];
+  const requestValidation = validateResearchRequest(packet.request);
+  const errors = requestValidation.errors.map(error => `packet.request: ${error}`);
   if (!packet.summary || !packet.summary.trim()) errors.push('packet.summary is required');
   if (packet.schemaVersion !== RESEARCH_SCHEMA_VERSION) {
     errors.push(`unsupported schemaVersion ${packet.schemaVersion}`);
@@ -203,16 +340,25 @@ export function validatePacket(packet: ResearchPacket): ValidationResult {
   for (const source of packet.sources) {
     if (!source.provider) errors.push(`source ${source.id} missing provider`);
     if (!source.status) errors.push(`source ${source.id} missing status`);
+    if (
+      (source.kind === 'file' || source.projectPath !== undefined) &&
+      !isNormalizedProjectSourcePath(source.projectPath)
+    ) {
+      errors.push(`source ${source.id} has invalid projectPath`);
+    }
   }
   if (packet.sources.length > packet.request.maxSources) {
-    errors.push(`sources ${packet.sources.length} exceed request.maxSources ${packet.request.maxSources}`);
+    errors.push(
+      `sources ${packet.sources.length} exceed request.maxSources ${packet.request.maxSources}`
+    );
   }
 
   for (const claim of packet.claims) {
     for (const sid of claim.sourceIds) {
       if (!sourceIds.has(sid)) errors.push(`claim ${claim.id} references unknown source ${sid}`);
     }
-    const verified = claim.verification === 'observed' || claim.verification === 'partially_observed';
+    const verified =
+      claim.verification === 'observed' || claim.verification === 'partially_observed';
     if (verified && claim.sourceIds.length === 0) {
       errors.push(`claim ${claim.id} marked ${claim.verification} but has no source binding`);
     }
@@ -254,5 +400,7 @@ function packetContentForHash(packet: ResearchPacket): unknown {
  * was read, NOT that the content is true; used for dedupe and drift detection.
  */
 export function hashPacket(packet: ResearchPacket): string {
-  return createHash('sha256').update(stableStringify(packetContentForHash(packet))).digest('hex');
+  return createHash('sha256')
+    .update(stableStringify(packetContentForHash(packet)))
+    .digest('hex');
 }

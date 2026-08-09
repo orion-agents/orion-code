@@ -620,7 +620,7 @@ describe('session-storage', () => {
       expect(messages[1].role).toBe('assistant');
     });
 
-    test('readSessionMessages stops at a corrupt line to avoid orphaning later messages', () => {
+    test('readSessionMessages skips a corrupt line and keeps the later messages (Issue #84)', () => {
       const session = createSession('/tmp/project-read-corrupt-messages', 'gpt-4o');
       appendSessionMessage(session.id, {
         role: 'user',
@@ -637,8 +637,11 @@ describe('session-storage', () => {
       const [first, second] = readFileSync(transcriptPath, 'utf-8').trim().split('\n');
       writeFileSync(transcriptPath, `${first}\n{not-json}\n${second}\n`, 'utf-8');
 
+      // A single corrupt line must NOT truncate the whole session (which would
+      // drop every later turn on resume). It is skipped and the rest is kept.
       expect(readSessionMessages(session.id).map(message => message.content)).toEqual([
         'before corruption',
+        'after corruption',
       ]);
     });
 
@@ -685,6 +688,39 @@ describe('session-storage', () => {
       expect(history[1].content).toBe(compactToolOutput);
       expect(history[1].content).toContain('modelVisibleCompressed');
       expect(history[1].content).not.toContain('full line');
+    });
+
+    test('loadSessionHistory seals a legacy incomplete tool-call batch before resume', () => {
+      const session = createSession('/tmp/project-seal-tool-history', 'gpt-4o');
+      appendSessionMessages(session.id, [
+        {
+          role: 'assistant',
+          content: '',
+          timestamp: 1000,
+          tool_calls: [
+            {
+              id: 'call-a',
+              type: 'function',
+              function: { name: 'read_file', arguments: '{}' },
+            },
+            {
+              id: 'call-b',
+              type: 'function',
+              function: { name: 'read_file', arguments: '{}' },
+            },
+          ],
+        },
+        { role: 'tool', content: 'a', toolCallId: 'call-a', timestamp: 1001 },
+        { role: 'user', content: 'resume this session', timestamp: 1002 },
+      ]);
+
+      const history = loadSessionHistory(session.id);
+      expect(history.map(message => [message.role, message.tool_call_id])).toEqual([
+        ['assistant', undefined],
+        ['tool', 'call-a'],
+        ['tool', 'call-b'],
+        ['user', undefined],
+      ]);
     });
 
     test('loadSessionHistory falls back to full history for legacy compact boundary without persisted summary', () => {
@@ -941,7 +977,11 @@ describe('session-storage', () => {
       const truncated = truncateSessionToLastComplete(session.id);
       // The user prompt 'fix this bug' is kept; only the partial assistant
       // tool-call is dropped (Issue #49).
-      expect(truncated.map(message => message.content)).toEqual(['first question', 'done', 'fix this bug']);
+      expect(truncated.map(message => message.content)).toEqual([
+        'first question',
+        'done',
+        'fix this bug',
+      ]);
       expect(readSessionMessages(session.id)).toHaveLength(3);
     });
 

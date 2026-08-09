@@ -25,6 +25,7 @@ import {
   getProjectMetadataPath,
   getProjectsDir,
 } from '../src/services/config-dir';
+import { getVectorStore, resetVectorStore, VectorStore } from '../src/memory/vector-store';
 
 const fsModule: typeof import('fs') = require('fs');
 
@@ -43,6 +44,7 @@ describe('storage-maintenance', () => {
   });
 
   afterEach(() => {
+    resetVectorStore();
     rmSync(configDir, { recursive: true, force: true });
     if (originalConfigDir === undefined) {
       delete process.env.ORION_CODE_CONFIG_DIR;
@@ -691,6 +693,24 @@ describe('storage-maintenance', () => {
     expect(result.vectorDeletedRows).toBe(0);
     expect(result.skippedPaths).toContain('orphan-project');
     expect(ids).toEqual(['a\0b', 'c']);
+  });
+
+  test('collectStorageCleanupPlan snapshots through the live VectorStore connection', () => {
+    const dbPath = join(getConfigHome(), 'vector.db');
+    getVectorStore({ dbPath });
+    const db = new Database(dbPath);
+    insertVectorMemory(db, 'live-id', 'live', 'orphan-project');
+    db.close();
+    const snapshot = jest.spyOn(VectorStore.prototype, 'snapshotProjectRows');
+
+    const plan = collectStorageCleanupPlan();
+
+    expect(snapshot).toHaveBeenCalledWith('orphan-project');
+    expect(
+      plan.actions.some(
+        action => action.type === 'vector' && action.projectKey === 'orphan-project'
+      )
+    ).toBe(true);
   });
 
   test('cleanupStorage detects adjacent integers above Number.MAX_SAFE_INTEGER', () => {

@@ -22,6 +22,7 @@ import {
 } from './config-dir';
 import { formatBytes } from './format';
 import { debugError } from '../utils/debug-log';
+import { peekVectorStore } from '../memory/vector-store';
 
 export type StorageIssueKind =
   | 'legacy-global-sessions'
@@ -1238,6 +1239,19 @@ function readVectorProjectSnapshot(
   const databaseIdentity = databaseFileIdentity(dbPath);
   if (!databaseIdentity) return undefined;
 
+  const liveStore = peekVectorStore(dbPath);
+  if (liveStore) {
+    try {
+      const rows = liveStore.snapshotProjectRows(project);
+      if (!rows || databaseFileIdentity(dbPath) !== databaseIdentity) return undefined;
+      const snapshots = vectorRowsToSnapshots(rows);
+      return snapshots ? { databaseIdentity, rows: snapshots } : undefined;
+    } catch (error) {
+      debugError('storage-maintenance.readLiveVectorSnapshot', error, dbPath);
+      return undefined;
+    }
+  }
+
   let db: Database.Database | undefined;
   try {
     db = new Database(dbPath, { readonly: true });
@@ -1313,6 +1327,12 @@ function readVectorRowsFromDatabase(
   const rows = db
     .prepare('SELECT * FROM memories WHERE project = ? ORDER BY id')
     .all(project) as Array<Record<string, unknown>>;
+  return vectorRowsToSnapshots(rows);
+}
+
+function vectorRowsToSnapshots(
+  rows: Array<Record<string, unknown>>
+): StorageVectorRowSnapshot[] | undefined {
   const snapshots: StorageVectorRowSnapshot[] = [];
   for (const row of rows) {
     if (typeof row.id !== 'string') return undefined;

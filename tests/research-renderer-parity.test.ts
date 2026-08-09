@@ -71,8 +71,19 @@ describe('P1-R4 research renderer parity', () => {
   });
 
   it('emits a unified lifecycle event stream with start/source/conflict/completed', () => {
-    const ok = src('src-ok', { kind: 'web_page', canonicalUrl: 'https://example.com/x' });
-    const bad = src('src-bad', { kind: 'web_page', status: 'failed', canonicalUrl: 'https://example.com/y' });
+    const ok = src('src-ok', {
+      kind: 'web_page',
+      canonicalUrl: 'https://example.com/x',
+      displayUrl: 'https://example.com/x',
+      title: 'Example source',
+      contentHash: 'abcdef1234567890',
+    });
+    const bad = src('src-bad', {
+      kind: 'web_page',
+      status: 'failed',
+      canonicalUrl: 'https://example.com/y',
+      failureReason: 'HTTP 503',
+    });
     const c = claim('clm-1', { sourceIds: ['src-ok', 'src-bad'], evidenceKind: 'external' });
     const pkt = packet([c], [ok, bad]);
     const resolution = resolveCitations(pkt);
@@ -81,11 +92,26 @@ describe('P1-R4 research renderer parity', () => {
 
     expect(events[0].type).toBe('research_started');
     expect(events.filter(e => e.type === 'research_source')).toHaveLength(2);
+    expect(events.find(e => e.type === 'research_source' && e.sourceId === 'src-ok')).toEqual(
+      expect.objectContaining({
+        kind: 'web_page',
+        canonicalUrl: 'https://example.com/x',
+        displayUrl: 'https://example.com/x',
+        title: 'Example source',
+        contentHash: 'abcdef1234567890',
+      })
+    );
+    expect(events.find(e => e.type === 'research_source' && e.sourceId === 'src-bad')).toEqual(
+      expect.objectContaining({ failureReason: 'HTTP 503' })
+    );
     expect(events.filter(e => e.type === 'research_conflict')).toHaveLength(1);
     const done = events[events.length - 1] as Extract<typeof events[number], { type: 'research_completed' }>;
     expect(done.type).toBe('research_completed');
     expect(done.stage).toBe('partial');
     expect(done.auditStatus).toBe('partial');
+    expect(done.summary).toEqual(
+      expect.objectContaining({ sourceCount: 2, retrievedCount: 1, failedCount: 1 })
+    );
   });
 
   it('parity holds for a mixed-mode packet with stale + blocked sources', () => {

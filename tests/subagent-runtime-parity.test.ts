@@ -7,6 +7,7 @@ import {
 } from '../src/runtime/agent-runtime-protocol';
 import type { UiEventSink } from '../src/runtime/ui-events';
 import type { RuntimeSubtaskEvent } from '../src/runtime/subagents/types';
+import type { ResearchLifecycleEvent } from '../src/runtime/subagents/research-renderer';
 
 function subtaskEvent(state: RuntimeSubtaskEvent['state']): RuntimeSubtaskEvent {
   return {
@@ -24,6 +25,12 @@ function normalize(event: AgentRuntimeEvent): string {
   if (event.type === 'subtask_event') {
     return `subtask:${event.event.state}:${event.event.role}:${event.event.taskId}`;
   }
+  if (event.type === 'research_event') {
+    const research = event.event;
+    return research.type === 'research_source'
+      ? `research:${research.type}:${research.packetId}:${research.sourceId}:${research.contentHash ?? ''}`
+      : `research:${research.type}:${research.packetId}`;
+  }
   return `other:${event.type}`;
 }
 
@@ -39,6 +46,7 @@ function makeUiSink(collector: string[]): UiEventSink {
     showSessionPicker: () => {},
     showEditPreview: () => {},
     subtaskEvent: e => collector.push(normalize({ type: 'subtask_event', event: e })),
+    researchEvent: e => collector.push(normalize({ type: 'research_event', event: e })),
     setProcessing: () => {},
   } as UiEventSink;
 }
@@ -84,6 +92,52 @@ describe('subagent runtime/UI parity', () => {
     const uiAdapter = createUiEventSinkFromAgentRuntimeEvents(makeRuntimeSink(collected));
     uiAdapter.subtaskEvent!(subtaskEvent('completed'));
     expect(collected).toEqual(['subtask:completed:research:task-1']);
+  });
+
+  it('research_event preserves typed payload and lifecycle order through both adapters', () => {
+    const lifecycle: ResearchLifecycleEvent[] = [
+      {
+        type: 'research_started',
+        packetId: 'pkt-1',
+        objective: 'verify adapters',
+        mode: 'web',
+      },
+      {
+        type: 'research_source',
+        packetId: 'pkt-1',
+        sourceId: 'src-1',
+        status: 'retrieved',
+        provider: 'ddg',
+        kind: 'web_page',
+        displayUrl: 'https://example.com/doc',
+        contentHash: 'abcdef1234567890',
+      },
+      {
+        type: 'research_completed',
+        packetId: 'pkt-1',
+        stage: 'completed',
+        auditStatus: 'met',
+        conclusion: 'done',
+      },
+    ];
+    const uiCollected: string[] = [];
+    const runtimeCollected: string[] = [];
+    const uiSink = makeUiSink(uiCollected);
+    const runtimeAdapter = createUiEventSinkFromAgentRuntimeEvents(
+      makeRuntimeSink(runtimeCollected)
+    );
+
+    for (const event of lifecycle) {
+      emitToUiEventSink(uiSink, { type: 'research_event', event });
+      runtimeAdapter.researchEvent!(event);
+    }
+
+    expect(uiCollected).toEqual(runtimeCollected);
+    expect(uiCollected).toEqual([
+      'research:research_started:pkt-1',
+      'research:research_source:pkt-1:src-1:abcdef1234567890',
+      'research:research_completed:pkt-1',
+    ]);
   });
 
   it('a full lifecycle sequence is preserved in order', () => {

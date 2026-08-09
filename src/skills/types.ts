@@ -67,7 +67,7 @@ export interface SkillResult {
   /** Generated prompt */
   prompt?: string;
   /** Execution metadata */
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
 }
 
 /** Skill source location */

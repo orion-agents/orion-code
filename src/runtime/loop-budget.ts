@@ -1,5 +1,5 @@
 import { DEFAULT_LOOP_BUDGET, type LoopBudget, type LoopBudgetBaseProfile } from '../framework';
-import type { OpenHorseCLIConfig } from '../services/config';
+import type { OrionCodeCLIConfig } from '../services/config';
 import type { HarnessState } from '../harness/types';
 
 const COMPLEX_TASK_LLM_BUDGET = 48;
@@ -15,7 +15,7 @@ function toBaseProfile(value: LoopBudget['profile'] | undefined): LoopBudgetBase
 
 function applyConfigOverrides(
   budget: LoopBudget,
-  overrides: OpenHorseCLIConfig['agentLoop'] | undefined,
+  overrides: OrionCodeCLIConfig['agentLoop'] | undefined,
 ): LoopBudget {
   const configured = overrides?.budget;
   if (!configured) return budget;
@@ -49,7 +49,7 @@ function looksLikeComplexTask(input: string): boolean {
 
 export function resolveRuntimeLoopBudget(
   input: string,
-  config: Pick<OpenHorseCLIConfig, 'agentLoop'>,
+  config: Pick<OrionCodeCLIConfig, 'agentLoop'>,
   harnessState?: Pick<HarnessState, 'rootObjective' | 'activeInstruction' | 'contract' | 'capsule'>,
 ): LoopBudget {
   let budget: LoopBudget = {

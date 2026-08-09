@@ -3,7 +3,7 @@
  */
 
 import { buildTool } from '../src/framework/tool';
-import type { OpenHorseTool, ToolContext } from '../src/framework/tool';
+import type { OrionCodeTool, ToolContext } from '../src/framework/tool';
 import {
   prepareToolCalls,
   executeToolCalls,
@@ -12,7 +12,7 @@ import {
 } from '../src/framework/tool-scheduler';
 import type { Message } from '../src/services/llm';
 
-const readOnlyTool: OpenHorseTool = buildTool({
+const readOnlyTool: OrionCodeTool = buildTool({
   name: 'read_file',
   description: 'Read a file',
   parameters: {
@@ -25,7 +25,7 @@ const readOnlyTool: OpenHorseTool = buildTool({
   isConcurrencySafe: () => true,
 });
 
-const writeTool: OpenHorseTool = buildTool({
+const writeTool: OrionCodeTool = buildTool({
   name: 'edit_file',
   description: 'Edit a file',
   parameters: {
@@ -39,7 +39,7 @@ const writeTool: OpenHorseTool = buildTool({
   checkPermissions: () => ({ behavior: 'ask', reason: 'Edit operation' }),
 });
 
-const askTool: OpenHorseTool = buildTool({
+const askTool: OrionCodeTool = buildTool({
   name: 'web_search',
   description: 'Search the web',
   parameters: {
@@ -53,7 +53,7 @@ const askTool: OpenHorseTool = buildTool({
 });
 
 /** File-edit tool that requires confirmation — the target of `acceptEdits`. */
-const askFileEditTool: OpenHorseTool = buildTool({
+const askFileEditTool: OrionCodeTool = buildTool({
   name: 'write_file',
   description: 'Write a file',
   parameters: {
@@ -68,7 +68,7 @@ const askFileEditTool: OpenHorseTool = buildTool({
 });
 
 /** Concurrency-safe ask tool, used to assert scheduling stays consistent with execution. */
-const askConcurrentTool: OpenHorseTool = buildTool({
+const askConcurrentTool: OrionCodeTool = buildTool({
   name: 'web_fetch',
   description: 'Fetch a URL',
   parameters: {
@@ -103,7 +103,7 @@ const toolCalls = (names: string[]): NonNullable<Message['tool_calls']> =>
 
 const tools = [readOnlyTool, writeTool, askTool, askFileEditTool, askConcurrentTool];
 
-const stateWriteTool: OpenHorseTool = buildTool({
+const stateWriteTool: OrionCodeTool = buildTool({
   name: 'state_write',
   description: 'Mutate application state',
   parameters: { type: 'object', properties: {}, required: [] },
@@ -111,7 +111,7 @@ const stateWriteTool: OpenHorseTool = buildTool({
   isReadOnly: () => false,
 });
 
-const dangerousTool: OpenHorseTool = buildTool({
+const dangerousTool: OrionCodeTool = buildTool({
   name: 'dangerous_action',
   description: 'Perform a destructive action',
   parameters: { type: 'object', properties: {}, required: [] },
@@ -583,7 +583,7 @@ describe('permission mode semantics for ask tools', () => {
   });
 
   test('plan mode permits a local read-only exec_command even when it asks (Issue #19)', () => {
-    const execReadOnly: OpenHorseTool = buildTool({
+    const execReadOnly: OrionCodeTool = buildTool({
       name: 'exec_command',
       description: 'Run a shell command',
       parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] },
@@ -739,7 +739,7 @@ describe('permission mode semantics for ask tools', () => {
 describe('fail-closed permission matrix', () => {
   const cases: Array<{
     label: string;
-    tool: OpenHorseTool;
+    tool: OrionCodeTool;
     permission?: { behavior: 'allow' | 'ask' | 'deny'; reason?: string };
     expected: Record<string, 'allow' | 'confirm' | 'block'>;
   }> = [
@@ -781,7 +781,7 @@ describe('fail-closed permission matrix', () => {
   });
 
   test('global allow cannot approve caution, state-write, destructive, or unknown tools', async () => {
-    const unknownTool: OpenHorseTool = buildTool({
+    const unknownTool: OrionCodeTool = buildTool({
       name: 'unknown_risk',
       description: 'No risk metadata',
       parameters: { type: 'object', properties: {}, required: [] },

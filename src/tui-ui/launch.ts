@@ -6,7 +6,7 @@ import { format as formatConsoleMessage } from 'util';
 import {
   resolveUiRendererCapabilities,
   type ModelPickerRequest,
-  type OpenHorseUiRuntime,
+  type OrionCodeUiRuntime,
   type SessionPickerRequest,
   type UiEventSink,
 } from '../runtime/ui-events';
@@ -33,7 +33,7 @@ export interface TuiLaunchOptions {
 }
 
 export async function launchTuiUI(
-  runtime: OpenHorseUiRuntime,
+  runtime: OrionCodeUiRuntime,
   options: TuiLaunchOptions = {}
 ): Promise<void> {
   const input = options.input ?? process.stdin;
@@ -671,7 +671,7 @@ function stripTerminalControlSequences(value: string): string {
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '');
 }
 
-function tokensFromRuntime(rt: OpenHorseUiRuntime): {
+function tokensFromRuntime(rt: OrionCodeUiRuntime): {
   input?: number;
   output?: number;
   contextPercent?: number;
@@ -685,7 +685,7 @@ function tokensFromRuntime(rt: OpenHorseUiRuntime): {
   };
 }
 
-export function statusSnapshotString(rt: OpenHorseUiRuntime): string {
+export function statusSnapshotString(rt: OrionCodeUiRuntime): string {
   const snapshot = rt.store.getSnapshot();
   const session = rt.getSession()?.id.slice(0, 8) ?? 'none';
   const tokens = snapshot.tokenUsage

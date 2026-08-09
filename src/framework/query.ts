@@ -18,7 +18,7 @@ import type {
 } from '../services/llm';
 import { ProviderRequestPreflightError } from '../services/llm';
 import type { ProviderErrorType } from '../services/provider-diagnostics';
-import type { OpenHorseTool, ToolContext } from './tool';
+import type { OrionCodeTool, ToolContext } from './tool';
 import type { PermissionMode } from '../commands/types';
 import type { CostTracker } from '../core/cost-tracker';
 import type { ToolConfirmationPolicy } from '../services/config';
@@ -26,6 +26,7 @@ import type { ToolAllowlistEvaluator } from '../services/tool-allowlist';
 import { toOpenAITools } from './tool';
 import { createStrategyTracker, type StrategyTracker } from '../core/strategy-tracker';
 import { AutoCompact } from '../services/compact/auto-compact';
+import { pendingToolCalls } from '../services/compact/tool-call-groups';
 import type { CompactCoordinator } from '../services/compact/coordinator';
 import type { ContextHarness } from '../harness';
 import type { PromptAssemblyStats } from '../harness/types';
@@ -718,7 +719,7 @@ export interface QueryParams {
   /** Conversation history (must include system prompt as first message) */
   messages: Message[];
   /** Available tools */
-  tools: OpenHorseTool[];
+  tools: OrionCodeTool[];
   /** Tool executor: (name, args, abortSignal?) => result string
    *  Issue #32 #3.2: 支持 abortSignal 透传 */
   toolExecutor: (
@@ -1158,6 +1159,10 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
         ? stats.singleReadOnlyStreak + 1
         : 0;
 
+      let pendingStrategySuggestion: string | undefined;
+      const answeredToolCallIds = new Set<string>();
+      const preparedCallById = new Map(preparedCalls.map(call => [call.tc.id, call]));
+
       for (const prepared of preparedCalls) {
         yield {
           type: 'tool_call',
@@ -1272,8 +1277,49 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
           content: modelVisible.result,
           tool_call_id: tc.id,
         });
+        answeredToolCallIds.add(tc.id);
 
         if (executed.permissionDecision?.approved === false) {
+          for (const skipped of pendingToolCalls(toolCalls, answeredToolCallIds)) {
+            const skippedPrepared = preparedCallById.get(skipped.id);
+            if (!skippedPrepared) continue;
+            const skippedError = `Skipped after permission denial for ${tc.function.name}.`;
+            const skippedResult = JSON.stringify({ success: false, error: skippedError });
+            const skippedBytes = byteLength(skippedResult);
+            strategyTracker.recordResult(skippedPrepared.attemptId, 'failed', skippedError, 0);
+            harness?.recordToolResult({
+              name: skipped.function.name,
+              args: skippedPrepared.args,
+              result: skippedResult,
+              duration: 0,
+              success: false,
+              error: skippedError,
+              summary: skippedError,
+            });
+            stats.toolResultBytes += skippedBytes;
+            stats.modelVisibleToolBytes += skippedBytes;
+            yield {
+              type: 'tool_result',
+              name: skipped.function.name,
+              args: skippedPrepared.args,
+              callId: skipped.id,
+              result: skippedResult,
+              modelVisibleResult: skippedResult,
+              duration: 0,
+              success: false,
+              error: skippedError,
+              summary: skippedError,
+              outputBytes: skippedBytes,
+              batchCount: toolCalls.length,
+              batchIndex: skippedPrepared.index,
+            };
+            messages.push({
+              role: 'tool',
+              content: skippedResult,
+              tool_call_id: skipped.id,
+            });
+            answeredToolCallIds.add(skipped.id);
+          }
           yield attachCompactCommit(
             permissionBlockedEvent(
               llm,
@@ -1289,17 +1335,18 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
           return;
         }
 
-        if (strategyTracker.isExhausted()) {
-          const suggestion = strategyTracker.suggestAlternative();
-          if (suggestion) {
-            yield { type: 'strategy_exhausted', suggestion };
-            messages.push({
-              role: 'user',
-              content: suggestion,
-            });
-            strategyTracker.reset();
-          }
+        if (!pendingStrategySuggestion && strategyTracker.isExhausted()) {
+          pendingStrategySuggestion = strategyTracker.suggestAlternative() ?? undefined;
         }
+      }
+
+      if (pendingStrategySuggestion) {
+        yield { type: 'strategy_exhausted', suggestion: pendingStrategySuggestion };
+        messages.push({
+          role: 'user',
+          content: pendingStrategySuggestion,
+        });
+        strategyTracker.reset();
       }
 
       if (stats.singleReadOnlyStreak >= loopBudget.maxReadOnlyFragmentation) {
@@ -1312,6 +1359,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
           ].join(' '),
         });
         stats.batchReadSuggestionCount++;
+        stats.singleReadOnlyStreak = 0;
       }
 
       // Continue to next turn
