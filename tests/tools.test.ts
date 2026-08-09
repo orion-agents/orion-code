@@ -326,6 +326,47 @@ describe('write_file / edit_file path containment (issue #65)', () => {
     expect(result.success).toBe(true);
     expect(fs.readFileSync(inside, 'utf-8')).toBe('new');
   });
+
+  test('write_file refuses a symlink inside the workspace that points outside (issue #99)', async () => {
+    const outsideFile = path.join(outside, 'secret.txt');
+    fs.writeFileSync(outsideFile, 'old-secret', 'utf-8');
+    const linkPath = path.join(wsRoot, 'link-to-outside.txt');
+    fs.symlinkSync(outsideFile, linkPath);
+    const result = await writeTool.execute(
+      { path: linkPath, content: 'written-through-link' },
+      wsCtx,
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/outside the workspace/);
+    // The real outside target must be untouched.
+    expect(fs.readFileSync(outsideFile, 'utf-8')).toBe('old-secret');
+  });
+
+  test('edit_file refuses editing through a workspace symlink to an outside file (issue #99)', async () => {
+    const outsideFile = path.join(outside, 'secret2.txt');
+    fs.writeFileSync(outsideFile, 'old-secret', 'utf-8');
+    const linkPath = path.join(wsRoot, 'link-to-outside2.txt');
+    fs.symlinkSync(outsideFile, linkPath);
+    const result = await editTool.execute(
+      { path: linkPath, old_string: 'old-secret', new_string: 'edited-through-link' },
+      wsCtx,
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/outside the workspace/);
+    expect(fs.readFileSync(outsideFile, 'utf-8')).toBe('old-secret');
+  });
+
+  test('write_file refuses when an intermediate directory is a symlink to outside (issue #99)', async () => {
+    const outsideDir = fs.mkdtempSync(path.join(tmpdir(), 'orion-outside-dir-'));
+    const linkDir = path.join(wsRoot, 'linkdir');
+    fs.symlinkSync(outsideDir, linkDir);
+    const target = path.join(linkDir, 'escape.txt');
+    const result = await writeTool.execute({ path: target, content: 'x' }, wsCtx);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/outside the workspace/);
+    expect(fs.existsSync(path.join(outsideDir, 'escape.txt'))).toBe(false);
+    fs.rmSync(outsideDir, { recursive: true, force: true });
+  });
 });
 
 describe('list_files tool', () => {

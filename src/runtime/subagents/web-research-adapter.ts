@@ -224,6 +224,10 @@ export async function runWebResearch(
     Math.max(1, request.maxDurationMs)
   );
   try {
+    // Issue #101: once a single source blows the remaining byte budget we stop
+    // fetching entirely — the budget is a hard boundary, not a warning. Without
+    // this, every later source is still fetched and only rejected after the fact.
+    let byteBudgetExhausted = false;
     for (const { hit, rank } of selected) {
       if (result.timedOut) {
         result.skipped.push(redactUrl(hit.url).url);
@@ -231,7 +235,7 @@ export async function runWebResearch(
       }
       // Byte budget: once exhausted, stop fetching (remaining become skipped, not
       // a failure - they can be retried, so status stays silent).
-      if (byteBudget > 0 && result.bytesFetched >= byteBudget) {
+      if (byteBudget > 0 && (result.bytesFetched >= byteBudget || byteBudgetExhausted)) {
         result.truncatedDueToBytes = true;
         result.skipped.push(redactUrl(hit.url).url);
         continue;
@@ -260,6 +264,21 @@ export async function runWebResearch(
       const status = toSourceStatus(fetched.status);
       const bytes =
         fetched.bytes ?? (fetched.content ? Buffer.byteLength(fetched.content, 'utf8') : 0);
+
+      // Issue #101: a single fetched source must not exceed the remaining byte
+      // budget. If it does, it is rejected as oversized instead of being stored
+      // as a normal retrieved source, and the budget is marked exhausted so no
+      // further sources are fetched.
+      if (byteBudget > 0) {
+        const remaining = byteBudget - result.bytesFetched;
+        if (bytes > remaining) {
+          result.truncatedDueToBytes = true;
+          result.skipped.push(redactUrl(hit.url).url);
+          byteBudgetExhausted = true;
+          continue;
+        }
+      }
+
       result.bytesFetched += bytes;
 
       // Redirects can introduce credentials the search hit never had, so the

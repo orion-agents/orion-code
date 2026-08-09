@@ -20,8 +20,9 @@ import {
   createReadStream,
   lstatSync,
   mkdirSync,
+  realpathSync,
 } from 'fs';
-import { join, resolve, relative, isAbsolute } from 'path';
+import { join, resolve, relative, isAbsolute, dirname } from 'path';
 import { createInterface } from 'readline';
 import {
   buildTool,
@@ -1015,6 +1016,16 @@ function safePath(input: string, cwd = process.cwd()): string {
 }
 
 /**
+ * Return true when `p` resolves (after following symlinks) to a location at or
+ * under `rootReal`. Used to enforce that a realpath is still inside the
+ * workspace even when directories along the path are themselves symlinks.
+ */
+function isUnderRealRoot(p: string, rootReal: string): boolean {
+  const rel = relative(rootReal, p);
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
+/**
  * Contain a tool-resolved path inside the workspace root (cwd).
  *
  * Blocks `../` traversal and absolute paths outside the workspace, which would
@@ -1022,14 +1033,34 @@ function safePath(input: string, cwd = process.cwd()): string {
  * or other projects — especially dangerous under `acceptEdits` auto-approval,
  * where the write runs without a confirmation prompt (issue #65).
  *
- * Containment is path-based (not `realpath`-based) because the target file may
- * not yet exist; it therefore does not follow symlink escapes. Symlink escapes
- * remain a residual risk documented in the issue.
+ * Containment is lexical first, then re-checked after resolving symlinks
+ * (issue #99): a workspace symlink that points outside the workspace must not
+ * be followed into an arbitrary write target. We resolve the realpath of the
+ * parent directory (which also collapses any intermediate symlinked dirs) and,
+ * if the target already exists, the target itself; if either escapes the
+ * workspace we refuse. The workspace root is also realpath-resolved so a
+ * symlinked cwd does not produce false rejections. Fail-closed on any
+ * filesystem error.
  */
 function isWithinWorkspace(resolved: string, cwd: string): boolean {
   const root = resolve(cwd);
   const rel = relative(root, resolved);
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+  if (!(rel === '' || (!rel.startsWith('..') && !isAbsolute(rel)))) return false;
+  try {
+    const rootReal = realpathSync(root);
+    const realParent = realpathSync(dirname(resolved));
+    if (!isUnderRealRoot(realParent, rootReal)) return false;
+    // Only the existing target needs its own realpath check; a brand-new file
+    // inherits the (already-validated) containment of its parent directory.
+    if (existsSync(resolved)) {
+      const realTarget = realpathSync(resolved);
+      if (!isUnderRealRoot(realTarget, rootReal)) return false;
+    }
+  } catch {
+    // A missing/unknowable realpath means we cannot prove containment — refuse.
+    return false;
+  }
+  return true;
 }
 
 /**

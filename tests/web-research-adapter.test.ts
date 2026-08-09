@@ -126,7 +126,7 @@ describe('P0-R2 web research adapter', () => {
     expect(res.sources.every(source => source.status === 'blocked')).toBe(true);
   });
 
-  it('stops fetching once the byte budget is exhausted', async () => {
+  it('enforces a hard byte budget and rejects oversized sources (#101)', async () => {
     const fetched: string[] = [];
     const deps: WebResearchDeps = {
       search: async () => Array.from({ length: 3 }, (_, i) => okHit(`https://example.com/${i}`)),
@@ -137,10 +137,29 @@ describe('P0-R2 web research adapter', () => {
     };
     const res = await runWebResearch(webRequest({ maxSources: 3, maxFetchBytes: 150 }), deps);
 
-    expect(fetched).toHaveLength(2); // 100 + 100 = 200 > 150 after second fetch
+    // First 100B source fits; the second (100B > 50B remaining) is rejected as
+    // oversized and no further sources are fetched. The oversized source is NOT
+    // stored as a retrieved hit.
+    expect(fetched).toHaveLength(2);
     expect(res.truncatedDueToBytes).toBe(true);
-    expect(res.bytesFetched).toBe(200);
-    expect(res.skipped).toContain('https://example.com/2');
+    expect(res.bytesFetched).toBe(100);
+    expect(res.sources).toHaveLength(1);
+    expect(res.skipped).toEqual(
+      expect.arrayContaining(['https://example.com/1', 'https://example.com/2'])
+    );
+  });
+
+  it('ingests multiple sources that fit within the byte budget', async () => {
+    const deps: WebResearchDeps = {
+      search: async () => Array.from({ length: 3 }, (_, i) => okHit(`https://example.com/${i}`)),
+      fetch: async url => okFetch(url, 'x', 50),
+    };
+    const res = await runWebResearch(webRequest({ maxSources: 3, maxFetchBytes: 200 }), deps);
+
+    expect(res.bytesFetched).toBe(150);
+    expect(res.sources).toHaveLength(3);
+    expect(res.truncatedDueToBytes).toBe(false);
+    expect(res.skipped).toHaveLength(0);
   });
 
   it('aborts remaining fetches after the duration budget elapses', async () => {
