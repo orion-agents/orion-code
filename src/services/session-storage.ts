@@ -1214,6 +1214,23 @@ export function removeLastIncompleteAssistantMessage(sessionId: string): Session
 }
 
 /**
+ * Remove the trailing user message from a failed turn so a provider/tool
+ * failure does not leave a dangling prompt in the persisted session that would
+ * be replayed on resume. The caller must guarantee the trailing message was
+ * appended by the turn that just failed (i.e. `persistAsUserMessage !== false`);
+ * this is a no-op when the last message is not a user message.
+ */
+export function removeTrailingSessionUserMessage(sessionId: string): SessionMessage[] {
+  const messages = readSessionMessages(sessionId);
+  if (messages.length === 0) return messages;
+  if (messages[messages.length - 1].role !== 'user') return messages;
+
+  const truncated = messages.slice(0, -1);
+  overwriteSessionMessages(sessionId, truncated);
+  return truncated;
+}
+
+/**
  * 读取会话消息
  */
 export function readSessionMessages(sessionId: string): SessionMessage[] {

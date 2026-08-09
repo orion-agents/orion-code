@@ -28,7 +28,7 @@
     "format": "prettier --write src/",
     "release:check": "node scripts/release-check.js",
     "prepack": "npm run build",
-    "prepublishOnly": "npm run lint && npm run build && npm test -- --runInBand"
+    "prepublishOnly": "npm run lint && npm run release:check -- --skip-tests && npm run build && npm test -- --runInBand"
   },
   "keywords": [
     "agent",

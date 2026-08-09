@@ -10,6 +10,7 @@ import { loadGoal } from '../src/services/goal-storage';
 import type { OpenHorseUiRuntime } from '../src/runtime/ui-events';
 import { appendSessionMessage, createSession } from '../src/services/session-storage';
 import { TOOLS } from '../src/tools';
+import { canRunCliSmoke } from './support/env';
 import {
   makeToolStartedEvent,
   makeToolFinishedEvent,
@@ -27,7 +28,10 @@ function findPython(): string | null {
 describe('print mode smoke', () => {
   const python = findPython();
   const smokeScript = join(__dirname, '..', 'scripts', 'print-mode-smoke.py');
-  const maybeIt = python && existsSync(smokeScript) && process.platform !== 'win32' ? it : it.skip;
+  const maybeIt =
+    python && existsSync(smokeScript) && process.platform !== 'win32' && canRunCliSmoke
+      ? it
+      : it.skip;
 
   maybeIt(
     'runs text, json, and piped stdin prompts without interactive UI',

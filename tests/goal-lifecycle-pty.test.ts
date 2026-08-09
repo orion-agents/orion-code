@@ -1,6 +1,7 @@
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
+import { canRunPtySmoke } from './support/env';
 
 function findPython(): string | null {
   for (const command of ['python3', 'python']) {
@@ -13,7 +14,10 @@ function findPython(): string | null {
 describe('v0.1.2 Goal lifecycle PTY acceptance', () => {
   const python = findPython();
   const smokeScript = join(__dirname, '..', 'scripts', 'goal-lifecycle-pty-smoke.py');
-  const maybeIt = python && existsSync(smokeScript) && process.platform !== 'win32' ? it : it.skip;
+  const maybeIt =
+    python && existsSync(smokeScript) && process.platform !== 'win32' && canRunPtySmoke
+      ? it
+      : it.skip;
 
   maybeIt(
     'survives failure, repair, compact, restart, resume, and audited completion in both renderers',

@@ -27,4 +27,14 @@ echo "== Known deprecated / abandoned transitive packages =="
 npm ls glob@7.2.3 eslint@8.7.1 prebuild-install@7.1.3 inflight@1.0.6 --all || true
 
 echo
+echo "== All deprecated packages reported by the resolver (issue #62) =="
+# Dynamic scan so newly-deprecated transitive deps are surfaced without
+# hardcoding them. npm ls marks deprecated entries inline; collect them here.
+if npm ls --all --parseable 2>/dev/null | head -n1 >/dev/null; then
+  npm ls --all 2>&1 | grep -iE "deprecated" || echo "(no deprecated packages reported)"
+else
+  echo "(deprecated-package scan skipped: npm ls unavailable)"
+fi
+
+echo
 echo "Dependency health check complete."

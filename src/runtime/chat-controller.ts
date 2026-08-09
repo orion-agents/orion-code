@@ -21,6 +21,7 @@ import {
   loadSessionHistory,
   loadSessionMeta,
   removeLastIncompleteAssistantMessage,
+  removeTrailingSessionUserMessage,
   readSessionMessages,
   readSessionTraceEvents,
   redactTraceText,
@@ -2965,6 +2966,12 @@ export class AgentChatController {
           localFastPathUsed: failedStats.localFastPathUsed,
         });
         removeLastIncompleteAssistantMessage(sessionId);
+        // A failed turn must not leave the user's prompt dangling in the
+        // persisted session (it would replay on resume). The in-memory history
+        // is cleaned above (2969-2972); mirror that for the on-disk transcript.
+        if (options.persistAsUserMessage !== false) {
+          removeTrailingSessionUserMessage(sessionId);
+        }
       }
       const history = this.runtime.store.getSnapshot().conversationHistory;
       if (history.length > 0) {

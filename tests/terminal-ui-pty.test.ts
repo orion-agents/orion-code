@@ -1,6 +1,7 @@
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
+import { canRunPtySmoke } from './support/env';
 
 function findPython(): string | null {
   for (const command of ['python3', 'python']) {
@@ -21,7 +22,13 @@ describe('Explicit terminal agent flow PTY smoke', () => {
     process.env.CODEBUDDY_SAFE_DELETE_SANDBOX === '1' ||
     (process.env.NODE_OPTIONS || '').includes('genie-safe-delete');
   const maybeIt =
-    python && existsSync(smokeScript) && process.platform !== 'win32' && !guardActive ? it : it.skip;
+    python &&
+    existsSync(smokeScript) &&
+    process.platform !== 'win32' &&
+    !guardActive &&
+    canRunPtySmoke
+      ? it
+      : it.skip;
 
   maybeIt('keeps input stable and verifies context, tool confirmation, and resume', () => {
     const result = spawnSync(python as string, [smokeScript], {
