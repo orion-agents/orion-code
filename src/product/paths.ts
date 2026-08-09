@@ -217,12 +217,10 @@ function sweepStorageDirectory(directory: string): void {
 
 export function ensureConfigDir(): void {
   const dir = getConfigHome();
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-  }
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
   for (const sub of ['projects', 'cost', 'cache']) {
     const p = join(dir, sub);
-    if (!existsSync(p)) mkdirSync(p, { mode: 0o700 });
+    mkdirSync(p, { recursive: true, mode: 0o700 });
     sweepStorageDirectory(p);
   }
   sweepStorageDirectory(dir);
@@ -231,13 +229,9 @@ export function ensureConfigDir(): void {
 export function ensureProjectDir(projectPath: string): void {
   ensureConfigDir();
   const projectDir = getProjectDir(projectPath);
-  if (!existsSync(projectDir)) {
-    mkdirSync(projectDir, { recursive: true, mode: 0o700 });
-  }
+  mkdirSync(projectDir, { recursive: true, mode: 0o700 });
   const sessionsDir = getProjectSessionsDir(projectPath);
-  if (!existsSync(sessionsDir)) {
-    mkdirSync(sessionsDir, { recursive: true, mode: 0o700 });
-  }
+  mkdirSync(sessionsDir, { recursive: true, mode: 0o700 });
   sweepStorageDirectory(projectDir);
   sweepStorageDirectory(sessionsDir);
   // Write project metadata (lazy import to avoid circular dependency).
