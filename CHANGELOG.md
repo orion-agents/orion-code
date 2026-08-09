@@ -19,10 +19,14 @@ Evidence labels follow `docs/plan/targets-v0.1.3-v0.1.3-2.md`:
 `met` / `partial` / `unmet` / `not_run` — where `not_run` means "blocked by environment",
 which is **not** a pass.
 
-## [0.1.4-2] — UNRELEASED
+## [Unreleased]
 
-> **Status: release candidate.** Not yet tagged or published. This maintenance
-> prerelease is intended for the npm `next` dist-tag; stable `latest` remains `0.1.4`.
+No changes yet.
+
+## [0.1.4-2] — 2026-08-09
+
+> **Status: published.** Tag `v0.1.4-2` exists and the package is on npm
+> (`@orion-agents/orion-code@0.1.4-2`, `next` dist-tag). Stable `latest` remains `0.1.4`.
 
 ### Changed
 

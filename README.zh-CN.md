@@ -108,15 +108,16 @@ npm start -- --print "review the current git diff"
 
 ```bash
 npm install -g @orion-agents/orion-code@0.1.4-2
-# 发布后也可使用：npm install -g @orion-agents/orion-code@next
+# 或通过预发布 dist-tag 安装：
+npm install -g @orion-agents/orion-code@next
 # 任意目录运行
 orion
 ```
 
 也可以在源码工作树中使用 `npm ci && npm run build && npm start`。
 
-> **预发布状态**：`0.1.4-2` 是计划发布到 npm `next` dist-tag 的维护候选，
-> 当前尚未创建标签或发布。稳定版 `latest` 仍为 `0.1.4`。
+> **预发布状态**：`0.1.4-2` 已通过 npm `next` dist-tag 发布，并已创建
+> `v0.1.4-2` 标签。稳定版 `latest` 仍为 `0.1.4`。
 
 公众体验、交互优化和新增工作流优先落在 TUI。`terminal-ui` 不作为与
 TUI 并行发展的公众产品；Ink 只保留迁移期兼容，不再增加产品能力。
@@ -466,7 +467,7 @@ orion-code/
 
 ## 版本历史
 
-### v0.1.4-2（候选，未发布）
+### v0.1.4-2（已发布至 next）
 
 - 汇总 v0.1.4 后续的安全、持久化、Goal/runtime、Research、依赖与发布门禁修复；
 - 以 npm `next` dist-tag 发布，不移动稳定版 `latest`。
