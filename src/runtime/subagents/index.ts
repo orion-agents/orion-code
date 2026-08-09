@@ -43,7 +43,12 @@ export {
   type RunSubtaskOutcome,
 } from './runner';
 export { SubagentProviderGate, type ProviderGateOptions } from './provider-gate';
-export { runSubtaskBatch, type SubagentSupervisorDeps, type RunBatchOutcome } from './supervisor';
+export {
+  runSubtaskBatch,
+  type SubagentSupervisorDeps,
+  type SubtaskResearchResultContext,
+  type RunBatchOutcome,
+} from './supervisor';
 export { createSubtaskTool, coerceSubtaskRequest, summarizeBatchForModel } from './tool';
 export {
   createProductionExecuteQuery,
@@ -61,12 +66,14 @@ export * from './research-types';
 export {
   RESEARCH_HARD_LIMITS,
   createLocalResearchRequest,
+  createResearchRequestForSubtask,
   hashPacket,
   stableStringify,
   subtaskResultToPacket,
   validatePacket,
   validateResearchRequest,
   type PacketContext,
+  type ResearchPacketInputs,
   type ValidationResult,
 } from './research-contract';
 export {

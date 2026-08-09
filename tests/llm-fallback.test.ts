@@ -79,7 +79,7 @@ describe('LLMService fallback model', () => {
         529,
         { error: { message: 'overloaded' } },
         'overloaded',
-        {} as any,
+        new Headers(),
       );
       return err;
     };
@@ -143,7 +143,7 @@ describe('LLMService fallback model', () => {
       429,
       { error: { message: 'rate limit exceeded' } },
       'rate limit exceeded',
-      {} as any,
+      new Headers(),
     );
 
     let callCount = 0;
@@ -195,7 +195,7 @@ describe('LLMService fallback model', () => {
       429,
       { error: { message: 'rate limit exceeded' } },
       'rate limit exceeded',
-      {} as any,
+      new Headers(),
     );
 
     let callCount = 0;

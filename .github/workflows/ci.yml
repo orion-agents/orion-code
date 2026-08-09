@@ -22,11 +22,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Native modules (better-sqlite3, sqlite-vec) only ship prebuilds for the
-        # Node version documented as required (20). Node 22/24 currently fail with
-        # native ABI mismatches (NODE_MODULE_VERSION) on sqlite-backed tests, so the
-        # matrix is pinned to 20 until those prebuilds land.
-        node-version: ['20']
+        # Keep package.json engines and the native sqlite verification matrix in
+        # lockstep. npm ci must install a working binding on every supported LTS.
+        node-version: ['20', '22', '24']
 
     steps:
       - name: Check out repository

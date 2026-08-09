@@ -1,5 +1,5 @@
 import * as childProcess from 'child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -15,6 +15,7 @@ import {
   resetSessionMemory,
   type SessionMemoryEntry,
 } from '../src/services/session-memory/sessionMemory';
+import { getProjectMemoryDir } from '../src/services/config-dir';
 import * as autoFixConfigModule from '../src/services/auto-fix/autoFixConfig';
 import type { AutoFixConfig } from '../src/services/auto-fix/autoFixConfig';
 import {
@@ -405,13 +406,21 @@ describe('agent/service branch coverage: Coordinator', () => {
 
 describe('agent/service branch coverage: SessionMemory', () => {
   let projectPath: string;
+  let configDir: string;
+  let originalConfigDir: string | undefined;
 
   beforeEach(() => {
     projectPath = mkdtempSync(join(tmpdir(), 'orion-session-memory-'));
+    configDir = mkdtempSync(join(tmpdir(), 'orion-session-memory-config-'));
+    originalConfigDir = process.env.ORION_CODE_CONFIG_DIR;
+    process.env.ORION_CODE_CONFIG_DIR = configDir;
   });
 
   afterEach(() => {
     rmSync(projectPath, { recursive: true, force: true });
+    rmSync(configDir, { recursive: true, force: true });
+    if (originalConfigDir === undefined) delete process.env.ORION_CODE_CONFIG_DIR;
+    else process.env.ORION_CODE_CONFIG_DIR = originalConfigDir;
   });
 
   test('handles disabled mode, missing files, force update, and clear variants', () => {
@@ -428,7 +437,9 @@ describe('agent/service branch coverage: SessionMemory', () => {
   });
 
   test('loads an existing file and writes when the tool-call frequency is reached', () => {
-    const file = join(projectPath, 'memory.md');
+    const memoryDir = getProjectMemoryDir(projectPath);
+    const file = join(memoryDir, 'memory.md');
+    mkdirSync(memoryDir, { recursive: true });
     writeFileSync(file, 'existing');
     const memory = new SessionMemory(projectPath, {
       filename: 'memory.md',

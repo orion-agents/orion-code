@@ -19,7 +19,7 @@ import { Store } from '../src/framework/store';
 import { TOOLS } from '../src/tools';
 import { createContextHarness } from '../src/harness';
 import { createSession, type SessionMeta } from '../src/services/session-storage';
-import type { OpenHorseUiRuntime } from '../src/runtime/ui-events';
+import type { OrionCodeUiRuntime } from '../src/runtime/ui-events';
 import { DEFAULT_SUBAGENT_CONFIG, SubtaskExecutionError } from '../src/runtime/subagents/types';
 import type { ExecuteChildQuery } from '../src/runtime/subagents/runner';
 
@@ -63,16 +63,16 @@ jest.mock('../src/runtime/subagents/production', () => ({
 // Helpers
 // ---------------------------------------------------------------------------
 
-function createRuntime(overrides: Partial<OpenHorseUiRuntime> = {}): OpenHorseUiRuntime {
+function createRuntime(overrides: Partial<OrionCodeUiRuntime> = {}): OrionCodeUiRuntime {
   return {
     cwd: '/tmp/openhorse',
     version: 'test',
-    config: { model: 'test-model' } as OpenHorseUiRuntime['config'],
+    config: { model: 'test-model' } as OrionCodeUiRuntime['config'],
     store: {
       setProcessing: jest.fn(),
-    } as unknown as OpenHorseUiRuntime['store'],
+    } as unknown as OrionCodeUiRuntime['store'],
     llm: null,
-    runtime: {} as OpenHorseUiRuntime['runtime'],
+    runtime: {} as OrionCodeUiRuntime['runtime'],
     isConfigured: true,
     ensureSession: jest.fn(),
     setSession: jest.fn(),
@@ -260,7 +260,7 @@ describe('subagent end-to-end', () => {
 
     const evLog = makeEvents();
     const controller = new AgentChatController(
-      runtime as unknown as OpenHorseUiRuntime,
+      runtime as unknown as OrionCodeUiRuntime,
       evLog.events
     );
 
@@ -505,7 +505,7 @@ describe('subagent end-to-end', () => {
 
     const evLog2 = makeEvents();
     const controller = new AgentChatController(
-      runtime as unknown as OpenHorseUiRuntime,
+      runtime as unknown as OrionCodeUiRuntime,
       evLog2.events
     );
 
@@ -558,7 +558,7 @@ describe('subagent end-to-end', () => {
 
     const evLog3 = makeEvents();
     const controller = new AgentChatController(
-      runtime as unknown as OpenHorseUiRuntime,
+      runtime as unknown as OrionCodeUiRuntime,
       evLog3.events
     );
 
@@ -682,7 +682,7 @@ describe('subagent end-to-end', () => {
 
     const evLog4 = makeEvents();
     const controller = new AgentChatController(
-      runtime as unknown as OpenHorseUiRuntime,
+      runtime as unknown as OrionCodeUiRuntime,
       evLog4.events
     );
 

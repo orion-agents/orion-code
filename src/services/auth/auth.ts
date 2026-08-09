@@ -60,10 +60,18 @@ export interface AwsAuth {
   secretAccessKey?: string;
   /** Session Token */
   sessionToken?: string;
+  /** Optional expiration for temporary credentials (ISO-8601). */
+  expiration?: string;
   /** Region */
   region?: string;
   /** Profile */
   profile?: string;
+  /** Optional role to assume when temporary role credentials are required. */
+  roleArn?: string;
+  /** STS role session name. */
+  roleSessionName?: string;
+  /** Optional external ID required by the target role trust policy. */
+  externalId?: string;
 }
 
 // ============================================================================

@@ -5,10 +5,11 @@
  * 参考 OpenClaude 的 sessionMemory.ts 实现。
  */
 
-import { writeFileSync, readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, mkdirSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import type { Message } from '../llm';
-
+import { atomicWriteFileSync } from '../atomic-write';
+import { getProjectMemoryDir } from '../config-dir';
 
 // ============================================================================
 // 类型定义
@@ -128,7 +129,7 @@ export class SessionMemory {
     this.entries = [];
     const filePath = this.getFilePath();
     if (existsSync(filePath)) {
-      writeFileSync(filePath, '');
+      unlinkSync(filePath);
     }
   }
 
@@ -137,7 +138,7 @@ export class SessionMemory {
   // ============================================================================
 
   private getFilePath(): string {
-    return join(this.projectPath, this.config.filename!);
+    return join(getProjectMemoryDir(this.projectPath), this.config.filename!);
   }
 
   private load(): void {
@@ -153,7 +154,8 @@ export class SessionMemory {
   private update(): void {
     const filePath = this.getFilePath();
     const content = this.generateMarkdown();
-    writeFileSync(filePath, content, 'utf-8');
+    mkdirSync(getProjectMemoryDir(this.projectPath), { recursive: true, mode: 0o700 });
+    atomicWriteFileSync(filePath, content, { mode: 0o600 });
     this.lastUpdateTime = Date.now();
   }
 
@@ -295,7 +297,10 @@ export class SessionMemory {
 
 let sessionMemoryInstance: SessionMemory | null = null;
 
-export function getSessionMemory(projectPath?: string, config?: SessionMemoryConfig): SessionMemory {
+export function getSessionMemory(
+  projectPath?: string,
+  config?: SessionMemoryConfig
+): SessionMemory {
   if (!sessionMemoryInstance) {
     sessionMemoryInstance = new SessionMemory(projectPath || process.cwd(), config);
   }

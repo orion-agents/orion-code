@@ -1,35 +1,26 @@
 import { findCommand } from '../commands';
-import { AsyncLocalStorage } from 'async_hooks';
+import { randomUUID } from 'crypto';
 import { parseInput, buildCommandSuggestions } from '../commands/parser';
-import * as path from 'path';
-import type { CommandContext, CommandResult, CommandUiRenderer } from '../commands/types';
-import type {
-  LLMRequestDiagnostics,
-  Message,
-  ProviderRequestPreflight,
-  StreamCallbacks,
-} from '../services/llm';
+import type { CommandContext, CommandUiRenderer } from '../commands/types';
+import type { Message, ProviderRequestPreflight, StreamCallbacks } from '../services/llm';
 import type { SessionMessage, SessionTraceEvent } from '../services/session-storage';
 import {
   appendSessionMessage,
   appendSessionMessages,
-  appendSessionTraceEvent,
   commitSessionCompactCheckpoint,
   endSession,
   loadSessionHarnessState,
-  loadSessionTranscriptMessages,
   loadSessionHistory,
   loadSessionMeta,
   removeLastIncompleteAssistantMessage,
   removeTrailingSessionUserMessage,
   readSessionMessages,
-  readSessionTraceEvents,
-  redactTraceText,
   updateSessionHarnessState,
   updateSessionSkills,
   updateSessionSummary,
 } from '../services/session-storage';
 import { isConfigured } from '../services/config';
+import { ProviderRetryExhaustedError } from '../services/provider-resilience';
 import {
   resolveProjectToolAllowlist,
   type ToolAllowlistEvaluator,
@@ -43,16 +34,13 @@ import {
   type LoopFinishReason,
   type LoopStats,
   type PromptContext,
-  type QueryEvent,
   type QueryCompactCommit,
 } from '../framework';
 import { buildGoalContextFragment } from './goals/prompt';
 import { createContextHarness } from '../harness';
-import type { HarnessState } from '../harness/types';
 import { executeTool, getRuntimeTools } from '../tools';
 import { parseToolResultEnvelope } from '../framework/tool-serializer';
-import { storeArtifact, truncateForContext } from '../core/tool-artifacts';
-import { createCheckpoint, shouldCreateMultiFileCheckpoint } from '../core/checkpoint';
+import { storeArtifact } from '../core/tool-artifacts';
 import { resolveSkillsForTurn, hasMatchingSkill } from '../skills';
 import {
   createSubagentBundleForTurn,
@@ -70,37 +58,15 @@ import {
 } from './subagents';
 import { buildReferencedFilesPrompt } from '../services/file-context';
 import { refreshProjectInstructions } from '../services/prompt-context';
-import { formatBytes } from '../services/format';
-import {
-  captureWorkspaceSnapshot,
-  diffWorkspaceSnapshots,
-  type WorkspaceSnapshot,
-} from '../services/workspace-state';
+import { captureWorkspaceSnapshot } from '../services/workspace-state';
 import {
   collectVerificationCommandResult,
   formatVerificationGateNotice,
-  isRiskyEdit,
-  selectVerificationProfile,
   shouldGateCompletion,
-  summarizeVerificationState,
   type VerificationCommandResult,
-  type VerificationProfile,
-  type VerificationSummary,
 } from '../services/verification-profile';
-import type {
-  OpenHorseUiRuntime,
-  RuntimeHarnessDiagnostics,
-  StructuredToolActivity,
-  TranscriptEntry,
-  UiEventSink,
-  UiRendererCapabilities,
-} from './ui-events';
+import type { OrionCodeUiRuntime, UiEventSink, UiRendererCapabilities } from './ui-events';
 import { resolveUiRendererCapabilities } from './ui-events';
-import {
-  formatToolActivityTranscript,
-  toolActivityFromFinished,
-  toolActivityFromStarted,
-} from './ui-view-model';
 import {
   agentStepStatus,
   batchingSuggestion,
@@ -109,1181 +75,60 @@ import {
   verificationGateStatus,
 } from './agent-status';
 import { resolveRuntimeLoopBudget } from './loop-budget';
-import { createToolOutputView, DEFAULT_TOOL_OUTPUT_POLICY } from './tool-output-presentation';
-import { presentAggregateToolResult } from './aggregate-tool-presenter';
-
-const ANSI_PATTERN = /\x1b\[[0-9;?]*[A-Za-z]/g;
-const LOCAL_FAST_PATH_INLINE_OUTPUT_BYTES = 2048;
-const TRACE_ARGS_ARTIFACT_THRESHOLD_BYTES = 160;
-const TOOL_TRANSCRIPT_ARG_BUDGET = 512;
-
-/**
- * Runtime-only accounting confidence carried from the chat loop into Goal
- * finalization. `false` means the recorded token totals are a known lower
- * bound (for example, an in-flight provider request was aborted before usage
- * metadata arrived).
- */
-type GoalAccountingLoopStats = LoopStats & {
-  usageAccountingComplete?: boolean;
-};
-
-function stripAnsi(text: string): string {
-  return text.replace(ANSI_PATTERN, '');
-}
-
-function isAbortError(error: unknown, abortSignal?: AbortSignal): boolean {
-  if (abortSignal?.aborted) return true;
-  if (error instanceof Error) {
-    return error.name === 'AbortError' || error.message.toLowerCase().includes('aborted');
-  }
-  return false;
-}
-
-function errorLayerForChatError(error: unknown): import('./ui-events').ErrorLayer {
-  const message = error instanceof Error ? error.message : String(error);
-  const lower = message.toLowerCase();
-  if (
-    /NotEnoughCvError|code:\s*11210|provider|quota|rate.?limit|timeout|connection/i.test(message)
-  ) {
-    return 'provider';
-  }
-  if (/tool|command|exec_command|write_file|edit_file/i.test(message)) {
-    return 'tool';
-  }
-  if (/\bmcp\b/i.test(message)) return 'mcp';
-  if (/\b(session|resume|compact|harness)\b/i.test(message)) return 'session';
-  if (/\b(skill|skills)\b/i.test(message)) return 'skills';
-  if (/\b(memory|vector store|recall|forget)\b/i.test(message)) return 'memory';
-  if (/\b(renderer|terminal|tty|prompt|resize|scrollback)\b/i.test(message)) return 'renderer';
-  if (lower.includes('abort') || lower.includes('interrupted')) return 'runtime';
-  return 'unknown';
-}
-
-function formatChatError(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  if (/NotEnoughCvError|code:\s*11210/i.test(message)) {
-    return [
-      message,
-      '',
-      'Provider quota or credit appears insufficient. The Orion Code session is still active; switch model/provider or recharge the provider account, then continue.',
-    ].join('\n');
-  }
-  return message;
-}
-
-function compactMiddle(text: string, maxLength: number): string {
-  const compact = text.replace(/\s+/g, ' ').trim();
-  if (compact.length <= maxLength) return compact;
-  if (maxLength <= 3) return compact.slice(0, maxLength);
-
-  const headLength = Math.ceil((maxLength - 3) * 0.55);
-  const tailLength = Math.floor((maxLength - 3) * 0.45);
-  return `${compact.slice(0, headLength)}...${compact.slice(-tailLength)}`;
-}
-
-function compactToolArgs(args: Record<string, unknown>, maxLength = 160): string {
-  for (const key of [
-    'path',
-    'file_path',
-    'file',
-    'cwd',
-    'command',
-    'pattern',
-    'query',
-    'url',
-    'target',
-    'sessionId',
-  ]) {
-    const value = args[key];
-    if (typeof value === 'string') {
-      return compactMiddle(value, maxLength);
-    }
-  }
-  const firstString = Object.values(args).find(value => typeof value === 'string');
-  if (typeof firstString === 'string') {
-    return compactMiddle(firstString, maxLength);
-  }
-  return '';
-}
-
-interface TraceArgsDetails {
-  argsSummary: string;
-  argsArtifactId?: string;
-  argsBytes?: number;
-}
-
-function fullToolArgsForTrace(name: string, args: Record<string, unknown>): string {
-  if (name === 'exec_command' && typeof args.command === 'string') {
-    return `$ ${args.command}`;
-  }
-
-  try {
-    return JSON.stringify(args, null, 2);
-  } catch {
-    return compactToolArgs(args, 2048);
-  }
-}
-
-function buildTraceArgsDetails(
-  projectPath: string | undefined,
-  name: string,
-  args: Record<string, unknown>
-): TraceArgsDetails {
-  const argsSummary = compactToolArgs(args);
-  const fullArgs = redactTraceText(fullToolArgsForTrace(name, args)).trim();
-  const argsBytes = byteLength(fullArgs);
-
-  if (
-    !projectPath ||
-    !fullArgs ||
-    fullArgs === redactTraceText(argsSummary) ||
-    argsBytes <= TRACE_ARGS_ARTIFACT_THRESHOLD_BYTES
-  ) {
-    return { argsSummary };
-  }
-
-  const artifact = storeArtifact(projectPath, `${name}-args`, fullArgs, argsBytes);
-  return artifact ? { argsSummary, argsArtifactId: artifact.id, argsBytes } : { argsSummary };
-}
-
-function parseToolCallArgsForRuntime(
-  toolCall: NonNullable<Message['tool_calls']>[number]
-): Record<string, unknown> | null {
-  try {
-    const parsed = JSON.parse(toolCall.function.arguments || '{}');
-    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function resolveProjectScopedPath(cwd: string, filePath: string): string | null {
-  const absolute = path.resolve(cwd, filePath);
-  const relative = path.relative(cwd, absolute);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
-  return absolute;
-}
-
-function checkpointTargetsFromToolCalls(
-  cwd: string,
-  toolCalls: NonNullable<Message['tool_calls']>
-): string[] {
-  const targets = new Set<string>();
-  for (const toolCall of toolCalls) {
-    const name = toolCall.function.name;
-    if (name !== 'write_file' && name !== 'edit_file') continue;
-
-    const args = parseToolCallArgsForRuntime(toolCall);
-    if (!args || typeof args.path !== 'string') continue;
-    if (name === 'edit_file' && args.preview === true) continue;
-
-    const target = resolveProjectScopedPath(cwd, args.path);
-    if (target) targets.add(target);
-  }
-  return Array.from(targets);
-}
-
-function createPreToolCheckpoint(
-  events: UiEventSink,
-  sessionId: string | undefined,
-  turnId: string,
-  checkpointId: string,
-  cwd: string,
-  toolCalls: NonNullable<Message['tool_calls']>
-): { created: boolean; targetCount: number; risky: boolean } {
-  const targets = checkpointTargetsFromToolCalls(cwd, toolCalls);
-  if (targets.length === 0) return { created: false, targetCount: 0, risky: false };
-
-  const risky = shouldCreateMultiFileCheckpoint(targets.length);
-  const checkpoint = createCheckpoint(cwd, checkpointId, targets);
-  if (!sessionId) return { created: true, targetCount: targets.length, risky };
-
-  const relativeTargets = targets.map(target => path.relative(cwd, target));
-  recordTraceEvent(events, sessionId, {
-    turnId,
-    type: 'checkpoint',
-    checkpointId,
-    checkpointFileCount: checkpoint?.files.length ?? 0,
-    checkpointFiles: checkpoint?.files.map(file => file.path) ?? [],
-    workspaceFiles: relativeTargets,
-    note: checkpoint
-      ? risky
-        ? 'risky_multi_file_checkpoint'
-        : 'pre_edit_checkpoint'
-      : 'pre_edit_checkpoint_skipped',
-  });
-  return { created: true, targetCount: targets.length, risky };
-}
-
-function byteLength(text: string): number {
-  return Buffer.byteLength(text, 'utf8');
-}
-
-function traceTurnId(turnId: number | string | undefined): string {
-  return turnId == null ? `turn-${Date.now()}` : String(turnId);
-}
-
-function compactTraceError(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  return compactMiddle(message, 240);
-}
-
-function getLastRequestDiagnostics(
-  llm: OpenHorseUiRuntime['llm']
-): LLMRequestDiagnostics | undefined {
-  if (!llm) return undefined;
-  const reader = (
-    llm as unknown as {
-      getLastRequestDiagnostics?: () => LLMRequestDiagnostics;
-    }
-  ).getLastRequestDiagnostics;
-  return typeof reader === 'function' ? reader.call(llm) : undefined;
-}
-
-function compactPathList(paths: string[], maxItems = 40): string[] {
-  return paths.slice(0, maxItems);
-}
-
-function formatWorkspaceFileForTrace(file: WorkspaceSnapshot['files'][number]): string {
-  const metadata = [
-    typeof file.sizeBytes === 'number' ? `${file.sizeBytes}B` : '',
-    typeof file.mtimeMs === 'number' ? `mtime=${file.mtimeMs}` : '',
-  ]
-    .filter(Boolean)
-    .join(' ');
-  return `${file.status} ${file.path}${metadata ? ` (${metadata})` : ''}`;
-}
-
-function appendWorkspaceSnapshotTrace(
-  events: UiEventSink,
-  sessionId: string | undefined,
-  turnId: string,
-  phase: 'pre_turn' | 'post_turn',
-  snapshot: WorkspaceSnapshot
-): void {
-  if (!sessionId) return;
-  recordTraceEvent(events, sessionId, {
-    turnId,
-    type: 'workspace_snapshot',
-    workspacePhase: phase,
-    workspaceGitAvailable: snapshot.gitAvailable,
-    workspaceDirty: snapshot.dirty,
-    workspaceBranch: snapshot.branch,
-    workspaceFileCount: snapshot.fileCount,
-    workspaceFiles: compactPathList(snapshot.files.map(formatWorkspaceFileForTrace)),
-    error: snapshot.error ? compactMiddle(snapshot.error, 240) : undefined,
-  });
-}
-
-function appendWorkspaceDeltaTrace(
-  events: UiEventSink,
-  sessionId: string | undefined,
-  turnId: string,
-  before: WorkspaceSnapshot,
-  after: WorkspaceSnapshot
-): ReturnType<typeof diffWorkspaceSnapshots> {
-  const delta = diffWorkspaceSnapshots(before, after);
-  if (sessionId) {
-    recordTraceEvent(events, sessionId, {
-      turnId,
-      type: 'workspace_delta',
-      workspaceFileCount: delta.filesAfterTurn.length,
-      workspaceFiles: compactPathList(delta.filesAfterTurn),
-      workspaceNewByTurn: compactPathList(delta.newFilesByTurn),
-      workspaceChangedByTurn: compactPathList(delta.changedByTurn),
-      workspaceModifiedPreExistingByTurn: compactPathList(delta.modifiedPreExistingByTurn),
-      workspaceResolvedByTurn: compactPathList(delta.resolvedByTurn),
-      note: `pre_existing=${delta.preExistingFiles.length}`,
-    });
-  }
-  return delta;
-}
-
-function workspaceDeltaHasTurnChanges(delta: ReturnType<typeof diffWorkspaceSnapshots>): boolean {
-  return (
-    delta.newFilesByTurn.length > 0 ||
-    delta.changedByTurn.length > 0 ||
-    delta.resolvedByTurn.length > 0
-  );
-}
-
-function formatFailureRecoveryNotice(
-  turnId: string,
-  delta: ReturnType<typeof diffWorkspaceSnapshots>,
-  checkpointIds: string[]
-): string {
-  const files = compactPathList(
-    [...delta.newFilesByTurn, ...delta.changedByTurn, ...delta.resolvedByTurn],
-    8
-  );
-  const fileText = files.length > 0 ? files.join(', ') : 'workspace changes recorded';
-  const checkpointText =
-    checkpointIds.length > 0
-      ? ` Checkpoints: ${checkpointIds.join(', ')}. Preview rollback with /checkpoint restore <id>; restore each listed checkpoint if multiple.`
-      : '';
-  return `Turn failed after modifying files: ${fileText}. Inspect /trace ${turnId}.${checkpointText}`;
-}
-
-function appendVerificationProfileTrace(
-  events: UiEventSink,
-  sessionId: string | undefined,
-  turnId: string,
-  profile: VerificationProfile
-): void {
-  if (!sessionId || profile.changedFiles.length === 0) return;
-  recordTraceEvent(events, sessionId, {
-    turnId,
-    type: 'verification_profile',
-    verificationProfile: profile.profile,
-    verificationRequired: profile.required,
-    verificationRisky: isRiskyEdit(profile.changedFiles),
-    verificationCommands: compactPathList(profile.commands, 8),
-    verificationChangedFiles: compactPathList(profile.changedFiles),
-    note: profile.reason,
-  });
-}
-
-function appendVerificationResultTrace(
-  events: UiEventSink,
-  sessionId: string | undefined,
-  turnId: string,
-  result: VerificationCommandResult
-): void {
-  if (!sessionId) return;
-  recordTraceEvent(events, sessionId, {
-    turnId,
-    type: 'verification_result',
-    verificationCommand: result.command,
-    verificationPassed: result.success,
-    outputBytes: result.outputBytes,
-    error: result.error ? compactMiddle(result.error, 240) : undefined,
-  });
-}
-
-function appendVerificationSummaryTrace(
-  events: UiEventSink,
-  sessionId: string | undefined,
-  turnId: string,
-  summary: VerificationSummary,
-  changedFiles: string[]
-): void {
-  if (!sessionId || changedFiles.length === 0) return;
-  recordTraceEvent(events, sessionId, {
-    turnId,
-    type: 'verification_summary',
-    verificationProfile: summary.profile,
-    verificationRequired: summary.required,
-    verificationCommands: compactPathList(summary.commandsRun, 12),
-    verificationPassedCommands: compactPathList(summary.passedCommands, 12),
-    verificationFailedCommands: compactPathList(summary.failedCommands, 12),
-    verificationMissingCommands: compactPathList(summary.missingCommands, 12),
-    verificationChangedFiles: compactPathList(changedFiles),
-    verificationClaimAllowed: summary.claimAllowed,
-    note: summary.skippedReason,
-  });
-}
-
-function compactVerificationCommands(commands: string[], maxItems = 12): string[] {
-  return commands.slice(0, maxItems).map(redactTraceText);
-}
-
-function withVerificationLoopStats(stats: LoopStats, summary: VerificationSummary): LoopStats {
-  return {
-    ...stats,
-    verificationProfile: summary.profile,
-    verificationRequired: summary.required,
-    verificationClaimAllowed: summary.claimAllowed,
-    verificationPassedCommands: compactVerificationCommands(summary.passedCommands),
-    verificationFailedCommands: compactVerificationCommands(summary.failedCommands),
-    verificationMissingCommands: compactVerificationCommands(summary.missingCommands),
-    verificationSkippedReason: summary.skippedReason
-      ? redactTraceText(summary.skippedReason)
-      : undefined,
-  };
-}
-
-function shouldRecordVerificationLoopStats(
-  profile: VerificationProfile,
-  summary: VerificationSummary
-): boolean {
-  return (
-    profile.changedFiles.length > 0 ||
-    summary.commandsRun.length > 0 ||
-    summary.passedCommands.length > 0 ||
-    summary.failedCommands.length > 0 ||
-    summary.missingCommands.length > 0
-  );
-}
-
-function appendPostWorkspaceTrace(
-  events: UiEventSink,
-  sessionId: string | undefined,
-  turnId: string,
-  cwd: string,
-  before: WorkspaceSnapshot,
-  verificationResults: VerificationCommandResult[] = []
-): {
-  delta: ReturnType<typeof diffWorkspaceSnapshots>;
-  profile: VerificationProfile;
-  summary: VerificationSummary;
-} {
-  const postWorkspace = captureWorkspaceSnapshot(cwd);
-  appendWorkspaceSnapshotTrace(events, sessionId, turnId, 'post_turn', postWorkspace);
-  const delta = appendWorkspaceDeltaTrace(events, sessionId, turnId, before, postWorkspace);
-  const profile = selectVerificationProfile(cwd, delta.changedByTurn);
-  const summary = summarizeVerificationState(profile, verificationResults);
-  appendVerificationProfileTrace(events, sessionId, turnId, profile);
-  appendVerificationSummaryTrace(events, sessionId, turnId, summary, profile.changedFiles);
-  return { delta, profile, summary };
-}
-
-function appendAssistantNotice(messages: SessionMessage[], notice: string): void {
-  for (let index = messages.length - 1; index >= 0; index--) {
-    const message = messages[index];
-    if (message.role === 'assistant' && !message.tool_calls) {
-      message.content = message.content ? `${message.content}\n\n${notice}` : notice;
-      return;
-    }
-  }
-  messages.push({
-    role: 'assistant',
-    content: notice,
-    timestamp: Date.now(),
-  });
-}
-
-function recordTraceEvent(
-  events: UiEventSink,
-  sessionId: string | undefined,
-  event: Omit<SessionTraceEvent, 'sessionId' | 'timestamp'> & { timestamp?: number }
-): SessionTraceEvent | null {
-  if (!sessionId) return null;
-  const goal = goalTraceContext.getStore();
-  const traceEvent = appendSessionTraceEvent(sessionId, {
-    ...event,
-    goalId: goal?.goalId,
-    goalRevision: goal?.goalRevision,
-    goalInputKind: goal?.goalInputKind,
-    goalStopReason: goal?.getStopReason(),
-  });
-  if (traceEvent) {
-    events.traceEventRecorded?.(traceEvent);
-  }
-  return traceEvent;
-}
-
-function recordProviderTraceEvents(
-  events: UiEventSink,
-  sessionId: string | undefined,
-  turnId: string,
-  stats: LoopStats
-): void {
-  if ((stats.providerRetryCount ?? 0) > 0) {
-    recordTraceEvent(events, sessionId, {
-      turnId,
-      type: 'provider_retry',
-      providerRetryCount: stats.providerRetryCount,
-      providerRetryDelayMs: stats.providerRetryDelayMs,
-      providerRetryErrorTypes: stats.providerRetryErrorTypes,
-      providerLastRetryErrorType: stats.providerLastRetryErrorType,
-      providerLastRetryStatus: stats.providerLastRetryStatus,
-      providerFinalModel: stats.providerFinalModel,
-      providerUsingFallback: stats.providerUsingFallback,
-    });
-  }
-
-  if ((stats.providerFallbackCount ?? 0) > 0 || stats.providerUsingFallback) {
-    recordTraceEvent(events, sessionId, {
-      turnId,
-      type: 'provider_fallback',
-      providerFallbackCount: stats.providerFallbackCount,
-      providerFallbackFromModel: stats.providerFallbackFromModel,
-      providerFallbackToModel: stats.providerFallbackToModel,
-      providerFinalModel: stats.providerFinalModel,
-      providerUsingFallback: stats.providerUsingFallback,
-    });
-  }
-}
-
-function toHarnessDiagnostics(state: HarnessState): RuntimeHarnessDiagnostics {
-  const stats = state.promptAssemblyStats;
-  const redactOptional = (value: string | undefined): string | undefined =>
-    typeof value === 'string' ? redactTraceText(value) : undefined;
-  const redactList = (values: string[] | undefined): string[] | undefined =>
-    values?.slice(0, 6).map(redactTraceText);
-  return {
-    taskEpoch: state.taskEpoch,
-    rootObjective: redactOptional(state.rootObjective ?? state.contract?.objective),
-    activeInstruction: redactOptional(state.activeInstruction ?? state.contract?.userIntent),
-    openQuestions: redactList(state.openQuestions),
-    diagnostics: redactList(state.diagnostics?.slice(-6)),
-    ledgerSize: state.ledger?.length ?? 0,
-    evidenceSize: state.evidenceIndex?.length ?? 0,
-    turnSummaryCount: state.turnSummaries?.length ?? 0,
-    promptAssembly: stats
-      ? {
-          modelId: stats.modelId,
-          estimatedTokens: stats.estimatedTokens,
-          budgetTokens: stats.budgetTokens,
-          sections: stats.sections.slice(0, 12),
-          includedEvidence: stats.includedEvidence.length,
-          omittedEvidence: stats.omittedEvidence.length,
-        }
-      : undefined,
-  };
-}
-
-function emitHarnessDiagnostics(events: UiEventSink, state: HarnessState): void {
-  events.harnessDiagnosticsUpdated?.(toHarnessDiagnostics(state));
-}
-
-function toolStartContent(event: ToolCallEvent): string {
-  return formatToolActivityTranscript(
-    toolActivityFromStarted(event, compactToolArgs(event.args, TOOL_TRANSCRIPT_ARG_BUDGET))
-  );
-}
-
-function toolFinishContent(event: ToolResultEvent): string {
-  return formatToolActivityTranscript(
-    toolActivityFromFinished(event, compactToolArgs(event.args, TOOL_TRANSCRIPT_ARG_BUDGET))
-  );
-}
-
-function structuredToolStartActivity(event: ToolCallEvent, seq: number): StructuredToolActivity {
-  const command =
-    event.name === 'exec_command' && typeof event.args.command === 'string'
-      ? event.args.command
-      : undefined;
-  const safeCommand = command ? redactTraceText(command) : undefined;
-  return {
-    state: 'running',
-    name: event.name,
-    detail: command ? '' : redactTraceText(compactToolArgs(event.args, TOOL_TRANSCRIPT_ARG_BUDGET)),
-    command: safeCommand,
-    body: '',
-    seq,
-  };
-}
-
-interface ToolEventPresenterOptions {
-  projectPath?: string;
-  turnId?: string;
-}
-
-function structuredToolFinishActivity(
-  event: ToolResultEvent,
-  seq: number,
-  options: ToolEventPresenterOptions = {}
-): StructuredToolActivity {
-  const modelVisible = parseToolResultEnvelope(event.modelVisibleResult);
-  const durable = parseToolResultEnvelope(event.result);
-  const durableOutput = typeof durable.output === 'string' ? durable.output : '';
-  const displayOutput =
-    typeof modelVisible.output === 'string' ? modelVisible.output : durableOutput;
-  const outputBytes = event.outputBytes ?? Buffer.byteLength(durableOutput, 'utf8');
-  const aggregatePresentation = presentAggregateToolResult(event.name, durableOutput, outputBytes);
-  const aggregate = aggregatePresentation?.view;
-  const storedArtifact =
-    event.artifactRef ??
-    (options.projectPath &&
-    durableOutput &&
-    (outputBytes > DEFAULT_TOOL_OUTPUT_POLICY.inlineMaxBytes || aggregate)
-      ? (storeArtifact(options.projectPath, event.name, durableOutput, outputBytes) ?? undefined)
-      : undefined);
-  const artifactRef = storedArtifact
-    ? { id: storedArtifact.id, outputBytes: storedArtifact.outputBytes }
-    : undefined;
-  const outputView = createToolOutputView({
-    toolName: event.name,
-    success: event.success,
-    summary: event.summary,
-    rawOutput: durableOutput.length <= 64 * 1024 ? durableOutput : displayOutput,
-    outputBytes,
-    artifactRef,
-    callId: event.callId,
-    sequence: seq,
-    turnId: options.turnId,
-    policy: DEFAULT_TOOL_OUTPUT_POLICY,
-  });
-  if (aggregate) {
-    outputView.aggregate = {
-      ...aggregate,
-      steps: aggregate.steps.map(step => ({ ...step, detailRef: outputView.detailRef })),
-    };
-  }
-  const command =
-    event.name === 'exec_command' && typeof event.args.command === 'string'
-      ? event.args.command
-      : undefined;
-  const safeCommand = command ? redactTraceText(command) : undefined;
-  return {
-    state: event.success ? 'success' : 'error',
-    name: event.name,
-    detail: command ? '' : redactTraceText(compactToolArgs(event.args, TOOL_TRANSCRIPT_ARG_BUDGET)),
-    command: safeCommand,
-    duration: `${event.duration}ms`,
-    summary: event.summary ? redactTraceText(event.summary.split(/\r?\n/u, 1)[0]) : undefined,
-    outputBytes,
-    body: redactTraceText(modelVisible.output),
-    error: event.error ? redactTraceText(event.error) : undefined,
-    seq,
-    artifactHint: artifactRef ? `/artifacts show ${artifactRef.id} --full` : undefined,
-    callId: event.callId,
-    turnId: options.turnId,
-    outputView,
-  };
-}
-
-function isSyntheticCompactContext(content: string): boolean {
-  return (
-    content.startsWith('[Orion Code Context State v2]') ||
-    content.startsWith('[Context Summary]') ||
-    content.startsWith('I will continue from this Orion Code Context State') ||
-    content.startsWith(
-      'I understand the context. I will continue the conversation with this background information.'
-    )
-  );
-}
-
-function sessionToolCallSummaries(message: SessionMessage): Array<{ id: string; content: string }> {
-  return (message.tool_calls ?? []).map(call => {
-    const args = parseToolCallArgs(call.function.arguments);
-    const detail = compactToolArgs(args);
-    return {
-      id: call.id,
-      content: `Requested ${call.function.name}${detail ? ` ${detail}` : ''}`,
-    };
-  });
-}
-
-function parseToolCallArgs(rawArgs: string | undefined): Record<string, unknown> {
-  try {
-    return rawArgs ? (JSON.parse(rawArgs) as Record<string, unknown>) : {};
-  } catch {
-    return rawArgs ? { arguments: rawArgs } : {};
-  }
-}
-
-function parseSessionToolResult(content: string): {
-  success: boolean;
-  error?: string;
-  summary?: string;
-} {
-  try {
-    const parsed = JSON.parse(content) as { success?: unknown; error?: unknown; summary?: unknown };
-    return {
-      success: parsed.success === true,
-      error: typeof parsed.error === 'string' ? parsed.error : undefined,
-      summary: typeof parsed.summary === 'string' ? parsed.summary : undefined,
-    };
-  } catch {
-    return { success: false, error: 'Invalid JSON result' };
-  }
-}
-
-function removeTrailingUserMessage(runtime: OpenHorseUiRuntime): void {
-  const history = runtime.store.getSnapshot().conversationHistory;
-  if (history.length === 0) return;
-
-  const lastMsg = history[history.length - 1];
-  if (lastMsg?.role === 'user') {
-    runtime.store.setState({ conversationHistory: history.slice(0, -1) });
-  }
-}
-
-function sessionToolResultSummary(
-  message: SessionMessage,
-  toolCallsById: Map<string, NonNullable<SessionMessage['tool_calls']>[number]>
-): string | null {
-  if (!message.toolCallId) return null;
-  const call = toolCallsById.get(message.toolCallId);
-  if (!call) return null;
-
-  const args = parseToolCallArgs(call.function.arguments);
-  const detail = compactToolArgs(args);
-  const parsed = parseSessionToolResult(message.content);
-  const firstLine =
-    parsed.summary ||
-    `${parsed.success ? '✓' : '✗'} ${call.function.name}${detail ? ` ${detail}` : ''}`;
-  return parsed.error ? `${firstLine}\nError: ${parsed.error}` : firstLine;
-}
-
-export interface SessionTranscriptEntryOptions {
-  includeToolOutputViews?: boolean;
-}
-
-export function sessionMessagesToTranscriptEntries(
-  sessionId: string,
-  options: SessionTranscriptEntryOptions = {}
-): TranscriptEntry[] {
-  const messages = loadSessionTranscriptMessages(sessionId);
-  const resultTraces = options.includeToolOutputViews
-    ? readSessionTraceEvents(sessionId).filter(
-        trace => trace.type === 'tool_result' && trace.callId
-      )
-    : [];
-  const resultTraceByCallId = new Map(resultTraces.map(trace => [trace.callId!, trace]));
-  const sequenceByCallId = new Map<string, number>();
-  resultTraces.forEach((trace, index) => {
-    if (!sequenceByCallId.has(trace.callId!)) sequenceByCallId.set(trace.callId!, index + 1);
-  });
-  const entries: TranscriptEntry[] = [];
-  const toolCallsById = new Map<string, NonNullable<SessionMessage['tool_calls']>[number]>();
-  const completedToolCallIds = new Set<string>();
-  let fallbackToolSequence = 0;
-
-  for (const message of messages) {
-    for (const call of message.tool_calls ?? []) {
-      toolCallsById.set(call.id, call);
-    }
-    if (message.role === 'tool' && message.toolCallId) {
-      completedToolCallIds.add(message.toolCallId);
-    }
-  }
-
-  messages.forEach((message, index) => {
-    if (isSyntheticCompactContext(message.content)) return;
-
-    const idBase = `session-${sessionId.slice(0, 8)}-${index}`;
-    if (message.role === 'user') {
-      entries.push({ id: `${idBase}-user`, role: 'user', content: message.content });
-      return;
-    }
-
-    if (message.role === 'assistant') {
-      if (message.content?.trim()) {
-        entries.push({ id: `${idBase}-assistant`, role: 'assistant', content: message.content });
-      }
-      for (const summary of sessionToolCallSummaries(message)) {
-        if (!completedToolCallIds.has(summary.id)) {
-          entries.push({
-            id: `${idBase}-tool-call-${entries.length}`,
-            role: 'tool',
-            content: summary.content,
-          });
-        }
-      }
-      return;
-    }
-
-    if (message.role === 'tool') {
-      const summary = sessionToolResultSummary(message, toolCallsById);
-      const call = message.toolCallId ? toolCallsById.get(message.toolCallId) : undefined;
-      const trace = message.toolCallId ? resultTraceByCallId.get(message.toolCallId) : undefined;
-      const durable = parseToolResultEnvelope(message.content);
-      const modelVisible = message.modelVisibleContent
-        ? parseToolResultEnvelope(message.modelVisibleContent)
-        : durable;
-      const durableOutput = typeof durable.output === 'string' ? durable.output : '';
-      const displayOutput =
-        typeof modelVisible.output === 'string' ? modelVisible.output : durableOutput;
-      const outputBytes =
-        trace?.outputBytes ??
-        (durable.schemaVersion === 1 ? durable.outputBytes : undefined) ??
-        Buffer.byteLength(durableOutput, 'utf8');
-      const artifactId = durable.artifactRef?.id ?? trace?.artifactId;
-      fallbackToolSequence += 1;
-      const sequence = message.toolCallId
-        ? (sequenceByCallId.get(message.toolCallId) ?? fallbackToolSequence)
-        : fallbackToolSequence;
-      const outputView =
-        options.includeToolOutputViews && call && message.toolCallId
-          ? createToolOutputView({
-              toolName: call.function.name,
-              success: durable.success,
-              summary: durable.summary,
-              rawOutput: durableOutput.length <= 64 * 1024 ? durableOutput : displayOutput,
-              outputBytes,
-              artifactRef: artifactId ? { id: artifactId, outputBytes } : undefined,
-              callId: message.toolCallId,
-              sequence,
-              turnId: trace?.turnId,
-              policy: DEFAULT_TOOL_OUTPUT_POLICY,
-            })
-          : undefined;
-      entries.push({
-        id: `${idBase}-tool`,
-        role: 'tool',
-        content:
-          summary ??
-          (message.toolCallId
-            ? `Tool result ${message.toolCallId}\n${message.content}`
-            : message.content),
-        toolActivity:
-          call && message.toolCallId && outputView
-            ? {
-                state: durable.success ? 'success' : 'error',
-                name: call.function.name,
-                detail: redactTraceText(
-                  compactToolArgs(parseToolCallArgs(call.function.arguments))
-                ),
-                summary: durable.summary
-                  ? redactTraceText(durable.summary.split(/\r?\n/u, 1)[0])
-                  : undefined,
-                outputBytes,
-                body: redactTraceText(
-                  durableOutput.length <= 64 * 1024 ? durableOutput : displayOutput
-                ),
-                error: durable.error ? redactTraceText(durable.error) : undefined,
-                duration: typeof trace?.duration === 'number' ? `${trace.duration}ms` : undefined,
-                seq: sequence,
-                artifactHint: artifactId ? `/artifacts show ${artifactId} --full` : undefined,
-                callId: message.toolCallId,
-                turnId: trace?.turnId,
-                outputView,
-              }
-            : undefined,
-      });
-      return;
-    }
-
-    if (message.role === 'system') {
-      entries.push({ id: `${idBase}-system`, role: 'system', content: message.content });
-    }
-  });
-
-  return entries;
-}
-
-export interface AssistantStreamPresenter {
-  appendChunk(chunk: string): void;
-  closeSegment(): void;
-  discardSegment(): void;
-  ensureMessage(content: string): void;
-  replaceMessage(content: string): void;
-}
-
-export function createAssistantStreamPresenter(
-  events: UiEventSink,
-  abortSignal?: AbortSignal
-): AssistantStreamPresenter {
-  let activeSegmentText = '';
-  let activeEntryId: string | null = null;
-
-  const ensureLiveEntry = (): string | null => {
-    if (abortSignal?.aborted || !activeSegmentText) return null;
-    if (activeEntryId) {
-      events.update(activeEntryId, { content: activeSegmentText });
-      return activeEntryId;
-    }
-
-    activeEntryId = events.append({
-      role: 'assistant',
-      content: activeSegmentText,
-      live: true,
-    });
-    return activeEntryId;
-  };
-
-  const flushSegment = (): void => {
-    if (abortSignal?.aborted) {
-      if (activeEntryId) events.remove(activeEntryId);
-      activeEntryId = null;
-      activeSegmentText = '';
-      return;
-    }
-
-    const entryId = ensureLiveEntry();
-    if (!entryId) return;
-    events.finalize(entryId);
-    activeEntryId = null;
-    activeSegmentText = '';
-  };
-
-  return {
-    appendChunk(chunk: string): void {
-      if (abortSignal?.aborted || !chunk) return;
-      activeSegmentText += chunk;
-      ensureLiveEntry();
-    },
-
-    closeSegment(): void {
-      flushSegment();
-    },
-
-    discardSegment(): void {
-      if (activeEntryId) events.remove(activeEntryId);
-      activeEntryId = null;
-      activeSegmentText = '';
-    },
-
-    ensureMessage(content: string): void {
-      if (abortSignal?.aborted || !content || activeSegmentText.length > 0) return;
-      activeSegmentText = content;
-      ensureLiveEntry();
-    },
-
-    replaceMessage(content: string): void {
-      if (abortSignal?.aborted || !content) return;
-      activeSegmentText = content;
-      ensureLiveEntry();
-    },
-  };
-}
-
-type ToolCallEvent = Extract<QueryEvent, { type: 'tool_call' }>;
-type ToolResultEvent = Extract<QueryEvent, { type: 'tool_result' }>;
-
-interface GoalTraceContext {
-  goalId: string;
-  goalRevision: number;
-  goalInputKind: import('./goals/types').AgentInputKind;
-  getStopReason: () => string | undefined;
-}
-
-const goalTraceContext = new AsyncLocalStorage<GoalTraceContext>();
-
-interface LocalFastPathAction {
-  tool: string;
-  args: Record<string, unknown>;
-  label: string;
-}
-
-class LocalFastPathBlockedError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'LocalFastPathBlockedError';
-  }
-}
-
-function parseLocalFastPath(input: string): LocalFastPathAction | null {
-  const text = input.trim();
-  if (/^git\s+status$/i.test(text)) {
-    return { tool: 'git_status', args: {}, label: 'git status' };
-  }
-
-  const readMatch = /^(?:read|读取)\s+(.+)$/i.exec(text);
-  const readTarget = readMatch?.[1]?.trim();
-  const looksLikePath =
-    Boolean(readTarget) &&
-    !/\s/.test(readTarget!) &&
-    (/[/\\.]/.test(readTarget!) || readTarget!.startsWith('~'));
-  if (readTarget && looksLikePath) {
-    return { tool: 'read_file', args: { path: readTarget }, label: `read ${readTarget}` };
-  }
-
-  const grepMatch = /^(?:grep|搜索)\s+(.+)$/i.exec(text);
-  if (grepMatch?.[1]?.trim()) {
-    return {
-      tool: 'grep',
-      args: { pattern: grepMatch[1].trim() },
-      label: `grep ${grepMatch[1].trim()}`,
-    };
-  }
-
-  const runTestMatch = /^(?:run\s+test|运行测试)\s*[:：]\s*(.+)$/i.exec(text);
-  if (runTestMatch?.[1]?.trim()) {
-    return {
-      tool: 'exec_command',
-      args: { command: runTestMatch[1].trim() },
-      label: `run test: ${runTestMatch[1].trim()}`,
-    };
-  }
-
-  return null;
-}
-
-function formatLocalFastPathAssistantContent(
-  action: LocalFastPathAction,
-  rawResult: string,
-  projectPath: string
-): { content: string; artifactRef?: { id: string; outputBytes: number } } {
-  const envelope = parseToolResultEnvelope(rawResult);
-  const rawOutput = typeof envelope.output === 'string' ? envelope.output : '';
-  const output = rawOutput.trim();
-  const summary = envelope.summary || `${action.tool} ${envelope.success ? 'completed' : 'failed'}`;
-  const lines = [
-    envelope.success
-      ? `Local fast path completed ${action.label}.`
-      : `Local fast path failed ${action.label}.`,
-    '',
-    summary,
-  ];
-  if (!envelope.success && envelope.error) {
-    lines.push(`Error: ${envelope.error}`);
-  }
-
-  if (!output) {
-    return { content: lines.join('\n'), artifactRef: envelope.artifactRef };
-  }
-
-  let artifactRef = envelope.artifactRef;
-  let preview = output;
-  const outputBytes = envelope.outputBytes ?? byteLength(rawOutput);
-  if (byteLength(rawOutput) > LOCAL_FAST_PATH_INLINE_OUTPUT_BYTES) {
-    if (!artifactRef) {
-      const artifact = storeArtifact(projectPath, action.tool, rawOutput, outputBytes);
-      artifactRef = artifact ? { id: artifact.id, outputBytes: artifact.outputBytes } : undefined;
-    }
-    preview = truncateForContext(output, LOCAL_FAST_PATH_INLINE_OUTPUT_BYTES);
-  }
-
-  if (artifactRef) {
-    lines.push(
-      '',
-      `Full output: /artifacts show ${artifactRef.id} --full (${formatBytes(artifactRef.outputBytes)})`
-    );
-  }
-  lines.push('', 'Preview:', preview);
-  return { content: lines.join('\n'), artifactRef };
-}
-
-export interface ToolEventPresenter {
-  start(event: ToolCallEvent): void;
-  finish(event: ToolResultEvent): void;
-  finalizePendingAsSkipped(reason?: string): void;
-}
-
-export function createToolEventPresenter(
-  events: UiEventSink,
-  options: ToolEventPresenterOptions = {}
-): ToolEventPresenter {
-  const runningToolEntries = new Map<
-    string,
-    {
-      entryId: string;
-      name: string;
-      args: Record<string, unknown>;
-      sequence: number;
-      batchCount?: number;
-      batchIndex?: number;
-    }
-  >();
-  let toolSequenceCounter = 0;
-
-  return {
-    start(event: ToolCallEvent): void {
-      const seq = ++toolSequenceCounter;
-      const entryId = events.append({
-        role: 'tool',
-        title: 'tool',
-        content: toolStartContent(event),
-        toolActivity: structuredToolStartActivity(event, seq),
-      });
-      runningToolEntries.set(event.callId, {
-        entryId,
-        name: event.name,
-        args: event.args,
-        sequence: seq,
-        batchCount: event.batchCount,
-        batchIndex: event.batchIndex,
-      });
-      events.toolStarted?.({
-        callId: event.callId,
-        name: event.name,
-        args: event.args,
-        sequence: seq,
-        batchCount: event.batchCount,
-        batchIndex: event.batchIndex,
-      });
-    },
-
-    finish(event: ToolResultEvent): void {
-      const content = toolFinishContent(event);
-      const stored = runningToolEntries.get(event.callId);
-      const seq = stored?.sequence ?? ++toolSequenceCounter;
-      const toolActivity = structuredToolFinishActivity(event, seq, options);
-
-      if (stored) {
-        events.finalize(stored.entryId, {
-          role: event.success ? 'tool' : 'error',
-          title: 'tool',
-          content,
-          toolActivity,
-        });
-        runningToolEntries.delete(event.callId);
-      } else {
-        const entryId = events.append({
-          role: event.success ? 'tool' : 'error',
-          title: 'tool',
-          content,
-          toolActivity,
-        });
-        events.finalize(entryId);
-      }
-
-      events.toolFinished?.({
-        callId: event.callId,
-        name: event.name,
-        args: event.args,
-        success: event.success,
-        duration: event.duration,
-        summary: event.summary,
-        error: event.error,
-        outputBytes: event.outputBytes,
-        artifactRef: toolActivity.outputView?.detailRef?.artifactId
-          ? {
-              id: toolActivity.outputView.detailRef.artifactId,
-              outputBytes: toolActivity.outputView.detailRef.outputBytes,
-            }
-          : event.artifactRef,
-        externalAssertion: event.externalAssertion,
-        sequence: seq,
-        batchCount: event.batchCount,
-        batchIndex: event.batchIndex,
-      });
-    },
-
-    finalizePendingAsSkipped(reason = 'permission denied'): void {
-      for (const [callId, entry] of runningToolEntries) {
-        events.finalize(entry.entryId, {
-          role: 'tool',
-          title: 'tool',
-          content: `Skipped · ${reason}`,
-          toolActivity: {
-            state: 'skipped',
-            name: entry.name,
-            detail: '',
-            body: '',
-            error: reason,
-            seq: entry.sequence,
-          },
-        });
-        events.toolFinished?.({
-          callId,
-          name: entry.name,
-          args: entry.args,
-          success: false,
-          skipped: true,
-          duration: 0,
-          error: reason,
-          sequence: entry.sequence,
-          batchCount: entry.batchCount,
-          batchIndex: entry.batchIndex,
-        });
-      }
-      runningToolEntries.clear();
-    },
-  };
-}
-
-async function captureConsoleOutput(
-  fn: () => Promise<CommandResult> | CommandResult
-): Promise<{ result: CommandResult; output: string }> {
-  const lines: string[] = [];
-  const originalLog = console.log;
-  const originalError = console.error;
-  const originalWarn = console.warn;
-  const capture = (...args: unknown[]) => {
-    lines.push(
-      stripAnsi(args.map(arg => (typeof arg === 'string' ? arg : JSON.stringify(arg))).join(' '))
-    );
-  };
-
-  console.log = capture;
-  console.error = capture;
-  console.warn = capture;
-  try {
-    const result = await fn();
-    return { result, output: lines.join('\n').trim() };
-  } finally {
-    console.log = originalLog;
-    console.error = originalError;
-    console.warn = originalWarn;
-  }
-}
+import { setDiagnosticTraceContext } from '../utils/observability';
+import {
+  appendAssistantNotice,
+  buildTraceArgsDetails,
+  byteLength,
+  compactMiddle,
+  compactToolArgs,
+  compactTraceError,
+  emitHarnessDiagnostics,
+  errorLayerForChatError,
+  formatChatError,
+  getLastRequestDiagnostics,
+  goalTraceContext,
+  isAbortError,
+  recordProviderTraceEvents,
+  recordTraceEvent,
+  traceTurnId,
+  type GoalAccountingLoopStats,
+} from './chat-trace';
+import { createPreToolCheckpoint, parseToolCallArgsForRuntime } from './chat-checkpoint';
+import {
+  appendPostWorkspaceTrace,
+  appendVerificationResultTrace,
+  appendWorkspaceSnapshotTrace,
+  formatFailureRecoveryNotice,
+  shouldRecordVerificationLoopStats,
+  withVerificationLoopStats,
+  workspaceDeltaHasTurnChanges,
+} from './chat-workspace';
+import {
+  captureConsoleOutput,
+  formatLocalFastPathAssistantContent,
+  LocalFastPathBlockedError,
+  parseLocalFastPath,
+  removeTrailingUserMessage,
+  sessionMessagesToTranscriptEntries,
+  createAssistantStreamPresenter,
+  createToolEventPresenter,
+  structuredToolFinishActivity,
+  toolFinishContent,
+  type LocalFastPathAction,
+  type ToolResultEvent,
+} from './chat-presentation';
+
+export {
+  createAssistantStreamPresenter,
+  createToolEventPresenter,
+  sessionMessagesToTranscriptEntries,
+} from './chat-presentation';
+export type {
+  AssistantStreamPresenter,
+  SessionTranscriptEntryOptions,
+  ToolEventPresenter,
+} from './chat-presentation';
 
 export interface RunInputOptions {
   abortSignal?: AbortSignal;
@@ -1299,26 +144,16 @@ export interface AgentChatControllerOptions {
   onVerificationStateChange?: (
     state: 'pending' | 'running' | 'passed' | 'failed' | 'gated'
   ) => void;
-  /**
-   * R6: returns true when a tool permission request is awaiting user decision.
-   * When provided, the subagent policy gate uses it to prevent background
-   * delegation while the user is deciding a permission. When absent, defaults
-   * to false (no pending permission) — the root loop should inject the real
-   * state via AgentRuntimeController.
-   */
+  /** True while the parent runtime is awaiting a permission decision. */
   hasPendingPermission?: () => boolean;
-  /**
-   * R6: called with each child's observed usage so the root loop can record
-   * it into its shared CostTracker. The observed values are never clamped;
-   * `/cost` and telemetry must reflect the truth.
-   */
+  /** Reports observed child usage to the root cost tracker. */
   onChildUsage?: (
     taskId: string,
     role: import('./subagents/types').SubagentRole,
     usage: import('./subagents/types').SubtaskUsage,
     modelLabel?: string
   ) => void;
-  /** Shared Goal budget gate installed on every root, compact, retry, fallback, and child request. */
+  /** Shared Goal budget gate for every provider request. */
   beforeProviderRequest?: ProviderRequestPreflight;
 }
 
@@ -1348,7 +183,7 @@ export class AgentChatController {
   }
 
   constructor(
-    private readonly runtime: OpenHorseUiRuntime,
+    private readonly runtime: OrionCodeUiRuntime,
     private readonly events: UiEventSink,
     private readonly controllerOptions: AgentChatControllerOptions = {}
   ) {}
@@ -1571,6 +406,11 @@ export class AgentChatController {
       loadSessionMeta(this.runtime.getSession()?.id ?? '');
     const sessionId = activeSession?.id;
     const turnId = traceTurnId(options.turnId);
+    setDiagnosticTraceContext({
+      traceId: `${sessionId ?? 'local'}:${turnId}`,
+      ...(sessionId ? { sessionId } : {}),
+      turnId,
+    });
     const localCallId = `local-${turnId}`;
     const start = Date.now();
     const preWorkspace = captureWorkspaceSnapshot(this.runtime.cwd);
@@ -1943,6 +783,11 @@ export class AgentChatController {
       this.runtime.ensureSession() ??
       loadSessionMeta(this.runtime.getSession()?.id ?? '');
     const sessionId = activeSession?.id;
+    setDiagnosticTraceContext({
+      traceId: `${sessionId ?? 'unsaved'}:${turnId}`,
+      ...(sessionId ? { sessionId } : {}),
+      turnId,
+    });
     const preWorkspace = captureWorkspaceSnapshot(this.runtime.cwd);
     const runtimeTools = getRuntimeTools();
     const skillResolution = resolveSkillsForTurn({
@@ -2024,7 +869,7 @@ export class AgentChatController {
             onSubtaskEvent: event => {
               this.handleSubtaskEvent(event, sessionId, turnId);
             },
-            onSubtaskResult: (result, _batchId, objective) => {
+            onSubtaskResult: (result, _batchId, objective, researchContext) => {
               if (!projectPath) return;
               const json = JSON.stringify(result);
               const artifact = storeArtifact(
@@ -2059,23 +904,47 @@ export class AgentChatController {
                 const objectiveRevision = goal?.contract?.objectiveRevision;
                 const hasGoalBinding =
                   typeof goal?.goalId === 'string' && typeof objectiveRevision === 'number';
-                const request = createLocalResearchRequest(
-                  objective?.trim() || result.summary || 'repository research',
-                  projectPath,
-                  hasGoalBinding
+                // Preserve the authoritative request produced from the
+                // original subtask capability. Reconstruct local-only only for
+                // legacy callers that predate the additive callback context.
+                const baseRequest =
+                  researchContext?.request ??
+                  createLocalResearchRequest(
+                    objective?.trim() || result.summary || 'repository research',
+                    projectPath
+                  );
+                const request = {
+                  ...baseRequest,
+                  scope: { ...baseRequest.scope, projectRoot: projectPath },
+                  ...(hasGoalBinding
                     ? {
                         goalBinding: {
                           goalId: goal!.goalId,
                           objectiveRevision,
                         },
                       }
-                    : undefined
+                    : {}),
+                };
+                const packet = subtaskResultToPacket(
+                  result,
+                  request,
+                  {
+                    projectPath,
+                    sessionId,
+                    ...(hasGoalBinding ? { goalId: goal!.goalId, objectiveRevision } : {}),
+                  },
+                  {
+                    externalSources: researchContext?.web?.sources,
+                    externalNotes: researchContext?.web?.notes,
+                    externalTimedOut: researchContext?.web?.timedOut,
+                    externalAborted: researchContext?.web?.aborted,
+                  }
                 );
-                const packet = subtaskResultToPacket(result, request, {
-                  projectPath,
-                  sessionId,
-                  ...(hasGoalBinding ? { goalId: goal!.goalId, objectiveRevision } : {}),
-                });
+                // Citation resolution can downgrade claims and mark superseded
+                // same-URL sources stale. Resolve before validation/persistence so
+                // the CAS token, durable packet and renderer view describe the
+                // exact same final state (#105).
+                const resolution = resolveCitations(packet);
                 const validation = validatePacket(packet);
                 if (!validation.ok) return;
 
@@ -2085,7 +954,6 @@ export class AgentChatController {
                   packetId: packet.packetId,
                   ...(packet.goalId ? { goalId: packet.goalId } : {}),
                 });
-                const resolution = resolveCitations(packet);
                 const view = buildResearchView(packet, resolution);
                 for (const event of toLifecycleEvents(view, resolution)) {
                   this.events.researchEvent?.(event);
@@ -2322,8 +1190,7 @@ export class AgentChatController {
                 this.events.append({ role: 'status', content: suggestion });
               }
             }
-            const checkpointId =
-              checkpointSequence === 0 ? turnId : `${turnId}-checkpoint-${checkpointSequence + 1}`;
+            const checkpointId = `${turnId}-${checkpointSequence + 1}-${randomUUID()}`;
             const checkpointResult = createPreToolCheckpoint(
               this.events,
               sessionId,
@@ -2797,8 +1664,8 @@ export class AgentChatController {
       this.events.setStatus(finalModel ? `Completed with ${finalModel}` : 'Completed');
     } catch (error: unknown) {
       // v0.2.25: Provider retry exhausted is a recoverable turn failure.
-      if (error instanceof Error && error.name === 'ProviderRetryExhaustedError') {
-        const diag = (error as any).diagnostics;
+      if (error instanceof ProviderRetryExhaustedError) {
+        const diag = error.diagnostics;
         const attempts = diag?.attempts?.length ?? '?';
         const kind = diag?.attempts?.[diag.attempts.length - 1]?.failureKind ?? 'unknown';
         this.events.setStatus(
@@ -2986,7 +1853,7 @@ export class AgentChatController {
 /** @deprecated Use AgentChatController. Chat execution is renderer-independent. */
 export { AgentChatController as InkChatController };
 
-export function loadSessionIntoRuntime(runtime: OpenHorseUiRuntime, sessionId: string): string {
+export function loadSessionIntoRuntime(runtime: OrionCodeUiRuntime, sessionId: string): string {
   const history = loadSessionHistory(sessionId);
   runtime.store.setState({ conversationHistory: history });
   runtime.store.setState({
@@ -2995,7 +1862,7 @@ export function loadSessionIntoRuntime(runtime: OpenHorseUiRuntime, sessionId: s
   return `Restored ${history.length} messages`;
 }
 
-export function closeSession(runtime: OpenHorseUiRuntime): void {
+export function closeSession(runtime: OrionCodeUiRuntime): void {
   const session = runtime.getSession();
   if (!session) return;
   const messages = readSessionMessages(session.id);

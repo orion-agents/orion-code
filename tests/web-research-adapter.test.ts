@@ -298,6 +298,56 @@ describe('P0-R2 web research adapter resilience and redaction', () => {
     expect(source.contentHash).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  it('blocks a redirect whose final URL leaves the approved domain scope (#103)', async () => {
+    const deps: WebResearchDeps = {
+      allowedDomains: ['example.com'],
+      search: async () => [okHit('https://example.com/start')],
+      fetch: async () => ({
+        url: 'https://example.com/start',
+        status: 'ok',
+        content: 'off-policy body',
+        finalUrl: 'https://evil.example.net/final',
+        bytes: 15,
+      }),
+    };
+    const res = await runWebResearch(
+      webRequest({ scope: { projectRoot: '/proj', domains: ['example.com'] } }),
+      deps
+    );
+
+    expect(res.blocked).toContain('https://evil.example.net/final');
+    expect(res.sources).toHaveLength(1);
+    expect(res.sources[0]).toEqual(
+      expect.objectContaining({
+        status: 'blocked',
+        canonicalUrl: 'https://evil.example.net/final',
+        failureReason: 'redirected domain not in allowlist',
+      })
+    );
+    expect(res.sources[0].excerpt).toBeUndefined();
+    expect(res.sources[0].contentHash).toBeUndefined();
+  });
+
+  it('blocks an SSRF-unsafe effective final URL even when the search hit was safe (#103)', async () => {
+    const deps: WebResearchDeps = {
+      search: async () => [okHit('https://example.com/start')],
+      fetch: async () => ({
+        url: 'https://example.com/start',
+        status: 'ok',
+        content: 'private body',
+        finalUrl: 'http://169.254.169.254/latest/meta-data/',
+        bytes: 12,
+      }),
+    };
+    const res = await runWebResearch(webRequest(), deps);
+
+    expect(res.blocked).toContain('http://169.254.169.254/latest/meta-data/');
+    expect(res.sources[0].status).toBe('blocked');
+    expect(res.sources[0].failureReason).toMatch(/SSRF|Blocked|internal/i);
+    expect(res.sources[0].excerpt).toBeUndefined();
+    expect(res.sources[0].contentHash).toBeUndefined();
+  });
+
   it('keeps clean URLs byte-identical so redaction never moves the content hash', async () => {
     const clean = 'https://example.com/doc?page=2';
     const deps: WebResearchDeps = {

@@ -24,6 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from pty_test_config import write_mock_orion_config
 from pty_runner_identity import resolve_orion_command
 
 
@@ -60,7 +61,8 @@ class PtyOutput:
         self.fd = fd
         self.renderer = renderer
         self.chunks: list[bytes] = []
-        self.approved_scopes: set[str] = set()
+        self.permission_pending = False
+        self.permission_scan_offset = 0
 
     def mark(self) -> int:
         self.drain()
@@ -88,17 +90,29 @@ class PtyOutput:
         permission_visible = "Tool Permission" in plain or "Allow tool" in plain
         if not permission_visible:
             return
-        scopes = {
-            "test": "npm test",
-            "fixture": "lifecycle-fixture.txt",
-            "build": "npm run build",
-        }
-        for scope, marker in scopes.items():
-            if marker not in plain or scope in self.approved_scopes:
-                continue
-            self.approved_scopes.add(scope)
-            os.write(self.fd, b"y" if self.renderer == "tui" else b"y\r")
-            time.sleep(0.15)
+        full_plain = self.plain()
+        if self.permission_pending:
+            completion = re.search(
+                r"Goal evidence (?:passed|failed)|was not executed because permission was denied",
+                full_plain[self.permission_scan_offset:],
+            )
+            if completion is None:
+                return
+            self.permission_scan_offset += completion.end()
+            self.permission_pending = False
+
+        searchable = full_plain[self.permission_scan_offset:]
+        permission_prompts = list(re.finditer(r"Tool Permission|\? Allow tool", searchable))
+        if not permission_prompts:
+            return
+        latest_permission = searchable[permission_prompts[-1].start():]
+        allowed_markers = ("npm test", "lifecycle-fixture.txt", "npm run build")
+        if not any(marker in latest_permission for marker in allowed_markers):
+            return
+        self.permission_pending = True
+        self.permission_scan_offset = len(full_plain)
+        os.write(self.fd, b"y" if self.renderer == "tui" else b"y\r")
+        time.sleep(0.15)
 
 
 def send(fd: int, value: str) -> None:
@@ -493,7 +507,6 @@ def spawn_orion(
     repo: Path,
     project: Path,
     config_dir: Path,
-    base_url: str,
     renderer: str,
 ) -> tuple[subprocess.Popen[bytes], int]:
     master, slave = pty.openpty()
@@ -502,8 +515,6 @@ def spawn_orion(
         {
             "ORION_CODE_CONFIG_DIR": str(config_dir),
             "ORION_CODE_API_KEY": "sk-goal-lifecycle-pty",
-            "ORION_CODE_API_BASE_URL": base_url,
-            "ORION_CODE_MODEL": "mock-goal-lifecycle",
             "TERM": "xterm-256color",
             "NO_COLOR": "1",
             "FORCE_COLOR": "0",
@@ -546,8 +557,14 @@ def run_renderer(repo: Path, renderer: str) -> None:
         project.mkdir()
         config_dir.mkdir()
         seed_fixture(project)
+        write_mock_orion_config(
+            config_dir,
+            base_url=base_url,
+            model="mock-goal-lifecycle",
+            tool_confirmation="ask",
+        )
 
-        process, master = spawn_orion(repo, project, config_dir, base_url, renderer)
+        process, master = spawn_orion(repo, project, config_dir, renderer)
         output = PtyOutput(master, renderer)
         try:
             boot_marker = "ORION CODE | 猎户座" if renderer == "tui" else "technical terminal UI"
@@ -617,7 +634,7 @@ def run_renderer(repo: Path, renderer: str) -> None:
             stop_process(process, master)
 
         scenario.set_phase("complete")
-        restarted, restarted_master = spawn_orion(repo, project, config_dir, base_url, renderer)
+        restarted, restarted_master = spawn_orion(repo, project, config_dir, renderer)
         restarted_output = PtyOutput(restarted_master, renderer)
         try:
             boot_marker = "ORION CODE | 猎户座" if renderer == "tui" else "technical terminal UI"
@@ -626,6 +643,10 @@ def run_renderer(repo: Path, renderer: str) -> None:
                 restarted_output.wait("Ready.", timeout=10)
                 restarted_output.wait("›", timeout=10)
                 time.sleep(0.2)
+            else:
+                restarted_output.wait("ready", timeout=10)
+                restarted_output.wait("›", timeout=10)
+                time.sleep(0.5)
             resume_mark = restarted_output.mark()
             send(restarted_master, f"/resume {session_id}")
             restarted_output.wait("Restored", timeout=15, start=resume_mark)

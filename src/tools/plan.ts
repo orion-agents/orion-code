@@ -8,10 +8,10 @@
  * into the main Store.
  */
 
-import { buildTool, type OpenHorseTool } from '../framework/tool';
+import { buildTool, type OrionCodeTool } from '../framework/tool';
 import { getToolState, setToolState } from '../framework/tool-state';
 
-export const enterPlanModeTool: OpenHorseTool = buildTool({
+export const enterPlanModeTool: OrionCodeTool = buildTool({
   name: 'enter_plan_mode',
   description: `Enter plan mode for complex tasks requiring exploration and planning.
 In plan mode, you should explore the project structure, understand the problem,
@@ -34,7 +34,7 @@ Use this when the task is complex, ambiguous, or requires careful consideration.
   userFacingName: () => 'Enter plan mode',
 });
 
-export const exitPlanModeTool: OpenHorseTool = buildTool({
+export const exitPlanModeTool: OrionCodeTool = buildTool({
   name: 'exit_plan_mode',
   description: `Exit plan mode and save the implementation plan.
 This tool finalizes the plan and returns to execution mode.`,
@@ -79,4 +79,4 @@ export function getCurrentPlan(): string {
   return getToolState().currentPlan ?? '';
 }
 
-export const PLAN_TOOLS: OpenHorseTool[] = [enterPlanModeTool, exitPlanModeTool];
+export const PLAN_TOOLS: OrionCodeTool[] = [enterPlanModeTool, exitPlanModeTool];

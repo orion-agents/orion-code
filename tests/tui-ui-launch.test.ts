@@ -6,7 +6,7 @@ import {
   parseExternalEditorCommand,
   statusSnapshotString,
 } from '../src/tui-ui/launch';
-import type { OpenHorseUiRuntime } from '../src/runtime/ui-events';
+import type { OrionCodeUiRuntime } from '../src/runtime/ui-events';
 
 class FakeTTYInput extends EventEmitter {
   isTTY = true;
@@ -61,7 +61,7 @@ class FailingTTYOutput extends FakeTTYOutput {
   }
 }
 
-function makeRuntime(): OpenHorseUiRuntime {
+function makeRuntime(): OrionCodeUiRuntime {
   const config = loadConfig({
     apiKey: 'sk-test',
     model: 'glm-5',

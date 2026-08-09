@@ -1,0 +1,44 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "02:00"
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 6
+    versioning-strategy: increase
+    groups:
+      production-minor-patch:
+        dependency-type: production
+        update-types:
+          - minor
+          - patch
+      development-minor-patch:
+        dependency-type: development
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # openai 7 requires Node >=22; v0.1.4 still supports Node 20.
+      - dependency-name: openai
+        update-types:
+          - version-update:semver-major
+      # Ink is a deprecated renderer scheduled for removal, not an in-place
+      # ESM/React migration. See src/tui-ui/INK-REMOVAL-MIGRATION.md.
+      - dependency-name: ink
+        update-types:
+          - version-update:semver-major
+      - dependency-name: react
+        update-types:
+          - version-update:semver-major
+      - dependency-name: "@types/react"
+        update-types:
+          - version-update:semver-major
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3

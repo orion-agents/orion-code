@@ -319,7 +319,14 @@ describe('budgetPreflight (before provider call)', () => {
     // 800 used of 1000, next turn projected at 300 -> would exceed.
     const r = budgetPreflight(800, 1000, 300);
     expect(r.available).toBe(false);
-    expect(r.reason).toContain('would be exceeded');
+    expect(r.reason).toContain('would be exhausted');
+    expect(r.reason).toContain('>=');
+  });
+
+  it('reports >= when the projected delta exactly exhausts the budget', () => {
+    const r = budgetPreflight(999, 1000, 1);
+    expect(r.available).toBe(false);
+    expect(r.reason).toBe('Token budget would be exhausted: 999+1 >= 1000');
   });
 
   it('allows when projected delta fits within remaining budget', () => {

@@ -11,6 +11,7 @@ import {
   LLMProviderError,
   LLMService,
   ProviderRequestPreflightError,
+  normalizeFinishReason,
   type CacheControlContentPart,
   type Message,
   type Tool,
@@ -66,6 +67,29 @@ describe('LLMService', () => {
 
       // Verify service handles tool messages
       expect(llm).toBeDefined();
+    });
+
+    test('rejects an incomplete tool-call group before provider serialization', () => {
+      const llm = new LLMService({ apiKey: 'test-key', model: 'gpt-4o' });
+      const serialize = (
+        llm as unknown as { toOpenAIMessages: (messages: Message[]) => unknown }
+      ).toOpenAIMessages.bind(llm);
+
+      expect(() =>
+        serialize([
+          {
+            role: 'assistant',
+            content: '',
+            tool_calls: [
+              {
+                id: 'missing-result',
+                type: 'function',
+                function: { name: 'read_file', arguments: '{}' },
+              },
+            ],
+          },
+        ])
+      ).toThrow('Incomplete tool-call group');
     });
   });
 
@@ -173,6 +197,39 @@ describe('LLMService', () => {
   });
 
   describe('non-standard provider responses', () => {
+    test.each([
+      ['end_turn', 'stop'],
+      ['max_tokens', 'length'],
+      ['tool_use', 'tool_calls'],
+      ['function_call', 'tool_calls'],
+      ['safety', 'content_filter'],
+      ['provider_custom_reason', 'unknown'],
+    ] as const)('normalizes provider finish reason %s to %s', (raw, normalized) => {
+      expect(normalizeFinishReason(raw)).toBe(normalized);
+    });
+
+    test('passes through and normalizes non-stream finish_reason', async () => {
+      const llm = new LLMService({ apiKey: 'test-key', model: 'configured-model' });
+      (llm as any).client = {
+        chat: {
+          completions: {
+            create: jest.fn().mockResolvedValue({
+              id: 'finish-reason-1',
+              choices: [{ message: { content: 'partial' }, finish_reason: 'max_tokens' }],
+            }),
+          },
+        },
+      };
+
+      const response = await llm.chat([{ role: 'user', content: 'Hi' }]);
+
+      expect(response).toMatchObject({
+        content: 'partial',
+        finishReason: 'length',
+        rawFinishReason: 'max_tokens',
+      });
+    });
+
     test('falls back to the configured model when the response omits one', async () => {
       // LLMResponse.model is declared `string`, but `model` is optional on the
       // wire and some OpenAI-compatible gateways leave it out. Without a
@@ -375,6 +432,7 @@ describe('LLMService', () => {
                   },
                 ],
               },
+              finish_reason: 'tool_use',
             },
           ],
           model: 'gpt-4o',
@@ -395,10 +453,66 @@ describe('LLMService', () => {
         { path: 'a.ts' },
         { pattern: 'foo' },
       ]);
+      expect(response.finishReason).toBe('tool_calls');
+      expect(response.rawFinishReason).toBe('tool_use');
     });
   });
 
   describe('provider transient errors', () => {
+    test('recovers a committed stream without replaying visible text', async () => {
+      const llm = new LLMService({ apiKey: 'test-key', model: 'gpt-4o' });
+      llm.resilience = new ProviderResilienceCoordinator({
+        maxTotalAttempts: 2,
+        baseDelayMs: 0,
+        maxDelayMs: 0,
+        minRateLimitDelayMs: 0,
+      });
+      const create = jest
+        .fn()
+        .mockImplementationOnce(async function* () {
+          yield {
+            id: 'interrupted-request',
+            choices: [{ delta: { content: 'hello world' } }],
+            model: 'gpt-4o',
+          };
+          throw new Error('socket ECONNRESET after data');
+        })
+        .mockImplementationOnce(async function* () {
+          yield {
+            id: 'recovery-request',
+            choices: [{ delta: { content: 'hello world recovered' } }],
+            model: 'gpt-4o',
+          };
+          yield {
+            id: 'recovery-request',
+            choices: [{ delta: {}, finish_reason: 'end_turn' }],
+            usage: { prompt_tokens: 5, completion_tokens: 3 },
+            model: 'gpt-4o',
+          };
+        });
+      (llm as any).client = { chat: { completions: { create } } };
+      const visible: string[] = [];
+
+      const response = await llm.chatStream([{ role: 'user', content: 'Recover safely' }], chunk =>
+        visible.push(chunk)
+      );
+
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(visible).toEqual(['hello world', ' recovered']);
+      expect(visible.join('')).toBe('hello world recovered');
+      expect(response).toMatchObject({
+        content: 'hello world recovered',
+        finishReason: 'stop',
+        rawFinishReason: 'end_turn',
+      });
+      expect(llm.getLastRequestDiagnostics()).toMatchObject({
+        retryCount: 1,
+        recoveryCount: 1,
+        unknownBilledAttemptCount: 1,
+        usageConfidence: 'partial',
+      });
+    });
+
     test('surfaces production resilience retry diagnostics for turn accounting', async () => {
       const llm = new LLMService({ apiKey: 'test-key', model: 'gpt-4o' });
       llm.resilience = new ProviderResilienceCoordinator({
@@ -838,6 +952,7 @@ describe('LLMService', () => {
             },
           ],
         },
+        { role: 'tool', content: '{"ok":true}', tool_call_id: 'call-1' },
       ]);
 
       const callArgs = ((llm as any).client.chat.completions.create as jest.Mock).mock.calls[0];

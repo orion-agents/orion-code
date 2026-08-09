@@ -10,7 +10,7 @@
 
 import {
   getToolMetadataPresence,
-  type OpenHorseTool,
+  type OrionCodeTool,
   type PermissionResult,
   type ToolContext,
 } from './tool';
@@ -33,7 +33,7 @@ export interface PreparedToolCall {
   index: number;
   tc: ToolCallRecord;
   args: Record<string, unknown>;
-  tool: OpenHorseTool | undefined;
+  tool: OrionCodeTool | undefined;
   attemptId: string;
   drift: DriftCheckResult | undefined;
   permission: PermissionResult | undefined;
@@ -94,7 +94,7 @@ export interface ToolSchedulerOptions {
   /** Tool calls from the LLM response */
   toolCalls: NonNullable<Message['tool_calls']>;
   /** Available tool registry */
-  tools: OpenHorseTool[];
+  tools: OrionCodeTool[];
   /** Tool executor: (name, args, abortSignal?) => result string */
   toolExecutor: (
     name: string,
@@ -170,7 +170,7 @@ interface ToolRiskAssessment {
 }
 
 function assessToolRisk(
-  tool: OpenHorseTool | undefined,
+  tool: OrionCodeTool | undefined,
   args: Record<string, unknown>,
   permission: PermissionResult | undefined
 ): ToolRiskAssessment {
@@ -197,6 +197,21 @@ function assessToolRisk(
   return { risk: 'state_write', known: true, isFileEdit };
 }
 
+function checkToolPermission(
+  tool: OrionCodeTool | undefined,
+  args: Record<string, unknown>,
+  context: ToolContext | undefined
+): PermissionResult | undefined {
+  const metadata = getToolMetadataPresence(tool);
+  if (!metadata.hasPermissionCheck || !tool?.checkPermissions || !context) return undefined;
+  try {
+    return tool.checkPermissions(args, context);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return { behavior: 'deny', reason: `Permission check failed closed: ${detail}` };
+  }
+}
+
 function isSafeReadOnly(risk: ToolRiskAssessment): boolean {
   return risk.known && risk.risk === 'read_only';
 }
@@ -211,7 +226,7 @@ function isSafeReadOnly(risk: ToolRiskAssessment): boolean {
  */
 export function resolveAskPermission(
   permissionMode: string | undefined,
-  tool: OpenHorseTool | undefined,
+  tool: OrionCodeTool | undefined,
   args: Record<string, unknown>
 ): AskResolution {
   switch (permissionMode) {
@@ -260,7 +275,7 @@ export interface EffectivePermission {
  */
 export function resolveEffectivePermission(input: {
   toolName: string;
-  tool?: OpenHorseTool;
+  tool?: OrionCodeTool;
   args: Record<string, unknown>;
   permission?: PermissionResult;
   permissionMode?: string;
@@ -268,18 +283,11 @@ export function resolveEffectivePermission(input: {
   toolConfirmation?: string;
 }): EffectivePermission {
   const { toolName, tool, args, permission, permissionMode, allowlist } = input;
-  const risk = assessToolRisk(tool, args, permission);
-  const riskReason =
-    risk.risk === 'unknown'
-      ? `Tool ${toolName} is missing risk metadata; automatic approval is not allowed.`
-      : `Tool ${toolName} is ${risk.risk.replace('_', ' ')} and requires explicit confirmation.`;
-
   if (permission?.behavior === 'deny') {
     return {
       outcome: 'deny',
       source: 'tool_policy',
       reason: permission.reason || 'Permission denied',
-      risk: risk.risk,
     };
   }
 
@@ -288,9 +296,14 @@ export function resolveEffectivePermission(input: {
       outcome: 'deny',
       source: 'allowlist_deny',
       reason: `Tool ${toolName} is denied by project allowedTools rule "${allowlist.rule}"`,
-      risk: risk.risk,
     };
   }
+
+  const risk = assessToolRisk(tool, args, permission);
+  const riskReason =
+    risk.risk === 'unknown'
+      ? `Tool ${toolName} is missing risk metadata; automatic approval is not allowed.`
+      : `Tool ${toolName} is ${risk.risk.replace('_', ' ')} and requires explicit confirmation.`;
 
   const reason =
     permission?.behavior === 'ask'
@@ -386,11 +399,7 @@ export function prepareToolCalls(options: ToolSchedulerOptions): PreparedToolCal
     options.addToolToTracker?.(attemptId, tc.function.name);
     const tool = tools.find(t => t.name === tc.function.name);
     const drift = options.harnessDriftCheck?.({ name: tc.function.name, args });
-    const metadata = getToolMetadataPresence(tool);
-    const permission =
-      metadata.hasPermissionCheck && tool?.checkPermissions && options.toolContext
-        ? tool.checkPermissions(args, options.toolContext)
-        : undefined;
+    const permission = checkToolPermission(tool, args, options.toolContext);
     const allowlist = options.toolAllowlist?.(tc.function.name, args);
     const effective = resolveEffectivePermission({
       toolName: tc.function.name,
@@ -405,9 +414,9 @@ export function prepareToolCalls(options: ToolSchedulerOptions): PreparedToolCal
     const needsInteractiveConfirmation =
       effective.outcome === 'confirm' && confirmation === 'ask' && Boolean(options.confirmToolUse);
     const canRunConcurrently =
-      tool?.isConcurrencySafe?.(args) === true &&
-      drift?.status !== 'block' &&
       effective.outcome !== 'deny' &&
+      drift?.status !== 'block' &&
+      tool?.isConcurrencySafe?.(args) === true &&
       !needsInteractiveConfirmation;
 
     preparedCalls.push({
@@ -509,10 +518,11 @@ function executePreparedTool(
   const exec = async (): Promise<string> => {
     try {
       return await toolExecutor(tc.function.name, args, abortSignal);
-    } catch (err: any) {
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
       return JSON.stringify({
         success: false,
-        error: `Tool execution error: ${err.message}`,
+        error: `Tool execution error: ${message}`,
       });
     }
   };

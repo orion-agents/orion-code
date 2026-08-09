@@ -35,7 +35,7 @@ import {
 } from '../src/terminal-ui/launch';
 import { RawTerminalEditor } from '../src/terminal-ui/raw-editor';
 import { createToolEventPresenter } from '../src/runtime/chat-controller';
-import type { OpenHorseUiRuntime } from '../src/runtime/ui-events';
+import type { OrionCodeUiRuntime } from '../src/runtime/ui-events';
 import type { AppState } from '../src/framework/store';
 
 function makeRawEditor(
@@ -85,9 +85,9 @@ function makeRawEditor(
 function makeRuntime(
   overrides: {
     state?: Partial<AppState>;
-    config?: Partial<OpenHorseUiRuntime['config']>;
+    config?: Partial<OrionCodeUiRuntime['config']>;
   } = {}
-): OpenHorseUiRuntime {
+): OrionCodeUiRuntime {
   const state = {
     tools: [],
     memoryContent: '',
@@ -103,13 +103,13 @@ function makeRuntime(
       model: 'test-model',
       ui: { renderer: 'terminal' },
       ...overrides.config,
-    } as OpenHorseUiRuntime['config'],
+    } as OrionCodeUiRuntime['config'],
     store: {
       setProcessing: jest.fn(),
       getSnapshot: jest.fn(() => state),
-    } as unknown as OpenHorseUiRuntime['store'],
+    } as unknown as OrionCodeUiRuntime['store'],
     llm: null,
-    runtime: {} as OpenHorseUiRuntime['runtime'],
+    runtime: {} as OrionCodeUiRuntime['runtime'],
     isConfigured: true,
     ensureSession: jest.fn(),
     setSession: jest.fn(),

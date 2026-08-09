@@ -5,9 +5,11 @@
  * 参考 OpenClaude 的 forkSubagent.ts 实现。
  */
 
-import type { Message } from '../services/llm';
-import type { OpenHorseTool } from '../framework/tool';
+import type { LLMService, Message } from '../services/llm';
+import type { OrionCodeTool, ToolContext } from '../framework/tool';
 import type { PermissionMode } from '../commands/types';
+import type { ToolConfirmationPolicy } from '../services/config';
+import type { ToolAllowlistEvaluator } from '../services/tool-allowlist';
 import { query, type PromptContext, getSystemPrompt } from '../framework';
 import { TOOLS } from '../tools';
 
@@ -20,8 +22,14 @@ export interface ForkOptions {
   inheritContext: boolean;
   /** 权限模式 */
   permissionMode?: PermissionMode;
-  /** 可用工具（默认 TOOLS） */
-  tools?: OpenHorseTool[];
+  /** LLM 服务实例。Fork 不会从 CLI 单例中隐式加载。 */
+  llm?: LLMService;
+  /** 可用工具（默认最小只读工具集） */
+  tools?: OrionCodeTool[];
+  /** 需要交互确认时的无 UI 回退策略 */
+  toolConfirmation?: ToolConfirmationPolicy;
+  /** 项目级工具 allow/ask/deny 规则 */
+  toolAllowlist?: ToolAllowlistEvaluator;
   /** 最大轮次 */
   maxTurns?: number;
   /** 后台执行（不阻塞父 Agent） */
@@ -58,7 +66,11 @@ export interface ForkResult {
 export async function forkSubagent(options: ForkOptions): Promise<ForkResult> {
   const {
     inheritContext = true,
-    tools = TOOLS,
+    llm,
+    tools = getDefaultForkTools(),
+    permissionMode = 'plan',
+    toolConfirmation,
+    toolAllowlist,
     maxTurns = 5,
     background = false,
     taskDescription,
@@ -99,26 +111,28 @@ export async function forkSubagent(options: ForkOptions): Promise<ForkResult> {
     ];
   }
 
-  // 工具执行器
+  const toolContext: ToolContext = {
+    cwd,
+    config: { name: 'orion-code', mode: 'development' },
+    permissionMode,
+    toolAllowlist,
+  };
+
+  // query scheduler 在调用执行器前统一应用 tool policy、permission mode 与 allowlist。
   const toolExecutor = async (name: string, args: Record<string, unknown>) => {
-    // 简化版：直接执行工具
     const tool = tools.find(t => t.name === name);
     if (!tool) {
       return JSON.stringify({ success: false, error: `Unknown tool: ${name}` });
     }
-    // 调用工具的 execute
-    const context = { cwd, config: { name: 'orion-code', mode: 'development' } };
     try {
-      const result = await tool.execute(args, context);
+      const result = await tool.execute(args, toolContext);
       return JSON.stringify(result);
-    } catch (err: any) {
-      return JSON.stringify({ success: false, error: err.message });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      return JSON.stringify({ success: false, error: message });
     }
   };
 
-  // 简化的 LLM（不使用完整 LLMService，避免依赖）
-  // 这里假设有全局的 llm 实例可用
-  const llm = getGlobalLLM();
   if (!llm) {
     return {
       success: false,
@@ -140,6 +154,10 @@ export async function forkSubagent(options: ForkOptions): Promise<ForkResult> {
       toolExecutor,
       llm,
       maxTurns,
+      permissionMode,
+      toolConfirmation,
+      toolAllowlist,
+      toolContext,
       streamCallbacks: {
         onChunk: (chunk) => {
           if (!background) {
@@ -174,35 +192,27 @@ export async function forkSubagent(options: ForkOptions): Promise<ForkResult> {
       duration: Date.now() - startTime,
       tokenUsage: finalUsage,
     };
-  } catch (err: any) {
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
     return {
       success: false,
       content: '',
-      error: err.message,
+      error: message,
       duration: Date.now() - startTime,
     };
   }
 }
 
-// ============================================================================
-// 辅助函数
-// ============================================================================
+const DEFAULT_FORK_TOOL_NAMES = new Set([
+  'read_file',
+  'list_files',
+  'glob',
+  'grep',
+  'batch_read',
+]);
 
-/**
- * 获取全局 LLM 实例（从 CLI 模块）
- * 注意：这是一个简化实现，实际应该通过参数传递 LLM
- */
-function getGlobalLLM(): any {
-  // 尝试从全局获取
-  try {
-    const cliModule = require('../cli');
-    if (cliModule.llm) {
-      return cliModule.llm;
-    }
-  } catch {
-    // ignore
-  }
-  return null;
+function getDefaultForkTools(): OrionCodeTool[] {
+  return TOOLS.filter(tool => DEFAULT_FORK_TOOL_NAMES.has(tool.name));
 }
 
 // ============================================================================

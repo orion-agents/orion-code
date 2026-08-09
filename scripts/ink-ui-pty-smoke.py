@@ -28,6 +28,8 @@ import unicodedata
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from pty_test_config import write_mock_orion_config
+
 
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b[()][A-Za-z0-9]")
 
@@ -626,6 +628,11 @@ def main() -> int:
     repo = Path(__file__).resolve().parents[1]
     config_dir = tempfile.mkdtemp(prefix="orion-code-pty-smoke-")
     mock_server, mock_base_url = start_mock_openai_server()
+    write_mock_orion_config(
+        config_dir,
+        base_url=mock_base_url,
+        model="mock-stream",
+    )
 
     env = os.environ.copy()
     env.update(
@@ -635,8 +642,6 @@ def main() -> int:
             "NO_COLOR": "1",
             "FORCE_COLOR": "0",
             "ORION_CODE_API_KEY": "sk-orion-code-pty",
-            "ORION_CODE_API_BASE_URL": mock_base_url,
-            "ORION_CODE_MODEL": "mock-stream",
         }
     )
 

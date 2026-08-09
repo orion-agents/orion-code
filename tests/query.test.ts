@@ -1,14 +1,14 @@
 import { DEFAULT_LOOP_BUDGET, QueryLoopError, query } from '../src/framework/query';
 import type { QueryEvent } from '../src/framework/query';
 import { buildTool } from '../src/framework/tool';
-import type { OpenHorseTool, ToolContext } from '../src/framework/tool';
+import type { OrionCodeTool, ToolContext } from '../src/framework/tool';
 import { LLMService, type LLMResponse, type Message, type Tool } from '../src/services/llm';
 import { ProviderResilienceCoordinator } from '../src/services/provider-resilience';
 import { resetAutoCompact } from '../src/services/compact/auto-compact';
 import { CompactCoordinator } from '../src/services/compact/coordinator';
 import { CostTracker } from '../src/core/cost-tracker';
 
-const mockTool: OpenHorseTool = buildTool({
+const mockTool: OrionCodeTool = buildTool({
   name: 'read_file',
   description: 'Read a file',
   parameters: {
@@ -20,7 +20,7 @@ const mockTool: OpenHorseTool = buildTool({
   isReadOnly: () => true,
 });
 
-const askTool: OpenHorseTool = buildTool({
+const askTool: OrionCodeTool = buildTool({
   name: 'web_search',
   description: 'Search the web',
   parameters: {
@@ -32,7 +32,7 @@ const askTool: OpenHorseTool = buildTool({
   checkPermissions: () => ({ behavior: 'ask', reason: 'External query' }),
 });
 
-const batchReadTool: OpenHorseTool = buildTool({
+const batchReadTool: OrionCodeTool = buildTool({
   name: 'batch_read',
   description: 'Batch read-only exploration',
   parameters: {
@@ -303,7 +303,7 @@ describe('query generator', () => {
   });
 
   test('preserves a typed external assertion on the tool_result event', async () => {
-    const execTool: OpenHorseTool = buildTool({
+    const execTool: OrionCodeTool = buildTool({
       name: 'exec_command',
       description: 'Execute a command',
       parameters: {
@@ -994,7 +994,7 @@ describe('query generator', () => {
       { type: 'complete' }
     >;
     expect(complete.stats).toMatchObject({
-      singleReadOnlyStreak: 2,
+      singleReadOnlyStreak: 0,
       batchReadSuggestionCount: 1,
       loopBudgetMaxReadOnlyFragmentation: 2,
     });
@@ -1755,6 +1755,71 @@ describe('query generator', () => {
       finishReason: 'blocked',
       llmRequests: 1,
       toolCalls: 1,
+    });
+  });
+
+  test('permission denial seals every remaining result in a tool-call batch', async () => {
+    const llm = makeMockLLM([
+      {
+        content: '',
+        model: 'test-model',
+        toolCalls: [
+          {
+            id: 'call-1',
+            type: 'function',
+            function: { name: 'web_search', arguments: '{"query":"one"}' },
+          },
+          {
+            id: 'call-2',
+            type: 'function',
+            function: { name: 'web_search', arguments: '{"query":"two"}' },
+          },
+          {
+            id: 'call-3',
+            type: 'function',
+            function: { name: 'web_search', arguments: '{"query":"three"}' },
+          },
+        ],
+      },
+    ]);
+    const messages: Message[] = [
+      { role: 'system', content: 'You are a bot.' },
+      { role: 'user', content: 'Search' },
+    ];
+    const toolExecutor = jest.fn(async () => JSON.stringify({ success: true, output: 'ok' }));
+    const events: QueryEvent[] = [];
+
+    for await (const event of query({
+      messages,
+      tools: [askTool],
+      toolExecutor,
+      llm,
+      permissionMode: 'default',
+      toolConfirmation: 'deny',
+      toolContext,
+    })) {
+      events.push(event);
+    }
+
+    expect(toolExecutor).not.toHaveBeenCalled();
+    expect(events.filter(event => event.type === 'tool_result').map(event => event.callId)).toEqual(
+      ['call-1', 'call-2', 'call-3']
+    );
+    const assistantIndex = messages.findIndex(message => message.tool_calls?.length === 3);
+    expect(
+      messages.slice(assistantIndex, assistantIndex + 4).map(message => ({
+        role: message.role,
+        toolCallId: message.tool_call_id,
+      }))
+    ).toEqual([
+      { role: 'assistant', toolCallId: undefined },
+      { role: 'tool', toolCallId: 'call-1' },
+      { role: 'tool', toolCallId: 'call-2' },
+      { role: 'tool', toolCallId: 'call-3' },
+    ]);
+    expect(events.find(event => event.type === 'complete')).toMatchObject({
+      type: 'complete',
+      stats: { finishReason: 'blocked', toolCalls: 3 },
     });
   });
 

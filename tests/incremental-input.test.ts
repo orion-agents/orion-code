@@ -1,14 +1,14 @@
 import { AgentRuntimeController, type AgentRuntimeRunner } from '../src/runtime/agent-runtime-controller';
-import type { OpenHorseUiRuntime, TranscriptAppendEntry, UiEventSink } from '../src/runtime/ui-events';
+import type { OrionCodeUiRuntime, TranscriptAppendEntry, UiEventSink } from '../src/runtime/ui-events';
 
-function createRuntime(overrides: Partial<OpenHorseUiRuntime> = {}): OpenHorseUiRuntime {
+function createRuntime(overrides: Partial<OrionCodeUiRuntime> = {}): OrionCodeUiRuntime {
   return {
     cwd: '/tmp/openhorse',
     version: 'test',
-    config: { model: 'test-model' } as OpenHorseUiRuntime['config'],
-    store: { setProcessing: jest.fn() } as unknown as OpenHorseUiRuntime['store'],
+    config: { model: 'test-model' } as OrionCodeUiRuntime['config'],
+    store: { setProcessing: jest.fn() } as unknown as OrionCodeUiRuntime['store'],
     llm: null,
-    runtime: {} as OpenHorseUiRuntime['runtime'],
+    runtime: {} as OrionCodeUiRuntime['runtime'],
     isConfigured: true,
     ensureSession: jest.fn(),
     setSession: jest.fn(),

@@ -29,7 +29,7 @@ Orion Code is a terminal-based coding agent. It wraps LLM APIs in a harness of s
 
 ### Requirements
 
-- Node.js >= 20.0
+- Node.js 20, 22, or 24 LTS
 - npm >= 9.0
 
 ### Install & Run

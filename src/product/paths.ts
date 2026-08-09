@@ -11,6 +11,7 @@ import { join, resolve } from 'path';
 import { existsSync, mkdirSync, realpathSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
+import { cleanupStaleAtomicWriteFiles } from '../services/atomic-write';
 
 import {
   CONFIG_DIR_NAME,
@@ -97,7 +98,11 @@ export function resolveProjectStoragePath(projectPath: string): string {
     } catch {
       // Not a git worktree.
     }
-    try { return realpathSync(absolute); } catch { return absolute; }
+    try {
+      return realpathSync(absolute);
+    } catch {
+      return absolute;
+    }
   }
   return absolute;
 }
@@ -202,6 +207,14 @@ export function getExistingMemoryPaths(cwd?: string): string[] {
 
 // ── Directory helpers ───────────────────────────────────────────────────────
 
+const sweptStorageDirectories = new Set<string>();
+
+function sweepStorageDirectory(directory: string): void {
+  if (sweptStorageDirectories.has(directory)) return;
+  cleanupStaleAtomicWriteFiles(directory);
+  sweptStorageDirectories.add(directory);
+}
+
 export function ensureConfigDir(): void {
   const dir = getConfigHome();
   if (!existsSync(dir)) {
@@ -210,7 +223,9 @@ export function ensureConfigDir(): void {
   for (const sub of ['projects', 'cost', 'cache']) {
     const p = join(dir, sub);
     if (!existsSync(p)) mkdirSync(p, { mode: 0o700 });
+    sweepStorageDirectory(p);
   }
+  sweepStorageDirectory(dir);
 }
 
 export function ensureProjectDir(projectPath: string): void {
@@ -223,6 +238,8 @@ export function ensureProjectDir(projectPath: string): void {
   if (!existsSync(sessionsDir)) {
     mkdirSync(sessionsDir, { recursive: true, mode: 0o700 });
   }
+  sweepStorageDirectory(projectDir);
+  sweepStorageDirectory(sessionsDir);
   // Write project metadata (lazy import to avoid circular dependency).
   const { updateProjectMetadata } = require('../services/config-dir') as {
     updateProjectMetadata: (pp: string) => unknown;

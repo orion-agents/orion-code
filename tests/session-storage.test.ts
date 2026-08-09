@@ -690,6 +690,39 @@ describe('session-storage', () => {
       expect(history[1].content).not.toContain('full line');
     });
 
+    test('loadSessionHistory seals a legacy incomplete tool-call batch before resume', () => {
+      const session = createSession('/tmp/project-seal-tool-history', 'gpt-4o');
+      appendSessionMessages(session.id, [
+        {
+          role: 'assistant',
+          content: '',
+          timestamp: 1000,
+          tool_calls: [
+            {
+              id: 'call-a',
+              type: 'function',
+              function: { name: 'read_file', arguments: '{}' },
+            },
+            {
+              id: 'call-b',
+              type: 'function',
+              function: { name: 'read_file', arguments: '{}' },
+            },
+          ],
+        },
+        { role: 'tool', content: 'a', toolCallId: 'call-a', timestamp: 1001 },
+        { role: 'user', content: 'resume this session', timestamp: 1002 },
+      ]);
+
+      const history = loadSessionHistory(session.id);
+      expect(history.map(message => [message.role, message.tool_call_id])).toEqual([
+        ['assistant', undefined],
+        ['tool', 'call-a'],
+        ['tool', 'call-b'],
+        ['user', undefined],
+      ]);
+    });
+
     test('loadSessionHistory falls back to full history for legacy compact boundary without persisted summary', () => {
       const session = createSession('/tmp/project-legacy-compact-boundary', 'gpt-4o');
       appendSessionMessages(session.id, [
@@ -944,7 +977,11 @@ describe('session-storage', () => {
       const truncated = truncateSessionToLastComplete(session.id);
       // The user prompt 'fix this bug' is kept; only the partial assistant
       // tool-call is dropped (Issue #49).
-      expect(truncated.map(message => message.content)).toEqual(['first question', 'done', 'fix this bug']);
+      expect(truncated.map(message => message.content)).toEqual([
+        'first question',
+        'done',
+        'fix this bug',
+      ]);
       expect(readSessionMessages(session.id)).toHaveLength(3);
     });
 

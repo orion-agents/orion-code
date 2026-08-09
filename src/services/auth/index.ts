@@ -17,6 +17,7 @@ export {
 export {
   verifyAwsCredentials,
   getStsToken,
+  assumeAwsRole,
   checkAwsCliAvailable,
   type StsResult,
 } from './aws';

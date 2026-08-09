@@ -9,7 +9,6 @@ import { readFileSync, existsSync } from 'fs';
 import { join, resolve } from 'path';
 import {
   buildTool,
-  type OpenHorseTool,
   type OrionCodeTool,
   type ToolInputJSONSchema,
   type ToolInputJSONSchemaProperty,
@@ -715,7 +714,7 @@ export const mcpManager = new MCPServerManager();
 // MCP Tools for Orion Code
 // ============================================================================
 
-export const mcpListTool: OpenHorseTool = buildTool({
+export const mcpListTool: OrionCodeTool = buildTool({
   name: 'mcp_list',
   description: 'List available MCP tools from connected MCP servers.',
   parameters: {
@@ -771,7 +770,7 @@ export const mcpListTool: OpenHorseTool = buildTool({
   userFacingName: () => 'List MCP tools',
 });
 
-export const mcpCallTool: OpenHorseTool = buildTool({
+export const mcpCallTool: OrionCodeTool = buildTool({
   name: 'mcp_call',
   description: 'Call an MCP tool from a connected MCP server.',
   parameters: {
@@ -840,4 +839,4 @@ export const mcpCallTool: OpenHorseTool = buildTool({
   userFacingName: args => `Call ${args.server as string}/${args.tool as string}`,
 });
 
-export const MCP_TOOLS: OpenHorseTool[] = [mcpListTool, mcpCallTool];
+export const MCP_TOOLS: OrionCodeTool[] = [mcpListTool, mcpCallTool];

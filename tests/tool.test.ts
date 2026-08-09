@@ -1,5 +1,5 @@
 import { buildTool, toOpenAITool, toOpenAITools } from '../src/framework/tool';
-import type { OpenHorseTool, ToolContext, ToolConfig } from '../src/framework/tool';
+import type { OrionCodeTool, ToolContext, ToolConfig } from '../src/framework/tool';
 
 const mockContext: ToolContext = {
   cwd: '/test',
@@ -7,7 +7,7 @@ const mockContext: ToolContext = {
 };
 
 describe('buildTool', () => {
-  const baseTool: OpenHorseTool = {
+  const baseTool: OrionCodeTool = {
     name: 'test_tool',
     description: 'A test tool',
     parameters: {
@@ -100,7 +100,7 @@ describe('buildTool', () => {
 });
 
 describe('toOpenAITool', () => {
-  test('converts OpenHorseTool to OpenAI format', () => {
+  test('converts OrionCodeTool to OpenAI format', () => {
     const tool = buildTool({
       name: 'read_file',
       description: 'Read a file',

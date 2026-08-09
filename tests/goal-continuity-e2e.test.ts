@@ -17,7 +17,7 @@ import type {
   AgentRuntimeEventSink,
 } from '../src/runtime/agent-runtime-protocol';
 import type { AgentTurnRequest } from '../src/runtime/goals/types';
-import type { OpenHorseUiRuntime } from '../src/runtime/ui-events';
+import type { OrionCodeUiRuntime } from '../src/runtime/ui-events';
 import { loadConfig } from '../src/services/config';
 import {
   appendSessionMessages,
@@ -53,13 +53,13 @@ describe('Goal continuity integration', () => {
       const config = loadConfig({ apiKey: 'test-key', model: 'test-model' });
       const session = createSession(projectDir, 'test-model');
       const initialStore = new Store({ config, tools: TOOLS, currentModel: 'test-model' });
-      const initialRuntime: OpenHorseUiRuntime = {
+      const initialRuntime: OrionCodeUiRuntime = {
         cwd: projectDir,
         version: 'test',
         config,
         store: initialStore,
         llm: null,
-        runtime: {} as OpenHorseUiRuntime['runtime'],
+        runtime: {} as OrionCodeUiRuntime['runtime'],
         isConfigured: true,
         ensureSession: jest.fn(() => session),
         getSession: jest.fn(() => session),
@@ -229,13 +229,13 @@ describe('Goal continuity integration', () => {
           throw new Error('compact must not call the provider');
         }),
       };
-      const compactRuntime: OpenHorseUiRuntime = {
+      const compactRuntime: OrionCodeUiRuntime = {
         cwd: projectDir,
         version: 'test',
         config,
         store: compactStore,
         llm: noNetworkLlm as any,
-        runtime: {} as OpenHorseUiRuntime['runtime'],
+        runtime: {} as OrionCodeUiRuntime['runtime'],
         isConfigured: true,
         ensureSession: jest.fn(() => compactSession!),
         getSession: jest.fn(() => compactSession),
@@ -286,13 +286,13 @@ describe('Goal continuity integration', () => {
           usage: { promptTokens: 10, completionTokens: 5 },
         })),
       };
-      const restartedRuntime: OpenHorseUiRuntime = {
+      const restartedRuntime: OrionCodeUiRuntime = {
         cwd: projectDir,
         version: 'test',
         config,
         store: restartedStore,
         llm: llm as any,
-        runtime: {} as OpenHorseUiRuntime['runtime'],
+        runtime: {} as OrionCodeUiRuntime['runtime'],
         isConfigured: true,
         ensureSession: jest.fn(() => {
           restartedSession ??= createSession(projectDir, 'test-model');
@@ -377,7 +377,7 @@ describe('Goal continuity integration', () => {
 
       const store = new Store({ config, tools: TOOLS, currentModel: 'test-model' });
       let currentSession: SessionMeta | null = null;
-      const runtime: OpenHorseUiRuntime = {
+      const runtime: OrionCodeUiRuntime = {
         cwd: projectDir,
         version: 'test',
         config,
@@ -386,7 +386,7 @@ describe('Goal continuity integration', () => {
           getModel: jest.fn(() => 'test-model'),
           chatStream: jest.fn(),
         } as any,
-        runtime: {} as OpenHorseUiRuntime['runtime'],
+        runtime: {} as OrionCodeUiRuntime['runtime'],
         isConfigured: true,
         ensureSession: jest.fn(() => {
           currentSession ??= createSession(projectDir, 'test-model');
@@ -443,13 +443,13 @@ describe('Goal continuity integration', () => {
 
       const store = new Store({ config, tools: TOOLS, currentModel: 'test-model' });
       let activeSession: SessionMeta | null = currentSession;
-      const runtime: OpenHorseUiRuntime = {
+      const runtime: OrionCodeUiRuntime = {
         cwd: currentProjectDir,
         version: 'test',
         config,
         store,
         llm: null,
-        runtime: {} as OpenHorseUiRuntime['runtime'],
+        runtime: {} as OrionCodeUiRuntime['runtime'],
         isConfigured: true,
         ensureSession: jest.fn(() => activeSession ?? currentSession),
         getSession: jest.fn(() => activeSession),
@@ -509,13 +509,13 @@ describe('Goal continuity integration', () => {
 
       const store = new Store({ config, tools: TOOLS, currentModel: 'test-model' });
       let activeSession: SessionMeta | null = firstSession;
-      const runtime: OpenHorseUiRuntime = {
+      const runtime: OrionCodeUiRuntime = {
         cwd: firstProjectDir,
         version: 'test',
         config,
         store,
         llm: null,
-        runtime: {} as OpenHorseUiRuntime['runtime'],
+        runtime: {} as OrionCodeUiRuntime['runtime'],
         isConfigured: true,
         ensureSession: jest.fn(() => activeSession ?? firstSession),
         getSession: jest.fn(() => activeSession),

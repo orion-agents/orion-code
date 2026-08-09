@@ -12,7 +12,13 @@ import {
   generateSummaryWithSource,
   type SummaryOptions,
 } from './summary-generator';
-import { renderContextCapsule, renderHarnessStateForCompact, type ContextCapsule, type HarnessState } from '../../harness';
+import {
+  renderContextCapsule,
+  renderHarnessStateForCompact,
+  type ContextCapsule,
+  type HarnessState,
+} from '../../harness';
+import { snapToToolCallGroupStart } from './tool-call-groups';
 
 // ============================================================================
 // 类型定义
@@ -100,14 +106,10 @@ export async function compactMessages(
   }
 
   // 1. 保留 system 消息
-  const systemMessage = opts.keepSystemMessage
-    ? messages.find(m => m.role === 'system')
-    : undefined;
+  const systemMessages = opts.keepSystemMessage ? messages.filter(m => m.role === 'system') : [];
 
   // 2. 分离需要压缩的消息
-  const toCompact = opts.keepSystemMessage
-    ? messages.filter(m => m.role !== 'system')
-    : messages;
+  const toCompact = opts.keepSystemMessage ? messages.filter(m => m.role !== 'system') : messages;
 
   const priorSummary = [...toCompact]
     .reverse()
@@ -123,11 +125,11 @@ export async function compactMessages(
   );
 
   // 3. 保留最近 maxMessages 条
-  const recentMessages = conversationMessages.slice(-opts.maxMessages!);
-  const oldMessages = conversationMessages.slice(
-    0,
-    conversationMessages.length - opts.maxMessages!
-  );
+  const maxMessages = Math.max(0, Math.floor(opts.maxMessages ?? DEFAULT_OPTIONS.maxMessages!));
+  const requestedStart = Math.max(0, conversationMessages.length - maxMessages);
+  const recentStart = snapToToolCallGroupStart(conversationMessages, requestedStart);
+  const recentMessages = conversationMessages.slice(recentStart);
+  const oldMessages = conversationMessages.slice(0, recentStart);
   if (priorSummary) oldMessages.unshift(priorSummary);
 
   // 4. 对早期消息生成摘要
@@ -143,9 +145,7 @@ export async function compactMessages(
   // 5. 构建压缩后的消息列表
   let compactedMessages: Message[] = [];
 
-  if (systemMessage) {
-    compactedMessages.push(systemMessage);
-  }
+  compactedMessages.push(...systemMessages);
 
   // Preserve structured task state before the lossy natural-language summary.
   if (opts.harnessState) {
@@ -155,7 +155,8 @@ export async function compactMessages(
     });
     compactedMessages.push({
       role: 'assistant',
-      content: 'I will continue from this Orion Code Context State and preserve its root objective, active instruction, constraints, and verification state.',
+      content:
+        'I will continue from this Orion Code Context State and preserve its root objective, active instruction, constraints, and verification state.',
     });
   } else if (opts.contextCapsule) {
     compactedMessages.push({
@@ -164,7 +165,8 @@ export async function compactMessages(
     });
     compactedMessages.push({
       role: 'assistant',
-      content: 'I will continue from this Context Capsule and preserve its open todos, constraints, and verification state.',
+      content:
+        'I will continue from this Context Capsule and preserve its open todos, constraints, and verification state.',
     });
   }
 
@@ -176,7 +178,8 @@ export async function compactMessages(
     });
     compactedMessages.push({
       role: 'assistant',
-      content: 'I understand the context. I will continue the conversation with this background information.',
+      content:
+        'I understand the context. I will continue the conversation with this background information.',
     });
   }
 

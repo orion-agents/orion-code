@@ -104,7 +104,9 @@ describe('checkpoint', () => {
     expect(fs.existsSync(payloadPath)).toBe(true);
     expect(fs.readFileSync(payloadPath, 'utf8')).toBe('atomic content');
 
-    const leftovers = fs.readdirSync(cpDir, { recursive: true }).filter(f => String(f).includes('.tmp'));
+    const leftovers = fs
+      .readdirSync(cpDir, { recursive: true })
+      .filter(f => String(f).includes('.tmp'));
     expect(leftovers).toHaveLength(0);
   });
 
@@ -138,6 +140,40 @@ describe('checkpoint', () => {
     expect(result.restored).toHaveLength(1);
     expect(result.restored[0]).toBe('restore.txt');
     expect(fs.readFileSync(filePath, 'utf8')).toBe('original');
+  });
+
+  test('restoreCheckpoint preserves binary file bytes exactly', () => {
+    const filePath = path.join(TEST_PROJECT, 'image.bin');
+    const original = Buffer.from([0x00, 0xff, 0xfe, 0x80, 0x41, 0x42]);
+    fs.writeFileSync(filePath, original);
+    createCheckpoint(TEST_PROJECT, 'turn-binary', [filePath]);
+
+    fs.writeFileSync(filePath, Buffer.from('modified'));
+    const result = restoreCheckpoint(TEST_PROJECT, 'turn-binary');
+
+    expect(result.error).toBeUndefined();
+    expect(fs.readFileSync(filePath)).toEqual(original);
+  });
+
+  test('restoreCheckpoint reports failure and rolls back files already restored', () => {
+    const first = path.join(TEST_PROJECT, 'first.txt');
+    const readOnlyDir = path.join(TEST_PROJECT, 'read-only');
+    const second = path.join(readOnlyDir, 'second.txt');
+    fs.mkdirSync(readOnlyDir);
+    fs.writeFileSync(first, 'checkpoint-first');
+    fs.writeFileSync(second, 'checkpoint-second');
+    createCheckpoint(TEST_PROJECT, 'turn-rollback', [first, second]);
+    fs.writeFileSync(first, 'current-first');
+    fs.writeFileSync(second, 'current-second');
+
+    fs.chmodSync(readOnlyDir, 0o500);
+    const result = restoreCheckpoint(TEST_PROJECT, 'turn-rollback');
+    fs.chmodSync(readOnlyDir, 0o700);
+
+    expect(result.error).toContain('Checkpoint restore failed');
+    expect(result.rolledBack).toEqual(['first.txt']);
+    expect(fs.readFileSync(first, 'utf8')).toBe('current-first');
+    expect(fs.readFileSync(second, 'utf8')).toBe('current-second');
   });
 
   test('restoreCheckpoint deletes files that did not exist when checkpoint was created', () => {

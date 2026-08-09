@@ -4,6 +4,7 @@ import {
   AutoCompact,
 } from '../src/services/compact/auto-compact';
 import { compactMessages } from '../src/services/compact/compact';
+import { summaryGenerator } from '../src/services/compact/summary-generator';
 import { CompactCoordinator } from '../src/services/compact/coordinator';
 import { createContextHarness } from '../src/harness';
 import {
@@ -63,10 +64,7 @@ describe('AutoCompact', () => {
       const msgs = createMessages(30);
       const safeInputBudget = resolveContextBudget('test-model').safeInputBudget;
 
-      const result = await autoCompact.checkAndCompact(
-        msgs,
-        Math.floor(safeInputBudget * 0.9499)
-      );
+      const result = await autoCompact.checkAndCompact(msgs, Math.floor(safeInputBudget * 0.9499));
 
       expect(result).toBe(msgs);
       expect(autoCompact.getStats().ctxPercent).toBe(94);
@@ -285,9 +283,7 @@ describe('AutoCompact', () => {
       modelId: 'test-model',
     });
 
-    const automatic = await coordinator
-      .getAutomatic()
-      .checkAndCompact(createMessages(60), 200000);
+    const automatic = await coordinator.getAutomatic().checkAndCompact(createMessages(60), 200000);
     expect(automatic.filter(message => message.content?.startsWith('Message '))).toHaveLength(20);
   });
 
@@ -338,10 +334,7 @@ describe('AutoCompact', () => {
       }),
     };
     const result = await compactMessages(
-      [
-        { role: 'user', content: 'deploy using apiKey=sk-testsecret123456' },
-        ...createMessages(5),
-      ],
+      [{ role: 'user', content: 'deploy using apiKey=sk-testsecret123456' }, ...createMessages(5)],
       { maxMessages: 1, llm: llm as any }
     );
 
@@ -373,5 +366,90 @@ describe('AutoCompact', () => {
     expect(prompt).toContain('prior durable summary');
     expect(prompt.match(/prior durable summary/g)).toHaveLength(1);
     expect(result.summary).toBe('merged durable summary');
+  });
+
+  test('does not duplicate histories shorter than the recent-message window', async () => {
+    const messages = createMessages(19);
+
+    const result = await compactMessages(messages, { maxMessages: 20 });
+
+    expect(result.messages).toEqual(messages);
+    expect(result.compactedCount).toBe(19);
+    expect(result.ratio).toBe(1);
+  });
+
+  test('preserves every system message during compaction', async () => {
+    const result = await compactMessages(
+      [
+        { role: 'system', content: 'static prompt' },
+        { role: 'system', content: 'dynamic project instructions' },
+        { role: 'user', content: 'old request' },
+        { role: 'assistant', content: 'latest answer' },
+      ],
+      { maxMessages: 1 }
+    );
+
+    expect(result.messages.filter(message => message.role === 'system')).toEqual([
+      { role: 'system', content: 'static prompt' },
+      { role: 'system', content: 'dynamic project instructions' },
+    ]);
+  });
+
+  test('snaps a recent-history cut back to the assistant tool-call group head', async () => {
+    const toolCalls: NonNullable<Message['tool_calls']> = ['a', 'b', 'c'].map(id => ({
+      id,
+      type: 'function',
+      function: { name: `tool_${id}`, arguments: '{}' },
+    }));
+    const messages: Message[] = [
+      ...createMessages(3),
+      { role: 'assistant', content: '', tool_calls: toolCalls },
+      ...toolCalls.map(call => ({
+        role: 'tool' as const,
+        content: `result-${call.id}`,
+        tool_call_id: call.id,
+      })),
+      ...createMessages(17),
+    ];
+
+    const result = await compactMessages(messages, { maxMessages: 20 });
+    const firstRetainedTool = result.messages.findIndex(message => message.tool_call_id === 'a');
+
+    expect(firstRetainedTool).toBeGreaterThan(0);
+    expect(result.messages[firstRetainedTool - 1].tool_calls?.map(call => call.id)).toEqual([
+      'a',
+      'b',
+      'c',
+    ]);
+  });
+
+  test('reserves deterministic summary space for newly evicted context', async () => {
+    const summary = await summaryGenerator(
+      [
+        { role: 'user', content: `[Context Summary]\n${'P'.repeat(500)}` },
+        { role: 'user', content: 'FRESH_UNIQUE_CONTEXT' },
+      ],
+      { maxLength: 500 }
+    );
+
+    expect(summary.length).toBeLessThanOrEqual(500);
+    expect(summary).toContain('PPP');
+    expect(summary).toContain('FRESH_UNIQUE_CONTEXT');
+  });
+
+  test('rejects an automatic compaction that does not reduce estimated tokens', async () => {
+    const onCompact = jest.fn();
+    const autoCompact = new AutoCompact({
+      modelId: 'test-model',
+      maxMessages: 20,
+      onCompact,
+    });
+    const messages = createMessages(19);
+
+    const result = await autoCompact.checkAndCompact(messages, 200000);
+
+    expect(result).toBe(messages);
+    expect(autoCompact.getStats().compactCount).toBe(0);
+    expect(onCompact).not.toHaveBeenCalled();
   });
 });

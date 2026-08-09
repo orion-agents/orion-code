@@ -32,6 +32,7 @@ import {
 } from './config-dir';
 import { atomicWriteFileSync } from './atomic-write';
 import { deleteSessionIndex, updateSessionIndex } from './session-index';
+import { sealToolCallGroups } from './compact/tool-call-groups';
 import { redactTraceText } from './redaction';
 import { debugError } from '../utils/debug-log';
 import { deleteGoal } from './goal-storage';
@@ -526,6 +527,15 @@ function normalizeSessionMeta(session: SessionMeta): SessionMeta {
   };
 }
 
+function tryNormalizeSessionMeta(session: SessionMeta, sourcePath: string): SessionMeta | null {
+  try {
+    return normalizeSessionMeta(session);
+  } catch (error) {
+    debugError('session-storage.normalizeSessionMeta', error, sourcePath);
+    return null;
+  }
+}
+
 function uniquePaths(paths: string[]): string[] {
   return [...new Set(paths)];
 }
@@ -689,7 +699,8 @@ export function loadSessionMeta(sessionId: string): SessionMeta | null {
 
       const session = parseSessionMetaFile(path);
       if (session) {
-        return normalizeSessionMeta(session);
+        const normalized = tryNormalizeSessionMeta(session, path);
+        if (normalized) return normalized;
       }
     }
   }
@@ -1340,10 +1351,10 @@ export function loadSessionHistory(sessionId: string): Message[] {
   const messages = readSessionMessages(sessionId);
   const checkpoint = loadSessionCompactCheckpoint(sessionId);
   if (checkpoint) {
-    return [
+    return sealToolCallGroups([
       ...checkpoint.modelHistory.map(message => ({ ...message })),
       ...messages.slice(checkpoint.sourceMessageCount).map(sessionMessageToModelMessage),
-    ];
+    ]);
   }
   const session = loadSessionMeta(sessionId);
   const displayStartTime = session?.transcriptDisplayStartTime;
@@ -1357,7 +1368,7 @@ export function loadSessionHistory(sessionId: string): Message[] {
       : messages;
   }
 
-  return modelVisibleMessages.map(sessionMessageToModelMessage);
+  return sealToolCallGroups(modelVisibleMessages.map(sessionMessageToModelMessage));
 }
 
 function sessionMessageToModelMessage(message: SessionMessage): Message {
@@ -1390,9 +1401,10 @@ export function listSessions(limit?: number): SessionMeta[] {
       const files = readdirSync(projectSessionsDir).filter(isSessionMetaFile);
       for (const file of files) {
         const rawSession = parseSessionMetaFile(join(projectSessionsDir, file));
-        if (rawSession) {
-          upsertNewestSession(sessionsById, normalizeSessionMeta(rawSession));
-        }
+        if (!rawSession) continue;
+        const sourcePath = join(projectSessionsDir, file);
+        const normalized = tryNormalizeSessionMeta(rawSession, sourcePath);
+        if (normalized) upsertNewestSession(sessionsById, normalized);
       }
     }
   }
@@ -1413,9 +1425,10 @@ export function listProjectSessions(projectPath: string, limit?: number): Sessio
     const files = readdirSync(projectSessionsDir).filter(isSessionMetaFile);
     for (const file of files) {
       const rawSession = parseSessionMetaFile(join(projectSessionsDir, file));
-      if (rawSession) {
-        upsertNewestSession(sessionsById, normalizeSessionMeta(rawSession));
-      }
+      if (!rawSession) continue;
+      const sourcePath = join(projectSessionsDir, file);
+      const normalized = tryNormalizeSessionMeta(rawSession, sourcePath);
+      if (normalized) upsertNewestSession(sessionsById, normalized);
     }
   }
 

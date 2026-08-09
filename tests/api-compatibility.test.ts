@@ -9,7 +9,7 @@ import * as openhorse from '../src/index';
 import type {
   QueryEvent,
   QueryParams,
-  OpenHorseTool,
+  OrionCodeTool,
   ToolResult,
   ToolContext,
   PermissionResult,
@@ -365,7 +365,7 @@ describe('Public API', () => {
   });
 
   describe('Tool API shape', () => {
-    it('buildTool returns valid OpenHorseTool', () => {
+    it('buildTool returns valid OrionCodeTool', () => {
       const tool = openhorse.buildTool({
         name: 'test_tool',
         description: 'A test tool',

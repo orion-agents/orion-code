@@ -1,40 +1,117 @@
 #!/usr/bin/env bash
-# Dependency health gate (Issue #58).
-#
-# The dependency tree contains deprecated / unmaintained transitive packages
-# (e.g. eslint@8, glob@7, inflight@1.0.6, prebuild-install@7.1.3 — the last via
-# better-sqlite3's native install path). These do not currently trigger a CVE but
-# keep raising install/build risk. This script surfaces them on a periodic basis
-# so they can be tracked and upgraded deliberately, rather than blocking a release
-# by surprise.
-#
-# It is a reporting gate: it prints findings and exits 0. It does NOT fail the
-# build on its own, because upgrading those transitive deps (jest/eslint/glob,
-# better-sqlite3's prebuild chain) is a separate, riskier change tracked elsewhere.
+# Dependency contract gate for the supported v0.1.4 runtime matrix.
 
-set -uo pipefail
+set -euo pipefail
 
-echo "== npm audit (prod only) =="
-npm audit --omit=dev || true
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
 
-echo
-echo "== npm outdated (prod only) =="
-npm outdated --omit=dev || true
-
-echo
-echo "== Known deprecated / abandoned transitive packages =="
-# --all walks the full tree; failures (package not present) are expected and ignored.
-npm ls glob@7.2.3 eslint@8.7.1 prebuild-install@7.1.3 inflight@1.0.6 --all || true
-
-echo
-echo "== All deprecated packages reported by the resolver (issue #62) =="
-# Dynamic scan so newly-deprecated transitive deps are surfaced without
-# hardcoding them. npm ls marks deprecated entries inline; collect them here.
-if npm ls --all --parseable 2>/dev/null | head -n1 >/dev/null; then
-  npm ls --all 2>&1 | grep -iE "deprecated" || echo "(no deprecated packages reported)"
-else
-  echo "(deprecated-package scan skipped: npm ls unavailable)"
+mode="${1:-full}"
+if [[ "$mode" != "full" && "$mode" != "--policy-only" ]]; then
+  echo "Usage: $0 [--policy-only]" >&2
+  exit 2
 fi
+
+node <<'NODE'
+const { existsSync, readFileSync } = require('fs');
+const { join } = require('path');
+
+const root = process.cwd();
+const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+const lock = JSON.parse(readFileSync(join(root, 'package-lock.json'), 'utf8'));
+const production = manifest.dependencies ?? {};
+const development = manifest.devDependencies ?? {};
+const lockRoot = lock.packages?.[''] ?? {};
+const errors = [];
+
+const failUnless = (condition, message) => {
+  if (!condition) errors.push(message);
+};
+const major = value => Number(String(value ?? '').match(/\d+/)?.[0] ?? NaN);
+
+failUnless(
+  manifest.engines?.node === '^20.0.0 || ^22.0.0 || ^24.0.0',
+  'package engines must explicitly support only the tested Node 20/22/24 majors',
+);
+failUnless(major(production.openai) === 6, 'openai must stay on the Node-20-compatible 6.x line');
+failUnless(!('lodash-es' in production), 'zero-reference lodash-es must not be a direct dependency');
+failUnless(!('type-fest' in production), 'zero-reference type-fest must not be a direct dependency');
+failUnless(
+  !Object.keys(production).some(name => name.startsWith('@types/')),
+  '@types/* packages belong in devDependencies, not production dependencies',
+);
+failUnless(
+  '@types/better-sqlite3' in development,
+  '@types/better-sqlite3 must remain a devDependency',
+);
+failUnless(
+  !('@types/better-sqlite3' in (lockRoot.dependencies ?? {})) &&
+    '@types/better-sqlite3' in (lockRoot.devDependencies ?? {}),
+  'package-lock root metadata must preserve @types/better-sqlite3 as development-only',
+);
+
+// Ink is a deprecated compatibility renderer. Upgrading it in-place would
+// force ESM + React 19 and, for Ink 7, Node >=22. Remove the renderer according
+// to the checked-in migration plan instead of silently breaking Node 20/CJS.
+failUnless(major(production.ink) === 3, 'Ink compatibility exemption is pinned to major 3');
+failUnless(major(production.react) === 17, 'Ink compatibility exemption requires React 17');
+failUnless(
+  existsSync(join(root, 'src/tui-ui/INK-REMOVAL-MIGRATION.md')),
+  'Ink/React exemption requires the executable removal roadmap',
+);
+
+let OpenAI;
+try {
+  const loaded = require('openai');
+  OpenAI = loaded.default ?? loaded;
+} catch (error) {
+  errors.push(`openai must expose a CommonJS require entry: ${error.message}`);
+}
+if (OpenAI) {
+  const installed = JSON.parse(
+    readFileSync(join(root, 'node_modules/openai/package.json'), 'utf8'),
+  );
+  failUnless(major(installed.version) === 6, `installed openai must be 6.x, found ${installed.version}`);
+  failUnless(
+    !installed.engines?.node || !/>=\s*22/.test(installed.engines.node),
+    `installed openai excludes Node 20 via engines.node=${installed.engines?.node}`,
+  );
+  try {
+    const client = new OpenAI({ apiKey: 'dependency-contract-probe' });
+    failUnless(
+      typeof client.chat?.completions?.create === 'function',
+      'openai Chat Completions API is unavailable',
+    );
+  } catch (error) {
+    errors.push(`openai CommonJS Chat Completions probe failed: ${error.message}`);
+  }
+}
+
+if (errors.length > 0) {
+  console.error('DEPENDENCY_POLICY_FAILED');
+  for (const error of errors) console.error(`- ${error}`);
+  process.exit(1);
+}
+console.log('DEPENDENCY_POLICY_OK node=20|22|24 openai=6 cjs=ok chat-completions=ok');
+console.log('DEPENDENCY_EXEMPTION ink=3 react=17 removal=src/tui-ui/INK-REMOVAL-MIGRATION.md');
+NODE
+
+if [[ "$mode" == "--policy-only" ]]; then
+  exit 0
+fi
+
+echo
+echo "== dependency tree consistency =="
+npm ls --all >/dev/null
+echo "npm ls: ok"
+
+echo
+echo "== npm audit (high severity gate) =="
+npm audit --audit-level=high
+
+echo
+echo "== npm outdated (report only; majors require contract review) =="
+npm outdated || true
 
 echo
 echo "Dependency health check complete."

@@ -12,18 +12,18 @@ import type {
   AgentRuntimeEventSink,
 } from '../src/runtime/agent-runtime-protocol';
 import type { AgentTurnRequest, GoalRuntimeEvent } from '../src/runtime/goals/types';
-import type { OpenHorseUiRuntime } from '../src/runtime/ui-events';
+import type { OrionCodeUiRuntime } from '../src/runtime/ui-events';
 import { LLMService, ProviderRequestPreflightError } from '../src/services/llm';
 import { getProjectSessionsDir } from '../src/services/config-dir';
 import { GoalCoordinator } from '../src/runtime/goals/coordinator';
 import * as goalStorage from '../src/services/goal-storage';
 
-function createRuntime(): OpenHorseUiRuntime {
+function createRuntime(): OrionCodeUiRuntime {
   const session = { id: `runtime-safety-${randomUUID()}` };
   return {
     cwd: `/tmp/orion-runtime-safety-${randomUUID()}`,
     version: 'test',
-    config: { model: 'test-model', ui: { renderer: 'terminal' } } as OpenHorseUiRuntime['config'],
+    config: { model: 'test-model', ui: { renderer: 'terminal' } } as OrionCodeUiRuntime['config'],
     store: {
       setProcessing: jest.fn(),
       getSnapshot: jest.fn(() => ({
@@ -35,13 +35,13 @@ function createRuntime(): OpenHorseUiRuntime {
           unsafeToolCalls: 0,
         },
       })),
-    } as unknown as OpenHorseUiRuntime['store'],
+    } as unknown as OrionCodeUiRuntime['store'],
     llm: null,
-    runtime: {} as OpenHorseUiRuntime['runtime'],
+    runtime: {} as OrionCodeUiRuntime['runtime'],
     isConfigured: true,
-    ensureSession: jest.fn(() => session as ReturnType<OpenHorseUiRuntime['ensureSession']>),
+    ensureSession: jest.fn(() => session as ReturnType<OrionCodeUiRuntime['ensureSession']>),
     setSession: jest.fn(),
-    getSession: jest.fn(() => session as ReturnType<OpenHorseUiRuntime['getSession']>),
+    getSession: jest.fn(() => session as ReturnType<OrionCodeUiRuntime['getSession']>),
     shutdown: jest.fn(),
   };
 }
@@ -74,7 +74,7 @@ function createController(): {
   controller: AgentRuntimeController;
   runner: ReturnType<typeof createDeferredRunner>;
   events: AgentRuntimeEvent[];
-  runtime: OpenHorseUiRuntime;
+  runtime: OrionCodeUiRuntime;
 } {
   const runtime = createRuntime();
   const runner = createDeferredRunner();

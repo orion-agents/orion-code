@@ -170,7 +170,10 @@ describe('argv construction', () => {
     backend => {
       const plan = planSandboxedCommand(nasty, {
         cwd: CWD,
-        settings: { profile: 'workspace-write' },
+        settings: {
+          profile: 'workspace-write',
+          ...(backend === 'seatbelt' ? { allowNetwork: true } : {}),
+        },
         capabilities: only(backend),
       });
       expect(plan.ok).toBe(true);
@@ -203,33 +206,27 @@ describe('argv construction', () => {
 // ============================================================================
 
 describe('seatbelt policy', () => {
-  test('read-only denies every write and blocks network', () => {
+  test('refuses to claim network isolation for the deprecated seatbelt backend', () => {
     const plan = planSandboxedCommand('ls', {
       cwd: CWD,
       settings: { profile: 'read-only' },
       capabilities: only('seatbelt'),
     });
-    expect(plan.ok).toBe(true);
-    if (!plan.ok) return;
-    expect(plan.writableRoots).toEqual([]);
-    expect(plan.network).toBe('blocked');
-    expect(plan.policy).toContain('(deny file-write*)');
-    expect(plan.policy).toContain('(deny network*)');
-    // No subpath write exemption other than the character devices.
-    expect(plan.policy).not.toMatch(/\(allow file-write\* \(subpath/);
+    expect(plan.ok).toBe(false);
+    if (plan.ok) return;
+    expect(plan.reason).toContain('cannot verify network isolation');
   });
 
-  test('workspace-write grants the cwd and temp dir, still blocking network', () => {
+  test('auto-selection skips seatbelt when network isolation is required', () => {
     const plan = planSandboxedCommand('ls', {
       cwd: CWD,
       settings: { profile: 'workspace-write' },
       capabilities: only('seatbelt'),
     });
-    expect(plan.ok).toBe(true);
-    if (!plan.ok) return;
-    expect(plan.network).toBe('blocked');
-    expect(plan.writableRoots.length).toBeGreaterThan(0);
-    expect(plan.policy).toMatch(/\(allow file-write\* \(subpath/);
+    expect(plan.ok).toBe(false);
+    if (plan.ok) return;
+    expect(plan.reason).toContain('seatbelt');
+    expect(plan.reason).toContain('network isolation');
   });
 
   test('network is only allowed when explicitly requested', () => {
@@ -253,10 +250,19 @@ describe('seatbelt policy', () => {
     expect(rawQuotes % 2).toBe(0);
   });
 
+  test('denies reads from credential directories and project secret files', () => {
+    const policy = buildSeatbeltPolicy([], true, '/workspace');
+    expect(policy).toContain('.ssh');
+    expect(policy).toContain('.aws');
+    expect(policy).toContain('Library/Keychains');
+    expect(policy).toContain('/workspace/.env');
+    expect(policy).toContain('/workspace/.npmrc');
+  });
+
   test('symlinked writable roots are resolved to their real path', () => {
     const plan = planSandboxedCommand('ls', {
       cwd: '/tmp',
-      settings: { profile: 'workspace-write' },
+      settings: { profile: 'workspace-write', allowNetwork: true },
       capabilities: only('seatbelt'),
     });
     expect(plan.ok).toBe(true);
@@ -288,7 +294,7 @@ describe('bubblewrap plan', () => {
   test('workspace-write binds the workspace read-write', () => {
     const plan = planSandboxedCommand('ls', {
       cwd: CWD,
-      settings: { profile: 'workspace-write' },
+      settings: { profile: 'workspace-write', allowNetwork: true },
       capabilities: only('bubblewrap'),
     });
     expect(plan.ok).toBe(true);
@@ -386,7 +392,7 @@ describe('capability probing', () => {
   test('describeSandboxPlan summarises the active isolation', () => {
     const plan = planSandboxedCommand('ls', {
       cwd: CWD,
-      settings: { profile: 'workspace-write' },
+      settings: { profile: 'workspace-write', allowNetwork: true },
       capabilities: only('seatbelt'),
     });
     expect(plan.ok).toBe(true);
@@ -394,7 +400,7 @@ describe('capability probing', () => {
     const text = describeSandboxPlan(plan);
     expect(text).toContain('workspace-write');
     expect(text).toContain('seatbelt');
-    expect(text).toContain('network blocked');
+    expect(text).toContain('network allowed');
   });
 });
 

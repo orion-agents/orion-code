@@ -81,6 +81,25 @@ export interface SubtaskScope {
   symbols?: string[];
 }
 
+/**
+ * Root-owned research capability requested for a research subtask.
+ *
+ * The default is local-only. `web` and `mixed` are declarative requests: they
+ * do not grant network access by themselves. The parent `subtask` permission
+ * gate must approve the call before the Supervisor may invoke the dedicated
+ * WebSearch/WebFetch adapter.
+ */
+export interface SubtaskResearchCapability {
+  mode?: import('./research-types').ResearchMode;
+  /** Narrower domain policy for external sources. */
+  domains?: string[];
+  freshness?: 'any' | 'recent' | 'as_of';
+  asOf?: string;
+  maxSources?: number;
+  maxFetchBytes?: number;
+  maxDurationMs?: number;
+}
+
 export interface SubtaskPacket {
   /** Caller-proposed id. Runtime generates the authoritative id and ignores this. */
   id?: string;
@@ -94,6 +113,8 @@ export interface SubtaskPacket {
   contextHints?: string[];
   /** What a good result looks like. */
   expectedOutput?: string;
+  /** Additive research contract. Valid only when `role` is `research`. */
+  research?: SubtaskResearchCapability;
 }
 
 export interface SubtaskRequest {

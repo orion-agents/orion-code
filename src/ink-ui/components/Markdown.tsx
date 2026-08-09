@@ -16,7 +16,19 @@ interface MarkdownProps {
   dimColor?: boolean;
 }
 
-type AnyToken = Token & Record<string, any>;
+type AnyToken = Token & {
+  raw?: string;
+  text?: string;
+  tokens?: AnyToken[];
+  href?: string;
+  lang?: string;
+  header?: AnyToken[];
+  rows?: AnyToken[][];
+  ordered?: boolean;
+  start?: number;
+  items?: AnyToken[];
+  depth?: number;
+};
 
 const HTML_ENTITIES: Record<string, string> = {
   amp: '&',

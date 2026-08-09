@@ -16,6 +16,11 @@ import type { CommandCategory, SlashCommand } from '../commands/types';
 import { formatBytes } from '../services/format';
 import { classifyCommandSafety } from '../services/verification-profile';
 import type { ContextUsageSnapshot } from '../services/model-context';
+import type {
+  ResearchLifecycleEvent,
+  ResearchLifecycleSummary,
+  ResearchStage,
+} from './subagents/research-renderer';
 
 export type TranscriptBlockKind =
   | 'user'
@@ -128,6 +133,178 @@ export function subtaskTimelineLabel(entry: SubtaskTimelineEntry): string {
   const tail = entry.summary ? ` - ${entry.summary.slice(0, 120)}` : '';
   const dur = entry.durationMs ? ` (${entry.durationMs}ms)` : '';
   return `${arrow} subtask ${entry.role} ${entry.state}${tail}${dur}`;
+}
+
+// ============================================================================
+// Research lifecycle projection (shared across terminal/Print/TUI)
+// ============================================================================
+
+export const MAX_RESEARCH_EVENT_HISTORY = 512;
+const MAX_RESEARCH_PROJECTED_SOURCES = 200;
+const MAX_RESEARCH_PROJECTED_CONFLICTS = 200;
+
+export type ResearchSourceEvent = Extract<ResearchLifecycleEvent, { type: 'research_source' }>;
+
+export interface ResearchSourceProjection {
+  id: string;
+  kind?: ResearchSourceEvent['kind'];
+  provider: string;
+  status: ResearchSourceEvent['status'];
+  canonicalUrl?: string;
+  displayUrl?: string;
+  projectPath?: string;
+  title?: string;
+  contentHash?: string;
+  failureReason?: string;
+}
+
+export interface ResearchStatusProjection {
+  packetId: string;
+  objective?: string;
+  mode?: Extract<ResearchLifecycleEvent, { type: 'research_started' }>['mode'];
+  stage: 'running' | ResearchStage;
+  auditStatus?: Extract<ResearchLifecycleEvent, { type: 'research_completed' }>['auditStatus'];
+  conclusion?: string;
+  summary?: ResearchLifecycleSummary;
+  sources: ResearchSourceProjection[];
+  conflictClaimIds: string[];
+}
+
+/** Keep a renderer's ordered research audit history bounded for long sessions. */
+export function appendResearchEventHistory(
+  history: readonly ResearchLifecycleEvent[],
+  event: ResearchLifecycleEvent,
+  limit = MAX_RESEARCH_EVENT_HISTORY
+): ResearchLifecycleEvent[] {
+  const boundedLimit =
+    Number.isSafeInteger(limit) && limit > 0 ? limit : MAX_RESEARCH_EVENT_HISTORY;
+  const next = [...history, event];
+  return next.length <= boundedLimit ? next : next.slice(next.length - boundedLimit);
+}
+
+/** Fold one ordered lifecycle event into the renderer-neutral latest-packet view. */
+export function projectResearchLifecycleEvent(
+  current: ResearchStatusProjection | null,
+  event: ResearchLifecycleEvent
+): ResearchStatusProjection {
+  const base: ResearchStatusProjection =
+    current?.packetId === event.packetId
+      ? current
+      : {
+          packetId: event.packetId,
+          stage: 'running',
+          sources: [],
+          conflictClaimIds: [],
+        };
+
+  switch (event.type) {
+    case 'research_started':
+      return {
+        packetId: event.packetId,
+        objective: event.objective,
+        mode: event.mode,
+        stage: 'running',
+        sources: [],
+        conflictClaimIds: [],
+      };
+    case 'research_source': {
+      const source: ResearchSourceProjection = {
+        id: event.sourceId,
+        provider: event.provider,
+        status: event.status,
+        ...(event.kind ? { kind: event.kind } : {}),
+        ...(event.canonicalUrl ? { canonicalUrl: event.canonicalUrl } : {}),
+        ...(event.displayUrl ? { displayUrl: event.displayUrl } : {}),
+        ...(event.projectPath ? { projectPath: event.projectPath } : {}),
+        ...(event.title ? { title: event.title } : {}),
+        ...(event.contentHash ? { contentHash: event.contentHash } : {}),
+        ...(event.failureReason ? { failureReason: event.failureReason } : {}),
+      };
+      const sources = [...base.sources.filter(existing => existing.id !== event.sourceId), source];
+      return {
+        ...base,
+        stage: 'running',
+        sources: sources.slice(-MAX_RESEARCH_PROJECTED_SOURCES),
+      };
+    }
+    case 'research_conflict': {
+      const conflictClaimIds = [
+        ...base.conflictClaimIds.filter(claimId => claimId !== event.claimId),
+        event.claimId,
+      ];
+      return {
+        ...base,
+        stage: 'running',
+        conflictClaimIds: conflictClaimIds.slice(-MAX_RESEARCH_PROJECTED_CONFLICTS),
+      };
+    }
+    case 'research_completed':
+      return {
+        ...base,
+        stage: event.stage,
+        auditStatus: event.auditStatus,
+        conclusion: event.conclusion,
+        summary: event.summary,
+      };
+  }
+}
+
+function inlineResearchText(value: string, limit = 160): string {
+  const singleLine = value
+    .replace(/[\u0000-\u001f\u007f]+/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim();
+  return singleLine.length <= limit ? singleLine : `${singleLine.slice(0, limit - 1)}…`;
+}
+
+/** Format an individual event without re-reading a ResearchPacket. */
+export function formatResearchLifecycleEvent(
+  event: ResearchLifecycleEvent,
+  mode: 'terminal' | 'print' | 'tui'
+): string {
+  const packetId = inlineResearchText(event.packetId, 48);
+  switch (event.type) {
+    case 'research_started':
+      return `research ${packetId} started mode=${event.mode} objective=${inlineResearchText(event.objective)}`;
+    case 'research_source': {
+      const location = event.displayUrl ?? event.canonicalUrl ?? event.projectPath;
+      const diagnostics = [
+        `provider=${inlineResearchText(event.provider, 64)}`,
+        event.kind ? `kind=${event.kind}` : '',
+        location ? `source=${inlineResearchText(location)}` : '',
+        event.contentHash ? `hash=${inlineResearchText(event.contentHash, 64).slice(0, 12)}` : '',
+        event.failureReason ? `failure=${inlineResearchText(event.failureReason)}` : '',
+      ].filter(Boolean);
+      const base = `research ${packetId} source ${inlineResearchText(event.sourceId, 64)} [${event.status}]`;
+      return mode === 'tui' ? base : `${base} ${diagnostics.join(' ')}`.trimEnd();
+    }
+    case 'research_conflict':
+      return `research ${packetId} conflict claim=${inlineResearchText(event.claimId, 64)}`;
+    case 'research_completed': {
+      const counts = event.summary
+        ? ` sources=${event.summary.retrievedCount}/${event.summary.sourceCount} failed=${event.summary.failedCount + event.summary.blockedCount} citations=${event.summary.citationCount} risks=${event.summary.riskCount}`
+        : '';
+      return `research ${packetId} ${event.stage} audit=${event.auditStatus}${counts} conclusion=${inlineResearchText(event.conclusion)}`;
+    }
+  }
+}
+
+/** Compact TUI status projection with source, citation and risk counts. */
+export function researchProjectionLabel(projection: ResearchStatusProjection): string {
+  const summary = projection.summary;
+  const sourceCount = summary?.sourceCount ?? projection.sources.length;
+  const retrieved =
+    summary?.retrievedCount ??
+    projection.sources.filter(source => source.status === 'retrieved').length;
+  const failed =
+    summary != null
+      ? summary.failedCount + summary.blockedCount
+      : projection.sources.filter(
+          source => source.status === 'failed' || source.status === 'blocked'
+        ).length;
+  const citations = summary?.citationCount ?? 0;
+  const risks = summary?.riskCount ?? 0;
+  return `research:${projection.stage} src:${retrieved}/${sourceCount} fail:${failed} cite:${citations} risk:${risks}`;
 }
 
 export type UiRendererStatus = 'product' | 'technical' | 'deprecated' | 'non-interactive' | 'custom';

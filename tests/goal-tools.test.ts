@@ -7,14 +7,18 @@ import { randomUUID } from 'crypto';
 
 import { GoalCoordinator } from '../src/runtime/goals/coordinator';
 import {
+  abandonGoalTool,
+  authorizeGoalAbandonment,
   getGoalTool,
   createGoalTool,
+  GOAL_TOOLS,
   updateGoalPlanTool,
   updateGoalTool,
   runWithGoalToolContext,
   type GoalToolExecutionContext,
 } from '../src/runtime/goals/tools';
-import type { OpenHorseTool, ToolResult } from '../src/framework/tool';
+import type { OrionCodeTool, ToolResult } from '../src/framework/tool';
+import * as sessionStorage from '../src/services/session-storage';
 
 describe('Goal model tools', () => {
   let coordinator: GoalCoordinator;
@@ -24,7 +28,7 @@ describe('Goal model tools', () => {
     coordinator = new GoalCoordinator(`/tmp/goal-tools-${randomUUID()}`, 'test-session');
   });
 
-  async function execute(tool: OpenHorseTool, args: Record<string, unknown>): Promise<ToolResult> {
+  async function execute(tool: OrionCodeTool, args: Record<string, unknown>): Promise<ToolResult> {
     lastContext = {
       coordinator,
       request: {
@@ -337,6 +341,10 @@ describe('Goal model tools', () => {
         fingerprint: 'permission:production deploy:user approval required',
         retryable: false,
       });
+      expect(result.output).toContain('does not mean blocked was applied');
+      expect(result.output).toContain('no progress');
+      expect(updateGoalTool.description).toContain('>= 3');
+      expect(updateGoalTool.description).toContain('no progress');
     });
 
     it('rejects blocked without a structured blocker', async () => {
@@ -381,6 +389,97 @@ describe('Goal model tools', () => {
 
     it('has tool definition', () => {
       expect(updateGoalTool.name).toBe('update_goal');
+    });
+  });
+
+  describe('abandon_goal', () => {
+    async function abandon(
+      text: string,
+      inputKind: GoalToolExecutionContext['request']['inputKind'] = 'user',
+      reason = 'The user withdrew this Goal.'
+    ): Promise<ToolResult> {
+      lastContext = {
+        coordinator,
+        request: {
+          inputKind,
+          text,
+          sessionId: coordinator.boundSessionId,
+          persistAsUserMessage: true,
+          echoToTranscript: true,
+          generation: coordinator.generation,
+        },
+        turnId: 'turn-abandon',
+        evidenceRecords: [],
+      };
+      return runWithGoalToolContext(lastContext, () =>
+        abandonGoalTool.execute(
+          { reason },
+          { cwd: '/test', config: { name: 'test', mode: 'test' } }
+        )
+      );
+    }
+
+    it('clears the Goal and session binding after explicit latest-user authorization', async () => {
+      coordinator.create('Obsolete objective');
+      const goalId = coordinator.goal!.goalId;
+      const binding = jest.spyOn(sessionStorage, 'updateSessionGoalBinding').mockReturnValue(null);
+
+      const result = await abandon("ok let's just abandon this goal entirely");
+
+      expect(result.success).toBe(true);
+      expect(result.metadata).toMatchObject({
+        action: 'abandon_goal',
+        goalId,
+        turnId: 'turn-abandon',
+        reason: 'The user withdrew this Goal.',
+        authorizedBy: 'latest_user_explicit_intent',
+      });
+      expect(coordinator.goal).toBeNull();
+      expect(binding).toHaveBeenCalledWith(coordinator.boundSessionId, null);
+    });
+
+    it.each([
+      ['user asked a question', 'Should we abandon this goal?', 'user'],
+      ['user negated abandonment', 'Do not abandon this goal.', 'user'],
+      ['user discussed unrelated work', 'Stop the development server.', 'user'],
+      ['model continuation asserted intent', 'Abandon this goal.', 'goal_continuation'],
+    ] as const)('fails closed when %s', async (_label, text, inputKind) => {
+      coordinator.create('Goal must remain');
+
+      const result = await abandon(text, inputKind);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('denied');
+      expect(coordinator.goal?.objective).toBe('Goal must remain');
+    });
+
+    it('accepts an explicit Chinese abandonment revision and requires an audit reason', async () => {
+      coordinator.create('待取消目标');
+      const missingReason = await abandon('放弃这个目标', 'revision', '');
+      expect(missingReason.success).toBe(false);
+      expect(coordinator.goal).not.toBeNull();
+
+      const result = await abandon('放弃这个目标', 'revision', '用户明确改变方向');
+      expect(result.success).toBe(true);
+      expect(coordinator.goal).toBeNull();
+    });
+
+    it('registers a destructive typed tool and denies permission without runtime context', () => {
+      expect(GOAL_TOOLS).toContain(abandonGoalTool);
+      expect(abandonGoalTool.name).toBe('abandon_goal');
+      expect(abandonGoalTool.parameters.required).toContain('reason');
+      expect(abandonGoalTool.isDestructive!({})).toBe(true);
+      expect(abandonGoalTool.checkPermissions!({}, {} as never).behavior).toBe('deny');
+      expect(
+        authorizeGoalAbandonment({
+          inputKind: 'user',
+          text: 'Cancel the current target.',
+          sessionId: 'test-session',
+          persistAsUserMessage: true,
+          echoToTranscript: true,
+          generation: 1,
+        }).authorized
+      ).toBe(true);
     });
   });
 

@@ -61,7 +61,7 @@ export function budgetPreflight(
     return {
       available: false,
       remaining,
-      reason: `Token budget would be exceeded: ${tokensUsed}+${projectedDelta} > ${tokenBudget}`,
+      reason: `Token budget would be exhausted: ${tokensUsed}+${projectedDelta} >= ${tokenBudget}`,
     };
   }
   return { available: true, remaining };

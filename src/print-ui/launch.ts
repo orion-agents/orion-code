@@ -4,7 +4,7 @@ import { resolveUiRendererCapabilities } from '../runtime/ui-events';
 import type {
   EditPreviewRequest,
   ModelPickerRequest,
-  OpenHorseUiRuntime,
+  OrionCodeUiRuntime,
   RuntimeToolFinishedEvent,
   RuntimeToolStartedEvent,
   SessionPickerRequest,
@@ -15,6 +15,13 @@ import type {
 } from '../runtime/ui-events';
 import type { GoalRuntimeEvent } from '../runtime/goals/types';
 import { formatGoalRuntimeEvent } from '../runtime/goals/presentation';
+import type { ResearchLifecycleEvent } from '../runtime/subagents/research-renderer';
+import {
+  appendResearchEventHistory,
+  formatResearchLifecycleEvent,
+  projectResearchLifecycleEvent,
+  type ResearchStatusProjection,
+} from '../runtime/ui-view-model';
 
 export type PrintOutputFormat = 'text' | 'json';
 
@@ -29,6 +36,8 @@ export interface PrintModeResult {
   statuses: string[];
   errors: string[];
   goalEvents: GoalRuntimeEvent[];
+  researchEvents: ResearchLifecycleEvent[];
+  research: ResearchStatusProjection | null;
   sessionId: string | null;
   model: string;
 }
@@ -77,10 +86,12 @@ export class PrintEventSink implements UiEventSink {
   private readonly statuses: string[] = [];
   private readonly errors: string[] = [];
   private readonly goalEvents: GoalRuntimeEvent[] = [];
+  private researchEvents: ResearchLifecycleEvent[] = [];
+  private researchProjection: ResearchStatusProjection | null = null;
   private idCounter = 0;
 
   constructor(
-    private readonly runtime: OpenHorseUiRuntime,
+    private readonly runtime: OrionCodeUiRuntime,
     private readonly outputFormat: PrintOutputFormat
   ) {}
 
@@ -189,6 +200,14 @@ export class PrintEventSink implements UiEventSink {
     }
   }
 
+  researchEvent(event: ResearchLifecycleEvent): void {
+    this.researchEvents = appendResearchEventHistory(this.researchEvents, event);
+    this.researchProjection = projectResearchLifecycleEvent(this.researchProjection, event);
+    if (this.outputFormat === 'text') {
+      stderrLine(formatResearchLifecycleEvent(event, 'print'));
+    }
+  }
+
   setProcessing(_processing: boolean): void {
     // Non-interactive print mode has no live processing indicator.
   }
@@ -211,6 +230,14 @@ export class PrintEventSink implements UiEventSink {
       statuses: [...this.statuses],
       errors: [...this.errors],
       goalEvents: [...this.goalEvents],
+      researchEvents: [...this.researchEvents],
+      research: this.researchProjection
+        ? {
+            ...this.researchProjection,
+            sources: [...this.researchProjection.sources],
+            conflictClaimIds: [...this.researchProjection.conflictClaimIds],
+          }
+        : null,
       sessionId: this.runtime.getSession()?.id ?? null,
       model: this.runtime.store.getSnapshot().currentModel || this.runtime.config.model,
     };
@@ -282,7 +309,7 @@ export async function readPromptFromStdinIfAvailable(
 }
 
 export async function launchPrintMode(
-  runtime: OpenHorseUiRuntime,
+  runtime: OrionCodeUiRuntime,
   input: string,
   options: PrintModeOptions = {}
 ): Promise<number> {

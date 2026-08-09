@@ -1,11 +1,11 @@
 import { query } from '../src/framework/query';
 import type { QueryEvent } from '../src/framework/query';
 import { buildTool } from '../src/framework/tool';
-import type { OpenHorseTool } from '../src/framework/tool';
+import type { OrionCodeTool } from '../src/framework/tool';
 import type { LLMService, LLMResponse, Message } from '../src/services/llm';
 import { createStrategyTracker } from '../src/core/strategy-tracker';
 
-const failTool: OpenHorseTool = buildTool({
+const failTool: OrionCodeTool = buildTool({
   name: 'flaky_tool',
   description: 'Always fails',
   parameters: {
@@ -134,8 +134,67 @@ describe('strategy tracker integration with query()', () => {
     expect(userSuggestionMsg).toBeDefined();
   });
 
+  test('seals every tool result before injecting and resetting an exhausted strategy', async () => {
+    const llm = makeMockLLM([
+      {
+        content: '',
+        model: 'test-model',
+        toolCalls: [
+          {
+            id: 'c1',
+            type: 'function',
+            function: { name: 'flaky_tool', arguments: '{"path":"/a"}' },
+          },
+          {
+            id: 'c2',
+            type: 'function',
+            function: { name: 'flaky_tool', arguments: '{"path":"/b"}' },
+          },
+          {
+            id: 'c3',
+            type: 'function',
+            function: { name: 'flaky_tool', arguments: '{"path":"/c"}' },
+          },
+        ],
+      },
+      { content: 'done', model: 'test-model' },
+    ]);
+    const tracker = createStrategyTracker({ maxAttempts: 1 });
+    const recordResult = jest.spyOn(tracker, 'recordResult');
+    const messages: Message[] = [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'do it' },
+    ];
+
+    for await (const _event of query({
+      messages,
+      tools: [failTool],
+      toolExecutor: async () => JSON.stringify({ success: false, error: 'boom' }),
+      llm,
+      strategyTracker: tracker,
+    })) {
+      // Consume the complete turn.
+    }
+
+    expect(recordResult).toHaveBeenCalledTimes(3);
+    const secondRequest = (llm.chatStream as jest.Mock).mock.calls[1][0] as Message[];
+    const batchStart = secondRequest.findIndex(message => message.tool_calls?.length === 3);
+    expect(
+      secondRequest.slice(batchStart, batchStart + 5).map(message => ({
+        role: message.role,
+        toolCallId: message.tool_call_id,
+      }))
+    ).toEqual([
+      { role: 'assistant', toolCallId: undefined },
+      { role: 'tool', toolCallId: 'c1' },
+      { role: 'tool', toolCallId: 'c2' },
+      { role: 'tool', toolCallId: 'c3' },
+      { role: 'user', toolCallId: undefined },
+    ]);
+  });
+
   test('does not yield strategy_exhausted on successful tool calls', async () => {
-    const okTool: OpenHorseTool = buildTool({
+    const okTool: OrionCodeTool = buildTool({
       name: 'ok_tool',
       description: 'always works',
       parameters: { type: 'object', properties: {} },

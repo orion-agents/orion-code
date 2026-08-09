@@ -131,10 +131,12 @@ export function buildHarnessContext(
   const omittedEvidence: PromptAssemblyStats['omittedEvidence'] = [];
   let usedEvidenceTokens = 0;
   for (const record of rankedEvidence) {
-    const tokens = Math.max(record.tokenEstimate, estimateTokens(record.content));
+    const line = evidenceLine(record);
+    // Charge exactly what reaches the prompt after render-time compaction.
+    const tokens = estimateTokens(line);
     if (usedEvidenceTokens + tokens <= evidenceBudgetTokens || includedEvidence.length < 4) {
       usedEvidenceTokens += tokens;
-      evidenceLines.push(evidenceLine(record));
+      evidenceLines.push(line);
       includedEvidence.push({
         id: record.id,
         kind: record.kind,

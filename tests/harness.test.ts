@@ -179,7 +179,9 @@ describe('Context Harness', () => {
       { role: 'system', content: 'base' },
       ...Array.from({ length: 12 }, (_, i) => ({
         role: 'user' as const,
-        content: `old message ${i}`,
+        // Use genuinely compressible history. Automatic compaction now rejects
+        // a capsule/summary that would be as large as the original prompt.
+        content: `old message ${i} ${'historical context '.repeat(30)}`,
       })),
     ];
 

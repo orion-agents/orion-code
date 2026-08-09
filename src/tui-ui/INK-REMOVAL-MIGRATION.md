@@ -91,7 +91,7 @@ src/ink-ui/runtime/transcript-state.ts — transcript 状态管理，TUI 已有 
 
 1. 搜索并移除所有 `import ... from 'ink'` 和 `import ... from 'react'`
 2. 搜索并移除所有 `import ... from '../ink-ui/...'` （除 compatibility re-export 外）
-3. 移除 `src/runtime/ui-events.ts` 中 `OrionCodeInkRuntime` deprecated type alias (via OpenHorseInkRuntime)
+3. 确认 `src/runtime/ui-events.ts` 只暴露通用的 `OrionCodeUiRuntime`，不保留 renderer-specific deprecated type alias
 4. 移除 `src/runtime/chat-controller.ts` 中 deprecated Ink type aliases
 5. 更新 `tsconfig.json` 如果有 Ink/JSX 相关 compiler options
 

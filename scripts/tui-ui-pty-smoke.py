@@ -24,6 +24,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from pty_test_config import write_mock_orion_config
 from pty_runner_identity import resolve_orion_command
 
 
@@ -515,7 +516,7 @@ def seed_resume_sessions(config_dir: str, repo: Path) -> list[str]:
     return session_ids
 
 
-def spawn_orion(repo: Path, base_url: str, config_dir: str, rows: int = 24, cols: int = 100) -> tuple[subprocess.Popen[bytes], int, int]:
+def spawn_orion(repo: Path, config_dir: str, rows: int = 24, cols: int = 100) -> tuple[subprocess.Popen[bytes], int, int]:
     master, slave = pty.openpty()
     set_window_size(slave, rows=rows, cols=cols)
     env = os.environ.copy()
@@ -526,8 +527,6 @@ def spawn_orion(repo: Path, base_url: str, config_dir: str, rows: int = 24, cols
             "NO_COLOR": "1",
             "FORCE_COLOR": "0",
             "ORION_CODE_API_KEY": "sk-orion-code-tui-pty",
-            "ORION_CODE_API_BASE_URL": base_url,
-            "ORION_CODE_MODEL": "mock-tui-stream",
             # Stale renderer env values must not override the product default.
             "ORION_CODE_UI": "terminal",
             "ORION_CODE_UI_RENDERER": "terminal",
@@ -568,9 +567,14 @@ def main() -> int:
     repo = Path(__file__).resolve().parents[1]
     mock_server, mock_base_url = start_mock_openai_server()
     config_dir = tempfile.mkdtemp(prefix="orion-code-tui-pty-")
+    write_mock_orion_config(
+        config_dir,
+        base_url=mock_base_url,
+        model="mock-tui-stream",
+    )
     resume_session_ids = seed_resume_sessions(config_dir, repo)
     target_resume_session_id = resume_session_ids[2]
-    process, master, slave = spawn_orion(repo, mock_base_url, config_dir)
+    process, master, slave = spawn_orion(repo, config_dir)
     output: list[bytes] = []
     model = TerminalModel(rows=24, cols=100)
     consumed = 0

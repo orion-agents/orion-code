@@ -47,22 +47,37 @@ export function parseSkillFile(content: string, sourcePath: string): SkillDefini
       return null;
     }
 
-    const frontmatter = loadYaml(frontmatterMatch[1]) as Record<string, any>;
+    const parsedFrontmatter: unknown = loadYaml(frontmatterMatch[1]);
+    if (!isRecord(parsedFrontmatter)) {
+      warnOnce(
+        `skill-frontmatter-invalid:${normalizedSourcePath}`,
+        `Invalid frontmatter in ${normalizedSourcePath}`,
+      );
+      return null;
+    }
+    const frontmatter = parsedFrontmatter;
 
     // Extract prompt (content after frontmatter)
     const prompt = normalizedContent.slice(frontmatterMatch[0].length).trim();
 
     // Build skill definition
     const skill: SkillDefinition = {
-      name: frontmatter.name || deriveSkillName(normalizedSourcePath),
-      description: frontmatter.description || '',
-      trigger: frontmatter.trigger,
+      name:
+        typeof frontmatter.name === 'string' && frontmatter.name.trim()
+          ? frontmatter.name
+          : deriveSkillName(normalizedSourcePath),
+      description: typeof frontmatter.description === 'string' ? frontmatter.description : '',
+      trigger: typeof frontmatter.trigger === 'string' ? frontmatter.trigger : undefined,
       prompt,
-      tools: frontmatter.tools,
-      auto: frontmatter.auto ?? false,
-      priority: frontmatter.priority ?? DEFAULT_SKILL_PRIORITY,
+      tools:
+        frontmatter.tools === undefined ? undefined : normalizeStringList(frontmatter.tools),
+      auto: typeof frontmatter.auto === 'boolean' ? frontmatter.auto : false,
+      priority:
+        typeof frontmatter.priority === 'number' && Number.isFinite(frontmatter.priority)
+          ? frontmatter.priority
+          : DEFAULT_SKILL_PRIORITY,
       source: normalizedSourcePath,
-      tags: frontmatter.tags || [],
+      tags: normalizeStringList(frontmatter.tags),
       aliases: normalizeStringList(frontmatter.aliases ?? frontmatter.alias),
     };
 
@@ -74,6 +89,10 @@ export function parseSkillFile(content: string, sourcePath: string): SkillDefini
     );
     return null;
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 export function normalizeSkillSourcePath(sourcePath: string): string {

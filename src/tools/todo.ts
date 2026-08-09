@@ -7,7 +7,7 @@
  * into the main Store and render it in the UI.
  */
 
-import { buildTool, type OpenHorseTool } from '../framework/tool';
+import { buildTool, type OrionCodeTool } from '../framework/tool';
 import { getToolState, setToolState, type TodoItem } from '../framework/tool-state';
 
 // ============================================================================
@@ -52,7 +52,7 @@ Each todo must have:
 - Remove tasks that are no longer relevant
 - Only mark completed when FULLY accomplished`;
 
-export const todoWriteTool: OpenHorseTool = buildTool({
+export const todoWriteTool: OrionCodeTool = buildTool({
   name: 'todo_write',
   description: `Update the todo list for the current session.
 
@@ -167,4 +167,4 @@ export function formatTodosForDisplay(todos: TodoItem[]): string {
 }
 
 export type { TodoItem };
-export const TODO_TOOLS: OpenHorseTool[] = [todoWriteTool];
+export const TODO_TOOLS: OrionCodeTool[] = [todoWriteTool];

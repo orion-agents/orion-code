@@ -37,6 +37,8 @@ export type PolicyRejectReason =
   | 'parent_aborted'
   | 'budget_exhausted'
   | 'provider_unavailable'
+  | 'invalid_research_request'
+  | 'external_research_unavailable'
   | 'concurrency_limit'
   | 'empty_request'
   | 'not_eligible_for_delegation';

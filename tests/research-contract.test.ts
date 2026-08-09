@@ -207,7 +207,7 @@ describe('research contract hard limits and fail-closed branches', () => {
       expect.arrayContaining([
         `maxSources must be >= ${RESEARCH_HARD_LIMITS.maxSources.min}`,
         'maxFetchBytes must be >= 0',
-        'maxDurationMs must be > 0',
+        `maxDurationMs must be >= ${RESEARCH_HARD_LIMITS.maxDurationMs.min}`,
       ]),
     );
   });

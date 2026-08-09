@@ -6,7 +6,7 @@
 
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 
 // The installed better-sqlite3 (v12) supports `allowExtension`, but
@@ -96,12 +96,14 @@ export interface VectorCleanupResult {
 
 export class VectorStore {
   private db: Database.Database;
+  private readonly dbPath: string;
   private embeddingService: ReturnType<typeof getEmbeddingService>;
   private initialized: boolean = false;
 
   constructor(config?: VectorStoreConfig) {
     // Determine database path
-    const dbPath = config?.dbPath || join(getConfigHome(), 'vector.db');
+    const dbPath = resolve(config?.dbPath || join(getConfigHome(), 'vector.db'));
+    this.dbPath = dbPath;
 
     // Ensure directory exists
     const dbDir = join(dbPath, '..');
@@ -180,6 +182,22 @@ export class VectorStore {
   /** Check if vector search is available */
   isVectorSearchAvailable(): boolean {
     return this.initialized;
+  }
+
+  /** Return a transactionally consistent project snapshot on the live connection. */
+  snapshotProjectRows(project: string): Array<Record<string, unknown>> | undefined {
+    const readSnapshot = this.db.transaction(() => {
+      if (!this.hasTable('memories')) return undefined;
+      return this.db
+        .prepare('SELECT * FROM memories WHERE project = ? ORDER BY id')
+        .all(project) as Array<Record<string, unknown>>;
+    });
+    return readSnapshot.deferred();
+  }
+
+  /** Whether this live store owns the requested database file. */
+  ownsDatabase(dbPath: string): boolean {
+    return this.dbPath === resolve(dbPath);
   }
 
   /** Insert or update memory with embedding - Issue #32 #3.3: 使用事务 */
@@ -535,6 +553,11 @@ export function getVectorStore(config?: VectorStoreConfig): VectorStore {
     defaultStore = new VectorStore(config);
   }
   return defaultStore;
+}
+
+/** Return the live singleton only when it owns this exact database. */
+export function peekVectorStore(dbPath: string): VectorStore | undefined {
+  return defaultStore?.ownsDatabase(dbPath) ? defaultStore : undefined;
 }
 
 export function resetVectorStore(): void {

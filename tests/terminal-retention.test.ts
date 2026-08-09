@@ -6,7 +6,7 @@ import {
   TerminalEventSink,
   TerminalWriter,
 } from '../src/terminal-ui/launch';
-import type { OpenHorseUiRuntime } from '../src/runtime/ui-events';
+import type { OrionCodeUiRuntime } from '../src/runtime/ui-events';
 
 function syncWriter(): TerminalWriter & { writes: string[] } {
   const writes: string[] = [];
@@ -18,7 +18,7 @@ function syncWriter(): TerminalWriter & { writes: string[] } {
   };
 }
 
-function mockRuntime(): OpenHorseUiRuntime {
+function mockRuntime(): OrionCodeUiRuntime {
   return {
     cwd: '/tmp/test',
     version: '0.2.23',

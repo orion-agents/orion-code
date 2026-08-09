@@ -151,6 +151,30 @@ describe('provider error classifier', () => {
       )
     ).toMatchObject({ retryAfterMs: 3_000 });
 
+    expect(
+      classifyProviderError(
+        {
+          status: 429,
+          response: { headers: new Headers({ 'Retry-After': '1.5' }) },
+        },
+        false
+      )
+    ).toMatchObject({ retryAfterMs: 1_500 });
+
+    expect(
+      classifyProviderError(
+        {
+          status: 429,
+          headers: { 'Retry-After-Ms': 750, 'Retry-After': '120' },
+        },
+        false
+      )
+    ).toMatchObject({ retryAfterMs: 750 });
+
+    expect(
+      classifyProviderError({ status: 429, headers: { 'retry-after': '120' } }, false)
+    ).toMatchObject({ retryAfterMs: 120_000 });
+
     jest.useFakeTimers();
     jest.setSystemTime(new Date('2026-08-01T00:00:00.000Z'));
     expect(

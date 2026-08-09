@@ -19,7 +19,7 @@ import {
   sessionMessagesToTranscriptEntries,
 } from '../src/runtime/chat-controller';
 import type {
-  OpenHorseUiRuntime,
+  OrionCodeUiRuntime,
   TranscriptAppendEntry,
   TranscriptEntry,
   UiEventSink,
@@ -33,7 +33,7 @@ import {
   type SessionMeta,
 } from '../src/services/session-storage';
 
-function createRuntime(root: string, overrides: Partial<OpenHorseUiRuntime> = {}) {
+function createRuntime(root: string, overrides: Partial<OrionCodeUiRuntime> = {}) {
   const config = loadConfig({
     apiKey: 'test-key',
     model: 'test-model',
@@ -41,7 +41,7 @@ function createRuntime(root: string, overrides: Partial<OpenHorseUiRuntime> = {}
   });
   const store = new Store({ config, tools: [], currentModel: 'test-model' });
   let session: SessionMeta | null = null;
-  const runtime: OpenHorseUiRuntime = {
+  const runtime: OrionCodeUiRuntime = {
     cwd: root,
     version: 'test',
     config,

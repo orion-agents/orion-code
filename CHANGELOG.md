@@ -19,6 +19,34 @@ Evidence labels follow `docs/plan/targets-v0.1.3-v0.1.3-2.md`:
 `met` / `partial` / `unmet` / `not_run` — where `not_run` means "blocked by environment",
 which is **not** a pass.
 
+## [Unreleased]
+
+> **Status: maintenance branch only.** These fixes are newer than the immutable
+> `v0.1.4` tag and npm artifact; pushing the `v0.1.4` branch does not republish them.
+
+### Changed
+
+- Split the slash-command registry and chat runtime into bounded modules, removed
+  deprecated OpenHorse type aliases, and made strict lint rules fail the build.
+- Upgraded the OpenAI SDK to the Node-20-compatible 6.x line, removed unused runtime
+  dependencies, and added automated dependency policy/update checks.
+- Added structured diagnostics, provider recovery metrics, runtime-matrix CI, and
+  real PTY research lifecycle coverage.
+
+### Fixed
+
+- Closed persistence races, checkpoint corruption/rollback gaps, task-capacity and
+  response-parsing bugs, tool-call group corruption, context compaction errors, and
+  provider retry/stream recovery inconsistencies.
+- Hardened forked-agent capabilities, harness evidence/sandbox enforcement, AWS auth,
+  command execution gates, and macOS sandbox fail-closed behavior.
+- Completed the research contract across controlled web access, redirects, budgets,
+  atomic CAS persistence, citation durability, renderer events, and restart/resume.
+- Added conversational Goal abandonment with explicit user authorization and corrected
+  Goal boundary/audit/no-progress semantics.
+- Made `prepublishOnly` build before the release pack gate so clean checkouts and final
+  tarballs are validated against the same generated `dist` output.
+
 ## [0.1.4] — 2026-08-06
 
 > **Status: published.** Tag `v0.1.4` exists and the package is on npm

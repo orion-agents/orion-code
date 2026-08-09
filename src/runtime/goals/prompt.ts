@@ -5,7 +5,7 @@
  * Continuation instructions are ephemeral and never enter user transcript.
  */
 
-import type { SessionGoalV1 } from './types';
+import { GOAL_INVARIANTS, type SessionGoalV1 } from './types';
 
 export interface GoalPromptFragment {
   /** The assembled text to inject into the system prompt. */
@@ -72,13 +72,14 @@ export function buildGoalContextFragment(goal: SessionGoalV1 | null): GoalPrompt
   }
 
   lines.push(
+    `Blocked gate: same eligible blocker ${goal.blocker?.consecutiveTurns ?? 0}/${GOAL_INVARIANTS.maxConsecutiveBlockerTurns}; no-progress ${goal.noProgressCount}/${GOAL_INVARIANTS.maxConsecutiveNoProgressTurns}. Both must reach the threshold.`,
     '',
     'Rules:',
     '- Preserve the complete objective across turns.',
     '- Inspect current worktree and external state; they are authoritative.',
     '- Make concrete progress. A plan is not a substitute for execution.',
     '- Do not mark complete until every requirement is verified.',
-    '- Do not mark blocked unless the same blocker persisted for 3 consecutive goal turns.',
+    `- Do not mark blocked unless the same eligible non-retryable blocker persisted for >= ${GOAL_INVARIANTS.maxConsecutiveBlockerTurns} consecutive Goal turns and no progress persisted for >= ${GOAL_INVARIANTS.maxConsecutiveNoProgressTurns} consecutive Goal turns.`,
     '- User corrections refine the work but do not replace the objective unless /target edit/replace occurs.'
   );
 
@@ -102,7 +103,7 @@ export function buildContinuationInstruction(): string {
     'Review completed and remaining requirements against evidence.',
     'Make concrete progress in this turn.',
     'If fully verified, request goal completion.',
-    'If the same blocker has persisted for three consecutive goal turns, request blocked status.',
+    `Only request blocked status when the same eligible non-retryable blocker persisted for >= ${GOAL_INVARIANTS.maxConsecutiveBlockerTurns} consecutive Goal turns and no progress persisted for >= ${GOAL_INVARIANTS.maxConsecutiveNoProgressTurns} consecutive Goal turns.`,
     'Otherwise continue working and leave the goal active.',
   ].join('\n');
 }

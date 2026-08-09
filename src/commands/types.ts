@@ -5,10 +5,10 @@
  * 非 `/` 前缀的输入直接作为 chat 消息处理。
  */
 
-import type { OpenHorseRuntime } from '../init';
+import type { OrionCodeRuntime } from '../init';
 import type { Store } from '../framework/store';
 import type { LLMService } from '../services/llm';
-import type { OpenHorseCLIConfig, UIRenderer } from '../services/config';
+import type { OrionCodeCLIConfig, UIRenderer } from '../services/config';
 import type { SessionMeta } from '../services/session-storage';
 import type { CompactCoordinator } from '../services/compact';
 import type {
@@ -28,11 +28,11 @@ export type CommandUiRenderer = UIRenderer | 'print';
 /** 命令执行上下文 */
 export interface CommandContext {
   cwd: string;
-  config: OpenHorseCLIConfig;
+  config: OrionCodeCLIConfig;
   store: Store;
   llm: LLMService | null;
   compactCoordinator?: CompactCoordinator;
-  runtime: OpenHorseRuntime;
+  runtime: OrionCodeRuntime;
   /** 当前会话 ID（用于记录消息） */
   sessionId?: string;
   /** Lazily create or return the active session. */

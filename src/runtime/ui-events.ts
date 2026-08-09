@@ -1,9 +1,9 @@
-import type { OpenHorseRuntime } from '../init';
+import type { OrionCodeRuntime } from '../init';
 import type { Store } from '../framework/store';
 import type { LoopStats } from '../framework';
 import type { LLMService } from '../services/llm';
 import type { CompactCoordinator } from '../services/compact';
-import type { OpenHorseCLIConfig } from '../services/config';
+import type { OrionCodeCLIConfig } from '../services/config';
 import type { SessionMeta, SessionTraceEvent } from '../services/session-storage';
 import type { RuntimeSubtaskEvent } from './subagents/types';
 import type { ResearchLifecycleEvent } from './subagents/research-renderer';
@@ -251,21 +251,15 @@ export interface RuntimeSessionAccessors {
 export interface OrionCodeUiRuntime extends RuntimeSessionAccessors {
   cwd: string;
   version: string;
-  config: OpenHorseCLIConfig;
+  config: OrionCodeCLIConfig;
   store: Store;
   llm: LLMService | null;
   compactCoordinator?: CompactCoordinator;
-  runtime: OpenHorseRuntime;
+  runtime: OrionCodeRuntime;
   isConfigured: boolean;
   mcpReady?: Promise<void>;
   shutdown: () => Promise<void>;
 }
-
-/** @deprecated Use OrionCodeUiRuntime. */
-export type OpenHorseUiRuntime = OrionCodeUiRuntime;
-
-/** @deprecated Use OrionCodeUiRuntime. Runtime context is shared by every renderer. */
-export type OpenHorseInkRuntime = OrionCodeUiRuntime;
 
 export interface UiEventSink {
   append: (entry: TranscriptAppendEntry) => string;

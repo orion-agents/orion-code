@@ -1,9 +1,9 @@
 import { buildSystemPrompt, getSystemPrompt } from '../src/framework/prompt';
 import type { PromptContext } from '../src/framework/prompt';
 import { buildTool } from '../src/framework/tool';
-import type { OpenHorseTool } from '../src/framework/tool';
+import type { OrionCodeTool } from '../src/framework/tool';
 
-const mockTool: OpenHorseTool = buildTool({
+const mockTool: OrionCodeTool = buildTool({
   name: 'read_file',
   description: 'Read a file',
   parameters: { type: 'object', properties: { path: { type: 'string', description: 'Path' } } },
@@ -109,7 +109,7 @@ describe('buildSystemPrompt', () => {
   });
 
   test('multiple tools are listed in static part', () => {
-    const tools: OpenHorseTool[] = [
+    const tools: OrionCodeTool[] = [
       buildTool({
         name: 'read_file',
         description: 'Read',
@@ -182,7 +182,7 @@ describe('Stable prefix cache invariance', () => {
 });
 
 describe('subagent prompt section', () => {
-  const subtaskTool: OpenHorseTool = buildTool({
+  const subtaskTool: OrionCodeTool = buildTool({
     name: 'subtask',
     description: 'Delegate subtasks',
     parameters: { type: 'object', properties: { tasks: { type: 'array', description: 'tasks' } } },

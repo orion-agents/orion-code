@@ -6,7 +6,7 @@
  * Dynamic sections are rebuilt each request.
  */
 
-import type { OpenHorseTool } from './tool';
+import type { OrionCodeTool } from './tool';
 
 // ============================================================================
 // 类型
@@ -17,7 +17,7 @@ export interface PromptContext {
   cwd: string;
   platform: string;
   nodeVersion: string;
-  tools: OpenHorseTool[];
+  tools: OrionCodeTool[];
   memoryContent?: string;
   /** Pre-rendered skills section (e.g. from SkillsRegistry.generateSystemPromptInjection) */
   skillsContent?: string;

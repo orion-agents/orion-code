@@ -1,9 +1,9 @@
 import { resolveWebSearchMcpConfig } from '../src/services/web-search-provider';
-import type { OpenHorseCLIConfig } from '../src/services/config';
+import type { OrionCodeCLIConfig } from '../src/services/config';
 
 const originalEnv = { ...process.env };
 
-function baseConfig(overrides: Partial<OpenHorseCLIConfig> = {}): OpenHorseCLIConfig {
+function baseConfig(overrides: Partial<OrionCodeCLIConfig> = {}): OrionCodeCLIConfig {
   return {
     apiKey: 'sk-configured',
     model: 'gpt-4o',

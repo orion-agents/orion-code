@@ -84,7 +84,7 @@ describe('SafetyChecker', () => {
     });
   });
 
-  it('returns whitelist warnings while allowing wildcard and listed actions', () => {
+  it('returns whitelist warnings while allowing wildcard in any position and listed actions', () => {
     const checker = new SafetyChecker({ allowed: ['read'], blocked: [], dangerousPatterns: [] });
 
     expect(checker.check('read file')).toEqual({
@@ -98,9 +98,9 @@ describe('SafetyChecker', () => {
       reason: 'Action "write" not in whitelist',
     });
 
-    checker.updatePolicy({ allowed: ['*'] });
+    checker.updatePolicy({ allowed: ['read', '*'] });
     expect(checker.check('write file')).toMatchObject({ passed: true, level: 'safe' });
-    expect(checker.getPolicy().allowed).toEqual(['*']);
+    expect(checker.getPolicy().allowed).toEqual(['read', '*']);
   });
 
   it('recompiles blocked and dangerous regexes when the policy changes', () => {
@@ -173,7 +173,7 @@ describe('SafetyChecker', () => {
     });
   });
 
-  it('handles invalid and excessively long policy regexes without throwing', () => {
+  it('fails closed on invalid and excessively long policy regexes without throwing', () => {
     const checker = new SafetyChecker({
       allowed: ['*'],
       blocked: ['[', 'x'.repeat(501)],
@@ -181,7 +181,64 @@ describe('SafetyChecker', () => {
     });
 
     expect(() => checker.check('ordinary action')).not.toThrow();
-    expect(checker.check('ordinary action')).toMatchObject({ passed: true, level: 'safe' });
+    expect(checker.check('ordinary action')).toMatchObject({ passed: false, level: 'blocked' });
+  });
+
+  it('uses normalized, boundary-safe containment for blocked paths', () => {
+    const checker = new SafetyChecker({
+      allowed: ['*'],
+      blocked: [],
+      dangerousPatterns: [],
+      blockedPaths: ['/tmp/orion-policy/etc/passwd'],
+    });
+
+    expect(checker.check('read file', {
+      cwd: '/tmp/orion-policy',
+      path: 'etc/./passwd',
+    })).toMatchObject({ passed: false, level: 'blocked' });
+    expect(checker.check('read file', {
+      cwd: '/tmp/orion-policy',
+      path: 'etc/passwd-backup',
+    })).toMatchObject({ passed: true, level: 'safe' });
+  });
+
+  it('requires proof of an active sandbox when sandboxMode is enabled', () => {
+    const checker = new SafetyChecker({
+      allowed: ['*'],
+      blocked: [],
+      dangerousPatterns: [],
+      sandboxMode: true,
+    });
+
+    expect(checker.check('read file')).toMatchObject({ passed: false, level: 'blocked' });
+    expect(checker.check('read file', { sandboxed: true })).toMatchObject({
+      passed: true,
+      level: 'safe',
+    });
+  });
+
+  it('enforces and fully parses allowed network protocols', () => {
+    const checker = new SafetyChecker({
+      allowed: ['*'],
+      blocked: [],
+      dangerousPatterns: [],
+      allowedNetworkOps: ['https'],
+    });
+
+    expect(checker.check('fetch https://example.com')).toMatchObject({
+      passed: true,
+      level: 'safe',
+    });
+    expect(checker.check('fetch http://example.com')).toMatchObject({
+      passed: false,
+      level: 'blocked',
+      reason: 'Network operation "http" is not allowed',
+    });
+    expect(checker.check('network request')).toMatchObject({
+      passed: false,
+      level: 'blocked',
+      reason: 'Network operation could not be parsed safely',
+    });
   });
 
   it('checks batches, returns the newest audit records, and clears the audit log', () => {

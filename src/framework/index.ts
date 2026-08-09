@@ -16,7 +16,6 @@ export {
 } from './tool-serializer';
 export type {
   OrionCodeTool,
-  OpenHorseTool,
   ToolResult,
   ToolContext,
   ToolConfig,

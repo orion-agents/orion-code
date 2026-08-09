@@ -16,33 +16,33 @@ function isCJK(char: string): boolean {
   const cp = char.codePointAt(0) || 0;
   return (
     // CJK Unified Ideographs
-    (cp >= 0x4E00 && cp <= 0x9FFF) ||
+    (cp >= 0x4e00 && cp <= 0x9fff) ||
     // CJK Extension A
-    (cp >= 0x3400 && cp <= 0x4DBF) ||
+    (cp >= 0x3400 && cp <= 0x4dbf) ||
     // CJK Extension B
-    (cp >= 0x20000 && cp <= 0x2A6DF) ||
+    (cp >= 0x20000 && cp <= 0x2a6df) ||
     // CJK Extension C
-    (cp >= 0x2A700 && cp <= 0x2B73F) ||
+    (cp >= 0x2a700 && cp <= 0x2b73f) ||
     // CJK Extension D
-    (cp >= 0x2B740 && cp <= 0x2B81F) ||
+    (cp >= 0x2b740 && cp <= 0x2b81f) ||
     // CJK Compatibility Ideographs
-    (cp >= 0xF900 && cp <= 0xFAFF) ||
+    (cp >= 0xf900 && cp <= 0xfaff) ||
     // CJK Compatibility Ideographs Supplement
-    (cp >= 0x2F800 && cp <= 0x2FA1F) ||
+    (cp >= 0x2f800 && cp <= 0x2fa1f) ||
     // Hiragana (Japanese)
-    (cp >= 0x3040 && cp <= 0x309F) ||
+    (cp >= 0x3040 && cp <= 0x309f) ||
     // Katakana (Japanese)
-    (cp >= 0x30A0 && cp <= 0x30FF) ||
+    (cp >= 0x30a0 && cp <= 0x30ff) ||
     // Katakana Phonetic Extensions
-    (cp >= 0x31F0 && cp <= 0x31FF) ||
+    (cp >= 0x31f0 && cp <= 0x31ff) ||
     // Hangul Syllables (Korean)
-    (cp >= 0xAC00 && cp <= 0xD7AF) ||
+    (cp >= 0xac00 && cp <= 0xd7af) ||
     // Hangul Jamo
-    (cp >= 0x1100 && cp <= 0x11FF) ||
+    (cp >= 0x1100 && cp <= 0x11ff) ||
     // Hangul Compatibility Jamo
-    (cp >= 0x3130 && cp <= 0x318F) ||
+    (cp >= 0x3130 && cp <= 0x318f) ||
     // Fullwidth Forms (CJK punctuation, etc.)
-    (cp >= 0xFF00 && cp <= 0xFFEF)
+    (cp >= 0xff00 && cp <= 0xffef)
   );
 }
 
@@ -121,13 +121,30 @@ export function estimateTokens(text: string): number {
  * @returns Estimated total token count
  */
 export function estimateMessagesTokens(
-  messages: Array<{ content?: string | null; role?: string }>
+  messages: Array<{
+    content?: string | null;
+    role?: string;
+    tool_call_id?: string;
+    tool_calls?: Array<{
+      id?: string;
+      function?: { name?: string; arguments?: string };
+    }>;
+  }>
 ): number {
   let total = 0;
   for (const msg of messages) {
-    if (msg.content) {
-      // Add overhead for message framing (~4 tokens per message)
-      total += estimateTokens(msg.content) + 4;
+    // Charge framing even for the common assistant message whose content is
+    // empty because it consists entirely of tool calls.
+    total += 4;
+    if (msg.content) total += estimateTokens(msg.content);
+    if (msg.tool_call_id) total += estimateTokens(msg.tool_call_id);
+    for (const toolCall of msg.tool_calls ?? []) {
+      total += 4;
+      if (toolCall.id) total += estimateTokens(toolCall.id);
+      if (toolCall.function?.name) total += estimateTokens(toolCall.function.name);
+      if (toolCall.function?.arguments) {
+        total += estimateTokens(toolCall.function.arguments);
+      }
     }
   }
   return total;

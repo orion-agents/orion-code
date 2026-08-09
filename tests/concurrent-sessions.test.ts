@@ -10,6 +10,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { SessionManager } from '../src/services/concurrent-sessions';
 import { getCacheDir } from '../src/services/config-dir';
+import * as debugLog from '../src/utils/debug-log';
 
 const fsModule = require('fs');
 
@@ -94,13 +95,111 @@ describe('concurrent-sessions (Issue #80)', () => {
 
   it('fails closed: getActiveSessions throws when the directory is unreadable (does NOT return [])', () => {
     const m = makeManager({ maxSessions: 10 });
+    const diagnostic = jest.spyOn(debugLog, 'debugError').mockImplementation(() => undefined);
     const spy = jest
       .spyOn(fsModule, 'readdirSync')
       .mockImplementation((() => {
         throw new Error('EACCES simulated');
       }) as any);
     expect(() => m.getActiveSessions()).toThrow(/EACCES simulated/);
+    expect(diagnostic).toHaveBeenCalledWith(
+      'concurrent-sessions.listSessions',
+      expect.objectContaining({ message: 'EACCES simulated' }),
+      sessionDir(),
+    );
     spy.mockRestore();
     m.terminate();
+  });
+
+  it('keeps one session lifecycle isolated on disk', () => {
+    const m = makeManager();
+    const session = m.register({ model: 'model-a' });
+    const filePath = path.join(sessionDir(), `${session.id}.json`);
+    const originalActivity = session.lastActivity;
+
+    m.updateActivity();
+    let stored = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    expect(stored).toMatchObject({ id: session.id, model: 'model-a', status: 'active' });
+    expect(stored.lastActivity).toBeGreaterThanOrEqual(originalActivity);
+
+    m.setIdle();
+    stored = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    expect(stored.status).toBe('idle');
+
+    m.terminate();
+    expect(fs.existsSync(filePath)).toBe(false);
+  });
+
+  it('reaps expired/dead sessions while retaining a live isolated session', () => {
+    const now = Date.now();
+    const live = makeManager().register({ model: 'live' });
+    const expiredPath = path.join(sessionDir(), 'expired.json');
+    const deadPath = path.join(sessionDir(), 'dead.json');
+    const corruptPath = path.join(sessionDir(), 'corrupt.json');
+    fs.writeFileSync(expiredPath, JSON.stringify({
+      ...live,
+      id: 'expired',
+      lastActivity: now - 120_000,
+    }));
+    fs.writeFileSync(deadPath, JSON.stringify({
+      ...live,
+      id: 'dead',
+      pid: 987_654_321,
+      lastActivity: now,
+    }));
+    fs.writeFileSync(corruptPath, '{invalid');
+    jest.spyOn(process, 'kill').mockImplementation(((pid: number) => {
+      if (pid === process.pid) return true;
+      throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' });
+    }) as typeof process.kill);
+    const diagnostic = jest.spyOn(debugLog, 'debugError').mockImplementation(() => undefined);
+
+    const sessions = makeManager().getActiveSessions();
+
+    expect(sessions.map(item => item.id)).toEqual([live.id]);
+    expect(fs.existsSync(expiredPath)).toBe(false);
+    expect(fs.existsSync(deadPath)).toBe(false);
+    expect(diagnostic).toHaveBeenCalledWith(
+      'concurrent-sessions.parseSession',
+      expect.any(Error),
+      corruptPath,
+    );
+  });
+
+  it('cleanup removes expired, dead, and corrupt records with diagnostics', () => {
+    const now = Date.now();
+    const manager = makeManager();
+    const template = {
+      pid: process.pid,
+      startedAt: now,
+      cwd: process.cwd(),
+      lastActivity: now,
+      status: 'active',
+    };
+    fs.writeFileSync(path.join(sessionDir(), 'expired.json'), JSON.stringify({
+      ...template,
+      id: 'expired',
+      lastActivity: now - 120_000,
+    }));
+    fs.writeFileSync(path.join(sessionDir(), 'dead.json'), JSON.stringify({
+      ...template,
+      id: 'dead',
+      pid: 987_654_321,
+    }));
+    const corruptPath = path.join(sessionDir(), 'corrupt.json');
+    fs.writeFileSync(corruptPath, '{invalid');
+    jest.spyOn(process, 'kill').mockImplementation(((pid: number) => {
+      if (pid === process.pid) return true;
+      throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' });
+    }) as typeof process.kill);
+    const diagnostic = jest.spyOn(debugLog, 'debugError').mockImplementation(() => undefined);
+
+    expect(manager.cleanup()).toBe(3);
+    expect(fs.readdirSync(sessionDir()).filter(file => file.endsWith('.json'))).toEqual([]);
+    expect(diagnostic).toHaveBeenCalledWith(
+      'concurrent-sessions.cleanupParse',
+      expect.any(Error),
+      corruptPath,
+    );
   });
 });

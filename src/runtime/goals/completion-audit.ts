@@ -9,6 +9,7 @@ import type {
   GoalEvidenceRecord,
   GoalEvidenceLedgerTruncation,
 } from './types';
+import { GOAL_INVARIANTS } from './types';
 import { EXTERNAL_COMPLETION_ACTION_RULES, type ExternalCompletionAction } from './evidence';
 
 const WORKSPACE_BOUND_EVIDENCE = new Set(['test', 'build', 'lint', 'file', 'runtime']);
@@ -836,16 +837,16 @@ export function auditBlocked(input: BlockedAuditInput): {
   if (input.blocker.retryable !== false) {
     return { allowed: false, reason: 'Retryable blockers cannot become terminal blocked.' };
   }
-  if (input.blocker.consecutiveTurns < 3) {
+  if (input.blocker.consecutiveTurns < GOAL_INVARIANTS.maxConsecutiveBlockerTurns) {
     return {
       allowed: false,
-      reason: `Blocker seen ${input.blocker.consecutiveTurns}/3 required turns.`,
+      reason: `Blocker seen ${input.blocker.consecutiveTurns}/${GOAL_INVARIANTS.maxConsecutiveBlockerTurns} required turns.`,
     };
   }
-  if (input.noProgressCount < 3) {
+  if (input.noProgressCount < GOAL_INVARIANTS.maxConsecutiveNoProgressTurns) {
     return {
       allowed: false,
-      reason: 'Progress was made in recent turns; blocking not justified.',
+      reason: `No-progress count ${input.noProgressCount}/${GOAL_INVARIANTS.maxConsecutiveNoProgressTurns}; blocking not justified.`,
     };
   }
   return {

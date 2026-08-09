@@ -98,8 +98,16 @@ export interface ProviderAttemptRecord {
   visibleTextBytes: number;
   toolCallDeltaSeen: boolean;
   terminalFinishReasonSeen: boolean;
+  finishReason?: string;
   outcome: 'succeeded' | 'failed' | 'aborted' | 'recovered' | 'superseded';
   usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
+}
+
+/** Narrow, write-only stream signals owned by the coordinator for one attempt. */
+export interface ProviderAttemptReporter {
+  onTextDelta(text: string): void;
+  onToolCallDelta(): void;
+  onFinishReason(finishReason: string): void;
 }
 
 export interface ProviderRequestDiagnosticsV2 {

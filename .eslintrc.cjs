@@ -7,13 +7,13 @@ module.exports = {
   parser: '@typescript-eslint/parser',
   plugins: ['@typescript-eslint'],
   rules: {
-    '@typescript-eslint/no-explicit-any': 'warn',
+    '@typescript-eslint/no-explicit-any': 'error',
     '@typescript-eslint/explicit-function-return-type': 'off',
-    '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
+    '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
     '@typescript-eslint/no-var-requires': 'off',
     '@typescript-eslint/ban-types': 'warn',
     '@typescript-eslint/ban-ts-comment': 'warn',
-    'prefer-const': 'warn',
+    'prefer-const': 'error',
     'no-console': 'off',
     // A parameterless `catch {}` discards the error object outright, which is
     // how persistence and auth failures used to become invisible (#9).

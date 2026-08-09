@@ -8,7 +8,6 @@
  */
 
 import OpenAI from 'openai';
-import type { RequestOptions } from 'openai/core';
 import type {
   ChatCompletionCreateParams,
   ChatCompletionMessageParam,
@@ -18,11 +17,17 @@ import { randomUUID } from 'crypto';
 import { diagnoseProviderError, toLLMProviderError } from './provider-diagnostics';
 import type { ProviderErrorType } from './provider-diagnostics';
 import {
+  extractRetryAfterMs,
   ProviderRetryExhaustedError,
+  reconcileStreamOverlap,
+  type ProviderAttemptReporter,
   type ProviderFailureKind,
   type ProviderRequestDiagnosticsV2,
 } from './provider-resilience';
+import { assertToolCallGroups } from './compact/tool-call-groups';
 import { estimateMessagesTokens } from '../utils/token-estimate';
+
+type RequestOptions = OpenAI.RequestOptions;
 
 export { LLMProviderError } from './provider-diagnostics';
 export type { ProviderErrorDiagnostic, ProviderErrorType } from './provider-diagnostics';
@@ -57,6 +62,8 @@ export interface RetryConfig {
   baseDelayMs: number;
   /** 最大延迟 ms */
   maxDelayMs?: number;
+  /** Maximum wait honoured from Retry-After; larger provider values are clamped. */
+  maxRetryAfterMs?: number;
   /** Abort retries and retry backoff when the current turn is interrupted */
   abortSignal?: AbortSignal;
   /** 重试回调 */
@@ -74,6 +81,9 @@ export interface LLMRequestDiagnostics {
   fallbackToModel?: string;
   finalModel: string;
   usingFallback: boolean;
+  recoveryCount: number;
+  unknownBilledAttemptCount: number;
+  usageConfidence: ProviderRequestDiagnosticsV2['usageConfidence'];
 }
 
 /** Fallback 触发错误 */
@@ -150,12 +160,41 @@ export interface LLMResponse {
   usage?: LLMUsage;
   /** 使用的模型 */
   model: string;
+  /** Provider finish reason normalized across OpenAI-compatible gateways. */
+  finishReason?: LLMFinishReason;
+  /** Exact non-empty provider finish_reason for diagnostics and compatibility. */
+  rawFinishReason?: string;
   /** 工具调用 */
   toolCalls?: Array<{
     id: string;
     type: 'function';
     function: { name: string; arguments: string };
   }>;
+}
+
+export type LLMFinishReason = 'stop' | 'length' | 'tool_calls' | 'content_filter' | 'unknown';
+
+export function normalizeFinishReason(value: unknown): LLMFinishReason | undefined {
+  if (typeof value !== 'string') return undefined;
+  const reason = value.trim().toLowerCase();
+  if (!reason) return undefined;
+  if (['stop', 'end', 'end_turn', 'completed', 'complete', 'success'].includes(reason)) {
+    return 'stop';
+  }
+  if (['length', 'max_tokens', 'max_output_tokens', 'token_limit'].includes(reason)) {
+    return 'length';
+  }
+  if (['tool_calls', 'tool_call', 'tool_use', 'function_call'].includes(reason)) {
+    return 'tool_calls';
+  }
+  if (['content_filter', 'content_filtered', 'safety', 'blocked'].includes(reason)) {
+    return 'content_filter';
+  }
+  return 'unknown';
+}
+
+function rawFinishReason(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
 /** 流式回调 */
@@ -229,6 +268,7 @@ const DEFAULT_RETRY_CONFIG: RetryConfig = {
   maxRetries: 3,
   baseDelayMs: 500,
   maxDelayMs: 10000,
+  maxRetryAfterMs: 60_000,
 };
 
 /** 529 错误最大重试次数（触发 fallback） */
@@ -257,29 +297,6 @@ function throwIfAborted(signal?: AbortSignal): void {
 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
-}
-
-/** 从错误中提取 retry-after 时间 */
-function getRetryAfterMs(error: unknown): number | null {
-  if (error instanceof OpenAI.APIError && error.headers) {
-    const headers = error.headers;
-    let retryAfter: string | null = null;
-
-    // headers may be Headers object or plain object
-    if (headers && typeof headers === 'object') {
-      if ('get' in headers && typeof headers.get === 'function') {
-        retryAfter = headers.get('retry-after');
-      } else if ('retry-after' in headers) {
-        retryAfter = (headers as Record<string, string>)['retry-after'];
-      }
-    }
-
-    if (retryAfter) {
-      const seconds = parseInt(retryAfter, 10);
-      if (!isNaN(seconds)) return seconds * 1000;
-    }
-  }
-  return null;
 }
 
 /** 指数退避计算 */
@@ -336,9 +353,9 @@ async function withRetry<T>(
 
       let delayMs = exponentialBackoff(attempt, config.baseDelayMs, config.maxDelayMs);
 
-      const retryAfter = getRetryAfterMs(error);
-      if (retryAfter !== null) {
-        delayMs = retryAfter;
+      const retryAfter = extractRetryAfterMs(error);
+      if (retryAfter !== undefined) {
+        delayMs = Math.min(retryAfter, config.maxRetryAfterMs ?? 60_000);
       } else if (isRateLimitError(error)) {
         delayMs = Math.max(delayMs, Math.min(2000, config.baseDelayMs * 4));
       }
@@ -647,7 +664,8 @@ export class LLMService {
       throw toLLMProviderError(error);
     }
 
-    const message = response.choices?.[0]?.message;
+    const choice = response.choices?.[0];
+    const message = choice?.message;
     const content = message?.content ?? '';
     const toolCalls = message?.tool_calls?.map(tc => ({
       id: tc.id,
@@ -657,6 +675,10 @@ export class LLMService {
         arguments: tc.function.arguments,
       },
     }));
+    const providerFinishReason = rawFinishReason(choice?.finish_reason);
+    const finishReason =
+      normalizeFinishReason(providerFinishReason) ??
+      (toolCalls && toolCalls.length > 0 ? 'tool_calls' : undefined);
 
     const usage = response.usage
       ? extractLLMUsage(response.usage, response, response.id)
@@ -675,6 +697,8 @@ export class LLMService {
       content,
       usage,
       model: response.model ?? this.config.model,
+      finishReason,
+      rawFinishReason: providerFinishReason,
       toolCalls,
     };
   }
@@ -692,11 +716,37 @@ export class LLMService {
     const onThinking = typeof callbacks === 'object' ? callbacks?.onThinking : undefined;
     const requestDiagnostics = this.createRequestDiagnostics();
     this.lastRequestDiagnostics = requestDiagnostics;
+    let visibleStreamText = '';
+
+    const emitStreamText = (
+      text: string,
+      bufferForRecovery: boolean,
+      reporter?: ProviderAttemptReporter
+    ): void => {
+      if (!text) return;
+      reporter?.onTextDelta(text);
+      if (bufferForRecovery) return;
+      visibleStreamText += text;
+      onChunk?.(text);
+    };
+
+    const finalizeStreamText = (attemptText: string, bufferForRecovery: boolean): string => {
+      if (!bufferForRecovery) return attemptText;
+      const suffix = attemptText.startsWith(visibleStreamText)
+        ? attemptText.slice(visibleStreamText.length)
+        : reconcileStreamOverlap(visibleStreamText, attemptText).suffix;
+      if (suffix) {
+        visibleStreamText += suffix;
+        onChunk?.(suffix);
+      }
+      return visibleStreamText;
+    };
 
     const retryConfig: RetryConfig = {
       maxRetries: this.config.maxRetries,
       baseDelayMs: this.config.retryBaseDelay,
       maxDelayMs: 10000,
+      maxRetryAfterMs: 60_000,
       abortSignal: options?.abortSignal,
       onRetry: (_attempt, error, delayMs) => {
         const diagnostic = diagnoseProviderError(error);
@@ -744,7 +794,12 @@ export class LLMService {
             fallbackModel: this.config.fallbackModel || undefined,
             abortSignal: options?.abortSignal,
           },
-          async (attempt: number, signal?: AbortSignal, model = this.config.model) => {
+          async (
+            attempt: number,
+            signal?: AbortSignal,
+            model = this.config.model,
+            reporter?: ProviderAttemptReporter
+          ) => {
             throwIfAborted(signal);
             await this.assertProviderRequestAllowed('chat_stream', attempt, messages, model);
 
@@ -773,6 +828,9 @@ export class LLMService {
             let usedModel = model;
             let usage: LLMUsage | undefined;
             let providerRequestId: string | undefined;
+            let providerFinishReason: string | undefined;
+            let finishReason: LLMFinishReason | undefined;
+            const bufferForRecovery = visibleStreamText.length > 0;
             const toolCallsMap = new Map<
               number,
               {
@@ -793,14 +851,19 @@ export class LLMService {
                 }
               }
 
-              const delta = chunk.choices?.[0]?.delta;
+              const choice = chunk.choices?.[0];
+              const delta = choice?.delta;
+              const msg = choice?.message;
 
-              const text = delta?.content ?? '';
+              const text = delta?.content ?? (content ? '' : (msg?.content ?? ''));
               if (text) {
                 content += text;
-                onChunk?.(text);
+                emitStreamText(text, bufferForRecovery, reporter);
               }
 
+              if ((delta?.tool_calls?.length ?? 0) > 0 || (msg?.tool_calls?.length ?? 0) > 0) {
+                reporter?.onToolCallDelta();
+              }
               for (const tc of delta?.tool_calls ?? []) {
                 const idx = tc.index ?? 0;
                 const existing = toolCallsMap.get(idx);
@@ -820,7 +883,6 @@ export class LLMService {
                 }
               }
 
-              const msg = chunk.choices?.[0]?.message;
               if (msg?.tool_calls && !delta?.tool_calls) {
                 for (const msgTc of msg.tool_calls) {
                   const existing = toolCallsMap.get(msgTc.index ?? 0);
@@ -848,6 +910,13 @@ export class LLMService {
               if (chunk.model) {
                 usedModel = chunk.model;
               }
+
+              const chunkFinishReason = rawFinishReason(choice?.finish_reason);
+              if (chunkFinishReason) {
+                providerFinishReason = chunkFinishReason;
+                finishReason = normalizeFinishReason(chunkFinishReason);
+                reporter?.onFinishReason(chunkFinishReason);
+              }
             }
 
             const toolCalls = Array.from(toolCallsMap.entries())
@@ -866,14 +935,18 @@ export class LLMService {
                 }
               }
             }
+            finishReason ??= toolCalls.length > 0 ? 'tool_calls' : undefined;
+            const finalContent = finalizeStreamText(content, bufferForRecovery);
 
             if (usage) this.publishUsage(usage, usedModel, 'chat_stream');
 
             return {
               response: {
-                content,
+                content: finalContent,
                 model: usedModel,
                 usage,
+                finishReason,
+                rawFinishReason: providerFinishReason,
                 toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
               } as LLMResponse,
               usage: usage
@@ -932,6 +1005,9 @@ export class LLMService {
           let usedModel = this.config.model;
           let usage: LLMUsage | undefined;
           let providerRequestId: string | undefined;
+          let providerFinishReason: string | undefined;
+          let finishReason: LLMFinishReason | undefined;
+          const bufferForRecovery = visibleStreamText.length > 0;
           const toolCallsMap = new Map<
             number,
             {
@@ -952,12 +1028,14 @@ export class LLMService {
               }
             }
 
-            const delta = chunk.choices?.[0]?.delta;
+            const choice = chunk.choices?.[0];
+            const delta = choice?.delta;
+            const msg = choice?.message;
 
-            const text = delta?.content ?? '';
+            const text = delta?.content ?? (content ? '' : (msg?.content ?? ''));
             if (text) {
               content += text;
-              onChunk?.(text);
+              emitStreamText(text, bufferForRecovery);
             }
 
             // Handle tool_calls from delta (OpenAI standard streaming format).
@@ -982,7 +1060,6 @@ export class LLMService {
             }
 
             // Handle tool_calls from message (some APIs like DashScope may use this format)
-            const msg = chunk.choices?.[0]?.message;
             if (msg?.tool_calls && !delta?.tool_calls) {
               for (const msgTc of msg.tool_calls) {
                 const existing = toolCallsMap.get(msgTc.index ?? 0);
@@ -1010,6 +1087,12 @@ export class LLMService {
             if (chunk.model) {
               usedModel = chunk.model;
             }
+
+            const chunkFinishReason = rawFinishReason(choice?.finish_reason);
+            if (chunkFinishReason) {
+              providerFinishReason = chunkFinishReason;
+              finishReason = normalizeFinishReason(chunkFinishReason);
+            }
           }
 
           const toolCalls = Array.from(toolCallsMap.entries())
@@ -1028,6 +1111,8 @@ export class LLMService {
               }
             }
           }
+          finishReason ??= toolCalls.length > 0 ? 'tool_calls' : undefined;
+          const finalContent = finalizeStreamText(content, bufferForRecovery);
 
           if (usage) this.publishUsage(usage, usedModel, 'chat_stream');
 
@@ -1039,9 +1124,11 @@ export class LLMService {
             retryErrorTypes: [...requestDiagnostics.retryErrorTypes],
           };
           return {
-            content,
+            content: finalContent,
             model: usedModel,
             usage,
+            finishReason,
+            rawFinishReason: providerFinishReason,
             toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
           };
         }, retryConfig);
@@ -1193,6 +1280,9 @@ export class LLMService {
       fallbackTriggered: false,
       finalModel: this.config.model,
       usingFallback: this.usingFallback,
+      recoveryCount: 0,
+      unknownBilledAttemptCount: 0,
+      usageConfidence: 'unknown',
     };
   }
 
@@ -1204,6 +1294,13 @@ export class LLMService {
     const lastRetriedAttempt = retriedAttempts[retriedAttempts.length - 1];
 
     target.retryCount += diagnostics.retryCount;
+    target.recoveryCount += diagnostics.recoveryCount;
+    target.unknownBilledAttemptCount += diagnostics.unknownBilledAttemptCount;
+    if (diagnostics.usageConfidence === 'partial' || target.usageConfidence === 'partial') {
+      target.usageConfidence = 'partial';
+    } else if (diagnostics.usageConfidence === 'exact') {
+      target.usageConfidence = 'exact';
+    }
     target.retryDelayMs += diagnostics.totalBackoffMs;
     target.retryErrorTypes.push(
       ...retriedAttempts.map(attempt => providerErrorTypeForFailureKind(attempt.failureKind))
@@ -1228,6 +1325,7 @@ export class LLMService {
 
   /** 转换为 OpenAI SDK 消息格式 */
   private toOpenAIMessages(messages: Message[]): ChatCompletionMessageParam[] {
+    assertToolCallGroups(messages);
     return messages.map(msg => {
       if (msg.role === 'tool') {
         return {

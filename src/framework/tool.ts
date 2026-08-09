@@ -117,9 +117,6 @@ export interface OrionCodeTool {
   getSummary?(args: Record<string, unknown>, result: ToolResult): string;
 }
 
-/** @deprecated Use OrionCodeTool instead. */
-export type OpenHorseTool = OrionCodeTool;
-
 /**
  * Records which security-sensitive callbacks were declared by a tool.
  *

@@ -47,7 +47,10 @@ describe('/target command parsing', () => {
       const long = 'x'.repeat(4001);
       const result = parseTargetCommand(`/target ${long}`);
       expect(result.ok).toBe(false);
-      if (!result.ok) expect(result.error).toContain('too long');
+      if (!result.ok) {
+        expect(result.error).toContain('too long');
+        expect(result.error).not.toContain('--file');
+      }
     });
   });
 
@@ -84,6 +87,32 @@ describe('/target command parsing', () => {
         expect(result.input.action).toBe('edit');
         expect(result.input.payload?.objective).toBe('new objective text');
       }
+    });
+
+    it('normalizes extra spacing around an existing subcommand', () => {
+      const status = parseTargetCommand('/target   status');
+      expect(status.ok && status.input.action).toBe('show');
+
+      const edit = parseTargetCommand('/target   edit   new objective');
+      expect(edit.ok && edit.input).toMatchObject({
+        action: 'edit',
+        payload: { objective: 'new objective' },
+      });
+    });
+
+    it.each(['confirm', 'edit', 'replace', 'budget'])(
+      'does not create a Goal for the bare reserved subcommand %s',
+      subcommand => {
+        const result = parseTargetCommand(`/target ${subcommand}`);
+        expect(result.ok).toBe(false);
+        if (!result.ok) expect(result.error).toContain('Usage:');
+      }
+    );
+
+    it('does not advertise an unimplemented --file mode for oversized edits', () => {
+      const result = parseTargetCommand(`/target edit ${'x'.repeat(4001)}`);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).not.toContain('--file');
     });
 
     it('replace', () => {

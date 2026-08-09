@@ -22,7 +22,7 @@ import {
   updateGoalTool,
 } from '../src/runtime/goals/tools';
 import type { AgentTurnRequest } from '../src/runtime/goals/types';
-import type { OpenHorseUiRuntime } from '../src/runtime/ui-events';
+import type { OrionCodeUiRuntime } from '../src/runtime/ui-events';
 import { loadConfig } from '../src/services/config';
 import {
   appendSessionMessages,
@@ -147,13 +147,13 @@ describe('Goal combined long-session regression', () => {
       const config = loadConfig({ apiKey: 'test-key', model: 'test-model' });
       const session = createSession(projectDir, 'test-model');
       const initialStore = new Store({ config, tools: TOOLS, currentModel: 'test-model' });
-      const initialRuntime: OpenHorseUiRuntime = {
+      const initialRuntime: OrionCodeUiRuntime = {
         cwd: projectDir,
         version: 'test',
         config,
         store: initialStore,
         llm: null,
-        runtime: {} as OpenHorseUiRuntime['runtime'],
+        runtime: {} as OrionCodeUiRuntime['runtime'],
         isConfigured: true,
         ensureSession: jest.fn(() => session),
         getSession: jest.fn(() => session),
@@ -321,13 +321,13 @@ describe('Goal combined long-session regression', () => {
           throw new Error('compact must not call the provider');
         }),
       };
-      const compactRuntime: OpenHorseUiRuntime = {
+      const compactRuntime: OrionCodeUiRuntime = {
         cwd: projectDir,
         version: 'test',
         config,
         store: compactStore,
         llm: noNetworkCompactLlm as any,
-        runtime: {} as OpenHorseUiRuntime['runtime'],
+        runtime: {} as OrionCodeUiRuntime['runtime'],
         isConfigured: true,
         ensureSession: jest.fn(() => compactSession!),
         getSession: jest.fn(() => compactSession),
@@ -362,13 +362,13 @@ describe('Goal combined long-session regression', () => {
           throw new Error('scripted resumed Goal turns must not call the provider');
         }),
       };
-      const restartedRuntime: OpenHorseUiRuntime = {
+      const restartedRuntime: OrionCodeUiRuntime = {
         cwd: projectDir,
         version: 'test',
         config,
         store: restartedStore,
         llm: noNetworkRestartLlm as any,
-        runtime: {} as OpenHorseUiRuntime['runtime'],
+        runtime: {} as OrionCodeUiRuntime['runtime'],
         isConfigured: true,
         ensureSession: jest.fn(() => {
           restartedSession ??= createSession(projectDir, 'test-model');

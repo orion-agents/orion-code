@@ -27,7 +27,7 @@ import { createInterface } from 'readline';
 import {
   buildTool,
   getToolMetadataPresence,
-  type OpenHorseTool,
+  type OrionCodeTool,
   type ToolResult,
   type ToolContext,
 } from '../framework/tool';
@@ -42,10 +42,9 @@ import {
   loadAllMemories,
   searchMemories,
   deleteMemory,
-  type MemoryEntry,
-  type MemoryType,
-} from '../memory';
-import { getSemanticSearchService, isSemanticEnabled } from '../memory/semantic-search';
+} from '../memory/storage';
+import type { MemoryEntry, MemoryType } from '../memory/types';
+import { isSemanticEnabled } from '../memory/semantic-config';
 import { readSessionMessages, loadSessionMeta, listSessions } from '../services/session-storage';
 import { WEB_TOOLS } from './web';
 import { MCP_TOOLS, mcpManager } from './mcp';
@@ -102,7 +101,7 @@ function summarizeFailedToolResult(result: ToolResult): string {
 // 工具集
 // ============================================================================
 
-export const TOOLS: OpenHorseTool[] = [
+export const TOOLS: OrionCodeTool[] = [
   // Web tools (P0)
   ...WEB_TOOLS,
 
@@ -641,6 +640,7 @@ export const TOOLS: OpenHorseTool[] = [
 
         if (isSemanticEnabled()) {
           // saveAndIndex internally calls saveMemory + vectorStore.upsert
+          const { getSemanticSearchService } = await import('../memory/semantic-search');
           await getSemanticSearchService().saveAndIndex(entry, projectPath);
         } else {
           saveMemory(entry, projectPath);
@@ -691,6 +691,7 @@ export const TOOLS: OpenHorseTool[] = [
           // Semantic path: ask the vector store, then fall back to keywords if it
           // returns nothing (e.g. embedding provider unreachable, empty index)
           try {
+            const { getSemanticSearchService } = await import('../memory/semantic-search');
             const result = await getSemanticSearchService().search({
               query,
               projectPath,
@@ -925,7 +926,7 @@ export const TOOLS: OpenHorseTool[] = [
  * exposed as first-class tools named mcp__<server>__<tool>, matching the
  * convention used by Claude Code, Codex, and OpenClaude.
  */
-export function getRuntimeTools(): OpenHorseTool[] {
+export function getRuntimeTools(): OrionCodeTool[] {
   return [...TOOLS, ...mcpManager.getOrionCodeTools()];
 }
 
@@ -2380,7 +2381,7 @@ export async function executeTool(
 }
 
 function summarizeToolResult(
-  tool: OpenHorseTool,
+  tool: OrionCodeTool,
   args: Record<string, unknown>,
   result: ToolResult
 ): string | undefined {

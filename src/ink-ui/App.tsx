@@ -1,10 +1,10 @@
 import React from 'react';
 import { ReplScreen } from './screens/ReplScreen';
 import type { NativeCursorController } from './runtime/native-cursor';
-import type { OpenHorseUiRuntime } from './types';
+import type { OrionCodeUiRuntime } from './types';
 
 export interface AppProps {
-  runtime: OpenHorseUiRuntime;
+  runtime: OrionCodeUiRuntime;
   cursorController: NativeCursorController;
   resizeEpoch?: number;
 }

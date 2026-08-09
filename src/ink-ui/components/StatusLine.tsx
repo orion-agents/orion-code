@@ -3,7 +3,7 @@ import { Box, Text } from 'ink';
 import stringWidth from 'string-width';
 import { calculateCtxPercent } from '../../services/model-context';
 import { mcpManager } from '../../tools/mcp';
-import type { OpenHorseUiRuntime } from '../types';
+import type { OrionCodeUiRuntime } from '../types';
 import { runningHorseLabel } from './RunningHorseIndicator';
 
 const RUNNING_HORSE_MARK = '╭◔╮▰╱╲ ·';
@@ -11,7 +11,7 @@ const RUNNING_HORSE_MARK = '╭◔╮▰╱╲ ·';
 export type ErrorLayer = 'renderer' | 'runtime' | 'provider' | 'tool' | 'session' | 'memory' | 'MCP' | 'skills';
 
 export interface StatusLineProps {
-  runtime: OpenHorseUiRuntime;
+  runtime: OrionCodeUiRuntime;
   running: boolean;
   statusMessage?: string;
   width?: number;
