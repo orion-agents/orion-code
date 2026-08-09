@@ -156,6 +156,33 @@ describe('release-check script contract', () => {
     );
   });
 
+  it('rejects stale README pre-release claims after the version tag exists', () => {
+    const cwd = createFixture('1.2.3', '## [1.2.3] — 2026-08-09\n\n> **Status: published.**');
+    writeFileSync(
+      join(cwd, 'README.md'),
+      'npm install -g @orion-agents/orion-code@1.2.3\n' +
+        '1.2.3 is not on npm yet; 1.2.2 is the current published release.\n'
+    );
+    writeFileSync(
+      join(cwd, 'README.zh-CN.md'),
+      'v1.2.3（当前版本）\n\nnpm install -g @orion-agents/orion-code@1.2.3\n' +
+        '### v1.2.3（开发中，未发布）\n### v1.2.2（最新已发布版本）\n'
+    );
+    commitAll(cwd, 'stale release docs');
+    git(cwd, ['tag', 'v1.2.3']);
+
+    const { status, report } = runReleaseCheck(cwd);
+
+    expect(status).toBe(1);
+    expect(resultById(report, 'version')).toMatchObject({ status: 'fail' });
+    expect(resultById(report, 'version').detail).toContain(
+      'README.md: contradicts refs/tags/v1.2.3'
+    );
+    expect(resultById(report, 'version').detail).toContain(
+      'README.zh-CN.md: claims 1.2.2 is the latest/current published release'
+    );
+  });
+
   it('rejects a release tag that points at a different package version', () => {
     const cwd = createFixture('9.9.9', '## [9.9.9] — UNRELEASED\n\n> **Status: candidate.**');
     git(cwd, ['tag', 'v1.2.3']);

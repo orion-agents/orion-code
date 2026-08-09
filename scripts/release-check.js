@@ -91,6 +91,10 @@ function releaseTag(version) {
   };
 }
 
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function versionSection(changelog, version) {
   const escaped = version.replace(/\./g, '\\.');
   const lines = changelog.split('\n');
@@ -190,6 +194,42 @@ function checkVersionConsistency() {
         mismatches.push(
           `README.zh-CN.md: "v${marker[1]}（当前版本）" marker is stale, package is ${version}`
         );
+      }
+    }
+  }
+
+  // Once the version tag exists, README status prose must not still describe
+  // that version as unreleased or name an older release as the latest/current.
+  if (releaseTag(version).exists) {
+    const escapedVersion = escapeRegExp(version);
+    const unreleasedPattern = new RegExp(
+      `(?:v)?${escapedVersion}[^\\n]{0,160}` +
+        '(?:not on npm yet|not yet published|in-development|in development|开发中|尚未发布|未发布)',
+      'i'
+    );
+
+    for (const readme of ['README.md', 'README.zh-CN.md']) {
+      const text = readTextIfPresent(readme);
+      if (!text) continue;
+      if (unreleasedPattern.test(text)) {
+        mismatches.push(
+          `${readme}: contradicts refs/tags/v${version} by describing ${version} as unreleased`
+        );
+      }
+
+      const olderLatestClaims = [
+        ...text.matchAll(
+          /v?(\d+\.\d+\.\d+)[^\n]{0,120}(?:is the current published release|(?:latest|current) published version)/gi
+        ),
+        ...text.matchAll(/v?(\d+\.\d+\.\d+)\s*[（(](?:最新|当前)已发布版本[）)]/g),
+        ...text.matchAll(/当前已发布版本[\s\S]{0,80}?v?(\d+\.\d+\.\d+)/g),
+      ];
+      for (const claim of olderLatestClaims) {
+        if (claim[1] !== version) {
+          mismatches.push(
+            `${readme}: claims ${claim[1]} is the latest/current published release; expected ${version}`
+          );
+        }
       }
     }
   }
