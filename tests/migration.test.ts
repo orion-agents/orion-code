@@ -7,6 +7,7 @@ import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { migrateBrand, migrateProjectFiles } from '../src/migration/migrate';
+import * as vectorStore from '../src/memory/vector-store';
 
 function makeHome(): string {
   return mkdtempSync(join(tmpdir(), 'orion-migration-'));
@@ -144,6 +145,35 @@ describe('brand migration', () => {
       expect(existsSync(join(home, '.orion-code.env'))).toBe(false);
       expect(result.manifest.warnings.find(w => w.includes('.openhorse.env'))).toBeUndefined();
     } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('fails with rebuild guidance when vector verification cannot load the native ABI', () => {
+    const home = makeHome();
+    const sourceDir = join(home, '.openhorse');
+    mkdirSync(sourceDir, { recursive: true });
+    writeFileSync(join(sourceDir, 'vector.db'), 'existing-vector-database');
+    const openSpy = jest.spyOn(vectorStore, 'openBetterSqlite3').mockImplementation(() => {
+      const cause = new Error(
+        'was compiled against a different Node.js version using NODE_MODULE_VERSION 115'
+      );
+      (cause as Error & { code?: string }).code = 'ERR_DLOPEN_FAILED';
+      throw new vectorStore.NativeVectorDatabaseUnavailableError(cause);
+    });
+
+    try {
+      const result = migrateBrand({ home });
+
+      expect(result.success).toBe(false);
+      expect(result.manifest.warnings.join('\n')).toContain('npm rebuild better-sqlite3');
+      expect(result.manifest.warnings.join('\n')).toContain('NODE_MODULE_VERSION 115');
+      expect(result.manifest.warnings).not.toContain(
+        'vector.db integrity check failed. The file was copied but may be corrupted.'
+      );
+      expect(existsSync(join(home, '.orion-code'))).toBe(false);
+    } finally {
+      openSpy.mockRestore();
       rmSync(home, { recursive: true, force: true });
     }
   });

@@ -19,6 +19,7 @@ import {
   getProjectMemoryDir,
 } from '../services/config-dir';
 import { atomicWriteFileSync } from '../services/atomic-write';
+import { isNativeVectorDatabaseUnavailableError } from './vector-store';
 
 // Re-export types for convenience
 export type { MemoryEntry, MemoryType } from './types';
@@ -436,7 +437,11 @@ export async function searchMemoriesAsync(
         updatedAt: r.createdAt || 0,
       }));
     }
-  } catch {
+  } catch (error) {
+    // The async API is an explicit semantic-search request. A missing or
+    // ABI-incompatible native database must stay actionable instead of being
+    // misreported as an ordinary text-search success.
+    if (isNativeVectorDatabaseUnavailableError(error)) throw error;
     // VectorStore not available, fall back
   }
   // Fallback: synchronous search

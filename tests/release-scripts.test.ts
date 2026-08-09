@@ -304,6 +304,8 @@ exit 0
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('DEPENDENCY_POLICY_OK node=20|22|24 openai=6');
+    expect(result.stdout).toContain('== native dependency ABI ==');
+    expect(result.stdout).toContain('better-sqlite3: ok node=');
     expect(result.stdout).toContain('== dependency tree consistency ==');
     expect(result.stdout).toContain('== npm audit (high severity gate) ==');
     expect(result.stdout).toContain('== npm outdated (report only; majors require contract review) ==');

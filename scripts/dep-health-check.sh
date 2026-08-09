@@ -101,6 +101,27 @@ if [[ "$mode" == "--policy-only" ]]; then
 fi
 
 echo
+echo "== native dependency ABI =="
+node <<'NODE'
+try {
+  const loaded = require('better-sqlite3');
+  const Database = loaded.default ?? loaded;
+  const db = new Database(':memory:');
+  db.prepare('SELECT 1 AS ok').get();
+  db.close();
+  console.log(
+    `better-sqlite3: ok node=${process.versions.node} abi=${process.versions.modules}`,
+  );
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error('NATIVE_DEPENDENCY_FAILED better-sqlite3');
+  console.error(`- ${message}`);
+  console.error('- Run: npm rebuild better-sqlite3');
+  process.exit(1);
+}
+NODE
+
+echo
 echo "== dependency tree consistency =="
 npm ls --all >/dev/null
 echo "npm ls: ok"

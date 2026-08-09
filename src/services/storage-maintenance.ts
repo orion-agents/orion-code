@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import type Database from 'better-sqlite3';
 import { createHash, randomBytes } from 'crypto';
 import {
   closeSync,
@@ -22,7 +22,11 @@ import {
 } from './config-dir';
 import { formatBytes } from './format';
 import { debugError } from '../utils/debug-log';
-import { peekVectorStore } from '../memory/vector-store';
+import {
+  isNativeVectorDatabaseUnavailableError,
+  openBetterSqlite3,
+  peekVectorStore,
+} from '../memory/vector-store';
 
 export type StorageIssueKind =
   | 'legacy-global-sessions'
@@ -1196,7 +1200,7 @@ function inspectVectorProjects(
 
   let db: Database.Database | null = null;
   try {
-    db = new Database(dbPath, { readonly: true });
+    db = openBetterSqlite3(dbPath, { readonly: true });
     const hasMemories = db.prepare("SELECT name FROM sqlite_master WHERE name = 'memories'").get();
     if (!hasMemories) return [];
 
@@ -1217,6 +1221,7 @@ function inspectVectorProjects(
       orphan: row.project !== 'global' && !validProjectKeys.has(row.project),
     }));
   } catch (error) {
+    if (isNativeVectorDatabaseUnavailableError(error)) throw error;
     // An empty result reads as "no vector rows" rather than "database
     // unreadable", which would hide real corruption from the report.
     debugError('storage-maintenance.readVectorProjects', error, dbPath);
@@ -1254,7 +1259,7 @@ function readVectorProjectSnapshot(
 
   let db: Database.Database | undefined;
   try {
-    db = new Database(dbPath, { readonly: true });
+    db = openBetterSqlite3(dbPath, { readonly: true });
     db.defaultSafeIntegers(true);
     const hasMemories = db.prepare("SELECT name FROM sqlite_master WHERE name = 'memories'").get();
     if (!hasMemories) return undefined;
@@ -1262,6 +1267,7 @@ function readVectorProjectSnapshot(
     if (!rows || databaseFileIdentity(dbPath) !== databaseIdentity) return undefined;
     return { databaseIdentity, rows };
   } catch (error) {
+    if (isNativeVectorDatabaseUnavailableError(error)) throw error;
     // Same trap as above: a locked or corrupt DB must not masquerade as an
     // absent one, because the caller then skips maintenance entirely.
     debugError('storage-maintenance.readVectorSnapshot', error, dbPath);
@@ -1275,7 +1281,7 @@ function deletePlannedVectorRows(configHome: string, action: StorageVectorCleanu
   const dbPath = join(configHome, 'vector.db');
   if (databaseFileIdentity(dbPath) !== action.databaseIdentity) return 0;
 
-  const db = new Database(dbPath);
+  const db = openBetterSqlite3(dbPath);
   db.defaultSafeIntegers(true);
   try {
     const apply = db.transaction((): number => {
