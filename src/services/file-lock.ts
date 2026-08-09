@@ -14,6 +14,7 @@ import { debugError } from '../utils/debug-log';
 const DEFAULT_WAIT_MS = 2_000;
 const DEFAULT_RETRY_MS = 10;
 const DEFAULT_STALE_MS = 30_000;
+const RECOVERY_SUFFIX = '.recovery';
 
 interface LockOwner {
   token: string;
@@ -94,33 +95,94 @@ function recoverStaleLock(lockPath: string, staleMs: number): boolean {
   return true;
 }
 
+function createLock(lockPath: string): LockOwner | null {
+  const owner: LockOwner = { token: randomUUID(), pid: process.pid, createdAt: Date.now() };
+  try {
+    const fd = openSync(lockPath, 'wx', 0o600);
+    try {
+      writeFileSync(fd, JSON.stringify(owner));
+    } catch (error) {
+      try {
+        unlinkSync(lockPath);
+      } catch (cleanupError) {
+        debugError('file-lock.initializeCleanup', cleanupError, lockPath);
+      }
+      throw error;
+    } finally {
+      closeSync(fd);
+    }
+    return owner;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return null;
+    throw error;
+  }
+}
+
+function releaseOwnedLock(lockPath: string, owner: LockOwner, scope: string): void {
+  try {
+    if (existsSync(lockPath) && readOwner(lockPath)?.token === owner.token) {
+      unlinkSync(lockPath);
+    } else {
+      debugError(`${scope}Ownership`, new Error('lock ownership changed'), lockPath);
+    }
+  } catch (error) {
+    debugError(scope, error, lockPath);
+  }
+}
+
+/**
+ * Acquire a lock without a recovery sentinel. This is used only for the short-
+ * lived recovery sentinel itself; normal locks must use acquireLock().
+ */
+function acquirePrimitiveLock(
+  lockPath: string,
+  options: { waitMs: number; retryMs: number; staleMs: number }
+): LockOwner {
+  const deadline = Date.now() + options.waitMs;
+  while (true) {
+    const owner = createLock(lockPath);
+    if (owner) return owner;
+
+    if (recoverStaleLock(lockPath, options.staleMs)) continue;
+    if (Date.now() >= deadline) throw new Error(`Timed out waiting for file lock ${lockPath}`);
+    sleepSync(options.retryMs);
+  }
+}
+
+function withRecoverySentinel<T>(
+  lockPath: string,
+  options: { waitMs: number; retryMs: number; staleMs: number },
+  operation: () => T
+): T {
+  // Every main-lock acquire, stale recovery, and release passes through this
+  // short-lived sentinel, so a checked stale main lock cannot be replaced
+  // before it is renamed. The primitive sentinel still treats a live owner as
+  // authoritative and fails closed on contention.
+  const sentinelPath = `${lockPath}${RECOVERY_SUFFIX}`;
+  const sentinel = acquirePrimitiveLock(sentinelPath, options);
+  try {
+    return operation();
+  } finally {
+    releaseOwnedLock(sentinelPath, sentinel, 'file-lock.releaseRecovery');
+  }
+}
+
 function acquireLock(
   lockPath: string,
   options: { waitMs: number; retryMs: number; staleMs: number }
 ): LockOwner {
   const deadline = Date.now() + options.waitMs;
   while (true) {
-    const owner: LockOwner = { token: randomUUID(), pid: process.pid, createdAt: Date.now() };
-    try {
-      const fd = openSync(lockPath, 'wx', 0o600);
-      try {
-        writeFileSync(fd, JSON.stringify(owner));
-      } catch (error) {
-        try {
-          unlinkSync(lockPath);
-        } catch (cleanupError) {
-          debugError('file-lock.initializeCleanup', cleanupError, lockPath);
-        }
-        throw error;
-      } finally {
-        closeSync(fd);
-      }
-      return owner;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    }
+    const remainingMs = Math.max(0, deadline - Date.now());
+    let owner: LockOwner | null = null;
 
-    if (recoverStaleLock(lockPath, options.staleMs)) continue;
+    withRecoverySentinel(lockPath, { ...options, waitMs: remainingMs }, () => {
+      owner = createLock(lockPath);
+      if (!owner && recoverStaleLock(lockPath, options.staleMs)) {
+        owner = createLock(lockPath);
+      }
+    });
+    if (owner) return owner;
     if (Date.now() >= deadline) throw new Error(`Timed out waiting for file lock ${lockPath}`);
     sleepSync(options.retryMs);
   }
@@ -133,20 +195,19 @@ export function withFileLockSync<T>(
   options: { waitMs?: number; retryMs?: number; staleMs?: number } = {}
 ): T {
   const lockPath = `${targetPath}.lock`;
-  const owner = acquireLock(lockPath, {
+  const resolvedOptions = {
     waitMs: options.waitMs ?? DEFAULT_WAIT_MS,
     retryMs: options.retryMs ?? DEFAULT_RETRY_MS,
     staleMs: options.staleMs ?? DEFAULT_STALE_MS,
-  });
+  };
+  const owner = acquireLock(lockPath, resolvedOptions);
   try {
     return operation();
   } finally {
     try {
-      if (existsSync(lockPath) && readOwner(lockPath)?.token === owner.token) {
-        unlinkSync(lockPath);
-      } else {
-        debugError('file-lock.releaseOwnership', new Error('lock ownership changed'), lockPath);
-      }
+      withRecoverySentinel(lockPath, resolvedOptions, () => {
+        releaseOwnedLock(lockPath, owner, 'file-lock.release');
+      });
     } catch (error) {
       debugError('file-lock.release', error, lockPath);
     }

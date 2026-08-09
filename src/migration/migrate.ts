@@ -28,6 +28,10 @@ import type {
   FileMapping,
 } from './types';
 import { errorMessage } from '../utils/errors';
+import {
+  isNativeVectorDatabaseUnavailableError,
+  openBetterSqlite3,
+} from '../memory/vector-store';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -165,15 +169,18 @@ function remapConfigKeys(content: string): string {
 // ── SQLite verification ──────────────────────────────────────────────────────
 
 function verifySqlite(path: string): boolean {
+  let db: ReturnType<typeof openBetterSqlite3> | undefined;
   try {
-    // Dynamic import to avoid requiring better-sqlite3 at module load
-    const Database = require('better-sqlite3');
-    const db = new Database(path, { readonly: true });
-    const result = db.pragma('integrity_check');
-    db.close();
+    db = openBetterSqlite3(path, { readonly: true });
+    const result = db.pragma('integrity_check') as Array<{ integrity_check?: unknown }>;
     return result?.[0]?.integrity_check === 'ok';
-  } catch {
+  } catch (error) {
+    // ABI/module failures are environmental and actionable, not evidence that
+    // the user's vector database failed its integrity check.
+    if (isNativeVectorDatabaseUnavailableError(error)) throw error;
     return false;
+  } finally {
+    db?.close();
   }
 }
 

@@ -21,7 +21,12 @@ which is **not** a pass.
 
 ## [Unreleased]
 
-No changes yet.
+### Fixed
+
+- Made concurrent session registration reserve capacity atomically across processes,
+  with atomic heartbeats and serialized stale-lock recovery (#121).
+- Deferred native SQLite loading to semantic-storage boundaries and added actionable
+  ABI diagnostics for memory, maintenance, migration, and dependency checks (#111).
 
 ## [0.1.4-2] — 2026-08-09
 

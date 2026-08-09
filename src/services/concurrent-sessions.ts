@@ -7,8 +7,10 @@
 import { writeFileSync, readFileSync, existsSync, unlinkSync, readdirSync, mkdirSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { join } from 'path';
+import { atomicWriteFileSync } from './atomic-write';
 import { getCacheDir, ensureConfigDir } from './config-dir';
 import { debugError } from '../utils/debug-log';
+import { withFileLockSync } from './file-lock';
 
 // ============================================================================
 // 类型定义
@@ -86,15 +88,6 @@ export class SessionManager {
    * 注册当前会话
    */
   register(options?: { model?: string }): SessionInfo {
-    // Enforce the concurrency limit up front. canStartNewSession() counts live
-    // sessions (reaping expired/dead ones), so we fail closed instead of
-    // letting maxSessions be silently bypassed.
-    if (!this.canStartNewSession()) {
-      throw new Error(
-        `Cannot start new session: the concurrent session limit (${this.config.maxSessions}) has been reached.`,
-      );
-    }
-
     const session: SessionInfo = {
       id: this.sessionId,
       pid: process.pid,
@@ -105,11 +98,21 @@ export class SessionManager {
       status: 'active',
     };
 
-    const filePath = this.getSessionFilePath(this.sessionId);
-    // Exclusive-create so a (now statistically impossible) ID collision fails
-    // loudly instead of overwriting another process's session file, which
-    // would corrupt its heartbeat and mis-count it in getActiveSessions().
-    this.writeSessionFileExclusive(filePath, session);
+    // The registry sentinel serializes the complete slot reservation across
+    // processes. Keeping live-session reaping, maxSessions enforcement, and
+    // the exclusive session-file create in one critical section prevents two
+    // simultaneous CLI launches from both observing the same free slot.
+    withFileLockSync(join(this.sessionPath, '.registry'), () => {
+      if (!this.canStartNewSession()) {
+        throw new Error(
+          `Cannot start new session: the concurrent session limit (${this.config.maxSessions}) has been reached.`
+        );
+      }
+
+      // Exclusive-create so a (now statistically impossible) ID collision
+      // fails loudly instead of overwriting another process's session file.
+      this.writeSessionFileExclusive(session);
+    });
 
     // 启动心跳
     this.startHeartbeat();
@@ -120,13 +123,16 @@ export class SessionManager {
   /**
    * 以排他方式写入会话文件；若 ID 冲突（EEXIST）则重新生成并重试。
    */
-  private writeSessionFileExclusive(filePath: string, session: SessionInfo): void {
-    const data = JSON.stringify(session, null, 2);
+  private writeSessionFileExclusive(session: SessionInfo): void {
     const MAX_RETRIES = 3;
-    let targetPath = filePath;
+    let targetPath = this.getSessionFilePath(this.sessionId);
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       try {
-        writeFileSync(targetPath, data, { mode: 0o600, flag: 'wx' });
+        session.id = this.sessionId;
+        writeFileSync(targetPath, JSON.stringify(session, null, 2), {
+          mode: 0o600,
+          flag: 'wx',
+        });
         return;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
@@ -139,7 +145,9 @@ export class SessionManager {
         throw error;
       }
     }
-    throw new Error(`Failed to create exclusive session file after ${MAX_RETRIES} attempts: ${targetPath}`);
+    throw new Error(
+      `Failed to create exclusive session file after ${MAX_RETRIES} attempts: ${targetPath}`
+    );
   }
 
   /**
@@ -154,7 +162,9 @@ export class SessionManager {
       const session = JSON.parse(content) as SessionInfo;
       session.lastActivity = Date.now();
       session.status = 'active';
-      writeFileSync(filePath, JSON.stringify(session, null, 2));
+      // Atomic replacement prevents another process from observing a
+      // truncated heartbeat record and under-counting active sessions.
+      atomicWriteFileSync(filePath, JSON.stringify(session, null, 2), { mode: 0o600 });
     } catch (error) {
       // A failed heartbeat makes this session look dead to every other
       // process, so it eventually gets reaped. Keep going, but record why.
@@ -173,7 +183,7 @@ export class SessionManager {
       const content = readFileSync(filePath, 'utf-8');
       const session = JSON.parse(content) as SessionInfo;
       session.status = 'idle';
-      writeFileSync(filePath, JSON.stringify(session, null, 2));
+      atomicWriteFileSync(filePath, JSON.stringify(session, null, 2), { mode: 0o600 });
     } catch (error) {
       // The session stays marked 'active' and keeps occupying a slot.
       debugError('concurrent-sessions.setIdle', error, filePath);
@@ -271,10 +281,10 @@ export class SessionManager {
       // 发送信号 0 检查进程是否存在
       process.kill(pid, 0);
       return true;
-    } catch {
+    } catch (error) {
       // Intentional liveness probe: throwing *is* the "process is gone"
-      // answer (ESRCH), so there is no error to report here.
-      return false;
+      // answer (ESRCH). EPERM means the process exists but cannot be signalled.
+      return (error as NodeJS.ErrnoException).code === 'EPERM';
     }
   }
 

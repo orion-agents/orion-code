@@ -4,8 +4,7 @@
  * 基于 sqlite-vec 的向量存储层
  */
 
-import Database from 'better-sqlite3';
-import * as sqliteVec from 'sqlite-vec';
+import type Database from 'better-sqlite3';
 import { join, resolve } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 
@@ -64,6 +63,80 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+export const BETTER_SQLITE3_REBUILD_COMMAND = 'npm rebuild better-sqlite3';
+
+type BetterSqlite3Constructor = typeof import('better-sqlite3');
+
+function isNativeBindingLoadFailure(error: unknown): boolean {
+  const code = error instanceof Error ? (error as Error & { code?: unknown }).code : undefined;
+  if (code === 'MODULE_NOT_FOUND' || code === 'ERR_DLOPEN_FAILED') return true;
+
+  return /NODE_MODULE_VERSION|Could not locate the bindings file|dlopen|wrong ELF class|not a valid Win32 application|incompatible architecture/i.test(
+    errorMessage(error)
+  );
+}
+
+/**
+ * Raised only at a vector database usage boundary when the native SQLite
+ * binding cannot be loaded. Importing non-semantic modules remains safe, but
+ * semantic persistence never silently degrades to an in-memory substitute.
+ */
+export class NativeVectorDatabaseUnavailableError extends Error {
+  readonly code = 'ORION_BETTER_SQLITE3_UNAVAILABLE';
+
+  constructor(cause: unknown) {
+    super(
+      'Orion Code cannot open semantic/vector storage because the native ' +
+        `better-sqlite3 binding failed to load: ${errorMessage(cause)}. ` +
+        `Run \`${BETTER_SQLITE3_REBUILD_COMMAND}\` with the active Node.js version, then retry.`
+    );
+    this.name = 'NativeVectorDatabaseUnavailableError';
+  }
+}
+
+export function isNativeVectorDatabaseUnavailableError(
+  error: unknown
+): error is NativeVectorDatabaseUnavailableError {
+  return (
+    error instanceof NativeVectorDatabaseUnavailableError ||
+    (error instanceof Error &&
+      (error as Error & { code?: unknown }).code === 'ORION_BETTER_SQLITE3_UNAVAILABLE')
+  );
+}
+
+/** Load the native binding only when vector persistence is actually used. */
+export function loadBetterSqlite3(): BetterSqlite3Constructor {
+  try {
+    const loaded: unknown = require('better-sqlite3');
+    const candidate =
+      typeof loaded === 'object' && loaded !== null && 'default' in loaded
+        ? (loaded as { default?: unknown }).default
+        : loaded;
+    if (typeof candidate !== 'function') {
+      throw new TypeError('better-sqlite3 did not export a database constructor');
+    }
+    return candidate as BetterSqlite3Constructor;
+  } catch (error) {
+    throw new NativeVectorDatabaseUnavailableError(error);
+  }
+}
+
+/** Open a database while preserving non-native SQLite errors verbatim. */
+export function openBetterSqlite3(
+  filename: string | Buffer,
+  options?: Database.Options
+): Database.Database {
+  const BetterSqlite3 = loadBetterSqlite3();
+  try {
+    return new BetterSqlite3(filename, options);
+  } catch (error) {
+    if (isNativeBindingLoadFailure(error)) {
+      throw new NativeVectorDatabaseUnavailableError(error);
+    }
+    throw error;
+  }
+}
+
 /**
  * A usable embedding must have the expected dimension, be all-finite, and
  * actually carry signal (not all zeros). Failed/empty embeddings from the
@@ -114,7 +187,7 @@ export class VectorStore {
     // Initialize database. allowExtension is required so sqlite-vec (a
     // loadable dylib) can be registered below — without it, db.loadExtension
     // is a no-op and the vec0 virtual table can never be created (#47).
-    this.db = new Database(dbPath, { allowExtension: true });
+    this.db = openBetterSqlite3(dbPath, { allowExtension: true });
 
     // Get embedding service
     this.embeddingService = getEmbeddingService(config?.embeddingConfig);
@@ -153,6 +226,7 @@ export class VectorStore {
       // before (#47): `CREATE VIRTUAL TABLE ... USING vec0` always threw
       // "no such module: vec0", so vector search silently fell back to LIKE.
       // Load it explicitly (allowExtension was enabled in the constructor).
+      const sqliteVec = require('sqlite-vec') as typeof import('sqlite-vec');
       sqliteVec.load(this.db);
 
       const dimension = this.embeddingService.getDimension();

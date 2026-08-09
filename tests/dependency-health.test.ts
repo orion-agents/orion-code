@@ -19,6 +19,15 @@ describe('dependency governance contract', () => {
     expect(result.stdout).toContain('DEPENDENCY_EXEMPTION ink=3 react=17');
   });
 
+  it('probes the native binding at its real open boundary with actionable recovery', () => {
+    const script = readFileSync(join(root, 'scripts', 'dep-health-check.sh'), 'utf8');
+
+    expect(script).toContain("new Database(':memory:')");
+    expect(script).toContain('process.versions.modules');
+    expect(script).toContain('NATIVE_DEPENDENCY_FAILED better-sqlite3');
+    expect(script).toContain('npm rebuild better-sqlite3');
+  });
+
   it('keeps runtime, type-only, and removed dependencies in their intended scopes', () => {
     const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as {
       dependencies: Record<string, string>;
