@@ -132,6 +132,21 @@ describe('release-check script contract', () => {
     expect(resultById(report, 'release-ref').detail).toContain('refs/tags/v1.2.3');
   });
 
+  it('accepts prerelease versions in package, README pins, and CHANGELOG headings', () => {
+    const cwd = createFixture(
+      '1.2.3-2',
+      '## [1.2.3-2] — UNRELEASED\n\n> **Status: candidate.** Not yet tagged or published.'
+    );
+
+    const { status, report } = runReleaseCheck(cwd);
+
+    expect(status).toBe(0);
+    expect(resultById(report, 'version')).toMatchObject({ status: 'pass' });
+    expect(resultById(report, 'changelog')).toMatchObject({ status: 'pass' });
+    expect(resultById(report, 'release-ref')).toMatchObject({ status: 'skip' });
+    expect(resultById(report, 'release-ref').detail).toContain('refs/tags/v1.2.3-2');
+  });
+
   it('rejects a published claim when the explicit release tag is absent', () => {
     const cwd = createFixture('1.2.3', '## [1.2.3] — 2026-08-09\n\n> **Status: published.**');
 

@@ -96,7 +96,7 @@ function escapeRegExp(value) {
 }
 
 function versionSection(changelog, version) {
-  const escaped = version.replace(/\./g, '\\.');
+  const escaped = escapeRegExp(version);
   const lines = changelog.split('\n');
   const headingIndex = lines.findIndex(line =>
     new RegExp(`^#{1,3}\\s*\\[?${escaped}\\]?(?:\\s|$)`).test(line.trim())
@@ -165,7 +165,8 @@ function checkVersionConsistency() {
   }
 
   // README install pins: `npm install -g @orion-agents/orion-code@X.Y.Z`
-  const pinPattern = /@orion-agents\/orion-code@(\d+\.\d+\.\d+)/g;
+  const pinPattern =
+    /@orion-agents\/orion-code@(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)/g;
   for (const readme of ['README.md', 'README.zh-CN.md']) {
     const text = readTextIfPresent(readme);
     if (text === null) {
