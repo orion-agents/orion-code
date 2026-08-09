@@ -5,11 +5,12 @@
  * sqlite-vec dylib) to be present, so they are skipped where that binding is
  * unavailable (e.g. CI/sandbox without a matching prebuilt binary).
  */
-import { existsSync, mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { VectorStore } from '../src/memory/vector-store';
 import { resetEmbeddingService } from '../src/memory/embeddings';
+import { ENV } from '../src/product/environment';
 
 // Probe for the native binding once; if absent, skip the whole suite.
 let SQLITE_AVAILABLE = false;
@@ -27,8 +28,14 @@ const describeIf = SQLITE_AVAILABLE ? describe : describe.skip;
 describeIf('VectorStore sqlite-vec loading (Issue #47)', () => {
   let dbPath = '';
   let store: VectorStore | null = null;
+  const originalOpenAiApiKey = process.env.OPENAI_API_KEY;
+  const originalOrionApiKey = process.env[ENV.API_KEY];
 
   beforeEach(() => {
+    // These cases exercise the deterministic no-credentials fallback. Do not
+    // inherit a developer or CI credential and accidentally call the network.
+    delete process.env.OPENAI_API_KEY;
+    delete process.env[ENV.API_KEY];
     resetEmbeddingService();
     const dir = mkdtempSync(join(tmpdir(), 'orion-vec-'));
     dbPath = join(dir, 'vector.db');
@@ -41,6 +48,10 @@ describeIf('VectorStore sqlite-vec loading (Issue #47)', () => {
       /* noop */
     }
     store = null;
+    if (originalOpenAiApiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = originalOpenAiApiKey;
+    if (originalOrionApiKey === undefined) delete process.env[ENV.API_KEY];
+    else process.env[ENV.API_KEY] = originalOrionApiKey;
     if (dbPath) rmSync(join(dbPath, '..'), { recursive: true, force: true });
   });
 

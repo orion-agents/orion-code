@@ -19,10 +19,10 @@ Evidence labels follow `docs/plan/targets-v0.1.3-v0.1.3-2.md`:
 `met` / `partial` / `unmet` / `not_run` — where `not_run` means "blocked by environment",
 which is **not** a pass.
 
-## [Unreleased]
+## [0.1.4-2] — UNRELEASED
 
-> **Status: maintenance branch only.** These fixes are newer than the immutable
-> `v0.1.4` tag and npm artifact; pushing the `v0.1.4` branch does not republish them.
+> **Status: release candidate.** Not yet tagged or published. This maintenance
+> prerelease is intended for the npm `next` dist-tag; stable `latest` remains `0.1.4`.
 
 ### Changed
 
