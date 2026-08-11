@@ -8,6 +8,7 @@ export type ProviderErrorType =
   | 'quota_or_credit_exhausted'
   | 'rate_limit'
   | 'provider_busy'
+  | 'unsupported_effort'
   | 'unknown_provider_error';
 
 export interface ProviderErrorDiagnostic {
@@ -149,6 +150,8 @@ function hintFor(type: ProviderErrorType): string {
       return 'Provider rate limit was reached. Wait before retrying, reduce request rate, or switch model/provider.';
     case 'provider_busy':
       return `Provider is busy or overloaded. Retry later or configure ${ENV.FALLBACK_MODEL}.`;
+    case 'unsupported_effort':
+      return 'The provider rejected the configured effort override. Use /effort auto or select a supported level; Orion did not retry without the explicit override.';
     case 'unknown_provider_error':
       return 'Provider request failed. Check provider status and model/endpoint configuration.';
   }
@@ -156,11 +159,21 @@ function hintFor(type: ProviderErrorType): string {
 
 function retryableFor(type: ProviderErrorType, status?: number, message?: string): boolean {
   if (type === 'rate_limit' || type === 'provider_busy') return true;
-  if (type === 'auth_failed' || type === 'quota_or_credit_exhausted' || type === 'model_not_found') return false;
+  if (
+    type === 'auth_failed' ||
+    type === 'quota_or_credit_exhausted' ||
+    type === 'model_not_found' ||
+    type === 'unsupported_effort'
+  )
+    return false;
   // invalid_endpoint: network-level errors (DNS, connection refused) are retryable;
   // configuration errors (invalid URL, unsupported protocol) are not.
   if (type === 'invalid_endpoint') {
-    if (message && /\b(econnrefused|etimedout|enotfound|econnreset|epipe|network|connection)\b/i.test(message)) return true;
+    if (
+      message &&
+      /\b(econnrefused|etimedout|enotfound|econnreset|epipe|network|connection)\b/i.test(message)
+    )
+      return true;
     return false;
   }
   if (status === 500 || status === 502 || status === 503 || status === 504) return true;
@@ -183,8 +196,17 @@ export function diagnoseProviderError(error: unknown): ProviderErrorDiagnostic {
   let type: ProviderErrorType = 'unknown_provider_error';
 
   if (
-    code === 'model_not_found'
-    || matchesAny(text, [
+    matchesAny(text, [
+      /\breasoning_effort\b.*\b(?:unsupported|invalid|unknown|not supported)\b/,
+      /\b(?:unsupported|invalid|unknown)\b.*\breasoning effort\b/,
+      /\boutput_config\.effort\b.*\b(?:unsupported|invalid|unknown|not supported)\b/,
+      /\bthinking level\b.*\b(?:unsupported|invalid|unknown|not supported)\b/,
+    ])
+  ) {
+    type = 'unsupported_effort';
+  } else if (
+    code === 'model_not_found' ||
+    matchesAny(text, [
       /\bmodel_not_found\b/,
       /\bmodel not found\b/,
       /\bmodel .*not found\b/,
@@ -194,8 +216,8 @@ export function diagnoseProviderError(error: unknown): ProviderErrorDiagnostic {
   ) {
     type = 'model_not_found';
   } else if (
-    code === '11210'
-    || matchesAny(text, [
+    code === '11210' ||
+    matchesAny(text, [
       /\bnotenoughcverror\b/,
       /\bnot enough cverror\b/,
       /\bcode:\s*11210\b/,
@@ -209,10 +231,10 @@ export function diagnoseProviderError(error: unknown): ProviderErrorDiagnostic {
   ) {
     type = 'quota_or_credit_exhausted';
   } else if (
-    code === 'invalid_api_key'
-    || parts.status === 401
-    || parts.status === 403
-    || matchesAny(text, [
+    code === 'invalid_api_key' ||
+    parts.status === 401 ||
+    parts.status === 403 ||
+    matchesAny(text, [
       /\binvalid api key\b/,
       /\binvalid_api_key\b/,
       /\bauthentication\b/,
@@ -225,8 +247,8 @@ export function diagnoseProviderError(error: unknown): ProviderErrorDiagnostic {
   ) {
     type = 'auth_failed';
   } else if (
-    parts.status === 429
-    || matchesAny(text, [
+    parts.status === 429 ||
+    matchesAny(text, [
       /\brate limit\b/,
       /\btoo many requests\b/,
       /\bapi-limit\b/,
@@ -241,8 +263,8 @@ export function diagnoseProviderError(error: unknown): ProviderErrorDiagnostic {
   ) {
     type = 'rate_limit';
   } else if (
-    parts.status === 529
-    || matchesAny(text, [
+    parts.status === 529 ||
+    matchesAny(text, [
       /\bcode:\s*10012\b/,
       /\bengineinternalerror\b/,
       /\bsystem is busy\b/,
@@ -254,8 +276,8 @@ export function diagnoseProviderError(error: unknown): ProviderErrorDiagnostic {
   ) {
     type = 'provider_busy';
   } else if (
-    parts.status === 404
-    || matchesAny(text, [
+    parts.status === 404 ||
+    matchesAny(text, [
       /\binvalid url\b/,
       /\berr_invalid_url\b/,
       /\bunsupported protocol\b/,

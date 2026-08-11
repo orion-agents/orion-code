@@ -310,7 +310,7 @@ describe('write_file / edit_file path containment (issue #65)', () => {
     const outsideTarget = path.join(outside, 'editable.txt');
     const result = await editTool.execute(
       { path: outsideTarget, old_string: 'old', new_string: 'new' },
-      wsCtx,
+      wsCtx
     );
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/outside the workspace/);
@@ -321,7 +321,7 @@ describe('write_file / edit_file path containment (issue #65)', () => {
     fs.writeFileSync(inside, 'old', 'utf-8');
     const result = await editTool.execute(
       { path: inside, old_string: 'old', new_string: 'new' },
-      wsCtx,
+      wsCtx
     );
     expect(result.success).toBe(true);
     expect(fs.readFileSync(inside, 'utf-8')).toBe('new');
@@ -334,7 +334,7 @@ describe('write_file / edit_file path containment (issue #65)', () => {
     fs.symlinkSync(outsideFile, linkPath);
     const result = await writeTool.execute(
       { path: linkPath, content: 'written-through-link' },
-      wsCtx,
+      wsCtx
     );
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/outside the workspace/);
@@ -349,7 +349,7 @@ describe('write_file / edit_file path containment (issue #65)', () => {
     fs.symlinkSync(outsideFile, linkPath);
     const result = await editTool.execute(
       { path: linkPath, old_string: 'old-secret', new_string: 'edited-through-link' },
-      wsCtx,
+      wsCtx
     );
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/outside the workspace/);
@@ -450,8 +450,14 @@ describe('exec_command tool', () => {
     expect(elapsed).toBeLessThan(2500);
   });
 
-  test('isDestructive detects rm -rf', () => {
+  test('isDestructive detects recursive rm flag variants', () => {
     expect(tool.isDestructive?.({ command: 'rm -rf /' })).toBe(true);
+    expect(tool.isDestructive?.({ command: 'rm -r build' })).toBe(true);
+    expect(tool.isDestructive?.({ command: 'rm -R build' })).toBe(true);
+    expect(tool.isDestructive?.({ command: 'rm -fr build' })).toBe(true);
+    expect(tool.isDestructive?.({ command: 'rm --recursive build' })).toBe(true);
+    expect(tool.isDestructive?.({ command: 'env FOO=1 rm -r build' })).toBe(true);
+    expect(tool.isDestructive?.({ command: 'echo ok && rm -r build' })).toBe(true);
     expect(tool.isDestructive?.({ command: 'ls -la' })).toBe(false);
   });
 
@@ -643,8 +649,11 @@ describe('getToolNames', () => {
 describe('batch_read tool', () => {
   const tool = TOOLS.find(t => t.name === 'batch_read')!;
 
-  async function runBatchRead(steps: Array<{ tool: string; args: Record<string, unknown> }>) {
-    const outer = JSON.parse(await executeTool('batch_read', { steps }, undefined, ctx));
+  async function runBatchRead(
+    steps: Array<{ tool: string; args: Record<string, unknown> }>,
+    context: ToolContext = ctx
+  ) {
+    const outer = JSON.parse(await executeTool('batch_read', { steps }, undefined, context));
     return {
       outer,
       inner: JSON.parse(outer.output),
@@ -698,6 +707,61 @@ describe('batch_read tool', () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  test.each([
+    { approved: true, expectedSuccess: true },
+    { approved: false, expectedSuccess: false },
+  ])(
+    'enforces per-step allowlist ask and executes only after explicit approval (approved=$approved)',
+    async ({ approved, expectedSuccess }) => {
+      const dir = fs.mkdtempSync(path.join(tmpdir(), 'orion-batch-read-ask-'));
+      const file = path.join(dir, 'sensitive.env');
+      fs.writeFileSync(file, 'SECRET=redacted', 'utf-8');
+      const confirmToolUse = jest.fn(async () => approved);
+      const context = {
+        ...ctx,
+        toolConfirmation: 'ask',
+        toolAllowlist: () => ({ effect: 'ask' as const, rule: 'ask:read_file(*.env)' }),
+        confirmToolUse,
+      } as ToolContext;
+
+      try {
+        const { outer, inner } = await runBatchRead(
+          [{ tool: 'read_file', args: { path: file } }],
+          context
+        );
+
+        expect(confirmToolUse).toHaveBeenCalledTimes(1);
+        expect(outer.success).toBe(expectedSuccess);
+        expect(inner.success).toBe(expectedSuccess);
+        if (approved) {
+          expect(inner.steps[0].output).toContain('SECRET=redacted');
+        } else {
+          expect(inner.steps[0].output).not.toContain('SECRET=redacted');
+        }
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  );
+
+  test('fails closed when a batch step requires confirmation but no callback exists', async () => {
+    const context = {
+      ...ctx,
+      toolConfirmation: 'ask',
+      toolAllowlist: () => ({ effect: 'ask' as const, rule: 'ask:read_file(*)' }),
+    } as ToolContext;
+
+    const { outer, inner } = await runBatchRead(
+      [{ tool: 'read_file', args: { path: 'package.json' } }],
+      context
+    );
+
+    expect(outer.success).toBe(false);
+    expect(inner.success).toBe(false);
+    expect(inner.error).toMatch(/confirmation/i);
+    expect(inner.steps[0].output).toBe('');
   });
 
   test('rejects more than eight steps', async () => {

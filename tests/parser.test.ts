@@ -1,4 +1,9 @@
-import { parseInput, buildCommandSuggestions, createCompleter } from '../src/commands/parser';
+import {
+  parseInput,
+  buildCommandSuggestions,
+  buildCommandLineSuggestions,
+  createCompleter,
+} from '../src/commands/parser';
 
 describe('parseInput', () => {
   test('parses slash command', () => {
@@ -46,6 +51,7 @@ describe('parseInput', () => {
       isCommand: true,
       name: 'unknown',
       args: 'argument',
+      rawArgs: 'argument',
     });
   });
 
@@ -71,10 +77,30 @@ describe('parseInput', () => {
 
   test('handles slash with leading spaces in input', () => {
     const result = parseInput('/  help');
-    expect(result.isCommand).toBe(true);
-    // After removing '/' and splitting by whitespace, first element is ''
-    expect(result.name).toBe('');
-    expect(result.args).toBe('help');
+    expect(result).toEqual({ isCommand: false, name: '', args: '/  help' });
+  });
+
+  test('preserves raw arguments and an opaque tail without shell expansion', () => {
+    expect(parseInput('/MODEL  glm-5 --  $HOME `pwd`')).toMatchObject({
+      isCommand: true,
+      name: 'model',
+      canonicalName: 'model',
+      commandId: 'builtin.model.model',
+      args: 'glm-5 --  $HOME `pwd`',
+      rawArgs: 'glm-5 --  $HOME `pwd`',
+      opaqueTail: '$HOME `pwd`',
+    });
+  });
+
+  test('never executes fuzzy names, paths, URLs, or commands after leading whitespace', () => {
+    expect(parseInput('/statu')).toMatchObject({ isCommand: true, name: 'statu' });
+    expect(parseInput('/statu').commandId).toBeUndefined();
+    expect(parseInput('/https://example.com')).toEqual({
+      isCommand: false,
+      name: '',
+      args: '/https://example.com',
+    });
+    expect(parseInput(' /status')).toEqual({ isCommand: false, name: '', args: '/status' });
   });
 });
 
@@ -132,5 +158,22 @@ describe('createCompleter', () => {
     const [completions, line] = completer('/');
     expect(completions.length).toBeGreaterThan(0);
     expect(completions[0]).toMatch(/^\/\w+/);
+  });
+
+  test('completes typed subcommands from the registered argument schema', () => {
+    const completer = createCompleter();
+    expect(completer('/effort h')[0]).toEqual(['/effort high']);
+    expect(completer('/session ')[0]).toEqual([
+      '/session list',
+      '/session info',
+      '/session rename',
+    ]);
+    expect(buildCommandLineSuggestions('/target st')).toEqual(['/goal status']);
+  });
+
+  test('does not guess free-form or multi-token arguments', () => {
+    const completer = createCompleter();
+    expect(completer('/model gpt')[0]).toEqual([]);
+    expect(completer('/effort high extra')[0]).toEqual([]);
   });
 });

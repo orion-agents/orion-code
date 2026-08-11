@@ -105,6 +105,8 @@ function normalizeEvent(event: AgentRuntimeEvent): string {
         : `research:${event.event.type}:${event.event.packetId}`;
     case 'goal_event':
       return `goal:${event.event.type}`;
+    case 'effort_event':
+      return `effort:${event.event.type}:${event.event.requested}`;
     case 'session_picker_requested':
       return `session_picker:${event.request.title}:${event.request.sessions.length}`;
     case 'edit_preview_requested':
@@ -417,6 +419,11 @@ describe('runtime/UI renderer parity contract', () => {
 
     const status = recording.controller.handleTargetInput('/target status').statusText;
     expect(status).toContain('Criteria: 1 pending | 1/4 passed | 1 failed | 1 stale');
+    expect(recording.events).toEqual(
+      expect.arrayContaining([
+        'append:system:/target is deprecated; use /goal. It will be removed in v0.3.0.',
+      ])
+    );
 
     recording.runner.calls[0].resolve();
     await recording.controller.stopActiveTurn();

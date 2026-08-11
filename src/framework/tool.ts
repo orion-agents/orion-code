@@ -68,6 +68,18 @@ export interface ToolContext {
   permissionMode?: string;
   /** Project-scoped allowlist evaluator, for the same reason as `permissionMode`. */
   toolAllowlist?: import('../services/tool-allowlist').ToolAllowlistEvaluator;
+  /** Confirmation policy inherited from the active logical request. */
+  toolConfirmation?: import('../services/config').ToolConfirmationPolicy;
+  /**
+   * Renderer-owned confirmation bridge for tools that dispatch nested calls.
+   * Nested tools must fail closed when this callback is absent.
+   */
+  confirmToolUse?: (request: {
+    name: string;
+    args: Record<string, unknown>;
+    reason?: string;
+    abortSignal?: AbortSignal;
+  }) => Promise<boolean>;
 }
 
 /** Minimal config needed by tools */

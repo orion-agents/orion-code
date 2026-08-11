@@ -73,7 +73,7 @@ describe('commit plan service', () => {
     expect(plan.nextSteps.join('\n')).toContain('Stage the intended files');
   });
 
-  maybeIt('is exposed as /commit slash command', async () => {
+  maybeIt('is exposed as /commit-plan slash command', async () => {
     repo = createRepo();
     writeFileSync(join(repo, 'src-file.ts'), 'export const value = 1;\n');
     git(repo, ['add', '.']);
@@ -93,10 +93,11 @@ describe('commit plan service', () => {
         llm: null,
         runtime: makeRuntime() as any,
       };
-      const result = await findCommand('commit')!.execute(ctx, '');
+      const result = await findCommand('commit-plan')!.execute(ctx, '');
       expect(result.success).toBe(true);
-      expect(logs.join('\n')).toContain('Commit Plan');
-      expect(logs.join('\n')).toContain('Message');
+      expect(logs).toEqual([]);
+      expect(result.output).toContain('Commit Plan');
+      expect(result.output).toContain('Message');
     } finally {
       logSpy.mockRestore();
     }
@@ -123,7 +124,14 @@ describe('openhorse commit CLI', () => {
 
     const result = spawnSync(
       'node',
-      ['-r', join(projectRoot, 'node_modules', 'ts-node', 'register'), join(projectRoot, 'src', 'cli.ts'), 'commit', '--output-format', 'json'],
+      [
+        '-r',
+        join(projectRoot, 'node_modules', 'ts-node', 'register'),
+        join(projectRoot, 'src', 'cli.ts'),
+        'commit',
+        '--output-format',
+        'json',
+      ],
       {
         cwd: repo,
         env: {

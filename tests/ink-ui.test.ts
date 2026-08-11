@@ -4,36 +4,93 @@ import { tmpdir } from 'os';
 import stringWidth from 'string-width';
 import { formatPromptLine } from '../src/ink-ui/components/PromptInput';
 import { decodeHtmlEntities, markdownBlockTypes } from '../src/ink-ui/components/Markdown';
-import { getRunningHorseFrame, runningHorseLabel } from '../src/ink-ui/components/RunningHorseIndicator';
+import {
+  getRunningHorseFrame,
+  runningHorseLabel,
+} from '../src/ink-ui/components/RunningHorseIndicator';
 import { formatToolActivityLine, parseToolActivity } from '../src/ink-ui/components/ToolActivity';
-import { createAssistantStreamPresenter, createToolEventPresenter, sessionMessagesToTranscriptEntries } from '../src/ink-ui/controllers/chat-controller';
+import {
+  createAssistantStreamPresenter,
+  createToolEventPresenter,
+  sessionMessagesToTranscriptEntries,
+} from '../src/ink-ui/controllers/chat-controller';
 import { readTerminalSize } from '../src/ink-ui/hooks/use-terminal-size';
 import { prepareInkStdin } from '../src/ink-ui/launch';
 import { initialInputBuffer, reduceInputBuffer } from '../src/ink-ui/runtime/input-buffer';
 import { getInkLayoutBudget } from '../src/ink-ui/runtime/layout-budget';
-import { applyTerminalOutputToCursor, createNativeCursorController, nativeCursorAbsoluteMoveSequence, nativeCursorAbsoluteParkSequence, nativeCursorAnchorFromNode, nativeCursorMoveSequence, nativeCursorParkSequence } from '../src/ink-ui/runtime/native-cursor';
-import { formatPromptVisualLine, getPromptInputViewport, getPromptVisualLines, getVisiblePromptVisualLines, splitByVisualWidth } from '../src/ink-ui/runtime/prompt-layout';
-import { floorGraphemeBoundary, nextGraphemeBoundary, previousGraphemeBoundary, segmentGraphemes } from '../src/ink-ui/runtime/grapheme';
-import { countCtrlCEvents, deleteActionFromRawInput, hasDeletionRawInput } from '../src/ink-ui/runtime/raw-input';
-import { initialTranscriptState, liveTranscriptEntries, staticTranscriptEntries, transcriptReducer } from '../src/ink-ui/runtime/transcript-state';
-import { getFileQuery, isMultilinePasteValue, normalizePastedInput, permissionItems, sessionItems, visibleCommandItems, visibleFileItems } from '../src/ink-ui/screens/ReplScreen';
+import {
+  applyTerminalOutputToCursor,
+  createNativeCursorController,
+  nativeCursorAbsoluteMoveSequence,
+  nativeCursorAbsoluteParkSequence,
+  nativeCursorAnchorFromNode,
+  nativeCursorMoveSequence,
+  nativeCursorParkSequence,
+} from '../src/ink-ui/runtime/native-cursor';
+import {
+  formatPromptVisualLine,
+  getPromptInputViewport,
+  getPromptVisualLines,
+  getVisiblePromptVisualLines,
+  splitByVisualWidth,
+} from '../src/ink-ui/runtime/prompt-layout';
+import {
+  floorGraphemeBoundary,
+  nextGraphemeBoundary,
+  previousGraphemeBoundary,
+  segmentGraphemes,
+} from '../src/ink-ui/runtime/grapheme';
+import {
+  countCtrlCEvents,
+  deleteActionFromRawInput,
+  hasDeletionRawInput,
+} from '../src/ink-ui/runtime/raw-input';
+import {
+  initialTranscriptState,
+  liveTranscriptEntries,
+  staticTranscriptEntries,
+  transcriptReducer,
+} from '../src/ink-ui/runtime/transcript-state';
+import {
+  getFileQuery,
+  hasRecognizedCommandArguments,
+  isMultilinePasteValue,
+  normalizePastedInput,
+  permissionItems,
+  sessionItems,
+  visibleCommandItems,
+  visibleFileItems,
+} from '../src/ink-ui/screens/ReplScreen';
 import type { TranscriptEntry, UiEventSink } from '../src/ink-ui/types';
 import type { SessionMeta } from '../src/services/session-storage';
-import { appendSessionMessage, createSession, markSessionTranscriptDisplayStart } from '../src/services/session-storage';
+import {
+  appendSessionMessage,
+  createSession,
+  markSessionTranscriptDisplayStart,
+} from '../src/services/session-storage';
 
 describe('Ink UI helpers', () => {
   it('filters command palette entries by slash query', () => {
     const items = visibleCommandItems('/s');
     expect(items.some(item => item.value === 'status')).toBe(true);
-    expect(items.some(item => item.value === 'sessions')).toBe(true);
-    expect(items.every(item => item.value.startsWith('s') || item.label.includes('(s'))).toBe(true);
+    expect(items.some(item => item.value === 'sessions')).toBe(false);
+    expect(items.some(item => item.value === 'security')).toBe(true);
+  });
+
+  it('recognizes complete slash commands with arguments before palette completion', () => {
+    expect(hasRecognizedCommandArguments('/target pause')).toBe(true);
+    expect(hasRecognizedCommandArguments('/unknown value')).toBe(false);
+    expect(hasRecognizedCommandArguments('/target')).toBe(false);
   });
 
   it('shows coding-agent commands and hides legacy chat commands', () => {
     const items = visibleCommandItems('/');
     const values = items.map(item => item.value);
 
-    expect(values).toEqual(expect.arrayContaining(['review', 'security', 'test-gen', 'tools', 'mode']));
+    expect(values).toEqual(expect.arrayContaining(['goal', 'review', 'context', 'effort', 'mode']));
+    expect(values).toHaveLength(10);
+    expect(values).not.toContain('security');
+    expect(values).not.toContain('sessions');
     expect(values).not.toContain('chat');
     expect(values).not.toContain('run');
     expect(values).not.toContain('task');
@@ -115,14 +172,22 @@ describe('Ink UI helpers', () => {
       reason: 'requires confirmation',
     });
 
-    expect(items).toHaveLength(2);
+    expect(items).toHaveLength(4);
     expect(items[0]).toMatchObject({
-      value: 'allow',
-      label: 'Allow exec_command',
+      value: 'allow-once',
+      label: 'Allow once',
     });
     expect(items[0].description).toContain('npm publish --dry-run');
     expect(items[0].description).toContain('requires confirmation');
     expect(items[1]).toMatchObject({
+      value: 'allow-project',
+      label: 'Always allow in this project',
+    });
+    expect(items[2]).toMatchObject({
+      value: 'allow-global',
+      label: 'Always allow on this machine',
+    });
+    expect(items[3]).toMatchObject({
       value: 'deny',
       label: 'Deny exec_command',
     });
@@ -132,15 +197,24 @@ describe('Ink UI helpers', () => {
     const compact = getInkLayoutBudget(80, 20, { overlayVisible: true });
     const roomy = getInkLayoutBudget(160, 49, { overlayVisible: true });
 
-    expect(compact.maxOverlayItems + compact.maxPromptRows + compact.maxLiveTranscriptItems + 10).toBeLessThanOrEqual(compact.terminalHeight);
+    expect(
+      compact.maxOverlayItems + compact.maxPromptRows + compact.maxLiveTranscriptItems + 10
+    ).toBeLessThanOrEqual(compact.terminalHeight);
     expect(roomy.maxOverlayItems).toBeLessThanOrEqual(10);
     expect(roomy.layoutWidth).toBe(159);
   });
 
   it('reads terminal size from the active stdout and falls back safely', () => {
-    expect(readTerminalSize({ columns: 120, rows: 42 } as NodeJS.WriteStream)).toEqual({ width: 120, height: 42 });
-    expect(readTerminalSize({ columns: 0, rows: 0 } as NodeJS.WriteStream, { columns: 88, rows: 33 } as NodeJS.WriteStream))
-      .toEqual({ width: 88, height: 33 });
+    expect(readTerminalSize({ columns: 120, rows: 42 } as NodeJS.WriteStream)).toEqual({
+      width: 120,
+      height: 42,
+    });
+    expect(
+      readTerminalSize(
+        { columns: 0, rows: 0 } as NodeJS.WriteStream,
+        { columns: 88, rows: 33 } as NodeJS.WriteStream
+      )
+    ).toEqual({ width: 88, height: 33 });
   });
 
   it('prepares stdin raw mode before Ink mounts so terminal echo cannot leak into the prompt', () => {
@@ -229,7 +303,10 @@ describe('Ink UI helpers', () => {
     try {
       wrapped.write('one\r\ntwo\r\nend');
       await Promise.resolve();
-      expect(writes).toEqual(['one\r\ntwo\r\nend', nativeCursorParkSequence({ enabled: true, column: 9, rowsUp: 2 })]);
+      expect(writes).toEqual([
+        'one\r\ntwo\r\nend',
+        nativeCursorParkSequence({ enabled: true, column: 9, rowsUp: 2 }),
+      ]);
 
       wrapped.write('next');
       await Promise.resolve();
@@ -272,17 +349,18 @@ describe('Ink UI helpers', () => {
   it('keeps native cursor controller state isolated per renderer', () => {
     const writesA: string[] = [];
     const writesB: string[] = [];
-    const createStdout = (writes: string[]) => ({
-      rows: 20,
-      columns: 80,
-      isTTY: true,
-      write: (chunk: string | Buffer) => {
-        writes.push(String(chunk));
-        return true;
-      },
-      on: jest.fn(),
-      off: jest.fn(),
-    }) as unknown as NodeJS.WriteStream;
+    const createStdout = (writes: string[]) =>
+      ({
+        rows: 20,
+        columns: 80,
+        isTTY: true,
+        write: (chunk: string | Buffer) => {
+          writes.push(String(chunk));
+          return true;
+        },
+        on: jest.fn(),
+        off: jest.fn(),
+      }) as unknown as NodeJS.WriteStream;
 
     const controllerA = createNativeCursorController(createStdout(writesA));
     const controllerB = createNativeCursorController(createStdout(writesB));
@@ -297,9 +375,7 @@ describe('Ink UI helpers', () => {
       nativeCursorAbsoluteParkSequence({ row: 6, column: 8 }),
       nativeCursorAbsoluteMoveSequence({ row: 0, column: 0 }),
     ]);
-    expect(writesB).toEqual([
-      nativeCursorAbsoluteParkSequence({ row: 7, column: 11 }),
-    ]);
+    expect(writesB).toEqual([nativeCursorAbsoluteParkSequence({ row: 7, column: 11 })]);
 
     controllerB.disable();
   });
@@ -339,12 +415,18 @@ describe('Ink UI helpers', () => {
     const combining = 'e\u0301';
     const family = '👨‍👩‍👧‍👦';
 
-    expect(applyTerminalOutputToCursor({ row: 0, column: 0 }, combining, 80))
-      .toEqual({ row: 0, column: 1 });
-    expect(applyTerminalOutputToCursor({ row: 0, column: 0 }, family, 80))
-      .toEqual({ row: 0, column: stringWidth(family) });
-    expect(applyTerminalOutputToCursor({ row: 0, column: 78 }, `${family}x`, 80))
-      .toEqual({ row: 0, column: 79 });
+    expect(applyTerminalOutputToCursor({ row: 0, column: 0 }, combining, 80)).toEqual({
+      row: 0,
+      column: 1,
+    });
+    expect(applyTerminalOutputToCursor({ row: 0, column: 0 }, family, 80)).toEqual({
+      row: 0,
+      column: stringWidth(family),
+    });
+    expect(applyTerminalOutputToCursor({ row: 0, column: 78 }, `${family}x`, 80)).toEqual({
+      row: 0,
+      column: 79,
+    });
   });
 
   it('tracks visual prompt cursor columns with fullwidth Chinese input', () => {
@@ -393,8 +475,11 @@ describe('Ink UI helpers', () => {
       parentNode: parent,
     };
 
-    expect(nativeCursorAnchorFromNode(promptBox, { cursorColumn: 5, cursorLineIndex: 0 }))
-      .toEqual({ column: 8, row: 4, rowsUp: 3 });
+    expect(nativeCursorAnchorFromNode(promptBox, { cursorColumn: 5, cursorLineIndex: 0 })).toEqual({
+      column: 8,
+      row: 4,
+      rowsUp: 3,
+    });
   });
 
   it('pads live prompt lines to the full input width', () => {
@@ -405,7 +490,11 @@ describe('Ink UI helpers', () => {
   });
 
   it('can render a visual cursor when explicitly requested', () => {
-    const line = formatPromptVisualLine({ logicalIndex: 0, wrapIndex: 0, content: '', start: 0, end: 0 }, 20, { showCursor: true });
+    const line = formatPromptVisualLine(
+      { logicalIndex: 0, wrapIndex: 0, content: '', start: 0, end: 0 },
+      20,
+      { showCursor: true }
+    );
 
     expect(line.startsWith('› ▌')).toBe(true);
   });
@@ -457,7 +546,10 @@ describe('Ink UI helpers', () => {
     const inserted = reduceInputBuffer(draft, { type: 'insert', text: 'l' });
     const removed = reduceInputBuffer(inserted, { type: 'backspace' });
     const deleted = reduceInputBuffer({ value: 'abcd', cursor: 1 }, { type: 'delete' });
-    const cjkRemoved = reduceInputBuffer({ value: '开源小？事收到', cursor: '开源小？事收到'.length }, { type: 'backspace' });
+    const cjkRemoved = reduceInputBuffer(
+      { value: '开源小？事收到', cursor: '开源小？事收到'.length },
+      { type: 'backspace' }
+    );
 
     expect(inserted).toEqual({ value: 'hello', cursor: 3 });
     expect(removed).toEqual({ value: 'helo', cursor: 2 });
@@ -471,24 +563,36 @@ describe('Ink UI helpers', () => {
     const value = `${combining}${family}z`;
 
     expect(segmentGraphemes(value).map(part => part.segment)).toEqual([combining, family, 'z']);
-    expect(previousGraphemeBoundary(value, combining.length + family.length)).toBe(combining.length);
+    expect(previousGraphemeBoundary(value, combining.length + family.length)).toBe(
+      combining.length
+    );
     expect(nextGraphemeBoundary(value, combining.length)).toBe(combining.length + family.length);
     expect(floorGraphemeBoundary(value, combining.length + 1)).toBe(combining.length);
-    expect(floorGraphemeBoundary(value, combining.length + family.length)).toBe(combining.length + family.length);
+    expect(floorGraphemeBoundary(value, combining.length + family.length)).toBe(
+      combining.length + family.length
+    );
   });
 
   it('edits by grapheme cluster so emoji and combining marks are not split', () => {
     const combining = 'e\u0301';
     const family = '👨‍👩‍👧‍👦';
 
-    expect(reduceInputBuffer({ value: combining, cursor: combining.length }, { type: 'backspace' }))
-      .toEqual({ value: '', cursor: 0 });
-    expect(reduceInputBuffer({ value: family, cursor: family.length }, { type: 'backspace' }))
-      .toEqual({ value: '', cursor: 0 });
-    expect(reduceInputBuffer({ value: `${family}x`, cursor: 0 }, { type: 'delete' }))
-      .toEqual({ value: 'x', cursor: 0 });
-    expect(reduceInputBuffer({ value: `${family}x`, cursor: `${family}x`.length }, { type: 'move', direction: 'left' }).cursor)
-      .toBe(family.length);
+    expect(
+      reduceInputBuffer({ value: combining, cursor: combining.length }, { type: 'backspace' })
+    ).toEqual({ value: '', cursor: 0 });
+    expect(
+      reduceInputBuffer({ value: family, cursor: family.length }, { type: 'backspace' })
+    ).toEqual({ value: '', cursor: 0 });
+    expect(reduceInputBuffer({ value: `${family}x`, cursor: 0 }, { type: 'delete' })).toEqual({
+      value: 'x',
+      cursor: 0,
+    });
+    expect(
+      reduceInputBuffer(
+        { value: `${family}x`, cursor: `${family}x`.length },
+        { type: 'move', direction: 'left' }
+      ).cursor
+    ).toBe(family.length);
   });
 
   it('wraps prompt input by grapheme cluster instead of splitting emoji sequences', () => {
@@ -499,11 +603,26 @@ describe('Ink UI helpers', () => {
   });
 
   it('parses mixed text and arrow escape sequences in one input chunk', () => {
-    const edited = reduceInputBuffer(initialInputBuffer, { type: 'inputChunk', text: 'helo\x1b[D\x1b[Dl' });
-    const deleted = reduceInputBuffer(initialInputBuffer, { type: 'inputChunk', text: 'ab\x1b[D\x1b[3~' });
-    const pastedWithControl = reduceInputBuffer({ value: '/', cursor: 1 }, { type: 'inputChunk', text: '\x7fone\ntwo' });
-    const clearedThenInserted = reduceInputBuffer({ value: 'draft', cursor: 5 }, { type: 'inputChunk', text: '\x15abc' });
-    const ignoredControl = reduceInputBuffer(initialInputBuffer, { type: 'inputChunk', text: '\x16abc' });
+    const edited = reduceInputBuffer(initialInputBuffer, {
+      type: 'inputChunk',
+      text: 'helo\x1b[D\x1b[Dl',
+    });
+    const deleted = reduceInputBuffer(initialInputBuffer, {
+      type: 'inputChunk',
+      text: 'ab\x1b[D\x1b[3~',
+    });
+    const pastedWithControl = reduceInputBuffer(
+      { value: '/', cursor: 1 },
+      { type: 'inputChunk', text: '\x7fone\ntwo' }
+    );
+    const clearedThenInserted = reduceInputBuffer(
+      { value: 'draft', cursor: 5 },
+      { type: 'inputChunk', text: '\x15abc' }
+    );
+    const ignoredControl = reduceInputBuffer(initialInputBuffer, {
+      type: 'inputChunk',
+      text: '\x16abc',
+    });
 
     expect(edited).toEqual({ value: 'hello', cursor: 3 });
     expect(deleted).toEqual({ value: 'a', cursor: 1 });
@@ -515,9 +634,13 @@ describe('Ink UI helpers', () => {
   it('normalizes running status into a horse animation label', () => {
     expect(runningHorseLabel('Turn 2...')).toBe('working');
     expect(runningHorseLabel('Working: thinking')).toBe('Working: thinking');
-    expect(runningHorseLabel('Working: reading tool results')).toBe('Working: reading tool results');
+    expect(runningHorseLabel('Working: reading tool results')).toBe(
+      'Working: reading tool results'
+    );
     expect(runningHorseLabel('Working: running 4 tools')).toBe('Working: running 4 tools');
-    expect(runningHorseLabel('Revision received. Interrupting current response...')).toBe('Revision received. Interrupting current response...');
+    expect(runningHorseLabel('Revision received. Interrupting current response...')).toBe(
+      'Revision received. Interrupting current response...'
+    );
   });
 
   it('uses stable-width running horse frames with moving dust', () => {
@@ -529,25 +652,29 @@ describe('Ink UI helpers', () => {
   });
 
   it('recognizes rich markdown blocks for Ink transcript rendering', () => {
-    const blocks = markdownBlockTypes([
-      '# Title',
-      '',
-      '- item',
-      '',
-      '```ts',
-      'const value = 1;',
-      '```',
-      '',
-      '| A | B |',
-      '|---|---|',
-      '| 1 | 2 |',
-    ].join('\n'));
+    const blocks = markdownBlockTypes(
+      [
+        '# Title',
+        '',
+        '- item',
+        '',
+        '```ts',
+        'const value = 1;',
+        '```',
+        '',
+        '| A | B |',
+        '|---|---|',
+        '| 1 | 2 |',
+      ].join('\n')
+    );
 
     expect(blocks).toEqual(expect.arrayContaining(['heading', 'list', 'code', 'table']));
   });
 
   it('decodes html entities in assistant markdown text', () => {
-    expect(decodeHtmlEntities('I see you&#39;ve entered &quot;111&quot; &amp; more.')).toBe('I see you\'ve entered "111" & more.');
+    expect(decodeHtmlEntities('I see you&#39;ve entered &quot;111&quot; &amp; more.')).toBe(
+      'I see you\'ve entered "111" & more.'
+    );
     expect(decodeHtmlEntities('numeric: &#8226; &#x2022;')).toBe('numeric: • •');
   });
 
@@ -578,12 +705,15 @@ describe('Ink UI helpers', () => {
   });
 
   it('formats tool activity lines within the available transcript width', () => {
-    const line = formatToolActivityLine({
-      state: 'success',
-      name: 'read_file',
-      detail: '/Users/hope/ai-project/openhorse/src/ink-ui/screens/ReplScreen.tsx',
-      duration: '12ms',
-    }, 32);
+    const line = formatToolActivityLine(
+      {
+        state: 'success',
+        name: 'read_file',
+        detail: '/Users/hope/ai-project/openhorse/src/ink-ui/screens/ReplScreen.tsx',
+        duration: '12ms',
+      },
+      32
+    );
 
     expect(stringWidth(line)).toBeLessThanOrEqual(32);
     expect(line).toContain('read_file');
@@ -621,7 +751,11 @@ describe('Ink UI helpers', () => {
     presenter.closeSegment();
 
     expect(entries.map(entry => entry.role)).toEqual(['assistant', 'tool', 'assistant']);
-    expect(entries.map(entry => entry.content)).toEqual(['先说明', 'Running read_file src/index.ts', '再给结论']);
+    expect(entries.map(entry => entry.content)).toEqual([
+      '先说明',
+      'Running read_file src/index.ts',
+      '再给结论',
+    ]);
     expect(events.finalize).toHaveBeenCalledWith('entry-1');
   });
 
@@ -676,7 +810,9 @@ describe('Ink UI helpers', () => {
     presenter.appendChunk('partial output');
     presenter.discardSegment();
 
-    expect(events.append).toHaveBeenCalledWith(expect.objectContaining({ role: 'assistant', live: true }));
+    expect(events.append).toHaveBeenCalledWith(
+      expect.objectContaining({ role: 'assistant', live: true })
+    );
     expect(events.remove).toHaveBeenCalledWith('entry-1');
     expect(events.finalize).not.toHaveBeenCalled();
   });
@@ -712,7 +848,8 @@ describe('Ink UI helpers', () => {
       showSessionPicker: jest.fn(),
       showEditPreview: jest.fn(),
       toolStarted: event => structuredEvents.push(`start:${event.callId}:${event.name}`),
-      toolFinished: event => structuredEvents.push(`finish:${event.callId}:${event.success ? 'ok' : 'fail'}`),
+      toolFinished: event =>
+        structuredEvents.push(`finish:${event.callId}:${event.success ? 'ok' : 'fail'}`),
       setProcessing: jest.fn(),
     };
 
@@ -783,9 +920,18 @@ describe('Ink UI helpers', () => {
 
   it('keeps transcript order while a tool is running between assistant segments', () => {
     let state = initialTranscriptState;
-    state = transcriptReducer(state, { type: 'append', entry: { id: 'assistant-1', role: 'assistant', content: 'before tool' } });
-    state = transcriptReducer(state, { type: 'append', entry: { id: 'tool-1', role: 'tool', content: 'Running read_file src/index.ts' } });
-    state = transcriptReducer(state, { type: 'append', entry: { id: 'assistant-2', role: 'assistant', content: 'after tool' } });
+    state = transcriptReducer(state, {
+      type: 'append',
+      entry: { id: 'assistant-1', role: 'assistant', content: 'before tool' },
+    });
+    state = transcriptReducer(state, {
+      type: 'append',
+      entry: { id: 'tool-1', role: 'tool', content: 'Running read_file src/index.ts' },
+    });
+    state = transcriptReducer(state, {
+      type: 'append',
+      entry: { id: 'assistant-2', role: 'assistant', content: 'after tool' },
+    });
 
     expect(staticTranscriptEntries(state).map(entry => entry.id)).toEqual(['assistant-1']);
     expect(liveTranscriptEntries(state).map(entry => entry.id)).toEqual(['tool-1', 'assistant-2']);
@@ -796,7 +942,11 @@ describe('Ink UI helpers', () => {
       patch: { role: 'tool', content: '✓ read_file src/index.ts (3ms)' },
     });
 
-    expect(staticTranscriptEntries(state).map(entry => entry.id)).toEqual(['assistant-1', 'tool-1', 'assistant-2']);
+    expect(staticTranscriptEntries(state).map(entry => entry.id)).toEqual([
+      'assistant-1',
+      'tool-1',
+      'assistant-2',
+    ]);
     expect(liveTranscriptEntries(state)).toEqual([]);
   });
 
@@ -807,11 +957,23 @@ describe('Ink UI helpers', () => {
 
     try {
       const session = createSession('/tmp/openhorse-ink-resume', 'glm-5');
-      appendSessionMessage(session.id, { role: 'user', content: 'before compact', timestamp: 1000 });
-      appendSessionMessage(session.id, { role: 'assistant', content: 'old answer', timestamp: 1001 });
+      appendSessionMessage(session.id, {
+        role: 'user',
+        content: 'before compact',
+        timestamp: 1000,
+      });
+      appendSessionMessage(session.id, {
+        role: 'assistant',
+        content: 'old answer',
+        timestamp: 1001,
+      });
       markSessionTranscriptDisplayStart(session.id, 2000);
       appendSessionMessage(session.id, { role: 'user', content: 'after compact', timestamp: 2001 });
-      appendSessionMessage(session.id, { role: 'assistant', content: 'new answer', timestamp: 2002 });
+      appendSessionMessage(session.id, {
+        role: 'assistant',
+        content: 'new answer',
+        timestamp: 2002,
+      });
 
       const entries = sessionMessagesToTranscriptEntries(session.id);
 
@@ -833,10 +995,26 @@ describe('Ink UI helpers', () => {
 
     try {
       const session = createSession('/tmp/openhorse-ink-full-resume', 'glm-5');
-      appendSessionMessage(session.id, { role: 'user', content: 'first question', timestamp: 1000 });
-      appendSessionMessage(session.id, { role: 'assistant', content: 'first answer', timestamp: 1001 });
-      appendSessionMessage(session.id, { role: 'user', content: 'second question', timestamp: 1002 });
-      appendSessionMessage(session.id, { role: 'assistant', content: 'second answer', timestamp: 1003 });
+      appendSessionMessage(session.id, {
+        role: 'user',
+        content: 'first question',
+        timestamp: 1000,
+      });
+      appendSessionMessage(session.id, {
+        role: 'assistant',
+        content: 'first answer',
+        timestamp: 1001,
+      });
+      appendSessionMessage(session.id, {
+        role: 'user',
+        content: 'second question',
+        timestamp: 1002,
+      });
+      appendSessionMessage(session.id, {
+        role: 'assistant',
+        content: 'second answer',
+        timestamp: 1003,
+      });
 
       const entries = sessionMessagesToTranscriptEntries(session.id);
 
@@ -868,11 +1046,13 @@ describe('Ink UI helpers', () => {
         role: 'assistant',
         content: 'I will inspect files first.',
         timestamp: 1001,
-        tool_calls: [{
-          id: 'call-list-files',
-          type: 'function',
-          function: { name: 'list_files', arguments: '{"path":".","maxDepth":0}' },
-        }],
+        tool_calls: [
+          {
+            id: 'call-list-files',
+            type: 'function',
+            function: { name: 'list_files', arguments: '{"path":".","maxDepth":0}' },
+          },
+        ],
       });
       appendSessionMessage(session.id, {
         role: 'tool',
@@ -883,7 +1063,9 @@ describe('Ink UI helpers', () => {
       appendSessionMessage(session.id, { role: 'assistant', content: 'Done.', timestamp: 1003 });
 
       const plainEntries = sessionMessagesToTranscriptEntries(session.id);
-      const entries = sessionMessagesToTranscriptEntries(session.id, { includeToolOutputViews: true });
+      const entries = sessionMessagesToTranscriptEntries(session.id, {
+        includeToolOutputViews: true,
+      });
 
       expect(plainEntries[2].toolActivity).toBeUndefined();
 
@@ -918,12 +1100,18 @@ describe('Ink UI helpers', () => {
 describe('Ink UI input-buffer edges', () => {
   it('ignores non-word-delete Ctrl+W control character (\x17)', () => {
     // \x17 (Ctrl+W) is a control char < 32 (not \n or \t) — buffer ignores it
-    const state = reduceInputBuffer({ value: 'hello world foo', cursor: 'hello world foo'.length }, { type: 'inputChunk', text: '\x17' });
+    const state = reduceInputBuffer(
+      { value: 'hello world foo', cursor: 'hello world foo'.length },
+      { type: 'inputChunk', text: '\x17' }
+    );
     expect(state.value).toBe('hello world foo');
   });
 
   it('clears input on Ctrl+U from any cursor position', () => {
-    const state = reduceInputBuffer({ value: 'hello world', cursor: 5 }, { type: 'inputChunk', text: '\x15' });
+    const state = reduceInputBuffer(
+      { value: 'hello world', cursor: 5 },
+      { type: 'inputChunk', text: '\x15' }
+    );
     expect(state.value).toBe('');
     expect(state.cursor).toBe(0);
   });
@@ -943,7 +1131,10 @@ describe('Ink UI input-buffer edges', () => {
   it('handles emoji sequences with combining modifiers', () => {
     // 👨‍💻 = man technologist emoji (👨‍💻)
     const techEmoji = '👨‍💻';
-    let state = reduceInputBuffer(initialInputBuffer, { type: 'inputChunk', text: `hello ${techEmoji} world` });
+    let state = reduceInputBuffer(initialInputBuffer, {
+      type: 'inputChunk',
+      text: `hello ${techEmoji} world`,
+    });
     expect(state.value).toContain(techEmoji);
     // Backspace should remove the entire emoji sequence
     state = reduceInputBuffer(state, { type: 'backspace' });
@@ -952,27 +1143,41 @@ describe('Ink UI input-buffer edges', () => {
 
   it('handles Home/End keys via raw escape sequences', () => {
     // \x1b[H = Home, \x1b[F = End
-    const homeState = reduceInputBuffer({ value: 'hello', cursor: 5 }, { type: 'inputChunk', text: '\x1b[H' });
+    const homeState = reduceInputBuffer(
+      { value: 'hello', cursor: 5 },
+      { type: 'inputChunk', text: '\x1b[H' }
+    );
     expect(homeState.cursor).toBe(0);
-    const endState = reduceInputBuffer({ value: 'hello', cursor: 0 }, { type: 'inputChunk', text: '\x1b[F' });
+    const endState = reduceInputBuffer(
+      { value: 'hello', cursor: 0 },
+      { type: 'inputChunk', text: '\x1b[F' }
+    );
     expect(endState.cursor).toBe(5);
   });
 
   it('ignores non-printable control characters except newline and tab', () => {
-    const state = reduceInputBuffer(initialInputBuffer, { type: 'inputChunk', text: '\x01a\x02b\x1b' });
+    const state = reduceInputBuffer(initialInputBuffer, {
+      type: 'inputChunk',
+      text: '\x01a\x02b\x1b',
+    });
     expect(state.value).toBe('ab');
   });
 
   it('preserves newline characters in input for multiline editing', () => {
-    const state = reduceInputBuffer(initialInputBuffer, { type: 'inputChunk', text: 'line1\nline2' });
+    const state = reduceInputBuffer(initialInputBuffer, {
+      type: 'inputChunk',
+      text: 'line1\nline2',
+    });
     expect(state.value).toBe('line1\nline2');
   });
 
   it('preserves bracketed paste marker text outside the paste handler', () => {
-    const state = reduceInputBuffer(initialInputBuffer, { type: 'inputChunk', text: '[200~literal[201~' });
+    const state = reduceInputBuffer(initialInputBuffer, {
+      type: 'inputChunk',
+      text: '[200~literal[201~',
+    });
     expect(state.value).toBe('[200~literal[201~');
   });
-
 });
 
 describe('Ink UI prompt-layout narrow and wide', () => {
@@ -1058,7 +1263,8 @@ describe('Ink UI layout-budget edge cases', () => {
 
   it('keeps total items within terminal height', () => {
     const budget = getInkLayoutBudget(100, 30, { overlayVisible: true });
-    const totalUsed = budget.maxOverlayItems + budget.maxPromptRows + budget.maxLiveTranscriptItems + 10;
+    const totalUsed =
+      budget.maxOverlayItems + budget.maxPromptRows + budget.maxLiveTranscriptItems + 10;
     expect(totalUsed).toBeLessThanOrEqual(budget.terminalHeight);
   });
 
@@ -1077,8 +1283,14 @@ describe('Ink UI transcript-state overlay safety', () => {
   it('does not include overlay entries in transcript', () => {
     let state = initialTranscriptState;
     // Append normal entries
-    state = transcriptReducer(state, { type: 'append', entry: { id: 'user-1', role: 'user', content: 'hello' } });
-    state = transcriptReducer(state, { type: 'append', entry: { id: 'assistant-1', role: 'assistant', content: 'hi' } });
+    state = transcriptReducer(state, {
+      type: 'append',
+      entry: { id: 'user-1', role: 'user', content: 'hello' },
+    });
+    state = transcriptReducer(state, {
+      type: 'append',
+      entry: { id: 'assistant-1', role: 'assistant', content: 'hi' },
+    });
     // Overlays are UI state, not transcript entries
     expect(state.entries.map(e => e.id)).toEqual(['user-1', 'assistant-1']);
     expect(state.entries.length).toBe(2);
@@ -1086,10 +1298,24 @@ describe('Ink UI transcript-state overlay safety', () => {
 
   it('maintains live/finalize order even with rapid append/update/finalize', () => {
     let state = initialTranscriptState;
-    state = transcriptReducer(state, { type: 'append', entry: { id: 'a1', role: 'assistant', content: 'p1', live: true } });
-    state = transcriptReducer(state, { type: 'append', entry: { id: 't1', role: 'tool', content: 'Running x' } });
-    state = transcriptReducer(state, { type: 'update', id: 'a1', patch: { content: 'p1 updated' } });
-    state = transcriptReducer(state, { type: 'finalize', id: 't1', patch: { content: '✓ x done' } });
+    state = transcriptReducer(state, {
+      type: 'append',
+      entry: { id: 'a1', role: 'assistant', content: 'p1', live: true },
+    });
+    state = transcriptReducer(state, {
+      type: 'append',
+      entry: { id: 't1', role: 'tool', content: 'Running x' },
+    });
+    state = transcriptReducer(state, {
+      type: 'update',
+      id: 'a1',
+      patch: { content: 'p1 updated' },
+    });
+    state = transcriptReducer(state, {
+      type: 'finalize',
+      id: 't1',
+      patch: { content: '✓ x done' },
+    });
     state = transcriptReducer(state, { type: 'finalize', id: 'a1' });
 
     const static_ = staticTranscriptEntries(state);
@@ -1103,8 +1329,14 @@ describe('Ink UI transcript-state overlay safety', () => {
 
   it('removing a live entry does not affect static entries', () => {
     let state = initialTranscriptState;
-    state = transcriptReducer(state, { type: 'append', entry: { id: 's1', role: 'user', content: 'stable' } });
-    state = transcriptReducer(state, { type: 'append', entry: { id: 'l1', role: 'assistant', content: 'streaming', live: true } });
+    state = transcriptReducer(state, {
+      type: 'append',
+      entry: { id: 's1', role: 'user', content: 'stable' },
+    });
+    state = transcriptReducer(state, {
+      type: 'append',
+      entry: { id: 'l1', role: 'assistant', content: 'streaming', live: true },
+    });
     state = transcriptReducer(state, { type: 'remove', id: 'l1' });
 
     const static_ = staticTranscriptEntries(state);
@@ -1114,8 +1346,14 @@ describe('Ink UI transcript-state overlay safety', () => {
 
   it('replace rebuilds the entire transcript and bumps generation', () => {
     let state = initialTranscriptState;
-    state = transcriptReducer(state, { type: 'append', entry: { id: 'old-1', role: 'user', content: 'old' } });
-    state = transcriptReducer(state, { type: 'append', entry: { id: 'old-2', role: 'assistant', content: 'resp' } });
+    state = transcriptReducer(state, {
+      type: 'append',
+      entry: { id: 'old-1', role: 'user', content: 'old' },
+    });
+    state = transcriptReducer(state, {
+      type: 'append',
+      entry: { id: 'old-2', role: 'assistant', content: 'resp' },
+    });
 
     const gen = state.generation;
     state = transcriptReducer(state, {
@@ -1131,7 +1369,10 @@ describe('Ink UI transcript-state overlay safety', () => {
 
   it('clear empties all entries and bumps generation', () => {
     let state = initialTranscriptState;
-    state = transcriptReducer(state, { type: 'append', entry: { id: 'u1', role: 'user', content: 'text' } });
+    state = transcriptReducer(state, {
+      type: 'append',
+      entry: { id: 'u1', role: 'user', content: 'text' },
+    });
     const gen = state.generation;
     state = transcriptReducer(state, { type: 'clear' });
 

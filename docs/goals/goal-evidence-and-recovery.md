@@ -1,6 +1,7 @@
 # Goal Evidence and Recovery
 
-Orion Code v0.1.2 supports one persistent Goal per session.
+Since v0.1.2, Orion Code supports one persistent Goal per session. The v0.1.4 release line preserves this contract;
+v0.1.5 may add new command or ACP clients, but they must reuse the same Goal, evidence, permission, and recovery rules.
 
 ## Lifecycle
 
@@ -69,7 +70,7 @@ find "$config_root/projects" -type f \
 ```
 
 Exit Orion before copying files. Back up the exact `<session-id>.goal.json` together with the matching `.json` and
-`.jsonl` session files to a separate directory. Do this before downgrading to v0.1.1 or replacing any sidecar. Do not
+`.jsonl` session files to a separate directory. Do this before downgrading or replacing any sidecar. Do not
 use broad cleanup commands against `~/.orion-code`.
 
 ### Corrupt sidecars
@@ -94,25 +95,29 @@ current files, restore the backup to the exact original path, then restart Orion
 ```
 
 An active Goal is restored as paused. Review the objective, criteria, revision, and next action before explicitly
-running `/target resume`. If no known-good backup exists, keep the quarantine file and create a new Goal; v0.1.2 has no
+running `/target resume`. If no known-good backup exists, keep the quarantine file and create a new Goal; Orion has no
 supported automatic sidecar-repair command.
 
 ### Version rollback
 
-After the backup above, never overwrite the published v0.1.2 artifact. Prefer a forward fix in v0.1.3. If the
-default registry version must be rolled back immediately, obtain explicit registry-write approval and run:
+Never overwrite a published npm version. Prefer a forward patch. Keep npm `latest`, prerelease tags such as `next`,
+Git tags, GitHub Releases, merged source, and a local explicit install as separate states. As of 2026-08-09,
+`latest=0.1.4` and `next=0.1.4-2`; `main` also contains newer merged-only fixes, so installing either published
+version is not proof that those fixes are present.
+
+Test a rollback in an isolated prefix first. Set `known_good_version` only after verifying its Goal/session
+compatibility:
 
 ```bash
-npm deprecate @orion-agents/orion-code@0.1.2 "Release blocked; use 0.1.1 or the next fixed release"
-npm dist-tag add @orion-agents/orion-code@0.1.1 latest
-npm view @orion-agents/orion-code dist-tags --json
-npm view @orion-agents/orion-code@latest version
-npm install -g @orion-agents/orion-code@0.1.1
-orion --version
+rollback_prefix="$(mktemp -d /tmp/orion-rollback.XXXXXX)"
+known_good_version="0.1.4"
+npm install --prefix "$rollback_prefix" "@orion-agents/orion-code@$known_good_version"
+"$rollback_prefix/node_modules/.bin/orion" --version
 ```
 
-v0.1.1 ignores the additive v0.1.2 contract, plan, and evidence fields in its UI. The compatibility fixture verifies
-that its reader/writer preserves those fields, but the richer v0.1.2 projections are unavailable until v0.1.2 is
-reinstalled. A rollback receipt must show `latest=0.1.1`, a clean default install resolving to 0.1.1, and an explicit
-`@0.1.1` install resolving to the same version. A local explicit install alone does not restore the registry default
-for other users. Always retain the backup until the restored session has been inspected successfully.
+Changing a public dist-tag or deprecating a version is an external registry write and requires explicit authorization.
+If authorized, the receipt must separately show the exact deprecated version (if any), the new dist-tag target,
+`npm view @orion-agents/orion-code dist-tags --json`, a clean default install, and an explicit exact-version install.
+A local explicit install alone does not change the default for other users. Always retain the backup until the restored
+session and Goal have been inspected successfully; older clients may preserve additive fields while not projecting
+newer command, Research, effort, or ACP state.

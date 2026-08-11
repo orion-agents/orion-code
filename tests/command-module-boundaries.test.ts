@@ -12,19 +12,22 @@ import { LEGACY_COMMANDS } from '../src/commands/legacy-commands';
 import type { CommandContext } from '../src/commands/types';
 
 const EXPECTED_REGISTRATION_ORDER = [
-  'target',
+  'goal',
   'diff',
-  'commit',
+  'commit-plan',
   'review',
+  'research',
   'security',
   'test-gen',
   'todos',
   'resume',
+  'session',
   'sessions',
   'session-rename',
   'compact',
   'context-clear',
   'clear-history',
+  'context',
   'harness',
   'skills',
   'skill',
@@ -36,14 +39,16 @@ const EXPECTED_REGISTRATION_ORDER = [
   'model',
   'models',
   'mode',
+  'permissions',
+  'effort',
   'config',
   'help',
   'status',
   'clear',
   'tool-output',
-  'permissions',
   'redraw',
   'exit',
+  'subagents',
   'doctor',
   'storage',
   'usage',
@@ -52,6 +57,7 @@ const EXPECTED_REGISTRATION_ORDER = [
   'last-tool',
   'artifacts',
   'checkpoint',
+  'rewind',
   'cost',
   'agents',
   'migrate',
@@ -112,7 +118,7 @@ describe('command module boundaries (#69)', () => {
     await expect(Promise.resolve(findCommand('target')?.execute(context, 'ship'))).resolves.toEqual(
       {
         success: false,
-        error: '/target must be routed through the shared AgentRuntimeController.',
+        error: '/goal must be routed through the shared AgentRuntimeController.',
       }
     );
     await expect(

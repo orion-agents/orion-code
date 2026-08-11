@@ -22,6 +22,7 @@ export function visibleCommandItems(input: string): TuiPickerItem[] {
   return createCommandPickerState({
     input: `/${commandToken}`,
     commands: getVisibleCommands('tui'),
+    maxVisibleItems: 10,
     categoryLabel: getCommandCategoryLabel,
   }).visibleItems.map(item => ({
     value: item.value,

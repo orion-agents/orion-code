@@ -95,6 +95,27 @@ describe('tui-ui runner', () => {
     expect(runner.renderFullFrame().cursor).toEqual({ row: 7, column: 4, visible: true });
   });
 
+  it('routes permissions through the shared runtime instead of a TUI-local branch', () => {
+    const { output } = createOutput();
+    const submitted: string[] = [];
+    const onPermissionModeChange = jest.fn();
+    const runner = new TuiRunner({
+      output,
+      width: 80,
+      height: 10,
+      onSubmit: input => {
+        submitted.push(input);
+      },
+      onPermissionModeChange,
+    });
+
+    runner.feedInput(Buffer.from('/permissions deny'));
+    runner.feedInput(Buffer.from('\r'));
+
+    expect(submitted).toEqual(['/permissions deny']);
+    expect(onPermissionModeChange).not.toHaveBeenCalled();
+  });
+
   it('submits a recognized slash command with arguments from the command palette', () => {
     const { output } = createOutput();
     const submitted: string[] = [];
@@ -108,10 +129,12 @@ describe('tui-ui runner', () => {
     });
 
     runner.feedInput(Buffer.from('/target status'));
-    expect(runner.getState().overlay).toMatchObject({
-      type: 'commands',
-      items: [expect.objectContaining({ value: 'target' })],
-    });
+    expect(runner.getState().overlay).toMatchObject({ type: 'commands' });
+    expect(runner.getState().overlay).toEqual(
+      expect.objectContaining({
+        items: expect.not.arrayContaining([expect.objectContaining({ value: 'target' })]),
+      })
+    );
     runner.feedInput(Buffer.from('\r'));
 
     expect(submitted).toEqual(['/target status']);
@@ -406,15 +429,19 @@ describe('tui-ui runner', () => {
     expect(submitted).toEqual(['']);
   });
 
-  it('routes tool permission overlay decisions through the callback', () => {
+  it('routes project and machine-wide permission decisions through the callback', () => {
     const { output } = createOutput();
-    const decisions: Array<{ requestId: string; approved: boolean }> = [];
+    const decisions: Array<{
+      requestId: string;
+      approved: boolean;
+      scope: 'once' | 'project' | 'global';
+    }> = [];
     const runner = new TuiRunner({
       output,
       width: 64,
       height: 12,
-      onPermissionDecision: (requestId, approved) => {
-        decisions.push({ requestId, approved });
+      onPermissionDecision: (requestId, approved, scope) => {
+        decisions.push({ requestId, approved, scope });
       },
     });
 
@@ -426,7 +453,7 @@ describe('tui-ui runner', () => {
     });
     runner.feedInput(Buffer.from('\x1b[B\r'));
 
-    expect(decisions).toEqual([{ requestId: 'permission-1', approved: false }]);
+    expect(decisions).toEqual([{ requestId: 'permission-1', approved: true, scope: 'project' }]);
     expect(runner.getState().overlay).toBeNull();
 
     runner.events.showPermissionRequest!({
@@ -434,11 +461,11 @@ describe('tui-ui runner', () => {
       name: 'git_push',
       args: { remote: 'origin' },
     });
-    runner.feedInput(Buffer.from('y'));
+    runner.feedInput(Buffer.from('g'));
 
     expect(decisions).toEqual([
-      { requestId: 'permission-1', approved: false },
-      { requestId: 'permission-2', approved: true },
+      { requestId: 'permission-1', approved: true, scope: 'project' },
+      { requestId: 'permission-2', approved: true, scope: 'global' },
     ]);
     expect(runner.getState().overlay).toBeNull();
   });
@@ -681,6 +708,29 @@ describe('tui-ui runner', () => {
 
     expect(decisions).toEqual([{ requestId: 'perm-enter', approved: true }]);
     expect(runner.getState().overlay).toBeNull();
+  });
+
+  it('can select global approval and deny through the four-item permission picker', () => {
+    const { output } = createOutput();
+    const decisions: Array<{ approved: boolean; scope: string }> = [];
+    const runner = new TuiRunner({
+      output,
+      width: 72,
+      height: 14,
+      onPermissionDecision: (_requestId, approved, scope) => {
+        decisions.push({ approved, scope });
+      },
+    });
+
+    runner.events.showPermissionRequest?.({ id: 'global', name: 'web_fetch', args: {} });
+    runner.feedInput(Buffer.from('\x1b[B\x1b[B\r'));
+    runner.events.showPermissionRequest?.({ id: 'deny', name: 'exec_command', args: {} });
+    runner.feedInput(Buffer.from('\x1b[B\x1b[B\x1b[B\r'));
+
+    expect(decisions).toEqual([
+      { approved: true, scope: 'global' },
+      { approved: false, scope: 'once' },
+    ]);
   });
 
   it('does not insert text into prompt while permission overlay is active (except y/n)', () => {

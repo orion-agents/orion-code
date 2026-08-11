@@ -57,6 +57,7 @@ describe('global-config', () => {
         fallbackModel: 'gpt-4o',
         apiKey: 'test-key',
         toolConfirmation: 'deny',
+        allowedTools: ['allow:exec_command'],
       };
       saveGlobalConfig({ ...loadGlobalConfig(), ...customConfig });
 
@@ -66,6 +67,7 @@ describe('global-config', () => {
       expect(config.fallbackModel).toBe('gpt-4o');
       expect(config.apiKey).toBe('test-key');
       expect(config.toolConfirmation).toBe('deny');
+      expect(config.allowedTools).toEqual(['allow:exec_command']);
     });
 
     test('returns default config when file is corrupted', () => {
@@ -164,6 +166,24 @@ describe('global-config', () => {
         allowedTools: ['read_file', 'write_file'],
         sandbox: { profile: 'workspace-write' },
       });
+    });
+
+    test('persists valid effort defaults and drops unknown values', () => {
+      saveGlobalConfig({
+        ...loadGlobalConfig(),
+        defaultEffort: 'high',
+        projects: {
+          '/effort-project': { defaultEffort: 'low' },
+          '/invalid-effort-project': { defaultEffort: 'turbo' as any },
+        },
+      });
+
+      expect(loadGlobalConfig().defaultEffort).toBe('high');
+      expect(getProjectConfig('/effort-project').defaultEffort).toBe('low');
+      expect(getProjectConfig('/invalid-effort-project').defaultEffort).toBeUndefined();
+
+      saveGlobalConfig({ ...loadGlobalConfig(), defaultEffort: 'turbo' as any });
+      expect(loadGlobalConfig().defaultEffort).toBeUndefined();
     });
   });
 

@@ -1,4 +1,9 @@
-import { getNextPermissionMode, getModeDisplayText, PERMISSION_MODES, type PermissionMode } from '../src/commands/types';
+import {
+  getNextPermissionMode,
+  getModeDisplayText,
+  PERMISSION_MODES,
+  type PermissionMode,
+} from '../src/commands/types';
 
 describe('Permission Mode', () => {
   describe('PERMISSION_MODES', () => {
@@ -26,16 +31,12 @@ describe('Permission Mode', () => {
   });
 
   describe('getModeDisplayText', () => {
-    test('returns empty string for default mode', () => {
-      expect(getModeDisplayText('default')).toBe('');
+    test('renders the interactive agent mode independently from tool permissions', () => {
+      expect(getModeDisplayText('interactive')).toBe('interactive mode');
     });
 
     test('returns "plan mode on" for plan mode', () => {
       expect(getModeDisplayText('plan')).toBe('plan mode on');
-    });
-
-    test('returns "auto-accept edits" for acceptEdits mode', () => {
-      expect(getModeDisplayText('acceptEdits')).toBe('auto-accept edits');
     });
 
     test('returns "auto mode" for auto mode', () => {

@@ -6,7 +6,8 @@
  * and duplicate detection use first-registration semantics.
  */
 
-import type { CommandContext, SlashCommand } from './types';
+import type { CommandContext, RegisteredSlashCommand, SlashCommand } from './types';
+import { registerBuiltinCommands } from './registry';
 import { sortCommands } from './core-command-handlers';
 import { WORKFLOW_COMMANDS } from './workflow-commands';
 import { SESSION_COMMANDS } from './session-commands';
@@ -17,11 +18,15 @@ import { createSystemCommands } from './system-commands';
 import { DIAGNOSTIC_COMMANDS } from './diagnostic-commands';
 import { LEGACY_COMMANDS } from './legacy-commands';
 
-export function getVisibleCommands(renderer?: CommandContext['uiRenderer']): SlashCommand[] {
+export function getVisibleCommands(
+  renderer?: CommandContext['uiRenderer']
+): RegisteredSlashCommand[] {
   return sortCommands(
     COMMANDS.filter(
       command =>
         !command.isHidden &&
+        command.audience !== 'compatibility' &&
+        command.audience !== 'internal' &&
         (!renderer || !command.rendererScope || command.rendererScope.includes(renderer))
     )
   );
@@ -29,7 +34,7 @@ export function getVisibleCommands(renderer?: CommandContext['uiRenderer']): Sla
 
 const SYSTEM_COMMANDS = createSystemCommands(getVisibleCommands);
 
-const COMMANDS: SlashCommand[] = [
+const COMMAND_DEFINITIONS: SlashCommand[] = [
   ...WORKFLOW_COMMANDS,
   ...SESSION_COMMANDS,
   ...CONTEXT_COMMANDS,
@@ -40,12 +45,20 @@ const COMMANDS: SlashCommand[] = [
   ...LEGACY_COMMANDS,
 ];
 
-export function getCommands(): SlashCommand[] {
+const COMMANDS = registerBuiltinCommands(COMMAND_DEFINITIONS);
+
+export function getCommands(): RegisteredSlashCommand[] {
   return sortCommands(COMMANDS);
 }
 
-export function findCommand(name: string): SlashCommand | undefined {
-  return COMMANDS.find(command => command.name === name || command.aliases?.includes(name));
+export function findCommand(name: string): RegisteredSlashCommand | undefined {
+  const normalized = name.toLowerCase();
+  return COMMANDS.find(
+    command =>
+      command.name.toLowerCase() === normalized ||
+      command.aliases?.some(alias => alias.toLowerCase() === normalized) ||
+      command.compatibilityAliases?.some(alias => alias.name.toLowerCase() === normalized)
+  );
 }
 
 export function getCommandNames(): string[] {

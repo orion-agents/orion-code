@@ -16,9 +16,14 @@ import {
   createAllowlistEvaluator,
   describeAllowlistSubject,
   resolveProjectToolAllowlist,
+  grantToolPermission,
   type ToolAllowlistEvaluator,
 } from '../src/services/tool-allowlist';
-import { saveProjectConfig } from '../src/services/global-config';
+import {
+  loadGlobalConfig,
+  saveGlobalConfig,
+  saveProjectConfig,
+} from '../src/services/global-config';
 import { buildTool } from '../src/framework/tool';
 import type { OrionCodeTool, ToolContext } from '../src/framework/tool';
 import {
@@ -393,7 +398,7 @@ describe('resolveEffectivePermission precedence', () => {
     expect(decision.reason).toContain('ask:read_file(*.env)');
   });
 
-  test('an allow rule never auto-approves a destructive invocation', () => {
+  test('an explicit allow rule cannot auto-approve a destructive non-file invocation', () => {
     const decision = resolve({
       toolName: 'exec_command',
       tool: execTool,
@@ -401,7 +406,11 @@ describe('resolveEffectivePermission precedence', () => {
       permission: { behavior: 'ask', reason: 'Command requires confirmation' },
       allowlist: { effect: 'allow', rule: 'exec_command' },
     });
-    expect(decision.outcome).toBe('confirm');
+    expect(decision).toMatchObject({
+      outcome: 'confirm',
+      source: 'risk_guard',
+      risk: 'destructive',
+    });
   });
 
   test('an allow rule downgrades a non-destructive ask to auto-approval', () => {
@@ -523,7 +532,7 @@ describe('tool scheduler with a project allowlist', () => {
     expect(executed[0].error).toContain('blocked in plan mode');
   });
 
-  test('allowlisted external ask tools remain confirmation-gated and serial', () => {
+  test('allowlisted external ask tools are persistently approved and may retain safe concurrency', async () => {
     const allowlist = createAllowlistEvaluator(parseAllowlistRules(['web_fetch']).rules);
 
     const prepared = prepareToolCalls({
@@ -539,8 +548,14 @@ describe('tool scheduler with a project allowlist', () => {
       confirmToolUse: async () => true,
     });
 
-    expect(prepared.every(p => p.canRunConcurrently)).toBe(false);
+    expect(prepared.every(p => p.canRunConcurrently)).toBe(true);
     expect(prepared[0].allowlist).toEqual({ effect: 'allow', rule: 'web_fetch' });
+
+    const { executedNames } = await runAll([['web_fetch', { url: 'https://a.dev' }]], {
+      allowlist,
+      toolConfirmation: 'ask',
+    });
+    expect(executedNames).toEqual(['web_fetch']);
   });
 
   test('an ask rule forces a concurrency-safe tool back to serial execution', () => {
@@ -582,6 +597,10 @@ describe('resolveProjectToolAllowlist', () => {
     process.env.ORION_CODE_CONFIG_DIR = testDir;
   });
 
+  beforeEach(() => {
+    saveGlobalConfig({ defaultModel: 'gpt-4o', toolConfirmation: 'allow' });
+  });
+
   afterAll(() => {
     if (existsSync(testDir)) rmSync(testDir, { recursive: true, force: true });
     if (originalEnv !== undefined) {
@@ -601,6 +620,7 @@ describe('resolveProjectToolAllowlist', () => {
     expect(a.evaluator?.('exec_command', { command: 'git status' })).toEqual({
       effect: 'allow',
       rule: 'exec_command(git status*)',
+      scope: 'project',
     });
 
     const b = resolveProjectToolAllowlist('/repo/b');
@@ -612,5 +632,42 @@ describe('resolveProjectToolAllowlist', () => {
     const unknown = resolveProjectToolAllowlist('/repo/never-configured');
     expect(unknown.evaluator).toBeUndefined();
     expect(unknown.invalid).toEqual([]);
+  });
+
+  test('global rules apply to every project while project restrictions still win', () => {
+    saveGlobalConfig({
+      ...loadGlobalConfig(),
+      allowedTools: ['allow:exec_command'],
+      projects: {
+        '/repo/a': { allowedTools: ['deny:exec_command(rm -rf*)'] },
+        '/repo/b': { allowedTools: ['ask:exec_command(git push*)'] },
+      },
+    });
+
+    expect(
+      resolveProjectToolAllowlist('/repo/c').evaluator?.('exec_command', { command: 'ls' })
+    ).toEqual({ effect: 'allow', rule: 'allow:exec_command', scope: 'global' });
+    expect(
+      resolveProjectToolAllowlist('/repo/a').evaluator?.('exec_command', { command: 'rm -rf x' })
+    ).toEqual({ effect: 'deny', rule: 'deny:exec_command(rm -rf*)', scope: 'project' });
+    expect(
+      resolveProjectToolAllowlist('/repo/b').evaluator?.('exec_command', { command: 'git push' })
+    ).toEqual({ effect: 'ask', rule: 'ask:exec_command(git push*)', scope: 'project' });
+  });
+
+  test('persists idempotent project and machine-wide grants', () => {
+    grantToolPermission('project', '/repo/grants', 'exec_command');
+    grantToolPermission('project', '/repo/grants', 'exec_command');
+    grantToolPermission('global', '/repo/grants', 'web_fetch');
+
+    expect(loadGlobalConfig().projects?.['/repo/grants']?.allowedTools).toEqual([
+      'allow:exec_command',
+    ]);
+    expect(loadGlobalConfig().allowedTools).toEqual(['allow:web_fetch']);
+    expect(
+      resolveProjectToolAllowlist('/another/repo').evaluator?.('web_fetch', {
+        url: 'https://example.com',
+      })
+    ).toEqual({ effect: 'allow', rule: 'allow:web_fetch', scope: 'global' });
   });
 });

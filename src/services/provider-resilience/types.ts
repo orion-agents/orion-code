@@ -21,6 +21,7 @@ export type ProviderFailureKind =
   | 'model_not_found'
   | 'invalid_endpoint'
   | 'invalid_request'
+  | 'unsupported_effort'
   | 'context_overflow'
   | 'request_too_large'
   | 'content_policy'

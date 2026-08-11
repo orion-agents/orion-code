@@ -16,6 +16,8 @@
 // Provider types
 // ============================================================================
 
+import { EFFORT_LEVELS, type ReasoningCapability } from './effort';
+
 export type ProviderProtocol = 'openai-completions' | 'anthropic-messages';
 
 export interface ProviderConfig {
@@ -54,6 +56,8 @@ export interface ModelProfile {
   enabled?: boolean;
   /** Whether this model supports reasoning/thinking. */
   reasoning?: boolean;
+  /** Explicit effort levels and wire adapter. Legacy `reasoning: true` is not sufficient. */
+  reasoningCapability?: ReasoningCapability;
   /** Temperature compatibility: "supported" | "unsupported". */
   temperatureMode?: 'supported' | 'unsupported';
   /** Optional cost per 1M tokens. */
@@ -221,12 +225,12 @@ const BUILTIN_CATALOG: Record<string, CatalogEntry> = {
   },
 
   // 讯飞 MAAS (xf-yun)
-  'xopdeepseekv4pro': {
+  xopdeepseekv4pro: {
     contextWindow: 1000000,
     maxOutputTokens: 16384,
     provider: 'astroncodingplan',
   },
-  'xopglm51': {
+  xopglm51: {
     contextWindow: 204800,
     maxOutputTokens: 16384,
     provider: 'astroncodingplan',
@@ -371,6 +375,71 @@ export function buildRegistry(config: ModelRegistryConfig): RegistryValidationRe
     ) {
       errors.push({ path: `models.${m.id}.contextWindow`, message: 'Must be a positive integer.' });
     }
+    if (m.reasoningCapability) {
+      const capability = m.reasoningCapability;
+      const supportedLevelsValid =
+        Array.isArray(capability.supportedLevels) &&
+        capability.supportedLevels.length > 0 &&
+        capability.supportedLevels.every(
+          level => typeof level === 'string' && EFFORT_LEVELS.includes(level)
+        ) &&
+        new Set(capability.supportedLevels).size === capability.supportedLevels.length;
+      if (!supportedLevelsValid) {
+        errors.push({
+          path: `models.${m.id}.reasoningCapability.supportedLevels`,
+          message: 'Must contain unique supported effort levels and cannot be empty.',
+        });
+      }
+      if (!['effort-level', 'thinking-level', 'thinking-budget'].includes(capability.kind)) {
+        errors.push({
+          path: `models.${m.id}.reasoningCapability.kind`,
+          message: 'Unknown reasoning capability kind.',
+        });
+      }
+      if (
+        !['openai-chat-reasoning-effort', 'anthropic-output-config-effort'].includes(
+          capability.adapter
+        )
+      ) {
+        errors.push({
+          path: `models.${m.id}.reasoningCapability.adapter`,
+          message: 'Unknown reasoning capability adapter.',
+        });
+      }
+      if (!['config', 'discovery', 'builtin'].includes(capability.source)) {
+        errors.push({
+          path: `models.${m.id}.reasoningCapability.source`,
+          message: 'Unknown reasoning capability source.',
+        });
+      }
+      if (
+        capability.defaultLevel !== undefined &&
+        (!supportedLevelsValid || !capability.supportedLevels.includes(capability.defaultLevel))
+      ) {
+        errors.push({
+          path: `models.${m.id}.reasoningCapability.defaultLevel`,
+          message: 'defaultLevel must be included in supportedLevels.',
+        });
+      }
+      if (
+        capability.adapter === 'openai-chat-reasoning-effort' &&
+        provider.protocol !== 'openai-completions'
+      ) {
+        errors.push({
+          path: `models.${m.id}.reasoningCapability.adapter`,
+          message: 'openai-chat-reasoning-effort requires openai-completions protocol.',
+        });
+      }
+      if (
+        capability.adapter === 'anthropic-output-config-effort' &&
+        provider.protocol !== 'anthropic-messages'
+      ) {
+        errors.push({
+          path: `models.${m.id}.reasoningCapability.adapter`,
+          message: 'anthropic-output-config-effort requires anthropic-messages protocol.',
+        });
+      }
+    }
     if (
       m.maxOutputTokens !== undefined &&
       (m.maxOutputTokens <= 0 || !Number.isInteger(m.maxOutputTokens))
@@ -482,6 +551,7 @@ function computeFingerprint(
     provider.protocol,
     profile.reasoning ? '1' : '0',
     profile.temperatureMode ?? '',
+    profile.reasoningCapability ? JSON.stringify(profile.reasoningCapability) : '',
   ];
   return createHash('sha256').update(parts.join('|')).digest('hex').slice(0, 12);
 }

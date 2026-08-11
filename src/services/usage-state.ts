@@ -17,6 +17,8 @@ import {
   getUsageStatePath,
 } from './config-dir';
 import type { CostSource, UsageRecord } from '../core/cost-tracker';
+import { isEffortPreference, type EffortLevel, type ResolvedEffort } from './effort';
+import type { ProviderProtocol } from './model-registry';
 import { debugError } from '../utils/debug-log';
 
 export interface UsageState {
@@ -50,11 +52,18 @@ export interface UsageLedgerEntry {
   requestKind?: string;
   agentId?: string;
   taskId?: string;
+  /** Subset of completionTokens; never added to totalTokens again. */
+  reasoningTokens?: number;
+  effortRequested?: import('./effort').EffortPreference;
+  effortEffective?: EffortLevel;
+  effortSource?: ResolvedEffort['source'];
+  providerProtocol?: ProviderProtocol;
 }
 
 export interface UsageLedgerSummary {
   promptTokens: number;
   completionTokens: number;
+  reasoningTokens: number;
   totalTokens: number;
   totalCost: number;
   providerCost: number;
@@ -112,6 +121,7 @@ function emptyLedgerSummary(): UsageLedgerSummary {
   return {
     promptTokens: 0,
     completionTokens: 0,
+    reasoningTokens: 0,
     totalTokens: 0,
     totalCost: 0,
     providerCost: 0,
@@ -132,6 +142,25 @@ function isCostSource(value: unknown): value is CostSource {
   return (
     value === 'provider' || value === 'configured' || value === 'builtin' || value === 'fallback'
   );
+}
+
+function isEffortLevel(value: unknown): value is EffortLevel {
+  return value !== 'auto' && isEffortPreference(value);
+}
+
+function isEffortSource(value: unknown): value is ResolvedEffort['source'] {
+  return (
+    value === 'request' ||
+    value === 'session' ||
+    value === 'project' ||
+    value === 'global' ||
+    value === 'model-default' ||
+    value === 'provider-default'
+  );
+}
+
+function isProviderProtocol(value: unknown): value is ProviderProtocol {
+  return value === 'openai-completions' || value === 'anthropic-messages';
 }
 
 function normalizeLedgerEntry(value: unknown): UsageLedgerEntry | null {
@@ -156,6 +185,22 @@ function normalizeLedgerEntry(value: unknown): UsageLedgerEntry | null {
     ...(typeof entry.requestKind === 'string' ? { requestKind: entry.requestKind } : {}),
     ...(typeof entry.agentId === 'string' ? { agentId: entry.agentId } : {}),
     ...(typeof entry.taskId === 'string' ? { taskId: entry.taskId } : {}),
+    ...(entry.reasoningTokens !== undefined
+      ? {
+          reasoningTokens: Math.min(
+            toNonNegativeNumber(entry.completionTokens),
+            toNonNegativeNumber(entry.reasoningTokens)
+          ),
+        }
+      : {}),
+    ...(isEffortPreference(entry.effortRequested)
+      ? { effortRequested: entry.effortRequested }
+      : {}),
+    ...(isEffortLevel(entry.effortEffective) ? { effortEffective: entry.effortEffective } : {}),
+    ...(isEffortSource(entry.effortSource) ? { effortSource: entry.effortSource } : {}),
+    ...(isProviderProtocol(entry.providerProtocol)
+      ? { providerProtocol: entry.providerProtocol }
+      : {}),
   };
 }
 
@@ -195,6 +240,7 @@ export function summarizeUsageLedger(entries?: UsageLedgerEntry[]): UsageLedgerS
   for (const entry of read.entries) {
     summary.promptTokens += entry.promptTokens;
     summary.completionTokens += entry.completionTokens;
+    summary.reasoningTokens += entry.reasoningTokens ?? 0;
     summary.totalTokens += entry.totalTokens;
     summary.totalCost += entry.costUsd;
     summary.recordCount++;
@@ -375,6 +421,11 @@ export function appendUsageRecord(
     ...(record.requestKind ? { requestKind: record.requestKind } : {}),
     ...(record.agentId ? { agentId: record.agentId } : {}),
     ...(record.taskId ? { taskId: record.taskId } : {}),
+    ...(record.reasoningTokens !== undefined ? { reasoningTokens: record.reasoningTokens } : {}),
+    ...(record.effortRequested !== undefined ? { effortRequested: record.effortRequested } : {}),
+    ...(record.effortEffective !== undefined ? { effortEffective: record.effortEffective } : {}),
+    ...(record.effortSource !== undefined ? { effortSource: record.effortSource } : {}),
+    ...(record.providerProtocol !== undefined ? { providerProtocol: record.providerProtocol } : {}),
   };
   appendFileSync(getUsageLedgerPath(), `${JSON.stringify(entry)}\n`, {
     encoding: 'utf-8',

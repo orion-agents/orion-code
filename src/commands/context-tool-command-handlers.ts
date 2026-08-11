@@ -145,6 +145,13 @@ function showSafety(ctx: CommandContext): CommandResult {
 }
 
 function showHarness(ctx: CommandContext, args: string = ''): CommandResult {
+  const lines: string[] = [];
+  const console = {
+    log: (...values: unknown[]): void => {
+      lines.push(values.map(value => String(value)).join(' '));
+    },
+  };
+  const result = (): CommandResult => ({ success: true, output: lines.join('\n') });
   const explain = args.trim().toLowerCase() === 'explain';
   console.log();
   console.log(HEADER(explain ? 'Harness Explain' : 'Harness'));
@@ -167,7 +174,7 @@ function showHarness(ctx: CommandContext, args: string = ''): CommandResult {
     console.log();
     console.log(DIM('  No Context Harness state for this session yet.'));
     console.log();
-    return { success: true };
+    return result();
   }
 
   if (explain) {
@@ -331,7 +338,7 @@ function showHarness(ctx: CommandContext, args: string = ''): CommandResult {
     console.log(`    Armed       ${compactStats.preCompactArmed ? SUCCESS('yes') : DIM('no')}`);
     console.log(`    Last mode   ${DIM(compactStats.lastCompactMode ?? 'none')}`);
     console.log();
-    return { success: true };
+    return result();
   }
 
   console.log();
@@ -362,7 +369,7 @@ function showHarness(ctx: CommandContext, args: string = ''): CommandResult {
     console.log(`    Diagnostics ${WARN(state.diagnostics.slice(-2).join(' | '))}`);
   }
   console.log();
-  return { success: true };
+  return result();
 }
 
 function handleSkills(_ctx: CommandContext): CommandResult {

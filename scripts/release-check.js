@@ -391,7 +391,7 @@ function checkReleaseRef() {
   let status = STATUS.PASS;
 
   if (!taggedSection.claimsPublished || taggedSection.marksUnreleased) {
-    status = STATUS.WARN;
+    status = STATUS.FAIL;
     details.push(
       `tagged CHANGELOG is stale ("${taggedSection.heading}"); current-tree CHANGELOG carries the post-publish evidence`
     );
@@ -403,7 +403,7 @@ function checkReleaseRef() {
     const tagIsAncestor = run('git', ['merge-base', '--is-ancestor', tag.commit, head]);
     const headIsAncestor = run('git', ['merge-base', '--is-ancestor', head, tag.commit]);
     if (tagIsAncestor.code === 0) {
-      status = STATUS.WARN;
+      if (status !== STATUS.FAIL) status = STATUS.WARN;
       details.push(
         `checkout=post-release commits (${head.slice(0, 12)} is ahead of the immutable release tag); HEAD is not published by ${tag.ref}`
       );
@@ -416,7 +416,7 @@ function checkReleaseRef() {
       );
     } else {
       const mergeBase = run('git', ['merge-base', tag.commit, head]);
-      status = STATUS.WARN;
+      if (status !== STATUS.FAIL) status = STATUS.WARN;
       details.push(
         `checkout=post-release branch drift (HEAD ${head.slice(0, 12)} and tag diverge at ` +
           `${mergeBase.stdout.trim().slice(0, 12) || '<unknown>'}); validate the tag tree as the published artifact`

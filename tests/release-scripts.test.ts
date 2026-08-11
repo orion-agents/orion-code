@@ -1,12 +1,4 @@
-import {
-  chmodSync,
-  cpSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'fs';
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { spawnSync } from 'child_process';
@@ -112,10 +104,27 @@ describe('release-check script contract', () => {
     };
     const prepublishOnly = pkg.scripts?.prepublishOnly ?? '';
     const buildIndex = prepublishOnly.indexOf('npm run build');
+    const dependencyPolicyIndex = prepublishOnly.indexOf('npm run deps:check -- --policy-only');
     const releaseCheckIndex = prepublishOnly.indexOf('npm run release:check');
 
+    expect(dependencyPolicyIndex).toBeGreaterThanOrEqual(0);
     expect(buildIndex).toBeGreaterThanOrEqual(0);
+    expect(buildIndex).toBeGreaterThan(dependencyPolicyIndex);
     expect(releaseCheckIndex).toBeGreaterThan(buildIndex);
+  });
+
+  it('keeps the dependency policy as a blocking release-gate step', () => {
+    const workflow = readFileSync(join(projectRoot, '.github', 'workflows', 'ci.yml'), 'utf8');
+
+    expect(workflow).toMatch(
+      /release-gate:[\s\S]*?Dependency policy[\s\S]*?npm run deps:check -- --policy-only[\s\S]*?release:check/u
+    );
+  });
+
+  it('runs the release workflow for version tag pushes', () => {
+    const workflow = readFileSync(join(projectRoot, '.github', 'workflows', 'ci.yml'), 'utf8');
+
+    expect(workflow).toMatch(/push:[\s\S]*?tags:\s*\n\s*- ['"]v\*['"]/u);
   });
 
   it('accepts an explicit candidate state while the release tag is absent', () => {
@@ -239,6 +248,23 @@ describe('release-check script contract', () => {
     expect(resultById(report, 'changelog').detail).toContain('unreleased/candidate state');
   });
 
+  it('rejects a stale tagged CHANGELOG even when the maintenance tree marks it published', () => {
+    const cwd = createFixture(
+      '1.2.3',
+      '## [1.2.3] — UNRELEASED\n\n> **Status: candidate.** Not yet tagged or published.'
+    );
+    git(cwd, ['tag', 'v1.2.3']);
+    writeVersionFiles(cwd, '1.2.3', '## [1.2.3] — 2026-08-09\n\n> **Status: published.**');
+    commitAll(cwd, 'record post-release evidence');
+
+    const { status, report } = runReleaseCheck(cwd);
+
+    expect(status).toBe(1);
+    expect(resultById(report, 'changelog')).toMatchObject({ status: 'pass' });
+    expect(resultById(report, 'release-ref')).toMatchObject({ status: 'fail' });
+    expect(resultById(report, 'release-ref').detail).toContain('tagged CHANGELOG is stale');
+  });
+
   it('warns instead of requiring post-release maintenance HEAD to equal the tag', () => {
     const cwd = createFixture('1.2.3', '## [1.2.3] — 2026-08-09\n\n> **Status: published.**');
     git(cwd, ['tag', 'v1.2.3']);
@@ -302,13 +328,32 @@ exit 0
       env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH ?? ''}` },
     });
 
-    expect(result.status).toBe(0);
+    const currentMajor = Number(process.versions.node.split('.')[0]);
+    if (![20, 22, 24].includes(currentMajor)) {
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(`current Node ${process.versions.node} is unsupported`);
+      const script = readFileSync(depHealthScript, 'utf8');
+      expect(script).toContain('== native dependency ABI ==');
+      expect(script).toContain('== dependency tree consistency ==');
+      expect(script).toContain('== npm audit (high severity gate) ==');
+      expect(script).toContain('== npm outdated (report only; majors require contract review) ==');
+      expect(script).toContain('Dependency health check complete.');
+      return;
+    }
+
+    if (result.status !== 0) {
+      throw new Error(
+        `dep-health fixture failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`
+      );
+    }
     expect(result.stdout).toContain('DEPENDENCY_POLICY_OK node=20|22|24 openai=6');
     expect(result.stdout).toContain('== native dependency ABI ==');
     expect(result.stdout).toContain('better-sqlite3: ok node=');
     expect(result.stdout).toContain('== dependency tree consistency ==');
     expect(result.stdout).toContain('== npm audit (high severity gate) ==');
-    expect(result.stdout).toContain('== npm outdated (report only; majors require contract review) ==');
+    expect(result.stdout).toContain(
+      '== npm outdated (report only; majors require contract review) =='
+    );
     expect(result.stdout).toContain('Dependency health check complete.');
   });
 });

@@ -26,6 +26,15 @@ import {
 } from './provider-resilience';
 import { assertToolCallGroups } from './compact/tool-call-groups';
 import { estimateMessagesTokens } from '../utils/token-estimate';
+import {
+  buildProviderEffortParams,
+  resolveEffort,
+  type EffortPreference,
+  type ProviderEffortSnapshot,
+  type ReasoningCapability,
+  type ResolvedEffort,
+} from './effort';
+import type { ProviderProtocol } from './model-registry';
 
 type RequestOptions = OpenAI.RequestOptions;
 
@@ -48,6 +57,10 @@ export interface LLMConfig {
   fallbackModel?: string;
   /** 请求超时 (ms) */
   timeout?: number;
+  providerProtocol?: ProviderProtocol;
+  reasoningCapability?: ReasoningCapability;
+  fallbackReasoningCapability?: ReasoningCapability;
+  effortPreference?: EffortPreference;
   // 以下参数由 Agent 智能控制，不暴露给用户:
   // maxTokens:    代码 8192 / 分析 4096 / 简短 512
   // temperature:  代码 0.1 / 分析 0.3 / 创意 0.7
@@ -145,6 +158,12 @@ export interface LLMUsage {
   costUsd?: number;
   /** Provider request id, or a locally generated id when omitted. */
   requestId?: string;
+  /** Provider-reported reasoning tokens; already included in completionTokens. */
+  reasoningTokens?: number;
+  effortRequested?: EffortPreference;
+  effortEffective?: import('./effort').EffortLevel;
+  effortSource?: ResolvedEffort['source'];
+  providerProtocol?: ProviderProtocol;
 }
 
 export interface LLMUsageEvent {
@@ -254,6 +273,8 @@ function providerErrorTypeForFailureKind(kind?: ProviderFailureKind): ProviderEr
     case 'provider_overloaded':
     case 'server_error':
       return 'provider_busy';
+    case 'unsupported_effort':
+      return 'unsupported_effort';
     default:
       return 'unknown_provider_error';
   }
@@ -422,6 +443,10 @@ function extractLLMUsage(usage: unknown, response: unknown, requestId?: string):
     readField(readField(usage, 'prompt_tokens_details'), 'cached_tokens') ??
       readField(readField(usage, 'input_tokens_details'), 'cached_tokens')
   );
+  const reasoningTokens = toNonNegativeFiniteNumber(
+    readField(readField(usage, 'completion_tokens_details'), 'reasoning_tokens') ??
+      readField(readField(usage, 'output_tokens_details'), 'reasoning_tokens')
+  );
   return {
     promptTokens:
       toNonNegativeFiniteNumber(
@@ -432,6 +457,7 @@ function extractLLMUsage(usage: unknown, response: unknown, requestId?: string):
         readField(usage, 'completion_tokens') ?? readField(usage, 'output_tokens')
       ) ?? 0,
     ...(cachedPromptTokens !== undefined ? { cachedPromptTokens } : {}),
+    ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
     ...(extractProviderCost(usage, response) !== undefined
       ? { costUsd: extractProviderCost(usage, response) }
       : {}),
@@ -511,6 +537,12 @@ export class LLMService {
   private lastRequestDiagnostics: LLMRequestDiagnostics;
   private usageObservers = new Set<(event: LLMUsageEvent) => void>();
   private providerRequestPreflight?: ProviderRequestPreflight;
+  private effortContext: {
+    preference: EffortPreference;
+    protocol: ProviderProtocol;
+    capability?: ReasoningCapability;
+    fallbackCapability?: ReasoningCapability;
+  };
   /** v0.2.25: injected resilience coordinator (optional — falls back to old withRetry if absent). */
   resilience?: import('./provider-resilience').ProviderResilienceCoordinator;
 
@@ -533,6 +565,14 @@ export class LLMService {
       timeout: config.timeout ?? 60000,
       maxRetries: DEFAULT_MAX_RETRIES,
       retryBaseDelay: DEFAULT_RETRY_DELAY,
+    };
+    this.effortContext = {
+      preference: config.effortPreference ?? 'auto',
+      protocol: config.providerProtocol ?? 'openai-completions',
+      ...(config.reasoningCapability ? { capability: config.reasoningCapability } : {}),
+      ...(config.fallbackReasoningCapability
+        ? { fallbackCapability: config.fallbackReasoningCapability }
+        : {}),
     };
     this.lastRequestDiagnostics = this.createRequestDiagnostics();
   }
@@ -605,6 +645,7 @@ export class LLMService {
   async chat(messages: Message[], tools?: Tool[]): Promise<LLMResponse> {
     const requestDiagnostics = this.createRequestDiagnostics();
     this.lastRequestDiagnostics = requestDiagnostics;
+    const effortSnapshot = this.createEffortRequestSnapshot();
     // v0.2.25: Use resilience coordinator when available.
     let response: WireChatCompletion;
     try {
@@ -624,6 +665,7 @@ export class LLMService {
               messages: this.toOpenAIMessages(messages),
               max_tokens: this.config.maxTokens,
               temperature: this.config.temperature,
+              ...buildProviderEffortParams(this.effortSnapshotForModel(effortSnapshot, model)),
             };
             if (tools && tools.length > 0) params.tools = tools as ChatCompletionTool[];
             return {
@@ -643,6 +685,9 @@ export class LLMService {
           messages: this.toOpenAIMessages(messages),
           max_tokens: this.config.maxTokens,
           temperature: this.config.temperature,
+          ...buildProviderEffortParams(
+            this.effortSnapshotForModel(effortSnapshot, this.config.model)
+          ),
         };
         if (tools && tools.length > 0) params.tools = tools as ChatCompletionTool[];
         response = (await this.client.chat.completions.create(
@@ -681,7 +726,10 @@ export class LLMService {
       (toolCalls && toolCalls.length > 0 ? 'tool_calls' : undefined);
 
     const usage = response.usage
-      ? extractLLMUsage(response.usage, response, response.id)
+      ? this.annotateEffortUsage(
+          extractLLMUsage(response.usage, response, response.id),
+          this.effortSnapshotForModel(effortSnapshot, response.model ?? this.config.model)
+        )
       : undefined;
 
     requestDiagnostics.finalModel = response.model ?? this.config.model;
@@ -716,6 +764,7 @@ export class LLMService {
     const onThinking = typeof callbacks === 'object' ? callbacks?.onThinking : undefined;
     const requestDiagnostics = this.createRequestDiagnostics();
     this.lastRequestDiagnostics = requestDiagnostics;
+    const effortSnapshot = this.createEffortRequestSnapshot();
     let visibleStreamText = '';
 
     const emitStreamText = (
@@ -810,6 +859,7 @@ export class LLMService {
               temperature: this.config.temperature,
               stream: true,
               stream_options: { include_usage: true },
+              ...buildProviderEffortParams(this.effortSnapshotForModel(effortSnapshot, model)),
             };
 
             if (tools && tools.length > 0) {
@@ -902,7 +952,10 @@ export class LLMService {
               }
 
               if (chunk.usage) {
-                usage = extractLLMUsage(chunk.usage, chunk, chunk.id ?? providerRequestId);
+                usage = this.annotateEffortUsage(
+                  extractLLMUsage(chunk.usage, chunk, chunk.id ?? providerRequestId),
+                  this.effortSnapshotForModel(effortSnapshot, usedModel)
+                );
               }
 
               if (chunk.id) providerRequestId = chunk.id;
@@ -987,6 +1040,9 @@ export class LLMService {
             temperature: this.config.temperature,
             stream: true,
             stream_options: { include_usage: true },
+            ...buildProviderEffortParams(
+              this.effortSnapshotForModel(effortSnapshot, this.config.model)
+            ),
           };
 
           if (tools && tools.length > 0) {
@@ -1079,7 +1135,10 @@ export class LLMService {
             }
 
             if (chunk.usage) {
-              usage = extractLLMUsage(chunk.usage, chunk, chunk.id ?? providerRequestId);
+              usage = this.annotateEffortUsage(
+                extractLLMUsage(chunk.usage, chunk, chunk.id ?? providerRequestId),
+                this.effortSnapshotForModel(effortSnapshot, usedModel)
+              );
             }
 
             if (chunk.id) providerRequestId = chunk.id;
@@ -1244,6 +1303,46 @@ export class LLMService {
     this.config.model = model;
   }
 
+  setEffortContext(input: {
+    preference: EffortPreference;
+    protocol: ProviderProtocol;
+    capability?: ReasoningCapability;
+    fallbackCapability?: ReasoningCapability;
+  }): ResolvedEffort {
+    const resolved = resolveEffort({ session: input.preference, capability: input.capability });
+    if (input.preference !== 'auto' && !resolved.supported) {
+      throw new Error(resolved.warning ?? 'Effort is not supported by the active profile.');
+    }
+    this.effortContext = {
+      preference: input.preference,
+      protocol: input.protocol,
+      ...(input.capability
+        ? {
+            capability: {
+              ...input.capability,
+              supportedLevels: [...input.capability.supportedLevels],
+            },
+          }
+        : {}),
+      ...(input.fallbackCapability
+        ? {
+            fallbackCapability: {
+              ...input.fallbackCapability,
+              supportedLevels: [...input.fallbackCapability.supportedLevels],
+            },
+          }
+        : {}),
+    };
+    return resolved;
+  }
+
+  getResolvedEffort(): ResolvedEffort {
+    return resolveEffort({
+      session: this.effortContext.preference,
+      capability: this.effortContext.capability,
+    });
+  }
+
   /**
    * 获取当前模型
    */
@@ -1271,6 +1370,60 @@ export class LLMService {
   }
 
   // ---- Internal ----
+
+  private createEffortRequestSnapshot(): {
+    primaryModel: string;
+    fallbackModel?: string;
+    primary: ProviderEffortSnapshot;
+    fallback: ProviderEffortSnapshot;
+  } {
+    const preference = this.effortContext.preference;
+    const primaryCapability = this.effortContext.capability
+      ? {
+          ...this.effortContext.capability,
+          supportedLevels: [...this.effortContext.capability.supportedLevels],
+        }
+      : undefined;
+    const fallbackCapability = this.effortContext.fallbackCapability
+      ? {
+          ...this.effortContext.fallbackCapability,
+          supportedLevels: [...this.effortContext.fallbackCapability.supportedLevels],
+        }
+      : undefined;
+    return {
+      primaryModel: this.config.model,
+      ...(this.config.fallbackModel ? { fallbackModel: this.config.fallbackModel } : {}),
+      primary: {
+        protocol: this.effortContext.protocol,
+        capability: primaryCapability,
+        resolved: resolveEffort({ session: preference, capability: primaryCapability }),
+      },
+      fallback: {
+        protocol: this.effortContext.protocol,
+        capability: fallbackCapability,
+        resolved: resolveEffort({ session: preference, capability: fallbackCapability }),
+      },
+    };
+  }
+
+  private effortSnapshotForModel(
+    snapshot: ReturnType<LLMService['createEffortRequestSnapshot']>,
+    model: string
+  ): ProviderEffortSnapshot {
+    return snapshot.fallbackModel && model === snapshot.fallbackModel
+      ? snapshot.fallback
+      : snapshot.primary;
+  }
+
+  private annotateEffortUsage(usage: LLMUsage, snapshot: ProviderEffortSnapshot): LLMUsage {
+    return {
+      ...usage,
+      effortRequested: snapshot.resolved.requested,
+      ...(snapshot.resolved.effective ? { effortEffective: snapshot.resolved.effective } : {}),
+      effortSource: snapshot.resolved.source,
+      providerProtocol: snapshot.protocol,
+    };
+  }
 
   private createRequestDiagnostics(): LLMRequestDiagnostics {
     return {

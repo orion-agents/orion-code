@@ -465,7 +465,7 @@ describe('legacy Ink pure component branch coverage', () => {
       sessionItems({ title: 'sessions', sessions: [{ ...baseSession }] })[0].description
     ).not.toContain('/tmp/project');
 
-    expect(permissionItems({ id: 'p', name: 'bash', args: {}, reason: '' })).toHaveLength(2);
+    expect(permissionItems({ id: 'p', name: 'bash', args: {}, reason: '' })).toHaveLength(4);
     const preview = {
       path: '/tmp/file.ts',
       newString: 'replacement',

@@ -24,6 +24,7 @@ describe('chat controller helper contracts (#69)', () => {
       'chat-checkpoint.ts',
       'chat-workspace.ts',
       'chat-presentation.ts',
+      'chat-effort.ts',
     ]) {
       const source = readFileSync(join(process.cwd(), 'src/runtime', file), 'utf8');
       expect(source).not.toMatch(/from ['"]\.\.\/commands/u);

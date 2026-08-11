@@ -61,9 +61,7 @@ function handleContextClear(ctx: CommandContext, args: string): CommandResult {
   const history = ctx.store.getSnapshot().conversationHistory;
 
   if (history.length === 0) {
-    console.log(DIM('Current in-memory model context is already empty.'));
-    console.log();
-    return { success: true };
+    return { success: true, output: 'Current in-memory model context is already empty.' };
   }
 
   if (!hasCommandFlag(args, '--yes')) {
@@ -72,26 +70,39 @@ function handleContextClear(ctx: CommandContext, args: string): CommandResult {
       error: [
         `This will clear ${history.length} message(s) from the current in-memory model context.`,
         'Saved session history will not be deleted and can still be restored with /resume.',
-        'Run /context-clear --yes to continue.',
+        'Run /context clear --yes to continue.',
       ].join('\n'),
     };
   }
 
   ctx.store.resetConversation();
   resetToolState();
-  console.log(SUCCESS(`✔ Cleared ${history.length} messages from current model context`));
-  console.log(DIM('  Saved session history, configuration, and system state were preserved.'));
-  console.log();
-  return { success: true };
+  return {
+    success: true,
+    output: [
+      `Cleared ${history.length} messages from current model context.`,
+      'Saved session history, configuration, and system state were preserved.',
+    ].join('\n'),
+  };
 }
 
 async function handleCompact(ctx: CommandContext, args: string): Promise<CommandResult> {
+  const lines: string[] = [];
+  const console = {
+    log: (...values: unknown[]): void => {
+      lines.push(values.map(value => String(value)).join(' '));
+    },
+  };
+  const finish = (success: boolean): CommandResult => ({
+    success,
+    output: lines.join('\n'),
+  });
   const history = ctx.store.getSnapshot().conversationHistory;
 
   if (history.length === 0) {
     console.log(DIM('Conversation history is empty, nothing to compact'));
     console.log();
-    return { success: true };
+    return finish(true);
   }
 
   // 解析参数
@@ -111,7 +122,7 @@ async function handleCompact(ctx: CommandContext, args: string): Promise<Command
     );
     console.log(DIM('Nothing compacted.'));
     console.log();
-    return { success: true };
+    return finish(true);
   }
 
   console.log(DIM(compactStatus()));
@@ -186,12 +197,12 @@ async function handleCompact(ctx: CommandContext, args: string): Promise<Command
     console.log(SUCCESS(`✔ Compacted ${history.length} → ${compacted.length} messages`));
     console.log(DIM(`  Reduced by ${reduction} messages (${percent}%)`));
     console.log();
-    return { success: true };
+    return finish(true);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     console.log(ERROR(`✗ Compact failed: ${message}`));
     console.log();
-    return { success: false };
+    return finish(false);
   }
 }
 
@@ -243,9 +254,13 @@ function truncateText(text: string, max: number): string {
   return text.length > max ? text.slice(0, max - 3) + '...' : text;
 }
 
+type SessionLineWriter = (text?: string) => void;
+const writeSessionLineToConsole: SessionLineWriter = (text = '') => console.log(text);
+
 function printSessionRows(
   sessions: SessionMeta[],
-  options: { showProject?: boolean; indexed?: boolean; showIndexSummary?: boolean } = {}
+  options: { showProject?: boolean; indexed?: boolean; showIndexSummary?: boolean } = {},
+  write: SessionLineWriter = writeSessionLineToConsole
 ): void {
   for (let i = 0; i < sessions.length; i++) {
     const session = sessions[i];
@@ -258,12 +273,12 @@ function printSessionRows(
     const index = options.indexed ? `${String(i + 1).padStart(2, ' ')}. ` : '  ';
     const name = session.name ? ` ${ACCENT(`"${session.name}"`)}` : '';
 
-    console.log(`${index}${status} ${BRAND(session.id.slice(0, 8))}${name} ${DIM(session.model)}`);
-    console.log(`    ${truncateText(sessionTitle(session), 96)}`);
-    console.log(
+    write(`${index}${status} ${BRAND(session.id.slice(0, 8))}${name} ${DIM(session.model)}`);
+    write(`    ${truncateText(sessionTitle(session), 96)}`);
+    write(
       `    ${DIM(`Started: ${startTime}`)} ${DIM(`Updated: ${updatedTime}`)} ${DIM(`Duration: ${duration}`)}`
     );
-    console.log(
+    write(
       `    ${DIM(`Messages: ${session.messageCount ?? 0}`)} ${DIM(`Size: ${formatBytes(session.historySizeBytes ?? 0)}`)} ${DIM(`Tokens: ${session.tokenCount}`)} ${DIM(`Cost: $${session.cost.toFixed(4)}`)}`
     );
     if (options.showIndexSummary) {
@@ -273,17 +288,17 @@ function printSessionRows(
           (total, count) => total + count,
           0
         );
-        console.log(
+        write(
           `    ${DIM(`Index: ${indexSummary.files.length} files, ${toolCount} tool calls, ${indexSummary.topics.length} topics`)}`
         );
       } else {
-        console.log(`    ${DIM('Index: not built')}`);
+        write(`    ${DIM('Index: not built')}`);
       }
     }
     if (options.showProject) {
-      console.log(`    ${DIM(`Project: ${session.projectPath}`)}`);
+      write(`    ${DIM(`Project: ${session.projectPath}`)}`);
     }
-    console.log();
+    write();
   }
 }
 
@@ -297,30 +312,35 @@ function parsePickerIndex(ref: string, max: number): number | null {
   return index - 1;
 }
 
-function printSessionConflict(ref: string, matches: SessionMeta[]): void {
-  console.log(ERROR(`Session reference is ambiguous: ${ref}`));
-  console.log(DIM('Use a longer id prefix, exact session name, or pick one of these:'));
-  console.log();
-  printSessionRows(matches.slice(0, 10), { indexed: true, showProject: true });
-  console.log(DIM('Example: /resume <longer-session-id>'));
-  console.log();
+function printSessionConflict(
+  ref: string,
+  matches: SessionMeta[],
+  write: SessionLineWriter = writeSessionLineToConsole
+): void {
+  write(ERROR(`Session reference is ambiguous: ${ref}`));
+  write(DIM('Use a longer id prefix, exact session name, or pick one of these:'));
+  write();
+  printSessionRows(matches.slice(0, 10), { indexed: true, showProject: true }, write);
+  write(DIM('Example: /resume <longer-session-id>'));
+  write();
 }
 
 function printSessionPicker(
   sessions: SessionMeta[],
-  options: { title: string; showProject?: boolean; moreCount?: number }
+  options: { title: string; showProject?: boolean; moreCount?: number },
+  write: SessionLineWriter = writeSessionLineToConsole
 ): void {
-  console.log(HEADER(options.title));
-  console.log(DIM('─'.repeat(Math.min(process.stdout.columns || 80, 96))));
-  printSessionRows(sessions, { indexed: true, showProject: options.showProject });
+  write(HEADER(options.title));
+  write(DIM('─'.repeat(Math.min(process.stdout.columns || 80, 96))));
+  printSessionRows(sessions, { indexed: true, showProject: options.showProject }, write);
   if (options.moreCount && options.moreCount > 0) {
-    console.log(
+    write(
       DIM(
-        `... ${options.moreCount} more sessions. Use /sessions to list them, or /resume <session-id>.`
+        `... ${options.moreCount} more sessions. Use /session list to list them, or /resume <session-id>.`
       )
     );
   }
-  console.log(DIM('Use /resume <number|session-id|name> or /resume --last.'));
+  write(DIM('Use /resume <number|session-id|name> or /resume --last.'));
 }
 
 function handleSessions(ctx: CommandContext, args: string = ''): CommandResult {
@@ -400,7 +420,54 @@ function handleSessions(ctx: CommandContext, args: string = ''): CommandResult {
   return { success: true };
 }
 
+function handleSessionInfo(ctx: CommandContext, args: string = ''): CommandResult {
+  const scope = parseSessionScopeArgs(args, ctx.cwd);
+  const active = ctx.getSession?.() ?? null;
+  let session: SessionMeta | null = null;
+
+  if (!scope.query) {
+    session = active ?? listProjectSessions(scope.projectPath)[0] ?? null;
+  } else {
+    const found = lookupSessionRef(scope.query, scope.projectPath, {
+      allProjects: scope.allProjects,
+    });
+    if (found.status === 'ambiguous') {
+      return {
+        success: false,
+        error: `Session reference is ambiguous: ${scope.query}. Matches: ${found.matches
+          .slice(0, 5)
+          .map(item => item.id.slice(0, 8))
+          .join(', ')}.`,
+      };
+    }
+    if (found.status === 'not_found') {
+      return { success: false, error: `Session not found: ${scope.query}.` };
+    }
+    session = found.session;
+  }
+
+  if (!session) return { success: false, error: 'No session is available for this project.' };
+  return {
+    success: true,
+    output: [
+      `Session ${session.id}`,
+      `Name: ${session.name ?? '(untitled)'}`,
+      `Status: ${session.endTime ? 'completed' : 'active'}`,
+      `Model: ${session.model}`,
+      `Project: ${session.projectPath}`,
+      `Started: ${new Date(session.startTime).toISOString()}`,
+      `Updated: ${new Date(session.updatedAt ?? session.startTime).toISOString()}`,
+      `Messages: ${session.messageCount ?? 0}`,
+      `History size: ${formatBytes(session.historySizeBytes ?? 0)}`,
+      `Effort: ${session.effortPreference ?? 'auto'}`,
+    ].join('\n'),
+  };
+}
+
 function handleResume(ctx: CommandContext, args: string): CommandResult {
+  const lines: string[] = [];
+  const write: SessionLineWriter = (text = '') => lines.push(text);
+  const output = (success: boolean): CommandResult => ({ success, output: lines.join('\n') });
   const ui = commandUICapabilities(ctx);
   const scope = parseSessionScopeArgs(args, ctx.cwd);
   const sessionRef = scope.query;
@@ -411,10 +478,11 @@ function handleResume(ctx: CommandContext, args: string): CommandResult {
   if (!sessionRef) {
     const lastSession = scopedSessions[0];
     if (!lastSession) {
-      console.log(ERROR('No previous session found for this project'));
-      console.log(DIM('Use /sessions --all to list all sessions'));
-      console.log();
-      return { success: false };
+      return {
+        success: false,
+        error:
+          'No previous session found for this project. Use /session list --all to list all sessions.',
+      };
     }
 
     if (scope.last || scopedSessions.length === 1) {
@@ -435,14 +503,18 @@ function handleResume(ctx: CommandContext, args: string): CommandResult {
     }
 
     const visibleSessions = scopedSessions.slice(0, 10);
-    console.log();
-    printSessionPicker(visibleSessions, {
-      title: picker.title,
-      showProject: picker.showProject,
-      moreCount: Math.max(0, scopedSessions.length - visibleSessions.length),
-    });
-    console.log();
-    return { success: true };
+    write();
+    printSessionPicker(
+      visibleSessions,
+      {
+        title: picker.title,
+        showProject: picker.showProject,
+        moreCount: Math.max(0, scopedSessions.length - visibleSessions.length),
+      },
+      write
+    );
+    write();
+    return output(true);
   }
 
   const pickerIndex = parsePickerIndex(sessionRef, scopedSessions.length);
@@ -456,21 +528,17 @@ function handleResume(ctx: CommandContext, args: string): CommandResult {
   });
 
   if (result.status === 'ambiguous') {
-    printSessionConflict(sessionRef, result.matches);
-    return { success: false };
+    printSessionConflict(sessionRef, result.matches, write);
+    return output(false);
   }
 
   if (result.status === 'not_found') {
-    console.log(ERROR(`Session not found: ${sessionRef}`));
-    console.log(
-      DIM(
-        scope.allProjects
-          ? 'Use /sessions --all to list sessions'
-          : 'Use /sessions to list project sessions, or /resume <id> --all'
-      )
-    );
-    console.log();
-    return { success: false };
+    return {
+      success: false,
+      error: scope.allProjects
+        ? `Session not found: ${sessionRef}. Use /session list --all to list sessions.`
+        : `Session not found: ${sessionRef}. Use /session list, or /resume <id> --all.`,
+    };
   }
 
   return restoreSession(ctx, result.session, false);
@@ -559,16 +627,18 @@ function restoreSession(ctx: CommandContext, session: SessionMeta, isLast: boole
     if (!ctx.sessionRestored) {
       for (const line of bannerLines) ctx.writeLine?.(line);
     }
-  } else {
-    console.log();
-    console.log(HEADER(bannerLines[0]));
-    for (const line of bannerLines.slice(1)) {
-      console.log(line.startsWith('✔') ? SUCCESS(line) : DIM(line));
-    }
-    console.log();
+    return { success: true };
   }
 
-  return { success: true };
+  return {
+    success: true,
+    output: [
+      '',
+      HEADER(bannerLines[0]),
+      ...bannerLines.slice(1).map(line => (line.startsWith('✔') ? SUCCESS(line) : DIM(line))),
+      '',
+    ].join('\n'),
+  };
 }
 
 function handleSessionRename(ctx: CommandContext, args: string): CommandResult {
@@ -700,4 +770,11 @@ function generateRestoredSessionEventSummary(messages: Message[]): string | unde
   return `Tools: ${uniqueTools.join(', ')}`;
 }
 
-export { handleResume, handleSessions, handleSessionRename, handleCompact, handleContextClear };
+export {
+  handleResume,
+  handleSessions,
+  handleSessionInfo,
+  handleSessionRename,
+  handleCompact,
+  handleContextClear,
+};

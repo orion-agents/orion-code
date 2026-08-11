@@ -29,6 +29,12 @@ export interface TokenUsage {
   costUsd?: number;
   /** Stable provider request id used to suppress duplicate accounting. */
   requestId?: string;
+  /** Provider-reported reasoning tokens; included in completionTokens. */
+  reasoningTokens?: number;
+  effortRequested?: import('../services/effort').EffortPreference;
+  effortEffective?: import('../services/effort').EffortLevel;
+  effortSource?: import('../services/effort').ResolvedEffort['source'];
+  providerProtocol?: import('../services/model-registry').ProviderProtocol;
 }
 
 export interface UsageRecord {
@@ -47,6 +53,12 @@ export interface UsageRecord {
   requestKind?: string;
   agentId?: string;
   taskId?: string;
+  /** Subset of completionTokens, retained separately for diagnostics. */
+  reasoningTokens?: number;
+  effortRequested?: import('../services/effort').EffortPreference;
+  effortEffective?: import('../services/effort').EffortLevel;
+  effortSource?: import('../services/effort').ResolvedEffort['source'];
+  providerProtocol?: import('../services/model-registry').ProviderProtocol;
 }
 
 /** 统计结果 */
@@ -156,7 +168,7 @@ export class CostTracker {
       agentId?: string;
       taskId?: string;
       requestKind?: string;
-    },
+    }
   ): UsageRecord {
     if (usage.requestId) {
       const existing = this.recordsByRequestId.get(usage.requestId);
@@ -165,28 +177,34 @@ export class CostTracker {
 
     const promptTokens = normalizeTokenCount(usage.promptTokens);
     const completionTokens = normalizeTokenCount(usage.completionTokens);
+    const reasoningTokens = Math.min(
+      completionTokens,
+      normalizeTokenCount(usage.reasoningTokens ?? 0)
+    );
     const cachedPromptTokens = Math.min(
       promptTokens,
-      normalizeTokenCount(usage.cachedPromptTokens ?? 0),
+      normalizeTokenCount(usage.cachedPromptTokens ?? 0)
     );
     const totalTokens = promptTokens + completionTokens;
     const providerCost = normalizeProviderCost(usage.costUsd);
     const configuredPricing = this.pricing[meta.model];
     const builtinPricing = MODEL_PRICING[meta.model];
     const pricing = configuredPricing ?? builtinPricing ?? this.defaultPricing;
-    const costSource: CostSource = providerCost !== undefined
-      ? 'provider'
-      : configuredPricing
-        ? 'configured'
-        : builtinPricing
-          ? 'builtin'
-          : 'fallback';
+    const costSource: CostSource =
+      providerCost !== undefined
+        ? 'provider'
+        : configuredPricing
+          ? 'configured'
+          : builtinPricing
+            ? 'builtin'
+            : 'fallback';
     const nonCachedPromptTokens = promptTokens - cachedPromptTokens;
-    const costUsd = providerCost ?? (
-      nonCachedPromptTokens * pricing.input
-      + cachedPromptTokens * (pricing.cachedInput ?? pricing.input)
-      + completionTokens * pricing.output
-    ) / 1_000_000;
+    const costUsd =
+      providerCost ??
+      (nonCachedPromptTokens * pricing.input +
+        cachedPromptTokens * (pricing.cachedInput ?? pricing.input) +
+        completionTokens * pricing.output) /
+        1_000_000;
 
     const record: UsageRecord = {
       timestamp: new Date(),
@@ -202,6 +220,11 @@ export class CostTracker {
       requestKind: meta.requestKind,
       agentId: meta.agentId,
       taskId: meta.taskId,
+      ...(usage.reasoningTokens !== undefined ? { reasoningTokens } : {}),
+      ...(usage.effortRequested !== undefined ? { effortRequested: usage.effortRequested } : {}),
+      ...(usage.effortEffective !== undefined ? { effortEffective: usage.effortEffective } : {}),
+      ...(usage.effortSource !== undefined ? { effortSource: usage.effortSource } : {}),
+      ...(usage.providerProtocol !== undefined ? { providerProtocol: usage.providerProtocol } : {}),
     };
 
     this.records.push(record);
@@ -227,7 +250,7 @@ export class CostTracker {
 
     if (timeRange) {
       filtered = filtered.filter(
-        r => r.timestamp >= timeRange.start && r.timestamp <= timeRange.end,
+        r => r.timestamp >= timeRange.start && r.timestamp <= timeRange.end
       );
     }
 
@@ -396,7 +419,5 @@ function normalizeTokenCount(value: number): number {
 }
 
 function normalizeProviderCost(value: number | undefined): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0
-    ? value
-    : undefined;
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
 }

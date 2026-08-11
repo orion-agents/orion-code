@@ -1,6 +1,6 @@
 {
   "name": "@orion-agents/orion-code",
-  "version": "0.1.4-2",
+  "version": "0.1.5",
   "description": "Orion Code - goal-driven coding agent for the terminal.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -29,7 +29,7 @@
     "format": "prettier --write src/",
     "release:check": "node scripts/release-check.js",
     "prepack": "npm run build",
-    "prepublishOnly": "npm run lint && npm run build && npm run release:check -- --skip-tests && npm test -- --runInBand"
+    "prepublishOnly": "npm run deps:check -- --policy-only && npm run lint && npm run build && npm run release:check -- --skip-tests && npm test -- --runInBand"
   },
   "keywords": [
     "agent",
@@ -83,7 +83,7 @@
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/figlet": "^1.5.8",
-    "@types/jest": "^30.0.0",
+    "@types/jest": "^29.5.14",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^20.0.0",
     "@types/react": "^17.0.83",

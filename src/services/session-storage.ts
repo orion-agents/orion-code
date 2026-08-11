@@ -31,6 +31,7 @@ import {
   getProjectsDir,
 } from './config-dir';
 import { atomicWriteFileSync } from './atomic-write';
+import { withFileLockSync } from './file-lock';
 import { deleteSessionIndex, updateSessionIndex } from './session-index';
 import { sealToolCallGroups } from './compact/tool-call-groups';
 import { redactTraceText } from './redaction';
@@ -39,6 +40,7 @@ import { deleteGoal } from './goal-storage';
 import type { LoopContinuationAction, LoopFinishReason } from '../framework/query';
 import type { Message } from './llm';
 import type { ContextUsageSnapshot } from './model-context';
+import type { EffortPreference } from './effort';
 import {
   summarizeHarnessStateForMeta,
   upgradeHarnessState,
@@ -119,6 +121,8 @@ export interface SessionMeta {
   activeGoalId?: string;
   /** v0.2.24 — Goal objective text (survives Compact). */
   activeGoalObjective?: string;
+  /** Session-level reasoning effort preference; absent means inherit project/global/model. */
+  effortPreference?: EffortPreference;
 }
 
 export interface CompactCheckpointV1 {
@@ -679,11 +683,81 @@ export function createSession(projectPath: string, model: string): SessionMeta {
 export function saveSessionMeta(session: SessionMeta): void {
   ensureConfigDir();
   const normalized = normalizeSessionMeta(session);
-  const payload = JSON.stringify(normalized, null, 2);
-
   ensureProjectDir(normalized.projectPath);
-  atomicWriteFileSync(getProjectSessionMetaPath(normalized.projectPath, normalized.id), payload, {
-    mode: 0o600,
+  const metaPath = getProjectSessionMetaPath(normalized.projectPath, normalized.id);
+  withFileLockSync(metaPath, () => {
+    writeSessionMetaUnlocked(normalized);
+  });
+}
+
+function writeSessionMetaUnlocked(session: SessionMeta): void {
+  const normalized = normalizeSessionMeta(session);
+  ensureProjectDir(normalized.projectPath);
+  atomicWriteFileSync(
+    getProjectSessionMetaPath(normalized.projectPath, normalized.id),
+    JSON.stringify(normalized, null, 2),
+    { mode: 0o600 }
+  );
+}
+
+function findSessionMetaPath(sessionId: string): string | null {
+  const projectsDir = getProjectsDir();
+  if (!existsSync(projectsDir)) return null;
+
+  for (const projectKey of readdirSync(projectsDir)) {
+    const path = join(projectsDir, projectKey, 'sessions', `${sessionId}.json`);
+    if (existsSync(path) && readSessionMetaAtPath(path)) return path;
+  }
+  return null;
+}
+
+function readSessionMetaAtPath(path: string): SessionMeta | null {
+  const session = parseSessionMetaFile(path);
+  return session ? tryNormalizeSessionMeta(session, path) : null;
+}
+
+/**
+ * Serialize a session read-modify-write transaction across Orion processes.
+ * The metadata path is rediscovered before each transaction and re-read only
+ * after the lock is held, so a stale snapshot can never overwrite a concurrent
+ * message/stat update.
+ */
+function withLockedSession<T>(sessionId: string, operation: (session: SessionMeta) => T): T | null {
+  const metaPath = findSessionMetaPath(sessionId);
+  if (!metaPath) return null;
+
+  return withFileLockSync(
+    metaPath,
+    () => {
+      const session = readSessionMetaAtPath(metaPath);
+      if (!session) return null;
+      return operation(session);
+    },
+    { waitMs: 10_000 }
+  );
+}
+
+function mutateSessionMeta(
+  sessionId: string,
+  mutation: (session: SessionMeta) => void
+): SessionMeta | null {
+  return withLockedSession(sessionId, session => {
+    mutation(session);
+    writeSessionMetaUnlocked(session);
+    return session;
+  });
+}
+
+export function updateSessionEffort(
+  sessionId: string,
+  effortPreference: EffortPreference | undefined
+): SessionMeta | null {
+  return mutateSessionMeta(sessionId, session => {
+    if (effortPreference === undefined || effortPreference === 'auto') {
+      delete session.effortPreference;
+    } else {
+      session.effortPreference = effortPreference;
+    }
   });
 }
 
@@ -691,61 +765,32 @@ export function saveSessionMeta(session: SessionMeta): void {
  * 加载会话元数据
  */
 export function loadSessionMeta(sessionId: string): SessionMeta | null {
-  const projectsDir = getProjectsDir();
-  if (existsSync(projectsDir)) {
-    for (const projectKey of readdirSync(projectsDir)) {
-      const path = join(projectsDir, projectKey, 'sessions', `${sessionId}.json`);
-      if (!existsSync(path)) continue;
-
-      const session = parseSessionMetaFile(path);
-      if (session) {
-        const normalized = tryNormalizeSessionMeta(session, path);
-        if (normalized) return normalized;
-      }
-    }
-  }
-
-  return null;
+  const path = findSessionMetaPath(sessionId);
+  return path ? readSessionMetaAtPath(path) : null;
 }
 
 /**
  * 更新会话统计
  */
 export function updateSessionStats(sessionId: string, tokens: number, cost: number): void {
-  const session = loadSessionMeta(sessionId);
-  if (!session) return;
-
-  session.tokenCount += tokens;
-  session.cost += cost;
-  session.updatedAt = Date.now();
-  session.updatedAtIso = new Date(session.updatedAt).toISOString();
-  saveSessionMeta(session);
-}
-
-function touchSession(sessionId: string, messageDelta: number = 0): SessionMeta | null {
-  const session = loadSessionMeta(sessionId);
-  if (!session) return null;
-
-  session.updatedAt = Date.now();
-  session.updatedAtIso = new Date(session.updatedAt).toISOString();
-  session.messageCount = (session.messageCount ?? 0) + messageDelta;
-  saveSessionMeta(session);
-  return session;
+  mutateSessionMeta(sessionId, session => {
+    session.tokenCount += tokens;
+    session.cost += cost;
+    session.updatedAt = Date.now();
+    session.updatedAtIso = new Date(session.updatedAt).toISOString();
+  });
 }
 
 /**
  * Mark a saved session as active again and refresh project metadata.
  */
 export function resumeSession(sessionId: string): SessionMeta | null {
-  const session = loadSessionMeta(sessionId);
-  if (!session) return null;
-
-  session.endTime = undefined;
-  session.gitBranch = getGitBranch(session.projectPath);
-  session.updatedAt = Date.now();
-  session.updatedAtIso = new Date(session.updatedAt).toISOString();
-  saveSessionMeta(session);
-  return session;
+  return mutateSessionMeta(sessionId, session => {
+    session.endTime = undefined;
+    session.gitBranch = getGitBranch(session.projectPath);
+    session.updatedAt = Date.now();
+    session.updatedAtIso = new Date(session.updatedAt).toISOString();
+  });
 }
 
 /** Keep the session metadata's additive Goal binding in sync with its sidecar. */
@@ -753,46 +798,45 @@ export function updateSessionGoalBinding(
   sessionId: string,
   goal: { goalId: string; objective: string } | null
 ): SessionMeta | null {
-  const session = loadSessionMeta(sessionId);
-  if (!session) return null;
-  session.activeGoalId = goal?.goalId;
-  session.activeGoalObjective = goal?.objective;
-  session.updatedAt = Date.now();
-  session.updatedAtIso = new Date(session.updatedAt).toISOString();
-  saveSessionMeta(session);
-  return session;
+  return mutateSessionMeta(sessionId, session => {
+    session.activeGoalId = goal?.goalId;
+    session.activeGoalObjective = goal?.objective;
+    session.updatedAt = Date.now();
+    session.updatedAtIso = new Date(session.updatedAt).toISOString();
+  });
 }
 
 /**
  * 更新会话 Harness 状态。
  */
 export function updateSessionHarnessState(sessionId: string, harnessState: HarnessState): void {
-  const session = loadSessionMeta(sessionId);
-  if (!session) return;
+  withLockedSession(sessionId, session => {
+    const fullState = upgradeHarnessState(harnessState, {
+      cwd: session.cwd ?? session.projectPath,
+    });
+    const sidecar: HarnessSidecar = {
+      version: 2,
+      sessionId,
+      projectPath: session.projectPath,
+      state: fullState,
+      contextCapsule: fullState.capsule,
+      updatedAt: Date.now(),
+      diagnostics: fullState.diagnostics,
+    };
 
-  const fullState = upgradeHarnessState(harnessState, { cwd: session.cwd ?? session.projectPath });
-  const sidecar: HarnessSidecar = {
-    version: 2,
-    sessionId,
-    projectPath: session.projectPath,
-    state: fullState,
-    contextCapsule: fullState.capsule,
-    updatedAt: Date.now(),
-    diagnostics: fullState.diagnostics,
-  };
+    ensureProjectDir(session.projectPath);
+    atomicWriteFileSync(
+      getProjectSessionHarnessPath(session.projectPath, sessionId),
+      JSON.stringify(sidecar, null, 2),
+      { mode: 0o600 }
+    );
 
-  ensureProjectDir(session.projectPath);
-  atomicWriteFileSync(
-    getProjectSessionHarnessPath(session.projectPath, sessionId),
-    JSON.stringify(sidecar, null, 2),
-    { mode: 0o600 }
-  );
-
-  session.harnessState = summarizeHarnessStateForMeta(fullState);
-  session.contextCapsule = fullState.capsule;
-  session.updatedAt = Date.now();
-  session.updatedAtIso = new Date(session.updatedAt).toISOString();
-  saveSessionMeta(session);
+    session.harnessState = summarizeHarnessStateForMeta(fullState);
+    session.contextCapsule = fullState.capsule;
+    session.updatedAt = Date.now();
+    session.updatedAtIso = new Date(session.updatedAt).toISOString();
+    writeSessionMetaUnlocked(session);
+  });
 }
 
 export function loadSessionHarnessState(sessionId: string): HarnessState | null {
@@ -830,27 +874,22 @@ export function loadSessionHarnessState(sessionId: string): HarnessState | null 
 
 export function updateSessionSkills(sessionId: string, skills: string[]): void {
   if (skills.length === 0) return;
-  const session = loadSessionMeta(sessionId);
-  if (!session) return;
-
-  session.skillsUsed = [...new Set([...(session.skillsUsed || []), ...skills])];
-  session.updatedAt = Date.now();
-  session.updatedAtIso = new Date(session.updatedAt).toISOString();
-  saveSessionMeta(session);
+  mutateSessionMeta(sessionId, session => {
+    session.skillsUsed = [...new Set([...(session.skillsUsed || []), ...skills])];
+    session.updatedAt = Date.now();
+    session.updatedAtIso = new Date(session.updatedAt).toISOString();
+  });
 }
 
 export function markSessionTranscriptDisplayStart(
   sessionId: string,
   timestamp: number = Date.now()
 ): SessionMeta | null {
-  const session = loadSessionMeta(sessionId);
-  if (!session) return null;
-
-  session.transcriptDisplayStartTime = timestamp;
-  session.updatedAt = timestamp;
-  session.updatedAtIso = new Date(timestamp).toISOString();
-  saveSessionMeta(session);
-  return session;
+  return mutateSessionMeta(sessionId, session => {
+    session.transcriptDisplayStartTime = timestamp;
+    session.updatedAt = timestamp;
+    session.updatedAtIso = new Date(timestamp).toISOString();
+  });
 }
 
 export function persistSessionCompactHistory(
@@ -896,62 +935,64 @@ export function loadSessionCompactCheckpoint(sessionId: string): CompactCheckpoi
 export function commitSessionCompactCheckpoint(
   input: CommitCompactCheckpointInput
 ): CompactCheckpointV1 {
-  const session = loadSessionMeta(input.sessionId);
-  if (!session) throw new Error(`Session not found: ${input.sessionId}`);
-  const rawCount = readSessionMessages(input.sessionId).length;
-  if (input.sourceMessageCount < 0 || input.sourceMessageCount > rawCount) {
-    throw new Error(
-      `Invalid compact source boundary ${input.sourceMessageCount}; transcript has ${rawCount} messages`
-    );
-  }
+  const checkpoint = withLockedSession(input.sessionId, session => {
+    const rawCount = readSessionMessagesForSession(session).length;
+    if (input.sourceMessageCount < 0 || input.sourceMessageCount > rawCount) {
+      throw new Error(
+        `Invalid compact source boundary ${input.sourceMessageCount}; transcript has ${rawCount} messages`
+      );
+    }
 
-  const createdAt = input.createdAt ?? Date.now();
-  const checkpoint: CompactCheckpointV1 = {
-    version: 1,
-    checkpointId: randomUUID(),
-    sessionId: input.sessionId,
-    createdAt,
-    mode: input.mode,
-    modelId: input.modelId,
-    sourceMessageCount: input.sourceMessageCount,
-    transcriptStartMessageIndex: Math.max(
-      0,
-      Math.min(input.sourceMessageCount, input.transcriptStartMessageIndex)
-    ),
-    modelHistory: input.modelHistory
-      .filter(message => message.role !== 'system')
-      .map(message => ({ ...message })),
-    summary: {
-      ...input.summary,
+    const createdAt = input.createdAt ?? Date.now();
+    const nextCheckpoint: CompactCheckpointV1 = {
+      version: 1,
+      checkpointId: randomUUID(),
+      sessionId: input.sessionId,
+      createdAt,
+      mode: input.mode,
+      modelId: input.modelId,
       sourceMessageCount: input.sourceMessageCount,
-    },
-    beforeUsage: { ...input.beforeUsage },
-    afterUsage: { ...input.afterUsage },
-  };
+      transcriptStartMessageIndex: Math.max(
+        0,
+        Math.min(input.sourceMessageCount, input.transcriptStartMessageIndex)
+      ),
+      modelHistory: input.modelHistory
+        .filter(message => message.role !== 'system')
+        .map(message => ({ ...message })),
+      summary: {
+        ...input.summary,
+        sourceMessageCount: input.sourceMessageCount,
+      },
+      beforeUsage: { ...input.beforeUsage },
+      afterUsage: { ...input.afterUsage },
+    };
 
-  const previousId = session.activeCompactCheckpointId;
-  const previousTime = session.lastCompactAt;
-  session.activeCompactCheckpointId = checkpoint.checkpointId;
-  session.lastCompactAt = createdAt;
-  session.updatedAt = createdAt;
-  session.updatedAtIso = new Date(createdAt).toISOString();
+    const previousId = session.activeCompactCheckpointId;
+    const previousTime = session.lastCompactAt;
+    session.activeCompactCheckpointId = nextCheckpoint.checkpointId;
+    session.lastCompactAt = createdAt;
+    session.updatedAt = createdAt;
+    session.updatedAtIso = new Date(createdAt).toISOString();
 
-  // Commit the pointer before replacing the atomic sidecar. If the process
-  // crashes between writes, the loader safely uses the last valid sidecar.
-  saveSessionMeta(session);
-  try {
-    atomicWriteFileSync(
-      getProjectSessionCompactPath(session.projectPath, input.sessionId),
-      JSON.stringify(checkpoint, null, 2),
-      { mode: 0o600 }
-    );
-  } catch (error) {
-    session.activeCompactCheckpointId = previousId;
-    session.lastCompactAt = previousTime;
-    saveSessionMeta(session);
-    throw error;
-  }
+    // Commit the pointer before replacing the atomic sidecar. If the process
+    // crashes between writes, the loader safely uses the last valid sidecar.
+    writeSessionMetaUnlocked(session);
+    try {
+      atomicWriteFileSync(
+        getProjectSessionCompactPath(session.projectPath, input.sessionId),
+        JSON.stringify(nextCheckpoint, null, 2),
+        { mode: 0o600 }
+      );
+    } catch (error) {
+      session.activeCompactCheckpointId = previousId;
+      session.lastCompactAt = previousTime;
+      writeSessionMetaUnlocked(session);
+      throw error;
+    }
 
+    return nextCheckpoint;
+  });
+  if (!checkpoint) throw new Error(`Session not found: ${input.sessionId}`);
   return checkpoint;
 }
 
@@ -982,13 +1023,11 @@ function hasPersistedCompactContext(messages: SessionMessage[]): boolean {
  * 结束会话
  */
 export function endSession(sessionId: string): void {
-  const session = loadSessionMeta(sessionId);
-  if (!session) return;
-
-  session.endTime = Date.now();
-  session.updatedAt = session.endTime;
-  session.updatedAtIso = new Date(session.updatedAt).toISOString();
-  saveSessionMeta(session);
+  mutateSessionMeta(sessionId, session => {
+    session.endTime = Date.now();
+    session.updatedAt = session.endTime;
+    session.updatedAtIso = new Date(session.updatedAt).toISOString();
+  });
 }
 
 /**
@@ -996,9 +1035,6 @@ export function endSession(sessionId: string): void {
  * 从会话消息中提取关键信息并更新元数据
  */
 export function updateSessionSummary(sessionId: string, messages: SessionMessage[]): void {
-  const session = loadSessionMeta(sessionId);
-  if (!session) return;
-
   // 提取工具使用列表
   const toolsUsed: string[] = [];
   const filesModified: string[] = [];
@@ -1029,15 +1065,15 @@ export function updateSessionSummary(sessionId: string, messages: SessionMessage
   const firstUserMsg = messages.find(m => m.role === 'user' && m.content);
   const taskSummary = redactTraceText(firstUserMsg?.content ?? '').slice(0, 100);
 
-  // 更新 session
-  session.toolsUsed = [...new Set(toolsUsed)]; // unique
-  session.filesModified = [...new Set(filesModified)]; // unique
-  session.taskSummary = taskSummary.length > 100 ? taskSummary.slice(0, 100) + '...' : taskSummary;
-  session.messageCount = messages.length;
-  session.updatedAt = Date.now();
-  session.updatedAtIso = new Date(session.updatedAt).toISOString();
-
-  saveSessionMeta(session);
+  mutateSessionMeta(sessionId, session => {
+    session.toolsUsed = [...new Set(toolsUsed)]; // unique
+    session.filesModified = [...new Set(filesModified)]; // unique
+    session.taskSummary =
+      taskSummary.length > 100 ? taskSummary.slice(0, 100) + '...' : taskSummary;
+    session.messageCount = messages.length;
+    session.updatedAt = Date.now();
+    session.updatedAtIso = new Date(session.updatedAt).toISOString();
+  });
 }
 
 /**
@@ -1119,17 +1155,20 @@ export function readProjectHistory(projectPath: string, limit?: number): History
 export function appendSessionMessage(sessionId: string, message: SessionMessage): void {
   ensureConfigDir();
   const line = JSON.stringify(message) + '\n';
-  const session = touchSession(sessionId, 1);
+  withLockedSession(sessionId, session => {
+    ensureProjectDir(session.projectPath);
+    appendFileSync(getProjectSessionMessagesPath(session.projectPath, sessionId), line, {
+      mode: 0o600,
+    });
 
-  if (!session) return;
-
-  ensureProjectDir(session.projectPath);
-  appendFileSync(getProjectSessionMessagesPath(session.projectPath, sessionId), line, {
-    mode: 0o600,
+    // Keep transcript, metadata, and search index inside the same session
+    // critical section so concurrent processes cannot lose counters.
+    updateSessionIndex(sessionId, session.projectPath, message);
+    session.updatedAt = Date.now();
+    session.updatedAtIso = new Date(session.updatedAt).toISOString();
+    session.messageCount = (session.messageCount ?? 0) + 1;
+    writeSessionMetaUnlocked(session);
   });
-
-  // Update session index for fast search
-  updateSessionIndex(sessionId, session.projectPath, message);
 }
 
 /**
@@ -1140,18 +1179,20 @@ export function appendSessionMessages(sessionId: string, messages: SessionMessag
 
   ensureConfigDir();
   const lines = messages.map(m => JSON.stringify(m)).join('\n') + '\n';
-  const session = touchSession(sessionId, messages.length);
+  withLockedSession(sessionId, session => {
+    ensureProjectDir(session.projectPath);
+    appendFileSync(getProjectSessionMessagesPath(session.projectPath, sessionId), lines, {
+      mode: 0o600,
+    });
 
-  if (!session) return;
-
-  ensureProjectDir(session.projectPath);
-  appendFileSync(getProjectSessionMessagesPath(session.projectPath, sessionId), lines, {
-    mode: 0o600,
+    for (const message of messages) {
+      updateSessionIndex(sessionId, session.projectPath, message);
+    }
+    session.updatedAt = Date.now();
+    session.updatedAtIso = new Date(session.updatedAt).toISOString();
+    session.messageCount = (session.messageCount ?? 0) + messages.length;
+    writeSessionMetaUnlocked(session);
   });
-
-  for (const message of messages) {
-    updateSessionIndex(sessionId, session.projectPath, message);
-  }
 }
 
 function isFinalAssistantMessage(message: SessionMessage): boolean {
@@ -1176,27 +1217,23 @@ function findLastCompleteBoundary(messages: SessionMessage[]): number {
   return lastUserIndex + 1;
 }
 
-function overwriteSessionMessages(sessionId: string, messages: SessionMessage[]): void {
-  ensureConfigDir();
-  const session = loadSessionMeta(sessionId);
-  if (!session) return;
-
+function overwriteSessionMessagesUnlocked(session: SessionMeta, messages: SessionMessage[]): void {
   const content =
     messages.length > 0 ? messages.map(message => JSON.stringify(message)).join('\n') + '\n' : '';
 
   ensureProjectDir(session.projectPath);
-  atomicWriteFileSync(getProjectSessionMessagesPath(session.projectPath, sessionId), content, {
+  atomicWriteFileSync(getProjectSessionMessagesPath(session.projectPath, session.id), content, {
     mode: 0o600,
   });
 
-  deleteSessionIndex(sessionId, session.projectPath);
+  deleteSessionIndex(session.id, session.projectPath);
   for (const message of messages) {
-    updateSessionIndex(sessionId, session.projectPath, message);
+    updateSessionIndex(session.id, session.projectPath, message);
   }
   session.messageCount = messages.length;
   session.updatedAt = Date.now();
   session.updatedAtIso = new Date(session.updatedAt).toISOString();
-  saveSessionMeta(session);
+  writeSessionMetaUnlocked(session);
 }
 
 /**
@@ -1208,16 +1245,17 @@ function overwriteSessionMessages(sessionId: string, messages: SessionMessage[])
  * resurrect partial state.
  */
 export function truncateSessionToLastComplete(sessionId: string): SessionMessage[] {
-  const messages = readSessionMessages(sessionId);
-  const boundary = findLastCompleteBoundary(messages);
+  return (
+    withLockedSession(sessionId, session => {
+      const messages = readSessionMessagesForSession(session);
+      const boundary = findLastCompleteBoundary(messages);
+      if (boundary === messages.length) return messages;
 
-  if (boundary === messages.length) {
-    return messages;
-  }
-
-  const truncated = messages.slice(0, boundary);
-  overwriteSessionMessages(sessionId, truncated);
-  return truncated;
+      const truncated = messages.slice(0, boundary);
+      overwriteSessionMessagesUnlocked(session, truncated);
+      return truncated;
+    }) ?? []
+  );
 }
 
 export function removeLastIncompleteAssistantMessage(sessionId: string): SessionMessage[] {
@@ -1232,13 +1270,17 @@ export function removeLastIncompleteAssistantMessage(sessionId: string): Session
  * this is a no-op when the last message is not a user message.
  */
 export function removeTrailingSessionUserMessage(sessionId: string): SessionMessage[] {
-  const messages = readSessionMessages(sessionId);
-  if (messages.length === 0) return messages;
-  if (messages[messages.length - 1].role !== 'user') return messages;
+  return (
+    withLockedSession(sessionId, session => {
+      const messages = readSessionMessagesForSession(session);
+      if (messages.length === 0) return messages;
+      if (messages[messages.length - 1].role !== 'user') return messages;
 
-  const truncated = messages.slice(0, -1);
-  overwriteSessionMessages(sessionId, truncated);
-  return truncated;
+      const truncated = messages.slice(0, -1);
+      overwriteSessionMessagesUnlocked(session, truncated);
+      return truncated;
+    }) ?? []
+  );
 }
 
 /**
@@ -1248,6 +1290,11 @@ export function readSessionMessages(sessionId: string): SessionMessage[] {
   const session = loadSessionMeta(sessionId);
   if (!session) return [];
 
+  return readSessionMessagesForSession(session);
+}
+
+function readSessionMessagesForSession(session: SessionMeta): SessionMessage[] {
+  const sessionId = session.id;
   const path = getProjectSessionMessagesPath(session.projectPath, sessionId);
   if (!existsSync(path)) return [];
 
@@ -1493,51 +1540,47 @@ export function lookupSessionRef(
  * Rename a session for easier picker/resume targeting.
  */
 export function renameSession(sessionId: string, name: string): SessionMeta | null {
-  const session = loadSessionMeta(sessionId);
-  if (!session) return null;
-
   const trimmed = name.trim();
-  session.name = trimmed || undefined;
-  session.updatedAt = Date.now();
-  session.updatedAtIso = new Date(session.updatedAt).toISOString();
-  saveSessionMeta(session);
-  return session;
+  return mutateSessionMeta(sessionId, session => {
+    session.name = trimmed || undefined;
+    session.updatedAt = Date.now();
+    session.updatedAtIso = new Date(session.updatedAt).toISOString();
+  });
 }
 
 /**
  * 删除会话
  */
 export function deleteSession(sessionId: string): boolean {
-  const session = loadSessionMeta(sessionId);
-  if (!session) return false;
+  return (
+    withLockedSession(sessionId, session => {
+      let deleted = false;
+      const paths = [
+        getProjectSessionMetaPath(session.projectPath, sessionId),
+        getProjectSessionMessagesPath(session.projectPath, sessionId),
+        getProjectSessionHarnessPath(session.projectPath, sessionId),
+        getProjectSessionCompactPath(session.projectPath, sessionId),
+        getProjectSessionTracePath(session.projectPath, sessionId),
+      ];
 
-  let deleted = false;
-  const paths = [
-    getProjectSessionMetaPath(session.projectPath, sessionId),
-    getProjectSessionMessagesPath(session.projectPath, sessionId),
-    getProjectSessionHarnessPath(session.projectPath, sessionId),
-    getProjectSessionCompactPath(session.projectPath, sessionId),
-    getProjectSessionTracePath(session.projectPath, sessionId),
-  ];
+      // Preserve a durable deletion fence so a stale writer in another process
+      // cannot recreate the Goal after the rest of the session is removed.
+      const goalPath = join(getProjectSessionsDir(session.projectPath), `${sessionId}.goal.json`);
+      const hadGoal = existsSync(goalPath);
+      const goalDeletion = deleteGoal(session.projectPath, sessionId);
+      if (!goalDeletion.ok) return false;
+      if (hadGoal) deleted = true;
 
-  // Preserve a durable deletion fence so a stale writer in another process
-  // cannot recreate the Goal after the rest of the session is removed.
-  const goalPath = join(getProjectSessionsDir(session.projectPath), `${sessionId}.goal.json`);
-  const hadGoal = existsSync(goalPath);
-  const goalDeletion = deleteGoal(session.projectPath, sessionId);
-  if (!goalDeletion.ok) {
-    return false;
-  }
-  if (hadGoal) deleted = true;
+      deleteSessionIndex(sessionId, session.projectPath);
 
-  deleteSessionIndex(sessionId, session.projectPath);
+      for (const path of uniquePaths(paths)) {
+        if (existsSync(path)) {
+          unlinkSync(path);
+          deleted = true;
+        }
+      }
 
-  for (const path of uniquePaths(paths)) {
-    if (existsSync(path)) {
-      unlinkSync(path);
-      deleted = true;
-    }
-  }
-
-  return deleted;
+      return deleted;
+    }) ?? false
+  );
 }

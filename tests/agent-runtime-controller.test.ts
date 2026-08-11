@@ -32,6 +32,7 @@ import {
 import { Store } from '../src/framework/store';
 import { TOOLS } from '../src/tools';
 import { loadConfig } from '../src/services/config';
+import { loadGlobalConfig, saveProjectConfig } from '../src/services/global-config';
 import { listArtifacts, retrieveArtifact } from '../src/core/tool-artifacts';
 import { listCheckpoints } from '../src/core/checkpoint';
 import { createContextHarness } from '../src/harness';
@@ -325,6 +326,32 @@ describe('AgentRuntimeController', () => {
           ),
         }),
       ]);
+    });
+  });
+
+  it('emits a structured warning when an exact compatibility command executes', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      const runtime = createRuntime({ cwd: projectDir });
+      const { events, appended } = createEvents();
+      const controller = new AgentChatController(runtime, events);
+
+      await controller.runInput('/checkpoint');
+
+      expect(appended).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: 'system',
+            title: '/checkpoint deprecated',
+            statusTone: 'warning',
+            content: expect.stringContaining('use /rewind'),
+            command: expect.objectContaining({
+              id: 'builtin.session.checkpoint',
+              name: 'checkpoint',
+              success: true,
+            }),
+          }),
+        ])
+      );
     });
   });
 
@@ -1265,6 +1292,72 @@ describe('AgentRuntimeController', () => {
     });
   });
 
+  test.each([
+    {
+      label: 'plan mode',
+      mode: 'plan' as const,
+      allowedTools: undefined,
+      expectedReason: /plan mode/i,
+    },
+    {
+      label: 'project deny rule',
+      mode: 'default' as const,
+      allowedTools: ['deny:exec_command(*)'],
+      expectedReason: /denied by project allowedTools/i,
+    },
+    {
+      label: 'project ask rule without a confirmation callback',
+      mode: 'default' as const,
+      allowedTools: ['ask:exec_command(*)'],
+      expectedReason: /confirmation/i,
+    },
+  ])('enforces $label on the local run-test fast path', async testCase => {
+    await withTempConfig(async ({ projectDir }) => {
+      mkdirSync(projectDir, { recursive: true });
+      if (testCase.allowedTools) {
+        saveProjectConfig(projectDir, { allowedTools: testCase.allowedTools });
+      }
+      const config = loadConfig({ apiKey: 'test-key', model: 'test-model' });
+      const store = new Store({ config, tools: TOOLS, currentModel: 'test-model' });
+      store.setPermissionMode(testCase.mode);
+      const llm = {
+        getModel: jest.fn(() => 'test-model'),
+        chatStream: jest.fn(async () => ({ content: 'should not run', model: 'test-model' })),
+      };
+      const runtime = createRuntime({
+        cwd: projectDir,
+        config,
+        store,
+        llm: llm as any,
+        isConfigured: true,
+        ensureSession: jest.fn(() => null as never),
+        getSession: jest.fn(() => null),
+      });
+      const { events, appended } = createEvents();
+      const controller = new AgentChatController(runtime, events);
+
+      await controller.runInput('run test: echo fast-path-guard', {
+        persistAsUserMessage: false,
+      });
+
+      expect(llm.chatStream).not.toHaveBeenCalled();
+      expect(appended).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: 'error',
+            title: 'local',
+            content: expect.stringMatching(testCase.expectedReason),
+          }),
+        ])
+      );
+      expect(store.getSnapshot().lastLoopStats).toMatchObject({
+        finishReason: 'blocked',
+        toolCalls: 0,
+        localFastPathUsed: true,
+      });
+    });
+  });
+
   it('marks failed local run-test fast paths as failed instead of completed', async () => {
     await withTempConfig(async ({ projectDir }) => {
       mkdirSync(projectDir, { recursive: true });
@@ -1959,7 +2052,10 @@ describe('AgentRuntimeController', () => {
 
     runner.calls[0].resolve();
     await Promise.resolve();
-    expect(runner.calls.map(call => call.input)).toEqual(['first goal', 'older revision\nlatest revision']);
+    expect(runner.calls.map(call => call.input)).toEqual([
+      'first goal',
+      'older revision\nlatest revision',
+    ]);
 
     runner.calls[1].resolve();
     await controller.waitForIdle();
@@ -1968,20 +2064,49 @@ describe('AgentRuntimeController', () => {
     expect(statuses).toContain('根据补充调整方向中…');
   });
 
-  it('does not run slash commands concurrently during an active turn', () => {
+  it('handles immediate slash snapshots without starting a concurrent runner', () => {
     const runtime = createRuntime();
     const { events, statuses } = createEvents();
     const runner = createDeferredRunner();
     const controller = new AgentRuntimeController({ runtime, events, runner });
 
     expect(controller.submit('long task')).toEqual({ type: 'started' });
-    expect(controller.submit('/status')).toEqual({ type: 'command_ignored' });
+    expect(controller.submit('/status')).toEqual({ type: 'command_handled' });
 
     expect(runner.calls).toHaveLength(1);
     expect(runner.calls[0].signal?.aborted).toBe(false);
-    expect(statuses).toContain(
-      'Command ignored while agent is running. Press Ctrl+C to interrupt first.'
+    expect(statuses.some(status => status.startsWith('running model='))).toBe(true);
+  });
+
+  it('queues queue-next commands and rejects reject-busy commands deterministically', async () => {
+    const runtime = createRuntime();
+    const { events, statuses } = createEvents();
+    const runner = createDeferredRunner();
+    const controller = new AgentRuntimeController({ runtime, events, runner });
+
+    expect(controller.submit('long task')).toEqual({ type: 'started' });
+    expect(controller.submit('/mode plan')).toEqual({
+      type: 'command_queued',
+      commandId: 'builtin.agent.mode',
+    });
+    expect(controller.submit('/resume abc')).toEqual({
+      type: 'command_rejected_busy',
+      commandId: 'builtin.session.resume',
+    });
+    expect(runner.calls.map(call => call.input)).toEqual(['long task']);
+
+    runner.calls[0].resolve();
+    await Promise.resolve();
+    expect(runner.calls.map(call => call.input)).toEqual(['long task', '/mode plan']);
+    expect(statuses).toEqual(
+      expect.arrayContaining([
+        'Queued /mode; it will apply after the active logical request.',
+        '/resume rejected: an agent turn is active.',
+      ])
     );
+
+    runner.calls[1].resolve();
+    await controller.waitForIdle();
   });
 
   it('uses double Ctrl+C semantics while running', () => {
@@ -2105,6 +2230,108 @@ describe('AgentRuntimeController', () => {
       })
     ).toEqual({ type: 'permission_decision_recorded' });
     await expect(decision).resolves.toBe(true);
+  });
+
+  it('waits for scoped feedback and persists project or machine-wide tool grants before continuing', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      const emitted: AgentRuntimeEvent[] = [];
+      const controller = new AgentRuntimeController({
+        runtime: createRuntime({ cwd: projectDir }),
+        runner: { runInput: jest.fn(async () => undefined) },
+        eventSink: { emit: event => void emitted.push(event) },
+      });
+
+      const projectDecision = controller.requestToolPermission({
+        name: 'exec_command',
+        args: { command: 'npm test' },
+      });
+      let settled = false;
+      void projectDecision.then(() => {
+        settled = true;
+      });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+
+      const projectRequest = emitted.find(
+        (event): event is Extract<AgentRuntimeEvent, { type: 'permission_requested' }> =>
+          event.type === 'permission_requested'
+      )!;
+      expect(
+        controller.handle({
+          type: 'permission_decision',
+          requestId: projectRequest.request.id,
+          approved: true,
+          scope: 'project',
+          source: 'keyboard',
+        })
+      ).toEqual({ type: 'permission_decision_recorded' });
+      await expect(projectDecision).resolves.toBe(true);
+      expect(loadGlobalConfig().projects?.[projectDir]?.allowedTools).toEqual([
+        'allow:exec_command',
+      ]);
+
+      const globalDecision = controller.requestToolPermission({
+        name: 'web_fetch',
+        args: { url: 'https://example.com' },
+      });
+      const globalRequest = emitted.filter(event => event.type === 'permission_requested').at(-1)!;
+      expect(
+        controller.handle({
+          type: 'permission_decision',
+          requestId: globalRequest.request.id,
+          approved: true,
+          scope: 'global',
+          source: 'keyboard',
+        })
+      ).toEqual({ type: 'permission_decision_recorded' });
+      await expect(globalDecision).resolves.toBe(true);
+      expect(loadGlobalConfig().allowedTools).toEqual(['allow:web_fetch']);
+    });
+  });
+
+  it('fails closed when a persistent permission grant cannot be stored', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      const emitted: AgentRuntimeEvent[] = [];
+      const controller = new AgentRuntimeController({
+        runtime: createRuntime({ cwd: projectDir }),
+        runner: { runInput: jest.fn(async () => undefined) },
+        eventSink: { emit: event => void emitted.push(event) },
+      });
+      const decision = controller.requestToolPermission({ name: 'invalid tool name', args: {} });
+      const request = emitted.find(event => event.type === 'permission_requested')!;
+
+      expect(
+        controller.handle({
+          type: 'permission_decision',
+          requestId: request.request.id,
+          approved: true,
+          scope: 'global',
+        })
+      ).toEqual(expect.objectContaining({ type: 'permission_decision_failed' }));
+      await expect(decision).resolves.toBe(false);
+      expect(loadGlobalConfig().allowedTools).toBeUndefined();
+    });
+  });
+
+  it('fails closed on an unknown permission scope at the runtime boundary', async () => {
+    const emitted: AgentRuntimeEvent[] = [];
+    const controller = new AgentRuntimeController({
+      runtime: createRuntime(),
+      runner: { runInput: jest.fn(async () => undefined) },
+      eventSink: { emit: event => void emitted.push(event) },
+    });
+    const decision = controller.requestToolPermission({ name: 'exec_command', args: {} });
+    const request = emitted.find(event => event.type === 'permission_requested')!;
+
+    expect(
+      controller.handle({
+        type: 'permission_decision',
+        requestId: request.request.id,
+        approved: true,
+        scope: 'machine' as never,
+      })
+    ).toEqual(expect.objectContaining({ type: 'permission_decision_failed' }));
+    await expect(decision).resolves.toBe(false);
   });
 
   it('ignores unknown permission decisions', () => {

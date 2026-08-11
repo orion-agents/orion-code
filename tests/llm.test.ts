@@ -147,6 +147,13 @@ describe('LLMService', () => {
         [Object.assign(new Error('429 API_LIMIT'), { status: 429 }), 'rate_limit', true],
         [new Error('code: 10012, msg: EngineInternalError: system is busy'), 'provider_busy', true],
         [new Error('Invalid URL: ht!tp://bad-endpoint'), 'invalid_endpoint', false],
+        [
+          Object.assign(new Error('Invalid reasoning_effort: level is unsupported'), {
+            status: 400,
+          }),
+          'unsupported_effort',
+          false,
+        ],
         [new Error('Connection error.'), 'unknown_provider_error', true],
       ] as const;
 

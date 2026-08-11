@@ -53,7 +53,7 @@ import { PLAN_TOOLS } from './plan';
 import { GIT_TOOLS } from './git';
 import { lspTools } from './lsp';
 import { GOAL_TOOLS } from '../runtime/goals/tools';
-import { assessCommandSecurity, isReadOnlyCommand } from './bash_security';
+import { assessCommandSecurity, containsRecursiveRm, isReadOnlyCommand } from './bash_security';
 import { debugError } from '../utils/debug-log';
 import { errorMessage } from '../utils/errors';
 import {
@@ -295,7 +295,7 @@ export const TOOLS: OrionCodeTool[] = [
     },
     isDestructive: args => {
       const cmd = (args.command as string) || '';
-      return /(rm\s+-rf|mkfs|dd\s)/.test(cmd);
+      return containsRecursiveRm(cmd) || /(?:^|[;&|]\s*)(?:[^\s]+\/)?(?:mkfs|dd)(?:\s|$)/.test(cmd);
     },
     checkPermissions: (args, context) => {
       const cmd = (args.command as string) || '';
@@ -2261,6 +2261,55 @@ async function executeBatchRead(
         error
       );
     }
+    if (effective.outcome === 'confirm') {
+      const confirmation = context.toolConfirmation ?? 'ask';
+      if (confirmation === 'deny' || !context.confirmToolUse) {
+        const error =
+          confirmation === 'deny'
+            ? `Tool ${step.tool} requires confirmation and was denied by toolConfirmation=deny.`
+            : effective.reason || `Tool ${step.tool} requires user confirmation.`;
+        return buildBatchReadPayload(
+          false,
+          error,
+          [
+            {
+              index: i + 1,
+              tool: step.tool,
+              args: step.args,
+              success: false,
+              error,
+              output: '',
+            },
+          ],
+          error
+        );
+      }
+
+      const approved = await context.confirmToolUse({
+        name: step.tool,
+        args: step.args,
+        reason: effective.reason,
+        abortSignal: context.abortSignal,
+      });
+      if (!approved) {
+        const error = `Tool ${step.tool} requires user confirmation and was denied by user.`;
+        return buildBatchReadPayload(
+          false,
+          error,
+          [
+            {
+              index: i + 1,
+              tool: step.tool,
+              args: step.args,
+              success: false,
+              error,
+              output: '',
+            },
+          ],
+          error
+        );
+      }
+    }
   }
 
   const stepResults: BatchReadStepOutput[] = [];
@@ -2342,6 +2391,8 @@ export async function executeTool(
     // sub-steps and reads both of these off the context.
     permissionMode: toolContext?.permissionMode,
     toolAllowlist: toolContext?.toolAllowlist,
+    toolConfirmation: toolContext?.toolConfirmation,
+    confirmToolUse: toolContext?.confirmToolUse,
   };
 
   const result = await tool.execute(args, context);

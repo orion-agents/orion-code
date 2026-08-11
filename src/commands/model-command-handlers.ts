@@ -2,12 +2,11 @@
 
 import chalk from 'chalk';
 import {
-  PERMISSION_MODES,
+  AGENT_MODES,
   getModeDisplayText,
-  getNextPermissionMode,
+  type AgentMode,
   type CommandContext,
   type CommandResult,
-  type PermissionMode,
 } from './types';
 import {
   createModelPickerState,
@@ -24,6 +23,15 @@ import {
   resolveModelAlias,
 } from '../services/model-catalog';
 import { lookupProfile, type ResolvedModelProfile } from '../services/model-registry';
+import { updateGlobalConfig } from '../services/global-config';
+import { getProjectConfig, loadGlobalConfig, saveProjectConfig } from '../services/global-config';
+import {
+  isEffortPreference,
+  resolveProfileEffort,
+  type EffortPreference,
+  type EffortScope,
+} from '../services/effort';
+import { updateSessionEffort } from '../services/session-storage';
 
 // ============================================================================
 // 颜色常量
@@ -100,6 +108,7 @@ function listConfiguredModelCatalogEntries(registry: CommandContext['config']['m
       contextWindow: profile.resolvedContextWindow,
       maxOutputTokens: profile.resolvedMaxOutputTokens,
       source: `${profile.contextSource}/${profile.outputSource}`,
+      effortSupportedLevels: profile.reasoningCapability?.supportedLevels,
     };
   });
 }
@@ -146,14 +155,20 @@ function showConfig(ctx: CommandContext): CommandResult {
   }
   if (allowlist.rules.length > 0 || allowlist.invalid.length > 0) {
     console.log();
-    console.log(HEADER('  Project allowedTools:'));
-    for (const rule of allowlist.rules) {
-      console.log(
-        `  ${ACCENT(rule.effect.padEnd(6))} ${DIM(rule.tool)}${DIM(rule.pattern ? `(${rule.pattern})` : '')}`
-      );
-    }
-    for (const entry of allowlist.invalid) {
-      console.log(`  ${WARN('invalid')} ${DIM(entry)}`);
+    for (const [label, parsed] of [
+      ['Machine-wide allowedTools', allowlist.global],
+      ['Project allowedTools', allowlist.project],
+    ] as const) {
+      if (parsed.rules.length === 0 && parsed.invalid.length === 0) continue;
+      console.log(HEADER(`  ${label}:`));
+      for (const rule of parsed.rules) {
+        console.log(
+          `  ${ACCENT(rule.effect.padEnd(6))} ${DIM(rule.tool)}${DIM(rule.pattern ? `(${rule.pattern})` : '')}`
+        );
+      }
+      for (const entry of parsed.invalid) {
+        console.log(`  ${WARN('invalid')} ${DIM(entry)}`);
+      }
     }
   }
   console.log();
@@ -167,10 +182,19 @@ function showConfig(ctx: CommandContext): CommandResult {
 
 function handleModel(ctx: CommandContext, args: string): CommandResult {
   const trimmedArgs = args.trim().toLowerCase();
+  if (!trimmedArgs) return handleModels(ctx, args);
+  const lines: string[] = [];
+  const write = (line = ''): void => {
+    lines.push(line);
+  };
+  const result = (success: boolean): CommandResult => ({
+    success,
+    ...(lines.length > 0 ? { output: lines.join('\n') } : {}),
+  });
 
   // 显示当前模型
-  if (!args || trimmedArgs === '?' || trimmedArgs === 'info') {
-    console.log();
+  if (trimmedArgs === '?' || trimmedArgs === 'info') {
+    write();
     if (ctx.llm) {
       const currentModel = ctx.store.getSnapshot().currentModel || ctx.llm.getModel();
       const profile = getProfileByModelId(ctx.config.modelRegistry, currentModel);
@@ -186,51 +210,47 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
           }
         : resolveModelContext(currentModel);
       const compactStats = getCommandAutoCompact(ctx, currentModel).getStats();
-      console.log(HEADER('Current Model'));
-      console.log(DIM('─'.repeat(40)));
-      console.log(`  Model    ${BRAND(currentModel)}`);
+      write(HEADER('Current Model'));
+      write(DIM('─'.repeat(40)));
+      write(`  Model    ${BRAND(currentModel)}`);
       if (profile) {
-        console.log(
-          `  Alias    ${ACCENT(profile.aliases?.[0] ? `(${profile.aliases[0]})` : 'none')}`
-        );
+        write(`  Alias    ${ACCENT(profile.aliases?.[0] ? `(${profile.aliases[0]})` : 'none')}`);
         const provider = ctx.config.modelRegistry?.providers.get(profile.provider);
-        console.log(`  Provider ${DIM(provider?.displayName || profile.provider)}`);
+        write(`  Provider ${DIM(provider?.displayName || profile.provider)}`);
       } else if (aliasEntry) {
-        console.log(`  Alias    ${ACCENT(aliasEntry.alias)}`);
-        console.log(`  Provider ${DIM(aliasEntry.provider)}`);
+        write(`  Alias    ${ACCENT(aliasEntry.alias)}`);
+        write(`  Provider ${DIM(aliasEntry.provider)}`);
       }
-      console.log(`  Context  ${DIM(`${formatTokenCount(contextInfo.contextWindow)} tokens`)}`);
+      write(`  Context  ${DIM(`${formatTokenCount(contextInfo.contextWindow)} tokens`)}`);
       if (contextInfo.maxOutputTokens) {
-        console.log(`  Output   ${DIM(`${formatTokenCount(contextInfo.maxOutputTokens)} tokens`)}`);
+        write(`  Output   ${DIM(`${formatTokenCount(contextInfo.maxOutputTokens)} tokens`)}`);
       }
-      console.log(
+      write(
         `  Source   ${DIM(`${contextInfo.source}${contextInfo.source === 'fuzzy' ? `:${contextInfo.matchedId}` : ''}`)}`
       );
-      console.log(
+      write(
         `  Compact  ${compactStats.enabled ? SUCCESS('auto') : WARN('off')} ${DIM(`predict ${formatThreshold(compactStats.predictiveCompactThreshold)}, hard ${formatThreshold(compactStats.threshold)}`)}`
       );
     } else {
-      console.log(ERROR('LLM not initialized. Set ORION_CODE_API_KEY first.'));
+      write(ERROR('LLM not initialized. Set ORION_CODE_API_KEY first.'));
     }
-    console.log();
-    return { success: true };
+    write();
+    return result(true);
   }
 
   // /model list|ls|help 已移除，统一由 /models 承接（交互式选择切换）
   if (trimmedArgs === 'list' || trimmedArgs === 'ls' || trimmedArgs === 'help') {
-    console.log();
-    console.log(WARN(`/model ${trimmedArgs} was removed.`));
-    console.log(DIM('Use /models to switch models interactively,'));
-    console.log(DIM('or /model <name|alias> to switch directly, e.g. /model sonnet'));
-    console.log();
-    return { success: true };
+    write();
+    write(WARN(`/model ${trimmedArgs} was removed.`));
+    write(DIM('Use /model without arguments to open the model picker,'));
+    write(DIM('or /model <name|alias> to switch directly, e.g. /model sonnet'));
+    write();
+    return result(true);
   }
 
   // 设置模型
   if (!ctx.llm) {
-    console.log(ERROR('LLM not initialized. Set ORION_CODE_API_KEY first.'));
-    console.log();
-    return { success: false };
+    return { success: false, error: 'LLM not initialized. Configure a provider first.' };
   }
 
   // 解析别名
@@ -239,9 +259,19 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
   const resolvedProfileId = registryProfile ? registryProfile.id : resolvedModel;
 
   ctx.llm.setModel(resolvedModel);
+  if (registryProfile) {
+    const provider = ctx.config.modelRegistry?.providers.get(registryProfile.provider);
+    if (provider && typeof ctx.llm.setEffortContext === 'function') {
+      ctx.llm.setEffortContext({
+        preference: ctx.store.getSnapshot().effortPreference,
+        protocol: provider.protocol,
+        capability: registryProfile.reasoningCapability,
+      });
+    }
+  }
   getCommandAutoCompact(ctx, resolvedModel);
   ctx.store.setState({ currentModel: resolvedProfileId });
-  console.log(SUCCESS(`✔ Model changed to ${BRAND(resolvedProfileId)}`));
+  write(SUCCESS(`✔ Model changed to ${BRAND(resolvedProfileId)}`));
   const contextInfo = registryProfile
     ? {
         contextWindow: registryProfile.resolvedContextWindow,
@@ -249,13 +279,13 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
         source: 'resolved',
       }
     : resolveModelContext(resolvedModel);
-  console.log(
+  write(
     DIM(
       `  Context window ${formatTokenCount(contextInfo.contextWindow)} tokens (${contextInfo.source})`
     )
   );
-  console.log();
-  return { success: true };
+  write();
+  return result(true);
 }
 
 /**
@@ -264,11 +294,10 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
  * 非交互式渲染器直接打印候选列表并提示 /model <name|alias>。
  */
 function handleModels(ctx: CommandContext, _args: string): CommandResult {
-  console.log();
   const currentModel = ctx.store.getSnapshot().currentModel || ctx.llm?.getModel() || '';
   const configuredModels = listConfiguredModelCatalogEntries(ctx.config.modelRegistry);
 
-  const candidates: ModelPickerCandidate[] =
+  const baseCandidates: ModelPickerCandidate[] =
     configuredModels.length > 0
       ? configuredModels
       : listModelCatalogEntries().map(model => {
@@ -282,6 +311,12 @@ function handleModels(ctx: CommandContext, _args: string): CommandResult {
             source: contextInfo.source,
           };
         });
+  const currentEffort = ctx.store.getSnapshot().resolvedEffort;
+  const candidates = baseCandidates.map(candidate =>
+    candidate.name === currentModel && currentEffort
+      ? { ...candidate, effortCurrent: currentEffort.requested }
+      : candidate
+  );
 
   const ui = commandUICapabilities(ctx);
   if (ui.structuredPickers) {
@@ -296,73 +331,74 @@ function handleModels(ctx: CommandContext, _args: string): CommandResult {
     };
   }
 
-  // 非交互式渲染器：打印候选列表
-  console.log(HEADER('Available Models'));
-  console.log(DIM('─'.repeat(40)));
+  // Non-interactive renderers consume the same structured text result.
+  const lines = ['', HEADER('Available Models'), DIM('─'.repeat(40))];
   const modelPicker = createModelPickerState({ currentModel, models: candidates });
   for (const item of modelPicker.visibleItems) {
     const marker = item.isCurrent ? SUCCESS('●') : DIM('○');
     const alias = item.alias ? `(${item.alias})` : '';
     const context = `${formatTokenCount(item.contextWindow ?? 0)} ctx`;
     const current = item.isCurrent ? BRAND('(current)') : '';
-    console.log(`  ${marker} ${ACCENT(item.name)} ${DIM(alias)} ${DIM(context)} ${current}`);
-    console.log(`      ${DIM(item.provider ?? 'unknown')}`);
+    lines.push(`  ${marker} ${ACCENT(item.name)} ${DIM(alias)} ${DIM(context)} ${current}`);
+    lines.push(`      ${DIM(item.provider ?? 'unknown')}`);
   }
-  console.log();
-  console.log(DIM('Use /model <name|alias> to switch, e.g. /model sonnet'));
-  console.log();
-  return { success: true };
-}
-
-function normalizePermissionMode(raw: string): PermissionMode | null {
-  const value = raw.trim().toLowerCase();
-  if (!value) return null;
-  if (
-    value === 'accept' ||
-    value === 'acceptedits' ||
-    value === 'accept-edits' ||
-    value === 'edit'
-  ) {
-    return 'acceptEdits';
-  }
-  if (value === 'default' || value === 'ask') return 'default';
-  if (value === 'plan' || value === 'readonly' || value === 'read-only') return 'plan';
-  if (value === 'auto' || value === 'full-auto') return 'auto';
-  return null;
+  lines.push('', DIM('Use /model <name|alias> to switch, e.g. /model sonnet'), '');
+  return { success: true, output: lines.join('\n') };
 }
 
 function handleMode(ctx: CommandContext, args: string): CommandResult {
-  const current = ctx.store.getSnapshot().permissionMode;
+  const current = ctx.store.getSnapshot().agentMode;
   const trimmed = args.trim();
 
   if (!trimmed || trimmed === '?' || trimmed === 'help') {
-    console.log();
-    console.log(HEADER('Permission Mode'));
-    console.log(DIM('─'.repeat(40)));
-    console.log(
-      `  Current  ${ACCENT(current)} ${DIM(getModeDisplayText(current) || 'ask before sensitive actions')}`
-    );
-    console.log();
-    console.log(`  ${ACCENT('/mode next')}           Cycle to the next mode`);
-    console.log(`  ${ACCENT('/mode default')}        Ask before sensitive actions`);
-    console.log(`  ${ACCENT('/mode accept-edits')}   Auto-accept file edits`);
-    console.log(`  ${ACCENT('/mode plan')}           Plan first, avoid executing edits`);
-    console.log(`  ${ACCENT('/mode auto')}           Auto-run allowed actions`);
-    console.log();
-    return { success: true };
-  }
-
-  const next =
-    trimmed === 'next' ? getNextPermissionMode(current) : normalizePermissionMode(trimmed);
-
-  if (!next || !PERMISSION_MODES.includes(next)) {
     return {
-      success: false,
-      error: `Unknown mode: ${trimmed}. Use one of: default, accept-edits, plan, auto, next.`,
+      success: true,
+      output: [
+        '',
+        HEADER('Agent Mode'),
+        DIM('─'.repeat(40)),
+        `  Current  ${ACCENT(current)} ${DIM(getModeDisplayText(current))}`,
+        '',
+        `  ${ACCENT('/mode interactive')}    Normal agent workflow`,
+        `  ${ACCENT('/mode plan')}           Plan first; block execution and edits`,
+        `  ${ACCENT('/mode auto')}           Auto-run actions allowed by tool policy`,
+        `  ${DIM('Tool approval is configured separately with /permissions.')}`,
+        '',
+      ].join('\n'),
     };
   }
 
-  ctx.store.setPermissionMode(next);
+  const normalized = trimmed.toLowerCase();
+  if (['accept', 'acceptedits', 'accept-edits', 'edit'].includes(normalized)) {
+    ctx.store.setPermissionMode('acceptEdits');
+    return {
+      success: true,
+      output:
+        'Legacy /mode accept-edits mapped to tool policy only. Agent mode was unchanged. Use /permissions allow-edits.',
+    };
+  }
+
+  const next: AgentMode | null =
+    normalized === 'next'
+      ? AGENT_MODES[(AGENT_MODES.indexOf(current) + 1) % AGENT_MODES.length]
+      : normalized === 'default'
+        ? 'interactive'
+        : normalized === 'readonly' || normalized === 'read-only'
+          ? 'plan'
+          : normalized === 'full-auto'
+            ? 'auto'
+            : AGENT_MODES.includes(normalized as AgentMode)
+              ? (normalized as AgentMode)
+              : null;
+
+  if (!next) {
+    return {
+      success: false,
+      error: `Unknown agent mode: ${trimmed}. Use one of: interactive, plan, auto, next.`,
+    };
+  }
+
+  ctx.store.setAgentMode(next);
   const display = getModeDisplayText(next);
   return {
     success: true,
@@ -370,4 +406,185 @@ function handleMode(ctx: CommandContext, args: string): CommandResult {
   };
 }
 
-export { handleModel, handleModels, handleMode, showConfig };
+function handlePermissions(ctx: CommandContext, args: string): CommandResult {
+  const value = args.trim().toLowerCase();
+  const snapshot = ctx.store.getSnapshot();
+  if (!value || value === '?' || value === 'help' || value === 'show' || value === 'audit') {
+    const allowlist = resolveProjectToolAllowlist(ctx.cwd);
+    return {
+      success: true,
+      output: [
+        `Tool confirmation: ${ctx.config.toolConfirmation}`,
+        `Edit policy: ${snapshot.permissionMode === 'acceptEdits' ? 'allow-edits' : 'confirm'}`,
+        `Agent mode: ${snapshot.agentMode}`,
+        `Machine-wide tool rules: ${allowlist.global.rules.length} (${allowlist.global.invalid.length} invalid)`,
+        `Project tool rules: ${allowlist.project.rules.length} (${allowlist.project.invalid.length} invalid)`,
+        'Interactive approval: once | this project | all projects | deny',
+      ].join('\n'),
+    };
+  }
+
+  if (value === 'allow-edits') {
+    ctx.store.setPermissionMode('acceptEdits');
+    return { success: true, output: 'Tool edit policy changed to allow-edits.' };
+  }
+
+  if (!['allow', 'ask', 'deny'].includes(value)) {
+    return {
+      success: false,
+      error: `Unknown tool policy: ${value}. Use one of: show, ask, allow, deny, allow-edits, audit.`,
+    };
+  }
+
+  const toolConfirmation = value as 'allow' | 'ask' | 'deny';
+  updateGlobalConfig({ toolConfirmation });
+  ctx.config.toolConfirmation = toolConfirmation;
+  if (snapshot.permissionMode === 'acceptEdits') ctx.store.setPermissionMode('default');
+  return { success: true, output: `Tool confirmation changed to ${toolConfirmation}.` };
+}
+
+function activeEffortProfile(ctx: CommandContext): ResolvedModelProfile | undefined {
+  return getProfileByModelId(ctx.config.modelRegistry, ctx.store.getSnapshot().currentModel);
+}
+
+function parseEffortArgs(
+  args: string
+): { preference: EffortPreference | 'status'; scope: EffortScope } | { error: string } {
+  const tokens = args.trim().split(/\s+/u).filter(Boolean);
+  let scope: EffortScope = 'session';
+  if (tokens.includes('--project') && tokens.includes('--global')) {
+    return { error: 'Choose only one effort scope: --project or --global.' };
+  }
+  if (tokens.includes('--project')) scope = 'project';
+  if (tokens.includes('--global')) scope = 'global';
+  const values = tokens.filter(token => token !== '--project' && token !== '--global');
+  if (values.length > 1) return { error: 'Usage: /effort <level> [--project|--global].' };
+  const value = values[0]?.toLowerCase() ?? 'status';
+  if (value === 'status') return { preference: 'status', scope };
+  if (!isEffortPreference(value)) {
+    return {
+      error: `Unknown effort: ${value}. Use auto, none, minimal, low, medium, high, xhigh, or max.`,
+    };
+  }
+  return { preference: value, scope };
+}
+
+function handleEffort(ctx: CommandContext, args: string): CommandResult {
+  const parsed = parseEffortArgs(args);
+  if ('error' in parsed) return { success: false, error: parsed.error };
+
+  const profile = activeEffortProfile(ctx);
+  const provider = profile ? ctx.config.modelRegistry?.providers.get(profile.provider) : undefined;
+  const session = ctx.getSession?.() ?? null;
+  const projectConfig = getProjectConfig(ctx.cwd);
+  const globalConfig = loadGlobalConfig();
+  const current = resolveProfileEffort(profile, {
+    session: session?.effortPreference ?? ctx.store.getSnapshot().effortPreference,
+    project: projectConfig.defaultEffort,
+    global: globalConfig.defaultEffort ?? ctx.config.defaultEffort,
+  });
+
+  if (parsed.preference === 'status') {
+    return {
+      success: true,
+      output: [
+        `Model: ${profile?.id ?? ctx.store.getSnapshot().currentModel}`,
+        `Provider/protocol: ${provider?.id ?? 'legacy'}/${provider?.protocol ?? 'unknown'}`,
+        `Requested/effective: ${current.requested}/${current.effective ?? 'provider-default'}`,
+        `Supported: ${current.supported ? current.supportedLevels.join(', ') : 'unavailable'}`,
+        ...(current.warning ? [`Reason: ${current.warning}`] : []),
+      ].join('\n'),
+      effortEvent: current.supported
+        ? {
+            type: 'effort_resolved',
+            model: profile?.id ?? ctx.store.getSnapshot().currentModel,
+            provider: provider?.id ?? 'legacy',
+            requested: current.requested,
+            effective: current.effective,
+            supportedLevels: current.supportedLevels,
+          }
+        : {
+            type: 'effort_unavailable',
+            model: profile?.id ?? ctx.store.getSnapshot().currentModel,
+            provider: provider?.id ?? 'legacy',
+            requested: current.requested,
+            reason: current.warning ?? 'capability not configured',
+          },
+    };
+  }
+
+  const next = resolveProfileEffort(profile, {
+    ...(parsed.scope === 'session' ? { session: parsed.preference } : {}),
+    ...(parsed.scope === 'project' ? { project: parsed.preference } : {}),
+    ...(parsed.scope === 'global' ? { global: parsed.preference } : {}),
+  });
+  if (parsed.preference !== 'auto' && !next.supported) {
+    return {
+      success: false,
+      error: `Effort is unavailable for ${profile?.id ?? 'the active model'}: ${next.warning ?? 'capability not configured'}.`,
+    };
+  }
+
+  try {
+    if (parsed.scope === 'session') {
+      const activeSession = session ?? ctx.ensureSession?.();
+      if (!activeSession) {
+        return { success: false, error: 'Cannot persist effort without an active session.' };
+      }
+      const persisted = updateSessionEffort(activeSession.id, parsed.preference);
+      if (!persisted) {
+        return { success: false, error: `Session ${activeSession.id} is no longer available.` };
+      }
+      if (persisted.effortPreference === undefined) delete activeSession.effortPreference;
+      else activeSession.effortPreference = persisted.effortPreference;
+    } else if (parsed.scope === 'project') {
+      saveProjectConfig(ctx.cwd, {
+        ...projectConfig,
+        defaultEffort: parsed.preference === 'auto' ? undefined : parsed.preference,
+      });
+    } else {
+      updateGlobalConfig({
+        defaultEffort: parsed.preference === 'auto' ? undefined : parsed.preference,
+      });
+      ctx.config.defaultEffort = parsed.preference === 'auto' ? undefined : parsed.preference;
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      success: false,
+      error: `Effort ${parsed.scope} preference was not changed: ${message}`,
+    };
+  }
+
+  const effective = resolveProfileEffort(profile, {
+    session: parsed.scope === 'session' ? parsed.preference : session?.effortPreference,
+    project: parsed.scope === 'project' ? parsed.preference : projectConfig.defaultEffort,
+    global:
+      parsed.scope === 'global'
+        ? parsed.preference
+        : (globalConfig.defaultEffort ?? ctx.config.defaultEffort),
+  });
+  const previous = ctx.store.getSnapshot().effortPreference;
+  ctx.store.setEffort(parsed.preference, effective);
+  if (provider && typeof ctx.llm?.setEffortContext === 'function') {
+    ctx.llm?.setEffortContext({
+      preference: parsed.preference,
+      protocol: provider.protocol,
+      capability: profile?.reasoningCapability,
+    });
+  }
+  return {
+    success: true,
+    output: `Effort ${parsed.scope} preference changed to ${parsed.preference}; effective ${effective.effective ?? 'provider-default'}. Applies to the next logical request.`,
+    effortEvent: {
+      type: 'effort_changed',
+      requested: parsed.preference,
+      scope: parsed.scope,
+      previous,
+      effective: effective.effective,
+      appliesFrom: 'next-logical-request',
+    },
+  };
+}
+
+export { handleModel, handleModels, handleMode, handlePermissions, handleEffort, showConfig };

@@ -16,6 +16,8 @@ import type { CommandCategory, SlashCommand } from '../commands/types';
 import { formatBytes } from '../services/format';
 import { classifyCommandSafety } from '../services/verification-profile';
 import type { ContextUsageSnapshot } from '../services/model-context';
+import type { EffortLevel, EffortPreference } from '../services/effort';
+import type { ToolPermissionScope } from '../services/tool-allowlist';
 import type {
   ResearchLifecycleEvent,
   ResearchLifecycleSummary,
@@ -307,7 +309,12 @@ export function researchProjectionLabel(projection: ResearchStatusProjection): s
   return `research:${projection.stage} src:${retrieved}/${sourceCount} fail:${failed} cite:${citations} risk:${risks}`;
 }
 
-export type UiRendererStatus = 'product' | 'technical' | 'deprecated' | 'non-interactive' | 'custom';
+export type UiRendererStatus =
+  | 'product'
+  | 'technical'
+  | 'deprecated'
+  | 'non-interactive'
+  | 'custom';
 
 export interface StatusSnapshot {
   model?: string;
@@ -414,7 +421,16 @@ export interface SessionPickerItem {
 export interface CommandPickerItem {
   command: Pick<
     SlashCommand,
-    'name' | 'aliases' | 'description' | 'argumentHint' | 'category' | 'priority' | 'risk' | 'deprecated'
+    | 'name'
+    | 'aliases'
+    | 'description'
+    | 'argumentHint'
+    | 'category'
+    | 'priority'
+    | 'risk'
+    | 'deprecated'
+    | 'audience'
+    | 'source'
   >;
   name: string;
   value: string;
@@ -444,13 +460,14 @@ export interface FilePickerItem {
   isDirectory: boolean;
 }
 
-export type PermissionDecisionValue = 'allow' | 'deny';
+export type PermissionDecisionValue = 'allow-once' | 'allow-project' | 'allow-global' | 'deny';
 
 export interface PermissionDecisionItem {
   value: PermissionDecisionValue;
   label: string;
   description: string;
   approved: boolean;
+  scope: ToolPermissionScope;
 }
 
 export interface EditPreviewPickerItem {
@@ -470,6 +487,8 @@ export interface ModelPickerCandidate {
   contextWindow?: number;
   maxOutputTokens?: number;
   source?: string;
+  effortSupportedLevels?: EffortLevel[];
+  effortCurrent?: EffortPreference;
 }
 
 export interface ModelPickerItem {
@@ -481,6 +500,8 @@ export interface ModelPickerItem {
   contextWindow?: number;
   maxOutputTokens?: number;
   source?: string;
+  effortSupportedLevels?: EffortLevel[];
+  effortCurrent?: EffortPreference;
   isCurrent: boolean;
   label: string;
   description: string;
@@ -537,7 +558,9 @@ export interface PermissionPromptState {
   cwd: string;
   risk: PermissionRiskState;
   options: {
-    approve: string;
+    once: string;
+    project: string;
+    global: string;
     deny: string;
   };
 }
@@ -712,7 +735,30 @@ function commandPickerQuery(input: string): string {
   return input.startsWith('/') ? input.slice(1).toLowerCase() : '';
 }
 
-function commandMatchRank(command: Pick<SlashCommand, 'name' | 'aliases'>, query: string): number {
+function fuzzySubsequence(value: string, query: string): boolean {
+  let queryIndex = 0;
+  for (const character of value) {
+    if (character === query[queryIndex]) queryIndex += 1;
+    if (queryIndex === query.length) return true;
+  }
+  return query.length === 0;
+}
+
+function commandSearchValues(
+  command: Pick<SlashCommand, 'name' | 'aliases' | 'description' | 'category'>
+): string[] {
+  return [
+    command.name,
+    ...(command.aliases ?? []),
+    command.description,
+    command.category ?? '',
+  ].map(value => value.toLowerCase());
+}
+
+function commandMatchRank(
+  command: Pick<SlashCommand, 'name' | 'aliases' | 'description' | 'category'>,
+  query: string
+): number {
   if (!query) return 0;
   const name = command.name.toLowerCase();
   const aliases = command.aliases?.map(alias => alias.toLowerCase()) ?? [];
@@ -720,17 +766,18 @@ function commandMatchRank(command: Pick<SlashCommand, 'name' | 'aliases'>, query
   if (aliases.some(alias => alias === query)) return 1;
   if (name.startsWith(query)) return 2;
   if (aliases.some(alias => alias.startsWith(query))) return 3;
-  return 4;
+  const searchValues = commandSearchValues(command);
+  if (searchValues.some(value => value.includes(query))) return 4;
+  if (searchValues.some(value => fuzzySubsequence(value, query))) return 5;
+  return Number.POSITIVE_INFINITY;
 }
 
 function commandMatchesQuery(
-  command: Pick<SlashCommand, 'name' | 'aliases'>,
+  command: Pick<SlashCommand, 'name' | 'aliases' | 'description' | 'category'>,
   query: string
 ): boolean {
   if (!query) return true;
-  const name = command.name.toLowerCase();
-  const aliases = command.aliases?.map(alias => alias.toLowerCase()) ?? [];
-  return name.startsWith(query) || aliases.some(alias => alias.startsWith(query));
+  return commandMatchRank(command, query) < Number.POSITIVE_INFINITY;
 }
 
 function commandPickerLabel(
@@ -747,7 +794,16 @@ export function createCommandPickerState(input: {
   commands: Array<
     Pick<
       SlashCommand,
-      'name' | 'aliases' | 'description' | 'argumentHint' | 'category' | 'priority' | 'risk' | 'deprecated'
+      | 'name'
+      | 'aliases'
+      | 'description'
+      | 'argumentHint'
+      | 'category'
+      | 'priority'
+      | 'risk'
+      | 'deprecated'
+      | 'audience'
+      | 'source'
     >
   >;
   visibleStart?: number;
@@ -757,6 +813,11 @@ export function createCommandPickerState(input: {
   const query = commandPickerQuery(input.input);
   const getCategoryLabel = input.categoryLabel ?? commandCategoryLabel;
   const ranked = input.commands
+    .filter(command =>
+      query
+        ? command.audience !== 'compatibility' && command.audience !== 'internal'
+        : (command.audience ?? 'primary') === 'primary'
+    )
     .map((command, index) => ({
       command,
       index,
@@ -767,11 +828,12 @@ export function createCommandPickerState(input: {
       const rankDelta = left.matchRank - right.matchRank;
       return rankDelta !== 0 ? rankDelta : left.index - right.index;
     });
-  const totalItems = ranked.length;
+  const surface = query ? ranked : ranked.slice(0, 12);
+  const totalItems = surface.length;
   const visibleLimit = normalizeVisibleLimit(totalItems, input.maxVisibleItems ?? totalItems);
   const maxOffset = maxPickerOffset(totalItems, visibleLimit);
   const visibleStart = Math.max(0, Math.min(input.visibleStart ?? 0, maxOffset));
-  const visibleItems = ranked.slice(visibleStart, visibleStart + visibleLimit).map(item => {
+  const visibleItems = surface.slice(visibleStart, visibleStart + visibleLimit).map(item => {
     const category = getCategoryLabel(item.command.category);
     const aliases = item.command.aliases ?? [];
     return {
@@ -786,7 +848,12 @@ export function createCommandPickerState(input: {
         item.command.deprecated
           ? `deprecated${item.command.deprecated.replacement ? `; use ${item.command.deprecated.replacement}` : ''}`
           : '',
-      ].filter(Boolean).join('  '),
+        item.command.source && item.command.source.kind !== 'builtin'
+          ? `${item.command.source.kind}:${item.command.source.id} (${item.command.source.trust})`
+          : '',
+      ]
+        .filter(Boolean)
+        .join('  '),
       categoryLabel: category,
       aliases,
       matchRank: item.matchRank,
@@ -877,16 +944,32 @@ export function createPermissionDecisionPickerState(
     .join('  ');
   const items: PermissionDecisionItem[] = [
     {
-      value: 'allow',
-      label: `Allow ${request.name}`,
+      value: 'allow-once',
+      label: 'Allow once',
       description: allowDescription,
       approved: true,
+      scope: 'once',
+    },
+    {
+      value: 'allow-project',
+      label: 'Always allow in this project',
+      description: `Persist allow:${request.name} for this project`,
+      approved: true,
+      scope: 'project',
+    },
+    {
+      value: 'allow-global',
+      label: 'Always allow on this machine',
+      description: `Persist allow:${request.name} for all projects`,
+      approved: true,
+      scope: 'global',
     },
     {
       value: 'deny',
       label: `Deny ${request.name}`,
       description: 'Do not run this tool call',
       approved: false,
+      scope: 'once',
     },
   ];
 
@@ -985,6 +1068,10 @@ export function createModelPickerState(input: {
         typeof model.contextWindow === 'number' ? `${model.contextWindow} ctx` : undefined,
         typeof model.maxOutputTokens === 'number' ? `${model.maxOutputTokens} output` : undefined,
         model.source,
+        model.effortSupportedLevels?.length
+          ? `effort ${model.effortSupportedLevels.join('/')}`
+          : 'effort unavailable',
+        model.effortCurrent ? `current ${model.effortCurrent}` : undefined,
       ]
         .filter(Boolean)
         .join('  ');
@@ -998,6 +1085,8 @@ export function createModelPickerState(input: {
         contextWindow: model.contextWindow,
         maxOutputTokens: model.maxOutputTokens,
         source: model.source,
+        effortSupportedLevels: model.effortSupportedLevels,
+        effortCurrent: model.effortCurrent,
         isCurrent,
         label: `${name}${aliasLabel}`,
         description,
@@ -1080,7 +1169,9 @@ export function createPermissionPromptState(
       reason: request.reason?.trim() || 'approval required',
     },
     options: {
-      approve: 'y=yes',
+      once: '1=once',
+      project: '2=project',
+      global: '3=global',
       deny: 'n=no',
     },
   };

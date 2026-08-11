@@ -35,7 +35,7 @@ describe('bash_security', () => {
     });
 
     test('returns false for sed with -i flag', () => {
-      expect(isReadOnlyCommand('sed -i \'s/old/new/g\' file.txt')).toBe(false);
+      expect(isReadOnlyCommand("sed -i 's/old/new/g' file.txt")).toBe(false);
     });
 
     test('returns false for curl with file output', () => {
@@ -212,6 +212,10 @@ describe('bash_security', () => {
       ['rm -rf ${HOME}/', '${HOME}/'],
       ['rm -rf /usr', '/usr'],
       ['rm -rf /etc/*', '/etc/*'],
+      ['rm -rf /tmp/..', '/tmp/..'],
+      ['rm -rf /tmp/../ --no-preserve-root', '/tmp/../'],
+      ['rm -rf /var/tmp/../..', '/var/tmp/../..'],
+      ['rm -rf ./..', './..'],
       ['rm -rf -- /', '/'],
       ['rm -rf build /', '/'],
     ])('flags %s as catastrophic', (cmd, target) => {
@@ -240,7 +244,13 @@ describe('bash_security', () => {
     });
 
     test('assessCommandSecurity blocks every rewrite', () => {
-      for (const cmd of ['rm -rf /', 'rm -fr /', 'rm -rf / --no-preserve-root', 'rm -rf /*']) {
+      for (const cmd of [
+        'rm -rf /',
+        'rm -fr /',
+        'rm -rf / --no-preserve-root',
+        'rm -rf /*',
+        'rm -rf /tmp/..',
+      ]) {
         expect(assessCommandSecurity(cmd).level).toBe('blocked');
       }
     });

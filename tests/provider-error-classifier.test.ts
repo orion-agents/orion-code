@@ -31,6 +31,7 @@ describe('provider error classifier', () => {
     [{ status: 403 }, 'auth_failed'],
     [{ status: 402 }, 'quota_or_credit_exhausted'],
     [{ status: 404 }, 'model_not_found'],
+    [{ status: 400, message: 'reasoning_effort is unsupported' }, 'unsupported_effort'],
     [{ status: 400, message: 'bad input' }, 'invalid_request'],
     [{ status: 413 }, 'request_too_large'],
   ] as const)('classifies non-retryable status error %j', (error, kind) => {

@@ -290,6 +290,11 @@ function renderStatus(frame: TuiFrame, state: TuiUiState, row: number): void {
   if (state.statusState.activeSubtasks > 0)
     activity.push(`sub:${state.statusState.activeSubtasks}`);
   if (state.research) activity.push(researchProjectionLabel(state.research));
+  if (state.effort) {
+    const effective =
+      'effective' in state.effort ? (state.effort.effective ?? 'auto') : 'unavailable';
+    activity.push(`effort:${effective}`);
+  }
   activity.push(`perm:${state.permissionMode}`);
   const activityStr = activity.length ? `[${activity.join(' ')}] ` : '';
   const rightFull = right ? `${right} ${activityStr}`.trimEnd() : activityStr.trimEnd();
@@ -525,11 +530,11 @@ function renderOverlay(frame: TuiFrame, state: TuiUiState, maxRows: number): voi
     const picker = createPermissionDecisionPickerState(overlay.request);
     const rows = [
       `Tool Permission: ${overlay.request.name}`,
-      ...picker.visibleItems.flatMap((item, index) => {
+      ...picker.visibleItems.map((item, index) => {
         const marker = index === overlay.selectedIndex ? '›' : ' ';
-        return [`${marker} ${item.label}`, ...(item.description ? [`  ${item.description}`] : [])];
+        return `${marker} ${item.label}${item.description ? ` — ${item.description}` : ''}`;
       }),
-      'Enter select   y allow   n/Esc deny',
+      'Enter select   y once   p project   g global   n/Esc deny',
     ].map(row => truncateCells(row, frame.width));
 
     rows.slice(0, maxRows).forEach((line, index) => {

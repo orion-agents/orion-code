@@ -9,10 +9,36 @@ import type { RuntimeSubtaskEvent } from './subagents/types';
 import type { ResearchLifecycleEvent } from './subagents/research-renderer';
 import type { GoalRuntimeEvent } from './goals/types';
 import type { ToolExternalAssertion } from '../framework/external-assertion';
+import type { EffortLevel, EffortPreference, EffortScope } from '../services/effort';
 
 /** Re-export so the runtime event protocol can reference subtask events. */
 export type { RuntimeSubtaskEvent } from './subagents/types';
 export type { ResearchLifecycleEvent } from './subagents/research-renderer';
+
+export type RuntimeEffortEvent =
+  | {
+      type: 'effort_changed';
+      requested: EffortPreference;
+      scope: EffortScope;
+      previous: EffortPreference;
+      effective?: EffortLevel;
+      appliesFrom: 'next-logical-request';
+    }
+  | {
+      type: 'effort_resolved';
+      model: string;
+      provider: string;
+      requested: EffortPreference;
+      effective?: EffortLevel;
+      supportedLevels: EffortLevel[];
+    }
+  | {
+      type: 'effort_unavailable';
+      model: string;
+      provider: string;
+      requested: EffortPreference;
+      reason: string;
+    };
 
 export type TranscriptRole =
   | 'user'
@@ -63,6 +89,13 @@ export interface TranscriptEntry {
   /** Structured tool activity — set by tool event presenter so renderers
    *  consume typed data instead of parsing transcript text. */
   toolActivity?: StructuredToolActivity;
+  /** Stable command identity shared by interactive, print, and protocol consumers. */
+  command?: {
+    id: string;
+    name: string;
+    source: import('../commands/types').CommandSource;
+    success: boolean;
+  };
 }
 
 export interface TranscriptAppendEntry extends Omit<TranscriptEntry, 'id'> {
@@ -86,6 +119,8 @@ export interface ModelPickerCandidate {
   contextWindow?: number;
   maxOutputTokens?: number;
   source?: string;
+  effortSupportedLevels?: EffortLevel[];
+  effortCurrent?: EffortPreference;
 }
 
 /** Structured request to render an interactive model switcher. */
@@ -285,6 +320,7 @@ export interface UiEventSink {
   researchEvent?: (event: ResearchLifecycleEvent) => void;
   /** Shared Goal lifecycle event; renderers only project this event. */
   goalEvent?: (event: GoalRuntimeEvent) => void;
+  effortEvent?: (event: RuntimeEffortEvent) => void;
   setProcessing: (processing: boolean) => void;
   /** v0.1.1: request the renderer to clear its viewport without affecting session state. */
   clearView?: () => void;

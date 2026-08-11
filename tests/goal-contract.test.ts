@@ -924,6 +924,16 @@ describe('criterion model', () => {
     }
   });
 
+  it('tells the model that local evidence kinds are accepted alternatives', () => {
+    const coord = new GoalCoordinator('/tmp/test-evidence-prompt', 'evidence-prompt');
+    expect(coord.create('Run focused unit tests').ok).toBe(true);
+
+    const fragment = buildGoalContextFragment(coord.goal);
+
+    expect(fragment?.text).toContain('accepted evidence (any of)=test,build,file,runtime');
+    expect(fragment?.text).not.toContain(' evidence=test,build,file,runtime');
+  });
+
   it('criterion status starts pending', () => {
     const coord = new GoalCoordinator('/tmp/test-criterion-status', 'criterion-status');
     coord.create('Pending goal');

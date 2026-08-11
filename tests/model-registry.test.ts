@@ -112,6 +112,70 @@ describe('Model Registry (Slice 1)', () => {
       });
       expect(r.valid).toBe(false);
     });
+
+    it('validates explicit effort capability and provider adapter compatibility', () => {
+      const valid = buildRegistry({
+        providers: [VALID_PROVIDER],
+        models: [
+          {
+            ...VALID_PROFILE,
+            reasoningCapability: {
+              kind: 'effort-level',
+              supportedLevels: ['low', 'high'],
+              defaultLevel: 'low',
+              adapter: 'openai-chat-reasoning-effort',
+              source: 'config',
+            },
+          },
+        ],
+      });
+      expect(valid.valid).toBe(true);
+
+      const wrongProtocol = buildRegistry({
+        providers: [{ ...VALID_PROVIDER, protocol: 'anthropic-messages' }],
+        models: [
+          {
+            ...VALID_PROFILE,
+            reasoningCapability: {
+              kind: 'effort-level',
+              supportedLevels: ['low'],
+              adapter: 'openai-chat-reasoning-effort',
+              source: 'config',
+            },
+          },
+        ],
+      });
+      expect(wrongProtocol.valid).toBe(false);
+      expect(wrongProtocol.errors.some(error => error.path.includes('reasoningCapability'))).toBe(
+        true
+      );
+
+      const malformed = buildRegistry({
+        providers: [VALID_PROVIDER],
+        models: [
+          {
+            ...VALID_PROFILE,
+            reasoningCapability: {
+              kind: 'unknown-kind',
+              supportedLevels: ['high', 'high'],
+              defaultLevel: 'max',
+              adapter: 'unknown-adapter',
+              source: 'guessed',
+            },
+          } as unknown as typeof VALID_PROFILE,
+        ],
+      });
+      expect(malformed.valid).toBe(false);
+      expect(malformed.errors.map(error => error.path)).toEqual(
+        expect.arrayContaining([
+          'models.test-model.reasoningCapability.kind',
+          'models.test-model.reasoningCapability.supportedLevels',
+          'models.test-model.reasoningCapability.defaultLevel',
+          'models.test-model.reasoningCapability.adapter',
+          'models.test-model.reasoningCapability.source',
+        ])
+      );
+    });
   });
 
   describe('resolution', () => {

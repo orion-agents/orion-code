@@ -36,7 +36,7 @@ Orion Code is a terminal-based coding agent. It wraps LLM APIs in a harness of s
 
 ```bash
 # Install the v0.1.4-2 maintenance prerelease:
-npm install -g @orion-agents/orion-code@0.1.4-2
+npm install -g @orion-agents/orion-code@0.1.5
 # Or install through the prerelease dist-tag:
 npm install -g @orion-agents/orion-code@next
 
@@ -68,7 +68,7 @@ orion doctor
 orion diff
 
 # Commit plan
-orion commit
+orion commit-plan
 
 # Experimental non-interactive print mode
 orion -p "review the current git diff"
@@ -110,7 +110,7 @@ Terminal validation remains part of the release gate.
 | Feature                | Description                                                                   |
 | ---------------------- | ----------------------------------------------------------------------------- |
 | **Tool Orchestration** | 29 built-in tools: file I/O, shell, web, memory, git, LSP, Goal, and planning |
-| **Multi-Model**        | OpenAI-compatible providers with model switching                              |
+| **Multi-Model**        | Provider profiles, model switching, and explicit effort capabilities          |
 | **Context Awareness**  | Per-model context windows, token-based auto-compact                           |
 | **MCP Protocol**       | stdio MCP servers with heartbeat + reconnect                                  |
 | **Memory System**      | User / Project / Session memory with semantic search                          |
@@ -119,7 +119,7 @@ Terminal validation remains part of the release gate.
 | **Safety Boundaries**  | Bash safety checks, audit logging, permission modes                           |
 | **Skills System**      | Builtin + user + project-level skill extensions                               |
 | **Multi-Agent**        | Subagent fork/worker-pool with smart routing                                  |
-| **CLI Utilities**      | `doctor`, `diff`, `commit`, experimental `-p` print mode                      |
+| **CLI Utilities**      | `doctor`, `diff`, `commit-plan`, experimental `-p` print mode                 |
 
 ## Configuration
 
@@ -139,10 +139,18 @@ Terminal validation remains part of the release gate.
       "provider": "my-provider",
       "model": "model-name",
       "contextWindow": 200000,
-      "maxOutputTokens": 64000
+      "maxOutputTokens": 64000,
+      "reasoningCapability": {
+        "kind": "effort-level",
+        "supportedLevels": ["low", "medium", "high"],
+        "defaultLevel": "medium",
+        "adapter": "openai-chat-reasoning-effort",
+        "source": "config"
+      }
     }
   ],
   "defaultModel": "my-model",
+  "defaultEffort": "auto",
   "toolConfirmation": "deny",
   "subagents": { "mode": "auto", "maxParallel": 3 }
 }
@@ -150,17 +158,32 @@ Terminal validation remains part of the release gate.
 
 Configuration: `~/.orion-code/orion.json` | Priority: `CLI flags > config > env vars > defaults`
 
+`reasoningCapability` is an explicit provider contract, not a model-name guess. Only add it
+after the configured endpoint is known to accept the selected adapter and levels. A legacy
+`"reasoning": true` flag does not enable a wire parameter. With no explicit capability Orion
+keeps `/effort` unavailable and sends no reasoning-effort override. Project defaults can be set
+with `projects["<absolute path>"].defaultEffort`; session overrides are changed with `/effort`.
+
 The renderer is a runtime choice rather than a persisted setting: `orion` starts
 the TUI, while `--ui terminal` selects the technical renderer.
 
-### Project tool rules (`allowedTools`)
+### Interactive and scoped tool permissions (`allowedTools`)
 
-Per-project permission rules live under `projects["<absolute path>"].allowedTools`.
-They are scoped to a single repository and are evaluated on top of each tool's own
-policy — they can tighten the gate, never loosen it.
+When a tool needs confirmation, the TUI, Ink UI, and technical Terminal renderer wait for one
+of four explicit decisions: allow once, always allow this tool in the current project, always
+allow it on this machine for every project, or deny. Persistent approvals are written before
+the waiting tool continues. A write failure denies the call.
+
+Machine-wide rules live at root `allowedTools`; project rules live under
+`projects["<absolute path>"].allowedTools`. Both sets are evaluated, and the most restrictive
+matching effect wins (`deny` > `ask` > `allow`). A durable `allow` can skip repeated prompts for
+a tool with known risk metadata, including external tools and explicit file edits, but it cannot
+auto-approve destructive shell/system operations or override a hard tool-policy denial, plan mode,
+an explicit `ask`/`deny` rule, or missing risk metadata.
 
 ```json
 {
+  "allowedTools": ["allow:web_fetch"],
   "projects": {
     "/Users/me/work/api": {
       "allowedTools": [
@@ -179,8 +202,11 @@ policy — they can tighten the gate, never loosen it.
 - The subject is the call's `command` / `file_path` / `path` / `url` / `pattern` / `query`
   argument, whichever comes first.
 - Conflicts resolve most-restrictive-first (`deny` > `ask` > `allow`), independent of order.
+- Interactive persistent choices add an exact tool rule such as `allow:exec_command`; edit
+  `~/.orion-code/orion.json` to audit or revoke a stored rule. `/permissions show` reports the
+  active machine-wide and project rule counts.
 - `allow` only skips an interactive confirmation. It never overrides a tool's own `deny`,
-  never escapes plan mode, and never auto-approves a destructive invocation.
+  never escapes plan mode, and never applies when risk metadata is missing.
 - Malformed entries are ignored and listed by `/config` rather than silently applied.
 
 ### Shell execution sandbox (`sandbox`)
@@ -230,22 +256,25 @@ backend is probed at runtime and a configured-but-unusable sandbox **fails close
 | Command                | Description                                                                 |
 | ---------------------- | --------------------------------------------------------------------------- |
 | `/help`                | Show help                                                                   |
-| `/target` (`/goal`)    | Create, inspect, pause, resume, replace, budget, or clear a persistent goal |
+| `/goal` (`/target`)    | Create, inspect, pause, resume, replace, budget, or clear a persistent goal |
 | `/status`              | System status                                                               |
 | `/model`               | View or switch models                                                       |
+| `/effort`              | View or change supported reasoning effort                                   |
+| `/mode`                | View or change agent working mode                                           |
+| `/permissions`         | View or change tool confirmation and edit policy                            |
 | `/config`              | Show configuration                                                          |
 | `/usage`               | Token usage and cost                                                        |
 | `/compact`             | Trigger context compact                                                     |
-| `/sessions`            | List recent sessions                                                        |
+| `/session`             | List, inspect, or rename sessions                                           |
 | `/resume`              | Resume last session                                                         |
 | `/memory`              | Memory system status                                                        |
 | `/skills`              | List loaded skills                                                          |
 | `/mcp`                 | MCP server status                                                           |
 | `/doctor`              | Run diagnostics                                                             |
 | `/diff`                | Workspace diff                                                              |
-| `/commit`              | Commit plan                                                                 |
+| `/commit-plan`         | Create a read-only commit plan                                              |
 | `/clear`               | Clear screen                                                                |
-| `/context-clear --yes` | Clear in-memory model context; preserve the saved session                   |
+| `/context clear --yes` | Clear in-memory model context; preserve the saved session                   |
 | `/exit`                | Exit                                                                        |
 
 TUI is the public product interface and the default launch path. `terminal-ui`
@@ -255,7 +284,7 @@ scheduled for removal in v0.2.0.
 
 ### Persistent Goal safety contract
 
-`/target <objective>` creates one active Goal for the current session. Automatic
+`/goal <objective>` creates one active Goal for the current session. Automatic
 continuations are typed runtime requests: they are not echoed or stored as fake
 user messages. After a process restart or `/resume`, an active Goal is restored
 in a visible paused state; run `/target resume` to continue deliberately.
@@ -264,7 +293,7 @@ The model may request `complete` or `blocked`, but cannot set either terminal
 state directly. Orion records runtime/tool evidence and audits every success
 criterion. Missing, failed, unmapped, wrong-kind, expired, or stale evidence keeps the
 Goal open. Criteria that require human acceptance can only receive trusted
-`user` evidence from `/target confirm <criterion-id>`; model tools cannot mint
+`user` evidence from `/goal confirm <criterion-id>`; model tools cannot mint
 that confirmation. v0.1.2 remains single-session and single-active-Goal; it does not
 promise multi-Goal scheduling or unattended background execution.
 

@@ -4,6 +4,8 @@
  * Provides safety checks and sandbox options for command execution.
  */
 
+import { posix as posixPath } from 'path';
+
 /**
  * Commands that are considered read-only and safe to execute without confirmation.
  * These commands only read data and do not modify the filesystem.
@@ -774,6 +776,24 @@ function normalizeRmTarget(raw: string): string {
     target = target.replace(/\/+$/, '');
   }
 
+  // Shells resolve dot segments before `rm` sees the operand. String-only
+  // cleanup therefore misses `/tmp/..` (which is `/`) and `dist/..` (which is
+  // the current directory). Normalize using POSIX semantics because the
+  // command grammar parsed above is a shell command even when Orion itself is
+  // hosted on another platform.
+  if (target !== '~' && target.startsWith('~/')) {
+    const home = process.env.HOME?.replace(/\\/g, '/');
+    if (home?.startsWith('/')) {
+      target = `${home}/${target.slice(2)}`;
+    }
+  }
+  target = posixPath.normalize(target);
+
+  const home = process.env.HOME?.replace(/\\/g, '/');
+  if (home?.startsWith('/') && target === posixPath.normalize(home)) {
+    return '~';
+  }
+
   return target;
 }
 
@@ -832,6 +852,20 @@ function parseRmInvocation(segment: string): RmInvocation | null {
   }
 
   return invocation;
+}
+
+/**
+ * Return true when any supported shell segment invokes recursive `rm`.
+ *
+ * Tool risk classification must use the same quote-aware/wrapper-aware parser
+ * as the command safety gate. A narrow `/rm -rf/` regex misses `rm -r`,
+ * `rm -R`, `rm -fr`, and `rm --recursive`, allowing durable tool rules to
+ * misclassify recursive deletion as an ordinary state write.
+ */
+export function containsRecursiveRm(cmd: string): boolean {
+  const scan = scanShellCommand(cmd);
+  if (!scan.supported) return true;
+  return scan.segments.some(segment => parseRmInvocation(segment)?.recursive === true);
 }
 
 /**

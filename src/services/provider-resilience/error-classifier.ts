@@ -44,6 +44,9 @@ export function classifyProviderError(
     return { kind: 'model_not_found', disposition: 'fail_fast', status };
   }
   if (status === 400) {
+    if (isUnsupportedEffort(error)) {
+      return { kind: 'unsupported_effort', disposition: 'fail_fast', status };
+    }
     if (isContextOverflow(error)) {
       return { kind: 'context_overflow', disposition: 'fail_fast', status };
     }
@@ -129,6 +132,22 @@ export function classifyProviderError(
   }
 
   return { kind: 'unknown', disposition: 'retry_precommit' };
+}
+
+function isUnsupportedEffort(error: unknown): boolean {
+  const msg = lowerMessage(error);
+  const namesEffortField =
+    msg.includes('reasoning_effort') ||
+    msg.includes('reasoning effort') ||
+    msg.includes('thinking level') ||
+    msg.includes('output_config.effort');
+  return (
+    namesEffortField &&
+    (msg.includes('unsupported') ||
+      msg.includes('not support') ||
+      msg.includes('unknown') ||
+      msg.includes('invalid'))
+  );
 }
 
 function isProviderRequestPreflightError(error: unknown): boolean {

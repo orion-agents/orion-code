@@ -137,7 +137,9 @@ describe('session commands', () => {
 
     expect(result.success).toBe(true);
     expect(result.sessionPicker).toBeUndefined();
-    expect(logSpy.mock.calls.flat().join('\n')).toContain('Use /resume <number|session-id|name>');
+    expect(result.output ?? logSpy.mock.calls.flat().join('\n')).toContain(
+      'Use /resume <number|session-id|name>'
+    );
   });
 
   test('/resume <session-id> restores history and switches active session', async () => {
@@ -165,7 +167,7 @@ describe('session commands', () => {
     });
     expect(sessionRestored[0].summary).not.toContain('restore this exact session');
     expect(sessionRestored[0].summary).not.toContain('sk-testsecret');
-    const printed = logSpy.mock.calls.flat().join('\n');
+    const printed = result.output ?? logSpy.mock.calls.flat().join('\n');
     expect(printed).toContain('apiKey=[REDACTED_SECRET]');
     expect(printed).not.toContain('sk-testsecret');
     const restoredHistory = store.getSnapshot().conversationHistory;
@@ -240,7 +242,7 @@ describe('session commands', () => {
     expect(store.getSnapshot().conversationHistory).toEqual([
       { role: 'user', content: '[Context Summary]\ndurable summary' },
     ]);
-    const printed = logSpy.mock.calls.flat().join('\n');
+    const printed = result.output ?? logSpy.mock.calls.flat().join('\n');
     expect(printed).toContain('(compact checkpoint)');
     expect(printed).toContain('Covers: 2 source messages');
     expect(printed).toContain('Restored 1 model-context messages / 1 transcript messages');

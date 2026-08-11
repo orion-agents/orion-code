@@ -46,7 +46,7 @@ export function buildGoalContextFragment(goal: SessionGoalV1 | null): GoalPrompt
           .slice(0, 12)
           .map(
             item =>
-              `- ${item.id} [${item.status}/${item.source}] evidence=${item.requiredEvidenceKinds.join(',')}: ${compactGoalLine(item.statement)}`
+              `- ${item.id} [${item.status}/${item.source}] accepted evidence (any of)=${item.requiredEvidenceKinds.join(',')}: ${compactGoalLine(item.statement)}`
           )
       );
     }
@@ -79,6 +79,8 @@ export function buildGoalContextFragment(goal: SessionGoalV1 | null): GoalPrompt
     '- Inspect current worktree and external state; they are authoritative.',
     '- Make concrete progress. A plan is not a substitute for execution.',
     '- Do not mark complete until every requirement is verified.',
+    '- Evidence kinds listed for a criterion are accepted alternatives, not a requirement to produce every kind.',
+    '- Name verification for its criterion or include the exact criterion id so evidence can be matched safely.',
     `- Do not mark blocked unless the same eligible non-retryable blocker persisted for >= ${GOAL_INVARIANTS.maxConsecutiveBlockerTurns} consecutive Goal turns and no progress persisted for >= ${GOAL_INVARIANTS.maxConsecutiveNoProgressTurns} consecutive Goal turns.`,
     '- User corrections refine the work but do not replace the objective unless /target edit/replace occurs.'
   );

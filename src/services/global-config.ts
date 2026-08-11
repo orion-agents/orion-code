@@ -11,6 +11,7 @@ import { join } from 'path';
 import { ensureConfigDir, getGlobalConfigPath, getConfigDir } from './config-dir';
 import { atomicWriteFileSync } from './atomic-write';
 import type { ModelPricing } from '../core/cost-tracker';
+import { isEffortPreference, type EffortPreference } from './effort';
 
 // ============================================================================
 // 类型定义
@@ -31,6 +32,8 @@ export interface ProjectConfig {
   lastModel?: string;
   /** 是否已接受信任对话框 */
   hasTrustDialogAccepted?: boolean;
+  /** Project default reasoning effort. */
+  defaultEffort?: EffortPreference;
 }
 
 /** How to handle tool permission checks that request interactive confirmation. */
@@ -170,6 +173,10 @@ export interface GlobalConfig {
   fallbackModel?: string;
   /** Tool confirmation fallback while the current CLI cannot show prompts. */
   toolConfirmation?: ToolConfirmationPolicy;
+  /** Machine-wide tool permission rules applied to every project. */
+  allowedTools?: string[];
+  /** Global default reasoning effort. */
+  defaultEffort?: EffortPreference;
   /** WebSearch MCP configuration. */
   webSearch?: WebSearchMcpConfig;
   /** Terminal UI configuration. */
@@ -254,6 +261,7 @@ function sanitizeProjectConfig(value: unknown): ProjectConfig {
   if (typeof raw.hasTrustDialogAccepted === 'boolean') {
     sanitized.hasTrustDialogAccepted = raw.hasTrustDialogAccepted;
   }
+  if (isEffortPreference(raw.defaultEffort)) sanitized.defaultEffort = raw.defaultEffort;
   return sanitized;
 }
 
@@ -269,6 +277,15 @@ function sanitizeGlobalConfig(config: GlobalConfig & LegacyUsageFields): GlobalC
   void _totalTokens;
   void _totalCost;
   const sanitized: GlobalConfig = { ...rest, schemaVersion: CONFIG_SCHEMA_VERSION };
+  if (
+    Array.isArray(rest.allowedTools) &&
+    rest.allowedTools.every(item => typeof item === 'string')
+  ) {
+    sanitized.allowedTools = [...new Set(rest.allowedTools)];
+  } else {
+    delete sanitized.allowedTools;
+  }
+  if (!isEffortPreference(rest.defaultEffort)) delete sanitized.defaultEffort;
 
   const sandbox = sanitizeSandboxConfig(rest.sandbox);
   if (sandbox) sanitized.sandbox = sandbox;

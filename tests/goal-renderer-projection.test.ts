@@ -402,6 +402,7 @@ describe('Goal renderer projection parity', () => {
       runner,
       eventSink,
       echoSubmittedInput: false,
+      readyStatus: 'generic ready status',
     });
 
     try {
@@ -452,6 +453,29 @@ describe('Goal renderer projection parity', () => {
       expect(events.filter(event => event.type === 'goal_audit_failed')).toHaveLength(1);
       expect(events.filter(event => event.type === 'goal_completed')).toHaveLength(1);
       expect(events.at(-1)?.type).toBe('goal_cleared');
+
+      const terminalGoalEventIndexes = protocolEvents
+        .map((event, index) => ({ event, index }))
+        .filter(
+          item =>
+            item.event.type === 'goal_event' &&
+            (item.event.event.type === 'goal_audit_failed' ||
+              item.event.event.type === 'goal_completed')
+        );
+      expect(terminalGoalEventIndexes).toHaveLength(2);
+      for (const item of terminalGoalEventIndexes) {
+        const nextGoalEventIndex = protocolEvents.findIndex(
+          (event, index) => index > item.index && event.type === 'goal_event'
+        );
+        const boundary = nextGoalEventIndex < 0 ? protocolEvents.length : nextGoalEventIndex;
+        expect(
+          protocolEvents
+            .slice(item.index + 1, boundary)
+            .filter(
+              event => event.type === 'status_changed' && event.message === 'generic ready status'
+            )
+        ).toEqual([]);
+      }
 
       const auditIndex = events.findIndex(event => event.type === 'goal_audit_failed');
       const completedIndex = events.findIndex(event => event.type === 'goal_completed');

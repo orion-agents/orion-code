@@ -16,9 +16,7 @@ import { InlineTerminalSurface } from './inline-surface';
 import { FileToolDetailRepository } from '../runtime/tool-detail-repository';
 import { TranscriptInspectorSurface } from './transcript-inspector-surface';
 import { spawn } from 'child_process';
-import {
-  renderTuiStartupBanner,
-} from './terminal-image';
+import { renderTuiStartupBanner } from './terminal-image';
 
 const DISABLE_BRACKETED_PASTE = '\x1b[?2004l';
 const SHOW_CURSOR = '\x1b[?25h';
@@ -344,7 +342,9 @@ export async function launchTuiUI(
     }
   };
 
-  const consumeModelPickerSelection = (inputValue: string | AgentRuntimeInput): string | AgentRuntimeInput => {
+  const consumeModelPickerSelection = (
+    inputValue: string | AgentRuntimeInput
+  ): string | AgentRuntimeInput => {
     if (typeof inputValue !== 'string') return inputValue;
     const overlay = runner.getState().overlay;
     if (overlay?.type !== 'model') return inputValue;
@@ -376,9 +376,7 @@ export async function launchTuiUI(
 
     const normalized = trimmed.toLowerCase();
     const exact = request.models.find(
-      m =>
-        m.name.toLowerCase() === normalized ||
-        (m.alias && m.alias.toLowerCase() === normalized)
+      m => m.name.toLowerCase() === normalized || (m.alias && m.alias.toLowerCase() === normalized)
     );
     if (exact) return `/model ${exact.name}`;
 
@@ -473,11 +471,12 @@ export async function launchTuiUI(
       cwd: runtime.cwd,
       onSubmit: submit,
       onCtrlC: handleCtrlC,
-      onPermissionDecision: (requestId, approved) => {
+      onPermissionDecision: (requestId, approved, scope) => {
         controller.handle({
           type: 'permission_decision',
           requestId,
           approved,
+          scope,
           source: 'keyboard',
         });
       },

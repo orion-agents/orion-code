@@ -7,8 +7,28 @@ import {
   handleSkill,
   handleMemory,
 } from './context-tool-command-handlers';
+import { handleContextClear } from './session-command-handlers';
 
 export const CONTEXT_COMMANDS: SlashCommand[] = [
+  {
+    name: 'context',
+    description: 'Show context diagnostics or clear model context with confirmation',
+    argumentHint: '[show|harness|explain|clear --yes]',
+    category: 'context',
+    priority: 5,
+    type: 'builtin',
+    execution: 'builtin',
+    risk: 'destructive',
+    execute: (ctx, args) => {
+      const trimmed = args.trim();
+      if (!trimmed || trimmed === 'show' || trimmed === 'harness') return showHarness(ctx, '');
+      if (trimmed === 'explain' || trimmed === 'harness explain') return showHarness(ctx, 'explain');
+      if (trimmed.startsWith('clear')) {
+        return handleContextClear(ctx, trimmed.slice('clear'.length).trim());
+      }
+      return { success: false, error: 'Usage: /context [show|harness|explain|clear --yes]' };
+    },
+  },
   {
     name: 'harness',
     description: 'Show Context Harness state, or `/harness explain` for prompt assembly details',

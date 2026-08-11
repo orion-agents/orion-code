@@ -76,6 +76,25 @@ describe('print mode event sink', () => {
     };
   }
 
+  it('preserves stable command identity in JSON transcript entries', () => {
+    const sink = new PrintEventSink(runtime(), 'json');
+    sink.append({
+      role: 'system',
+      content: 'status output',
+      command: {
+        id: 'builtin.system.status',
+        name: 'status',
+        source: { kind: 'builtin', id: 'orion-code', trust: 'core' },
+        success: true,
+      },
+    });
+
+    expect(sink.result().entries[0]).toMatchObject({
+      content: 'status output',
+      command: { id: 'builtin.system.status', name: 'status', success: true },
+    });
+  });
+
   it('keeps structured tool events in json results without polluting content', () => {
     const sink = new PrintEventSink(runtime(), 'json');
 

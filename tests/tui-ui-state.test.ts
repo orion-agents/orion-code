@@ -154,7 +154,7 @@ describe('tui-ui state', () => {
       { type: 'moveOverlaySelection', delta: 10 },
     ]);
 
-    expect(state.overlay).toMatchObject({ type: 'permission', selectedIndex: 1 });
+    expect(state.overlay).toMatchObject({ type: 'permission', selectedIndex: 3 });
     expect(state.transcript.map(entry => entry.content)).toEqual(['before permission']);
   });
 

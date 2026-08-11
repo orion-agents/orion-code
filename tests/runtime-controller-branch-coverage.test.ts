@@ -338,7 +338,7 @@ describe('runtime controller branch coverage', () => {
     expect(controller.handle({ type: 'submit', text: 'first' })).toEqual({ type: 'started' });
     expect(controller.hasActiveTurn()).toBe(true);
     expect(controller.handle({ type: 'submit', text: '/help' })).toEqual({
-      type: 'command_ignored',
+      type: 'command_handled',
     });
     expect(controller.handle({ type: 'submit', text: 'revision' })).toEqual({
       type: 'revision_requested',

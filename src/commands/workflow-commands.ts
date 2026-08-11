@@ -6,8 +6,18 @@ import { handleTodos } from './context-tool-command-handlers';
 
 export const WORKFLOW_COMMANDS: SlashCommand[] = [
   {
-    name: 'target',
-    aliases: ['goal'],
+    name: 'goal',
+    compatibilityAliases: [
+      {
+        name: 'target',
+        lifecycle: {
+          status: 'deprecated',
+          since: 'v0.1.5',
+          removeIn: 'v0.3.0',
+          replacement: '/goal',
+        },
+      },
+    ],
     description: 'Create, view, pause, resume, or clear a persistent goal target',
     argumentHint:
       '[objective | pause | resume | clear --yes | status | edit <text> | replace <text> | confirm <criterion-id> | budget <tokens>]',
@@ -18,7 +28,7 @@ export const WORKFLOW_COMMANDS: SlashCommand[] = [
     risk: 'state-write',
     execute: () => ({
       success: false,
-      error: '/target must be routed through the shared AgentRuntimeController.',
+      error: '/goal must be routed through the shared AgentRuntimeController.',
     }),
   },
   {
@@ -33,7 +43,18 @@ export const WORKFLOW_COMMANDS: SlashCommand[] = [
     execute: (ctx, args) => handleDiff(ctx, args),
   },
   {
-    name: 'commit',
+    name: 'commit-plan',
+    compatibilityAliases: [
+      {
+        name: 'commit',
+        lifecycle: {
+          status: 'deprecated',
+          since: 'v0.1.5',
+          removeIn: 'v0.3.0',
+          replacement: '/commit-plan',
+        },
+      },
+    ],
     description: 'Create a read-only commit plan and suggested message for current changes',
     argumentHint: '[--max-files N]',
     category: 'workflow',
@@ -53,6 +74,17 @@ export const WORKFLOW_COMMANDS: SlashCommand[] = [
     execution: 'agent-workflow',
     risk: 'read-only',
     execute: (_ctx, args) => continueAsSlashChat('review', args),
+  },
+  {
+    name: 'research',
+    description: 'Run repository or web research through the shared subagent runtime',
+    argumentHint: '[local|web|mixed] <objective>',
+    category: 'workflow',
+    priority: 15,
+    type: 'chat',
+    execution: 'agent-workflow',
+    risk: 'read-only',
+    execute: (_ctx, args) => continueAsSlashChat('research', args),
   },
   {
     name: 'security',
