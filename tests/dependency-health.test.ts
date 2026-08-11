@@ -1,22 +1,63 @@
 import { spawnSync } from 'child_process';
-import { readFileSync } from 'fs';
-import { join } from 'path';
+import { existsSync, readFileSync, readdirSync } from 'fs';
+import { homedir } from 'os';
+import { dirname, join } from 'path';
 import { load as loadYaml } from 'js-yaml';
 
 const root = join(__dirname, '..');
+const supportedMajors = new Set([20, 22, 24]);
+
+function supportedNodeExecutable(): string {
+  const currentMajor = Number(process.versions.node.split('.')[0]);
+  if (supportedMajors.has(currentMajor)) return process.execPath;
+
+  const versionsRoot = join(process.env.NVM_DIR ?? join(homedir(), '.nvm'), 'versions', 'node');
+  if (existsSync(versionsRoot)) {
+    const candidate = readdirSync(versionsRoot)
+      .filter(version => /^v(?:20|22|24)\./u.test(version))
+      .sort()
+      .reverse()
+      .map(version => join(versionsRoot, version, 'bin', 'node'))
+      .find(existsSync);
+    if (candidate) return candidate;
+  }
+  throw new Error('A supported Node 20, 22, or 24 runtime is required for dependency policy tests');
+}
+
+function policyResult(nodeExecutable = process.execPath) {
+  return spawnSync('bash', ['scripts/dep-health-check.sh', '--policy-only'], {
+    cwd: root,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PATH: `${dirname(nodeExecutable)}:${process.env.PATH ?? ''}`,
+    },
+  });
+}
 
 describe('dependency governance contract', () => {
-  it('passes the offline dependency policy gate', () => {
-    const result = spawnSync('bash', ['scripts/dep-health-check.sh', '--policy-only'], {
-      cwd: root,
-      encoding: 'utf8',
-    });
+  it('passes the offline dependency policy gate on a supported runtime', () => {
+    const result = policyResult(supportedNodeExecutable());
 
     expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: '' });
     expect(result.stdout).toContain(
-      'DEPENDENCY_POLICY_OK node=20|22|24 openai=6 cjs=ok chat-completions=ok'
+      'DEPENDENCY_POLICY_OK node=20|22|24 openai=6 cjs=ok chat-completions=ok sqlite-vec='
     );
     expect(result.stdout).toContain('DEPENDENCY_EXEMPTION ink=3 react=17');
+  });
+
+  it('rejects the active runtime when it is outside the supported matrix', () => {
+    const result = policyResult();
+    const currentMajor = Number(process.versions.node.split('.')[0]);
+    if (supportedMajors.has(currentMajor)) {
+      expect(result.status).toBe(0);
+      return;
+    }
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('DEPENDENCY_POLICY_FAILED');
+    expect(result.stderr).toContain(`current Node ${process.versions.node} is unsupported`);
+    expect(result.stdout).not.toContain('DEPENDENCY_POLICY_OK');
   });
 
   it('probes the native binding at its real open boundary with actionable recovery', () => {
@@ -24,8 +65,14 @@ describe('dependency governance contract', () => {
 
     expect(script).toContain("new Database(':memory:')");
     expect(script).toContain('process.versions.modules');
+    expect(script).toContain('supportedNodeMajors.has(runtimeNodeMajor)');
     expect(script).toContain('NATIVE_DEPENDENCY_FAILED better-sqlite3');
     expect(script).toContain('npm rebuild better-sqlite3');
+    expect(script).toContain("require('sqlite-vec')");
+    expect(script).toContain('SELECT vec_version() AS version');
+    expect(script).toContain('CREATE VIRTUAL TABLE vec_health USING vec0');
+    expect(script).toContain('npm rebuild sqlite-vec');
+    expect(script).not.toContain('!/>=\\s*22/.test(installed.engines.node)');
   });
 
   it('keeps runtime, type-only, and removed dependencies in their intended scopes', () => {
@@ -41,6 +88,10 @@ describe('dependency governance contract', () => {
     expect(manifest.dependencies).not.toHaveProperty('type-fest');
     expect(manifest.dependencies).not.toHaveProperty('@types/better-sqlite3');
     expect(manifest.devDependencies).toHaveProperty('@types/better-sqlite3');
+    const major = (value: string): number => Number(value.match(/\d+/)?.[0]);
+    expect(major(manifest.devDependencies['@types/jest'])).toBe(
+      major(manifest.devDependencies.jest)
+    );
   });
 
   it('configures bounded npm and GitHub Actions update streams', () => {

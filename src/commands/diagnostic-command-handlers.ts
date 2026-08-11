@@ -891,21 +891,19 @@ function handleCheckpoint(ctx: CommandContext, args: string = ''): CommandResult
       console.log(`  ${DIM(`${checkpoint.files.length} file(s)${files ? `: ${files}` : ''}`)}`);
     }
     console.log();
-    console.log(
-      DIM('Use /checkpoint restore <turn-id|prefix> to preview, then add --yes to restore.')
-    );
+    console.log(DIM('Use /rewind restore <turn-id|prefix> to preview, then add --yes to restore.'));
     return { success: true };
   }
 
   if (action !== 'restore') {
-    console.log(ERROR('Usage: /checkpoint [list|restore <turn-id|prefix> [--yes]]'));
+    console.log(ERROR('Usage: /rewind [list|restore <turn-id|prefix> [--yes]]'));
     return { success: false };
   }
 
   const ref = tokens.find(token => token !== 'restore' && token !== '--yes');
   const confirmed = tokens.includes('--yes');
   if (!ref) {
-    console.log(ERROR('Usage: /checkpoint restore <turn-id|prefix> [--yes]'));
+    console.log(ERROR('Usage: /rewind restore <turn-id|prefix> [--yes]'));
     return { success: false };
   }
 
@@ -914,7 +912,7 @@ function handleCheckpoint(ctx: CommandContext, args: string = ''): CommandResult
     console.log(
       ERROR(ambiguous ? `Checkpoint prefix is ambiguous: ${ref}` : `Checkpoint not found: ${ref}`)
     );
-    console.log(DIM('Run /checkpoint to list available checkpoint ids.'));
+    console.log(DIM('Run /rewind to list available checkpoint ids.'));
     return { success: false };
   }
 
@@ -926,7 +924,7 @@ function handleCheckpoint(ctx: CommandContext, args: string = ''): CommandResult
     }
     console.log();
     console.log(WARN(`This will overwrite current files from checkpoint ${checkpoint.turnId}.`));
-    console.log(DIM(`Run /checkpoint restore ${checkpoint.turnId} --yes to restore.`));
+    console.log(DIM(`Run /rewind restore ${checkpoint.turnId} --yes to restore.`));
     return { success: true };
   }
 

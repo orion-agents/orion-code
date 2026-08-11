@@ -8,20 +8,17 @@ function handleDiff(ctx: CommandContext, args: string): CommandResult {
   const maxFilesMatch = args.match(/--max-files(?:=|\s+)(\d+)/);
   const maxFiles = maxFilesMatch ? Number(maxFilesMatch[1]) : 40;
   const report = collectWorkspaceDiff({ cwd: ctx.cwd, maxFiles });
-  console.log();
-  console.log(formatWorkspaceDiff(report, { maxFiles }));
-  console.log();
-  return { success: report.isGitRepo };
+  return {
+    success: report.isGitRepo,
+    output: formatWorkspaceDiff(report, { maxFiles }),
+  };
 }
 
 function handleCommitPlan(ctx: CommandContext, args: string): CommandResult {
   const maxFilesMatch = args.match(/--max-files(?:=|\s+)(\d+)/);
   const maxFiles = maxFilesMatch ? Number(maxFilesMatch[1]) : 20;
   const plan = createCommitPlan({ cwd: ctx.cwd, maxFiles });
-  console.log();
-  console.log(formatCommitPlan(plan));
-  console.log();
-  return { success: plan.diff.isGitRepo };
+  return { success: plan.diff.isGitRepo, output: formatCommitPlan(plan) };
 }
 
 function continueAsSlashChat(name: string, args: string): CommandResult {

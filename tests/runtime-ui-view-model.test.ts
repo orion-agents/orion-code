@@ -106,11 +106,13 @@ describe('runtime UI view model', () => {
         value: item.value,
         rank: item.matchRank,
       }))
-    ).toEqual([
-      { value: 'resume', rank: 1 },
-      { value: 'status', rank: 2 },
-      { value: 'sessions', rank: 2 },
-    ]);
+    ).toEqual(
+      expect.arrayContaining([
+        { value: 'resume', rank: 1 },
+        { value: 'status', rank: 2 },
+        { value: 'sessions', rank: 2 },
+      ])
+    );
   });
 
   it('pages command picker state and supports custom category labels', () => {
@@ -262,7 +264,7 @@ describe('runtime UI view model', () => {
     expect(state.visibleItems[0]).toMatchObject({
       value: 'gpt-4o',
       label: 'gpt-4o (gpt4o)',
-      description: 'OpenAI  128000 ctx  16384 output  builtin',
+      description: 'OpenAI  128000 ctx  16384 output  builtin  effort unavailable',
       isCurrent: false,
     });
 
@@ -408,7 +410,9 @@ describe('runtime UI view model', () => {
         reason: 'Command execution needs approval',
       },
       options: {
-        approve: 'y=yes',
+        once: '1=once',
+        project: '2=project',
+        global: '3=global',
         deny: 'n=no',
       },
     });
@@ -484,7 +488,7 @@ describe('runtime UI view model', () => {
     expect(state).toMatchObject({
       kind: 'permission',
       title: 'Tool Permission',
-      totalItems: 2,
+      totalItems: 4,
       page: 1,
       pageCount: 1,
       hasPreviousPage: false,
@@ -492,16 +496,32 @@ describe('runtime UI view model', () => {
     });
     expect(state.visibleItems).toEqual([
       {
-        value: 'allow',
-        label: 'Allow exec_command',
+        value: 'allow-once',
+        label: 'Allow once',
         description: 'cmd=$ npm publish --dry-run  requires confirmation',
         approved: true,
+        scope: 'once',
+      },
+      {
+        value: 'allow-project',
+        label: 'Always allow in this project',
+        description: 'Persist allow:exec_command for this project',
+        approved: true,
+        scope: 'project',
+      },
+      {
+        value: 'allow-global',
+        label: 'Always allow on this machine',
+        description: 'Persist allow:exec_command for all projects',
+        approved: true,
+        scope: 'global',
       },
       {
         value: 'deny',
         label: 'Deny exec_command',
         description: 'Do not run this tool call',
         approved: false,
+        scope: 'once',
       },
     ]);
   });

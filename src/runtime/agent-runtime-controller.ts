@@ -1,3 +1,4 @@
+import { findCommand, getVisibleCommands } from '../commands';
 import { parseInput } from '../commands/parser';
 import { isTargetCommand, parseTargetCommand } from '../commands/target-command';
 import type {
@@ -42,6 +43,11 @@ import { appendSessionTraceEvent } from '../services/session-storage';
 import { externalAssertionMatchesInvocation } from '../framework/external-assertion';
 import { updateGlobalConfig } from '../services/global-config';
 import type { ToolConfirmationPolicy } from '../services/global-config';
+import {
+  grantToolPermission,
+  isToolPermissionScope,
+  type ToolPermissionScope,
+} from '../services/tool-allowlist';
 
 export type {
   AgentRuntimeInput,
@@ -164,13 +170,17 @@ export class AgentRuntimeController {
   private readonly turnController: TurnController;
   private readonly runner: AgentRuntimeRunner;
   private readonly eventSink: AgentRuntimeEventSink;
-  private readonly pendingPermissions = new Map<string, (approved: boolean) => void>();
+  private readonly pendingPermissions = new Map<
+    string,
+    { request: AgentRuntimeToolPermissionRequest; finish: (approved: boolean) => void }
+  >();
   private activeRun: Promise<void> | null = null;
   private stopping = false;
   private continuationScheduleEpoch = 0;
   /** Conservative reservations for every provider attempt in the current root turn. */
   private goalProviderReservedTokens = 0;
   private nextPermissionRequestId = 1;
+  private readonly queuedCommands: string[] = [];
   /** v0.2.24: optional goal coordinator for /target mode. */
   private goalCoordinator: import('./goals/coordinator').GoalCoordinator | null = null;
   private goalCoordinatorSessionId: string | null = null;
@@ -218,6 +228,23 @@ export class AgentRuntimeController {
     statusText?: string;
     runtimeResult: AgentRuntimeSubmitResult;
   } {
+    if (/^\/target(?:\s|$)/iu.test(rawInput.trim())) {
+      const command = findCommand('goal');
+      if (command) {
+        this.emitAppend({
+          role: 'system',
+          title: '/target deprecated',
+          content: '/target is deprecated; use /goal. It will be removed in v0.3.0.',
+          statusTone: 'warning',
+          command: {
+            id: command.id,
+            name: command.name,
+            source: command.source,
+            success: true,
+          },
+        });
+      }
+    }
     const parsed = parseTargetCommand(rawInput);
     if (!parsed.ok) {
       this.emitAppend({
@@ -461,7 +488,7 @@ export class AgentRuntimeController {
       case 'select_session':
         return this.submit(resumeSessionInput(input.sessionId, input.allProjects));
       case 'permission_decision':
-        return this.recordPermissionDecision(input.requestId, input.approved);
+        return this.recordPermissionDecision(input.requestId, input.approved, input.scope);
       case 'interrupt':
         return this.interrupt();
       case 'clear_exit_intent':
@@ -497,11 +524,27 @@ export class AgentRuntimeController {
     if (this.turnController.hasActiveTurn()) {
       const parsed = parseInput(submitted);
       if (parsed.isCommand) {
-        this.emitStatus(
-          this.options.commandWhileRunningStatus ??
-            'Command ignored while agent is running. Press Ctrl+C to interrupt first.'
-        );
-        return { type: 'command_ignored' };
+        const command = findCommand(parsed.name);
+        if (!command) {
+          this.emitStatus(`Unknown command /${parsed.name}; active turn continues.`);
+          return { type: 'command_ignored' };
+        }
+        if (command.busyPolicy === 'reject-busy') {
+          this.emitStatus(`/${command.name} rejected: an agent turn is active.`);
+          return { type: 'command_rejected_busy', commandId: command.id };
+        }
+        if (command.busyPolicy === 'immediate') {
+          this.emitImmediateCommandSnapshot(command.name);
+          return { type: 'command_handled' };
+        }
+        if (this.queuedCommands.length >= 32) {
+          this.emitStatus(`/${command.name} rejected: the command queue is full.`);
+          return { type: 'command_rejected_busy', commandId: command.id };
+        }
+        this.queuedCommands.push(submitted);
+        this.emitAppend(submittedEntry(submitted));
+        this.emitStatus(`Queued /${command.name}; it will apply after the active logical request.`);
+        return { type: 'command_queued', commandId: command.id };
       }
 
       // v0.2.26: user steering input during active goal — update constraints
@@ -529,9 +572,7 @@ export class AgentRuntimeController {
       // v0.1.3 (G1): echo the incremental input to the transcript immediately,
       // so the user sees their correction without waiting for the turn to abort.
       this.emitAppend(submittedEntry(submitted));
-      this.emitStatus(
-        this.options.revisionStatus ?? '已接收补充，正在中断当前轮…'
-      );
+      this.emitStatus(this.options.revisionStatus ?? '已接收补充，正在中断当前轮…');
       return { type: 'revision_requested' };
     }
 
@@ -554,6 +595,40 @@ export class AgentRuntimeController {
       generation: coord?.generation ?? 0,
     };
     return this.submitTurnRequest(request);
+  }
+
+  private emitImmediateCommandSnapshot(name: string): void {
+    const snapshot = this.options.runtime.store.getSnapshot?.() ?? {
+      currentModel: this.options.runtime.config.model ?? 'unknown',
+      agentMode: 'interactive',
+      effortPreference: 'auto',
+      resolvedEffort: null,
+      tokenUsage: null,
+    };
+    if (name === 'help') {
+      const roots = getVisibleCommands(this.options.uiRenderer)
+        .filter(command => command.audience === 'primary')
+        .slice(0, 12)
+        .map(command => `/${command.name}`)
+        .join('  ');
+      this.emitAppend({ role: 'system', title: '/help', content: roots });
+      this.emitStatus('Help snapshot shown; active turn continues.');
+      return;
+    }
+    if (name === 'status') {
+      this.emitStatus(
+        `running model=${snapshot.currentModel} mode=${snapshot.agentMode} effort=${snapshot.resolvedEffort?.effective ?? snapshot.effortPreference}`
+      );
+      return;
+    }
+    if (name === 'usage') {
+      const usage = snapshot.tokenUsage;
+      this.emitStatus(
+        `usage prompt=${usage?.promptTokens ?? 0} completion=${usage?.completionTokens ?? 0}`
+      );
+      return;
+    }
+    this.emitStatus(`/${name} acknowledged; active turn continues.`);
   }
 
   private submitTurnRequest(request: AgentTurnRequest): AgentRuntimeSubmitResult {
@@ -1081,6 +1156,7 @@ export class AgentRuntimeController {
 
   private async runTurn(firstRequest: AgentTurnRequest): Promise<void> {
     let nextRequest: AgentTurnRequest | undefined = firstRequest;
+    let preserveTerminalGoalStatus = false;
 
     while (nextRequest && !this.stopping) {
       this.goalProviderReservedTokens = 0;
@@ -1089,7 +1165,11 @@ export class AgentRuntimeController {
       const nextInput =
         request.text?.trim() ||
         'Continue pursuing the active goal from its persisted plan and evidence.';
-      if ((this.options.echoSubmittedInput ?? true) && request.echoToTranscript && !request.alreadyEchoed) {
+      if (
+        (this.options.echoSubmittedInput ?? true) &&
+        request.echoToTranscript &&
+        !request.alreadyEchoed
+      ) {
         this.emitAppend(submittedEntry(nextInput));
       }
       this.options.beforeTurn?.(nextInput);
@@ -1147,6 +1227,12 @@ export class AgentRuntimeController {
           workspaceFingerprintBefore,
           turn.abortSignal.aborted
         );
+        const finalizedGoal = request.goal ? this.goalCoordinator?.goal : undefined;
+        preserveTerminalGoalStatus = Boolean(
+          finalizedGoal?.completionAudit ||
+          (toolContext?.pendingTerminalRequest?.requestedStatus === 'blocked' &&
+            finalizedGoal?.status !== 'blocked')
+        );
 
         if (revision?.trim()) {
           const currentCoord = this.ensureGoalCoordinator(false);
@@ -1158,9 +1244,7 @@ export class AgentRuntimeController {
             );
             nextRequest = undefined;
           } else {
-            this.emitStatus(
-              this.options.restartingStatus ?? '根据补充调整方向中…'
-            );
+            this.emitStatus(this.options.restartingStatus ?? '根据补充调整方向中…');
             nextRequest = {
               inputKind: 'revision',
               text: revision,
@@ -1180,7 +1264,18 @@ export class AgentRuntimeController {
             };
           }
         } else {
-          nextRequest = undefined;
+          const queuedCommand = this.queuedCommands.shift();
+          nextRequest = queuedCommand
+            ? {
+                inputKind: 'user',
+                text: queuedCommand,
+                sessionId: this.options.runtime.getSession()?.id ?? request.sessionId,
+                persistAsUserMessage: true,
+                echoToTranscript: false,
+                alreadyEchoed: true,
+                generation: this.goalCoordinator?.generation ?? 0,
+              }
+            : undefined;
         }
       }
     }
@@ -1192,7 +1287,10 @@ export class AgentRuntimeController {
         typeof this.options.readyStatus === 'function'
           ? this.options.readyStatus()
           : this.options.readyStatus;
-      if (readyStatus) this.emitStatus(readyStatus);
+      // A completion/blocked audit is the authoritative terminal result of the
+      // turn. Keep it visible instead of immediately replacing it with the
+      // renderer's generic ready snapshot.
+      if (readyStatus && !preserveTerminalGoalStatus) this.emitStatus(readyStatus);
       this.options.afterTurnLoop?.();
     }
   }
@@ -1381,7 +1479,7 @@ export class AgentRuntimeController {
       };
       const onAbort = () => finish(false);
 
-      this.pendingPermissions.set(id, finish);
+      this.pendingPermissions.set(id, { request, finish });
       request.abortSignal?.addEventListener('abort', onAbort, { once: true });
       this.emitStatus(permissionPendingStatus(request.name));
       this.eventSink.emit({ type: 'permission_requested', request: runtimeRequest });
@@ -1582,10 +1680,41 @@ export class AgentRuntimeController {
     return lines.join('\n');
   }
 
-  private recordPermissionDecision(requestId: string, approved: boolean): AgentRuntimeInputResult {
-    const resolve = this.pendingPermissions.get(requestId);
-    if (!resolve) return { type: 'permission_decision_ignored' };
-    resolve(approved);
+  private recordPermissionDecision(
+    requestId: string,
+    approved: boolean,
+    scope: ToolPermissionScope = 'once'
+  ): AgentRuntimeInputResult {
+    const pending = this.pendingPermissions.get(requestId);
+    if (!pending) return { type: 'permission_decision_ignored' };
+    if (!isToolPermissionScope(scope)) {
+      const reason = `Invalid permission scope: ${String(scope)}`;
+      pending.finish(false);
+      this.emitStatus(`Permission denied: ${reason}`);
+      return { type: 'permission_decision_failed', reason };
+    }
+    if (approved && scope !== 'once') {
+      try {
+        grantToolPermission(scope, this.options.runtime.cwd, pending.request.name);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        pending.finish(false);
+        this.emitStatus(
+          `Permission was not saved; ${pending.request.name} remains denied: ${reason}`
+        );
+        return { type: 'permission_decision_failed', reason };
+      }
+    }
+    pending.finish(approved);
+    if (approved) {
+      const suffix =
+        scope === 'global'
+          ? ' for all projects'
+          : scope === 'project'
+            ? ' for this project'
+            : ' once';
+      this.emitStatus(`Allowed ${pending.request.name}${suffix}`);
+    }
     return { type: 'permission_decision_recorded' };
   }
 
@@ -1605,8 +1734,8 @@ export class AgentRuntimeController {
   private rejectPendingPermissions(): void {
     const pending = [...this.pendingPermissions.values()];
     this.pendingPermissions.clear();
-    for (const resolve of pending) {
-      resolve(false);
+    for (const entry of pending) {
+      entry.finish(false);
     }
   }
 

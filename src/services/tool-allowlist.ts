@@ -1,15 +1,15 @@
 /**
- * Orion Code - project-scoped tool allowlist rule engine.
+ * Orion Code - scoped tool allowlist rule engine.
  *
  * Contract (v0.1.3-2 §1.3 / P1-B / P1-E)
  * ======================================
  *
  * Scope
  * -----
- * Rules live in `ProjectConfig.allowedTools` (`~/.orion-code/orion.json` →
- * `projects["<absolute project path>"].allowedTools`). This is intentionally a
- * *project* field: it is never promoted to a global switch, so a rule written for
- * one repository can never widen permissions in another one.
+ * Project rules live in `ProjectConfig.allowedTools`; machine-wide rules live in
+ * `GlobalConfig.allowedTools`. Both are evaluated for a project and the most
+ * restrictive matching effect wins. Project rules win ties for clearer audit
+ * attribution.
  *
  * Grammar
  * -------
@@ -38,11 +38,10 @@
  *
  * Safety envelope (enforced by the scheduler, documented here)
  * -----------------------------------------------------------
- * `allow` can only downgrade an interactive confirmation to auto-approval. It
- * can never override `checkPermissions() === 'deny'`, never escape plan mode's
- * read-only guarantee, and never auto-approve a tool whose `isDestructive(args)`
- * is true. `deny` and `ask` apply to every tool call regardless of the tool's own
- * policy, so a project can always tighten but never silently loosen the gates.
+ * `allow` is an explicit durable approval and can downgrade an interactive
+ * confirmation for tools with known risk metadata. It can never override
+ * `checkPermissions() === 'deny'`, plan mode, an `ask`/`deny` rule, or missing
+ * risk metadata.
  *
  * Compatibility
  * -------------
@@ -52,7 +51,12 @@
  * meaning ("auto-approve this tool").
  */
 
-import { getProjectConfig } from './global-config';
+import {
+  getProjectConfig,
+  loadGlobalConfig,
+  saveProjectConfig,
+  updateGlobalConfig,
+} from './global-config';
 
 // ============================================================================
 // Types
@@ -60,6 +64,13 @@ import { getProjectConfig } from './global-config';
 
 /** Effect of a matched allowlist rule. */
 export type AllowlistEffect = 'allow' | 'ask' | 'deny';
+
+/** Scope selected by an interactive permission decision. */
+export type ToolPermissionScope = 'once' | 'project' | 'global';
+
+export function isToolPermissionScope(value: unknown): value is ToolPermissionScope {
+  return value === 'once' || value === 'project' || value === 'global';
+}
 
 /** A parsed allowlist rule. */
 export interface AllowlistRule {
@@ -77,6 +88,8 @@ export interface ToolAllowlistMatch {
   effect: AllowlistEffect;
   /** The winning rule's source text (for audit/UI reasons). */
   rule: string;
+  /** Present for config-backed evaluations; omitted by pure rule evaluators. */
+  scope?: Exclude<ToolPermissionScope, 'once'>;
 }
 
 /** Injected into the tool scheduler; pure, no I/O. */
@@ -278,6 +291,8 @@ export function createAllowlistEvaluator(
 
 export interface ResolvedToolAllowlist extends ParsedAllowlist {
   evaluator?: ToolAllowlistEvaluator;
+  global: ParsedAllowlist;
+  project: ParsedAllowlist;
 }
 
 /**
@@ -285,12 +300,65 @@ export interface ResolvedToolAllowlist extends ParsedAllowlist {
  * Missing/empty configuration yields no evaluator, i.e. unchanged behaviour.
  */
 export function resolveProjectToolAllowlist(projectPath: string): ResolvedToolAllowlist {
-  let entries: string[] | undefined;
+  let globalEntries: string[] | undefined;
+  let projectEntries: string[] | undefined;
   try {
-    entries = getProjectConfig(projectPath).allowedTools;
+    const config = loadGlobalConfig();
+    globalEntries = config.allowedTools;
+    projectEntries = config.projects?.[projectPath]?.allowedTools;
   } catch {
-    entries = undefined;
+    globalEntries = undefined;
+    projectEntries = undefined;
+  }
+  const global = parseAllowlistRules(globalEntries);
+  const project = parseAllowlistRules(projectEntries);
+  const rules = [...global.rules, ...project.rules];
+  const invalid = [...global.invalid, ...project.invalid];
+  const globalEvaluator = createAllowlistEvaluator(global.rules);
+  const projectEvaluator = createAllowlistEvaluator(project.rules);
+  const evaluator: ToolAllowlistEvaluator | undefined =
+    globalEvaluator || projectEvaluator
+      ? (toolName, args) => {
+          const globalMatch = globalEvaluator?.(toolName, args);
+          const projectMatch = projectEvaluator?.(toolName, args);
+          if (!globalMatch) return projectMatch ? { ...projectMatch, scope: 'project' } : undefined;
+          if (!projectMatch) return { ...globalMatch, scope: 'global' };
+          return EFFECT_RANK[projectMatch.effect] >= EFFECT_RANK[globalMatch.effect]
+            ? { ...projectMatch, scope: 'project' }
+            : { ...globalMatch, scope: 'global' };
+        }
+      : undefined;
+  return { rules, invalid, global, project, evaluator };
+}
+
+/** Alias with scope-neutral naming for new callers. */
+export const resolveToolAllowlist = resolveProjectToolAllowlist;
+
+function appendToolGrant(entries: readonly string[] | undefined, toolName: string): string[] {
+  if (!TOOL_NAME_RE.test(toolName) || toolName === '*' || toolName.includes('*')) {
+    throw new Error(`Cannot persist permission for invalid tool name: ${toolName}`);
   }
   const parsed = parseAllowlistRules(entries);
-  return { ...parsed, evaluator: createAllowlistEvaluator(parsed.rules) };
+  const alreadyGranted = parsed.rules.some(
+    rule => rule.effect === 'allow' && rule.tool === toolName && rule.pattern === undefined
+  );
+  return alreadyGranted ? [...(entries ?? [])] : [...(entries ?? []), `allow:${toolName}`];
+}
+
+/** Persist an explicit interactive approval before the waiting tool is resumed. */
+export function grantToolPermission(
+  scope: Exclude<ToolPermissionScope, 'once'>,
+  projectPath: string,
+  toolName: string
+): void {
+  if (scope === 'global') {
+    const config = loadGlobalConfig();
+    updateGlobalConfig({ allowedTools: appendToolGrant(config.allowedTools, toolName) });
+    return;
+  }
+  const project = getProjectConfig(projectPath);
+  saveProjectConfig(projectPath, {
+    ...project,
+    allowedTools: appendToolGrant(project.allowedTools, toolName),
+  });
 }

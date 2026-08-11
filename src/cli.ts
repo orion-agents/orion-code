@@ -227,6 +227,10 @@ async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OrionCodeUiRunt
       baseUrl: defaultProvider?.baseUrl ?? config.apiBaseUrl,
       model: config.modelRegistry?.defaultProfile?.model ?? config.model,
       fallbackModel: config.modelRegistry?.fallbackProfile?.model ?? config.fallbackModel,
+      providerProtocol: defaultProvider?.protocol,
+      reasoningCapability: config.modelRegistry?.defaultProfile?.reasoningCapability,
+      fallbackReasoningCapability: config.modelRegistry?.fallbackProfile?.reasoningCapability,
+      effortPreference: config.defaultEffort,
     });
     // v0.2.26: inject the ProviderResilienceCoordinator so chat() and
     // chatStream() go through the resilience layer.

@@ -39,6 +39,7 @@ import {
 import { buildGoalContextFragment } from './goals/prompt';
 import { createContextHarness } from '../harness';
 import { executeTool, getRuntimeTools } from '../tools';
+import { resolveEffectivePermission } from '../framework/tool-scheduler';
 import { parseToolResultEnvelope } from '../framework/tool-serializer';
 import { storeArtifact } from '../core/tool-artifacts';
 import { resolveSkillsForTurn, hasMatchingSkill } from '../skills';
@@ -118,6 +119,7 @@ import {
   type LocalFastPathAction,
   type ToolResultEvent,
 } from './chat-presentation';
+import { applySessionEffort } from './chat-effort';
 
 export {
   createAssistantStreamPresenter,
@@ -168,18 +170,10 @@ export class AgentChatController {
     this.goalCoordinator = coord;
   }
 
-  /**
-   * Project-scoped allowlist rules, compiled once per cwd (v0.1.3-2 §1.3).
-   * Rules can only tighten the permission gate; see services/tool-allowlist.
-   */
-  private toolAllowlistCache?: { cwd: string; evaluator?: ToolAllowlistEvaluator };
-
   private resolveToolAllowlist(): ToolAllowlistEvaluator | undefined {
-    const cwd = this.runtime.cwd;
-    if (this.toolAllowlistCache?.cwd !== cwd) {
-      this.toolAllowlistCache = { cwd, evaluator: resolveProjectToolAllowlist(cwd).evaluator };
-    }
-    return this.toolAllowlistCache.evaluator;
+    // Reload on every scheduling boundary so a project/global approval selected
+    // by the interactive prompt affects the very next tool call in this process.
+    return resolveProjectToolAllowlist(this.runtime.cwd).evaluator;
   }
 
   constructor(
@@ -258,6 +252,27 @@ export class AgentChatController {
       return;
     }
 
+    const compatibilityAlias = command.compatibilityAliases?.find(
+      alias => alias.name.toLowerCase() === parsed.name.toLowerCase()
+    );
+    const deprecation =
+      compatibilityAlias?.lifecycle ??
+      (command.lifecycle.status === 'deprecated' ? command.lifecycle : undefined);
+    if (deprecation) {
+      this.events.append({
+        role: 'system',
+        title: `/${parsed.name} deprecated`,
+        content: `/${parsed.name} is deprecated${deprecation.replacement ? `; use ${deprecation.replacement}` : ''}. It will be removed in ${deprecation.removeIn ?? 'a future release'}.`,
+        statusTone: 'warning',
+        command: {
+          id: command.id,
+          name: command.name,
+          source: command.source,
+          success: true,
+        },
+      });
+    }
+
     const ctx = this.createCommandContext(options.abortSignal, options.turnId);
     let commandProviderAttempts = 0;
     const commandProviderPreflight: ProviderRequestPreflight = async context => {
@@ -283,7 +298,12 @@ export class AgentChatController {
     let result: Awaited<ReturnType<typeof command.execute>>;
     let output: string;
     try {
-      ({ result, output } = await captureConsoleOutput(() => command.execute(ctx, parsed.args)));
+      if (command.audience === 'primary') {
+        result = await command.execute(ctx, parsed.args);
+        output = '';
+      } else {
+        ({ result, output } = await captureConsoleOutput(() => command.execute(ctx, parsed.args)));
+      }
     } finally {
       unsubscribeCommandUsage?.();
       restoreProviderPreflight?.();
@@ -322,11 +342,19 @@ export class AgentChatController {
       }
     }
 
+    const commandMeta = {
+      id: command.id,
+      name: command.name,
+      source: command.source,
+      success: result.success,
+    };
+
     if (output) {
       this.events.append({
         role: result.success ? 'system' : 'error',
         title: `/${command.name}`,
         content: output,
+        command: commandMeta,
       });
     }
 
@@ -335,6 +363,7 @@ export class AgentChatController {
         role: result.success ? 'system' : 'error',
         title: `/${command.name}`,
         content: result.output,
+        command: commandMeta,
       });
     }
 
@@ -344,6 +373,7 @@ export class AgentChatController {
         title: `/${command.name}`,
         content: result.error,
         errorLayer: 'runtime',
+        command: commandMeta,
       });
     }
 
@@ -360,6 +390,10 @@ export class AgentChatController {
     if (result.editPreview) {
       this.events.showEditPreview(result.editPreview);
       return;
+    }
+
+    if (result.effortEvent) {
+      this.events.effortEvent?.(result.effortEvent);
     }
 
     if (result.continueAsChat) {
@@ -444,6 +478,11 @@ export class AgentChatController {
 
     try {
       const tool = getRuntimeTools().find(candidate => candidate.name === action.tool);
+      if (!tool) {
+        throw new LocalFastPathBlockedError(`Local fast path tool ${action.tool} is unavailable.`);
+      }
+      const effectivePermissionMode = this.runtime.store.getEffectivePermissionMode();
+      const toolAllowlist = this.resolveToolAllowlist();
       const toolContext = {
         cwd: this.runtime.cwd,
         config: {
@@ -452,16 +491,65 @@ export class AgentChatController {
         },
         sessionId,
         turnId,
+        permissionMode: effectivePermissionMode,
+        toolAllowlist,
+        toolConfirmation: this.runtime.config.toolConfirmation,
+        confirmToolUse: this.controllerOptions.confirmToolUse,
       };
-      const permission = tool?.checkPermissions?.(action.args, toolContext);
-      if (permission?.behavior === 'deny' || tool?.isDestructive?.(action.args) === true) {
-        const reason = permission?.reason || 'Local fast path blocked a destructive tool request.';
-        throw new LocalFastPathBlockedError(reason);
+      let permission;
+      try {
+        permission = tool.checkPermissions?.(action.args, toolContext);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new LocalFastPathBlockedError(`Permission check failed closed: ${detail}`);
       }
-      if (permission?.behavior === 'ask') {
+      const effective = resolveEffectivePermission({
+        toolName: action.tool,
+        tool,
+        args: action.args,
+        permission,
+        permissionMode: effectivePermissionMode,
+        allowlist: toolAllowlist?.(action.tool, action.args),
+        toolConfirmation: this.runtime.config.toolConfirmation,
+      });
+
+      // Local exec is a hidden shortcut rather than a plan artifact. Even a
+      // read-only command must not execute through that shortcut in plan mode.
+      if (effectivePermissionMode === 'plan' && action.tool === 'exec_command') {
         throw new LocalFastPathBlockedError(
-          permission.reason || 'Local fast path requires an allow-safe command.'
+          'Local run-test fast path is blocked in plan mode; switch mode before executing commands.'
         );
+      }
+      if (effective.outcome === 'deny' || effective.outcome === 'block') {
+        throw new LocalFastPathBlockedError(
+          effective.reason ||
+            `Local fast path blocked by ${effective.source ?? 'permission policy'}.`
+        );
+      }
+      if (effective.outcome === 'confirm') {
+        if (
+          this.runtime.config.toolConfirmation === 'deny' ||
+          !this.controllerOptions.confirmToolUse
+        ) {
+          throw new LocalFastPathBlockedError(
+            effective.reason || 'Local fast path requires user confirmation.'
+          );
+        }
+        const approved = await this.controllerOptions.confirmToolUse({
+          name: action.tool,
+          args: action.args,
+          reason: effective.reason,
+          abortSignal: options.abortSignal,
+        });
+        if (!approved) {
+          throw new LocalFastPathBlockedError(
+            `Local fast path ${action.tool} requires confirmation and was denied by user.`
+          );
+        }
+      }
+
+      if (options.abortSignal?.aborted) {
+        throw new LocalFastPathBlockedError('Local fast path was cancelled before tool execution.');
       }
 
       if (sessionId) {
@@ -623,6 +711,7 @@ export class AgentChatController {
       ensureSession: this.runtime.ensureSession,
       setSession: session => {
         this.runtime.setSession(session);
+        applySessionEffort(this.runtime, this.events, session);
         const renderer =
           this.controllerOptions.uiRenderer ?? this.runtime.config.ui?.renderer ?? 'terminal';
         this.events.replaceTranscript(
@@ -820,6 +909,7 @@ export class AgentChatController {
     }
     refreshProjectInstructions(this.runtime.store, this.runtime.cwd);
     const snapshot = this.runtime.store.getSnapshot();
+    const effectivePermissionMode = this.runtime.store.getEffectivePermissionMode();
     const harness = createContextHarness({
       cwd: this.runtime.cwd,
       modelId: this.runtime.llm.getModel(),
@@ -1066,8 +1156,10 @@ export class AgentChatController {
         turnId,
         // Tools that fan out to other tools (batch_read) have to re-run the
         // permission gate per sub-step; they need the mode and the allowlist.
-        permissionMode: snapshot.permissionMode,
+        permissionMode: effectivePermissionMode,
         toolAllowlist: this.resolveToolAllowlist(),
+        toolConfirmation: this.runtime.config.toolConfirmation,
+        confirmToolUse: this.controllerOptions.confirmToolUse,
       });
     };
 
@@ -1119,7 +1211,7 @@ export class AgentChatController {
         llm: this.runtime.llm,
         streamCallbacks,
         costTracker: snapshot.costTracker,
-        permissionMode: snapshot.permissionMode,
+        permissionMode: effectivePermissionMode,
         toolConfirmation: this.runtime.config.toolConfirmation,
         toolAllowlist: this.resolveToolAllowlist(),
         confirmToolUse: this.controllerOptions.confirmToolUse,
@@ -1131,6 +1223,10 @@ export class AgentChatController {
           },
           sessionId,
           turnId,
+          permissionMode: effectivePermissionMode,
+          toolAllowlist: this.resolveToolAllowlist(),
+          toolConfirmation: this.runtime.config.toolConfirmation,
+          confirmToolUse: this.controllerOptions.confirmToolUse,
         },
         abortSignal,
         harness,

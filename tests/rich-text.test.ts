@@ -6,19 +6,30 @@ import type { RichTextThemeResolver } from '../src/runtime/rich-text/types';
 import { MAX_RICH_TEXT_INPUT_BYTES } from '../src/runtime/rich-text/types';
 import stringWidth from 'string-width';
 
-const themeResolver: RichTextThemeResolver = (token) => {
+const themeResolver: RichTextThemeResolver = token => {
   switch (token) {
-    case 'assistantText': return DEFAULT_THEME.assistantText;
-    case 'heading': return DEFAULT_THEME.heading;
-    case 'code': return DEFAULT_THEME.code;
-    case 'inlineCode': return DEFAULT_THEME.inlineCode ?? DEFAULT_THEME.code;
-    case 'link': return DEFAULT_THEME.link ?? DEFAULT_THEME.assistantText;
-    case 'diffAdded': return DEFAULT_THEME.diffAdded;
-    case 'diffRemoved': return DEFAULT_THEME.diffRemoved;
-    case 'diffHunk': return DEFAULT_THEME.diffHunk;
-    case 'warning': return DEFAULT_THEME.warning;
-    case 'error': return DEFAULT_THEME.error;
-    case 'muted': return DEFAULT_THEME.muted;
+    case 'assistantText':
+      return DEFAULT_THEME.assistantText;
+    case 'heading':
+      return DEFAULT_THEME.heading;
+    case 'code':
+      return DEFAULT_THEME.code;
+    case 'inlineCode':
+      return DEFAULT_THEME.inlineCode ?? DEFAULT_THEME.code;
+    case 'link':
+      return DEFAULT_THEME.link ?? DEFAULT_THEME.assistantText;
+    case 'diffAdded':
+      return DEFAULT_THEME.diffAdded;
+    case 'diffRemoved':
+      return DEFAULT_THEME.diffRemoved;
+    case 'diffHunk':
+      return DEFAULT_THEME.diffHunk;
+    case 'warning':
+      return DEFAULT_THEME.warning;
+    case 'error':
+      return DEFAULT_THEME.error;
+    case 'muted':
+      return DEFAULT_THEME.muted;
   }
 };
 
@@ -59,6 +70,37 @@ describe('rich-text parser', () => {
     const doc = parseRichText('Hello world');
     const para = doc.blocks.find(b => b.type === 'paragraph');
     expect(para).toBeDefined();
+  });
+
+  it('decodes marked entities exactly once in prose, tables, and inline code', () => {
+    const prose = parseRichText('被归类为"状态写入工具" & 继续 &#65; &#x42; &unknown; &#27;');
+    const paragraph = prose.blocks.find(block => block.type === 'paragraph');
+    expect(paragraph?.type).toBe('paragraph');
+    if (paragraph?.type === 'paragraph') {
+      expect(paragraph.spans.map(span => span.text).join('')).toBe(
+        '被归类为"状态写入工具" & 继续 A B &unknown; &#27;'
+      );
+    }
+
+    const inlineCode = parseRichText('`"` `&quot;` `&` `&amp;`');
+    const codeParagraph = inlineCode.blocks.find(block => block.type === 'paragraph');
+    expect(codeParagraph?.type).toBe('paragraph');
+    if (codeParagraph?.type === 'paragraph') {
+      expect(codeParagraph.spans.filter(span => span.code).map(span => span.text)).toEqual([
+        '"',
+        '&quot;',
+        '&',
+        '&amp;',
+      ]);
+    }
+
+    const table = parseRichText('| 类型 | 说明 |\n| --- | --- |\n| "state" | A & B |');
+    const tableBlock = table.blocks.find(block => block.type === 'table');
+    expect(tableBlock?.type).toBe('table');
+    if (tableBlock?.type === 'table') {
+      expect(tableBlock.rows[0][0].map(span => span.text).join('')).toBe('"state"');
+      expect(tableBlock.rows[0][1].map(span => span.text).join('')).toBe('A & B');
+    }
   });
 
   it('parses code block', () => {
@@ -175,7 +217,7 @@ describe('rich-text parser', () => {
   it('deterministically truncates oversized input', () => {
     const doc = parseRichText('x'.repeat(MAX_RICH_TEXT_INPUT_BYTES + 100));
     const text = doc.blocks
-      .flatMap(block => block.type === 'paragraph' ? block.spans.map(span => span.text) : [])
+      .flatMap(block => (block.type === 'paragraph' ? block.spans.map(span => span.text) : []))
       .join('');
 
     expect(text.length).toBe(MAX_RICH_TEXT_INPUT_BYTES);
@@ -194,7 +236,9 @@ describe('rich-text parser', () => {
 
 describe('rich-text layout', () => {
   it('produces rows within width constraint', () => {
-    const doc = parseRichText('This is a long paragraph that should wrap to multiple lines when the width is small');
+    const doc = parseRichText(
+      'This is a long paragraph that should wrap to multiple lines when the width is small'
+    );
     const rows = layoutRichText(doc, { width: 20, theme: themeResolver });
     for (const row of rows) {
       const rowWidth = stringWidth(row.map(s => s.text).join(''));
@@ -230,17 +274,21 @@ describe('rich-text layout', () => {
     const doc = parseRichText('```typescript\nconst value = 1;\n```');
     const rows = layoutRichText(doc, { width: 24, theme: themeResolver });
 
-    expect(rows[0].map(span => span.text).join('').trim()).toBe('typescript');
+    expect(
+      rows[0]
+        .map(span => span.text)
+        .join('')
+        .trim()
+    ).toBe('typescript');
     expect(rows[0].every(span => span.style.background !== undefined)).toBe(true);
     expect(rows[0].every(span => span.style.dim)).toBe(true);
     expect(stringWidth(rows[0].map(span => span.text).join(''))).toBe(24);
   });
 
   it('aligns nested list continuation rows under their content', () => {
-    const doc = parseRichText([
-      '- parent',
-      '  - child with enough words to wrap across several rows',
-    ].join('\n'));
+    const doc = parseRichText(
+      ['- parent', '  - child with enough words to wrap across several rows'].join('\n')
+    );
     const rows = layoutRichText(doc, { width: 18, theme: themeResolver });
     const textRows = rows.map(row => row.map(span => span.text).join(''));
     const childIndex = textRows.findIndex(row => row.startsWith('  - child'));

@@ -29,6 +29,7 @@ import {
 } from '../runtime/ui-view-model';
 import { formatBytes } from '../services/format';
 import { redactTraceText } from '../services/redaction';
+import type { ToolPermissionScope } from '../services/tool-allowlist';
 import { applyTerminalTabCompletion } from './completion';
 import { openExternalEditor } from './editor';
 import { RawTerminalEditor } from './raw-editor';
@@ -197,7 +198,9 @@ export function resolveTerminalModelPickerInput(
   );
   if (exact) return { type: 'selected', model: exact.name };
 
-  const prefixMatches = request.models.filter(m => normalizePickerText(m.name).startsWith(normalized));
+  const prefixMatches = request.models.filter(m =>
+    normalizePickerText(m.name).startsWith(normalized)
+  );
   if (prefixMatches.length === 1) return { type: 'selected', model: prefixMatches[0].name };
 
   return {
@@ -476,7 +479,9 @@ export function formatTerminalModelPickerItem(
   const marker = item.isCurrent ? ACCENT('●') : DIM('○');
   const alias = item.alias ? ` (${item.alias})` : '';
   const context = formatModelTokenCount(item.contextWindow);
-  const output = item.maxOutputTokens ? formatModelTokenCount(item.maxOutputTokens).replace('ctx', 'out') : '';
+  const output = item.maxOutputTokens
+    ? formatModelTokenCount(item.maxOutputTokens).replace('ctx', 'out')
+    : '';
   const provider = item.provider ?? 'unknown';
   const description = [provider, context, output].filter(Boolean).join('  ');
   const row = `${marker} ${ACCENT(`${item.name}${alias}`)}  ${DIM(description)}`;
@@ -566,6 +571,7 @@ export class TerminalEventSink implements UiEventSink {
   private readonly subtaskTimeline = new Map<string, SubtaskTimelineEntry>();
   private researchEvents: ResearchLifecycleEvent[] = [];
   private researchProjection: ResearchStatusProjection | null = null;
+  private readonly effortEvents: import('../runtime/ui-events').RuntimeEffortEvent[] = [];
 
   // --- v0.2.23: bounded state configuration ---
   private static readonly MAX_FINALIZED_METADATA = 512;
@@ -955,6 +961,17 @@ export class TerminalEventSink implements UiEventSink {
     this.writer.write(`${DIM(formatResearchLifecycleEvent(event, 'terminal'))}\n`);
   }
 
+  effortEvent(event: import('../runtime/ui-events').RuntimeEffortEvent): void {
+    this.effortEvents.push(event);
+    const effective =
+      'effective' in event ? (event.effective ?? 'provider-default') : 'unavailable';
+    this.writer.write(`${DIM(`effort:${event.requested}/${effective}`)}\n`);
+  }
+
+  getEffortEvents(): import('../runtime/ui-events').RuntimeEffortEvent[] {
+    return [...this.effortEvents];
+  }
+
   /** Ordered, bounded research audit history for parity and renderer diagnostics. */
   getResearchEvents(): ResearchLifecycleEvent[] {
     return [...this.researchEvents];
@@ -1069,7 +1086,7 @@ function formatTerminalPermissionScope(
   state: ReturnType<typeof createPermissionPromptState>
 ): string {
   const width = terminalContentWidth(120);
-  const maxScopeWidth = Math.max(24, Math.min(72, Math.floor(width * 0.35)));
+  const maxScopeWidth = Math.max(8, width - 2);
   return compactPermissionValue(permissionScopeDisplayValue(state.scope), maxScopeWidth);
 }
 
@@ -1081,48 +1098,51 @@ export function formatTerminalPermissionPrompt(
   const width = terminalContentWidth(120);
   const budget = Math.max(1, width);
   const base = `${ACCENT('?')} Allow tool ${ACCENT(state.toolName)}?`;
-  const options = DIM(`[${state.options.approve} ${state.options.deny}]`);
+  const options = DIM(
+    `[${state.options.once} ${state.options.project} ${state.options.global} ${state.options.deny}]`
+  );
   const scope = DIM(formatTerminalPermissionScope(state));
-  const cwdLabel = DIM(
-    `cwd=${compactPermissionValue(state.cwd, Math.max(12, Math.min(48, Math.floor(width * 0.22))))}`
-  );
+  const cwdLabel = DIM(`cwd=${compactPermissionValue(state.cwd, Math.max(8, width - 4))}`);
   const risk = DIM(
-    `risk=${compactPermissionValue(permissionRiskDisplayValue(state.risk), Math.max(12, Math.min(48, Math.floor(width * 0.24))))}`
+    `risk=${compactPermissionValue(permissionRiskDisplayValue(state.risk), Math.max(8, width - 5))}`
   );
+  const rows = [base, `${scope} ${cwdLabel}`, risk, options].map(row =>
+    truncateTerminalText(stripTrailingNewlines(row), budget)
+  );
+  const inputMarker = budget >= 2 ? `${ACCENT('>')} ` : ACCENT('>');
+  return `${rows.join('\n')}\n${inputMarker}`;
+}
 
-  const parts = [base, scope, cwdLabel, risk, options];
-  while (parts.length > 3 && visibleLength(`${parts.join(' ')} `) > budget) {
-    const riskIndex = parts.indexOf(risk);
-    if (riskIndex >= 0) {
-      parts.splice(riskIndex, 1);
-      continue;
-    }
-    const cwdIndex = parts.indexOf(cwdLabel);
-    if (cwdIndex >= 0) {
-      parts.splice(cwdIndex, 1);
-      continue;
-    }
-    break;
+export interface TerminalPermissionDecision {
+  approved: boolean;
+  scope: ToolPermissionScope;
+}
+
+/** Parse a deliberate response; invalid input leaves the permission prompt pending. */
+export function parseTerminalPermissionAnswer(
+  answer: string
+): TerminalPermissionDecision | undefined {
+  switch (answer.trim().toLowerCase()) {
+    case '1':
+    case 'y':
+    case 'yes':
+    case 'once':
+      return { approved: true, scope: 'once' };
+    case '2':
+    case 'p':
+    case 'project':
+      return { approved: true, scope: 'project' };
+    case '3':
+    case 'g':
+    case 'global':
+      return { approved: true, scope: 'global' };
+    case 'n':
+    case 'no':
+    case 'deny':
+      return { approved: false, scope: 'once' };
+    default:
+      return undefined;
   }
-
-  let prompt = `${parts.join(' ')} `;
-  if (visibleLength(prompt) <= budget) return prompt;
-
-  const fixed = `${base} ${options} `;
-  const scopeBudget = Math.max(8, budget - visibleLength(fixed) - 1);
-  prompt = `${base} ${DIM(truncateTerminalText(formatTerminalPermissionScope(state), scopeBudget))} ${options} `;
-  if (visibleLength(prompt) <= budget) return prompt;
-
-  const optionWidth = visibleLength(options);
-  if (budget <= optionWidth + 1) {
-    return truncateTerminalText(
-      `${stripTrailingNewlines(base)} ${stripTrailingNewlines(options)} `,
-      budget
-    );
-  }
-
-  const baseBudget = Math.max(1, budget - optionWidth - 2);
-  return `${truncateTerminalText(stripTrailingNewlines(base), baseBudget)} ${options} `;
 }
 
 export function parseEditInput(input: string): { isEdit: boolean; initialContent: string } {
@@ -1373,13 +1393,26 @@ export async function launchTerminalUI(runtime: OrionCodeUiRuntime): Promise<voi
 
       confirmingTool = true;
 
-      void editor
-        .ask(formatTerminalPermissionPrompt(event.request, runtime.cwd), event.request.abortSignal)
-        .then(answer => {
+      const askUntilValid = async (): Promise<TerminalPermissionDecision> => {
+        while (!event.request.abortSignal?.aborted && !stopping) {
+          const answer = await editor.ask(
+            formatTerminalPermissionPrompt(event.request, runtime.cwd),
+            event.request.abortSignal
+          );
+          const decision = parseTerminalPermissionAnswer(answer);
+          if (decision) return decision;
+          writer.write(`${WARNING('Please choose 1, 2, 3, or n.')}\n`);
+        }
+        return { approved: false, scope: 'once' };
+      };
+
+      void askUntilValid()
+        .then(decision => {
           agentController.handle({
             type: 'permission_decision',
             requestId: event.request.id,
-            approved: /^y(es)?$/i.test(answer.trim()),
+            approved: decision.approved,
+            scope: decision.scope,
             source: 'keyboard',
           });
         })

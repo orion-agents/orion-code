@@ -17,6 +17,7 @@ import type {
 } from './ui-events';
 import type { GoalControlAction, GoalControlInput, GoalRuntimeEvent } from './goals/types';
 import type { ToolConfirmationPolicy } from '../services/global-config';
+import type { ToolPermissionScope } from '../services/tool-allowlist';
 
 export type AgentRuntimeInput =
   | {
@@ -36,6 +37,8 @@ export type AgentRuntimeInput =
       type: 'permission_decision';
       requestId: string;
       approved: boolean;
+      /** Defaults to `once` for backward-compatible renderer adapters. */
+      scope?: ToolPermissionScope;
       source?: 'picker' | 'keyboard' | 'programmatic';
       metadata?: Record<string, unknown>;
     }
@@ -67,6 +70,8 @@ export type AgentRuntimeSubmitResult =
   | { type: 'exit_requested' }
   | { type: 'started' }
   | { type: 'revision_requested' }
+  | { type: 'command_queued'; commandId: string }
+  | { type: 'command_rejected_busy'; commandId: string }
   | { type: 'command_ignored' };
 
 export type AgentRuntimeInterruptResult =
@@ -80,6 +85,7 @@ export type AgentRuntimeInputResult =
   | { type: 'exit_intent_cleared' }
   | { type: 'permission_decision_recorded' }
   | { type: 'permission_decision_ignored' }
+  | { type: 'permission_decision_failed'; reason: string }
   | { type: 'permission_mode_changed' }
   | { type: 'permission_mode_invalid' };
 
@@ -104,6 +110,7 @@ export type AgentRuntimeEvent =
   | { type: 'subtask_event'; event: RuntimeSubtaskEvent }
   | { type: 'research_event'; event: ResearchLifecycleEvent }
   | { type: 'goal_event'; event: GoalRuntimeEvent }
+  | { type: 'effort_event'; event: import('./ui-events').RuntimeEffortEvent }
   | { type: 'processing_changed'; processing: boolean }
   | { type: 'clear_view' }
   | { type: 'shutdown_requested'; reason?: string };
@@ -172,6 +179,9 @@ export function emitToUiEventSink(events: UiEventSink, event: AgentRuntimeEvent)
       return undefined;
     case 'goal_event':
       events.goalEvent?.(event.event);
+      return undefined;
+    case 'effort_event':
+      events.effortEvent?.(event.event);
       return undefined;
     case 'processing_changed':
       events.setProcessing(event.processing);
@@ -249,6 +259,9 @@ export function createUiEventSinkFromAgentRuntimeEvents(sink: AgentRuntimeEventS
     },
     goalEvent: event => {
       sink.emit({ type: 'goal_event', event });
+    },
+    effortEvent: event => {
+      sink.emit({ type: 'effort_event', event });
     },
     setProcessing: processing => {
       sink.emit({ type: 'processing_changed', processing });

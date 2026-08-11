@@ -13,7 +13,7 @@ export const LEGACY_COMMANDS: SlashCommand[] = [
     isHidden: true,
     execution: 'builtin',
     risk: 'state-write',
-    deprecated: { since: 'v0.1.1', replacement: '/target', removeIn: 'v0.3.0' },
+    deprecated: { since: 'v0.1.1', replacement: '/goal', removeIn: 'v0.3.0' },
     execute: (ctx, args) => handleTask(ctx, args),
   },
   {
@@ -25,7 +25,7 @@ export const LEGACY_COMMANDS: SlashCommand[] = [
     isHidden: true,
     execution: 'agent-workflow',
     risk: 'state-write',
-    deprecated: { since: 'v0.1.1', replacement: '/target', removeIn: 'v0.3.0' },
+    deprecated: { since: 'v0.1.1', replacement: '/goal', removeIn: 'v0.3.0' },
     execute: (ctx, args) => handleRun(ctx, args),
   },
   {

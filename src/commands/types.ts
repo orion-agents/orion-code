@@ -75,6 +75,8 @@ export interface CommandResult {
   modelPicker?: ModelPickerRequest;
   /** Structured edit preview request forwarded to renderer adapters. */
   editPreview?: EditPreviewRequest;
+  /** Shared provider-aware effort state event projected by every renderer. */
+  effortEvent?: import('../runtime/ui-events').RuntimeEffortEvent;
 }
 
 /** 命令参数定义 */
@@ -102,6 +104,11 @@ export type CommandCategory =
 /** Permission Mode - controls how tools/edits are handled */
 export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'auto';
 
+/** Agent working mode. This is deliberately independent from tool confirmation policy. */
+export type AgentMode = 'interactive' | 'plan' | 'auto';
+
+export const AGENT_MODES: AgentMode[] = ['interactive', 'plan', 'auto'];
+
 /** Permission mode cycle order */
 export const PERMISSION_MODES: PermissionMode[] = ['default', 'acceptEdits', 'plan', 'auto'];
 
@@ -112,21 +119,70 @@ export function getNextPermissionMode(current: PermissionMode): PermissionMode {
 }
 
 /** Get mode display text */
-export function getModeDisplayText(mode: PermissionMode): string {
+export function getModeDisplayText(mode: AgentMode): string {
   switch (mode) {
     case 'plan':
       return 'plan mode on';
-    case 'acceptEdits':
-      return 'auto-accept edits';
     case 'auto':
       return 'auto mode';
     default:
-      return '';
+      return 'interactive mode';
   }
 }
 
 /** Command execution classification. */
 export type CommandExecution = 'builtin' | 'agent-workflow' | 'renderer-local';
+
+/** Product audience used to keep compatibility and internal commands out of default surfaces. */
+export type CommandAudience = 'primary' | 'advanced' | 'compatibility' | 'internal';
+
+/** Behaviour when a command is submitted while an agent turn is active. */
+export type CommandBusyPolicy = 'immediate' | 'queue-next' | 'reject-busy';
+
+/** Registration source. Built-ins are reserved and cannot be shadowed by extensions. */
+export type CommandSourceKind = 'builtin' | 'skill' | 'mcp-prompt' | 'plugin';
+export type CommandTrust = 'core' | 'user' | 'project' | 'remote';
+
+export interface CommandSource {
+  kind: CommandSourceKind;
+  id: string;
+  trust: CommandTrust;
+}
+
+/** Observable effects used by renderers, permission routing, and documentation. */
+export type CommandSideEffect =
+  | 'none'
+  | 'agent-request'
+  | 'session-state'
+  | 'project-config'
+  | 'global-config'
+  | 'workspace-write'
+  | 'renderer-view'
+  | 'process-lifecycle';
+
+export type CommandDefaultAction = 'execute' | 'show-status' | 'open-picker' | 'show-help';
+
+export interface CommandLifecycle {
+  status: 'stable' | 'deprecated' | 'internal';
+  since?: string;
+  removeIn?: string;
+  replacement?: string;
+}
+
+export interface CommandCompatibilityAlias {
+  name: string;
+  lifecycle: CommandLifecycle & { status: 'deprecated'; replacement: string };
+}
+
+/**
+ * Parser-facing argument contract. `raw` preserves the user's values and never
+ * performs shell expansion. Domain handlers may layer a stricter schema on top.
+ */
+export interface CommandArgumentSchema {
+  kind: 'none' | 'raw' | 'subcommands';
+  opaqueTail: boolean;
+  subcommands?: string[];
+}
 
 /** Command risk level used for safety metadata and permission routing. */
 export type CommandRisk = 'read-only' | 'state-write' | 'destructive';
@@ -148,6 +204,8 @@ export interface CommandDeprecation {
 export interface SlashCommand {
   name: string;
   aliases?: string[];
+  /** Exact legacy spellings that execute but never appear in discovery surfaces. */
+  compatibilityAliases?: CommandCompatibilityAlias[];
   /** 描述（可以是 getter 函数支持动态） */
   description: string;
   /** Product-facing grouping for command palettes and help output. */
@@ -171,6 +229,28 @@ export interface SlashCommand {
   /** Deprecation lifecycle metadata. */
   deprecated?: CommandDeprecation;
   execute(ctx: CommandContext, args: string): Promise<CommandResult> | CommandResult;
+
+  /** Registered descriptors populate these fields; raw extension definitions may omit them. */
+  id?: string;
+  source?: CommandSource;
+  audience?: CommandAudience;
+  sideEffects?: CommandSideEffect[];
+  busyPolicy?: CommandBusyPolicy;
+  defaultAction?: CommandDefaultAction;
+  lifecycle?: CommandLifecycle;
+  argumentSchema?: CommandArgumentSchema;
+}
+
+/** Fully validated command returned by the shared registry. */
+export interface RegisteredSlashCommand extends SlashCommand {
+  id: string;
+  source: CommandSource;
+  audience: CommandAudience;
+  sideEffects: CommandSideEffect[];
+  busyPolicy: CommandBusyPolicy;
+  defaultAction: CommandDefaultAction;
+  lifecycle: CommandLifecycle;
+  argumentSchema: CommandArgumentSchema;
 }
 
 /** List of renderers that a command scope can apply to. */

@@ -37,6 +37,7 @@ export interface PrintModeResult {
   errors: string[];
   goalEvents: GoalRuntimeEvent[];
   researchEvents: ResearchLifecycleEvent[];
+  effortEvents: import('../runtime/ui-events').RuntimeEffortEvent[];
   research: ResearchStatusProjection | null;
   sessionId: string | null;
   model: string;
@@ -87,6 +88,7 @@ export class PrintEventSink implements UiEventSink {
   private readonly errors: string[] = [];
   private readonly goalEvents: GoalRuntimeEvent[] = [];
   private researchEvents: ResearchLifecycleEvent[] = [];
+  private readonly effortEvents: import('../runtime/ui-events').RuntimeEffortEvent[] = [];
   private researchProjection: ResearchStatusProjection | null = null;
   private idCounter = 0;
 
@@ -99,9 +101,7 @@ export class PrintEventSink implements UiEventSink {
     const id = `print-${++this.idCounter}`;
     const fullEntry: TranscriptEntry = {
       id,
-      role: entry.role,
-      title: entry.title,
-      content: entry.content,
+      ...entry,
     };
     this.entries.set(id, fullEntry);
     this.printEntry(fullEntry, false);
@@ -208,6 +208,15 @@ export class PrintEventSink implements UiEventSink {
     }
   }
 
+  effortEvent(event: import('../runtime/ui-events').RuntimeEffortEvent): void {
+    this.effortEvents.push(event);
+    if (this.outputFormat === 'text') {
+      const effective =
+        'effective' in event ? (event.effective ?? 'provider-default') : 'unavailable';
+      stderrLine(`effort:${event.type} requested=${event.requested} effective=${effective}`);
+    }
+  }
+
   setProcessing(_processing: boolean): void {
     // Non-interactive print mode has no live processing indicator.
   }
@@ -231,6 +240,7 @@ export class PrintEventSink implements UiEventSink {
       errors: [...this.errors],
       goalEvents: [...this.goalEvents],
       researchEvents: [...this.researchEvents],
+      effortEvents: [...this.effortEvents],
       research: this.researchProjection
         ? {
             ...this.researchProjection,

@@ -23,6 +23,7 @@ import {
   inferTerminalErrorLayer,
   normalizeTerminalAnswer,
   parseEditInput,
+  parseTerminalPermissionAnswer,
   promptText,
   renderTerminalBanner,
   renderTerminalCapabilitySummary,
@@ -1088,14 +1089,25 @@ describe('terminal UI renderer adapter', () => {
     );
     const rendered = stripAnsi(prompt);
 
-    expect(visibleLength(rendered)).toBeLessThanOrEqual(180);
+    expect(rendered.split('\n').every(line => visibleLength(line) <= 180)).toBe(true);
     expect(rendered).toContain('Allow tool exec_command?');
     expect(rendered).toContain('cmd=$ echo');
     expect(rendered).toContain('Authorization: [REDACTED_SECRET]');
     expect(rendered).toContain('cwd=/tmp/openhorse-terminal-renderer');
     expect(rendered).toContain('risk=low: Command execution needs approval');
-    expect(rendered).toContain('[y=yes n=no]');
+    expect(rendered).toContain('[1=once 2=project 3=global n=no]');
     expect(rendered).not.toContain('secret-token-123456');
+  });
+
+  it('parses all interactive permission scopes and keeps invalid feedback pending', () => {
+    expect(parseTerminalPermissionAnswer('1')).toEqual({ approved: true, scope: 'once' });
+    expect(parseTerminalPermissionAnswer('project')).toEqual({
+      approved: true,
+      scope: 'project',
+    });
+    expect(parseTerminalPermissionAnswer('g')).toEqual({ approved: true, scope: 'global' });
+    expect(parseTerminalPermissionAnswer('no')).toEqual({ approved: false, scope: 'once' });
+    expect(parseTerminalPermissionAnswer('maybe')).toBeUndefined();
   });
 
   it('formats path-oriented permission prompts without changing runtime policy', () => {
@@ -1116,7 +1128,7 @@ describe('terminal UI renderer adapter', () => {
     expect(prompt).toContain('path=src/terminal-ui/launch.ts');
     expect(prompt).toContain('cwd=/repo');
     expect(prompt).toContain('risk=HIGH: approval required');
-    expect(prompt).toContain('[y=yes n=no]');
+    expect(prompt).toContain('[1=once 2=project 3=global n=no]');
   });
 
   it('bounds terminal permission prompts to the active terminal width', () => {
@@ -1137,8 +1149,10 @@ describe('terminal UI renderer adapter', () => {
         )
       );
 
-      expect(visibleLength(prompt)).toBeLessThanOrEqual(columns);
-      expect(prompt).toContain('[y=yes n=no]');
+      expect(prompt.split('\n').every(line => visibleLength(line) <= columns)).toBe(true);
+      if (columns >= 40) {
+        expect(prompt).toContain('[1=once 2=project 3=global n=no]');
+      }
     }
   });
 
@@ -1160,7 +1174,7 @@ describe('terminal UI renderer adapter', () => {
         )
       );
 
-      expect(visibleLength(prompt)).toBeLessThanOrEqual(columns);
+      expect(prompt.split('\n').every(line => visibleLength(line) <= columns)).toBe(true);
     }
   });
 });
@@ -1368,7 +1382,7 @@ describe('raw terminal editor', () => {
 
     const rendered = stripAnsi(writes.join(''));
     expect(editor.getBuffer().value).toBe(value);
-    expect((rendered.match(/\r\n/g) ?? [])).toHaveLength(5);
+    expect(rendered.match(/\r\n/g) ?? []).toHaveLength(5);
     expect(rendered).toContain('line 19');
   });
 

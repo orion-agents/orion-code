@@ -14,8 +14,35 @@ import {
   showAgents,
 } from './diagnostic-command-handlers';
 import { handleMigrateCommand } from '../migration/command';
+import { readSessionTraceEvents } from '../services/session-storage';
 
 export const DIAGNOSTIC_COMMANDS: SlashCommand[] = [
+  {
+    name: 'subagents',
+    description: 'Show typed subtask and research activity for the current session',
+    category: 'diagnostics',
+    priority: 4,
+    type: 'builtin',
+    execution: 'builtin',
+    risk: 'read-only',
+    execute: ctx => {
+      const sessionId = ctx.getSession?.()?.id ?? ctx.sessionId;
+      if (!sessionId) return { success: true, output: 'No active session.' };
+      const events = readSessionTraceEvents(sessionId).filter(
+        event => event.type.startsWith('subtask_') || event.name?.startsWith('research:')
+      );
+      return {
+        success: true,
+        output:
+          events.length > 0
+            ? events
+                .slice(-50)
+                .map(event => `${event.type}${event.name ? ` ${event.name}` : ''}`)
+                .join('\n')
+            : 'No typed subtask or research activity in this session.',
+      };
+    },
+  },
   {
     name: 'doctor',
     aliases: ['diag', 'diagnose'],
@@ -106,6 +133,22 @@ export const DIAGNOSTIC_COMMANDS: SlashCommand[] = [
     execution: 'builtin',
     risk: 'destructive',
     execute: (ctx, args) => handleCheckpoint(ctx, args),
+  },
+  {
+    name: 'rewind',
+    description: 'List or restore a checkpoint with explicit preview and confirmation',
+    argumentHint: '[list|restore <turn-id> --yes]',
+    category: 'session',
+    priority: 35,
+    type: 'builtin',
+    execution: 'builtin',
+    risk: 'destructive',
+    execute: (ctx, args) => {
+      const trimmed = args.trim();
+      if (!trimmed || trimmed === 'list') return handleCheckpoint(ctx, '');
+      if (trimmed.startsWith('restore ')) return handleCheckpoint(ctx, trimmed);
+      return { success: false, error: 'Usage: /rewind [list|restore <turn-id> --yes]' };
+    },
   },
   {
     name: 'cost',

@@ -107,7 +107,7 @@ npm start -- --print "review the current git diff"
 固定安装 v0.1.4-2 维护预发布版本：
 
 ```bash
-npm install -g @orion-agents/orion-code@0.1.4-2
+npm install -g @orion-agents/orion-code@0.1.5
 # 或通过预发布 dist-tag 安装：
 npm install -g @orion-agents/orion-code@next
 # 任意目录运行

@@ -5,7 +5,11 @@ import { join } from 'path';
 import { promisify } from 'util';
 import { loadSessionIndex, updateSessionIndex } from '../src/services/session-index';
 import { getProjectSessionsDir } from '../src/services/config-dir';
-import { loadSessionMeta } from '../src/services/session-storage';
+import {
+  createSession,
+  loadSessionMeta,
+  readSessionMessages,
+} from '../src/services/session-storage';
 import { loadUsageState } from '../src/services/usage-state';
 
 const execFileAsync = promisify(execFile);
@@ -65,6 +69,33 @@ describe('cross-process persistence coordination', () => {
       files: ['shared.ts'],
     });
   });
+
+  test('keeps transcript and metadata counters consistent across processes', async () => {
+    const session = createSession(projectPath, 'test-model');
+    const sessionId = JSON.stringify(session.id);
+    const workers = 4;
+    const operationsPerWorker = 6;
+
+    await Promise.all(
+      Array.from({ length: workers }, (_, worker) =>
+        runWorker(
+          `const { appendSessionMessage, updateSessionStats } = require('./src/services/session-storage'); ` +
+            `for (let i = 0; i < ${operationsPerWorker}; i++) { ` +
+            `appendSessionMessage(${sessionId}, { role: 'user', content: 'worker-${worker}-' + i, timestamp: i }); ` +
+            `updateSessionStats(${sessionId}, 1, 0.01); }`
+        )
+      )
+    );
+
+    const expected = workers * operationsPerWorker;
+    expect(readSessionMessages(session.id)).toHaveLength(expected);
+    const meta = loadSessionMeta(session.id);
+    expect(meta).toMatchObject({
+      messageCount: expected,
+      tokenCount: expected,
+    });
+    expect(meta?.cost).toBeCloseTo(expected * 0.01, 8);
+  }, 20_000);
 
   test('rebuilds a structurally corrupt session index on the next update', () => {
     const sessionsDir = getProjectSessionsDir(projectPath);

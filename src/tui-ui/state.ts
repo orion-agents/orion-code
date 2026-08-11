@@ -107,6 +107,7 @@ export interface TuiUiState {
   inspector: ToolInspectorState | null;
   /** Shared runtime Goal projection. Null when the session has no goal. */
   goal: RuntimeGoalSnapshot | null;
+  effort: import('../runtime/ui-events').RuntimeEffortEvent | null;
 }
 
 export interface TuiToolDetailSummary {
@@ -145,6 +146,7 @@ export type TuiUiAction =
   | { type: 'subtaskEvent'; event: RuntimeSubtaskEvent }
   | { type: 'researchEvent'; event: ResearchLifecycleEvent }
   | { type: 'goalEvent'; event: GoalRuntimeEvent }
+  | { type: 'effortEvent'; event: import('../runtime/ui-events').RuntimeEffortEvent }
   | { type: 'showCommandPalette'; query: string; items: TuiPickerItem[] }
   | { type: 'showFilePicker'; base: string; query: string; items: TuiPickerItem[] }
   | { type: 'showShortcuts' }
@@ -170,6 +172,7 @@ export const initialTuiUiState: TuiUiState = {
   subtaskTimeline: [],
   researchEvents: [],
   research: null,
+  effort: null,
   committableTranscriptCount: 0,
   queuedTranscriptCount: 0,
   committedTranscriptCount: 0,
@@ -435,6 +438,20 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
         ...state,
         researchEvents: appendResearchEventHistory(state.researchEvents, action.event),
         research: projectResearchLifecycleEvent(state.research, action.event),
+        statusMessage,
+        statusState: { ...state.statusState, message: statusMessage },
+      };
+    }
+
+    case 'effortEvent': {
+      const effective =
+        'effective' in action.event
+          ? (action.event.effective ?? 'provider-default')
+          : 'unavailable';
+      const statusMessage = `effort ${action.event.requested} → ${effective}`;
+      return {
+        ...state,
+        effort: action.event,
         statusMessage,
         statusState: { ...state.statusState, message: statusMessage },
       };
@@ -741,6 +758,7 @@ export function createTuiUiEventSink(
     subtaskEvent: event => dispatch({ type: 'subtaskEvent', event }),
     researchEvent: event => dispatch({ type: 'researchEvent', event }),
     goalEvent: event => dispatch({ type: 'goalEvent', event }),
+    effortEvent: event => dispatch({ type: 'effortEvent', event }),
     setProcessing: processing => dispatch({ type: 'setProcessing', processing }),
     clearView: () => dispatch({ type: 'clearTranscript' }),
   };
@@ -872,7 +890,7 @@ function overlayItemCount(overlay: Exclude<TuiOverlayState, null | { type: 'shor
     case 'edit':
       return overlay.request.candidates.length;
     case 'permission':
-      return 2;
+      return 4;
     case 'toolConfirmation':
       return 3;
     case 'commands':

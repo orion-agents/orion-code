@@ -1,7 +1,14 @@
 /** Command definitions extracted from the stable slash-command registry. */
 
 import type { SlashCommand } from './types';
-import { handleModel, handleModels, handleMode, showConfig } from './model-command-handlers';
+import {
+  handleModel,
+  handleModels,
+  handleMode,
+  handlePermissions,
+  handleEffort,
+  showConfig,
+} from './model-command-handlers';
 
 export const MODEL_COMMANDS: SlashCommand[] = [
   {
@@ -28,15 +35,48 @@ export const MODEL_COMMANDS: SlashCommand[] = [
   },
   {
     name: 'mode',
-    aliases: ['perm'],
-    description: 'Show or change tool permission mode',
-    argumentHint: '[default|accept-edits|plan|auto|next]',
+    compatibilityAliases: [
+      {
+        name: 'perm',
+        lifecycle: {
+          status: 'deprecated',
+          since: 'v0.1.5',
+          removeIn: 'v0.3.0',
+          replacement: '/mode',
+        },
+      },
+    ],
+    description: 'Show or change the agent working mode',
+    argumentHint: '[interactive|plan|auto|next]',
     category: 'model',
     priority: 20,
     type: 'builtin',
     execution: 'builtin',
     risk: 'state-write',
     execute: (ctx, args) => handleMode(ctx, args),
+  },
+  {
+    name: 'permissions',
+    description: 'Show or change tool confirmation and edit policy',
+    argumentHint: '[show|ask|allow|deny|allow-edits|audit]',
+    category: 'model',
+    priority: 25,
+    type: 'builtin',
+    execution: 'builtin',
+    risk: 'state-write',
+    execute: (ctx, args) => handlePermissions(ctx, args),
+  },
+  {
+    name: 'effort',
+    aliases: ['reasoning'],
+    description: 'Show or change reasoning effort for the active model',
+    argumentHint: '[status|auto|none|minimal|low|medium|high|xhigh|max] [--project|--global]',
+    category: 'model',
+    priority: 22,
+    type: 'builtin',
+    execution: 'builtin',
+    risk: 'state-write',
+    execute: (ctx, args) => handleEffort(ctx, args),
   },
   {
     name: 'config',

@@ -1,18 +1,31 @@
-import { appendFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import {
+  appendFileSync,
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { findCommand } from '../src/commands';
 import { Store } from '../src/framework/store';
 import { loadConfig } from '../src/services/config';
 import { buildRegistry } from '../src/services/model-registry';
-import { appendSessionTraceEvent, createSession, readSessionTraceEvents } from '../src/services/session-storage';
+import {
+  appendSessionTraceEvent,
+  createSession,
+  readSessionTraceEvents,
+} from '../src/services/session-storage';
 import { getProjectSessionTracePath } from '../src/services/config-dir';
 import { storeArtifact } from '../src/core/tool-artifacts';
 import { createCheckpoint } from '../src/core/checkpoint';
 import { TOOLS } from '../src/tools';
 import type { CommandContext } from '../src/commands/types';
 
-const stripAnsi = (text: string): string => text.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
+const stripAnsi = (text: string): string =>
+  text.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
 
 function makeRuntime() {
   return {
@@ -69,12 +82,14 @@ describe('/status context diagnostics', () => {
     };
 
     const result = await findCommand('status')!.execute(ctx, '');
-    const rendered = stripAnsi(logs.join('\n'));
+    const rendered = stripAnsi(result.output ?? logs.join('\n'));
 
     expect(result.success).toBe(true);
     expect(rendered).toContain('Context:');
     expect(rendered).toContain('Renderer   tui product');
-    expect(rendered).toContain('pickers, inline-progress, clean-meta, assistant-spacing, quiet-abort');
+    expect(rendered).toContain(
+      'pickers, inline-progress, clean-meta, assistant-spacing, quiet-abort'
+    );
     expect(rendered).toContain('Project rules 2 files');
     expect(rendered).toContain('AGENTS.md');
     expect(rendered).toContain('packages/cli/AGENTS.md');
@@ -112,11 +127,13 @@ describe('/status context diagnostics', () => {
     };
 
     const result = await findCommand('status')!.execute(ctx, '');
-    const rendered = stripAnsi(logs.join('\n'));
+    const rendered = stripAnsi(result.output ?? logs.join('\n'));
 
     expect(result.success).toBe(true);
     expect(rendered).toContain('Renderer   ink deprecated');
-    expect(rendered).toContain('text-pickers, legacy-progress, legacy-meta, compact-spacing, abort-notice');
+    expect(rendered).toContain(
+      'text-pickers, legacy-progress, legacy-meta, compact-spacing, abort-notice'
+    );
   });
 
   it('uses the active renderer adapter identity for print-mode /status diagnostics', async () => {
@@ -147,7 +164,7 @@ describe('/status context diagnostics', () => {
     };
 
     const result = await findCommand('status')!.execute(ctx, '');
-    const rendered = stripAnsi(logs.join('\n'));
+    const rendered = stripAnsi(result.output ?? logs.join('\n'));
 
     expect(result.success).toBe(true);
     expect(rendered).toContain('Renderer   print non-interactive');
@@ -174,7 +191,7 @@ describe('/status context diagnostics', () => {
     };
 
     const result = await findCommand('models')!.execute(ctx, '');
-    const rendered = stripAnsi(logs.join('\n'));
+    const rendered = stripAnsi(result.output ?? logs.join('\n'));
 
     expect(result.success).toBe(true);
     expect(rendered).toContain('Available Models');
@@ -234,8 +251,8 @@ describe('/status context diagnostics', () => {
       runtime: makeRuntime() as any,
     };
 
-    const result = await findCommand('model')!.execute(ctx, '');
-    const rendered = stripAnsi(logs.join('\n'));
+    const result = await findCommand('model')!.execute(ctx, 'info');
+    const rendered = stripAnsi(result.output ?? logs.join('\n'));
 
     expect(result.success).toBe(true);
     expect(rendered).toContain('Current Model');
@@ -265,7 +282,7 @@ describe('/status context diagnostics', () => {
     };
 
     const result = await findCommand('model')!.execute(ctx, 'glm-5.2');
-    const rendered = stripAnsi(logs.join('\n'));
+    const rendered = stripAnsi(result.output ?? logs.join('\n'));
 
     expect(result.success).toBe(true);
     expect(setModel).toHaveBeenCalledWith('glm-5.2');
@@ -328,7 +345,7 @@ describe('/status context diagnostics', () => {
     };
 
     const result = await findCommand('models')!.execute(ctx, '');
-    const rendered = stripAnsi(logs.join('\n'));
+    const rendered = stripAnsi(result.output ?? logs.join('\n'));
 
     expect(result.success).toBe(true);
     expect(rendered).toContain('Available Models');
@@ -383,8 +400,8 @@ describe('/status context diagnostics', () => {
       runtime: makeRuntime() as any,
     };
 
-    const result = await findCommand('model')!.execute(ctx, '');
-    const rendered = stripAnsi(logs.join('\n'));
+    const result = await findCommand('model')!.execute(ctx, 'info');
+    const rendered = stripAnsi(result.output ?? logs.join('\n'));
 
     expect(result.success).toBe(true);
     expect(rendered).toContain('Current Model');
@@ -440,7 +457,7 @@ describe('/status context diagnostics', () => {
     };
 
     const result = await findCommand('model')!.execute(ctx, 'ark');
-    const rendered = stripAnsi(logs.join('\n'));
+    const rendered = stripAnsi(result.output ?? logs.join('\n'));
 
     expect(result.success).toBe(true);
     expect(setModel).toHaveBeenCalledWith('ark-code-latest');
@@ -470,7 +487,7 @@ describe('/status context diagnostics', () => {
     };
 
     const result = await findCommand('model')!.execute(ctx, 'opus');
-    const rendered = stripAnsi(logs.join('\n'));
+    const rendered = stripAnsi(result.output ?? logs.join('\n'));
 
     expect(result.success).toBe(true);
     expect(setModel).toHaveBeenCalledWith('claude-opus-4-8');
@@ -479,7 +496,7 @@ describe('/status context diagnostics', () => {
     expect(rendered).toContain('Context window 200K tokens (builtin)');
   });
 
-  it('reports /model help was removed and points to /models', async () => {
+  it('reports /model help was removed and points to the canonical /model picker', async () => {
     const cwd = join(root, 'packages', 'cli');
     const config = loadConfig({ apiKey: 'test-key', model: 'glm-5' });
     const store = new Store({
@@ -496,14 +513,14 @@ describe('/status context diagnostics', () => {
     };
 
     const result = await findCommand('model')!.execute(ctx, 'help');
-    const rendered = stripAnsi(logs.join('\n'));
+    const rendered = stripAnsi(result.output ?? logs.join('\n'));
 
     expect(result.success).toBe(true);
     expect(rendered).toContain('/model help was removed.');
-    expect(rendered).toContain('Use /models');
+    expect(rendered).toContain('Use /model without arguments');
   });
 
-  it('reports /model list was removed and points to /models', async () => {
+  it('reports /model list was removed and points to the canonical /model picker', async () => {
     const cwd = join(root, 'packages', 'cli');
     const config = loadConfig({ apiKey: 'test-key', model: 'glm-5' });
     const store = new Store({
@@ -520,11 +537,11 @@ describe('/status context diagnostics', () => {
     };
 
     const result = await findCommand('model')!.execute(ctx, 'list');
-    const rendered = stripAnsi(logs.join('\n'));
+    const rendered = stripAnsi(result.output ?? logs.join('\n'));
 
     expect(result.success).toBe(true);
     expect(rendered).toContain('/model list was removed.');
-    expect(rendered).toContain('Use /models');
+    expect(rendered).toContain('Use /model without arguments');
   });
 
   it('shows last agent-loop stats when available', async () => {
@@ -533,9 +550,9 @@ describe('/status context diagnostics', () => {
     const store = new Store({
       config,
       tools: TOOLS,
-        currentModel: 'gpt-4o',
-      });
-      store.setLastLoopStats({
+      currentModel: 'gpt-4o',
+    });
+    store.setLastLoopStats({
       turnsStarted: 2,
       llmRequests: 2,
       toolCalls: 3,
@@ -583,7 +600,7 @@ describe('/status context diagnostics', () => {
     };
 
     const result = await findCommand('status')!.execute(ctx, '');
-    const rendered = stripAnsi(logs.join('\n'));
+    const rendered = stripAnsi(result.output ?? logs.join('\n'));
 
     expect(result.success).toBe(true);
     expect(rendered).toContain('Last loop:');
@@ -619,8 +636,14 @@ describe('/status context diagnostics', () => {
       summarizedBytes: 500,
       finishReason: 'budget_exceeded',
       budgetExceededReason: 'LLM request budget 96 reached',
-      continuationActions: ['reply_continue', 'narrow_instruction', 'inspect_loop_stats', 'raise_budget'],
-      continuationHint: 'Reply `继续` to continue the same objective, give a narrower next step, inspect /loop-stats, or raise agentLoop.budget for intentional long work.',
+      continuationActions: [
+        'reply_continue',
+        'narrow_instruction',
+        'inspect_loop_stats',
+        'raise_budget',
+      ],
+      continuationHint:
+        'Reply `继续` to continue the same objective, give a narrower next step, inspect /loop-stats, or raise agentLoop.budget for intentional long work.',
       loopBudgetSource: 'config',
       loopBudgetBaseProfile: 'release',
       loopBudgetMaxLlmRequests: 96,
@@ -666,13 +689,17 @@ describe('/status context diagnostics', () => {
     expect(rendered).toContain('Fallback   final fallback-model');
     expect(rendered).toContain('Verify     node required=yes passed=1 failed=1 missing=1 claim=no');
     expect(rendered).toContain('Budget     LLM request budget 96 reached');
-    expect(rendered).toContain('Next       reply_continue, narrow_instruction, inspect_loop_stats, raise_budget');
+    expect(rendered).toContain(
+      'Next       reply_continue, narrow_instruction, inspect_loop_stats, raise_budget'
+    );
     expect(rendered).toContain('Budget cap 0/96 LLM, 1/360 tools');
     expect(rendered).toContain('(config over release)');
     expect(rendered).toContain('Retry type provider_busy');
     expect(rendered).toContain('Failed     npm run lint');
     expect(rendered).toContain('Missing    npm test -- --runInBand');
-    expect(rendered).toContain('Verify why Some expected verification commands have not passed yet.');
+    expect(rendered).toContain(
+      'Verify why Some expected verification commands have not passed yet.'
+    );
     expect(rendered).toContain('Next why   Reply `继续` to continue the same objective');
     expect(rendered).toContain('Budget hit yes');
   });
@@ -759,7 +786,8 @@ describe('/status context diagnostics', () => {
         type: 'tool_call',
         name: 'read_file',
         callId: 'call-1',
-        argsSummary: 'src/index.ts {"apiKey":"dashscope-secret-value"} Authorization: Bearer secret-token-123456',
+        argsSummary:
+          'src/index.ts {"apiKey":"dashscope-secret-value"} Authorization: Bearer secret-token-123456',
         argsArtifactId: 'read_file-args-123',
         argsBytes: 4096,
       });
@@ -836,7 +864,12 @@ describe('/status context diagnostics', () => {
         loopBudgetMaxModelVisibleBytes: 128 * 1024,
         loopBudgetConfigOverride: true,
         budgetExceededReason: 'LLM request budget 24 reached',
-        continuationActions: ['reply_continue', 'narrow_instruction', 'inspect_loop_stats', 'raise_budget'],
+        continuationActions: [
+          'reply_continue',
+          'narrow_instruction',
+          'inspect_loop_stats',
+          'raise_budget',
+        ],
         continuationHint: 'Reply `继续` to continue the same objective.',
         llmRequests: 1,
         toolCalls: 1,
@@ -858,32 +891,48 @@ describe('/status context diagnostics', () => {
       expect(result.success).toBe(true);
       expect(rendered).toContain('Trace turn-7');
       expect(rendered).toContain('request_start model=gpt-4o iteration=1');
-      expect(rendered).toContain('provider_retry count=2 delay=1.5s last=provider_busy/529 types=rate_limit,provider_busy final=fallback-model');
-      expect(rendered).toContain('provider_fallback count=1 path=primary-model->fallback-model using=yes');
-      expect(rendered).toContain('prompt_assembly model=gpt-4o tokens=512/2048 core=128 evidenceBudget=400 recentBudget=300 included=1 omitted=1');
+      expect(rendered).toContain(
+        'provider_retry count=2 delay=1.5s last=provider_busy/529 types=rate_limit,provider_busy final=fallback-model'
+      );
+      expect(rendered).toContain(
+        'provider_fallback count=1 path=primary-model->fallback-model using=yes'
+      );
+      expect(rendered).toContain(
+        'prompt_assembly model=gpt-4o tokens=512/2048 core=128 evidenceBudget=400 recentBudget=300 included=1 omitted=1'
+      );
       expect(rendered).toContain('sections=core,ranked_evidence');
       expect(rendered).toContain('evidence=ledger-1:user_requirement:score=42:tokens=20');
       expect(rendered).toContain('workspace_snapshot pre_turn dirty count=1 branch=main');
       expect(rendered).toContain('checkpoint id=turn-7 saved=2 files=src/a.ts, src/b.ts');
       expect(rendered).toContain('tool_call read_file src/index.ts');
       expect(rendered).toContain('args=/artifacts show read_file-args-123 --full (4.0 KB)');
-      expect(rendered).toContain('permission_decision approved read_file source=user behavior=ask 9ms');
+      expect(rendered).toContain(
+        'permission_decision approved read_file source=user behavior=ask 9ms'
+      );
       expect(rendered).toContain('[REDACTED_SECRET]');
       expect(rendered).not.toContain('secret-token-123456');
       expect(rendered).not.toContain('dashscope-secret-value');
       expect(storedTrace).not.toContain('secret-token-123456');
       expect(storedTrace).not.toContain('dashscope-secret-value');
       expect(rendered).toContain('tool_result ok read_file');
-      expect(rendered).toContain('workspace_delta after=2 new=1 changed=2 pre-existing-modified=1 resolved=0');
+      expect(rendered).toContain(
+        'workspace_delta after=2 new=1 changed=2 pre-existing-modified=1 resolved=0'
+      );
       expect(rendered).toContain('new: new-file.ts');
       expect(rendered).toContain('changed: pre-existing.txt, new-file.ts');
       expect(rendered).toContain('pre-existing modified: pre-existing.txt');
-      expect(rendered).toContain('verification_profile profile=node required=yes commands=2 files=1');
+      expect(rendered).toContain(
+        'verification_profile profile=node required=yes commands=2 files=1'
+      );
       expect(rendered).toContain('cmds: npm run build && npm test -- --runInBand');
       expect(rendered).toContain('verification_result passed npm run build');
-      expect(rendered).toContain('verification_summary profile=node required=yes passed=1 failed=0 missing=1 claimAllowed=no');
+      expect(rendered).toContain(
+        'verification_summary profile=node required=yes passed=1 failed=0 missing=1 claimAllowed=no'
+      );
       expect(rendered).toContain('missing: npm test -- --runInBand');
-      expect(rendered).toContain('complete finish=budget_exceeded llm=1 tools=1 budgetProfile=config/release(1/96llm,1/360tools,128 KBvisible,frag=4,override=yes) budget=LLM request budget 24 reached next=reply_continue,narrow_instruction,inspect_loop_stats,raise_budget hint=Reply `继续` to continue the same objective.');
+      expect(rendered).toContain(
+        'complete finish=budget_exceeded llm=1 tools=1 budgetProfile=config/release(1/96llm,1/360tools,128 KBvisible,frag=4,override=yes) budget=LLM request budget 24 reached next=reply_continue,narrow_instruction,inspect_loop_stats,raise_budget hint=Reply `继续` to continue the same objective.'
+      );
     } finally {
       if (previousConfigDir === undefined) {
         delete process.env.ORION_CODE_CONFIG_DIR;
@@ -909,13 +958,16 @@ describe('/status context diagnostics', () => {
         cwd,
         'exec_command-args',
         'cd /repo && Authorization: Bearer secret-token-123456 && npm test',
-        Buffer.byteLength('cd /repo && Authorization: Bearer secret-token-123456 && npm test', 'utf8'),
+        Buffer.byteLength(
+          'cd /repo && Authorization: Bearer secret-token-123456 && npm test',
+          'utf8'
+        )
       )!;
       const outputArtifact = storeArtifact(
         cwd,
         'exec_command',
         'test output\nAuthorization: Bearer secret-token-123456 failed',
-        Buffer.byteLength('test output\nAuthorization: Bearer secret-token-123456 failed', 'utf8'),
+        Buffer.byteLength('test output\nAuthorization: Bearer secret-token-123456 failed', 'utf8')
       )!;
       appendSessionTraceEvent(session.id, {
         turnId: 'turn-8',
@@ -975,7 +1027,9 @@ describe('/status context diagnostics', () => {
       expect(rendered).toContain('Call        call-exec');
       expect(rendered).toContain('Status      error');
       expect(rendered).toContain('Time        1.3s');
-      expect(rendered).toContain('Command      cd /repo && Authorization: [REDACTED_SECRET] && npm test');
+      expect(rendered).toContain(
+        'Command      cd /repo && Authorization: [REDACTED_SECRET] && npm test'
+      );
       expect(rendered).toContain(`Command full /artifacts show ${argsArtifact.id} --full`);
       expect(rendered).toContain('Output      50 KB, model-visible 1.0 KB');
       expect(rendered).toContain(`Output full /artifacts show ${outputArtifact.id} --full`);
@@ -1007,7 +1061,12 @@ describe('/status context diagnostics', () => {
         currentModel: 'gpt-4o',
       });
       const longOutput = `head\n${'x'.repeat(5000)}\ntail-marker Authorization: Bearer secret-token-123456`;
-      const artifact = storeArtifact(cwd, 'exec_command', longOutput, Buffer.byteLength(longOutput, 'utf8'))!;
+      const artifact = storeArtifact(
+        cwd,
+        'exec_command',
+        longOutput,
+        Buffer.byteLength(longOutput, 'utf8')
+      )!;
       const session = createSession(cwd, 'gpt-4o');
       appendSessionTraceEvent(session.id, {
         turnId: 'turn-preview',
@@ -1140,7 +1199,9 @@ describe('/status context diagnostics', () => {
       const rendered = stripAnsi(logs.join('\n'));
 
       expect(result.success).toBe(true);
-      expect(rendered).toContain(`No tool trace events recorded for session ${session.id.slice(0, 8)} yet.`);
+      expect(rendered).toContain(
+        `No tool trace events recorded for session ${session.id.slice(0, 8)} yet.`
+      );
     } finally {
       if (previousConfigDir === undefined) {
         delete process.env.ORION_CODE_CONFIG_DIR;
@@ -1192,7 +1253,9 @@ describe('/status context diagnostics', () => {
       expect(rendered).toContain('Tool        exec_command');
       expect(rendered).toContain('Turn        turn-result-only');
       expect(rendered).toContain('Command      npm test -- --runInBand');
-      expect(rendered).toContain('Command full /artifacts show exec_command-args-result-only --full (2.0 KB)');
+      expect(rendered).toContain(
+        'Command full /artifacts show exec_command-args-result-only --full (2.0 KB)'
+      );
     } finally {
       if (previousConfigDir === undefined) {
         delete process.env.ORION_CODE_CONFIG_DIR;
@@ -1215,34 +1278,43 @@ describe('/status context diagnostics', () => {
       });
       const session = createSession(cwd, 'gpt-4o');
       const tracePath = getProjectSessionTracePath(session.projectPath, session.id);
-      appendFileSync(tracePath, `${JSON.stringify({
-        sessionId: session.id,
-        turnId: 'legacy-turn',
-        timestamp: Date.now(),
-        type: 'tool_call',
-        name: 'exec_command',
-        callId: 'legacy-call',
-        argsSummary: 'curl -H "Authorization: Bearer secret-token-123456" https://example.test',
-      })}\n`);
-      appendFileSync(tracePath, `${JSON.stringify({
-        sessionId: session.id,
-        turnId: 'legacy-turn',
-        timestamp: Date.now(),
-        type: 'permission_decision',
-        name: 'exec_command',
-        callId: 'legacy-call',
-        permissionApproved: false,
-        permissionSource: 'user',
-        permissionBehavior: 'ask',
-        permissionReason: 'apiKey=dashscope-secret-value',
-      })}\n`);
-      appendFileSync(tracePath, `${JSON.stringify({
-        sessionId: session.id,
-        turnId: 'legacy-turn',
-        timestamp: Date.now(),
-        type: 'complete',
-        finishReason: 'completed',
-      })}\n`);
+      appendFileSync(
+        tracePath,
+        `${JSON.stringify({
+          sessionId: session.id,
+          turnId: 'legacy-turn',
+          timestamp: Date.now(),
+          type: 'tool_call',
+          name: 'exec_command',
+          callId: 'legacy-call',
+          argsSummary: 'curl -H "Authorization: Bearer secret-token-123456" https://example.test',
+        })}\n`
+      );
+      appendFileSync(
+        tracePath,
+        `${JSON.stringify({
+          sessionId: session.id,
+          turnId: 'legacy-turn',
+          timestamp: Date.now(),
+          type: 'permission_decision',
+          name: 'exec_command',
+          callId: 'legacy-call',
+          permissionApproved: false,
+          permissionSource: 'user',
+          permissionBehavior: 'ask',
+          permissionReason: 'apiKey=dashscope-secret-value',
+        })}\n`
+      );
+      appendFileSync(
+        tracePath,
+        `${JSON.stringify({
+          sessionId: session.id,
+          turnId: 'legacy-turn',
+          timestamp: Date.now(),
+          type: 'complete',
+          finishReason: 'completed',
+        })}\n`
+      );
       const ctx: CommandContext = {
         cwd,
         config,
@@ -1284,7 +1356,12 @@ describe('/status context diagnostics', () => {
         tools: TOOLS,
         currentModel: 'gpt-4o',
       });
-      const artifact = storeArtifact(cwd, 'exec_command', 'full command output', Buffer.byteLength('full command output', 'utf8'))!;
+      const artifact = storeArtifact(
+        cwd,
+        'exec_command',
+        'full command output',
+        Buffer.byteLength('full command output', 'utf8')
+      )!;
       const ctx: CommandContext = {
         cwd,
         config,
@@ -1330,7 +1407,7 @@ describe('/status context diagnostics', () => {
         cwd,
         'exec_command-Bearer-sk-secretvalue123456',
         'safe artifact output',
-        Buffer.byteLength('safe artifact output', 'utf8'),
+        Buffer.byteLength('safe artifact output', 'utf8')
       )!;
       expect(artifact.path).toContain('sk-secretvalue123456');
       expect(artifact.id).not.toContain('sk-secretvalue123456');
@@ -1405,7 +1482,10 @@ describe('/status context diagnostics', () => {
       expect(readFileSync(target, 'utf-8')).toBe('after\n');
 
       logs = [];
-      const restoreResult = await findCommand('checkpoint')!.execute(ctx, 'restore turn-rest --yes');
+      const restoreResult = await findCommand('checkpoint')!.execute(
+        ctx,
+        'restore turn-rest --yes'
+      );
       rendered = stripAnsi(logs.join('\n'));
       expect(restoreResult.success).toBe(true);
       expect(rendered).toContain('Restored 1 file(s)');

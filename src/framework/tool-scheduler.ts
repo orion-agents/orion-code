@@ -269,7 +269,7 @@ export interface EffectivePermission {
  *   3. plan mode                             — only explicit safe read-only metadata runs
  *   4. allowlist `ask:` rule                 — explicit escalation beats modes
  *   5. acceptEdits                           — only explicit file edits auto-run
- *   6. allowlist `allow:` rule               — only known, non-destructive tools
+ *   6. allowlist `allow:` rule               — known tools except destructive non-file operations
  *   7. safe read-only tools                  — auto-run in every non-plan mode
  *   8. otherwise confirm (fail closed)
  */
@@ -295,7 +295,7 @@ export function resolveEffectivePermission(input: {
     return {
       outcome: 'deny',
       source: 'allowlist_deny',
-      reason: `Tool ${toolName} is denied by project allowedTools rule "${allowlist.rule}"`,
+      reason: `Tool ${toolName} is denied by ${allowlist.scope ?? 'configured'} allowedTools rule "${allowlist.rule}"`,
     };
   }
 
@@ -309,7 +309,7 @@ export function resolveEffectivePermission(input: {
     permission?.behavior === 'ask'
       ? permission.reason
       : allowlist?.effect === 'ask'
-        ? `Confirmation required by project allowedTools rule "${allowlist.rule}"`
+        ? `Confirmation required by ${allowlist.scope ?? 'configured'} allowedTools rule "${allowlist.rule}"`
         : riskReason;
 
   if (permissionMode === 'plan') {
@@ -349,13 +349,12 @@ export function resolveEffectivePermission(input: {
   if (
     allowlist?.effect === 'allow' &&
     risk.known &&
-    risk.risk !== 'destructive' &&
-    risk.risk !== 'external'
+    !(risk.risk === 'destructive' && !risk.isFileEdit)
   ) {
     return {
       outcome: 'allow',
       source: 'allowlist_allow',
-      reason: `Auto-approved by project allowedTools rule "${allowlist.rule}"`,
+      reason: `Auto-approved by ${allowlist.scope ?? 'configured'} allowedTools rule "${allowlist.rule}"`,
       risk: risk.risk,
     };
   }
@@ -412,7 +411,7 @@ export function prepareToolCalls(options: ToolSchedulerOptions): PreparedToolCal
     });
     const confirmation = options.toolConfirmation ?? 'ask';
     const needsInteractiveConfirmation =
-      effective.outcome === 'confirm' && confirmation === 'ask' && Boolean(options.confirmToolUse);
+      effective.outcome === 'confirm' && confirmation !== 'deny' && Boolean(options.confirmToolUse);
     const canRunConcurrently =
       effective.outcome !== 'deny' &&
       drift?.status !== 'block' &&
@@ -591,10 +590,43 @@ function executePreparedTool(
     }
 
     const confirmation = toolConfirmation ?? 'ask';
+    const requestInteractiveConfirmation = async (): Promise<string> => {
+      if (!confirmToolUse) {
+        return JSON.stringify({
+          success: false,
+          error: `Tool ${tc.function.name} requires user confirmation.`,
+        });
+      }
+      const permissionStart = Date.now();
+      const approved = await confirmToolUse({
+        name: tc.function.name,
+        args,
+        reason: effective.reason,
+        abortSignal,
+      });
+      permissionDecision = {
+        behavior: 'ask',
+        approved,
+        source: 'user',
+        reason: effective.reason,
+        duration: Date.now() - permissionStart,
+      };
+      return approved
+        ? await exec()
+        : JSON.stringify({
+            success: false,
+            error: `Tool ${tc.function.name} requires user confirmation and was denied by user.`,
+          });
+    };
     if (confirmation === 'allow') {
       const risk = assessToolRisk(tool, args, permission);
       const allowWithConfirmationBypass = risk.isFileEdit;
       if (effective.source === 'allowlist_ask' || !allowWithConfirmationBypass) {
+        // `allow` may auto-approve only the bounded file-edit envelope. For
+        // higher-risk tools, use the available UI to collect the explicit
+        // decision promised by the error contract; headless callers remain
+        // fail-closed below.
+        if (confirmToolUse) return requestInteractiveConfirmation();
         permissionDecision = {
           behavior: 'ask',
           approved: false,
@@ -622,26 +654,7 @@ function executePreparedTool(
       });
     }
     if (confirmToolUse && confirmation === 'ask') {
-      const permissionStart = Date.now();
-      const approved = await confirmToolUse({
-        name: tc.function.name,
-        args,
-        reason: effective.reason,
-        abortSignal,
-      });
-      permissionDecision = {
-        behavior: 'ask',
-        approved,
-        source: 'user',
-        reason: effective.reason,
-        duration: Date.now() - permissionStart,
-      };
-      return approved
-        ? await exec()
-        : JSON.stringify({
-            success: false,
-            error: `Tool ${tc.function.name} requires user confirmation and was denied by user.`,
-          });
+      return requestInteractiveConfirmation();
     }
     permissionDecision = {
       behavior: 'ask',

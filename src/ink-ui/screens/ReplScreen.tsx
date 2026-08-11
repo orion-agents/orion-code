@@ -1,7 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { Box, Static, Text, useApp, useInput, useStdout } from 'ink';
 import type { DOMElement } from 'ink/build/dom';
-import { getCommandCategoryLabel, getCommands, getVisibleCommands } from '../../commands';
+import {
+  findCommand,
+  getCommandCategoryLabel,
+  getCommands,
+  getVisibleCommands,
+} from '../../commands';
 import { getModeDisplayText } from '../../commands/types';
 import { AgentRuntimeController } from '../../runtime/agent-runtime-controller';
 import { resolveUiRendererCapabilities } from '../../runtime/ui-events';
@@ -16,6 +21,7 @@ import {
   type SubtaskTimelineEntry,
 } from '../../runtime/ui-view-model';
 import { addToInputHistory, getInputHistory } from '../../services/global-config';
+import type { ToolPermissionScope } from '../../services/tool-allowlist';
 import { formatBytes } from '../../services/format';
 import { matchFiles } from '../../services/file-glob';
 import type { SessionMeta } from '../../services/session-storage';
@@ -37,7 +43,17 @@ import {
   staticTranscriptEntries,
   transcriptReducer,
 } from '../runtime/transcript-state';
-import type { OrionCodeUiRuntime, SessionPickerRequest, ModelPickerRequest, ToolPermissionRequest, TranscriptAppendEntry, TranscriptEntry, UiEventSink, EditPreviewRequest, RuntimeSubtaskEvent } from '../types';
+import type {
+  OrionCodeUiRuntime,
+  SessionPickerRequest,
+  ModelPickerRequest,
+  ToolPermissionRequest,
+  TranscriptAppendEntry,
+  TranscriptEntry,
+  UiEventSink,
+  EditPreviewRequest,
+  RuntimeSubtaskEvent,
+} from '../types';
 
 type Overlay =
   | { type: 'commands'; selectedIndex: number }
@@ -55,20 +71,26 @@ function createId(): string {
   return `ui-${nextTranscriptId++}`;
 }
 
-type StaticTranscriptItem =
-  | { id: string; type: 'banner' }
-  | (TranscriptEntry & { type: 'entry' });
+type StaticTranscriptItem = { id: string; type: 'banner' } | (TranscriptEntry & { type: 'entry' });
 
 export function visibleCommandItems(input: string): SelectListItem[] {
   return createCommandPickerState({
     input,
     commands: getVisibleCommands('ink'),
+    maxVisibleItems: 10,
     categoryLabel: getCommandCategoryLabel,
   }).visibleItems.map(item => ({
     value: item.value,
     label: item.label,
     description: item.description,
   }));
+}
+
+export function hasRecognizedCommandArguments(input: string): boolean {
+  const match = input.trim().match(/^\/([^\s]+)\s+\S/u);
+  if (!match) return false;
+  const name = match[1].toLowerCase();
+  return findCommand(name) !== undefined;
 }
 
 export function getFileQuery(input: string): { base: string; query: string } | null {
@@ -83,11 +105,13 @@ export function visibleFileItems(cwd: string, input: string): SelectListItem[] {
     files: matchFiles(fileQuery.query, cwd, { limit: 80 }),
     maxVisibleItems: 80,
   });
-  return state?.visibleItems.map(item => ({
-    value: item.value,
-    label: item.label,
-    description: item.description,
-  })) ?? [];
+  return (
+    state?.visibleItems.map(item => ({
+      value: item.value,
+      label: item.label,
+      description: item.description,
+    })) ?? []
+  );
 }
 
 function sessionTitle(session: SessionMeta): string {
@@ -103,7 +127,9 @@ export function sessionItems(request: SessionPickerRequest): SelectListItem[] {
       formatBytes(session.historySizeBytes ?? 0),
       session.model,
       request.showProject ? session.projectPath : '',
-    ].filter(Boolean).join('  '),
+    ]
+      .filter(Boolean)
+      .join('  '),
   }));
 }
 
@@ -175,14 +201,21 @@ export interface ReplScreenProps {
   resizeEpoch?: number;
 }
 
-export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplScreenProps): JSX.Element {
+export function ReplScreen({
+  runtime,
+  cursorController,
+  resizeEpoch = 0,
+}: ReplScreenProps): JSX.Element {
   const app = useApp();
   const { stdout } = useStdout();
   const terminalSize = useTerminalSize(stdout);
   const terminalHeight = terminalSize.height;
   const terminalWidth = terminalSize.width;
-  const [transcriptState, dispatchTranscript] = useReducer(transcriptReducer, initialTranscriptState);
-  const [inputBuffer, dispatchInput] = useReducer(reduceInputBuffer, initialInputBuffer);
+  const [transcriptState, dispatchTranscript] = useReducer(
+    transcriptReducer,
+    initialTranscriptState
+  );
+  const [inputBuffer, dispatchInputState] = useReducer(reduceInputBuffer, initialInputBuffer);
   const input = inputBuffer.value;
   const inputCursor = inputBuffer.cursor;
   const [overlay, setOverlay] = useState<Overlay>(null);
@@ -204,12 +237,22 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
   const inputRef = useRef<InputBuffer>(initialInputBuffer);
   const promptBoxRef = useRef<DOMElement>(null);
   const bracketedPasteActiveRef = useRef(false);
+  const dispatchInput = useCallback(
+    (action: Parameters<typeof reduceInputBuffer>[1]) => {
+      inputRef.current = reduceInputBuffer(inputRef.current, action);
+      dispatchInputState(action);
+    },
+    [dispatchInputState]
+  );
 
   useEffect(() => {
     inputRef.current = inputBuffer;
   }, [inputBuffer]);
 
-  useEffect(() => runtime.store.subscribe(() => setStoreVersion(version => version + 1)), [runtime.store]);
+  useEffect(
+    () => runtime.store.subscribe(() => setStoreVersion(version => version + 1)),
+    [runtime.store]
+  );
 
   const append = useCallback((entry: TranscriptAppendEntry): string => {
     const id = createId();
@@ -230,72 +273,80 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
     dispatchTranscript({ type: 'remove', id });
   }, []);
 
-  const events: UiEventSink = useMemo(() => ({
-    append,
-    update,
-    finalize,
-    remove,
-    replaceTranscript: entries => {
-      dispatchTranscript({ type: 'replace', entries });
-    },
-    clearTranscript: () => {
-      dispatchTranscript({ type: 'clear' });
-    },
-    clearView: () => {
-      dispatchTranscript({ type: 'clear' });
-    },
-    setStatus: setStatusMessage,
-    showSessionPicker: request => setOverlay({ type: 'sessions', selectedIndex: 0, request }),
-    showModelPicker: request => setOverlay({ type: 'model', selectedIndex: 0, request }),
-    showEditPreview: request => setOverlay({ type: 'edit', selectedIndex: 0, request }),
-    showPermissionRequest: request => setOverlay({ type: 'permission', selectedIndex: 0, request }),
-    setProcessing,
-    sessionRestored: event => {
-      const view = createSessionRestoredView(event);
-      const lines = [view.headline];
-      if (view.summary) lines.push(`Summary: ${view.summary}`);
-      if (view.summaryGeneratedAt) {
+  const events: UiEventSink = useMemo(
+    () => ({
+      append,
+      update,
+      finalize,
+      remove,
+      replaceTranscript: entries => {
+        dispatchTranscript({ type: 'replace', entries });
+      },
+      clearTranscript: () => {
+        dispatchTranscript({ type: 'clear' });
+      },
+      clearView: () => {
+        dispatchTranscript({ type: 'clear' });
+      },
+      setStatus: setStatusMessage,
+      showSessionPicker: request => setOverlay({ type: 'sessions', selectedIndex: 0, request }),
+      showModelPicker: request => setOverlay({ type: 'model', selectedIndex: 0, request }),
+      showEditPreview: request => setOverlay({ type: 'edit', selectedIndex: 0, request }),
+      showPermissionRequest: request =>
+        setOverlay({ type: 'permission', selectedIndex: 0, request }),
+      setProcessing,
+      sessionRestored: event => {
+        const view = createSessionRestoredView(event);
+        const lines = [view.headline];
+        if (view.summary) lines.push(`Summary: ${view.summary}`);
+        if (view.summaryGeneratedAt) {
+          lines.push(
+            `Generated: ${new Date(view.summaryGeneratedAt).toLocaleString()} (${view.checkpointId ? 'compact checkpoint' : 'generated on resume'})`
+          );
+        }
+        if (typeof view.summaryCoveredMessages === 'number') {
+          lines.push(`Covers: ${view.summaryCoveredMessages} source messages`);
+        }
         lines.push(
-          `Generated: ${new Date(view.summaryGeneratedAt).toLocaleString()} (${view.checkpointId ? 'compact checkpoint' : 'generated on resume'})`
+          `✔ Restored ${event.restoredMessages} model-context messages / ${event.transcriptMessages ?? event.messageCount ?? event.restoredMessages} transcript messages`
         );
-      }
-      if (typeof view.summaryCoveredMessages === 'number') {
-        lines.push(`Covers: ${view.summaryCoveredMessages} source messages`);
-      }
-      lines.push(
-        `✔ Restored ${event.restoredMessages} model-context messages / ${event.transcriptMessages ?? event.messageCount ?? event.restoredMessages} transcript messages`
-      );
-      dispatchTranscript({
-        type: 'append',
-        entry: {
-          id: `resume-${event.sessionId}`,
-          role: 'status',
-          title: 'resume',
-          content: lines.join('\n'),
-          errorLayer: undefined,
-        },
-      });
-    },
-    // R8: consume the typed subagent event into the shared timeline. Keyed by
-    // taskId so state advances queued -> running -> terminal without duplicates.
-    subtaskEvent: (event: RuntimeSubtaskEvent) => {
-      const entry = subtaskEventToTimelineEntry(event);
-      setSubtaskTimeline(prev => {
-        const without = prev.filter(e => e.taskId !== entry.taskId);
-        return [...without, entry];
-      });
-    },
-  }), [append, finalize, remove, stdout, update]);
+        dispatchTranscript({
+          type: 'append',
+          entry: {
+            id: `resume-${event.sessionId}`,
+            role: 'status',
+            title: 'resume',
+            content: lines.join('\n'),
+            errorLayer: undefined,
+          },
+        });
+      },
+      // R8: consume the typed subagent event into the shared timeline. Keyed by
+      // taskId so state advances queued -> running -> terminal without duplicates.
+      subtaskEvent: (event: RuntimeSubtaskEvent) => {
+        const entry = subtaskEventToTimelineEntry(event);
+        setSubtaskTimeline(prev => {
+          const without = prev.filter(e => e.taskId !== entry.taskId);
+          return [...without, entry];
+        });
+      },
+    }),
+    [append, finalize, remove, stdout, update]
+  );
 
-  const agentController = useMemo(() => new AgentRuntimeController({
-    runtime,
-    events,
-    uiCapabilities: resolveUiRendererCapabilities(undefined, 'ink'),
-    uiRenderer: 'ink',
-    exitConfirmWindowMs: 5000,
-    useRuntimeToolPermissions: true,
-    beforeTurn: () => setStatusMessage(''),
-  }), [runtime, events]);
+  const agentController = useMemo(
+    () =>
+      new AgentRuntimeController({
+        runtime,
+        events,
+        uiCapabilities: resolveUiRendererCapabilities(undefined, 'ink'),
+        uiRenderer: 'ink',
+        exitConfirmWindowMs: 5000,
+        useRuntimeToolPermissions: true,
+        beforeTurn: () => setStatusMessage(''),
+      }),
+    [runtime, events]
+  );
 
   const shutdown = useCallback(() => {
     if (shuttingDownRef.current) return;
@@ -315,30 +366,41 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
     });
   }, [app, cursorController, runtime]);
 
-  const submit = useCallback((value: string) => {
-    const submitted = value.trim();
-    if (!submitted) return;
-    dispatchInput({ type: 'clear' });
-    setOverlay(null);
-    addToInputHistory(submitted);
-    setHistory(getInputHistory());
-    setHistoryIndex(-1);
+  const submit = useCallback(
+    (value: string) => {
+      const submitted = value.trim();
+      if (!submitted) return;
+      dispatchInput({ type: 'clear' });
+      setOverlay(null);
+      addToInputHistory(submitted);
+      setHistory(getInputHistory());
+      setHistoryIndex(-1);
 
-    const result = agentController.handle({ type: 'submit', text: submitted, source: 'composer' });
-    if (result.type === 'exit_requested') {
-      void shutdown();
-    }
-  }, [agentController, shutdown]);
+      const result = agentController.handle({
+        type: 'submit',
+        text: submitted,
+        source: 'composer',
+      });
+      if (result.type === 'exit_requested') {
+        void shutdown();
+      }
+    },
+    [agentController, shutdown]
+  );
 
-  const answerPermission = useCallback((request: ToolPermissionRequest, approved: boolean) => {
-    setOverlay(null);
-    agentController.handle({
-      type: 'permission_decision',
-      requestId: request.id,
-      approved,
-      source: 'keyboard',
-    });
-  }, [agentController]);
+  const answerPermission = useCallback(
+    (request: ToolPermissionRequest, approved: boolean, scope: ToolPermissionScope = 'once') => {
+      setOverlay(null);
+      agentController.handle({
+        type: 'permission_decision',
+        requestId: request.id,
+        approved,
+        scope,
+        source: 'keyboard',
+      });
+    },
+    [agentController]
+  );
 
   const closeOverlay = useCallback((): boolean => {
     if (!overlay) return false;
@@ -362,31 +424,37 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
     }
   }, [agentController, closeOverlay, shutdown]);
 
-  const handleCtrlCEvent = useCallback((options: { allowRapidRepeat?: boolean } = {}) => {
-    const now = Date.now();
-    const delta = now - lastCtrlCEventAtRef.current;
-    if (!options.allowRapidRepeat && delta < 30) {
-      return;
-    }
-    lastCtrlCEventAtRef.current = now;
-    handleCtrlC();
-  }, [handleCtrlC]);
+  const handleCtrlCEvent = useCallback(
+    (options: { allowRapidRepeat?: boolean } = {}) => {
+      const now = Date.now();
+      const delta = now - lastCtrlCEventAtRef.current;
+      if (!options.allowRapidRepeat && delta < 30) {
+        return;
+      }
+      lastCtrlCEventAtRef.current = now;
+      handleCtrlC();
+    },
+    [handleCtrlC]
+  );
 
   const lastRawInputRef = useRawInputBridge(handleCtrlCEvent);
 
   const commandItems = visibleCommandItems(input);
   const fileItems = visibleFileItems(runtime.cwd, input);
 
-  const completeCommand = useCallback((item: SelectListItem, submitImmediately: boolean) => {
-    const command = getCommands().find(candidate => candidate.name === item.value);
-    const value = `/${item.value}${command?.argumentHint || command?.params?.some(param => param.required) ? ' ' : ''}`;
-    setOverlay(null);
-    if (submitImmediately && value.trim() === `/${item.value}`) {
-      submit(value);
-    } else {
-      dispatchInput({ type: 'set', value });
-    }
-  }, [submit]);
+  const completeCommand = useCallback(
+    (item: SelectListItem, submitImmediately: boolean) => {
+      const command = getCommands().find(candidate => candidate.name === item.value);
+      const value = `/${item.value}${command?.argumentHint || command?.params?.some(param => param.required) ? ' ' : ''}`;
+      setOverlay(null);
+      if (submitImmediately && value.trim() === `/${item.value}`) {
+        submit(value);
+      } else {
+        dispatchInput({ type: 'set', value });
+      }
+    },
+    [submit]
+  );
 
   const completeFile = useCallback((item: SelectListItem) => {
     const fileQuery = getFileQuery(inputRef.current.value);
@@ -395,30 +463,40 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
     setOverlay(null);
   }, []);
 
-  const selectSession = useCallback((request: SessionPickerRequest, index: number) => {
-    const session = request.sessions[index];
-    if (!session) return;
-    setOverlay(null);
-    const result = agentController.handle({
-      type: 'select_session',
-      sessionId: session.id,
-      allProjects: request.allProjects,
-      source: 'picker',
-    });
-    if (result.type === 'exit_requested') {
-      void shutdown();
-    }
-  }, [agentController, shutdown]);
+  const selectSession = useCallback(
+    (request: SessionPickerRequest, index: number) => {
+      const session = request.sessions[index];
+      if (!session) return;
+      setOverlay(null);
+      const result = agentController.handle({
+        type: 'select_session',
+        sessionId: session.id,
+        allProjects: request.allProjects,
+        source: 'picker',
+      });
+      if (result.type === 'exit_requested') {
+        void shutdown();
+      }
+    },
+    [agentController, shutdown]
+  );
 
-  const selectModel = useCallback((request: ModelPickerRequest, index: number) => {
-    const model = request.models[index];
-    if (!model) return;
-    setOverlay(null);
-    const result = agentController.handle({ type: 'submit', text: `/model ${model.name}`, source: 'composer' });
-    if (result.type === 'exit_requested') {
-      void shutdown();
-    }
-  }, [agentController, shutdown]);
+  const selectModel = useCallback(
+    (request: ModelPickerRequest, index: number) => {
+      const model = request.models[index];
+      if (!model) return;
+      setOverlay(null);
+      const result = agentController.handle({
+        type: 'submit',
+        text: `/model ${model.name}`,
+        source: 'composer',
+      });
+      if (result.type === 'exit_requested') {
+        void shutdown();
+      }
+    },
+    [agentController, shutdown]
+  );
 
   useInput((value, key) => {
     const isReturn = key?.return || value === '\r' || value === '\n';
@@ -432,14 +510,19 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
 
     const rawInput = lastRawInputRef.current || '';
     const pasteSource = value || rawInput;
-    const startsBracketedPaste = rawInput.includes('\x1b[200~')
-      || pasteSource.includes('\x1b[200~')
-      || pasteSource.includes('[200~');
-    const endsBracketedPaste = rawInput.includes('\x1b[201~')
-      || pasteSource.includes('\x1b[201~')
-      || pasteSource.includes('[201~');
+    const startsBracketedPaste =
+      rawInput.includes('\x1b[200~') ||
+      pasteSource.includes('\x1b[200~') ||
+      pasteSource.includes('[200~');
+    const endsBracketedPaste =
+      rawInput.includes('\x1b[201~') ||
+      pasteSource.includes('\x1b[201~') ||
+      pasteSource.includes('[201~');
 
-    if (!key?.ctrl && (bracketedPasteActiveRef.current || startsBracketedPaste || endsBracketedPaste)) {
+    if (
+      !key?.ctrl &&
+      (bracketedPasteActiveRef.current || startsBracketedPaste || endsBracketedPaste)
+    ) {
       bracketedPasteActiveRef.current = true;
       const normalized = normalizePastedInput(value || rawInput);
       if (normalized) {
@@ -474,11 +557,19 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
         return;
       }
       if (key?.downArrow) {
-        setOverlay({ ...overlay, selectedIndex: Math.min(Math.max(0, items.length - 1), overlay.selectedIndex + 1) });
+        setOverlay({
+          ...overlay,
+          selectedIndex: Math.min(Math.max(0, items.length - 1), overlay.selectedIndex + 1),
+        });
         return;
       }
       if (key?.tab && items[overlay.selectedIndex]) {
         completeCommand(items[overlay.selectedIndex], false);
+        return;
+      }
+      if (isReturn && hasRecognizedCommandArguments(inputRef.current.value)) {
+        setOverlay(null);
+        submit(inputRef.current.value);
         return;
       }
       if (isReturn && items[overlay.selectedIndex]) {
@@ -498,7 +589,10 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
         return;
       }
       if (key?.downArrow) {
-        setOverlay({ ...overlay, selectedIndex: Math.min(Math.max(0, items.length - 1), overlay.selectedIndex + 1) });
+        setOverlay({
+          ...overlay,
+          selectedIndex: Math.min(Math.max(0, items.length - 1), overlay.selectedIndex + 1),
+        });
         return;
       }
       if ((key?.tab || isReturn) && items[overlay.selectedIndex]) {
@@ -518,7 +612,10 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
         return;
       }
       if (key?.downArrow) {
-        setOverlay({ ...overlay, selectedIndex: Math.min(Math.max(0, total - 1), overlay.selectedIndex + 1) });
+        setOverlay({
+          ...overlay,
+          selectedIndex: Math.min(Math.max(0, total - 1), overlay.selectedIndex + 1),
+        });
         return;
       }
       if (key?.pageUp) {
@@ -526,7 +623,10 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
         return;
       }
       if (key?.pageDown) {
-        setOverlay({ ...overlay, selectedIndex: Math.min(Math.max(0, total - 1), overlay.selectedIndex + 10) });
+        setOverlay({
+          ...overlay,
+          selectedIndex: Math.min(Math.max(0, total - 1), overlay.selectedIndex + 10),
+        });
         return;
       }
       if (isReturn) {
@@ -546,7 +646,10 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
         return;
       }
       if (key?.downArrow) {
-        setOverlay({ ...overlay, selectedIndex: Math.min(Math.max(0, total - 1), overlay.selectedIndex + 1) });
+        setOverlay({
+          ...overlay,
+          selectedIndex: Math.min(Math.max(0, total - 1), overlay.selectedIndex + 1),
+        });
         return;
       }
       if (key?.pageUp) {
@@ -554,7 +657,10 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
         return;
       }
       if (key?.pageDown) {
-        setOverlay({ ...overlay, selectedIndex: Math.min(Math.max(0, total - 1), overlay.selectedIndex + 10) });
+        setOverlay({
+          ...overlay,
+          selectedIndex: Math.min(Math.max(0, total - 1), overlay.selectedIndex + 10),
+        });
         return;
       }
       if (isReturn) {
@@ -574,7 +680,10 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
         return;
       }
       if (key?.downArrow) {
-        setOverlay({ ...overlay, selectedIndex: Math.min(Math.max(0, total - 1), overlay.selectedIndex + 1) });
+        setOverlay({
+          ...overlay,
+          selectedIndex: Math.min(Math.max(0, total - 1), overlay.selectedIndex + 1),
+        });
         return;
       }
       if (key?.pageUp) {
@@ -582,7 +691,10 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
         return;
       }
       if (key?.pageDown) {
-        setOverlay({ ...overlay, selectedIndex: Math.min(Math.max(0, total - 1), overlay.selectedIndex + 10) });
+        setOverlay({
+          ...overlay,
+          selectedIndex: Math.min(Math.max(0, total - 1), overlay.selectedIndex + 10),
+        });
         return;
       }
     }
@@ -594,7 +706,15 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
         return;
       }
       if (value?.toLowerCase() === 'y') {
-        answerPermission(overlay.request, true);
+        answerPermission(overlay.request, true, 'once');
+        return;
+      }
+      if (value?.toLowerCase() === 'p') {
+        answerPermission(overlay.request, true, 'project');
+        return;
+      }
+      if (value?.toLowerCase() === 'g') {
+        answerPermission(overlay.request, true, 'global');
         return;
       }
       if (key?.upArrow) {
@@ -602,11 +722,17 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
         return;
       }
       if (key?.downArrow || key?.tab) {
-        setOverlay({ ...overlay, selectedIndex: Math.min(items.length - 1, overlay.selectedIndex + 1) });
+        setOverlay({
+          ...overlay,
+          selectedIndex: Math.min(items.length - 1, overlay.selectedIndex + 1),
+        });
         return;
       }
       if (isReturn) {
-        answerPermission(overlay.request, items[overlay.selectedIndex]?.value === 'allow');
+        const item = createPermissionDecisionPickerState(overlay.request).visibleItems[
+          overlay.selectedIndex
+        ];
+        answerPermission(overlay.request, item?.approved ?? false, item?.scope ?? 'once');
         return;
       }
       return;
@@ -674,7 +800,10 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
     if (key?.downArrow && historyIndex >= 0) {
       const nextIndex = historyIndex - 1;
       setHistoryIndex(nextIndex);
-      dispatchInput({ type: 'set', value: nextIndex >= 0 ? history[nextIndex]?.content ?? '' : '' });
+      dispatchInput({
+        type: 'set',
+        value: nextIndex >= 0 ? (history[nextIndex]?.content ?? '') : '',
+      });
       return;
     }
 
@@ -709,12 +838,15 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
     }
   });
 
-  const modeText = getModeDisplayText(runtime.store.getSnapshot().permissionMode);
+  const modeText = getModeDisplayText(runtime.store.getSnapshot().agentMode);
 
   const staticItems = useMemo<StaticTranscriptItem[]>(
     () => [
       { id: 'orion-code-banner', type: 'banner' },
-      ...staticTranscriptEntries(transcriptState).map(entry => ({ ...entry, type: 'entry' as const })),
+      ...staticTranscriptEntries(transcriptState).map(entry => ({
+        ...entry,
+        type: 'entry' as const,
+      })),
     ],
     [transcriptState]
   );
@@ -727,13 +859,15 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
   return (
     <Box flexDirection="column">
       <Static key={`${transcriptState.generation}:${resizeEpoch}`} items={staticItems}>
-        {item => item.type === 'banner' ? (
-          <Box key={item.id} flexDirection="column" marginBottom={1}>
-            <PixelHorseBanner runtime={runtime} width={layoutWidth} />
-          </Box>
-        ) : (
-          <TranscriptEntryBlock key={item.id} entry={item} width={layoutWidth} />
-        )}
+        {item =>
+          item.type === 'banner' ? (
+            <Box key={item.id} flexDirection="column" marginBottom={1}>
+              <PixelHorseBanner runtime={runtime} width={layoutWidth} />
+            </Box>
+          ) : (
+            <TranscriptEntryBlock key={item.id} entry={item} width={layoutWidth} />
+          )
+        }
       </Static>
 
       <Transcript
@@ -770,7 +904,10 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
           title={overlay.request.title}
           items={sessionItems(overlay.request)}
           selectedIndex={overlay.selectedIndex}
-          maxVisibleItems={Math.min(overlay.request.maxVisibleItems ?? maxOverlayItems, maxOverlayItems)}
+          maxVisibleItems={Math.min(
+            overlay.request.maxVisibleItems ?? maxOverlayItems,
+            maxOverlayItems
+          )}
           footer="↑↓ scroll  PgUp/PgDn  Enter resume  Esc cancel"
           width={layoutWidth}
         />
@@ -781,7 +918,10 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
           title={overlay.request.title ?? 'Switch Model'}
           items={modelItems(overlay.request)}
           selectedIndex={overlay.selectedIndex}
-          maxVisibleItems={Math.min(overlay.request.maxVisibleItems ?? maxOverlayItems, maxOverlayItems)}
+          maxVisibleItems={Math.min(
+            overlay.request.maxVisibleItems ?? maxOverlayItems,
+            maxOverlayItems
+          )}
           footer="↑↓ scroll  PgUp/PgDn  Enter switch  Esc cancel"
           width={layoutWidth}
         />
@@ -810,16 +950,37 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
       ) : null}
 
       {overlay?.type === 'shortcuts' ? (
-        <Box width={layoutWidth} borderStyle="single" borderColor="gray" paddingX={1} flexDirection="column">
+        <Box
+          width={layoutWidth}
+          borderStyle="single"
+          borderColor="gray"
+          paddingX={1}
+          flexDirection="column"
+        >
           <Text color="cyan">Shortcuts</Text>
-          <Text>/ commands    @ file picker    ? shortcuts</Text>
-          <Text>Alt+Enter newline    Ctrl+C interrupt / twice exits    ↑↓ history or picker navigation</Text>
+          <Text>/ commands @ file picker ? shortcuts</Text>
+          <Text>
+            Alt+Enter newline Ctrl+C interrupt / twice exits ↑↓ history or picker navigation
+          </Text>
           <Text color="gray">Enter or Esc closes this panel.</Text>
         </Box>
       ) : null}
 
-      <StatusLine runtime={runtime} running={processing} statusMessage={statusMessage} width={layoutWidth} />
-      <PromptInput ref={promptBoxRef} value={input} cursor={inputCursor} running={processing} modeText={modeText} width={layoutWidth} maxRows={maxPromptRows} />
+      <StatusLine
+        runtime={runtime}
+        running={processing}
+        statusMessage={statusMessage}
+        width={layoutWidth}
+      />
+      <PromptInput
+        ref={promptBoxRef}
+        value={input}
+        cursor={inputCursor}
+        running={processing}
+        modeText={modeText}
+        width={layoutWidth}
+        maxRows={maxPromptRows}
+      />
       <NativeCursor
         cursorController={cursorController}
         promptRef={promptBoxRef}

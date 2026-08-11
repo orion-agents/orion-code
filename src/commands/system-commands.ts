@@ -16,7 +16,12 @@ export function createSystemCommands(
       type: 'builtin',
       execution: 'builtin',
       risk: 'read-only',
-      execute: ctx => showHelp(ctx, getVisibleCommands(ctx.uiRenderer)),
+      execute: (ctx, args) =>
+        showHelp(
+          ctx,
+          getVisibleCommands(ctx.uiRenderer),
+          args.trim().toLowerCase() === '--all'
+        ),
     },
     {
       name: 'status',
@@ -52,19 +57,6 @@ export function createSystemCommands(
       type: 'builtin',
       execution: 'renderer-local',
       risk: 'read-only',
-      rendererScope: ['tui'],
-      execute: () => ({ success: true }),
-    },
-    {
-      name: 'permissions',
-      description:
-        'Set the tool confirmation policy (TUI). No argument opens a picker; with an argument applies immediately.',
-      argumentHint: '[allow|ask|deny]',
-      category: 'system',
-      priority: 33,
-      type: 'builtin',
-      execution: 'renderer-local',
-      risk: 'state-write',
       rendererScope: ['tui'],
       execute: () => ({ success: true }),
     },

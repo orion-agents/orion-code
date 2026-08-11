@@ -8,12 +8,13 @@
 import type { Message } from '../services/llm';
 import type { OrionCodeTool } from './tool';
 import type { OrionCodeCLIConfig } from '../services/config';
-import type { PermissionMode } from '../commands/types';
+import type { AgentMode, PermissionMode } from '../commands/types';
 import { CostTracker } from '../core/cost-tracker';
 import type { TodoItem } from './tool-state';
 import type { HarnessState } from '../harness';
 import type { LoopStats } from './query';
 import type { ContextUsageSnapshot } from '../services/model-context';
+import type { EffortPreference, ResolvedEffort } from '../services/effort';
 
 // ============================================================================
 // 状态结构
@@ -29,6 +30,10 @@ export interface AppState {
   /** Current request context pressure. This is not cumulative session usage. */
   contextUsage: ContextUsageSnapshot | null;
   permissionMode: PermissionMode;
+  /** Agent working mode, independent from tool confirmation/edit policy. */
+  agentMode: AgentMode;
+  effortPreference: EffortPreference;
+  resolvedEffort: ResolvedEffort | null;
   costTracker: CostTracker;
   /** Project memory content loaded at startup */
   memoryContent: string;
@@ -66,6 +71,9 @@ export class Store {
       | 'tokenUsage'
       | 'contextUsage'
       | 'permissionMode'
+      | 'agentMode'
+      | 'effortPreference'
+      | 'resolvedEffort'
       | 'costTracker'
       | 'memoryContent'
       | 'skillsContent'
@@ -82,6 +90,9 @@ export class Store {
       tokenUsage: null,
       contextUsage: null,
       permissionMode: 'default',
+      agentMode: 'interactive',
+      effortPreference: initial.config.defaultEffort ?? 'auto',
+      resolvedEffort: null,
       costTracker: new CostTracker({
         pricing: initial.config.cost?.modelPricing,
         defaultPricing: initial.config.cost?.defaultPricing,
@@ -162,5 +173,21 @@ export class Store {
     const nextMode = getNextPermissionMode(this.state.permissionMode);
     this.setState({ permissionMode: nextMode });
     return nextMode;
+  }
+
+  setAgentMode(mode: AgentMode): void {
+    this.setState({ agentMode: mode });
+  }
+
+  setEffort(preference: EffortPreference, resolved: ResolvedEffort): void {
+    this.setState({ effortPreference: preference, resolvedEffort: resolved });
+  }
+
+  /** Compatibility bridge used by the scheduler while legacy edit policy remains readable. */
+  getEffectivePermissionMode(): PermissionMode {
+    if (this.state.agentMode === 'plan') return 'plan';
+    if (this.state.agentMode === 'auto') return 'auto';
+    // Preserve legacy persisted/direct state until the v0.3 removal window.
+    return this.state.permissionMode;
   }
 }

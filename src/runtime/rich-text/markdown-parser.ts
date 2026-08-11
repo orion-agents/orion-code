@@ -23,6 +23,43 @@ import {
 } from './types';
 import { sanitizeRichTextInput, sanitizeCodeContent } from './sanitizer';
 
+const MARKDOWN_ENTITIES: Readonly<Record<string, string>> = {
+  amp: '&',
+  apos: "'",
+  gt: '>',
+  lt: '<',
+  nbsp: ' ',
+  quot: '"',
+};
+
+/** Decode one layer of entity escaping introduced by marked token text. */
+export function decodeMarkdownEntities(text: string): string {
+  return text.replace(
+    /&(#(?:x|X)?[0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]+);/g,
+    (match, entity: string) => {
+      if (entity.startsWith('#x') || entity.startsWith('#X')) {
+        const codePoint = Number.parseInt(entity.slice(2), 16);
+        return safeEntityCodePoint(codePoint) ? String.fromCodePoint(codePoint) : match;
+      }
+      if (entity.startsWith('#')) {
+        const codePoint = Number.parseInt(entity.slice(1), 10);
+        return safeEntityCodePoint(codePoint) ? String.fromCodePoint(codePoint) : match;
+      }
+      return MARKDOWN_ENTITIES[entity.toLowerCase()] ?? match;
+    }
+  );
+}
+
+function safeEntityCodePoint(codePoint: number): boolean {
+  return (
+    Number.isInteger(codePoint) &&
+    codePoint >= 0x20 &&
+    codePoint <= 0x10ffff &&
+    !(codePoint >= 0x7f && codePoint <= 0x9f) &&
+    !(codePoint >= 0xd800 && codePoint <= 0xdfff)
+  );
+}
+
 /**
  * Parse model text into a RichTextDocument.
  * Never throws - returns a plain-text paragraph on parse failure.
@@ -33,9 +70,10 @@ export function parseRichText(rawText: string): RichTextDocument {
   }
 
   // Resource limit: truncate oversized input.
-  const truncated = rawText.length > MAX_RICH_TEXT_INPUT_BYTES
-    ? rawText.slice(0, MAX_RICH_TEXT_INPUT_BYTES)
-    : rawText;
+  const truncated =
+    rawText.length > MAX_RICH_TEXT_INPUT_BYTES
+      ? rawText.slice(0, MAX_RICH_TEXT_INPUT_BYTES)
+      : rawText;
 
   const cleaned = sanitizeRichTextInput(truncated);
 
@@ -161,16 +199,20 @@ function parseDiffLines(content: string): DiffLine[] {
 }
 
 function parseTable(token: Tokens.Table): RichTextBlock {
-  const headers = (token.header ?? []).map(cell => parseInlineTokens(cell.tokens ?? [], 0)).slice(0, MAX_TABLE_COLUMNS);
+  const headers = (token.header ?? [])
+    .map(cell => parseInlineTokens(cell.tokens ?? [], 0))
+    .slice(0, MAX_TABLE_COLUMNS);
   const rows = (token.rows ?? [])
     .slice(0, MAX_TABLE_ROWS)
-    .map(row => row.slice(0, MAX_TABLE_COLUMNS).map(cell => parseInlineTokens(cell.tokens ?? [], 0)));
+    .map(row =>
+      row.slice(0, MAX_TABLE_COLUMNS).map(cell => parseInlineTokens(cell.tokens ?? [], 0))
+    );
   return { type: 'table', headers, rows };
 }
 
 function parseHtml(token: Tokens.HTML): RichTextBlock {
   // Never interpret HTML tags - display as safe plain text.
-  return { type: 'paragraph', spans: [{ text: token.text }] };
+  return { type: 'paragraph', spans: [{ text: decodeMarkdownEntities(token.text) }] };
 }
 
 type RichTextSpanMarks = Omit<RichTextSpan, 'text'>;
@@ -178,7 +220,7 @@ type RichTextSpanMarks = Omit<RichTextSpan, 'text'>;
 function parseInlineTokens(
   tokens: Token[],
   depth: number,
-  inherited: RichTextSpanMarks = {},
+  inherited: RichTextSpanMarks = {}
 ): RichTextSpan[] {
   if (depth > MAX_MARKDOWN_NESTING) {
     const text = tokens.map(extractTokenText).join('');
@@ -195,7 +237,7 @@ function parseInlineTokens(
 function inlineTokenToSpans(
   token: Token,
   depth: number,
-  inherited: RichTextSpanMarks,
+  inherited: RichTextSpanMarks
 ): RichTextSpan[] {
   switch (token.type) {
     case 'text':
@@ -205,9 +247,15 @@ function inlineTokenToSpans(
     case 'em':
       return nestedInlineSpans(token, depth, { ...inherited, italic: true });
     case 'codespan':
-      return [{ text: (token as Tokens.Codespan).text, ...inherited, code: true }];
+      return [
+        {
+          text: decodeMarkdownEntities((token as Tokens.Codespan).text),
+          ...inherited,
+          code: true,
+        },
+      ];
     case 'link': {
-      const linkUrl = (token as Tokens.Link).href;
+      const linkUrl = decodeMarkdownEntities((token as Tokens.Link).href);
       return nestedInlineSpans(token, depth, { ...inherited, linkUrl });
     }
     case 'br':
@@ -215,11 +263,15 @@ function inlineTokenToSpans(
     case 'del':
       return nestedInlineSpans(token, depth, inherited);
     case 'image':
-      return [{
-        text: (token as Tokens.Image).text || (token as Tokens.Image).href,
-        ...inherited,
-        linkUrl: (token as Tokens.Image).href,
-      }];
+      return [
+        {
+          text: decodeMarkdownEntities(
+            (token as Tokens.Image).text || (token as Tokens.Image).href
+          ),
+          ...inherited,
+          linkUrl: decodeMarkdownEntities((token as Tokens.Image).href),
+        },
+      ];
     default:
       // Unknown inline: use raw text.
       const raw = (token as { raw?: string }).raw;
@@ -230,7 +282,7 @@ function inlineTokenToSpans(
 function nestedInlineSpans(
   token: Token,
   depth: number,
-  inherited: RichTextSpanMarks,
+  inherited: RichTextSpanMarks
 ): RichTextSpan[] {
   const nested = (token as Token & { tokens?: Token[] }).tokens;
   if (nested?.length) return parseInlineTokens(nested, depth + 1, inherited);
@@ -240,8 +292,8 @@ function nestedInlineSpans(
 
 function extractTokenText(token: Token): string {
   const t = token as Token & { text?: string; raw?: string; tokens?: Token[] };
-  if (typeof t.text === 'string') return t.text;
-  if (typeof t.raw === 'string') return t.raw;
+  if (typeof t.text === 'string') return decodeMarkdownEntities(t.text);
+  if (typeof t.raw === 'string') return decodeMarkdownEntities(t.raw);
   if (Array.isArray(t.tokens)) {
     return t.tokens.map(extractTokenText).join('');
   }

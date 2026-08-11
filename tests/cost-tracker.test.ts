@@ -11,7 +11,7 @@ describe('CostTracker', () => {
     test('records usage with model pricing', () => {
       const record = tracker.record(
         { promptTokens: 1000, completionTokens: 500 },
-        { model: 'gpt-4o' },
+        { model: 'gpt-4o' }
       );
 
       expect(record.promptTokens).toBe(1000);
@@ -26,7 +26,7 @@ describe('CostTracker', () => {
     test('records usage with agent and task metadata', () => {
       const record = tracker.record(
         { promptTokens: 100, completionTokens: 50 },
-        { model: 'claude-sonnet-4-6', agentId: 'agent-1', taskId: 'task-1' },
+        { model: 'claude-sonnet-4-6', agentId: 'agent-1', taskId: 'task-1' }
       );
 
       expect(record.agentId).toBe('agent-1');
@@ -36,7 +36,7 @@ describe('CostTracker', () => {
     test('uses default pricing for unknown model', () => {
       const record = tracker.record(
         { promptTokens: 1000, completionTokens: 1000 },
-        { model: 'unknown-model' },
+        { model: 'unknown-model' }
       );
 
       // Default: $1/1M input, $5/1M output
@@ -47,15 +47,15 @@ describe('CostTracker', () => {
     test('prices canonical catalog models without falling back to unknown defaults', () => {
       const opus = tracker.record(
         { promptTokens: 1000, completionTokens: 1000 },
-        { model: 'claude-opus-4-8' },
+        { model: 'claude-opus-4-8' }
       );
       const qwen = tracker.record(
         { promptTokens: 1000, completionTokens: 1000 },
-        { model: 'qwen3.7-plus' },
+        { model: 'qwen3.7-plus' }
       );
       const minimax = tracker.record(
         { promptTokens: 1000, completionTokens: 1000 },
-        { model: 'MiniMax-M2.5' },
+        { model: 'MiniMax-M2.5' }
       );
 
       expect(opus.estimatedCost).toBeCloseTo(0.09, 5);
@@ -66,7 +66,7 @@ describe('CostTracker', () => {
     test('prefers provider-reported cost over token-price estimates', () => {
       const record = tracker.record(
         { promptTokens: 1000, completionTokens: 1000, costUsd: 0.1234 },
-        { model: 'gpt-4o' },
+        { model: 'gpt-4o' }
       );
 
       expect(record.costUsd).toBe(0.1234);
@@ -82,7 +82,7 @@ describe('CostTracker', () => {
       });
       const record = configured.record(
         { promptTokens: 1000, cachedPromptTokens: 600, completionTokens: 500 },
-        { model: 'routed' },
+        { model: 'routed' }
       );
 
       expect(record.costSource).toBe('configured');
@@ -92,14 +92,36 @@ describe('CostTracker', () => {
     test('deduplicates records with the same provider request id', () => {
       tracker.record(
         { promptTokens: 10, completionTokens: 5, requestId: 'request-1' },
-        { model: 'gpt-4o' },
+        { model: 'gpt-4o' }
       );
       tracker.record(
         { promptTokens: 10, completionTokens: 5, requestId: 'request-1' },
-        { model: 'gpt-4o' },
+        { model: 'gpt-4o' }
       );
 
       expect(tracker.getStats().recordCount).toBe(1);
+    });
+
+    test('retains effort metadata without double-counting reasoning tokens', () => {
+      const record = tracker.record(
+        {
+          promptTokens: 100,
+          completionTokens: 40,
+          reasoningTokens: 25,
+          effortRequested: 'high',
+          effortEffective: 'high',
+          effortSource: 'session',
+          providerProtocol: 'openai-completions',
+        },
+        { model: 'reasoning-model' }
+      );
+
+      expect(record.totalTokens).toBe(140);
+      expect(record.reasoningTokens).toBe(25);
+      expect(record.effortRequested).toBe('high');
+      expect(record.effortEffective).toBe('high');
+      expect(record.effortSource).toBe('session');
+      expect(record.providerProtocol).toBe('openai-completions');
     });
   });
 
@@ -143,9 +165,18 @@ describe('CostTracker', () => {
 
   describe('byAgent and byTask', () => {
     test('aggregates by agent', () => {
-      tracker.record({ promptTokens: 100, completionTokens: 50 }, { model: 'gpt-4o', agentId: 'agent-a' });
-      tracker.record({ promptTokens: 200, completionTokens: 100 }, { model: 'gpt-4o', agentId: 'agent-a' });
-      tracker.record({ promptTokens: 150, completionTokens: 75 }, { model: 'gpt-4o', agentId: 'agent-b' });
+      tracker.record(
+        { promptTokens: 100, completionTokens: 50 },
+        { model: 'gpt-4o', agentId: 'agent-a' }
+      );
+      tracker.record(
+        { promptTokens: 200, completionTokens: 100 },
+        { model: 'gpt-4o', agentId: 'agent-a' }
+      );
+      tracker.record(
+        { promptTokens: 150, completionTokens: 75 },
+        { model: 'gpt-4o', agentId: 'agent-b' }
+      );
 
       const stats = tracker.getStats();
 
@@ -156,8 +187,14 @@ describe('CostTracker', () => {
     });
 
     test('aggregates by task', () => {
-      tracker.record({ promptTokens: 100, completionTokens: 50 }, { model: 'gpt-4o', taskId: 'task-1' });
-      tracker.record({ promptTokens: 200, completionTokens: 100 }, { model: 'gpt-4o', taskId: 'task-2' });
+      tracker.record(
+        { promptTokens: 100, completionTokens: 50 },
+        { model: 'gpt-4o', taskId: 'task-1' }
+      );
+      tracker.record(
+        { promptTokens: 200, completionTokens: 100 },
+        { model: 'gpt-4o', taskId: 'task-2' }
+      );
 
       const stats = tracker.getStats();
 

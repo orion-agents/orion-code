@@ -95,4 +95,34 @@ describe('durable usage ledger', () => {
     expect(summary.recordCount).toBe(1);
     expect(summary.droppedCorruptLines).toBe(1);
   });
+
+  test('persists additive effort metadata while keeping reasoning tokens inside completion totals', () => {
+    const tracker = new CostTracker();
+    const entry = appendUsageRecord(
+      tracker.record(
+        {
+          promptTokens: 50,
+          completionTokens: 30,
+          reasoningTokens: 12,
+          effortRequested: 'high',
+          effortEffective: 'high',
+          effortSource: 'project',
+          providerProtocol: 'openai-completions',
+          requestId: 'reasoning-request',
+        },
+        { model: 'reasoning-model' }
+      )
+    );
+
+    expect(entry.reasoningTokens).toBe(12);
+    expect(entry.effortRequested).toBe('high');
+    expect(entry.effortEffective).toBe('high');
+    expect(entry.effortSource).toBe('project');
+    expect(entry.providerProtocol).toBe('openai-completions');
+
+    const summary = summarizeUsageLedger();
+    expect(summary.reasoningTokens).toBe(12);
+    expect(summary.completionTokens).toBe(30);
+    expect(summary.totalTokens).toBe(80);
+  });
 });

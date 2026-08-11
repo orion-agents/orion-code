@@ -28,6 +28,8 @@ const autoCompactStats = {
   lastCompactMode: 'manual',
 };
 
+let commandOutputs: string[] = [];
+
 function makeContext(root: string, overrides: Partial<CommandContext> = {}): CommandContext {
   const config = loadConfig({
     apiKey: 'test-key',
@@ -90,7 +92,9 @@ function makeContext(root: string, overrides: Partial<CommandContext> = {}): Com
 async function execute(ctx: CommandContext, name: string, args = '') {
   const command = findCommand(name);
   expect(command).toBeDefined();
-  return command!.execute(ctx, args);
+  const result = await command!.execute(ctx, args);
+  if (result.output) commandOutputs.push(result.output);
+  return result;
 }
 
 describe('command index branch coverage', () => {
@@ -106,6 +110,7 @@ describe('command index branch coverage', () => {
     priorConfigDir = process.env.ORION_CODE_CONFIG_DIR;
     process.env.ORION_CODE_CONFIG_DIR = configRoot;
     logs = [];
+    commandOutputs = [];
     logSpy = jest.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
       logs.push(args.join(' '));
     });
@@ -162,7 +167,8 @@ describe('command index branch coverage', () => {
     ]);
     expect(getCommandCategoryLabel(undefined)).toBe('System');
     expect(getCommandCategoryLabel('workflow')).toBe('Workflow');
-    expect(findCommand('goal')?.name).toBe('target');
+    expect(findCommand('goal')?.name).toBe('goal');
+    expect(findCommand('TARGET')?.id).toBe('builtin.workflow.goal');
     expect(findCommand('audit')?.name).toBe('security');
     expect(findCommand('missing')).toBeUndefined();
     expect(getCommandNames()).toContain('help');
@@ -180,10 +186,12 @@ describe('command index branch coverage', () => {
       const ctx = makeContext(root, { uiRenderer: renderer });
       expect((await execute(ctx, 'help')).success).toBe(true);
     }
+    expect((await execute(makeContext(root), 'help', '--all')).success).toBe(true);
 
-    const output = stripAnsi(logs.join('\n'));
+    const output = stripAnsi([...logs, ...commandOutputs].join('\n'));
     expect(output).toContain('Workflow');
-    expect(output).toContain('/context-clear');
+    expect(output).not.toContain('/context-clear');
+    expect(output).toContain('/storage');
     expect(output).toContain('deprecated since');
     expect(output).toContain('destructive');
   });
@@ -193,7 +201,7 @@ describe('command index branch coverage', () => {
 
     await expect(execute(ctx, 'target', 'ship')).resolves.toEqual({
       success: false,
-      error: '/target must be routed through the shared AgentRuntimeController.',
+      error: '/goal must be routed through the shared AgentRuntimeController.',
     });
     await expect(execute(ctx, 'review', '')).resolves.toMatchObject({
       success: true,
@@ -212,24 +220,34 @@ describe('command index branch coverage', () => {
   });
 
   it.each([
-    ['accept', 'acceptEdits'],
-    ['acceptedits', 'acceptEdits'],
-    ['accept-edits', 'acceptEdits'],
-    ['edit', 'acceptEdits'],
-    ['default', 'default'],
-    ['ask', 'default'],
+    ['default', 'interactive'],
+    ['interactive', 'interactive'],
     ['plan', 'plan'],
     ['readonly', 'plan'],
     ['read-only', 'plan'],
     ['auto', 'auto'],
     ['full-auto', 'auto'],
-  ])('normalizes /mode %s to %s', async (input, expected) => {
+  ])('normalizes /mode %s to agent mode %s', async (input, expected) => {
     const ctx = makeContext(root);
     const result = await execute(ctx, 'mode', input);
 
     expect(result.success).toBe(true);
-    expect(ctx.store.getSnapshot().permissionMode).toBe(expected);
+    expect(ctx.store.getSnapshot().agentMode).toBe(expected);
+    expect(ctx.store.getSnapshot().permissionMode).toBe('default');
   });
+
+  it.each(['accept', 'acceptedits', 'accept-edits', 'edit'])(
+    'maps legacy /mode %s to edit policy without changing agent mode',
+    async input => {
+      const ctx = makeContext(root);
+      const result = await execute(ctx, 'mode', input);
+      expect(result.success).toBe(true);
+      expect(ctx.store.getSnapshot()).toMatchObject({
+        agentMode: 'interactive',
+        permissionMode: 'acceptEdits',
+      });
+    }
+  );
 
   it('covers mode help, cycling, aliases, and invalid input', async () => {
     const ctx = makeContext(root);
@@ -238,10 +256,10 @@ describe('command index branch coverage', () => {
       expect((await execute(ctx, 'permissions', arg)).success).toBe(true);
     }
     expect((await execute(ctx, 'perm', 'next')).success).toBe(true);
-    expect(ctx.store.getSnapshot().permissionMode).toBe('acceptEdits');
+    expect(ctx.store.getSnapshot().agentMode).toBe('plan');
     const invalid = await execute(ctx, 'mode', 'danger');
     expect(invalid).toMatchObject({ success: false });
-    expect(invalid.error).toContain('Unknown mode');
+    expect(invalid.error).toContain('Unknown agent mode');
   });
 
   it('prints agents, memory, safety, and configuration with rich runtime data', async () => {
@@ -259,7 +277,7 @@ describe('command index branch coverage', () => {
       expect((await execute(ctx, command)).success).toBe(true);
     }
 
-    const output = stripAnsi(logs.join('\n'));
+    const output = stripAnsi([...logs, ...commandOutputs].join('\n'));
     expect(output).toContain('Registered Agents');
     expect(output).toContain('Short-term 3 / 20');
     expect(output).toContain('Blocked patterns');
@@ -323,7 +341,7 @@ describe('command index branch coverage', () => {
     expect((await execute(ctx, 'harness')).success).toBe(true);
     expect((await execute(ctx, 'harness', 'explain')).success).toBe(true);
 
-    const output = stripAnsi(logs.join('\n'));
+    const output = stripAnsi([...logs, ...commandOutputs].join('\n'));
     expect(output).toContain('Context State');
     expect(output).toContain('restored session');
     expect(output).toContain('Included Evidence');
@@ -343,7 +361,7 @@ describe('command index branch coverage', () => {
     });
 
     expect((await execute(ctx, 'harness', 'explain')).success).toBe(true);
-    const output = stripAnsi(logs.join('\n'));
+    const output = stripAnsi([...logs, ...commandOutputs].join('\n'));
     expect(output).toContain('(no contract established)');
     expect(output).toContain('(no evidence records yet)');
     expect(output).toContain('(no capsule yet)');
@@ -391,7 +409,7 @@ describe('command index branch coverage', () => {
 
     expect((await execute(ctx, 'todos')).success).toBe(true);
     expect((await execute(ctx, 'stats')).success).toBe(true);
-    const output = stripAnsi(logs.join('\n'));
+    const output = stripAnsi([...logs, ...commandOutputs].join('\n'));
     expect(output).toContain('actively working');
     expect(output).toContain('Ratio');
     expect(output).toContain('active-model');

@@ -91,10 +91,11 @@ describe('workspace diff service', () => {
       };
       const result = await findCommand('diff')!.execute(ctx, '');
       expect(result.success).toBe(true);
-      expect(logs.join('\n')).toContain('Workspace Diff');
-      expect(logs.join('\n')).toContain('staged.txt');
-      expect(logs.join('\n')).toContain('tracked.txt');
-      expect(logs.join('\n')).toContain('new.txt');
+      expect(logs).toEqual([]);
+      expect(result.output).toContain('Workspace Diff');
+      expect(result.output).toContain('staged.txt');
+      expect(result.output).toContain('tracked.txt');
+      expect(result.output).toContain('new.txt');
     } finally {
       logSpy.mockRestore();
     }
@@ -117,7 +118,14 @@ describe('openhorse diff CLI', () => {
     const projectRoot = join(__dirname, '..');
     const result = spawnSync(
       'node',
-      ['-r', join(projectRoot, 'node_modules', 'ts-node', 'register'), join(projectRoot, 'src', 'cli.ts'), 'diff', '--output-format', 'json'],
+      [
+        '-r',
+        join(projectRoot, 'node_modules', 'ts-node', 'register'),
+        join(projectRoot, 'src', 'cli.ts'),
+        'diff',
+        '--output-format',
+        'json',
+      ],
       {
         cwd: repo,
         env: {

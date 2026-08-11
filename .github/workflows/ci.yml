@@ -6,6 +6,8 @@ on:
     branches:
       - main
       - 'v*'
+    tags:
+      - 'v*'
 
 permissions:
   contents: read
@@ -120,6 +122,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Dependency policy
+        run: npm run deps:check -- --policy-only
 
       - name: Build (npm pack --dry-run needs dist/)
         run: npm run build

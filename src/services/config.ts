@@ -39,6 +39,7 @@ import {
   type ModelRegistry,
 } from './model-registry';
 import { ModelClientPool } from './model-client-pool';
+import type { EffortPreference } from './effort';
 import { DEFAULT_SUBAGENT_CONFIG, type SubagentConfig } from '../runtime/subagents/types';
 import { clampSubagentConfig } from '../runtime/subagents/policy';
 import { maskSecret } from '../utils/mask';
@@ -92,6 +93,7 @@ export interface OrionCodeCLIConfig {
   modelRegistry?: ModelRegistry;
   modelClientPool?: ModelClientPool;
   toolConfirmation: ToolConfirmationPolicy;
+  defaultEffort?: EffortPreference;
   webSearch?: WebSearchMcpConfig;
   ui?: UIConfig;
   skills?: SkillsConfig;
@@ -378,6 +380,7 @@ export function loadConfig(overrides: Partial<OrionCodeCLIConfig> = {}): OrionCo
       normalizeToolConfirmationPolicy(overrides.toolConfirmation) ??
       normalizeToolConfirmationPolicy(globalConfig.toolConfirmation) ??
       INTERNAL_DEFAULTS.toolConfirmation,
+    defaultEffort: globalConfig.defaultEffort,
     webSearch: loadWebSearchConfig(globalConfig, overrides),
     ui: loadUIConfig(globalConfig, overrides),
     skills: loadSkillsConfig(globalConfig, overrides),

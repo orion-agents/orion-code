@@ -1,4 +1,8 @@
-import { EmbeddingService, getEmbeddingService, resetEmbeddingService } from '../src/memory/embeddings';
+import {
+  EmbeddingService,
+  getEmbeddingService,
+  resetEmbeddingService,
+} from '../src/memory/embeddings';
 import { VectorStore } from '../src/memory/vector-store';
 import { SemanticSearchService } from '../src/memory/semantic-search';
 import { createHash } from 'crypto';
@@ -6,10 +10,38 @@ import { existsSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { getCanonicalProjectKey } from '../src/services/config-dir';
+import axios from 'axios';
+
+function deterministicEmbedding(this: EmbeddingService, text: string): Promise<number[]> {
+  const vector = new Array(this.getDimension()).fill(0);
+  vector[0] = 1;
+  if (vector.length > 1) {
+    vector[1] = Math.max(1, text.length);
+  }
+  return Promise.resolve(vector);
+}
 
 describe('EmbeddingService', () => {
   beforeEach(() => {
     resetEmbeddingService();
+    jest.spyOn(axios, 'post').mockImplementation(async (_url, payload) => {
+      const text =
+        typeof payload === 'object' && payload !== null && 'prompt' in payload
+          ? String(payload.prompt)
+          : typeof payload === 'object' && payload !== null && 'input' in payload
+            ? String(payload.input)
+            : '';
+      const dimension = String(_url).includes('openai.com') ? 1536 : 768;
+      const vector = new Array(dimension).fill(0);
+      vector[0] = Math.max(1, text.length);
+      return String(_url).includes('openai.com')
+        ? { data: { data: [{ embedding: vector }] } }
+        : { data: { embedding: vector } };
+    });
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
   test('creates service with default config', () => {
@@ -49,13 +81,17 @@ describe('VectorStore', () => {
 
   beforeEach(() => {
     // Use temp database for each test
+    resetEmbeddingService();
+    jest.spyOn(EmbeddingService.prototype, 'embed').mockImplementation(deterministicEmbedding);
     dbPath = join(mkdtempSync(join(tmpdir(), 'openhorse-test-vector-')), 'vector.db');
-    store = new VectorStore({ dbPath });
+    store = new VectorStore({ dbPath, embeddingConfig: { provider: 'openai' } });
   });
 
   afterEach(() => {
-    store.close();
+    store?.close();
     rmSync(join(dbPath, '..'), { recursive: true, force: true });
+    jest.restoreAllMocks();
+    resetEmbeddingService();
   });
 
   test('initializes database', () => {
@@ -96,22 +132,28 @@ describe('VectorStore', () => {
 
   test('project-scoped rows with the same memory name do not overwrite each other', async () => {
     const name = 'shared-memory';
-    await store.upsert({
-      name,
-      type: 'project',
-      content: 'project A content',
-      description: 'A',
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    }, '/tmp/openhorse-vector-project-a');
-    await store.upsert({
-      name,
-      type: 'project',
-      content: 'project B content',
-      description: 'B',
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    }, '/tmp/openhorse-vector-project-b');
+    await store.upsert(
+      {
+        name,
+        type: 'project',
+        content: 'project A content',
+        description: 'A',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      },
+      '/tmp/openhorse-vector-project-a'
+    );
+    await store.upsert(
+      {
+        name,
+        type: 'project',
+        content: 'project B content',
+        description: 'B',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      },
+      '/tmp/openhorse-vector-project-b'
+    );
 
     expect(store.getAll('/tmp/openhorse-vector-project-a')[0]?.content).toBe('project A content');
     expect(store.getAll('/tmp/openhorse-vector-project-b')[0]?.content).toBe('project B content');
@@ -132,10 +174,12 @@ describe('VectorStore', () => {
     const legacyProjectKey = createHash('sha256').update(projectPath).digest('hex').slice(0, 16);
     const db = (store as any).db;
 
-    db.prepare(`
+    db.prepare(
+      `
       INSERT OR REPLACE INTO memories (id, name, type, content, description, project, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
+    `
+    ).run(
       'legacy-memory',
       'legacy-memory',
       'project',
@@ -143,7 +187,7 @@ describe('VectorStore', () => {
       'Legacy vector row',
       legacyProjectKey,
       Date.now(),
-      Date.now(),
+      Date.now()
     );
 
     const all = store.getAll(projectPath);
@@ -153,22 +197,28 @@ describe('VectorStore', () => {
   test('cleanupOrphanProjects removes rows for missing projects', async () => {
     const keepProject = '/tmp/openhorse-vector-keep-project';
     const orphanProject = '/tmp/openhorse-vector-orphan-project';
-    await store.upsert({
-      name: 'keep-memory',
-      type: 'project',
-      content: 'keep',
-      description: 'keep',
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    }, keepProject);
-    await store.upsert({
-      name: 'orphan-memory',
-      type: 'project',
-      content: 'orphan',
-      description: 'orphan',
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    }, orphanProject);
+    await store.upsert(
+      {
+        name: 'keep-memory',
+        type: 'project',
+        content: 'keep',
+        description: 'keep',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      },
+      keepProject
+    );
+    await store.upsert(
+      {
+        name: 'orphan-memory',
+        type: 'project',
+        content: 'orphan',
+        description: 'orphan',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      },
+      orphanProject
+    );
 
     const result = store.cleanupOrphanProjects([getCanonicalProjectKey(keepProject)]);
 
@@ -211,14 +261,21 @@ describe('SemanticSearchService', () => {
   let dbPath: string;
 
   beforeEach(() => {
+    resetEmbeddingService();
+    jest.spyOn(EmbeddingService.prototype, 'embed').mockImplementation(deterministicEmbedding);
     dbPath = join(mkdtempSync(join(tmpdir(), 'openhorse-test-semantic-')), 'vector.db');
-    store = new VectorStore({ dbPath });
-    service = new SemanticSearchService({ dbPath });
+    store = new VectorStore({ dbPath, embeddingConfig: { provider: 'openai' } });
+    service = new SemanticSearchService({
+      dbPath,
+      embeddingConfig: { provider: 'openai' },
+    });
   });
 
   afterEach(() => {
-    store.close();
+    store?.close();
     rmSync(join(dbPath, '..'), { recursive: true, force: true });
+    jest.restoreAllMocks();
+    resetEmbeddingService();
   });
 
   test('creates service', () => {

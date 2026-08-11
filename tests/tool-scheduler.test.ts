@@ -11,6 +11,7 @@ import {
   resolveEffectivePermission,
 } from '../src/framework/tool-scheduler';
 import type { Message } from '../src/services/llm';
+import { TOOLS } from '../src/tools';
 
 const readOnlyTool: OrionCodeTool = buildTool({
   name: 'read_file',
@@ -479,6 +480,47 @@ describe('executeToolCalls', () => {
     expect(results[0].error).toContain('toolConfirmation=allow cannot approve');
   });
 
+  test.each([
+    { approved: true, expectedSuccess: true, expectedExecutions: 1 },
+    { approved: false, expectedSuccess: false, expectedExecutions: 0 },
+  ])(
+    'falls back to explicit interactive confirmation for state-write tools when allow is configured (approved=$approved)',
+    async ({ approved, expectedSuccess, expectedExecutions }) => {
+      const confirmToolUse = jest.fn(async () => approved);
+      const toolExecutor = jest.fn(async () =>
+        JSON.stringify({ success: true, output: 'written' })
+      );
+      const prepared = prepareToolCalls({
+        toolCalls: toolCalls(['state_write']),
+        tools: [stateWriteTool],
+        toolExecutor,
+        toolContext,
+        permissionMode: 'default',
+        toolConfirmation: 'allow',
+        confirmToolUse,
+      });
+
+      const results: any[] = [];
+      for await (const executed of executeToolCalls(prepared, {
+        toolExecutor,
+        permissionMode: 'default',
+        toolConfirmation: 'allow',
+        confirmToolUse,
+      })) {
+        results.push(executed);
+      }
+
+      expect(confirmToolUse).toHaveBeenCalledTimes(1);
+      expect(toolExecutor).toHaveBeenCalledTimes(expectedExecutions);
+      expect(results[0].success).toBe(expectedSuccess);
+      expect(results[0].permissionDecision).toMatchObject({
+        behavior: 'ask',
+        approved,
+        source: 'user',
+      });
+    }
+  );
+
   test('records user permission decision for interactive confirmation', async () => {
     const prepared = prepareToolCalls({
       toolCalls: toolCalls(['web_search']),
@@ -586,7 +628,11 @@ describe('permission mode semantics for ask tools', () => {
     const execReadOnly: OrionCodeTool = buildTool({
       name: 'exec_command',
       description: 'Run a shell command',
-      parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] },
+      parameters: {
+        type: 'object',
+        properties: { command: { type: 'string' } },
+        required: ['command'],
+      },
       execute: async () => ({ success: true, output: '' }),
       isReadOnly: () => true,
       checkPermissions: () => ({ behavior: 'ask', reason: 'Command requires confirmation' }),
@@ -657,6 +703,28 @@ describe('permission mode semantics for ask tools', () => {
       approved: false,
       source: 'user',
     });
+  });
+
+  test('does not execute a tool until the interactive permission promise resolves', async () => {
+    const executed: string[] = [];
+    let resolvePermission!: (approved: boolean) => void;
+    const confirmation = new Promise<boolean>(resolve => {
+      resolvePermission = resolve;
+    });
+    const pending = runOne('web_search', {
+      permissionMode: 'default',
+      toolConfirmation: 'ask',
+      confirmToolUse: () => confirmation,
+      onExec: name => executed.push(name),
+    });
+
+    await Promise.resolve();
+    expect(executed).toEqual([]);
+    resolvePermission(true);
+    const { results } = await pending;
+
+    expect(executed).toEqual(['web_search']);
+    expect(results[0]).toMatchObject({ success: true });
   });
 
   test('acceptEdits honours toolConfirmation=deny for non-edit ask tools', async () => {
@@ -831,5 +899,22 @@ describe('fail-closed permission matrix', () => {
       allowlist: { effect: 'allow', rule: 'unknown_risk' },
     });
     expect(decision).toMatchObject({ outcome: 'confirm', source: 'missing_risk_metadata' });
+  });
+
+  test('allowlist allow cannot auto-approve recursive rm variants', () => {
+    const execTool = TOOLS.find(tool => tool.name === 'exec_command');
+    if (!execTool) throw new Error('exec_command tool is missing');
+
+    for (const command of ['rm -r build', 'rm -R build', 'rm --recursive build']) {
+      const decision = resolveEffectivePermission({
+        toolName: 'exec_command',
+        tool: execTool,
+        args: { command },
+        permission: { behavior: 'ask', reason: 'Command requires confirmation' },
+        allowlist: { effect: 'allow', rule: 'exec_command' },
+        toolConfirmation: 'ask',
+      });
+      expect(decision).toMatchObject({ outcome: 'confirm', risk: 'destructive' });
+    }
   });
 });

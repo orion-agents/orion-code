@@ -3,10 +3,12 @@ import type { StyledRow, TuiTheme } from '../tui-core/style';
 import { TuiInputParser, type TuiInputEvent, type TuiKey } from '../tui-core/input-parser';
 import type { UiEventSink } from '../runtime/ui-events';
 import type { ToolDetailRepository } from '../runtime/tool-detail-repository';
-import { getCommands } from '../commands';
+import { findCommand, getCommands } from '../commands';
 import { measureTuiLiveFrameHeight, renderTuiLiveFrame, renderTuiUiFrame } from './layout';
 import { getFileQuery, visibleCommandItems, visibleFileItems, type TuiPickerItem } from './pickers';
 import type { ToolConfirmationPolicy } from '../services/global-config';
+import type { ToolPermissionScope } from '../services/tool-allowlist';
+import { createPermissionDecisionPickerState } from '../runtime/ui-view-model';
 import {
   InlineTerminalSurface,
   type CommittedEntry,
@@ -66,7 +68,11 @@ export interface TuiRunnerOptions {
   cwd?: string;
   onSubmit?: (input: string) => void | Promise<void>;
   onCtrlC?: () => void;
-  onPermissionDecision?: (requestId: string, approved: boolean) => void | Promise<void>;
+  onPermissionDecision?: (
+    requestId: string,
+    approved: boolean,
+    scope: ToolPermissionScope
+  ) => void | Promise<void>;
   /** Called when the user changes the tool confirmation policy via /permissions. */
   onPermissionModeChange?: (value: ToolConfirmationPolicy) => void | Promise<void>;
   /** Initial tool confirmation policy, surfaced in the status bar until changed. */
@@ -486,7 +492,15 @@ export class TuiRunner {
       if (event.type === 'text') {
         const answer = event.value.trim().toLowerCase();
         if (answer === 'y' || answer === 'yes') {
-          this.answerPermission(true);
+          this.answerPermission(true, 'once');
+          return;
+        }
+        if (answer === 'p' || answer === 'project') {
+          this.answerPermission(true, 'project');
+          return;
+        }
+        if (answer === 'g' || answer === 'global') {
+          this.answerPermission(true, 'global');
           return;
         }
         if (answer === 'n' || answer === 'no') {
@@ -677,9 +691,13 @@ export class TuiRunner {
         case 'tab':
           this.dispatch({ type: 'moveOverlaySelection', delta: 1 });
           return;
-        case 'enter':
-          this.answerPermission(overlay.selectedIndex === 0);
+        case 'enter': {
+          const item = createPermissionDecisionPickerState(overlay.request).visibleItems[
+            overlay.selectedIndex
+          ];
+          this.answerPermission(item?.approved ?? false, item?.scope ?? 'once');
           return;
+        }
         case 'escape':
         case 'ctrl+c':
           this.answerPermission(false);
@@ -887,27 +905,6 @@ export class TuiRunner {
       });
       return true;
     }
-    const permMatch = command.match(/^\/permissions(?:\s+(allow|ask|deny))?$/u);
-    if (permMatch) {
-      const value = permMatch[1] as ToolConfirmationPolicy | undefined;
-      if (value) {
-        this.applyPermissionMode(value);
-        this.dispatch({
-          type: 'setStatus',
-          message: `tool confirmation: ${value}`,
-        });
-      } else {
-        this.dispatch({ type: 'showToolConfirmation' });
-      }
-      return true;
-    }
-    if (command.startsWith('/permissions')) {
-      this.dispatch({
-        type: 'setStatus',
-        message: 'Usage: /permissions [allow|ask|deny]',
-      });
-      return true;
-    }
     return false;
   }
 
@@ -978,11 +975,7 @@ export class TuiRunner {
     const match = prompt.match(/^\/([^\s]+)\s+\S/u);
     if (!match) return false;
     const name = match[1].toLowerCase();
-    return getCommands().some(
-      command =>
-        command.name.toLowerCase() === name ||
-        command.aliases?.some(alias => alias.toLowerCase() === name)
-    );
+    return findCommand(name) !== undefined;
   }
 
   private completeFile(item: TuiPickerItem | undefined): void {
@@ -994,11 +987,11 @@ export class TuiRunner {
     this.dispatch({ type: 'setPrompt', value, cursor: value.length });
   }
 
-  private answerPermission(approved: boolean): void {
+  private answerPermission(approved: boolean, scope: ToolPermissionScope = 'once'): void {
     const overlay = this.state.overlay;
     if (overlay?.type !== 'permission') return;
     this.dispatch({ type: 'closeOverlay' });
-    void this.options.onPermissionDecision?.(overlay.request.id, approved);
+    void this.options.onPermissionDecision?.(overlay.request.id, approved, scope);
   }
 
   private applyPermissionMode(value: ToolConfirmationPolicy): void {

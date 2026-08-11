@@ -242,7 +242,7 @@ function getCommandCategoryLabel(category: CommandCategory | undefined): string 
   return CATEGORY_LABELS[category ?? 'system'];
 }
 
-function sortCommands(commands: SlashCommand[]): SlashCommand[] {
+function sortCommands<TCommand extends SlashCommand>(commands: TCommand[]): TCommand[] {
   return [...commands].sort((a, b) => {
     const categoryDelta =
       CATEGORY_ORDER.indexOf(commandCategory(a)) - CATEGORY_ORDER.indexOf(commandCategory(b));
@@ -271,129 +271,144 @@ function isAbortError(error: unknown, abortSignal?: AbortSignal): boolean {
 
 let taskManager: TaskManager | null = null;
 
-function showHelp(ctx: CommandContext, visible: SlashCommand[]): CommandResult {
-  console.log();
-  console.log(HEADER('Commands:'));
-  console.log();
+function showHelp(
+  ctx: CommandContext,
+  visible: SlashCommand[],
+  includeAdvanced = false
+): CommandResult {
+  const lines: string[] = ['', HEADER('Commands:'), ''];
+  const write = (line = ''): void => {
+    lines.push(line);
+  };
 
   for (const category of CATEGORY_ORDER) {
-    const items = visible.filter(cmd => commandCategory(cmd) === category);
+    const items = visible.filter(
+      cmd =>
+        commandCategory(cmd) === category &&
+        (includeAdvanced || (cmd.audience ?? 'primary') === 'primary')
+    );
     if (items.length === 0) continue;
 
-    console.log(DIM(getCommandCategoryLabel(category)));
+    write(DIM(getCommandCategoryLabel(category)));
     for (const cmd of items) {
       const aliases = cmd.aliases ? ` (${cmd.aliases.join(', ')})` : '';
       const params = cmd.argumentHint || cmd.params?.map(p => `<${p.name}>`).join(' ') || '';
-      const lifecycle = cmd.deprecated
-        ? ` deprecated since ${cmd.deprecated.since}${cmd.deprecated.replacement ? `; use ${cmd.deprecated.replacement}` : ''}`
-        : '';
+      const lifecycle =
+        cmd.lifecycle?.status === 'deprecated'
+          ? ` deprecated since ${cmd.lifecycle.since ?? 'unknown'}${cmd.lifecycle.replacement ? `; use ${cmd.lifecycle.replacement}` : ''}${cmd.lifecycle.removeIn ? `; remove in ${cmd.lifecycle.removeIn}` : ''}`
+          : cmd.deprecated
+            ? ` deprecated since ${cmd.deprecated.since}${cmd.deprecated.replacement ? `; use ${cmd.deprecated.replacement}` : ''}`
+            : '';
       const risk = cmd.risk === 'destructive' ? ' destructive' : '';
       const availability = cmd.availability?.(ctx);
       const unavailable =
         availability && !availability.available
           ? ` unavailable: ${availability.reason ?? 'requirements not met'}`
           : '';
-      console.log(`  ${ACCENT(`/${cmd.name}`)}${aliases} ${DIM(params)}`);
-      console.log(`    ${DIM(`${cmd.description}${lifecycle}${risk}${unavailable}`)}`);
+      write(`  ${ACCENT(`/${cmd.name}`)}${aliases} ${DIM(params)}`);
+      write(`    ${DIM(`${cmd.description}${lifecycle}${risk}${unavailable}`)}`);
     }
-    console.log();
+    write();
   }
 
-  console.log(DIM('Type any text without / prefix to chat with the LLM.'));
-  console.log();
-  return { success: true };
+  write(DIM('Type any text without / prefix to chat with the LLM.'));
+  write();
+  return { success: true, output: lines.join('\n') };
 }
 
 function showStatus(ctx: CommandContext): CommandResult {
-  console.log();
-  console.log(HEADER('System Status'));
-  console.log(DIM('─'.repeat(40)));
+  const lines: string[] = ['', HEADER('System Status'), DIM('─'.repeat(40))];
+  const write = (line = ''): void => {
+    lines.push(line);
+  };
 
   const brainStatus = ctx.runtime.brain.getStatus();
   const memStatus = ctx.runtime.memory.getStatus();
   const storeStats = ctx.runtime.store.getStats();
 
-  console.log(`  Mode       ${BRAND(ctx.config.mode)}`);
-  console.log(`  Log level  ${DIM(ctx.config.logLevel)}`);
+  write(`  Mode       ${BRAND(ctx.config.mode)}`);
+  write(`  Log level  ${DIM(ctx.config.logLevel)}`);
   const modelId = ctx.llm?.getModel() ?? snapshotCurrentModel(ctx);
   const modelContext = resolveModelContext(modelId);
   const compactStats = getCommandAutoCompact(ctx, modelId).getStats();
-  console.log(`  Model      ${BRAND(modelId)}`);
-  console.log(
+  write(`  Model      ${BRAND(modelId)}`);
+  const effort = ctx.store.getSnapshot().resolvedEffort;
+  write(
+    `  Effort     ${DIM(effort ? `${effort.requested}/${effort.effective ?? 'provider-default'}` : 'auto/provider-default')}`
+  );
+  write(
     `  Context    ${DIM(`${formatTokenCount(modelContext.contextWindow)} tokens (${modelContext.source}${modelContext.source === 'fuzzy' ? `:${modelContext.matchedId}` : ''})`)}`
   );
-  console.log(
+  write(
     `  Compact    ${compactStats.enabled ? SUCCESS('auto') : WARN('off')} ${DIM(`predict ${formatThreshold(compactStats.predictiveCompactThreshold)}, hard ${formatThreshold(compactStats.threshold)}, used ${compactStats.ctxPercent}%`)}`
   );
-  console.log(`  Renderer   ${formatRendererStatus(ctx)}`);
-  console.log();
-  console.log(`  Agents     ${SUCCESS(brainStatus.agents.length)} registered`);
-  console.log(
-    `  Tasks      ${brainStatus.pendingTasks} pending (${brainStatus.strategy} strategy)`
-  );
-  console.log();
-  console.log(`  Memory (inline):`);
-  console.log(`    Working    ${memStatus.working} entries`);
-  console.log(`    Short-term ${memStatus['short-term']} entries`);
-  console.log(`    Long-term  ${memStatus['long-term']} entries`);
-  console.log();
-  console.log(`  Memory (store):`);
-  console.log(`    Working    ${storeStats.working} entries`);
-  console.log(`    Short-term ${storeStats['short-term']} entries`);
-  console.log(`    Long-term  ${storeStats['long-term']} entries`);
+  write(`  Renderer   ${formatRendererStatus(ctx)}`);
+  write();
+  write(`  Agents     ${SUCCESS(brainStatus.agents.length)} registered`);
+  write(`  Tasks      ${brainStatus.pendingTasks} pending (${brainStatus.strategy} strategy)`);
+  write();
+  write('  Memory (inline):');
+  write(`    Working    ${memStatus.working} entries`);
+  write(`    Short-term ${memStatus['short-term']} entries`);
+  write(`    Long-term  ${memStatus['long-term']} entries`);
+  write();
+  write('  Memory (store):');
+  write(`    Working    ${storeStats.working} entries`);
+  write(`    Short-term ${storeStats['short-term']} entries`);
+  write(`    Long-term  ${storeStats['long-term']} entries`);
 
   refreshProjectInstructions(ctx.store, ctx.cwd);
   const snapshot = ctx.store.getSnapshot();
   const instructionFiles = loadProjectInstructionFiles(ctx.cwd);
-  console.log();
-  console.log(`  Context:`);
-  console.log(
+  write();
+  write('  Context:');
+  write(
     `    Project rules ${instructionFiles.length > 0 ? SUCCESS(`${instructionFiles.length} files`) : DIM('none')}`
   );
   for (const file of instructionFiles.slice(0, 8)) {
-    console.log(`      ${DIM(file.path)}${file.truncated ? ` ${WARN('(truncated)')}` : ''}`);
+    write(`      ${DIM(file.path)}${file.truncated ? ` ${WARN('(truncated)')}` : ''}`);
   }
   if (instructionFiles.length > 8) {
-    console.log(`      ${DIM(`... ${instructionFiles.length - 8} more`)}`);
+    write(`      ${DIM(`... ${instructionFiles.length - 8} more`)}`);
   }
-  console.log(
+  write(
     `    Prompt rules  ${snapshot.projectInstructionsContent ? SUCCESS(`${snapshot.projectInstructionsContent.length} chars`) : DIM('none')}`
   );
-  console.log(
+  write(
     `    Project memory ${snapshot.memoryContent ? SUCCESS(`${snapshot.memoryContent.length} chars`) : DIM('none')}`
   );
-  console.log(
+  write(
     `    Skills index   ${snapshot.skillsContent ? SUCCESS(`${snapshot.skillsContent.length} chars`) : DIM('none')}`
   );
 
   if (snapshot.lastLoopStats) {
     const stats = snapshot.lastLoopStats;
-    console.log();
-    console.log(`  Last loop:`);
+    write();
+    write('  Last loop:');
     for (const line of formatLoopStatsLines(stats)) {
-      console.log(`    ${line}`);
+      write(`    ${line}`);
     }
   }
 
   const harnessState = snapshot.harnessState;
   if (harnessState?.contract || harnessState?.capsule) {
-    console.log();
-    console.log(`  Harness:`);
+    write();
+    write('  Harness:');
     if (harnessState.contract) {
-      console.log(`    Objective  ${ACCENT(harnessState.contract.objective)}`);
+      write(`    Objective  ${ACCENT(harnessState.contract.objective)}`);
     }
-    console.log(`    Ledger     ${DIM(`${harnessState.ledger.length} entries`)}`);
+    write(`    Ledger     ${DIM(`${harnessState.ledger.length} entries`)}`);
     if (harnessState.capsule) {
-      console.log(`    Next       ${DIM(harnessState.capsule.nextAction)}`);
+      write(`    Next       ${DIM(harnessState.capsule.nextAction)}`);
       const passed = harnessState.capsule.verification.passed.length;
       const failed = harnessState.capsule.verification.failed.length;
-      console.log(
+      write(
         `    Verify     ${SUCCESS(`${passed} passed`)} / ${failed > 0 ? ERROR(`${failed} failed`) : DIM('0 failed')}`
       );
     }
   }
-  console.log();
-  return { success: true };
+  write();
+  return { success: true, output: lines.join('\n') };
 }
 
 function snapshotCurrentModel(ctx: CommandContext): string {
@@ -669,7 +684,7 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
       turnId: ctx.turnId,
       // Tools that fan out to other tools (batch_read) have to re-run the
       // permission gate per sub-step; they need the mode and the allowlist.
-      permissionMode: snapshot.permissionMode,
+      permissionMode: ctx.store.getEffectivePermissionMode(),
       toolAllowlist: resolveProjectToolAllowlist(ctx.cwd).evaluator,
     });
     // 不在这里打印，让 tool_result 事件处理
@@ -715,7 +730,7 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
       llm: ctx.llm,
       streamCallbacks,
       costTracker: snapshot.costTracker,
-      permissionMode: snapshot.permissionMode,
+      permissionMode: ctx.store.getEffectivePermissionMode(),
       toolConfirmation: ctx.config.toolConfirmation,
       toolAllowlist: resolveProjectToolAllowlist(ctx.cwd).evaluator,
       toolContext: {

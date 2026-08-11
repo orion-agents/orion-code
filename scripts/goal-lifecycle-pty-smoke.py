@@ -61,6 +61,7 @@ class PtyOutput:
         self.fd = fd
         self.renderer = renderer
         self.chunks: list[bytes] = []
+        self.auto_approve_permissions = True
         self.permission_pending = False
         self.permission_scan_offset = 0
 
@@ -87,6 +88,8 @@ class PtyOutput:
         raise AssertionError(f"Timed out waiting for {needle!r}. Tail:\n{plain[-4000:]}")
 
     def _approve_visible_permission(self, plain: str) -> None:
+        if not self.auto_approve_permissions:
+            return
         permission_visible = "Tool Permission" in plain or "Allow tool" in plain
         if not permission_visible:
             return
@@ -115,8 +118,21 @@ class PtyOutput:
         time.sleep(0.15)
 
 
-def send(fd: int, value: str) -> None:
-    os.write(fd, (value + "\r").encode("utf-8"))
+def send(output: PtyOutput, value: str) -> None:
+    if output.renderer == "terminal":
+        # The raw terminal parser processes text and Enter in order within one
+        # batch, preventing an asynchronous permission modal from taking input
+        # ownership between those events.
+        os.write(output.fd, value.encode("utf-8") + b"\r")
+        return
+
+    # Ink exposes text and Enter as distinct key events. Wait for its input box
+    # to render the command instead of relying on a machine-speed-dependent
+    # sleep before Enter chooses submission over palette completion.
+    mark = output.mark()
+    os.write(output.fd, value.encode("utf-8"))
+    output.wait(f"│ › {value}", timeout=8, start=mark)
+    os.write(output.fd, b"\r")
 
 
 def stop_process(process: subprocess.Popen[bytes], master: int) -> None:
@@ -575,15 +591,25 @@ def run_renderer(repo: Path, renderer: str) -> None:
                 time.sleep(0.2)
 
             create_mark = output.mark()
-            send(master, "/target Make lifecycle-test-check pass with durable evidence")
-            output.wait("lifecycle-test-check", timeout=8, start=create_mark)
-            send(master, "/target pause")
+            # Pause the freshly-created Goal before allowing its first tool prompt.
+            # Otherwise the harness's automatic `y` can race the following slash
+            # command and turn `/target pause` into a single invalid input line.
+            output.auto_approve_permissions = False
+            send(output, "/target Make lifecycle-test-check pass with durable evidence")
+            # Wait for the command result, not its immediately echoed input. Under
+            # full-suite load the echo can arrive before the TUI has submitted the
+            # command, and sending the next slash command would only edit the draft.
+            output.wait("Target: [active]", timeout=8, start=create_mark)
+            send(output, "/target pause")
             output.wait("Target: [paused]", timeout=8, start=create_mark)
-            send(master, "/target budget 100000")
-            output.wait("budget 0/100000", timeout=8, start=create_mark)
+            send(output, "/target budget 100000")
+            # Pausing can race with the first provider usage. The contract is the
+            # configured ceiling, not an assumption that no tokens were charged.
+            output.wait("/100000", timeout=8, start=create_mark)
+            output.auto_approve_permissions = True
 
             lifecycle_mark = output.mark()
-            send(master, "/target resume")
+            send(output, "/target resume")
             output.wait("Goal evidence failed", timeout=25, start=lifecycle_mark)
             output.wait("FAILED_TEST_REPAIRED_WITH_FILE_CHANGE", timeout=25, start=lifecycle_mark)
             output.wait("FRESH_TEST_AND_BUILD_REVERIFY_COMPLETE", timeout=30, start=lifecycle_mark)
@@ -597,22 +623,22 @@ def run_renderer(repo: Path, renderer: str) -> None:
                 raise AssertionError("The Goal turn did not repair lifecycle-fixture.txt")
 
             pause_mark = output.mark()
-            send(master, "/target pause")
+            send(output, "/target pause")
             paused = output.wait("Target: [paused]", timeout=10, start=pause_mark)
             if "0/3" not in paused and "criteria 0/3" not in paused:
-                send(master, "/target status")
+                send(output, "/target status")
                 paused = output.wait("criteria 0/3", timeout=8, start=pause_mark)
             if "100000" not in paused:
                 raise AssertionError(f"Token budget was not preserved:\n{paused[-2500:]}")
 
             scenario.set_phase("compact")
             compact_mark = output.mark()
-            send(master, "/compact 1")
+            send(output, "/compact 1")
             output.wait("Compacted", timeout=25, start=compact_mark)
 
             scenario.set_phase("restart_hold")
             output.mark()
-            send(master, "/target resume")
+            send(output, "/target resume")
             restart_deadline = time.time() + 20
             while (
                 not scenario.restart_hold_started.is_set() and time.time() < restart_deadline
@@ -648,15 +674,15 @@ def run_renderer(repo: Path, renderer: str) -> None:
                 restarted_output.wait("›", timeout=10)
                 time.sleep(0.5)
             resume_mark = restarted_output.mark()
-            send(restarted_master, f"/resume {session_id}")
+            send(restarted_output, f"/resume {session_id}")
             restarted_output.wait("Restored", timeout=15, start=resume_mark)
-            send(restarted_master, "/target status")
+            send(restarted_output, "/target status")
             recovered = restarted_output.wait("Target: [paused]", timeout=10, start=resume_mark)
             if "Recovered after restart" not in recovered:
                 raise AssertionError(f"Missing safe-recovery reason:\n{recovered[-3000:]}")
 
             completion_mark = restarted_output.mark()
-            send(restarted_master, "/target resume")
+            send(restarted_output, "/target resume")
             provider_deadline = time.time() + 25
             while not scenario.completed.is_set() and time.time() < provider_deadline:
                 restarted_output.drain()
@@ -678,7 +704,7 @@ def run_renderer(repo: Path, renderer: str) -> None:
                     "Goal did not reach persisted complete state:\n"
                     + json.dumps(final_goal, indent=2)
                 )
-            send(restarted_master, "/target status")
+            send(restarted_output, "/target status")
             status = restarted_output.wait("3/3 passed", timeout=10, start=completion_mark)
             if "100000" not in status:
                 raise AssertionError(f"Completion lost token budget:\n{status[-3000:]}")

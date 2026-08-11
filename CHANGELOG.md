@@ -9,11 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 This project distinguishes three delivery states. **Never present unreleased work as released.**
 
-| State | Meaning | Criterion |
-| --- | --- | --- |
-| **Published** | Users can install it | git tag exists **and** `npm publish` done |
-| **Merged** | In the default branch, not yet installable | merged, **no** tag / not published |
-| **Candidate** | Worktree only | **not committed**; carries no release promise |
+| State         | Meaning                                    | Criterion                                     |
+| ------------- | ------------------------------------------ | --------------------------------------------- |
+| **Published** | Users can install it                       | git tag exists **and** `npm publish` done     |
+| **Merged**    | In the default branch, not yet installable | merged, **no** tag / not published            |
+| **Candidate** | Worktree only                              | **not committed**; carries no release promise |
 
 Evidence labels follow `docs/plan/targets-v0.1.3-v0.1.3-2.md`:
 `met` / `partial` / `unmet` / `not_run` — where `not_run` means "blocked by environment",
@@ -21,12 +21,47 @@ which is **not** a pass.
 
 ## [Unreleased]
 
+## [0.1.5] — UNRELEASED
+
+> **Status: candidate.** This release candidate is intended for the npm `next` channel. It is
+> not the stable `latest` release until review, merge, tag, and explicit dist-tag promotion.
+
+### Added
+
+- Added a typed slash-command descriptor registry, exact invocation grammar, compatibility
+  lifecycle metadata, busy policies, and canonical `/goal`, `/session`, `/context`,
+  `/commit-plan`, `/rewind`, `/subagents`, and `/effort` control surfaces.
+- Added provider-aware effort capability resolution, scoped persistence, immutable retry
+  snapshots, structured renderer events, and additive reasoning/effort usage ledger metadata.
+
+### Changed
+
+- Split agent mode from tool permission policy and constrained the empty command palette to a
+  primary, searchable surface while retaining explicit advanced and compatibility commands.
+- Made dependency, Jest-major, tag/changelog, and prepublish checks fail closed.
+- Made the dependency policy reject runtimes outside the declared Node 20/22/24 matrix (#133).
+- Added version-tag CI triggers, synchronized the Jest 29 lockfile, and moved the candidate
+  package/install metadata to `0.1.5` (#134, #135, #141).
+- Made the dependency policy prove the installed OpenAI client on each CI runtime instead of
+  inferring Node support from an engine-string regex, and added a real sqlite-vec load/query
+  probe (#137, #142).
+
 ### Fixed
 
+- Canonicalized recursive `rm` targets before safety evaluation and routed batch confirmations
+  and local fast paths through the shared permission policy (#125, #126, #132).
+- Repaired Goal completion audit persistence, entity decoding, confirmation fallback, and TUI
+  submission/projection behavior (#127).
+- Classified every recursive `rm` flag form as destructive so broad tool rules cannot silently
+  approve shell deletion (#136).
 - Made concurrent session registration reserve capacity atomically across processes,
   with atomic heartbeats and serialized stale-lock recovery (#121).
+- Serialized session transcript, metadata, statistics, summaries, and deletion updates under a
+  per-session cross-process lock so counters cannot lose concurrent writes (#138).
 - Deferred native SQLite loading to semantic-storage boundaries and added actionable
   ABI diagnostics for memory, maintenance, migration, and dependency checks (#111).
+- Removed real Ollama/OpenAI calls from vector unit tests by using deterministic embedding
+  fixtures, eliminating timeout-driven release flakiness (#139, #140).
 
 ## [0.1.4-2] — 2026-08-09
 
@@ -112,7 +147,7 @@ plan-mode bypass, SSRF / API-key leakage) and rounds out developer-facing toolin
     `paths` / `all` arguments.
   - All paths confined to the repository; `paths` rejects glob / pathspec syntax;
     output is redacted.
-  - ⚠️ **Known gap**: `git_commit({ all: true })` stages *every* tracked modification.
+  - ⚠️ **Known gap**: `git_commit({ all: true })` stages _every_ tracked modification.
     The index snapshot / rollback and user-visible preview required by plan §P1-C are
     **not implemented** — prefer explicit `paths`.
 - **TUI permission interaction** (`/permissions` command)

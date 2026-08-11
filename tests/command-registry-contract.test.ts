@@ -48,7 +48,11 @@ describe('Command registry contract', () => {
     it('aliases must not collide with other command names', () => {
       const nameSet = new Set(all.map(c => c.name));
       for (const cmd of all) {
-        for (const alias of cmd.aliases ?? []) {
+        const aliases = [
+          ...(cmd.aliases ?? []),
+          ...(cmd.compatibilityAliases ?? []).map(alias => alias.name),
+        ];
+        for (const alias of aliases) {
           expect(nameSet.has(alias)).toBe(false);
         }
       }
@@ -166,10 +170,16 @@ describe('Command registry contract', () => {
       }
     });
 
-    it('/goal is a non-duplicated compatibility alias for /target', () => {
+    it('/target is a non-duplicated compatibility alias for /goal', () => {
       const goal = findCommand('goal');
       expect(goal).toBe(findCommand('target'));
-      expect(goal?.aliases).toContain('goal');
+      expect(goal?.name).toBe('goal');
+      expect(goal?.compatibilityAliases).toContainEqual(
+        expect.objectContaining({
+          name: 'target',
+          lifecycle: expect.objectContaining({ replacement: '/goal' }),
+        })
+      );
     });
 
     it('/target advertises replace and explicit user confirmation arguments', () => {
@@ -233,9 +243,9 @@ describe('Command registry contract', () => {
   describe('palette categories', () => {
     it('workflow palette contains the product-default workflow commands', () => {
       const names = new Set(visible.filter(c => c.category === 'workflow').map(c => c.name));
-      expect(names.has('target')).toBe(true);
+      expect(names.has('goal')).toBe(true);
       expect(names.has('diff')).toBe(true);
-      expect(names.has('commit')).toBe(true);
+      expect(names.has('commit-plan')).toBe(true);
       expect(names.has('review')).toBe(true);
       expect(names.has('security')).toBe(true);
       expect(names.has('test-gen')).toBe(true);
@@ -244,7 +254,7 @@ describe('Command registry contract', () => {
     it('session palette contains session lifecycle commands', () => {
       const names = new Set(visible.filter(c => c.category === 'session').map(c => c.name));
       expect(names.has('resume')).toBe(true);
-      expect(names.has('sessions')).toBe(true);
+      expect(names.has('sessions')).toBe(false);
       expect(names.has('compact')).toBe(true);
     });
 
@@ -300,13 +310,15 @@ describe('Command registry contract', () => {
     });
 
     it('TUI-local commands are registered once with TUI scope', () => {
-      for (const name of ['tool-output', 'redraw']) {
+      for (const name of ['tool-output']) {
         const command = findCommand(name);
         expect(command?.execution).toBe('renderer-local');
         expect(command?.rendererScope).toEqual(['tui']);
         expect(getVisibleCommands('tui').filter(item => item.name === name)).toHaveLength(1);
         expect(getVisibleCommands('terminal').some(item => item.name === name)).toBe(false);
       }
+      expect(findCommand('redraw')?.audience).toBe('internal');
+      expect(getVisibleCommands('tui').some(item => item.name === 'redraw')).toBe(false);
     });
 
     it('renderer-aware visible commands exclude commands outside the active renderer', () => {
@@ -322,14 +334,15 @@ describe('Command registry contract', () => {
   // -----------------------------------------------------------------------
 
   describe('compatibility aliases', () => {
-    it('/goal is a compatibility alias with same business semantics as /target', () => {
+    it('/target is a compatibility alias with same business semantics as /goal', () => {
       const target = findCommand('target');
       const goal = findCommand('goal');
       expect(goal).toBeDefined();
       expect(target).toBeDefined();
       expect(goal).toBe(target);
-      expect(target?.aliases).toContain('goal');
-      expect(getVisibleCommands().filter(command => command.name === 'goal')).toHaveLength(0);
+      expect(target?.name).toBe('goal');
+      expect(target?.compatibilityAliases?.map(alias => alias.name)).toContain('target');
+      expect(getVisibleCommands().filter(command => command.name === 'goal')).toHaveLength(1);
     });
 
     it('terminal-ui technical commands share business semantics with TUI product commands', () => {

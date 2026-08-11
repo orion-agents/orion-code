@@ -137,7 +137,8 @@ describe('tui-ui layout', () => {
     expect(rows).toContain('Tool Permission: exec_command');
     expect(rows).toContain('npm publish --dry-run');
     expect(rows).toContain('requires confirmation');
-    expect(rows).toContain('› Deny');
+    expect(rows).toContain('› Always allow in this project');
+    expect(rows).toContain('Deny exec_command');
     expect(state.transcript.map(entry => entry.content)).toEqual(['old transcript']);
   });
 

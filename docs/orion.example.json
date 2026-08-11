@@ -16,7 +16,14 @@
       "provider": "my-provider",
       "model": "model-name",
       "contextWindow": 200000,
-      "maxOutputTokens": 8192
+      "maxOutputTokens": 8192,
+      "reasoningCapability": {
+        "kind": "effort-level",
+        "supportedLevels": ["low", "medium", "high"],
+        "defaultLevel": "medium",
+        "adapter": "openai-chat-reasoning-effort",
+        "source": "config"
+      }
     },
     {
       "id": "my-fallback",
@@ -29,7 +36,9 @@
   ],
   "defaultModel": "my-model",
   "fallbackModel": "my-fallback",
+  "defaultEffort": "auto",
   "toolConfirmation": "allow",
+  "allowedTools": [],
   "ui": {
     "confirmations": "config"
   },
