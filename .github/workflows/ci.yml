@@ -133,10 +133,10 @@ jobs:
         run: npm run release:check -- --skip-tests
 
   dep-health:
-    # Reporting dimension for deprecated / outdated transitive packages
-    # (issues #86 / #62). This script prints findings and exits 0, so it
-    # surfaces drift without blocking the merge.
-    name: Dependency health report
+    # Offline reporting dimension for native ABI and dependency-tree health.
+    # Registry-backed audit is the blocking security-audit job above; optional
+    # outdated reporting requires an explicit local --full-network run (#155).
+    name: Dependency health report (offline)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     continue-on-error: true

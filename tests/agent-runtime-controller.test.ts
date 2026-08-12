@@ -5819,7 +5819,7 @@ describe('AgentRuntimeController', () => {
   it.each([
     ['pause', '/target pause'],
     ['replace', '/target replace fresh after deletion'],
-    ['clear', '/target clear --yes'],
+    ['exit', '/goal exit'],
   ] as const)(
     'converges stale %s to deletion authority and permits a fresh create',
     async (_action, command) => {

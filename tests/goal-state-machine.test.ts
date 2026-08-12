@@ -2,11 +2,7 @@
  * v0.2.24 Phase 0 — Goal state machine tests.
  */
 
-import {
-  goalTransition,
-  GOAL_INVARIANTS,
-  type GoalStatus,
-} from '../src/runtime/goals/types';
+import { goalTransition, GOAL_INVARIANTS, type GoalStatus } from '../src/runtime/goals/types';
 
 describe('Goal state machine transitions', () => {
   describe('creation', () => {
@@ -79,7 +75,15 @@ describe('Goal state machine transitions', () => {
   });
 
   describe('replace and clear are always allowed', () => {
-    const states: (GoalStatus | null)[] = [null, 'active', 'paused', 'blocked', 'usage_limited', 'budget_limited', 'complete'];
+    const states: (GoalStatus | null)[] = [
+      null,
+      'active',
+      'paused',
+      'blocked',
+      'usage_limited',
+      'budget_limited',
+      'complete',
+    ];
 
     it('replace works from any state', () => {
       for (const s of states) {
@@ -115,6 +119,10 @@ describe('Goal invariants', () => {
 
   it('max consecutive no-progress turns is 3', () => {
     expect(GOAL_INVARIANTS.maxConsecutiveNoProgressTurns).toBe(3);
+  });
+
+  it('max automatic continuation turns is 5', () => {
+    expect(GOAL_INVARIANTS.maxAutomaticContinuationTurns).toBe(5);
   });
 
   it('token budget min is 1', () => {

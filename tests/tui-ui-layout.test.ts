@@ -403,6 +403,36 @@ describe('tui-ui layout', () => {
     expect(frame.cursor.visible).toBe(true);
   });
 
+  it.each([80, 120])('keeps the #150 Goal escape commands visible at %i columns', width => {
+    const state = reduce([
+      {
+        type: 'goalEvent',
+        event: {
+          type: 'goal_updated',
+          reason: 'turn_finalized',
+          goal: {
+            goalId: 'goal-autonomy-limit',
+            revision: 5,
+            objective: 'Unexpected autonomous lifecycle test',
+            status: 'paused',
+            tokensUsed: 581625,
+            timeUsedMs: 60 * 60 * 1000,
+            continuationCount: 5,
+            automaticContinuationStreak: 5,
+            updatedAt: 100,
+            stopReason:
+              'Auto-paused after 5 consecutive autonomous continuations. Review progress, then use /goal resume to continue or /goal exit to abandon.',
+          },
+        },
+      },
+    ]);
+
+    const status = renderFrameRows(renderTuiUiFrame(state, { width, height: 8 }))[4];
+    expect(status).toContain('goal:paused');
+    expect(status).toContain('/goal resume');
+    expect(status).toContain('/goal exit');
+  });
+
   it('keeps a long multi-line prompt inside a bounded, closed viewport', () => {
     const value = Array.from({ length: 20 }, (_, index) => `line-${index}`).join('\n');
     const state = reduce([{ type: 'setPrompt', value, cursor: value.length }]);

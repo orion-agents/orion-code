@@ -124,22 +124,27 @@ describe('/target command parsing', () => {
       }
     });
 
-    it('clear without confirmation', () => {
-      const result = parseTargetCommand('/target clear');
-      expect(result.ok).toBe(true);
-      if (result.ok) {
-        expect(result.input.action).toBe('clear');
-        expect(result.input.payload?.confirmed).toBe(false);
-      }
-    });
-
-    it('clear with confirmation', () => {
-      const result = parseTargetCommand('/target clear --yes');
+    it('exits with explicit authorization', () => {
+      const result = parseTargetCommand('/goal exit');
       expect(result.ok).toBe(true);
       if (result.ok) {
         expect(result.input.action).toBe('clear');
         expect(result.input.payload?.confirmed).toBe(true);
       }
+    });
+
+    it.each(['/goal clear', '/goal clear --yes', '/target clear --yes'])(
+      'rejects removed clear syntax: %s',
+      command => {
+        const result = parseTargetCommand(command);
+        expect(result.ok).toBe(false);
+        if (!result.ok) expect(result.error).toContain('Use');
+      }
+    );
+
+    it('rejects arguments after exit instead of creating an accidental Goal', () => {
+      const result = parseTargetCommand('/goal exit --yes');
+      expect(result).toEqual({ ok: false, error: 'Usage: /goal exit' });
     });
   });
 

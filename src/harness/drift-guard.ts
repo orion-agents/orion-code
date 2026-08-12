@@ -1,4 +1,9 @@
-import type { CompletionGateResult, ContextLedgerEntry, DriftCheckResult, TaskContract } from './types';
+import type {
+  CompletionGateResult,
+  ContextLedgerEntry,
+  DriftCheckResult,
+  TaskContract,
+} from './types';
 
 function hasExplicitVerificationNeed(contract: TaskContract | undefined): boolean {
   if (!contract) return false;
@@ -6,6 +11,12 @@ function hasExplicitVerificationNeed(contract: TaskContract | undefined): boolea
 
   return lines.some(line => {
     const normalized = line.trim().toLowerCase();
+
+    // A one-word smoke input such as `test` is ambiguous: it may be checking
+    // that the CLI responds at all, and must not lock the session behind a
+    // verification gate. Require an object, command, or obligation below.
+    if (/^(?:test|verify|validate|check|build|lint)[.!?]?$/u.test(normalized)) return false;
+    if (/^(?:测试|验证|检查|构建|编译)[。！!？?]?$/u.test(line.trim())) return false;
 
     // A noun such as "markdown render test" can describe a fixture or feature.
     // Only make verification a completion gate when the contract also contains
@@ -59,13 +70,17 @@ export function evaluateCompletionGate(params: {
   const evidence: string[] = [];
   const missing: string[] = [];
 
-  const verificationPassed = params.ledger.some(entry =>
-    (entry.type === 'verification' || entry.type === 'test_result') &&
-    entry.metadata?.success === true
+  const verificationPassed = params.ledger.some(
+    entry =>
+      (entry.type === 'verification' || entry.type === 'test_result') &&
+      entry.metadata?.success === true
   );
 
   for (const entry of params.ledger) {
-    if ((entry.type === 'verification' || entry.type === 'test_result') && entry.metadata?.success === true) {
+    if (
+      (entry.type === 'verification' || entry.type === 'test_result') &&
+      entry.metadata?.success === true
+    ) {
       evidence.push(entry.content);
     }
   }

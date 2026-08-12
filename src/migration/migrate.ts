@@ -168,17 +168,28 @@ function remapConfigKeys(content: string): string {
 
 // ── SQLite verification ──────────────────────────────────────────────────────
 
-function verifySqlite(path: string): boolean {
+type SqliteVerification =
+  | { status: 'verified' }
+  | { status: 'invalid' }
+  | { status: 'unavailable'; reason: string };
+
+function verifySqlite(path: string): SqliteVerification {
   let db: ReturnType<typeof openBetterSqlite3> | undefined;
   try {
     db = openBetterSqlite3(path, { readonly: true });
     const result = db.pragma('integrity_check') as Array<{ integrity_check?: unknown }>;
-    return result?.[0]?.integrity_check === 'ok';
+    return result?.[0]?.integrity_check === 'ok'
+      ? { status: 'verified' }
+      : { status: 'invalid' };
   } catch (error) {
     // ABI/module failures are environmental and actionable, not evidence that
-    // the user's vector database failed its integrity check.
-    if (isNativeVectorDatabaseUnavailableError(error)) throw error;
-    return false;
+    // the user's vector database failed its integrity check. Migration itself
+    // is byte-for-byte and does not require the native module, so preserve the
+    // data and record that verification could not run on this machine.
+    if (isNativeVectorDatabaseUnavailableError(error)) {
+      return { status: 'unavailable', reason: errorMessage(error) };
+    }
+    return { status: 'invalid' };
   } finally {
     db?.close();
   }
@@ -295,8 +306,13 @@ export function migrateBrand(options: MigrationOptions = {}): MigrationResult {
     // 5. Validate SQLite if present
     const vectorSrc = join(sourceRoot, 'vector.db');
     if (existsSync(vectorSrc)) {
-      if (!verifySqlite(vectorSrc)) {
+      const verification = verifySqlite(vectorSrc);
+      if (verification.status === 'invalid') {
         manifest.warnings.push('vector.db integrity check failed. The file was copied but may be corrupted.');
+      } else if (verification.status === 'unavailable') {
+        manifest.warnings.push(
+          `vector.db was copied verbatim, but integrity verification was skipped because the native SQLite verifier is unavailable. ${verification.reason}`
+        );
       }
     }
 

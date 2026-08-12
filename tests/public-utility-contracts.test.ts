@@ -20,6 +20,7 @@ import {
 import { ORION_USER_AGENT, PACKAGE_VERSION, resolvePackageVersion } from '../src/product/version';
 import packageMetadata from '../package.json';
 import { isTechnicalUIRenderer } from '../src/services/config';
+import { YAMLConfigLoader } from '../src/services/yaml-config';
 import {
   BUILTIN_MODELS,
   calculateCtxPercent,
@@ -57,6 +58,13 @@ describe('public utility contracts', () => {
       if (previous === undefined) delete process.env.npm_package_version;
       else process.env.npm_package_version = previous;
     }
+  });
+
+  it('uses the package version in generated YAML configuration templates', () => {
+    const template = new YAMLConfigLoader().generateTemplate();
+
+    expect(template).toContain(`version: "${packageMetadata.version}"`);
+    expect(template).not.toContain('version: "0.1.5"');
   });
 
   it('classifies only terminal-ui as the technical renderer', () => {

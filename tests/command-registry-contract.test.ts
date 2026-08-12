@@ -264,6 +264,7 @@ describe('Command registry contract', () => {
       expect(names.has('skills')).toBe(true);
       expect(names.has('skill')).toBe(true);
       expect(names.has('memory')).toBe(true);
+      expect(findCommand('memory')?.argumentHint).toBe('[validate|reindex]');
     });
 
     it('runtime palette contains model/mode/tools commands', () => {

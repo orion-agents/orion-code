@@ -6,14 +6,14 @@ Thank you for your interest in contributing to Orion Code! This document provide
 
 ### Prerequisites
 
-- Node.js 18+
+- Node.js 20, 22, or 24
 - npm 9+
 
 ### Getting Started
 
 ```bash
 # Clone the repository
-git clone https://github.com/Linux2010/orion-code.git
+git clone https://github.com/orion-agents/orion-code.git
 cd orion-code
 
 # Install dependencies

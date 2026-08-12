@@ -22,7 +22,8 @@ export const CONTEXT_COMMANDS: SlashCommand[] = [
     execute: (ctx, args) => {
       const trimmed = args.trim();
       if (!trimmed || trimmed === 'show' || trimmed === 'harness') return showHarness(ctx, '');
-      if (trimmed === 'explain' || trimmed === 'harness explain') return showHarness(ctx, 'explain');
+      if (trimmed === 'explain' || trimmed === 'harness explain')
+        return showHarness(ctx, 'explain');
       if (trimmed.startsWith('clear')) {
         return handleContextClear(ctx, trimmed.slice('clear'.length).trim());
       }
@@ -64,8 +65,8 @@ export const CONTEXT_COMMANDS: SlashCommand[] = [
   },
   {
     name: 'memory',
-    description: 'Show memory status, or `/memory reindex` to rebuild semantic index',
-    argumentHint: '[reindex]',
+    description: 'Show memory status, validate references, or rebuild the semantic index',
+    argumentHint: '[validate|reindex]',
     category: 'context',
     priority: 30,
     type: 'builtin',

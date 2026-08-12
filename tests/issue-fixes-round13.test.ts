@@ -311,10 +311,10 @@ describe('#52.1 /target reserved subcommands never fall through to create', () =
     }
   );
 
-  it('/target clear -y is a usage error, not a goal named "clear -y"', () => {
+  it('/target clear -y is a removed-command error, not a goal named "clear -y"', () => {
     const result = parseTargetCommand('/target clear -y');
     expect(result.ok).toBe(false);
-    expect(result.error).toMatch(/Usage: \/target clear/);
+    expect(result.error).toContain('Use /target exit');
   });
 
   it('the /goal alias reports its own name in the usage string', () => {
@@ -335,8 +335,9 @@ describe('#52.1 /target reserved subcommands never fall through to create', () =
       ok: true,
       input: { type: 'goal_control', action: 'confirm', payload: { criterionId: 'crit-1' } },
     });
-    expect(parseTargetCommand('/target clear').ok).toBe(true);
-    expect(parseTargetCommand('/target clear --yes').ok).toBe(true);
+    expect(parseTargetCommand('/goal exit').ok).toBe(true);
+    expect(parseTargetCommand('/goal clear').ok).toBe(false);
+    expect(parseTargetCommand('/goal clear --yes').ok).toBe(false);
   });
 });
 

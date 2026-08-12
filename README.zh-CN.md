@@ -3,7 +3,7 @@
 > **Orion Code — 通用 Agent 驾驭框架**
 > 一个 CLI 驱动的编码 Agent，具备安全边界、工具编排、记忆系统和上下文管理。
 >
-> v0.1.4 — Goal 连续性、模型配置与命令沙箱 POC
+> v0.1.6 候选版 — 有界 Goal 控制、确定性发布门与终端安全加固
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20.0-green.svg)](https://nodejs.org)
@@ -104,11 +104,11 @@ npm start -- --print "review the current git diff"
 
 ### 全局安装
 
-固定安装 v0.1.4-2 维护预发布版本：
+v0.1.6 发布后固定安装审计过的精确版本：
 
 ```bash
-npm install -g @orion-agents/orion-code@0.1.5
-# 或通过预发布 dist-tag 安装：
+npm install -g @orion-agents/orion-code@0.1.6
+# 当前预发布渠道（v0.1.6 发布前仍解析到 0.1.5）：
 npm install -g @orion-agents/orion-code@next
 # 任意目录运行
 orion
@@ -116,8 +116,9 @@ orion
 
 也可以在源码工作树中使用 `npm ci && npm run build && npm start`。
 
-> **预发布状态**：`0.1.4-2` 已通过 npm `next` dist-tag 发布，并已创建
-> `v0.1.4-2` 标签。稳定版 `latest` 仍为 `0.1.4`。
+> **发布状态**：`0.1.6` 仍是未发布的 PR 候选。npm 当前 `next=0.1.5`、
+> `latest=0.1.4`；PR 合并、Git tag/GitHub Release、npm 发布、registry 安装和
+> 稳定版提升分别记录。
 
 公众体验、交互优化和新增工作流优先落在 TUI。`terminal-ui` 不作为与
 TUI 并行发展的公众产品；Ink 只保留迁移期兼容，不再增加产品能力。
@@ -133,6 +134,9 @@ TUI 并行发展的公众产品；Ink 只保留迁移期兼容，不再增加产
 需要人工验收的 criterion 只能由用户执行 `/target confirm <criterion-id>` 生成可信的 `user`
 evidence，模型工具不能伪造该确认。
 v0.1.2 只覆盖单 Session、单 Active Goal，不承诺多 Goal 调度或无人值守后台执行。
+
+使用 `/goal exit` 会中止当前 turn、拒绝待确认工具并清除持久 Goal。v0.1.6
+明确不再支持旧 `/goal clear --yes` 与 `/target clear --yes` 语法。
 
 ---
 
@@ -411,7 +415,7 @@ ctxPercent = (promptTokens / 模型上下文窗口) × 100
 | 命令                   | 说明                                                |
 | ---------------------- | --------------------------------------------------- |
 | `/help`                | 显示当前 renderer 可用的完整命令列表                |
-| `/target`（`/goal`）   | 创建、查看、暂停、恢复、替换或清除持久 Goal         |
+| `/target`（`/goal`）   | 创建、查看、暂停、恢复、替换、预算或退出持久 Goal   |
 | `/status`              | 系统状态总览                                        |
 | `/model`               | 查看或切换模型                                      |
 | `/config`              | 显示当前生效配置                                    |
@@ -419,7 +423,7 @@ ctxPercent = (promptTokens / 模型上下文窗口) × 100
 | `/compact`             | 手动触发上下文压缩                                  |
 | `/sessions`            | 列出或搜索最近会话                                  |
 | `/resume`              | 恢复已有会话                                        |
-| `/memory`              | 查看记忆状态；`/memory reindex` 重建语义索引        |
+| `/memory`              | 记忆状态、引用漂移校验与语义索引重建                |
 | `/skills`              | 列出已加载技能                                      |
 | `/tools`               | 列出内置和 MCP 工具                                 |
 | `/mcp`                 | 查看 MCP Server 状态                                |
@@ -466,6 +470,18 @@ orion-code/
 ---
 
 ## 版本历史
+
+### v0.1.6（当前候选，尚未发布）
+
+- Goal 创建需要显式用户授权，自动 continuation 有界，`/goal exit` 提供确定退出路径；
+- 修复 native migration、测试确定性、seatbelt/exec cwd 与 terminal control-sequence 安全问题；
+- 尚未 merge、tag、创建 GitHub Release 或发布 npm；目标渠道为 `next`。
+
+### v0.1.5（已发布至 next）
+
+- 统一类型化命令描述、TUI 命令控制面与 Provider-aware Effort；
+- 修复 Goal/TUI 展示与授权边界，并加强跨进程持久化、安全和发布门禁；
+- 以 npm `next` dist-tag 发布，不移动稳定版 `latest`。
 
 ### v0.1.4-2（已发布至 next）
 

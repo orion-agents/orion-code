@@ -5,9 +5,43 @@
  * Prevents stale memories from causing confusion.
  */
 
-import { existsSync } from 'fs';
-import { join } from 'path';
+import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
+import { extname, join, resolve } from 'path';
 import type { MemoryEntry } from './types';
+
+const SYMBOL_SOURCE_EXTENSIONS = new Set([
+  '.c',
+  '.cc',
+  '.cpp',
+  '.cs',
+  '.go',
+  '.h',
+  '.hpp',
+  '.java',
+  '.js',
+  '.jsx',
+  '.mjs',
+  '.mts',
+  '.py',
+  '.rb',
+  '.rs',
+  '.swift',
+  '.ts',
+  '.tsx',
+]);
+const SYMBOL_SCAN_IGNORED_DIRECTORIES = new Set([
+  '.git',
+  '.next',
+  '.orion-code',
+  'build',
+  'coverage',
+  'dist',
+  'node_modules',
+  'vendor',
+]);
+const MAX_SYMBOL_SCAN_FILES = 10_000;
+const MAX_SYMBOL_SCAN_BYTES = 64 * 1024 * 1024;
+const MAX_SYMBOL_FILE_BYTES = 2 * 1024 * 1024;
 
 // ============================================================================
 // Types
@@ -24,6 +58,15 @@ export interface DriftItem {
 export interface DriftResult {
   valid: boolean;
   drifts: DriftItem[];
+  /** False means symbol absence was not reported because the bounded scan was incomplete. */
+  symbolScanComplete: boolean;
+  symbolFilesScanned: number;
+}
+
+interface SymbolIndex {
+  symbols: Set<string>;
+  complete: boolean;
+  filesScanned: number;
 }
 
 // ============================================================================
@@ -36,6 +79,14 @@ export interface DriftResult {
  * @param projectPath - Project path for resolving file references
  */
 export function validateMemoryDrift(entry: MemoryEntry, projectPath: string): DriftResult {
+  return validateMemoryDriftWithIndex(entry, projectPath);
+}
+
+function validateMemoryDriftWithIndex(
+  entry: MemoryEntry,
+  projectPath: string,
+  symbolIndex?: SymbolIndex
+): DriftResult {
   const drifts: DriftItem[] = [];
   const content = entry.content;
 
@@ -54,15 +105,20 @@ export function validateMemoryDrift(entry: MemoryEntry, projectPath: string): Dr
 
   // 2. Check symbol references (function/class names)
   const symbolRefs = extractSymbolRefs(content);
-  for (const ref of symbolRefs) {
-    // For now, we just check if the symbol looks valid (not a comprehensive grep)
-    // A full implementation would grep the project for the symbol
-    if (ref.length < 2 || ref.includes(' ')) {
-      // Likely not a valid symbol name
-      continue;
+  const effectiveSymbolIndex =
+    symbolRefs.length > 0
+      ? (symbolIndex ?? buildProjectSymbolIndex(projectPath))
+      : emptySymbolIndex();
+  if (effectiveSymbolIndex.complete) {
+    for (const ref of symbolRefs) {
+      if (!effectiveSymbolIndex.symbols.has(ref)) {
+        drifts.push({
+          type: 'symbol_missing',
+          ref,
+          message: `Symbol not found in project source: ${ref}`,
+        });
+      }
     }
-    // Note: Full symbol validation would require grep search
-    // For simplicity, we skip comprehensive validation here
   }
 
   // 3. Check URL references (basic format check)
@@ -78,8 +134,10 @@ export function validateMemoryDrift(entry: MemoryEntry, projectPath: string): Dr
   }
 
   return {
-    valid: drifts.length === 0,
+    valid: drifts.length === 0 && effectiveSymbolIndex.complete,
     drifts,
+    symbolScanComplete: effectiveSymbolIndex.complete,
+    symbolFilesScanned: effectiveSymbolIndex.filesScanned,
   };
 }
 
@@ -92,13 +150,89 @@ export function validateAllMemories(projectPath: string): Map<string, DriftResul
   // Import loadAllMemories dynamically to avoid circular dependency
   const { loadAllMemories } = require('./storage');
   const memories = loadAllMemories(projectPath);
+  const needsSymbolIndex = memories.some(
+    (memory: MemoryEntry) => extractSymbolRefs(memory.content).length > 0
+  );
+  const symbolIndex = needsSymbolIndex ? buildProjectSymbolIndex(projectPath) : emptySymbolIndex();
 
   for (const mem of memories) {
-    const result = validateMemoryDrift(mem, projectPath);
+    const result = validateMemoryDriftWithIndex(mem, projectPath, symbolIndex);
     results.set(mem.name, result);
   }
 
   return results;
+}
+
+function emptySymbolIndex(): SymbolIndex {
+  return { symbols: new Set<string>(), complete: true, filesScanned: 0 };
+}
+
+/** Build one bounded, deterministic source-symbol index for a validation pass. */
+function buildProjectSymbolIndex(projectPath: string): SymbolIndex {
+  const root = resolve(projectPath);
+  const symbols = new Set<string>();
+  const pending = [root];
+  let filesScanned = 0;
+  let bytesScanned = 0;
+  let complete = true;
+
+  while (pending.length > 0) {
+    const directory = pending.pop()!;
+    let entries;
+    try {
+      entries = readdirSync(directory, { withFileTypes: true }).sort((a, b) =>
+        a.name.localeCompare(b.name)
+      );
+    } catch {
+      complete = false;
+      continue;
+    }
+
+    for (const entry of entries) {
+      const path = join(directory, entry.name);
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        if (!SYMBOL_SCAN_IGNORED_DIRECTORIES.has(entry.name)) pending.push(path);
+        continue;
+      }
+      if (!entry.isFile() || !SYMBOL_SOURCE_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
+        continue;
+      }
+
+      if (filesScanned >= MAX_SYMBOL_SCAN_FILES) {
+        complete = false;
+        pending.length = 0;
+        break;
+      }
+
+      let size: number;
+      try {
+        size = statSync(path).size;
+      } catch {
+        complete = false;
+        continue;
+      }
+      if (size > MAX_SYMBOL_FILE_BYTES || bytesScanned + size > MAX_SYMBOL_SCAN_BYTES) {
+        complete = false;
+        if (bytesScanned + size > MAX_SYMBOL_SCAN_BYTES) pending.length = 0;
+        continue;
+      }
+
+      try {
+        const source = readFileSync(path, 'utf8');
+        const identifiers = source.match(/\b[A-Za-z_][A-Za-z0-9_]*\b/g);
+        if (identifiers) {
+          for (const identifier of identifiers) symbols.add(identifier);
+        }
+        filesScanned += 1;
+        bytesScanned += size;
+      } catch {
+        complete = false;
+      }
+    }
+  }
+
+  return { symbols, complete, filesScanned };
 }
 
 // ============================================================================
@@ -117,7 +251,8 @@ function extractFilePaths(content: string): string[] {
   const paths: string[] = [];
 
   // Match relative paths (common code references)
-  const relativePathRegex = /(?:\.\/|src\/|lib\/|tests\/|docs\/|[\w-]+\/)[\w-]+\.(?:ts|tsx|js|jsx|py|md|json|yaml|yml)/g;
+  const relativePathRegex =
+    /(?:\.\/|src\/|lib\/|tests\/|docs\/|[\w-]+\/)[\w-]+\.(?:ts|tsx|js|jsx|py|md|json|yaml|yml)/g;
   const matches = content.match(relativePathRegex);
   if (matches) {
     paths.push(...matches);
@@ -134,7 +269,7 @@ function extractFilePaths(content: string): string[] {
     }
   }
 
-  return [...new Set(paths)];  // unique
+  return [...new Set(paths)]; // unique
 }
 
 /**
@@ -144,7 +279,8 @@ function extractSymbolRefs(content: string): string[] {
   const symbols: string[] = [];
 
   // Match camelCase or PascalCase identifiers that look like code symbols
-  const symbolRegex = /\b(?:function|class|interface|type|const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)/g;
+  const symbolRegex =
+    /\b(?:function|class|interface|type|const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)/g;
   let match;
   while ((match = symbolRegex.exec(content)) !== null) {
     symbols.push(match[1]);
@@ -156,7 +292,7 @@ function extractSymbolRefs(content: string): string[] {
     symbols.push(match[1]);
   }
 
-  return [...new Set(symbols)];  // unique
+  return [...new Set(symbols)]; // unique
 }
 
 /**

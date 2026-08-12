@@ -20,6 +20,7 @@ jest.mock('../src/services/config-dir', () => {
 });
 
 import { GoalCoordinator } from '../src/runtime/goals/coordinator';
+import { GOAL_INVARIANTS } from '../src/runtime/goals/types';
 
 describe('GoalCoordinator', () => {
   afterAll(() => {
@@ -140,6 +141,7 @@ describe('GoalCoordinator', () => {
       expect(snap!.objective).toBe('test');
       expect(snap!.status).toBe('active');
       expect(snap!.continuationCount).toBe(0);
+      expect(snap!.automaticContinuationStreak).toBe(0);
     });
   });
 
@@ -169,7 +171,8 @@ describe('GoalCoordinator', () => {
         sessionId: coordinator.goal!.sessionId,
         goalId: 'wrong-id',
         goalRevision: 999,
-        startedAt: 0, endedAt: 1,
+        startedAt: 0,
+        endedAt: 1,
         finishReason: 'max_turns',
         usage: { promptTokens: 999, completionTokens: 999, subagentTokens: 0, totalTokens: 1998 },
         madeProgress: false,
@@ -186,13 +189,56 @@ describe('GoalCoordinator', () => {
           sessionId: coordinator.goal!.sessionId,
           goalId: coordinator.goal!.goalId,
           goalRevision: coordinator.goal!.revision,
-          startedAt: i * 1000, endedAt: i * 1000 + 1000,
+          startedAt: i * 1000,
+          endedAt: i * 1000 + 1000,
           finishReason: 'max_turns',
           usage: { promptTokens: 10, completionTokens: 10, subagentTokens: 0, totalTokens: 20 },
           madeProgress: false,
         });
       }
       expect(coordinator.goal!.status).toBe('paused');
+    });
+
+    it('auto-pauses after the bounded autonomous continuation window and resumes explicitly', () => {
+      coordinator.create('bounded autonomous work');
+
+      for (let i = 0; i < GOAL_INVARIANTS.maxAutomaticContinuationTurns; i++) {
+        coordinator.finalizeTurn({
+          turnId: `automatic-${i}`,
+          inputKind: 'goal_continuation',
+          sessionId: coordinator.goal!.sessionId,
+          goalId: coordinator.goal!.goalId,
+          goalRevision: coordinator.goal!.revision,
+          startedAt: i * 1000,
+          endedAt: i * 1000 + 1000,
+          finishReason: 'max_turns',
+          usage: {
+            promptTokens: 10,
+            completionTokens: 10,
+            subagentTokens: 0,
+            totalTokens: 20,
+          },
+          madeProgress: true,
+        });
+      }
+
+      expect(coordinator.goal).toMatchObject({
+        status: 'paused',
+        automaticContinuationStreak: GOAL_INVARIANTS.maxAutomaticContinuationTurns,
+        stopReason: {
+          kind: 'user',
+          message: expect.stringContaining('/goal exit'),
+        },
+      });
+      expect(coordinator.canContinue).toBe(false);
+      expect(coordinator.buildContinuationRequest()).toBeNull();
+
+      expect(coordinator.resume()).toBe(true);
+      expect(coordinator.goal).toMatchObject({
+        status: 'active',
+        automaticContinuationStreak: 0,
+      });
+      expect(coordinator.canContinue).toBe(true);
     });
   });
 

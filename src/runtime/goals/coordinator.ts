@@ -543,6 +543,8 @@ export class GoalCoordinator {
     return (
       this.isActive &&
       !this.state.continuationDeferred &&
+      (this.state.goal!.automaticContinuationStreak ?? 0) <
+        GOAL_INVARIANTS.maxAutomaticContinuationTurns &&
       !isBudgetExceeded(this.state.goal!.tokensUsed, this.state.goal!.tokenBudget)
     );
   }
@@ -581,6 +583,7 @@ export class GoalCoordinator {
       tokensUsed: g.tokensUsed,
       timeUsedMs: g.timeUsedMs,
       continuationCount: g.continuationCount,
+      automaticContinuationStreak: g.automaticContinuationStreak ?? 0,
       updatedAt: g.updatedAt,
       stopReason: g.stopReason?.message,
       criteria: {
@@ -770,6 +773,7 @@ export class GoalCoordinator {
       stopReason: undefined,
       blocker: undefined,
       noProgressCount: 0,
+      automaticContinuationStreak: 0,
       recentNoProgressTurns: [],
       boundaryConfirmation: pendingBoundary
         ? {
@@ -1048,11 +1052,20 @@ export class GoalCoordinator {
         'continuationCount'
       );
       const noProgressCount = this.addGoalInteger(accounting.noProgressCount, 0, 'noProgressCount');
+      const automaticContinuationStreak =
+        outcome.inputKind === 'goal_continuation'
+          ? this.addGoalInteger(
+              g.automaticContinuationStreak ?? 0,
+              1,
+              'automaticContinuationStreak'
+            )
+          : 0;
       this.state.goal = {
         ...g,
         tokensUsed,
         timeUsedMs,
         continuationCount,
+        automaticContinuationStreak,
         noProgressCount,
         status: 'paused',
         revision: this.addGoalInteger(g.revision, 1, 'revision'),
@@ -1145,12 +1158,17 @@ export class GoalCoordinator {
     const timeUsedMs = this.addGoalInteger(acc.timeUsedMs, 0, 'timeUsedMs');
     const continuationCount = this.addGoalInteger(acc.continuationCount, 0, 'continuationCount');
     const noProgressCount = this.addGoalInteger(acc.noProgressCount, 0, 'noProgressCount');
+    const automaticContinuationStreak =
+      outcome.inputKind === 'goal_continuation'
+        ? this.addGoalInteger(g.automaticContinuationStreak ?? 0, 1, 'automaticContinuationStreak')
+        : 0;
 
     const updated: SessionGoalV1 = {
       ...g,
       tokensUsed,
       timeUsedMs,
       continuationCount,
+      automaticContinuationStreak,
       noProgressCount,
       recentNoProgressTurns: accountingOutcome.madeProgress
         ? []
@@ -1430,6 +1448,22 @@ export class GoalCoordinator {
       this.state.continuationDeferred = true;
     }
 
+    // A Goal may make genuine progress indefinitely, but it must not run
+    // indefinitely without another human decision point. Pause instead of
+    // deleting state so the user can inspect, resume, or explicitly abandon it.
+    if (
+      (updated.automaticContinuationStreak ?? 0) >= GOAL_INVARIANTS.maxAutomaticContinuationTurns &&
+      updated.status === 'active'
+    ) {
+      updated.status = 'paused';
+      updated.stopReason = {
+        kind: 'user',
+        message: `Auto-paused after ${GOAL_INVARIANTS.maxAutomaticContinuationTurns} consecutive autonomous continuations. Review progress, then use /goal resume to continue or /goal exit to abandon.`,
+        at: Date.now(),
+      };
+      this.state.continuationDeferred = true;
+    }
+
     // Budget limit.
     if (isBudgetExceeded(updated.tokensUsed, updated.tokenBudget) && updated.status === 'active') {
       updated.status = 'budget_limited';
@@ -1484,6 +1518,7 @@ export class GoalCoordinator {
       tokensUsed,
       timeUsedMs,
       continuationCount,
+      automaticContinuationStreak: 0,
       revision,
       updatedAt: Date.now(),
       lastTurn: {

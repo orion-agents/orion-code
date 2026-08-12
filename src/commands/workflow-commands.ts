@@ -18,9 +18,9 @@ export const WORKFLOW_COMMANDS: SlashCommand[] = [
         },
       },
     ],
-    description: 'Create, view, pause, resume, or clear a persistent goal target',
+    description: 'Create, view, pause, resume, or exit a persistent goal target',
     argumentHint:
-      '[objective | pause | resume | clear --yes | status | edit <text> | replace <text> | confirm <criterion-id> | budget <tokens>]',
+      '[objective | pause | resume | exit | status | edit <text> | replace <text> | confirm <criterion-id> | budget <tokens>]',
     category: 'workflow',
     priority: 3,
     type: 'builtin',

@@ -1,7 +1,8 @@
 # Goal Evidence and Recovery
 
-Since v0.1.2, Orion Code supports one persistent Goal per session. The v0.1.4 release line preserves this contract;
-v0.1.5 may add new command or ACP clients, but they must reuse the same Goal, evidence, permission, and recovery rules.
+Since v0.1.2, Orion Code supports one persistent Goal per session. The npm `next=0.1.5` line preserves this contract;
+the unpublished v0.1.6 candidate tightens authorization and exit behavior without changing the additive Goal storage
+schema. New command or ACP clients must reuse the same Goal, evidence, permission, and recovery rules.
 
 ## Lifecycle
 
@@ -13,10 +14,11 @@ v0.1.5 may add new command or ACP clients, but they must reuse the same Goal, ev
   -> complete | paused | blocked | usage_limited | budget_limited
 ```
 
-Use `/target` to inspect the current state, `/target pause` to stop automatic continuation, and
-`/target resume` to continue a recoverable Goal. `/target replace <objective>` creates a new goalId;
-`/target confirm <criterion-id>` records trusted human acceptance only for a criterion that explicitly requires
-`user` evidence; `/target clear --yes` removes the Goal sidecar.
+Use `/goal` to inspect the current state, `/goal pause` to stop automatic continuation, and
+`/goal resume` to continue a recoverable Goal. `/goal replace <objective>` creates a new goalId;
+`/goal confirm <criterion-id>` records trusted human acceptance only for a criterion that explicitly requires
+`user` evidence; `/goal exit` immediately stops Goal-owned execution and removes the Goal sidecar.
+The old `/goal clear --yes` and `/target clear --yes` forms are intentionally rejected in v0.1.6.
 
 ## Completion evidence
 
@@ -101,9 +103,9 @@ supported automatic sidecar-repair command.
 ### Version rollback
 
 Never overwrite a published npm version. Prefer a forward patch. Keep npm `latest`, prerelease tags such as `next`,
-Git tags, GitHub Releases, merged source, and a local explicit install as separate states. As of 2026-08-09,
-`latest=0.1.4` and `next=0.1.4-2`; `main` also contains newer merged-only fixes, so installing either published
-version is not proof that those fixes are present.
+Git tags, GitHub Releases, merged source, and a local explicit install as separate states. As of 2026-08-12,
+`latest=0.1.4` and `next=0.1.5`; v0.1.6 remains an unpublished PR candidate, so installing either dist-tag is
+not proof that the candidate fixes are present.
 
 Test a rollback in an isolated prefix first. Set `known_good_version` only after verifying its Goal/session
 compatibility:

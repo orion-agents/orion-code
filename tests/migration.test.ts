@@ -2,7 +2,14 @@
  * Migration tool tests.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'fs';
 import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -149,7 +156,7 @@ describe('brand migration', () => {
     }
   });
 
-  test('fails with rebuild guidance when vector verification cannot load the native ABI', () => {
+  test('copies vector data with rebuild guidance when native verification is unavailable', () => {
     const home = makeHome();
     const sourceDir = join(home, '.openhorse');
     mkdirSync(sourceDir, { recursive: true });
@@ -165,13 +172,17 @@ describe('brand migration', () => {
     try {
       const result = migrateBrand({ home });
 
-      expect(result.success).toBe(false);
+      expect(result.success).toBe(true);
+      expect(result.manifest.verified).toBe(true);
       expect(result.manifest.warnings.join('\n')).toContain('npm rebuild better-sqlite3');
       expect(result.manifest.warnings.join('\n')).toContain('NODE_MODULE_VERSION 115');
+      expect(result.manifest.warnings.join('\n')).toContain('integrity verification was skipped');
       expect(result.manifest.warnings).not.toContain(
         'vector.db integrity check failed. The file was copied but may be corrupted.'
       );
-      expect(existsSync(join(home, '.orion-code'))).toBe(false);
+      expect(readFileSync(join(home, '.orion-code', 'vector.db'), 'utf8')).toBe(
+        'existing-vector-database'
+      );
     } finally {
       openSpy.mockRestore();
       rmSync(home, { recursive: true, force: true });

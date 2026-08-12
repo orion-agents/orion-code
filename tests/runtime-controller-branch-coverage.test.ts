@@ -566,8 +566,7 @@ describe('runtime controller branch coverage', () => {
       '/target edit revised',
       '/target replace replacement',
       '/target budget 1000',
-      '/target clear',
-      '/target clear --yes',
+      '/goal exit',
     ]) {
       expect(controller.handleTargetInput(command).handled).toBe(true);
     }
@@ -592,7 +591,7 @@ describe('runtime controller branch coverage', () => {
       '/target edit revised',
       '/target replace replacement',
       '/target budget off',
-      '/target clear --yes',
+      '/goal exit',
     ]) {
       expect(controller.handleTargetInput(command).handled).toBe(true);
     }

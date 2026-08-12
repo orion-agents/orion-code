@@ -1613,6 +1613,7 @@ describe('goal storage compatibility', () => {
         { field: 'createdAt', value: 1.5 },
         { field: 'activeSince', value: Number.MAX_SAFE_INTEGER + 1 },
         { field: 'continuationCount', value: Number.MAX_SAFE_INTEGER + 1 },
+        { field: 'automaticContinuationStreak', value: Number.MAX_SAFE_INTEGER + 1 },
       ].map(({ field, value }) => {
         const sessionId = `sess-invalid-safe-integer-${field}`;
         return {

@@ -281,9 +281,9 @@ function renderStatus(frame: TuiFrame, state: TuiUiState, row: number): void {
       state.goal.nextAction && !nextActionAlreadyShown
         ? ` next:${truncateCells(state.goal.nextAction, 24)}`
         : '';
-    const stop = state.goal.stopReason ? ` resume:${truncateCells(state.goal.stopReason, 24)}` : '';
+    const stop = goalStopProjection(state.goal.stopReason);
     activity.push(
-      `goal:${state.goal.status}${progress}${audit}${objective}${phase}${turn}${budget}${next}${stop}`
+      `goal:${state.goal.status}${stop}${progress}${audit}${objective}${phase}${turn}${budget}${next}`
     );
   }
   if (state.statusState.activeTools > 0) activity.push(`tools:${state.statusState.activeTools}`);
@@ -303,6 +303,13 @@ function renderStatus(frame: TuiFrame, state: TuiUiState, row: number): void {
     ? `${left}${' '.repeat(Math.max(1, available - stringWidth(rightFull)))}${truncateCells(rightFull, available)}`
     : left;
   writeFrameText(frame, row, 0, truncateCells(status, frame.width));
+}
+
+function goalStopProjection(stopReason: string | undefined): string {
+  if (!stopReason) return '';
+  const commands = [...new Set(stopReason.match(/\/(?:goal|target)\s+(?:resume|exit)\b/giu) ?? [])];
+  if (commands.length > 0) return ` action:${commands.join('|')}`;
+  return ` resume:${truncateCells(stopReason, 24)}`;
 }
 
 /**

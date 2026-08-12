@@ -9,11 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 This project distinguishes three delivery states. **Never present unreleased work as released.**
 
-| State         | Meaning                                    | Criterion                                     |
-| ------------- | ------------------------------------------ | --------------------------------------------- |
-| **Published** | Users can install it                       | git tag exists **and** `npm publish` done     |
-| **Merged**    | In the default branch, not yet installable | merged, **no** tag / not published            |
-| **Candidate** | Worktree only                              | **not committed**; carries no release promise |
+| State             | Meaning                                      | Criterion                                  |
+| ----------------- | -------------------------------------------- | ------------------------------------------ |
+| **Published**     | Tagged source is installable from npm        | git tag exists **and** `npm publish` done  |
+| **npm-published** | Registry version exists without full release | exact npm version, but tag/release may lag |
+| **Merged**        | In the default branch, not yet installable   | merged, **no** tag / not published         |
+| **Candidate**     | Reviewable source, no release promise        | committed PR branch or owned worktree      |
 
 Evidence labels follow `docs/plan/targets-v0.1.3-v0.1.3-2.md`:
 `met` / `partial` / `unmet` / `not_run` — where `not_run` means "blocked by environment",
@@ -21,10 +22,48 @@ which is **not** a pass.
 
 ## [Unreleased]
 
-## [0.1.5] — UNRELEASED
+## [0.1.6] — UNRELEASED
 
-> **Status: candidate.** This release candidate is intended for the npm `next` channel. It is
-> not the stable `latest` release until review, merge, tag, and explicit dist-tag promotion.
+> **Status: candidate.** PR [#152](https://github.com/orion-agents/orion-code/pull/152)
+> carries this source, but `v0.1.6` has not been merged, tagged, released, or published to npm.
+> The intended first registry channel is `next`; moving `latest` is a separate decision.
+
+### Changed
+
+- Require explicit user authorization before a model-created Goal can become active and bound
+  non-user continuation loops so a Goal cannot run indefinitely without returning control (#150).
+- Replace destructive Goal clearing with `/goal exit`, which aborts the active turn, rejects any
+  pending permission request, and clears persisted Goal state. The old `/goal clear --yes` and
+  `/target clear --yes` forms are intentionally rejected rather than retained as aliases.
+- Make the default dependency-health report reproducible without registry access; registry-backed
+  `npm audit` and `npm outdated` reports now require explicit `--full-network` (#155).
+
+### Fixed
+
+- Preserve `vector.db` during brand migration when native SQLite verification is unavailable and
+  report the actionable ABI/rebuild cause instead of misclassifying it as corruption (#149).
+- Remove real embedding-provider calls from vector tests, make source-only import tests independent
+  of prebuilt `dist/`, and select installed Node runtimes by numeric version (#140, #144, #146).
+- Keep dependency policy mandatory in prepublish/release gates and synchronize candidate version
+  claims across README and release metadata (#129, #147).
+- Anchor macOS seatbelt secret-file denies to the stable project root and make `exec_command`
+  permission prechecks use the same explicit command cwd as execution (#151, #153).
+- Strip ANSI/OSC/C0/C1 control sequences from terminal-ui transcript and streamed assistant output
+  before it reaches the terminal writer (#154).
+- Make memory drift validation perform a bounded project symbol scan, expose it through
+  `/memory validate`, and fail inconclusive scans closed instead of silently accepting them (#156).
+
+### Compatibility
+
+- This pre-1.0 release contains an intentional command-line breaking change: scripts using
+  `/goal clear --yes` or `/target clear --yes` must migrate to `/goal exit`. Goal/session storage
+  remains additive and compatible; the removed command syntax is not supported as an alias.
+
+## [0.1.5] — 2026-08-11
+
+> **Status: npm-published.** `@orion-agents/orion-code@0.1.5` is available through the npm
+> `next` dist-tag. No `v0.1.5` Git tag or GitHub Release exists, and stable `latest` remains
+> `0.1.4`; those delivery states are intentionally recorded separately.
 
 ### Added
 

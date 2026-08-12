@@ -738,6 +738,36 @@ describe('terminal UI renderer adapter', () => {
     expect(output.indexOf('✓ read_file')).toBeLessThan(output.indexOf('Done.'));
   });
 
+  it('strips terminal control sequences from transcript entries and streamed assistant text', () => {
+    const { sink, writes } = makeTerminalSink();
+
+    sink.append({
+      role: 'system',
+      content: 'system-safe\x1b[2J\x1b[H\x1b]0;untrusted-title\x07',
+    });
+    sink.append({
+      role: 'tool',
+      content: 'tool-safe\x1b[?25l\x00',
+    });
+    const assistantId = sink.append({
+      role: 'assistant',
+      content: 'assistant-safe\x1b[',
+      live: true,
+    });
+    sink.update(assistantId, {
+      content: 'assistant-safe\x1b[2J\x1b[Hstill-visible\x1b[?25l',
+    });
+    sink.finalize(assistantId);
+
+    const output = writes.join('');
+    expect(output).toContain('system-safe');
+    expect(output).toContain('tool-safe');
+    expect(output).toContain('assistant-safestill-visible');
+    expect(output).not.toContain('\x1b');
+    expect(output).not.toContain('\x00');
+    expect(output).not.toContain('untrusted-title');
+  });
+
   it('keeps the full exec command visible after tool completion', () => {
     const { sink, writes } = makeTerminalSink();
     const presenter = createToolEventPresenter(sink);

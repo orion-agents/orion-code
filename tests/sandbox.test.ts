@@ -259,6 +259,20 @@ describe('seatbelt policy', () => {
     expect(policy).toContain('/workspace/.npmrc');
   });
 
+  test('pins project secret denies to projectRoot when command cwd differs', () => {
+    const plan = planSandboxedCommand('pwd', {
+      cwd: '/workspace/project/packages/app',
+      projectRoot: '/workspace/project',
+      settings: { profile: 'workspace-write', allowNetwork: true },
+      capabilities: only('seatbelt'),
+    });
+    expect(plan.ok).toBe(true);
+    if (!plan.ok) return;
+    expect(plan.policy).toContain('/workspace/project/.env');
+    expect(plan.policy).toContain('/workspace/project/.npmrc');
+    expect(plan.policy).not.toContain('/workspace/project/packages/app/.env');
+  });
+
   test('symlinked writable roots are resolved to their real path', () => {
     const plan = planSandboxedCommand('ls', {
       cwd: '/tmp',

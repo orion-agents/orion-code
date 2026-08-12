@@ -7,6 +7,17 @@ import { load as loadYaml } from 'js-yaml';
 const root = join(__dirname, '..');
 const supportedMajors = new Set([20, 22, 24]);
 
+function compareNodeVersionDescending(left: string, right: string): number {
+  const parse = (value: string): number[] => value.replace(/^v/u, '').split('.').map(Number);
+  const leftParts = parse(left);
+  const rightParts = parse(right);
+  for (let index = 0; index < Math.max(leftParts.length, rightParts.length); index += 1) {
+    const difference = (rightParts[index] ?? 0) - (leftParts[index] ?? 0);
+    if (difference !== 0) return difference;
+  }
+  return 0;
+}
+
 function supportedNodeExecutable(): string {
   const currentMajor = Number(process.versions.node.split('.')[0]);
   if (supportedMajors.has(currentMajor)) return process.execPath;
@@ -15,8 +26,7 @@ function supportedNodeExecutable(): string {
   if (existsSync(versionsRoot)) {
     const candidate = readdirSync(versionsRoot)
       .filter(version => /^v(?:20|22|24)\./u.test(version))
-      .sort()
-      .reverse()
+      .sort(compareNodeVersionDescending)
       .map(version => join(versionsRoot, version, 'bin', 'node'))
       .find(existsSync);
     if (candidate) return candidate;
@@ -36,6 +46,14 @@ function policyResult(nodeExecutable = process.execPath) {
 }
 
 describe('dependency governance contract', () => {
+  it('sorts supported NVM runtimes by numeric semantic version', () => {
+    expect(['v24.2.0', 'v22.23.2', 'v24.14.1'].sort(compareNodeVersionDescending)).toEqual([
+      'v24.14.1',
+      'v24.2.0',
+      'v22.23.2',
+    ]);
+  });
+
   it('passes the offline dependency policy gate on a supported runtime', () => {
     const result = policyResult(supportedNodeExecutable());
 

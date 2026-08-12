@@ -296,6 +296,11 @@ export interface SessionGoalV1 {
   completedAt?: number;
 
   continuationCount: number;
+  /**
+   * Consecutive model-driven continuation turns since the latest human turn.
+   * Optional for backward compatibility with older Goal sidecars.
+   */
+  automaticContinuationStreak?: number;
   noProgressCount: number;
   /** Additive bounded history used to explain an automatic no-progress pause. */
   recentNoProgressTurns?: GoalNoProgressTurn[];
@@ -338,6 +343,7 @@ export interface RuntimeGoalSnapshot {
   tokensUsed: number;
   timeUsedMs: number;
   continuationCount: number;
+  automaticContinuationStreak?: number;
   updatedAt: number;
   stopReason?: string;
   criteria?: { passed: number; total: number; failed: number; stale: number };
@@ -377,6 +383,8 @@ export interface AgentTurnRequest {
 
 export interface AgentTurnOutcome {
   turnId: string;
+  /** Originating runtime input, used to bound autonomous Goal execution. */
+  inputKind?: AgentInputKind;
   sessionId: string;
   goalId?: string;
   goalRevision?: number;
@@ -572,5 +580,6 @@ export const GOAL_INVARIANTS = {
   maxObjectiveChars: 4000,
   maxConsecutiveBlockerTurns: 3,
   maxConsecutiveNoProgressTurns: 3,
+  maxAutomaticContinuationTurns: 5,
   tokenBudgetMin: 1,
 } as const;

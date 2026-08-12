@@ -65,6 +65,40 @@ function requireContext(): GoalToolExecutionContext {
 }
 
 type GoalAbandonmentAuthorization = { authorized: true } | { authorized: false; reason: string };
+type GoalCreationAuthorization = { authorized: true } | { authorized: false; reason: string };
+
+/**
+ * Persistent Goal mode changes runtime autonomy and must be explicitly selected
+ * by the latest human input. A normal task request is not Goal authorization.
+ */
+export function authorizeGoalCreation(request: AgentTurnRequest): GoalCreationAuthorization {
+  if (!['user', 'revision'].includes(request.inputKind) || typeof request.text !== 'string') {
+    return {
+      authorized: false,
+      reason: 'The latest runtime input is not an explicit user message or revision.',
+    };
+  }
+
+  const text = request.text.normalize('NFKC').replace(/\s+/gu, ' ').trim();
+  if (!text) {
+    return { authorized: false, reason: 'The latest user message is empty.' };
+  }
+
+  const englishIntent =
+    /^(?:(?:please|can you|could you|i want you to|i would like you to)\s+)?(?:(?:create|start|set|establish|begin|open)\s+(?:(?:a|the|this)\s+)?(?:(?:persistent|long-running)\s+)?(?:goal|target|objective)\b|(?:use|enter|enable|start)\s+(?:the\s+)?(?:persistent\s+)?goal\s+mode\b|make\s+.+\s+(?:a|the)\s+(?:persistent\s+)?(?:goal|target|objective)\b)/iu;
+  const chineseIntent =
+    /^(?:请)?(?:(?:创建|建立|设置|设定|开启|启动)(?:一个|这个|当前)?(?:持久|长期)?(?:目标|Goal|Target)|(?:进入|使用|启用|开启)(?:持久)?(?:目标模式|Goal模式)|把.+(?:设为|作为|定为)(?:持久|长期)?(?:目标|Goal|Target))/iu;
+
+  if (!englishIntent.test(text) && !chineseIntent.test(text)) {
+    return {
+      authorized: false,
+      reason:
+        'The latest user message does not explicitly request persistent Goal mode; continue as a normal task.',
+    };
+  }
+
+  return { authorized: true };
+}
 
 /**
  * Abandonment is destructive and must originate in the latest human-authored
@@ -79,16 +113,16 @@ export function authorizeGoalAbandonment(request: AgentTurnRequest): GoalAbandon
   }
 
   const text = request.text.normalize('NFKC').replace(/\s+/gu, ' ').trim();
-  if (!text || /[?？]/u.test(text)) {
+  if (!text) {
     return { authorized: false, reason: 'The latest user message is not an explicit instruction.' };
   }
 
   const englishIntent =
-    /^(?:(?:ok(?:ay)?|alright)[,!]?\s+)?(?:please\s+)?(?:(?:let(?:'|’)s|we should|i (?:want|would like) to|can you)\s+)?(?:just\s+)?(?:(?:abandon|cancel|drop|delete|clear|withdraw)\s+(?:(?:this|the|our)\s+)?(?:(?:current|active)\s+)?(?:goal|target|objective)|(?:stop|cease)\s+pursuing\s+(?:(?:this|the|our)\s+)?(?:(?:current|active)\s+)?(?:goal|target|objective)|give\s+up\s+on\s+(?:(?:this|the|our)\s+)?(?:(?:current|active)\s+)?(?:goal|target|objective))(?:\s+(?:now|entirely|completely))?(?:\s+because\s+.+)?[.!]*$/iu;
+    /^(?:(?:ok(?:ay)?|alright)[,!]?\s+)?(?:please\s+)?(?:(?:let(?:'|’)s|we should|i (?:want|would like) to|can you|could you|would you)\s+)?(?:just\s+)?(?:(?:abandon|cancel|drop|delete|clear|withdraw|exit|quit|stop|end)\s+(?:(?:this|the|our)\s+)?(?:(?:current|active)\s+)?(?:goal|target|objective)|(?:stop|cease)\s+pursuing\s+(?:(?:this|the|our)\s+)?(?:(?:current|active)\s+)?(?:goal|target|objective)|give\s+up\s+on\s+(?:(?:this|the|our)\s+)?(?:(?:current|active)\s+)?(?:goal|target|objective))(?:\s+(?:now|entirely|completely))?(?:\s+because\s+.+)?[.!?]*$/iu;
   const chineseIntent =
-    /^(?:好的?|好吧|行)?[，,\s]*(?:我们|我)?(?:请)?(?:现在)?(?:放弃|取消|删除|清除|终止)(?:这个|当前|该|本)?(?:目标|Goal|Target)(?:吧|了|即可)?(?:[，,]\s*(?:因为|原因是).+)?[。！!]*$/iu;
+    /^(?:好的?|好吧|行)?[，,\s]*(?:我们|我)?(?:请)?(?:现在)?(?:放弃|取消|删除|清除|终止|结束|退出|停止)(?:这个|当前|该|本)?(?:目标|Goal|Target)(?:吧|了|即可)?(?:[，,]\s*(?:因为|原因是).+)?[。！!？?]*$/iu;
   const chineseStopIntent =
-    /^(?:好的?|好吧|行)?[，,\s]*(?:我们|我)?(?:请)?不要再?继续(?:这个|当前|该|本)?(?:目标|Goal|Target)(?:吧|了)?[。！!]*$/iu;
+    /^(?:好的?|好吧|行)?[，,\s]*(?:我们|我)?(?:请)?不要再?继续(?:这个|当前|该|本)?(?:目标|Goal|Target)(?:吧|了)?[。！!？?]*$/iu;
 
   if (!englishIntent.test(text) && !chineseIntent.test(text) && !chineseStopIntent.test(text)) {
     return {
@@ -181,7 +215,17 @@ export const createGoalTool: OrionCodeTool = buildTool({
     required: ['objective'],
   },
   execute: async (args): Promise<ToolResult> => {
-    const coord = requireContext().coordinator;
+    const context = requireContext();
+    const authorization = authorizeGoalCreation(context.request);
+    if (!authorization.authorized) {
+      const error = `Goal creation denied: ${authorization.reason}`;
+      return { success: false, output: error, error };
+    }
+    if (context.request.sessionId !== context.coordinator.boundSessionId) {
+      const error = 'Goal creation denied: runtime session does not own this Goal state.';
+      return { success: false, output: error, error };
+    }
+    const coord = context.coordinator;
     const objective = args.objective as string;
     const constraints = Array.isArray(args.constraints)
       ? args.constraints.map(value => String(value).trim())
@@ -208,7 +252,16 @@ export const createGoalTool: OrionCodeTool = buildTool({
   },
   isReadOnly: () => false,
   isConcurrencySafe: () => false,
-  checkPermissions: () => ({ behavior: 'allow', reason: 'Internal Goal state update' }),
+  checkPermissions: () => {
+    const context = currentGoalToolContext();
+    if (!context) {
+      return { behavior: 'deny', reason: 'Goal runtime context is unavailable' };
+    }
+    const authorization = authorizeGoalCreation(context.request);
+    return authorization.authorized
+      ? { behavior: 'allow', reason: 'Explicit persistent Goal request from latest user input' }
+      : { behavior: 'deny', reason: authorization.reason };
+  },
 });
 
 export const updateGoalTool: OrionCodeTool = buildTool({

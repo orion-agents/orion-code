@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Dependency contract gate for the supported v0.1.4 runtime matrix.
+# Dependency contract gate for the supported runtime matrix.
 
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-mode="${1:-full}"
-if [[ "$mode" != "full" && "$mode" != "--policy-only" ]]; then
-  echo "Usage: $0 [--policy-only]" >&2
+mode="${1:-offline}"
+if [[ "$mode" != "offline" && "$mode" != "--policy-only" && "$mode" != "--full-network" ]]; then
+  echo "Usage: $0 [--policy-only|--full-network]" >&2
   exit 2
 fi
 
@@ -168,13 +168,18 @@ echo "== dependency tree consistency =="
 npm ls --all >/dev/null
 echo "npm ls: ok"
 
-echo
-echo "== npm audit (high severity gate) =="
-npm audit --audit-level=high
+if [[ "$mode" == "--full-network" ]]; then
+  echo
+  echo "== npm audit (high severity network gate) =="
+  npm audit --audit-level=high --fetch-retries=1 --fetch-timeout=10000
 
-echo
-echo "== npm outdated (report only; majors require contract review) =="
-npm outdated || true
+  echo
+  echo "== npm outdated (network report only; majors require contract review) =="
+  npm outdated --fetch-retries=1 --fetch-timeout=10000 || true
+else
+  echo
+  echo "== registry reports skipped (offline default; use --full-network) =="
+fi
 
 echo
 echo "Dependency health check complete."
