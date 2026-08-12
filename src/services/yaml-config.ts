@@ -9,6 +9,7 @@ import { join } from 'path';
 import { load as loadYaml } from 'js-yaml';
 import { getConfigHome } from './config-dir';
 import { errorMessage } from '../utils/errors';
+import { PACKAGE_VERSION } from '../product/version';
 
 // ============================================================================
 // Types
@@ -182,7 +183,7 @@ export class YAMLConfigLoader {
   generateTemplate(): string {
     const template = `# Orion Code Configuration
 orion:
-  version: "0.1.5"
+  version: "${PACKAGE_VERSION}"
 
   model:
     provider: openai

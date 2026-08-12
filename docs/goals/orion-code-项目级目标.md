@@ -4,10 +4,10 @@
 >
 > 维护范围：Orion Code CLI、Agent Runtime、TUI、terminal-ui、Print、工具与扩展协议
 >
-> 当前发布基线：稳定版 `@orion-agents/orion-code@0.1.4`（`latest`）；维护预发布版
-> `0.1.4-2`（`next`）。`main@611b659` 另含尚未进入上述 npm 产物的后续修复。
+> 当前发布基线：稳定版 `@orion-agents/orion-code@0.1.4`（`latest`）；预发布渠道
+> `next=0.1.5`。`v0.1.6` 是 PR #152 上尚未 merge、tag 或 npm publish 的候选。
 >
-> 最近更新：2026-08-09
+> 最近更新：2026-08-12
 
 ## 1. 项目使命
 
@@ -179,37 +179,29 @@ Orion Code 必须像一个可信赖的开发工具，而不是偶尔可用的演
 - command registry、结构化 runtime event、Provider/Model Registry、MCP、Skill、Subagent、本地会话/记忆
   和发布检查线已形成。
 
-**v0.1.4 发布线（当前前置）：**
+**当前发布线：**
 
-- `0.1.4` 已作为稳定 `latest` 发布；`0.1.4-2` 已作为 `next` 发布，承载
-  Research-to-Evidence、Goal/runtime、安全、持久化、依赖治理和运行时矩阵的集中修复；
-- ResearchPacket、受控 Web research、citation/quality、artifact CAS、Goal evidence bridge 以及
-  TUI/terminal/Print 投影已接入 shared runtime；
-- `main@611b659` 在已发布 `0.1.4-2` 之后又合并了配置目录并发创建、原生 SQLite
-  延迟加载/可操作 ABI 诊断和跨进程 session 容量原子预留；它们是 **Merged**，不是
-  已安装的 `0.1.4-2` 能力；
-- `main` 的 CI 已覆盖 Node 20/22/24、coverage、typecheck、audit、release gate 和 dependency
-  health；当前 GitHub open issue 列表为空，但这不代表没有已知加固项。
+- `0.1.4` 是稳定 `latest`；`0.1.5` 已发布到 npm `next`，但没有对应 `v0.1.5`
+  Git tag 或 GitHub Release，不能把 registry 版本、tag 和 release 混为同一状态；
+- `main@2fc91f7` 已合并 v0.1.5 命令控制面、provider-aware effort、安全和发布门；
+- `v0.1.6` 的 PR #152 补充 Goal 显式授权与有界 continuation、`/goal exit`、native migration、
+  测试确定性、seatbelt/exec cwd 和 terminal control-sequence 加固；
+- v0.1.6 只有在版本元数据、Node 20/22/24、coverage、PTY、tarball、clean install 和真实
+  provider smoke 对最终候选 SHA 全部成立后才进入 `READY_TO_PUBLISH`。merge、tag、GitHub Release、
+  npm publish 与 dist-tag 变更仍是独立授权动作。
 
-### 6.2 缺口状态
+### 6.2 v0.1.6 准出缺口
 
-v0.1.5 必须以下列现实缺口为输入，不得重复规划已在 v0.1.4/main 关闭的 issue：
-
-1. **发布产物落后 main。** `0.1.4-2` 不包含 `main` 上后续的配置目录并发修复、
-   native SQLite 延迟加载/ABI 诊断和 session 容量原子锁；v0.1.5 必须从最终
-   `main` 建立分支并在实际 tarball/registry install 中重验这些行为。
-2. **命令合同仍不是单一控制面。** 当前为 46 个 canonical command；部分 handler 直接写
-   `console.*`，runtime 仍用全局 console capture 转接给 renderer，且 availability 元数据尚未落地。
-3. **Provider reasoning 不等于 effort 能力。** model profile 只有布尔标记，没有受支持级别、
-   provider wire adapter、requested/effective 状态、fallback 语义和 reasoning usage 证据。
-4. **CI 仍有确定性债务。** `main@611b659` 的首次 Node 22 运行在 Goal evidence 状态断言上
-   失败，同 SHA 重跑成功；在找到时钟/工作区/并发根因前，不得把重跑当成稳定性证明。
-5. **存储锁还有小概率加固点。** main 已关闭报告中的正常跨进程 slot race，但 recovery
-   sentinel 自身的崩溃后双回收窗口、未受 registry lock 保护的未来 `cleanup()`、以及
-   unreadable/corrupt session 容量计数策略需要单独硬化。
-6. **多客户端只能是薄适配层。** v0.1.5 可以建立 experimental ACP v1 adapter，但必须复用
-   shared runtime、权限、Goal、session 和 event；若 tool permission、cancel、resume 或 stdio 协议纯净性
-   没有闭环，就不进 Registry、不宣称稳定 IDE 能力。
+1. **候选不等于发布。** PR 绿色只证明 exact head；仍需最终版本源、merge SHA、tag、npm 和
+   registry install 分离证据。
+2. **Goal 必须可控退出。** 模型不能隐式创建 Goal；非用户 continuation 必须有界；退出统一使用
+   `/goal exit`，旧 clear 语法不保留兼容。
+3. **终端与 shell 信任边界必须一致。** terminal-ui 不执行模型注入的控制序列；seatbelt secret
+   deny 锚定 project root；`exec_command` precheck 与执行使用同一 cwd。
+4. **发布验证必须来自最终包。** source tests 不能替代 tarball identity、Node 20/22/24 clean install、
+   native SQLite 路径、Goal 退出路径与脱敏真实 provider smoke。
+5. **外部状态保持显式授权。** READY_TO_PUBLISH 不包含 merge、tag、GitHub Release、npm publish
+   或 `next`/`latest` 变更。
 
 <details>
 <summary>v0.1.1/v0.1.2 历史候选快照（已失效，不作当前状态）</summary>
@@ -316,7 +308,7 @@ Goal 已发布。v0.1.5 的重点是不让命令重构、effort 或 ACP 新客�
 - 结构化 ResearchPacket、受控 Web research、citation/quality 与 Goal evidence boundary；
 - 持久化/CAS、provider recovery、原生依赖、运行时矩阵和发布门的系统加固。
 
-**v0.1.5（规划中）：命令控制面、provider-aware effort 与受控多客户端 POC**
+**v0.1.5（已发布至 npm next；tag/release 未补齐）：命令控制面与 provider-aware effort**
 
 - 先把 v0.1.4/main 的 merged-only 修复纳入可安装产物，并关闭已知 CI/锁残余；
 - 让 help/palette/completion/docs 来自单一 typed command descriptor，handler 不再依赖全局 console capture；
@@ -324,10 +316,17 @@ Goal 已发布。v0.1.5 的重点是不让命令重构、effort 或 ACP 新客�
 - ACP 只作复用 shared runtime 的 experimental v1 适配层；只有在权限、取消、恢复、PTY 和
   package/Registry 证据齐全时，才能升格为稳定对外能力。
 
+**v0.1.6（当前候选）：Goal 控制与发布可信度收敛**
+
+- Goal 创建只接受显式用户授权，自动 continuation 有界，并以 `/goal exit` 作为唯一清理入口；
+- 收敛 migration/native ABI、测试确定性、terminal control sequence 与 shell sandbox cwd 边界；
+- 让 memory drift 校验具有真实、显式且有界的 `/memory validate` 运行入口；
+- 在最终候选 SHA 上重建 Node 矩阵、coverage、PTY、tarball、clean install 和 provider 证据。
+
 **范围约束**：v0.1.x 仍只承诺单 Session、单 Active Goal 的可靠性闭环，不提前承诺
 v0.2 的多目标、跨 Session 调度或 unattended 后台执行。
 
-退出条件：已发布能力与文档相符；v0.1.5 的 P0 不破坏 G1/G2/G3，并从最终 merge SHA 重建
+退出条件：已发布能力与文档相符；v0.1.6 的 P0 不破坏 G1/G2/G3，并从最终 merge SHA 重建
 Node 矩阵、coverage、PTY、tarball、clean install 和发布证据。
 
 ### 阶段 B - v0.2：完整的项目目标运行时
@@ -470,6 +469,7 @@ v0.1.5 的 ACP POC 若达到发布门，只代表“已有受控薄适配层”�
 - [v0.1.4 Research-to-Evidence 计划](../plan/v0.1.4-plan.md)
 - [v0.1.4 发布检查清单](../plan/v0.1.4-release-checklist.md)
 - [v0.1.5 发布收敛、命令、Effort 与 ACP v1 计划](../plan/v0.1.5-plan.md)
+- [v0.1.6 发布检查清单](../plan/v0.1.6-release-checklist.md)
 - [Goal evidence and recovery](goal-evidence-and-recovery.md)
 - [English README](../../README.md)
 - [简体中文 README](../../README.zh-CN.md)

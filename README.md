@@ -2,7 +2,7 @@
 
 > **Goal-driven coding agent for the terminal.**
 >
-> v0.1.5 — typed command control, provider-aware effort & safety hardening
+> v0.1.6 candidate — bounded Goal control, deterministic release gates, terminal hardening
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20.0-green.svg)](https://nodejs.org)
@@ -35,9 +35,9 @@ Orion Code is a terminal-based coding agent. It wraps LLM APIs in a harness of s
 ### Install & Run
 
 ```bash
-# Install the v0.1.5 release candidate:
-npm install -g @orion-agents/orion-code@0.1.5
-# Or install through the prerelease dist-tag:
+# After v0.1.6 is published, install the exact audited version:
+npm install -g @orion-agents/orion-code@0.1.6
+# Current prerelease channel (resolves to 0.1.5 until v0.1.6 is published):
 npm install -g @orion-agents/orion-code@next
 
 # Or run from a checked-out source tree:
@@ -75,9 +75,9 @@ orion -p "review the current git diff"
 echo "summarize this project" | orion --print
 ```
 
-> **Prerelease status.** `0.1.5` is published under the npm `next` dist-tag.
-> Stable `latest` remains `0.1.4` until a separate stable release is approved;
-> merge and git-tag status are tracked independently from npm publication.
+> **Release status.** `0.1.6` is an unpublished PR candidate. npm currently resolves
+> `next` to `0.1.5` and stable `latest` to `0.1.4`. PR merge, Git tag/GitHub Release,
+> npm publication, registry installation, and stable promotion are separate gates.
 
 ### TUI startup banner
 
@@ -253,29 +253,29 @@ backend is probed at runtime and a configured-but-unusable sandbox **fails close
 
 ## Interactive Commands
 
-| Command                | Description                                                                 |
-| ---------------------- | --------------------------------------------------------------------------- |
-| `/help`                | Show help                                                                   |
-| `/goal` (`/target`)    | Create, inspect, pause, resume, replace, budget, or clear a persistent goal |
-| `/status`              | System status                                                               |
-| `/model`               | View or switch models                                                       |
-| `/effort`              | View or change supported reasoning effort                                   |
-| `/mode`                | View or change agent working mode                                           |
-| `/permissions`         | View or change tool confirmation and edit policy                            |
-| `/config`              | Show configuration                                                          |
-| `/usage`               | Token usage and cost                                                        |
-| `/compact`             | Trigger context compact                                                     |
-| `/session`             | List, inspect, or rename sessions                                           |
-| `/resume`              | Resume last session                                                         |
-| `/memory`              | Memory system status                                                        |
-| `/skills`              | List loaded skills                                                          |
-| `/mcp`                 | MCP server status                                                           |
-| `/doctor`              | Run diagnostics                                                             |
-| `/diff`                | Workspace diff                                                              |
-| `/commit-plan`         | Create a read-only commit plan                                              |
-| `/clear`               | Clear screen                                                                |
-| `/context clear --yes` | Clear in-memory model context; preserve the saved session                   |
-| `/exit`                | Exit                                                                        |
+| Command                | Description                                                                |
+| ---------------------- | -------------------------------------------------------------------------- |
+| `/help`                | Show help                                                                  |
+| `/goal` (`/target`)    | Create, inspect, pause, resume, replace, budget, or exit a persistent goal |
+| `/status`              | System status                                                              |
+| `/model`               | View or switch models                                                      |
+| `/effort`              | View or change supported reasoning effort                                  |
+| `/mode`                | View or change agent working mode                                          |
+| `/permissions`         | View or change tool confirmation and edit policy                           |
+| `/config`              | Show configuration                                                         |
+| `/usage`               | Token usage and cost                                                       |
+| `/compact`             | Trigger context compact                                                    |
+| `/session`             | List, inspect, or rename sessions                                          |
+| `/resume`              | Resume last session                                                        |
+| `/memory`              | Memory status, reference validation, and semantic reindexing               |
+| `/skills`              | List loaded skills                                                         |
+| `/mcp`                 | MCP server status                                                          |
+| `/doctor`              | Run diagnostics                                                            |
+| `/diff`                | Workspace diff                                                             |
+| `/commit-plan`         | Create a read-only commit plan                                             |
+| `/clear`               | Clear screen                                                               |
+| `/context clear --yes` | Clear in-memory model context; preserve the saved session                  |
+| `/exit`                | Exit                                                                       |
 
 TUI is the public product interface and the default launch path. `terminal-ui`
 is maintained as a technical diagnostics/compatibility renderer, not a second
@@ -296,6 +296,10 @@ Goal open. Criteria that require human acceptance can only receive trusted
 `user` evidence from `/goal confirm <criterion-id>`; model tools cannot mint
 that confirmation. v0.1.2 remains single-session and single-active-Goal; it does not
 promise multi-Goal scheduling or unattended background execution.
+
+Use `/goal exit` to abort the active turn, reject any pending permission request,
+and clear the persisted Goal. The old `/goal clear --yes` and `/target clear --yes`
+syntax is intentionally unsupported in v0.1.6.
 
 ## Migration from OpenHorse
 
