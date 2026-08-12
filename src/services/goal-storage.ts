@@ -917,6 +917,12 @@ function invalidGoalSchemaReason(value: JsonRecord): string | null {
   if (!isNonNegativeInteger(value.continuationCount)) {
     return 'continuationCount must be a non-negative integer';
   }
+  if (
+    value.automaticContinuationStreak !== undefined &&
+    !isNonNegativeInteger(value.automaticContinuationStreak)
+  ) {
+    return 'automaticContinuationStreak must be a non-negative integer';
+  }
   if (!isNonNegativeInteger(value.noProgressCount)) {
     return 'noProgressCount must be a non-negative integer';
   }
@@ -1413,6 +1419,7 @@ export function createGoal(
     updatedAt: now,
     ...(status === 'active' ? { activeSince: now } : {}),
     continuationCount: 0,
+    automaticContinuationStreak: 0,
     noProgressCount: 0,
     // v0.1.2: persist contract if provided. Omitted for pre-v0.1.2 callers,
     // in which case the coordinator normalizes a minimal pending contract at

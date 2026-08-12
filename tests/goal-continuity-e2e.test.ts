@@ -42,6 +42,14 @@ async function flushImmediate(): Promise<void> {
   await new Promise<void>(resolve => setImmediate(resolve));
 }
 
+async function waitForCondition(condition: () => boolean, label: string): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (!condition()) {
+    if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${label}`);
+    await new Promise<void>(resolve => setTimeout(resolve, 10));
+  }
+}
+
 describe('Goal continuity integration', () => {
   it('keeps one typed Goal through 21 turns, real compact, restart, /resume, and turn 22', async () => {
     const previousConfigDir = process.env.ORION_CODE_CONFIG_DIR;
@@ -170,6 +178,18 @@ describe('Goal continuity integration', () => {
       expect(
         initialController.submit('/target Preserve the verified Goal across compact and restart')
       ).toEqual({ type: 'started' });
+      const activeCoordinator = () =>
+        (initialController as unknown as { goalCoordinator: GoalCoordinator }).goalCoordinator;
+      for (const checkpoint of [5, 10, 15, 20]) {
+        await waitForCondition(
+          () =>
+            activeCoordinator().goal?.status === 'paused' &&
+            activeCoordinator().goal?.continuationCount === checkpoint,
+          `autonomy checkpoint ${checkpoint}`
+        );
+        expect(activeCoordinator().goal?.stopReason?.message).toContain('/goal resume');
+        expect(initialController.submit('/target resume')).toEqual({ type: 'started' });
+      }
       await turn21Started;
       expect(typedRequests).toHaveLength(21);
       const goalId = typedRequests[0].goal!.goalId;
@@ -180,7 +200,7 @@ describe('Goal continuity integration', () => {
         Array.from({ length: 21 }, (_, index) => index + 1)
       );
       expect(typedRequests.map(request => request.goal!.revision)).toEqual(
-        Array.from({ length: 21 }, (_, index) => index)
+        Array.from({ length: 21 }, (_, index) => index + Math.floor(index / 5))
       );
 
       releaseTurn21();
@@ -356,7 +376,7 @@ describe('Goal continuity integration', () => {
       else process.env.ORION_CODE_CONFIG_DIR = previousConfigDir;
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, 20_000);
 
   it('rebinds Goal state when /resume switches between sessions', async () => {
     const previousConfigDir = process.env.ORION_CODE_CONFIG_DIR;

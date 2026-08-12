@@ -125,6 +125,8 @@ export type SandboxPlanResult = SandboxCommandPlan | SandboxPlanFailure;
 export interface SandboxPlanOptions {
   /** Directory the command runs in; always the primary writable root. */
   cwd: string;
+  /** Stable repository/project root used to pin secret-file read denies. */
+  projectRoot?: string;
   settings?: SandboxConfig;
   /** Injectable for tests; defaults to the real probe. */
   capabilities?: SandboxCapabilities;
@@ -452,13 +454,14 @@ export function planSandboxedCommand(
   }
 
   const allowNetwork = settings.allowNetwork === true;
+  const projectRoot = realpathOrSelf(options.projectRoot ?? options.cwd);
   const writableRoots =
     rawProfile === 'workspace-write'
       ? uniquePaths([options.cwd, os.tmpdir(), ...(settings.writableRoots ?? [])])
       : [];
 
   if (selected.backend === 'seatbelt') {
-    const policy = buildSeatbeltPolicy(writableRoots, allowNetwork, options.cwd);
+    const policy = buildSeatbeltPolicy(writableRoots, allowNetwork, projectRoot);
     return {
       ok: true,
       profile: rawProfile,

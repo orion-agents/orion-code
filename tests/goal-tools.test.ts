@@ -9,6 +9,7 @@ import { GoalCoordinator } from '../src/runtime/goals/coordinator';
 import {
   abandonGoalTool,
   authorizeGoalAbandonment,
+  authorizeGoalCreation,
   getGoalTool,
   createGoalTool,
   GOAL_TOOLS,
@@ -28,12 +29,16 @@ describe('Goal model tools', () => {
     coordinator = new GoalCoordinator(`/tmp/goal-tools-${randomUUID()}`, 'test-session');
   });
 
-  async function execute(tool: OrionCodeTool, args: Record<string, unknown>): Promise<ToolResult> {
+  async function execute(
+    tool: OrionCodeTool,
+    args: Record<string, unknown>,
+    request: { text?: string; inputKind?: 'user' | 'revision' | 'goal_continuation' } = {}
+  ): Promise<ToolResult> {
     lastContext = {
       coordinator,
       request: {
-        inputKind: 'user',
-        text: 'test',
+        inputKind: request.inputKind ?? 'user',
+        text: request.text ?? 'test',
         sessionId: 'test-session',
         persistAsUserMessage: true,
         echoToTranscript: true,
@@ -110,17 +115,27 @@ describe('Goal model tools', () => {
 
   describe('create_goal', () => {
     it('creates a goal from explicit objective', async () => {
-      const result = await execute(createGoalTool, { objective: 'Run CI' });
+      const result = await execute(
+        createGoalTool,
+        { objective: 'Run CI' },
+        { text: 'Create a persistent goal to run CI' }
+      );
       expect(result.success).toBe(true);
       expect(result.output).toContain('Run CI');
     });
 
     it('creates user-owned constraints and success criteria from structured input', async () => {
-      const result = await execute(createGoalTool, {
-        objective: 'Ship safely',
-        constraints: ['Do not change public APIs'],
-        success_criteria: [{ statement: 'Focused tests pass', required_evidence_kinds: ['test'] }],
-      });
+      const result = await execute(
+        createGoalTool,
+        {
+          objective: 'Ship safely',
+          constraints: ['Do not change public APIs'],
+          success_criteria: [
+            { statement: 'Focused tests pass', required_evidence_kinds: ['test'] },
+          ],
+        },
+        { text: '建立一个长期目标，安全发布' }
+      );
       expect(result.success).toBe(true);
       expect(coordinator.goal!.contract!.constraints[0]).toMatchObject({
         statement: 'Do not change public APIs',
@@ -139,14 +154,66 @@ describe('Goal model tools', () => {
 
     it('rejects empty objective', async () => {
       // Coordinator rejects empty objectives
-      const result = await execute(createGoalTool, { objective: '' });
+      const result = await execute(
+        createGoalTool,
+        { objective: '' },
+        { text: 'Create a persistent goal for this task' }
+      );
       expect(result.success).toBe(false);
     });
 
     it('rejects duplicate goal if active', async () => {
       coordinator.create('first goal');
-      const result = await execute(createGoalTool, { objective: 'second goal' });
+      const result = await execute(
+        createGoalTool,
+        { objective: 'second goal' },
+        { text: 'Create a persistent goal for the second task' }
+      );
       expect(result.success).toBe(false);
+    });
+
+    it.each([
+      ['ordinary task request', 'Fix the current issues', 'user'],
+      ['ordinary Chinese task request', '修复当前分支的问题', 'user'],
+      ['#150 smoke input', 'test', 'user'],
+      ['#150 project overview input', '了解下整个项目', 'user'],
+      ['#150 error question', 'update_goal 失败是什么原因', 'user'],
+      ['#150 single-choice reply', 'A', 'user'],
+      ['model continuation', 'Create a persistent goal for this task', 'goal_continuation'],
+    ] as const)('denies creation for %s', async (_label, text, inputKind) => {
+      const result = await execute(
+        createGoalTool,
+        { objective: 'Unauthorized Goal' },
+        { text, inputKind }
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Goal creation denied');
+      expect(coordinator.goal).toBeNull();
+    });
+
+    it('requires explicit latest-user Goal intent at both authorization boundaries', () => {
+      const base = {
+        sessionId: 'test-session',
+        persistAsUserMessage: true,
+        echoToTranscript: true,
+        generation: 1,
+      } as const;
+      expect(
+        authorizeGoalCreation({
+          ...base,
+          inputKind: 'user',
+          text: 'Can you create a persistent goal to finish this work?',
+        }).authorized
+      ).toBe(true);
+      expect(
+        authorizeGoalCreation({
+          ...base,
+          inputKind: 'user',
+          text: 'Should we create a Goal?',
+        }).authorized
+      ).toBe(false);
+      expect(createGoalTool.checkPermissions!({}, {} as never).behavior).toBe('deny');
     });
 
     it('has tool definition', () => {
@@ -463,6 +530,16 @@ describe('Goal model tools', () => {
       expect(result.success).toBe(true);
       expect(coordinator.goal).toBeNull();
     });
+
+    it.each(['Can you abandon this goal?', '请结束当前目标？'])(
+      'accepts an explicit abandonment request with question punctuation: %s',
+      async text => {
+        coordinator.create('待取消目标');
+        const result = await abandon(text, 'user', '用户明确要求结束目标');
+        expect(result.success).toBe(true);
+        expect(coordinator.goal).toBeNull();
+      }
+    );
 
     it('registers a destructive typed tool and denies permission without runtime context', () => {
       expect(GOAL_TOOLS).toContain(abandonGoalTool);

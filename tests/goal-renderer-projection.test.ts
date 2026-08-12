@@ -425,7 +425,7 @@ describe('Goal renderer projection parity', () => {
       await flushImmediate();
 
       expect(turnIndex).toBe(2);
-      expect(controller.submit('/target clear --yes')).toEqual({ type: 'command_handled' });
+      expect(controller.submit('/goal exit')).toEqual({ type: 'command_handled' });
 
       const events = goalEvents(protocolEvents);
       const eventTypes = events.map(event => event.type);

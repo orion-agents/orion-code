@@ -316,7 +316,11 @@ export const TOOLS: OrionCodeTool[] = [
       const sandboxSettings = resolveSandboxSettings(workdir);
       let sandboxNote = '';
       if ((sandboxSettings.profile ?? 'none') !== 'none') {
-        const plan = planSandboxedCommand(cmd, { cwd: workdir, settings: sandboxSettings });
+        const plan = planSandboxedCommand(cmd, {
+          cwd: workdir,
+          projectRoot: workdir,
+          settings: sandboxSettings,
+        });
         if (!plan.ok) {
           return {
             behavior: 'deny',
@@ -1254,6 +1258,7 @@ async function execCommand_(
   // than silently degrade into an unsandboxed run.
   const plan = planSandboxedCommand(command, {
     cwd: workdir,
+    projectRoot: baseCwd ?? process.cwd(),
     settings: sandbox ?? resolveSandboxSettings(baseCwd ?? process.cwd()),
   });
   if (!plan.ok) {

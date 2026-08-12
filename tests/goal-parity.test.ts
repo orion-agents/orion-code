@@ -37,7 +37,7 @@ describe('Goal command parser parity', () => {
       '/target resume',
       '/target edit fix all bugs',
       '/target replace rewrite the API',
-      '/target clear --yes',
+      '/goal exit',
       '/target budget 50000',
       '/target budget off',
       '/target build a feature with many words in the objective',

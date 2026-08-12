@@ -13,10 +13,10 @@ v0.1.5 may add new command or ACP clients, but they must reuse the same Goal, ev
   -> complete | paused | blocked | usage_limited | budget_limited
 ```
 
-Use `/target` to inspect the current state, `/target pause` to stop automatic continuation, and
-`/target resume` to continue a recoverable Goal. `/target replace <objective>` creates a new goalId;
-`/target confirm <criterion-id>` records trusted human acceptance only for a criterion that explicitly requires
-`user` evidence; `/target clear --yes` removes the Goal sidecar.
+Use `/goal` to inspect the current state, `/goal pause` to stop automatic continuation, and
+`/goal resume` to continue a recoverable Goal. `/goal replace <objective>` creates a new goalId;
+`/goal confirm <criterion-id>` records trusted human acceptance only for a criterion that explicitly requires
+`user` evidence; `/goal exit` immediately stops Goal-owned execution and removes the Goal sidecar.
 
 ## Completion evidence
 

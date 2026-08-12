@@ -343,7 +343,7 @@ export class AgentRuntimeController {
         case 'clear':
           if (!input.payload?.confirmed) {
             success = false;
-            error = 'Clearing a target requires confirmation: /target clear --yes';
+            error = 'Removing a Goal requires explicit authorization: /goal exit';
           } else {
             const hadGoal = coord.goal !== null;
             if (hadGoal) {
@@ -814,6 +814,7 @@ export class AgentRuntimeController {
 
     const outcome: import('./goals/types').AgentTurnOutcome = {
       turnId: String(turnId),
+      inputKind: request.inputKind,
       sessionId: request.sessionId,
       goalId: requestGoal.goalId,
       goalRevision: requestGoal.revision,

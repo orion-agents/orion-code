@@ -2,7 +2,7 @@
 
 > **Goal-driven coding agent for the terminal.**
 >
-> v0.1.4 — Goal continuity, model config & shell sandbox POC
+> v0.1.5 — typed command control, provider-aware effort & safety hardening
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20.0-green.svg)](https://nodejs.org)
@@ -35,7 +35,7 @@ Orion Code is a terminal-based coding agent. It wraps LLM APIs in a harness of s
 ### Install & Run
 
 ```bash
-# Install the v0.1.4-2 maintenance prerelease:
+# Install the v0.1.5 release candidate:
 npm install -g @orion-agents/orion-code@0.1.5
 # Or install through the prerelease dist-tag:
 npm install -g @orion-agents/orion-code@next
@@ -75,9 +75,9 @@ orion -p "review the current git diff"
 echo "summarize this project" | orion --print
 ```
 
-> **Prerelease status.** `0.1.4-2` is published under the npm `next` dist-tag and
-> tagged as `v0.1.4-2`. Stable `latest` remains `0.1.4` until a separate stable
-> release is approved.
+> **Prerelease status.** `0.1.5` is published under the npm `next` dist-tag.
+> Stable `latest` remains `0.1.4` until a separate stable release is approved;
+> merge and git-tag status are tracked independently from npm publication.
 
 ### TUI startup banner
 

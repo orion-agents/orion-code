@@ -47,10 +47,13 @@ function writeVersionFiles(cwd: string, version: string, changelog: string): voi
       2
     ) + '\n'
   );
-  writeFileSync(join(cwd, 'README.md'), `npm install -g @orion-agents/orion-code@${version}\n`);
+  writeFileSync(
+    join(cwd, 'README.md'),
+    `> v${version} — fixture\n\nnpm install -g @orion-agents/orion-code@${version}\n`
+  );
   writeFileSync(
     join(cwd, 'README.zh-CN.md'),
-    `v${version}（当前版本）\n\nnpm install -g @orion-agents/orion-code@${version}\n`
+    `> v${version} — fixture\n\nv${version}（当前版本）\n\nnpm install -g @orion-agents/orion-code@${version}\n`
   );
   writeFileSync(join(cwd, 'CHANGELOG.md'), `# Changelog\n\n${changelog.trim()}\n`);
 }
@@ -184,12 +187,14 @@ describe('release-check script contract', () => {
     const cwd = createFixture('1.2.3', '## [1.2.3] — 2026-08-09\n\n> **Status: published.**');
     writeFileSync(
       join(cwd, 'README.md'),
-      'npm install -g @orion-agents/orion-code@1.2.3\n' +
+      '> v1.2.3 — fixture\n\n' +
+        'npm install -g @orion-agents/orion-code@1.2.3\n' +
         '1.2.3 is not on npm yet; 1.2.2 is the current published release.\n'
     );
     writeFileSync(
       join(cwd, 'README.zh-CN.md'),
-      'v1.2.3（当前版本）\n\nnpm install -g @orion-agents/orion-code@1.2.3\n' +
+      '> v1.2.3 — fixture\n\n' +
+        'v1.2.3（当前版本）\n\nnpm install -g @orion-agents/orion-code@1.2.3\n' +
         '### v1.2.3（开发中，未发布）\n### v1.2.2（最新已发布版本）\n'
     );
     commitAll(cwd, 'stale release docs');
@@ -204,6 +209,25 @@ describe('release-check script contract', () => {
     );
     expect(resultById(report, 'version').detail).toContain(
       'README.zh-CN.md: claims 1.2.2 is the latest/current published release'
+    );
+  });
+
+  it('rejects a stale top-level README version summary', () => {
+    const cwd = createFixture(
+      '1.2.3',
+      '## [1.2.3] — UNRELEASED\n\n> **Status: candidate.** Not yet tagged or published.'
+    );
+    writeFileSync(
+      join(cwd, 'README.md'),
+      '> v1.2.2 — stale summary\n\nnpm install -g @orion-agents/orion-code@1.2.3\n'
+    );
+
+    const { status, report } = runReleaseCheck(cwd);
+
+    expect(status).toBe(1);
+    expect(resultById(report, 'version')).toMatchObject({ status: 'fail' });
+    expect(resultById(report, 'version').detail).toContain(
+      'README.md: top-level version summary expected 1.2.3, found 1.2.2'
     );
   });
 

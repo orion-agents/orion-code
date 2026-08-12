@@ -1,7 +1,7 @@
 /**
  * v0.2.24 — /target command handler.
  *
- * Parses /target (and /goal alias) syntax, validates input, and returns
+ * Parses /goal (and the deprecated /target alias) syntax, validates input, and returns
  * structured GoalControlInput for AgentRuntimeController to process.
  */
 
@@ -50,6 +50,12 @@ export function parseTargetCommand(rawInput: string): TargetParseResult {
   }
   if (rest === 'resume') {
     return { ok: true, input: { type: 'goal_control', action: 'resume' } };
+  }
+  if (rest === 'exit') {
+    return {
+      ok: true,
+      input: { type: 'goal_control', action: 'clear', payload: { confirmed: true } },
+    };
   }
 
   if (rest.startsWith('confirm ')) {
@@ -108,11 +114,6 @@ export function parseTargetCommand(rawInput: string): TargetParseResult {
     };
   }
 
-  if (rest === 'clear' || rest === 'clear --yes') {
-    const confirmed = rest === 'clear --yes';
-    return { ok: true, input: { type: 'goal_control', action: 'clear', payload: { confirmed } } };
-  }
-
   // Reserved sub-commands must never fall through to `create`.
   //
   // Every branch above requires a trailing space, so a forgotten argument
@@ -126,17 +127,24 @@ export function parseTargetCommand(rawInput: string): TargetParseResult {
     edit: `${cmdPrefix} edit <objective>`,
     replace: `${cmdPrefix} replace <objective>`,
     budget: `${cmdPrefix} budget <tokens>|off`,
+    exit: `${cmdPrefix} exit`,
   };
   const bareSubcommandUsage = RESERVED_SUBCOMMAND_USAGE[rest.toLowerCase()];
   if (bareSubcommandUsage) {
     return { ok: false, error: `Usage: ${bareSubcommandUsage}` };
   }
+  if (/^exit\s+/u.test(rest)) {
+    return { ok: false, error: `Usage: ${cmdPrefix} exit` };
+  }
 
-  // `/target clear -y` / `--force`: a mistyped flag, not an objective. Only
-  // flag-looking arguments are rejected so a natural-language objective such
-  // as "clear the build cache" still creates a goal.
-  if (/^clear\s+-/u.test(rest)) {
-    return { ok: false, error: `Usage: ${cmdPrefix} clear [--yes]` };
+  // The old destructive clear syntax is intentionally not supported. Keep a
+  // targeted error so it cannot fall through and create a Goal accidentally;
+  // natural-language objectives such as "clear the build cache" still work.
+  if (rest === 'clear' || /^clear\s+-/u.test(rest)) {
+    return {
+      ok: false,
+      error: `${cmdPrefix} clear was removed. Use ${cmdPrefix} exit to stop execution and remove the Goal.`,
+    };
   }
 
   // Default: treat as create with objective

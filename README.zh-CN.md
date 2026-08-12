@@ -3,7 +3,7 @@
 > **Orion Code — 通用 Agent 驾驭框架**
 > 一个 CLI 驱动的编码 Agent，具备安全边界、工具编排、记忆系统和上下文管理。
 >
-> v0.1.4 — Goal 连续性、模型配置与命令沙箱 POC
+> v0.1.5 — 类型化命令控制、Provider-aware Effort 与安全加固
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20.0-green.svg)](https://nodejs.org)
@@ -104,7 +104,7 @@ npm start -- --print "review the current git diff"
 
 ### 全局安装
 
-固定安装 v0.1.4-2 维护预发布版本：
+固定安装 v0.1.5 发布候选版本：
 
 ```bash
 npm install -g @orion-agents/orion-code@0.1.5
@@ -116,8 +116,8 @@ orion
 
 也可以在源码工作树中使用 `npm ci && npm run build && npm start`。
 
-> **预发布状态**：`0.1.4-2` 已通过 npm `next` dist-tag 发布，并已创建
-> `v0.1.4-2` 标签。稳定版 `latest` 仍为 `0.1.4`。
+> **预发布状态**：`0.1.5` 已通过 npm `next` dist-tag 发布。稳定版 `latest`
+> 仍为 `0.1.4`；PR 合并、Git tag 与 npm 发布状态分别记录。
 
 公众体验、交互优化和新增工作流优先落在 TUI。`terminal-ui` 不作为与
 TUI 并行发展的公众产品；Ink 只保留迁移期兼容，不再增加产品能力。
@@ -466,6 +466,12 @@ orion-code/
 ---
 
 ## 版本历史
+
+### v0.1.5（当前版本，已发布至 next）
+
+- 统一类型化命令描述、TUI 命令控制面与 Provider-aware Effort；
+- 修复 Goal/TUI 展示与授权边界，并加强跨进程持久化、安全和发布门禁；
+- 以 npm `next` dist-tag 发布，不移动稳定版 `latest`。
 
 ### v0.1.4-2（已发布至 next）
 

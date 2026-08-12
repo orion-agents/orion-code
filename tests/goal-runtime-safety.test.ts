@@ -326,7 +326,7 @@ describe('goal runtime safety', () => {
     await controller.stopActiveTurn();
   });
 
-  it('aborts the active runner and rejects pending tool permission when the user clears the active Goal', async () => {
+  it('aborts the active runner and rejects pending tool permission when the user exits the active Goal', async () => {
     const { controller, runner } = createController();
 
     expect(controller.submit('/target verify clear abort safety')).toEqual({ type: 'started' });
@@ -345,7 +345,7 @@ describe('goal runtime safety', () => {
       return clearGoal();
     });
 
-    expect(controller.submit('/target clear --yes')).toEqual({ type: 'command_handled' });
+    expect(controller.submit('/goal exit')).toEqual({ type: 'command_handled' });
     expect(clearSpy).toHaveBeenCalledTimes(1);
     expect(runner.calls[0].signal?.aborted).toBe(true);
     await expect(permission).resolves.toBe(false);
@@ -357,7 +357,7 @@ describe('goal runtime safety', () => {
     expect(runner.calls).toHaveLength(1);
   });
 
-  it('keeps the old Goal turn stopped when persistent clear fails', async () => {
+  it('keeps the old Goal turn stopped when persistent exit cleanup fails', async () => {
     const { controller, runner } = createController();
 
     expect(controller.submit('/target verify failed clear remains fail-closed')).toEqual({
@@ -375,7 +375,7 @@ describe('goal runtime safety', () => {
       throw new Error('simulated clear persistence failure');
     });
 
-    expect(controller.submit('/target clear --yes')).toEqual({ type: 'command_handled' });
+    expect(controller.submit('/goal exit')).toEqual({ type: 'command_handled' });
     await expect(permission).resolves.toBe(false);
     expect(coordinator.goal).toMatchObject({
       status: 'paused',
@@ -433,7 +433,7 @@ describe('goal runtime safety', () => {
       reason: 'no-Goal clear must not revoke this permission',
     });
 
-    expect(controller.submit('/target clear --yes')).toEqual({ type: 'command_handled' });
+    expect(controller.submit('/goal exit')).toEqual({ type: 'command_handled' });
     expect(runner.calls[0].signal?.aborted).toBe(false);
     expect((controller as any).pendingPermissions.size).toBe(1);
     expect((controller as any).goalCoordinator.goal).toBeNull();

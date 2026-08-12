@@ -167,6 +167,8 @@ function checkVersionConsistency() {
   // README install pins: `npm install -g @orion-agents/orion-code@X.Y.Z`
   const pinPattern =
     /@orion-agents\/orion-code@(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)/g;
+  const summaryVersionPattern =
+    /^\s*>\s*(?:\*\*)?v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)\b/m;
   for (const readme of ['README.md', 'README.zh-CN.md']) {
     const text = readTextIfPresent(readme);
     if (text === null) {
@@ -182,6 +184,13 @@ function checkVersionConsistency() {
     checked.push(`${readme}.pin=${[...new Set(pins)].join(',')}`);
     if (bad.length > 0) {
       mismatches.push(`${readme}: install pin(s) ${[...new Set(bad)].join(', ')} != ${version}`);
+    }
+    const summaryVersion = text.match(summaryVersionPattern)?.[1];
+    checked.push(`${readme}.summary=${summaryVersion ?? '<missing>'}`);
+    if (summaryVersion !== version) {
+      mismatches.push(
+        `${readme}: top-level version summary expected ${version}, found ${summaryVersion ?? '<missing>'}`
+      );
     }
   }
 

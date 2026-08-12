@@ -149,6 +149,19 @@ describe('Context Harness', () => {
     ).toMatchObject({ canComplete: true, missing: [] });
   });
 
+  test('completion gate does not lock the exact #150 bare-test smoke input', () => {
+    const harness = createContextHarness({
+      cwd: '/repo',
+      modelId: 'gpt-4o',
+      config: { completionGate: 'block' },
+    });
+
+    harness.updateContractFromUserInput('test');
+    harness.updateContractFromUserInput('了解下整个项目');
+
+    expect(harness.beforeComplete()).toMatchObject({ canComplete: true, missing: [] });
+  });
+
   test('completion gate requires evidence for explicit verification instructions', () => {
     const contract = createTaskContract('Please run npm test and ensure the tests pass', '/repo');
 
