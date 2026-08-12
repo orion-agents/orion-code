@@ -2,7 +2,7 @@
 
 > **Goal-driven coding agent for the terminal.**
 >
-> v0.1.6 candidate — bounded Goal control, deterministic release gates, terminal hardening
+> v0.1.6 — bounded Goal control, deterministic release gates, terminal hardening
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20.0-green.svg)](https://nodejs.org)
@@ -35,9 +35,9 @@ Orion Code is a terminal-based coding agent. It wraps LLM APIs in a harness of s
 ### Install & Run
 
 ```bash
-# After v0.1.6 is published, install the exact audited version:
+# Install the exact audited version:
 npm install -g @orion-agents/orion-code@0.1.6
-# Current prerelease channel (resolves to 0.1.5 until v0.1.6 is published):
+# Or use the prerelease channel (next=0.1.6):
 npm install -g @orion-agents/orion-code@next
 
 # Or run from a checked-out source tree:
@@ -75,9 +75,9 @@ orion -p "review the current git diff"
 echo "summarize this project" | orion --print
 ```
 
-> **Release status.** `0.1.6` is an unpublished PR candidate. npm currently resolves
-> `next` to `0.1.5` and stable `latest` to `0.1.4`. PR merge, Git tag/GitHub Release,
-> npm publication, registry installation, and stable promotion are separate gates.
+> **Release status.** `0.1.6` is published through npm `next`; stable `latest` remains
+> `0.1.4`. The merge, Git tag/GitHub Release, npm publication, registry installation,
+> and stable promotion are recorded as separate delivery states.
 
 ### TUI startup banner
 

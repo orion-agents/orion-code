@@ -1,8 +1,8 @@
 # Goal Evidence and Recovery
 
-Since v0.1.2, Orion Code supports one persistent Goal per session. The npm `next=0.1.5` line preserves this contract;
-the unpublished v0.1.6 candidate tightens authorization and exit behavior without changing the additive Goal storage
-schema. New command or ACP clients must reuse the same Goal, evidence, permission, and recovery rules.
+Since v0.1.2, Orion Code supports one persistent Goal per session. The npm `next=0.1.6` line preserves this contract;
+v0.1.6 tightens authorization and exit behavior without changing the additive Goal storage schema. New command or
+ACP clients must reuse the same Goal, evidence, permission, and recovery rules.
 
 ## Lifecycle
 
@@ -104,8 +104,8 @@ supported automatic sidecar-repair command.
 
 Never overwrite a published npm version. Prefer a forward patch. Keep npm `latest`, prerelease tags such as `next`,
 Git tags, GitHub Releases, merged source, and a local explicit install as separate states. As of 2026-08-12,
-`latest=0.1.4` and `next=0.1.5`; v0.1.6 remains an unpublished PR candidate, so installing either dist-tag is
-not proof that the candidate fixes are present.
+`latest=0.1.4` and `next=0.1.6`; installing the exact `0.1.6` version or `next` includes these fixes, while
+installing `latest` does not.
 
 Test a rollback in an isolated prefix first. Set `known_good_version` only after verifying its Goal/session
 compatibility:

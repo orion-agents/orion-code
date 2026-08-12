@@ -3,7 +3,7 @@
 > **Orion Code — 通用 Agent 驾驭框架**
 > 一个 CLI 驱动的编码 Agent，具备安全边界、工具编排、记忆系统和上下文管理。
 >
-> v0.1.6 候选版 — 有界 Goal 控制、确定性发布门与终端安全加固
+> v0.1.6 — 有界 Goal 控制、确定性发布门与终端安全加固
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20.0-green.svg)](https://nodejs.org)
@@ -104,11 +104,11 @@ npm start -- --print "review the current git diff"
 
 ### 全局安装
 
-v0.1.6 发布后固定安装审计过的精确版本：
+固定安装审计过的精确版本：
 
 ```bash
 npm install -g @orion-agents/orion-code@0.1.6
-# 当前预发布渠道（v0.1.6 发布前仍解析到 0.1.5）：
+# 或使用预发布渠道（next=0.1.6）：
 npm install -g @orion-agents/orion-code@next
 # 任意目录运行
 orion
@@ -116,9 +116,8 @@ orion
 
 也可以在源码工作树中使用 `npm ci && npm run build && npm start`。
 
-> **发布状态**：`0.1.6` 仍是未发布的 PR 候选。npm 当前 `next=0.1.5`、
-> `latest=0.1.4`；PR 合并、Git tag/GitHub Release、npm 发布、registry 安装和
-> 稳定版提升分别记录。
+> **发布状态**：`0.1.6` 已通过 npm `next` 发布；稳定版 `latest` 仍为 `0.1.4`。
+> PR 合并、Git tag/GitHub Release、npm 发布、registry 安装和稳定版提升分别记录。
 
 公众体验、交互优化和新增工作流优先落在 TUI。`terminal-ui` 不作为与
 TUI 并行发展的公众产品；Ink 只保留迁移期兼容，不再增加产品能力。
@@ -471,11 +470,11 @@ orion-code/
 
 ## 版本历史
 
-### v0.1.6（当前候选，尚未发布）
+### v0.1.6（已发布至 next）
 
 - Goal 创建需要显式用户授权，自动 continuation 有界，`/goal exit` 提供确定退出路径；
 - 修复 native migration、测试确定性、seatbelt/exec cwd 与 terminal control-sequence 安全问题；
-- 尚未 merge、tag、创建 GitHub Release 或发布 npm；目标渠道为 `next`。
+- 已合并、创建 `v0.1.6` tag 和 GitHub Release，并通过 npm `next` 发布；未移动稳定版 `latest`。
 
 ### v0.1.5（已发布至 next）
 

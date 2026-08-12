@@ -22,11 +22,11 @@ which is **not** a pass.
 
 ## [Unreleased]
 
-## [0.1.6] — UNRELEASED
+## [0.1.6] — 2026-08-12
 
-> **Status: candidate.** PR [#152](https://github.com/orion-agents/orion-code/pull/152)
-> carries this source, but `v0.1.6` has not been merged, tagged, released, or published to npm.
-> The intended first registry channel is `next`; moving `latest` is a separate decision.
+> **Status: published.** Tag `v0.1.6` and its GitHub Release identify the source;
+> `@orion-agents/orion-code@0.1.6` is published through the npm `next` dist-tag.
+> Stable `latest` remains `0.1.4`; promotion is a separate decision.
 
 ### Changed
 
@@ -44,7 +44,7 @@ which is **not** a pass.
   report the actionable ABI/rebuild cause instead of misclassifying it as corruption (#149).
 - Remove real embedding-provider calls from vector tests, make source-only import tests independent
   of prebuilt `dist/`, and select installed Node runtimes by numeric version (#140, #144, #146).
-- Keep dependency policy mandatory in prepublish/release gates and synchronize candidate version
+- Keep dependency policy mandatory in prepublish/release gates and synchronize release version
   claims across README and release metadata (#129, #147).
 - Anchor macOS seatbelt secret-file denies to the stable project root and make `exec_command`
   permission prechecks use the same explicit command cwd as execution (#151, #153).

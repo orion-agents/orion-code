@@ -5,7 +5,7 @@
 > 维护范围：Orion Code CLI、Agent Runtime、TUI、terminal-ui、Print、工具与扩展协议
 >
 > 当前发布基线：稳定版 `@orion-agents/orion-code@0.1.4`（`latest`）；预发布渠道
-> `next=0.1.5`。`v0.1.6` 是 PR #152 上尚未 merge、tag 或 npm publish 的候选。
+> `next=0.1.6`。`v0.1.6` tag、GitHub Release 与 npm 精确版本共同标识本次发布。
 >
 > 最近更新：2026-08-12
 
@@ -181,27 +181,26 @@ Orion Code 必须像一个可信赖的开发工具，而不是偶尔可用的演
 
 **当前发布线：**
 
-- `0.1.4` 是稳定 `latest`；`0.1.5` 已发布到 npm `next`，但没有对应 `v0.1.5`
+- `0.1.4` 是稳定 `latest`；`0.1.5` 曾发布到 npm `next`，但没有对应 `v0.1.5`
   Git tag 或 GitHub Release，不能把 registry 版本、tag 和 release 混为同一状态；
-- `main@2fc91f7` 已合并 v0.1.5 命令控制面、provider-aware effort、安全和发布门；
-- `v0.1.6` 的 PR #152 补充 Goal 显式授权与有界 continuation、`/goal exit`、native migration、
+- `main` 已合并 v0.1.6；PR #152 补充 Goal 显式授权与有界 continuation、
+  `/goal exit`、native migration、
   测试确定性、seatbelt/exec cwd 和 terminal control-sequence 加固；
-- v0.1.6 只有在版本元数据、Node 20/22/24、coverage、PTY、tarball、clean install 和真实
-  provider smoke 对最终候选 SHA 全部成立后才进入 `READY_TO_PUBLISH`。merge、tag、GitHub Release、
-  npm publish 与 dist-tag 变更仍是独立授权动作。
+- v0.1.6 已从最终发布提交重建 Node 20/22/24、coverage、PTY、tarball、clean install 和
+  真实 provider smoke 证据，并发布到 npm `next`；提升 `latest` 仍是独立授权动作。
 
-### 6.2 v0.1.6 准出缺口
+### 6.2 v0.1.6 准出结果
 
-1. **候选不等于发布。** PR 绿色只证明 exact head；仍需最终版本源、merge SHA、tag、npm 和
-   registry install 分离证据。
+1. **候选不等于发布。** 本次已将最终版本源、merge SHA、tag、npm 和 registry install
+   作为分离证据记录。
 2. **Goal 必须可控退出。** 模型不能隐式创建 Goal；非用户 continuation 必须有界；退出统一使用
    `/goal exit`，旧 clear 语法不保留兼容。
 3. **终端与 shell 信任边界必须一致。** terminal-ui 不执行模型注入的控制序列；seatbelt secret
    deny 锚定 project root；`exec_command` precheck 与执行使用同一 cwd。
 4. **发布验证必须来自最终包。** source tests 不能替代 tarball identity、Node 20/22/24 clean install、
    native SQLite 路径、Goal 退出路径与脱敏真实 provider smoke。
-5. **外部状态保持显式授权。** READY_TO_PUBLISH 不包含 merge、tag、GitHub Release、npm publish
-   或 `next`/`latest` 变更。
+5. **外部状态保持显式授权。** 本次 merge、tag、GitHub Release、npm `next` 发布都有明确用户
+   授权；`latest` 未变更。
 
 <details>
 <summary>v0.1.1/v0.1.2 历史候选快照（已失效，不作当前状态）</summary>
@@ -316,12 +315,12 @@ Goal 已发布。v0.1.5 的重点是不让命令重构、effort 或 ACP 新客�
 - ACP 只作复用 shared runtime 的 experimental v1 适配层；只有在权限、取消、恢复、PTY 和
   package/Registry 证据齐全时，才能升格为稳定对外能力。
 
-**v0.1.6（当前候选）：Goal 控制与发布可信度收敛**
+**v0.1.6（已发布至 npm next）：Goal 控制与发布可信度收敛**
 
 - Goal 创建只接受显式用户授权，自动 continuation 有界，并以 `/goal exit` 作为唯一清理入口；
 - 收敛 migration/native ABI、测试确定性、terminal control sequence 与 shell sandbox cwd 边界；
 - 让 memory drift 校验具有真实、显式且有界的 `/memory validate` 运行入口；
-- 在最终候选 SHA 上重建 Node 矩阵、coverage、PTY、tarball、clean install 和 provider 证据。
+- 在最终发布 SHA 上重建 Node 矩阵、coverage、PTY、tarball、clean install 和 provider 证据。
 
 **范围约束**：v0.1.x 仍只承诺单 Session、单 Active Goal 的可靠性闭环，不提前承诺
 v0.2 的多目标、跨 Session 调度或 unattended 后台执行。
