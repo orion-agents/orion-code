@@ -1,6 +1,7 @@
 import { TOOLS, executeTool, getToolNames } from '../src/tools';
 import type { ToolContext } from '../src/framework/tool';
 import { getMemoryDir, loadMemory } from '../src/memory/storage';
+import * as sandboxTools from '../src/tools/sandbox';
 import fs from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
@@ -471,6 +472,42 @@ describe('exec_command tool', () => {
     // Use a command that is not in the whitelist instead.
     const perm = tool.checkPermissions?.({ command: 'make install' }, ctx);
     expect(perm?.behavior).toBe('ask');
+  });
+
+  test('checkPermissions plans the sandbox with the command cwd', () => {
+    const projectRoot = fs.mkdtempSync(path.join(tmpdir(), 'orion-exec-permission-'));
+    const commandCwd = path.join('packages', 'worker');
+    const settings = { profile: 'workspace-write' as const };
+    const resolveSettings = jest
+      .spyOn(sandboxTools, 'resolveSandboxSettings')
+      .mockReturnValue(settings);
+    const planSandbox = jest.spyOn(sandboxTools, 'planSandboxedCommand').mockReturnValue({
+      ok: true,
+      profile: 'workspace-write',
+      backend: 'docker',
+      file: 'docker',
+      args: [],
+      network: 'blocked',
+      writableRoots: [path.join(projectRoot, commandCwd)],
+    });
+
+    try {
+      const perm = tool.checkPermissions?.(
+        { command: 'make install', cwd: commandCwd },
+        { ...ctx, cwd: projectRoot }
+      );
+
+      expect(perm?.behavior).toBe('ask');
+      expect(resolveSettings).toHaveBeenCalledWith(projectRoot);
+      expect(planSandbox).toHaveBeenCalledWith('make install', {
+        cwd: path.join(projectRoot, commandCwd),
+        projectRoot,
+        settings,
+      });
+    } finally {
+      jest.restoreAllMocks();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
   });
 
   test('userFacingName returns truncated command', () => {

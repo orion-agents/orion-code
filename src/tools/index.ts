@@ -312,13 +312,16 @@ export const TOOLS: OrionCodeTool[] = [
 
       // v0.1.3-2 §1.2: a configured-but-unusable sandbox is a hard deny, decided
       // here so the user sees the reason instead of an opaque execution failure.
-      const workdir = context?.cwd ?? process.cwd();
-      const sandboxSettings = resolveSandboxSettings(workdir);
+      const { workdir, projectRoot } = resolveExecCommandPaths(
+        args.cwd as string | undefined,
+        context?.cwd
+      );
+      const sandboxSettings = resolveSandboxSettings(projectRoot);
       let sandboxNote = '';
       if ((sandboxSettings.profile ?? 'none') !== 'none') {
         const plan = planSandboxedCommand(cmd, {
           cwd: workdir,
-          projectRoot: workdir,
+          projectRoot,
           settings: sandboxSettings,
         });
         if (!plan.ok) {
@@ -1242,6 +1245,17 @@ async function listFiles_(path: string, maxDepth?: number, cwd?: string): Promis
 }
 
 // Issue #32 #3.2: execCommand_ 支持 abortSignal
+function resolveExecCommandPaths(
+  cwd?: string,
+  baseCwd?: string
+): { workdir: string; projectRoot: string } {
+  const projectRoot = baseCwd ?? process.cwd();
+  return {
+    workdir: cwd ? safePath(cwd, projectRoot) : projectRoot,
+    projectRoot,
+  };
+}
+
 async function execCommand_(
   command: string,
   cwd?: string,
@@ -1251,15 +1265,15 @@ async function execCommand_(
   baseCwd?: string,
   sandbox?: SandboxConfig
 ): Promise<ToolResult> {
-  const workdir = cwd ? safePath(cwd, baseCwd) : (baseCwd ?? process.cwd());
+  const { workdir, projectRoot } = resolveExecCommandPaths(cwd, baseCwd);
 
   // v0.1.3-2 §1.2: plan the (possibly sandboxed) argv before spawning. A
   // configured sandbox that cannot be honoured must refuse the command rather
   // than silently degrade into an unsandboxed run.
   const plan = planSandboxedCommand(command, {
     cwd: workdir,
-    projectRoot: baseCwd ?? process.cwd(),
-    settings: sandbox ?? resolveSandboxSettings(baseCwd ?? process.cwd()),
+    projectRoot,
+    settings: sandbox ?? resolveSandboxSettings(projectRoot),
   });
   if (!plan.ok) {
     return {
