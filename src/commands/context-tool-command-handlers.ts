@@ -16,6 +16,7 @@ import {
   skillActivationNames,
 } from '../skills';
 import { resolveModelContext } from '../services/model-context';
+import { validateAllMemories } from '../memory/validation';
 
 const ACCENT = chalk.hex('#00D4AA');
 
@@ -107,8 +108,51 @@ async function handleMemoryReindex(_ctx: CommandContext): Promise<CommandResult>
   return { success: true };
 }
 
+function handleMemoryValidate(_ctx: CommandContext): CommandResult {
+  console.log();
+  console.log(HEADER('Validating project memories...'));
+
+  try {
+    const results = validateAllMemories(process.cwd());
+    let driftCount = 0;
+    let incompleteCount = 0;
+
+    for (const [name, result] of results) {
+      if (!result.symbolScanComplete) incompleteCount += 1;
+      for (const drift of result.drifts) {
+        driftCount += 1;
+        console.log(WARN(`  ${name}: ${drift.message}`));
+      }
+    }
+
+    if (incompleteCount > 0) {
+      console.log(
+        WARN(
+          `⚠ Symbol scan reached a safety limit for ${incompleteCount} memory entr${incompleteCount === 1 ? 'y' : 'ies'}; missing symbols were not inferred.`
+        )
+      );
+    }
+    if (driftCount > 0) {
+      console.log(ERROR(`✗ Found ${driftCount} stale memory reference(s)`));
+      console.log();
+      return { success: false };
+    }
+
+    console.log(SUCCESS(`✔ ${results.size} memories validated`));
+    console.log();
+    return { success: incompleteCount === 0 };
+  } catch (err) {
+    console.log(ERROR(`✗ Memory validation failed: ${errorMessage(err)}`));
+    console.log();
+    return { success: false };
+  }
+}
+
 async function handleMemory(ctx: CommandContext, args: string): Promise<CommandResult> {
   const sub = args.trim().toLowerCase();
+  if (sub === 'validate') {
+    return handleMemoryValidate(ctx);
+  }
   if (sub === 'reindex') {
     return handleMemoryReindex(ctx);
   }

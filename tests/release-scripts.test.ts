@@ -326,7 +326,7 @@ describe('release-check script contract', () => {
 const maybeDescribeDepHealth = process.platform === 'win32' ? describe.skip : describe;
 
 maybeDescribeDepHealth('dep-health-check script contract', () => {
-  it('enforces the policy and surfaces tree, audit, outdated, and completion sections', () => {
+  it('keeps the default health report offline and reproducible', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'orion-dep-health-'));
     fixtures.push(cwd);
     const fakeBin = join(cwd, 'bin');
@@ -336,8 +336,6 @@ maybeDescribeDepHealth('dep-health-check script contract', () => {
       npm,
       `#!/bin/sh
 case "$*" in
-  "audit --audit-level=high") echo "found 0 vulnerabilities" ;;
-  "outdated") echo "fixture-package 1.0.0 1.0.1 2.0.0"; exit 1 ;;
   "ls --all") echo "dependency tree ok" ;;
   *) echo "unexpected npm invocation: $*"; exit 2 ;;
 esac
@@ -359,8 +357,10 @@ exit 0
       const script = readFileSync(depHealthScript, 'utf8');
       expect(script).toContain('== native dependency ABI ==');
       expect(script).toContain('== dependency tree consistency ==');
-      expect(script).toContain('== npm audit (high severity gate) ==');
-      expect(script).toContain('== npm outdated (report only; majors require contract review) ==');
+      expect(script).toContain('== npm audit (high severity network gate) ==');
+      expect(script).toContain(
+        '== npm outdated (network report only; majors require contract review) =='
+      );
       expect(script).toContain('Dependency health check complete.');
       return;
     }
@@ -374,10 +374,52 @@ exit 0
     expect(result.stdout).toContain('== native dependency ABI ==');
     expect(result.stdout).toContain('better-sqlite3: ok node=');
     expect(result.stdout).toContain('== dependency tree consistency ==');
-    expect(result.stdout).toContain('== npm audit (high severity gate) ==');
     expect(result.stdout).toContain(
-      '== npm outdated (report only; majors require contract review) =='
+      '== registry reports skipped (offline default; use --full-network) =='
     );
+    expect(result.stdout).not.toContain('fixture-package');
     expect(result.stdout).toContain('Dependency health check complete.');
+  });
+
+  it('runs registry-backed reports only with --full-network', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'orion-dep-health-network-'));
+    fixtures.push(cwd);
+    const fakeBin = join(cwd, 'bin');
+    mkdirSync(fakeBin);
+    const npm = join(fakeBin, 'npm');
+    writeFileSync(
+      npm,
+      `#!/bin/sh
+case "$*" in
+  "audit --audit-level=high --fetch-retries=1 --fetch-timeout=10000") echo "found 0 vulnerabilities" ;;
+  "outdated --fetch-retries=1 --fetch-timeout=10000") echo "fixture-package 1.0.0 1.0.1 2.0.0"; exit 1 ;;
+  "ls --all") echo "dependency tree ok" ;;
+  *) echo "unexpected npm invocation: $*"; exit 2 ;;
+esac
+exit 0
+`
+    );
+    chmodSync(npm, 0o755);
+
+    const result = spawnSync('bash', [depHealthScript, '--full-network'], {
+      cwd,
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH ?? ''}` },
+    });
+
+    if (![20, 22, 24].includes(Number(process.versions.node.split('.')[0]))) {
+      expect(result.status).toBe(1);
+      return;
+    }
+    if (result.status !== 0) {
+      throw new Error(
+        `dep-health network fixture failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`
+      );
+    }
+    expect(result.stdout).toContain('== npm audit (high severity network gate) ==');
+    expect(result.stdout).toContain(
+      '== npm outdated (network report only; majors require contract review) =='
+    );
+    expect(result.stdout).toContain('fixture-package');
   });
 });

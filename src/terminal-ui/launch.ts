@@ -49,6 +49,7 @@ import type {
 import type { ResearchLifecycleEvent } from '../runtime/subagents/research-renderer';
 import type { GoalRuntimeEvent } from '../runtime/goals/types';
 import { formatGoalRuntimeEvent } from '../runtime/goals/presentation';
+import { sanitizeTerminalText } from '../tui-core/style';
 
 const ACCENT = chalk.hex('#80E6E8');
 const DIM = chalk.hex('#567089');
@@ -210,7 +211,7 @@ export function resolveTerminalModelPickerInput(
 }
 
 function formatTranscriptEntry(entry: TranscriptEntry): string {
-  const content = stripTrailingNewlines(entry.content);
+  const content = sanitizeTerminalText(stripTrailingNewlines(entry.content));
   if (!content) return '';
 
   switch (entry.role) {
@@ -923,7 +924,7 @@ export class TerminalEventSink implements UiEventSink {
     if (shouldFlush) {
       this.pendingAssistantOutput.delete(entry.id);
       if (pending) {
-        return this.writeWithAcknowledgement(pending);
+        return this.writeWithAcknowledgement(sanitizeTerminalText(pending));
       } else if (finalized && next && !next.endsWith('\n')) {
         return this.writeWithAcknowledgement('\n');
       }
