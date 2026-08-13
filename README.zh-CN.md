@@ -108,7 +108,7 @@ npm start -- --print "review the current git diff"
 
 ```bash
 npm install -g @orion-agents/orion-code@0.1.7
-# v0.1.7 候选发布到预发布渠道后：
+# 安装当前预发布渠道：
 npm install -g @orion-agents/orion-code@next
 # 任意目录运行
 orion
@@ -116,9 +116,8 @@ orion
 
 也可以在源码工作树中使用 `npm ci && npm run build && npm start`。
 
-> **发布状态**：`0.1.7` 是未发布候选；上面的精确安装命令仅在 registry 发布后生效。
-> 已发布的 `next` 仍为 `0.1.6`，稳定版 `latest` 仍为 `0.1.4`。PR 合并、Git tag/GitHub
-> Release、npm 发布、registry 安装和稳定版提升分别记录。
+> **发布状态**：`0.1.7` 已通过 npm `next` dist-tag 发布，并由 `v0.1.7` tag 和 GitHub
+> prerelease 标识。稳定版 `latest` 仍为 `0.1.4`；稳定版提升是独立决策。
 
 公众体验、交互优化和新增工作流优先落在 TUI。`terminal-ui` 不作为与
 TUI 并行发展的公众产品；Ink 只保留迁移期兼容，不再增加产品能力。
@@ -494,12 +493,13 @@ orion-code/
 
 ## 版本历史
 
-### v0.1.7（当前版本，未发布候选）
+### v0.1.7（当前版本，已发布至 next）
 
 - 引入原创 Orion Pixel 与“星际小猎人”，并为 classic、NO_COLOR、窄终端提供安全降级；
 - 使用类型化 Chrome 统一 Goal、权限、模型、上下文、队列与 Active Work 状态层级；
 - Enter 继续 steering，Tab 加入有界 FIFO follow-up 队列，Shift+Tab 循环 BUILD/PLAN/AUTO；
-- 未创建 tag、GitHub Release 或 npm 发布记录。
+- 已合并、创建 `v0.1.7` tag 和 GitHub prerelease，并通过 npm `next` 发布；未移动稳定版
+  `latest`。
 
 ### v0.1.6（已发布至 next）
 

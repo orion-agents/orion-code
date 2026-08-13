@@ -37,7 +37,7 @@ Orion Code is a terminal-based coding agent. It wraps LLM APIs in a harness of s
 ```bash
 # Install the exact audited version:
 npm install -g @orion-agents/orion-code@0.1.7
-# After the v0.1.7 candidate is published to the prerelease channel:
+# Install the current prerelease channel:
 npm install -g @orion-agents/orion-code@next
 
 # Or run from a checked-out source tree:
@@ -75,10 +75,9 @@ orion -p "review the current git diff"
 echo "summarize this project" | orion --print
 ```
 
-> **Release status.** `0.1.7` is an unreleased candidate. The exact install command above becomes
-> valid only after registry publication. Published `next` remains `0.1.6`, and stable `latest`
-> remains `0.1.4`; merge, tag, GitHub Release, npm publication, registry installation, and stable
-> promotion are separate delivery states.
+> **Release status.** `0.1.7` is published through the npm `next` dist-tag and is identified by the
+> `v0.1.7` tag and GitHub prerelease. Stable `latest` remains `0.1.4`; promotion is a separate
+> decision.
 
 ### TUI startup banner
 

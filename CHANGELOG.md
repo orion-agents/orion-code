@@ -22,10 +22,11 @@ which is **not** a pass.
 
 ## [Unreleased]
 
-## [0.1.7] — UNRELEASED CANDIDATE
+## [0.1.7] — 2026-08-13
 
-> **Status: candidate.** The source and package metadata are prepared for review, but no
-> `v0.1.7` tag, GitHub Release, npm publication, or registry-install claim is made here.
+> **Status: published.** Tag `v0.1.7` and its GitHub prerelease identify the source;
+> `@orion-agents/orion-code@0.1.7` is published through the npm `next` dist-tag.
+> Stable `latest` remains `0.1.4`; promotion is a separate decision.
 
 ### Added
 
