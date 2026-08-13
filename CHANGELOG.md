@@ -22,6 +22,61 @@ which is **not** a pass.
 
 ## [Unreleased]
 
+## [0.1.7] — UNRELEASED CANDIDATE
+
+> **Status: candidate.** The source and package metadata are prepared for review, but no
+> `v0.1.7` tag, GitHub Release, npm publication, or registry-install claim is made here.
+
+### Added
+
+- Add `/plan [task]` as the task-scoped, read-only planning entry with an automatically saved exit
+  transition and restoration of the previous interactive/auto mode.
+- Add an original Orion Pixel terminal identity with a portable pixel mascot, semantic poses,
+  restrained motion, and safe classic/NO_COLOR/narrow-terminal fallbacks.
+- Add persisted TUI themes, motion, mascot, status-line, and semantic keymap configuration plus
+  `/theme`, `/keymap`, `/statusline`, and `/queue` command surfaces.
+- Add a bounded shared-runtime follow-up queue: Enter steers the active turn while Tab queues FIFO
+  work without interrupting it.
+
+### Changed
+
+- Remove the `/mode` command and its `/perm` compatibility alias. Base modes now change only through
+  `Shift+Tab`; `/plan` remains the task entry and model-driven `enter_plan_mode` stays unavailable,
+  so Plan state has one lifecycle authority and completion never starts implementation in the same
+  turn.
+- Replace renderer-local status strings with a typed Chrome projection for Goal, model, permission,
+  context, effort, queued follow-ups, and active work.
+- Complete Ctrl+R history search, Ctrl+E external composition, empty Ctrl+D exit, and Esc-owned
+  interruption behavior while preserving native terminal scrollback.
+- Show stable sequence numbers for active subtasks and keep critical Goal, evidence, research, and
+  permission state visible before lower-priority chrome.
+
+### Fixed
+
+- Automatically exit Goal mode after a persisted passing completion audit, restore the underlying
+  BUILD/PLAN/AUTO mode, retain the completed Goal sidecar as an audit receipt, and reconcile the
+  narrow crash window where the terminal sidecar was saved before the session binding was cleared.
+- Route explicit `exit goal mode` / `退出 goal 模式` intent through the same deterministic runtime
+  clear boundary as `/goal exit`, reject completion retries without new runtime evidence, and cap
+  each autonomous continuation below fresh-user loop budgets.
+- Sanitize every dynamic startup-banner field, including 8-bit C1 CSI/OSC forms, before writing it
+  to the terminal (#164).
+- Serialize global configuration read-modify-write transactions across processes and add an atomic
+  session catalog for indexed lookup and bounded listing (#157, #159, #163).
+- Reject brace-quantified and overlapping-alternative ReDoS patterns, while distinguishing benign
+  command substitution from visible recursive deletion in permission policy; contain command cwd
+  inside the workspace across permission and execution paths (#160, #162, #169).
+- Require explicit risk metadata on every built-in slash command, cover drift-guard prepare/execute
+  enforcement and session rename success/scoping, and make coverage a release gate (#158, #166,
+  #167, #168).
+- Pin all third-party GitHub Actions in CI to immutable commit SHAs (#165).
+
+### Compatibility
+
+- `/goal exit` remains the canonical slash command; explicit natural-language exit intent is routed
+  to the same operation. Removed `/goal clear --yes` and `/target clear --yes` syntax is still
+  rejected and is not restored as a compatibility alias.
+
 ## [0.1.6] — 2026-08-12
 
 > **Status: published.** Tag `v0.1.6` and its GitHub Release identify the source;

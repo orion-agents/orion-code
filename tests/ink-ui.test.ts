@@ -87,8 +87,10 @@ describe('Ink UI helpers', () => {
     const items = visibleCommandItems('/');
     const values = items.map(item => item.value);
 
-    expect(values).toEqual(expect.arrayContaining(['goal', 'review', 'context', 'effort', 'mode']));
+    expect(values).toEqual(expect.arrayContaining(['goal', 'plan', 'review', 'context', 'effort']));
     expect(values).toHaveLength(10);
+    expect(values).not.toContain('mode');
+    expect(values).not.toContain('perm');
     expect(values).not.toContain('security');
     expect(values).not.toContain('sessions');
     expect(values).not.toContain('chat');

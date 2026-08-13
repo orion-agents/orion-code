@@ -932,6 +932,9 @@ describe('criterion model', () => {
 
     expect(fragment?.text).toContain('accepted evidence (any of)=test,build,file,runtime');
     expect(fragment?.text).not.toContain(' evidence=test,build,file,runtime');
+    expect(fragment?.text).toContain('use only exact recentEvidence IDs');
+    expect(fragment?.text).toContain('update_goal success records a request only');
+    expect(fragment?.text).toContain('without newly captured runtime evidence');
   });
 
   it('criterion status starts pending', () => {

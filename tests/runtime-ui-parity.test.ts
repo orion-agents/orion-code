@@ -83,6 +83,8 @@ function normalizeEvent(event: AgentRuntimeEvent): string {
       return `status:${event.message}`;
     case 'processing_changed':
       return `processing:${event.processing}`;
+    case 'agent_mode_changed':
+      return `agent_mode:${event.snapshot.baseMode}:${event.snapshot.pendingBaseMode ?? ''}`;
     case 'permission_requested':
       return `permission:${event.request.name}:${event.request.reason ?? ''}`;
     case 'tool_started':
@@ -107,6 +109,8 @@ function normalizeEvent(event: AgentRuntimeEvent): string {
       return `goal:${event.event.type}`;
     case 'effort_event':
       return `effort:${event.event.type}:${event.event.requested}`;
+    case 'followup_queue_changed':
+      return `followup_queue:${event.snapshot.items.length}:${event.snapshot.limit}`;
     case 'session_picker_requested':
       return `session_picker:${event.request.title}:${event.request.sessions.length}`;
     case 'edit_preview_requested':
@@ -187,6 +191,8 @@ function createRecordingController(mode: SinkMode): {
     researchEvent: event => events.push(normalizeEvent({ type: 'research_event', event })),
     setProcessing: processing =>
       events.push(normalizeEvent({ type: 'processing_changed', processing })),
+    agentModeChanged: snapshot =>
+      events.push(normalizeEvent({ type: 'agent_mode_changed', snapshot })),
     clearView: () => events.push(normalizeEvent({ type: 'clear_view' })),
     shutdownRequested: reason =>
       events.push(normalizeEvent({ type: 'shutdown_requested', reason })),
@@ -255,6 +261,7 @@ describe('runtime/UI renderer parity contract', () => {
     expect(ui.runnerInputs).toEqual(['first goal', 'latest revision']);
     expect(ui.firstAborted).toBe(true);
     expect(ui.events).toEqual([
+      'agent_mode:interactive:',
       'append:user:first goal',
       'processing:true',
       'append:user:latest revision',
@@ -272,6 +279,7 @@ describe('runtime/UI renderer parity contract', () => {
     expect(ui).toEqual(runtime);
     expect(ui.result).toBe(false);
     expect(ui.events).toEqual([
+      'agent_mode:interactive:',
       'status:Waiting: permission required for exec_command',
       'permission:exec_command:publishing changes external state',
     ]);
@@ -329,7 +337,12 @@ describe('runtime/UI renderer parity contract', () => {
     expect(ui.runner.calls.map(call => call.input)).toEqual(['hello']);
     expect(runtime.runner.calls.map(call => call.input)).toEqual(['hello']);
     expect(ui.events).toEqual(runtime.events);
-    expect(ui.events).toEqual(['append:user:hello', 'processing:true', 'processing:false']);
+    expect(ui.events).toEqual([
+      'agent_mode:interactive:',
+      'append:user:hello',
+      'processing:true',
+      'processing:false',
+    ]);
   });
 
   it('routes clear and shutdown system events through both adapters identically', () => {
@@ -351,6 +364,7 @@ describe('runtime/UI renderer parity contract', () => {
 
     expect(ui.events).toEqual(runtime.events);
     expect(ui.events).toEqual([
+      'agent_mode:interactive:',
       'clear_view',
       'status:View cleared. Conversation context is preserved.',
       'shutdown_requested:user request',

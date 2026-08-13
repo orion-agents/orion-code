@@ -16,7 +16,8 @@ import { InlineTerminalSurface } from './inline-surface';
 import { FileToolDetailRepository } from '../runtime/tool-detail-repository';
 import { TranscriptInspectorSurface } from './transcript-inspector-surface';
 import { spawn } from 'child_process';
-import { renderTuiStartupBanner } from './terminal-image';
+import { renderTuiStartupBanner, shouldRenderTuiMascot } from './terminal-image';
+import { resolveTuiThemePreference } from './theme';
 
 const DISABLE_BRACKETED_PASTE = '\x1b[?2004l';
 const SHOW_CURSOR = '\x1b[?25h';
@@ -186,7 +187,7 @@ export async function launchTuiUI(
       // Stop scheduler before surface cleanup (prevents pending renders).
       if (runner) {
         try {
-          runner.getScheduler().stop();
+          runner.stop();
         } catch {
           /* best effort */
         }
@@ -446,14 +447,22 @@ export async function launchTuiUI(
     // Primary-screen inline surface: no alternate screen (1049).
     const { width, height } = dimensions();
     const startupSnapshot = runtime.store.getSnapshot();
+    const suppressColor =
+      Object.prototype.hasOwnProperty.call(env, 'NO_COLOR') || env.FORCE_COLOR === '0';
+    const renderMascot = shouldRenderTuiMascot({
+      suppressColor,
+      mascot: runtime.config.ui?.mascot,
+      theme: runtime.config.ui?.theme,
+    });
     output.write(
       renderTuiStartupBanner({
         cwd: runtime.cwd,
         version: runtime.version,
         model: startupSnapshot.currentModel || runtime.config.model,
         terminalWidth: width,
-        suppressColor:
-          Object.prototype.hasOwnProperty.call(env, 'NO_COLOR') || env.FORCE_COLOR === '0',
+        suppressColor,
+        mascot: runtime.config.ui?.mascot,
+        theme: runtime.config.ui?.theme,
       })
     );
     surface = new InlineTerminalSurface({ output });
@@ -470,7 +479,22 @@ export async function launchTuiUI(
       height,
       cwd: runtime.cwd,
       onSubmit: submit,
+      onQueueSubmit: text => {
+        controller.handle({ type: 'queue_followup', text, source: 'composer' });
+      },
       onCtrlC: handleCtrlC,
+      onInterrupt: () => {
+        const result = controller.handle({ type: 'interrupt', source: 'keyboard' });
+        runner.dispatch({
+          type: 'setStatus',
+          message:
+            result.type === 'interrupted' ? 'Interrupted current work.' : 'Nothing to interrupt.',
+        });
+      },
+      onExit: stop,
+      onQueueClear: () => {
+        controller.handle({ type: 'manage_followup_queue', action: 'clear', source: 'command' });
+      },
       onPermissionDecision: (requestId, approved, scope) => {
         controller.handle({
           type: 'permission_decision',
@@ -481,6 +505,13 @@ export async function launchTuiUI(
         });
       },
       initialPermissionMode: runtime.config.toolConfirmation,
+      initialAgentMode: {
+        baseMode: startupSnapshot.agentMode,
+        pendingBaseMode: null,
+      },
+      onCycleAgentMode: () => {
+        controller.handle({ type: 'cycle_agent_mode', source: 'keyboard' });
+      },
       onPermissionModeChange: value => {
         controller.handle({
           type: 'permission_mode_change',
@@ -489,6 +520,12 @@ export async function launchTuiUI(
         });
       },
       surface,
+      theme: resolveTuiThemePreference(runtime.config.ui?.theme ?? 'orion-pixel'),
+      themeId: runtime.config.ui?.theme ?? 'orion-pixel',
+      statusLine: runtime.config.ui?.statusLine,
+      mascot: renderMascot,
+      keymap: runtime.config.ui?.keymap,
+      motion: runtime.config.ui?.motion,
       onSurfaceError: failRenderer,
       detailRepository: new FileToolDetailRepository(),
       inspectorSurface,

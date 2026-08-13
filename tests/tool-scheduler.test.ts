@@ -178,6 +178,32 @@ describe('prepareToolCalls', () => {
 
     expect(prepared[0].args).toEqual({});
   });
+
+  test('serializes drift blocks while warn results preserve safe concurrency', () => {
+    const warning = prepareToolCalls({
+      toolCalls: toolCalls(['read_file']),
+      tools,
+      toolExecutor: async () => '',
+      toolContext,
+      harnessDriftCheck: () => ({ status: 'warn', reason: 'review context' }),
+    });
+    const blocked = prepareToolCalls({
+      toolCalls: toolCalls(['read_file']),
+      tools,
+      toolExecutor: async () => '',
+      toolContext,
+      harnessDriftCheck: () => ({ status: 'block', reason: 'context drift' }),
+    });
+
+    expect(warning[0]).toMatchObject({
+      canRunConcurrently: true,
+      drift: { status: 'warn', reason: 'review context' },
+    });
+    expect(blocked[0]).toMatchObject({
+      canRunConcurrently: false,
+      drift: { status: 'block', reason: 'context drift' },
+    });
+  });
 });
 
 describe('inspectSchedule', () => {
@@ -199,6 +225,41 @@ describe('inspectSchedule', () => {
 });
 
 describe('executeToolCalls', () => {
+  test('blocks drifted tools before execution with an auditable drift_guard decision', async () => {
+    const toolExecutor = jest.fn(async () => JSON.stringify({ success: true, output: 'unsafe' }));
+    const harnessBlockedResult = jest.fn(() =>
+      JSON.stringify({ success: false, error: 'blocked by test harness' })
+    );
+    const prepared = prepareToolCalls({
+      toolCalls: toolCalls(['read_file']),
+      tools,
+      toolExecutor,
+      toolContext,
+      harnessDriftCheck: () => ({ status: 'block', reason: 'context drift' }),
+    });
+
+    const results = [];
+    for await (const result of executeToolCalls(prepared, {
+      toolExecutor,
+      harnessBlockedResult,
+    })) {
+      results.push(result);
+    }
+
+    expect(toolExecutor).not.toHaveBeenCalled();
+    expect(harnessBlockedResult).toHaveBeenCalledWith({
+      status: 'block',
+      reason: 'context drift',
+    });
+    expect(results[0]).toMatchObject({
+      success: false,
+      permissionDecision: {
+        approved: false,
+        source: 'drift_guard',
+        reason: 'context drift',
+      },
+    });
+  });
   test('executes concurrent tools in parallel and yields in order', async () => {
     const executionOrder: string[] = [];
     const delays = [50, 10, 30]; // simulate different execution times
@@ -740,7 +801,7 @@ describe('permission mode semantics for ask tools', () => {
     expect(results[0].permissionDecision.source).toBe('config_deny');
   });
 
-  test('auto mode does not approve external ask tools', async () => {
+  test('auto mode runs external ask tools without an interactive prompt', async () => {
     const executed: string[] = [];
     let prompted = 0;
     const { results } = await runOne('web_search', {
@@ -753,12 +814,12 @@ describe('permission mode semantics for ask tools', () => {
       onExec: n => executed.push(n),
     });
 
-    expect(prompted).toBe(1);
-    expect(executed).toEqual([]);
-    expect(results[0].success).toBe(false);
+    expect(prompted).toBe(0);
+    expect(executed).toEqual(['web_search']);
+    expect(results[0].success).toBe(true);
     expect(results[0].permissionDecision).toMatchObject({
-      approved: false,
-      source: 'user',
+      approved: true,
+      source: 'mode_auto',
     });
   });
 
@@ -798,9 +859,7 @@ describe('permission mode semantics for ask tools', () => {
       toolConfirmation: 'ask',
       confirmToolUse,
     });
-    // auto mode does not bypass confirmation, so it must stay out of the
-    // parallel batch while the confirmation callback is pending.
-    expect(inAuto[0].canRunConcurrently).toBe(false);
+    expect(inAuto[0].canRunConcurrently).toBe(true);
   });
 });
 
@@ -809,7 +868,7 @@ describe('fail-closed permission matrix', () => {
     label: string;
     tool: OrionCodeTool;
     permission?: { behavior: 'allow' | 'ask' | 'deny'; reason?: string };
-    expected: Record<string, 'allow' | 'confirm' | 'block'>;
+    expected: Record<string, 'allow' | 'confirm' | 'block' | 'deny'>;
   }> = [
     {
       label: 'safe/read-only',
@@ -820,18 +879,18 @@ describe('fail-closed permission matrix', () => {
       label: 'caution/external',
       tool: askTool,
       permission: { behavior: 'ask', reason: 'External query' },
-      expected: { default: 'confirm', acceptEdits: 'confirm', plan: 'block', auto: 'confirm' },
+      expected: { default: 'confirm', acceptEdits: 'confirm', plan: 'block', auto: 'allow' },
     },
     {
       label: 'state-write',
       tool: stateWriteTool,
-      expected: { default: 'confirm', acceptEdits: 'confirm', plan: 'block', auto: 'confirm' },
+      expected: { default: 'confirm', acceptEdits: 'confirm', plan: 'block', auto: 'allow' },
     },
     {
       label: 'destructive',
       tool: dangerousTool,
       permission: { behavior: 'ask', reason: 'Dangerous operation' },
-      expected: { default: 'confirm', acceptEdits: 'confirm', plan: 'block', auto: 'confirm' },
+      expected: { default: 'confirm', acceptEdits: 'confirm', plan: 'block', auto: 'deny' },
     },
   ];
 
@@ -916,5 +975,31 @@ describe('fail-closed permission matrix', () => {
       });
       expect(decision).toMatchObject({ outcome: 'confirm', risk: 'destructive' });
     }
+  });
+
+  test('broad durable exec grant can approve benign substitution but not visible recursive rm', () => {
+    const execTool = TOOLS.find(tool => tool.name === 'exec_command');
+    if (!execTool) throw new Error('exec_command tool is missing');
+    const allowlist = { effect: 'allow' as const, rule: 'allow:exec_command(*)' };
+
+    expect(
+      resolveEffectivePermission({
+        toolName: 'exec_command',
+        tool: execTool,
+        args: { command: 'echo "v: $(node --version)"' },
+        permission: { behavior: 'ask', reason: 'Command requires confirmation' },
+        allowlist,
+      })
+    ).toMatchObject({ outcome: 'allow', source: 'allowlist_allow', risk: 'state_write' });
+
+    expect(
+      resolveEffectivePermission({
+        toolName: 'exec_command',
+        tool: execTool,
+        args: { command: 'echo "$(rm -rf $HOME)"' },
+        permission: { behavior: 'ask', reason: 'Command requires confirmation' },
+        allowlist,
+      })
+    ).toMatchObject({ outcome: 'confirm', risk: 'destructive' });
   });
 });

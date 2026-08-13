@@ -1,5 +1,6 @@
 import type {
   EditPreviewRequest,
+  FollowupQueueSnapshot,
   ModelPickerRequest,
   RuntimeSubtaskEvent,
   RuntimeSessionRestoredEvent,
@@ -28,6 +29,7 @@ import {
 } from '../runtime/ui-view-model';
 import type { TuiPickerItem } from './pickers';
 import type { ToolConfirmationPolicy } from '../services/global-config';
+import type { AgentModeSnapshot } from '../framework/agent-mode';
 
 /** Maximum subtask timeline entries (bounded for long-session safety). */
 const MAX_SUBTASK_TIMELINE = 100;
@@ -99,6 +101,8 @@ export interface TuiUiState {
   overlay: TuiOverlayState;
   /** Current tool confirmation policy, surfaced in the status bar (perm:<level>). */
   permissionMode: ToolConfirmationPolicy;
+  /** Current base mode plus a mode staged for the next logical request. */
+  agentMode: AgentModeSnapshot;
   /** v0.2.23: Tool output view mode for adaptive collapse. */
   toolOutputViewMode: 'adaptive' | 'collapsed' | 'full';
   /** v0.2.23: Bounded recent tool detail summaries (max 512). */
@@ -108,6 +112,7 @@ export interface TuiUiState {
   /** Shared runtime Goal projection. Null when the session has no goal. */
   goal: RuntimeGoalSnapshot | null;
   effort: import('../runtime/ui-events').RuntimeEffortEvent | null;
+  followupQueue: FollowupQueueSnapshot;
 }
 
 export interface TuiToolDetailSummary {
@@ -147,12 +152,14 @@ export type TuiUiAction =
   | { type: 'researchEvent'; event: ResearchLifecycleEvent }
   | { type: 'goalEvent'; event: GoalRuntimeEvent }
   | { type: 'effortEvent'; event: import('../runtime/ui-events').RuntimeEffortEvent }
+  | { type: 'followupQueueChanged'; snapshot: FollowupQueueSnapshot }
   | { type: 'showCommandPalette'; query: string; items: TuiPickerItem[] }
   | { type: 'showFilePicker'; base: string; query: string; items: TuiPickerItem[] }
   | { type: 'showShortcuts' }
   | { type: 'moveOverlaySelection'; delta: number }
   | { type: 'closeOverlay' }
   | { type: 'setPermissionMode'; value: ToolConfirmationPolicy }
+  | { type: 'agentModeChanged'; snapshot: AgentModeSnapshot }
   // --- v0.2.23: Tool Inspector actions ---
   | { type: 'setToolOutputViewMode'; mode: 'adaptive' | 'collapsed' | 'full' }
   | { type: 'openToolInspector' }
@@ -173,6 +180,7 @@ export const initialTuiUiState: TuiUiState = {
   researchEvents: [],
   research: null,
   effort: null,
+  followupQueue: { items: [], limit: 16 },
   committableTranscriptCount: 0,
   queuedTranscriptCount: 0,
   committedTranscriptCount: 0,
@@ -189,6 +197,7 @@ export const initialTuiUiState: TuiUiState = {
   processing: false,
   overlay: null,
   permissionMode: 'allow',
+  agentMode: { baseMode: 'interactive', pendingBaseMode: null },
   // v0.2.23
   toolOutputViewMode: 'adaptive',
   recentToolDetails: [],
@@ -392,6 +401,9 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
         permissionMode: action.value,
       };
 
+    case 'agentModeChanged':
+      return { ...state, agentMode: action.snapshot };
+
     case 'toolStarted': {
       const next = appendRuntimeToolEvent(state, { type: 'started', ...action.event });
       return updateStatusCounts(next);
@@ -456,6 +468,9 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
         statusState: { ...state.statusState, message: statusMessage },
       };
     }
+
+    case 'followupQueueChanged':
+      return { ...state, followupQueue: action.snapshot };
 
     case 'showCommandPalette':
       return {
@@ -759,7 +774,9 @@ export function createTuiUiEventSink(
     researchEvent: event => dispatch({ type: 'researchEvent', event }),
     goalEvent: event => dispatch({ type: 'goalEvent', event }),
     effortEvent: event => dispatch({ type: 'effortEvent', event }),
+    followupQueueChanged: snapshot => dispatch({ type: 'followupQueueChanged', snapshot }),
     setProcessing: processing => dispatch({ type: 'setProcessing', processing }),
+    agentModeChanged: snapshot => dispatch({ type: 'agentModeChanged', snapshot }),
     clearView: () => dispatch({ type: 'clearTranscript' }),
   };
 }

@@ -52,7 +52,6 @@ describe('primary command output isolation', () => {
         ['help', ''],
         ['status', ''],
         ['model', ''],
-        ['mode', ''],
         ['effort', 'status'],
         ['permissions', 'show'],
         ['diff', ''],

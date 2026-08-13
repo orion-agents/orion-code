@@ -77,7 +77,11 @@ describe('Command registry contract', () => {
     it('no command relies on the implicit default risk', () => {
       // DEFAULT_COMMAND_RISK is a fallback for external command authors;
       // every built-in command must declare its risk explicitly.
-      expect(all.length).toBeGreaterThan(0);
+      expect(DEFAULT_COMMAND_RISK).toBe('state-write');
+      expect(all.every(command => command.source?.kind === 'builtin')).toBe(true);
+      expect(
+        all.filter(command => command.risk === undefined).map(command => command.name)
+      ).toEqual([]);
     });
   });
 
@@ -267,11 +271,13 @@ describe('Command registry contract', () => {
       expect(findCommand('memory')?.argumentHint).toBe('[validate|reindex]');
     });
 
-    it('runtime palette contains model/mode/tools commands', () => {
+    it('runtime palette contains model and tools commands without the retired /mode root', () => {
       const modelNames = new Set(visible.filter(c => c.category === 'model').map(c => c.name));
       expect(modelNames.has('model')).toBe(true);
-      expect(modelNames.has('mode')).toBe(true);
+      expect(modelNames.has('mode')).toBe(false);
       expect(modelNames.has('config')).toBe(true);
+      expect(findCommand('mode')).toBeUndefined();
+      expect(findCommand('perm')).toBeUndefined();
 
       const toolNames = new Set(visible.filter(c => c.category === 'tools').map(c => c.name));
       expect(toolNames.has('tools')).toBe(true);

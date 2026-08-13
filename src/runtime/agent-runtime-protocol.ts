@@ -1,5 +1,6 @@
 import type {
   EditPreviewRequest,
+  FollowupQueueSnapshot,
   ModelPickerRequest,
   RuntimeLoopStats,
   RuntimeToolFinishedEvent,
@@ -18,6 +19,7 @@ import type {
 import type { GoalControlAction, GoalControlInput, GoalRuntimeEvent } from './goals/types';
 import type { ToolConfirmationPolicy } from '../services/global-config';
 import type { ToolPermissionScope } from '../services/tool-allowlist';
+import type { AgentModeSnapshot } from '../framework/agent-mode';
 
 export type AgentRuntimeInput =
   | {
@@ -25,6 +27,17 @@ export type AgentRuntimeInput =
       text: string;
       source?: 'composer' | 'picker' | 'programmatic';
       metadata?: Record<string, unknown>;
+    }
+  | {
+      type: 'queue_followup';
+      text: string;
+      source?: 'composer' | 'programmatic';
+    }
+  | {
+      type: 'manage_followup_queue';
+      action: 'clear' | 'remove';
+      itemId?: string;
+      source?: 'command' | 'programmatic';
     }
   | {
       type: 'select_session';
@@ -62,6 +75,10 @@ export type AgentRuntimeInput =
       type: 'permission_mode_change';
       value: ToolConfirmationPolicy;
       source?: 'command' | 'programmatic';
+    }
+  | {
+      type: 'cycle_agent_mode';
+      source?: 'keyboard' | 'command' | 'programmatic';
     };
 
 export type AgentRuntimeSubmitResult =
@@ -87,7 +104,15 @@ export type AgentRuntimeInputResult =
   | { type: 'permission_decision_ignored' }
   | { type: 'permission_decision_failed'; reason: string }
   | { type: 'permission_mode_changed' }
-  | { type: 'permission_mode_invalid' };
+  | { type: 'permission_mode_invalid' }
+  | {
+      type: 'agent_mode_changed';
+      snapshot: AgentModeSnapshot;
+      appliesFrom: 'immediate' | 'next-logical-request';
+    }
+  | { type: 'followup_queued'; itemId: string }
+  | { type: 'followup_queue_full' }
+  | { type: 'followup_queue_changed' };
 
 export type AgentRuntimeEvent =
   | { type: 'transcript_append'; entry: TranscriptAppendEntry }
@@ -111,7 +136,9 @@ export type AgentRuntimeEvent =
   | { type: 'research_event'; event: ResearchLifecycleEvent }
   | { type: 'goal_event'; event: GoalRuntimeEvent }
   | { type: 'effort_event'; event: import('./ui-events').RuntimeEffortEvent }
+  | { type: 'followup_queue_changed'; snapshot: FollowupQueueSnapshot }
   | { type: 'processing_changed'; processing: boolean }
+  | { type: 'agent_mode_changed'; snapshot: AgentModeSnapshot }
   | { type: 'clear_view' }
   | { type: 'shutdown_requested'; reason?: string };
 
@@ -183,8 +210,14 @@ export function emitToUiEventSink(events: UiEventSink, event: AgentRuntimeEvent)
     case 'effort_event':
       events.effortEvent?.(event.event);
       return undefined;
+    case 'followup_queue_changed':
+      events.followupQueueChanged?.(event.snapshot);
+      return undefined;
     case 'processing_changed':
       events.setProcessing(event.processing);
+      return undefined;
+    case 'agent_mode_changed':
+      events.agentModeChanged?.(event.snapshot);
       return undefined;
     case 'clear_view':
       events.clearView?.();
@@ -263,8 +296,14 @@ export function createUiEventSinkFromAgentRuntimeEvents(sink: AgentRuntimeEventS
     effortEvent: event => {
       sink.emit({ type: 'effort_event', event });
     },
+    followupQueueChanged: snapshot => {
+      sink.emit({ type: 'followup_queue_changed', snapshot });
+    },
     setProcessing: processing => {
       sink.emit({ type: 'processing_changed', processing });
+    },
+    agentModeChanged: snapshot => {
+      sink.emit({ type: 'agent_mode_changed', snapshot });
     },
     clearView: () => {
       sink.emit({ type: 'clear_view' });

@@ -75,7 +75,7 @@ import {
   verifyingStatus,
   verificationGateStatus,
 } from './agent-status';
-import { resolveRuntimeLoopBudget } from './loop-budget';
+import { capAutonomousGoalLoopBudget, resolveRuntimeLoopBudget } from './loop-budget';
 import { setDiagnosticTraceContext } from '../utils/observability';
 import {
   appendAssistantNotice,
@@ -120,6 +120,7 @@ import {
   type ToolResultEvent,
 } from './chat-presentation';
 import { applySessionEffort } from './chat-effort';
+import { createPlanModeChangeHandler } from '../framework/agent-mode';
 
 export {
   createAssistantStreamPresenter,
@@ -157,6 +158,8 @@ export interface AgentChatControllerOptions {
   ) => void;
   /** Shared Goal budget gate for every provider request. */
   beforeProviderRequest?: ProviderRequestPreflight;
+  /** Single BUILD / PLAN / AUTO lifecycle shared with commands and plan tools. */
+  agentModeLifecycle?: import('../framework/agent-mode').AgentModeLifecycleController;
 }
 
 /** @deprecated Use AgentChatControllerOptions. Chat execution is renderer-independent. */
@@ -494,7 +497,8 @@ export class AgentChatController {
         permissionMode: effectivePermissionMode,
         toolAllowlist,
         toolConfirmation: this.runtime.config.toolConfirmation,
-        confirmToolUse: this.controllerOptions.confirmToolUse,
+        confirmToolUse:
+          effectivePermissionMode === 'auto' ? undefined : this.controllerOptions.confirmToolUse,
       };
       let permission;
       try {
@@ -751,6 +755,7 @@ export class AgentChatController {
         this.controllerOptions.uiCapabilities,
         this.controllerOptions.uiRenderer ?? this.runtime.config.ui?.renderer
       ),
+      agentModeLifecycle: this.controllerOptions.agentModeLifecycle,
     };
   }
 
@@ -910,6 +915,10 @@ export class AgentChatController {
     refreshProjectInstructions(this.runtime.store, this.runtime.cwd);
     const snapshot = this.runtime.store.getSnapshot();
     const effectivePermissionMode = this.runtime.store.getEffectivePermissionMode();
+    const onPlanModeChange = createPlanModeChangeHandler(
+      this.runtime.store,
+      this.controllerOptions.agentModeLifecycle
+    );
     const harness = createContextHarness({
       cwd: this.runtime.cwd,
       modelId: this.runtime.llm.getModel(),
@@ -1084,6 +1093,8 @@ export class AgentChatController {
       projectInstructionsContent: snapshot.projectInstructionsContent,
       activeSkillsContent: skillResolution.promptInjection,
       referencedFilesContent: buildReferencedFilesPrompt(input, this.runtime.cwd),
+      planMode: snapshot.planMode || snapshot.agentMode === 'plan',
+      agentMode: snapshot.agentMode,
       goalContent:
         this.goalCoordinator?.goal?.status === 'active'
           ? buildGoalContextFragment(this.goalCoordinator.goal)?.text
@@ -1159,11 +1170,21 @@ export class AgentChatController {
         permissionMode: effectivePermissionMode,
         toolAllowlist: this.resolveToolAllowlist(),
         toolConfirmation: this.runtime.config.toolConfirmation,
-        confirmToolUse: this.controllerOptions.confirmToolUse,
+        confirmToolUse:
+          effectivePermissionMode === 'auto' ? undefined : this.controllerOptions.confirmToolUse,
+        onPlanModeChange,
       });
     };
 
-    const loopBudget = resolveRuntimeLoopBudget(input, this.runtime.config, harness.toJSON());
+    const resolvedLoopBudget = resolveRuntimeLoopBudget(
+      input,
+      this.runtime.config,
+      harness.toJSON()
+    );
+    const loopBudget =
+      options.inputKind === 'goal_continuation'
+        ? capAutonomousGoalLoopBudget(resolvedLoopBudget)
+        : resolvedLoopBudget;
     let observedTurnsStarted = 0;
     let observedLlmRequests = 0;
     let observedToolCalls = 0;
@@ -1214,7 +1235,8 @@ export class AgentChatController {
         permissionMode: effectivePermissionMode,
         toolConfirmation: this.runtime.config.toolConfirmation,
         toolAllowlist: this.resolveToolAllowlist(),
-        confirmToolUse: this.controllerOptions.confirmToolUse,
+        confirmToolUse:
+          effectivePermissionMode === 'auto' ? undefined : this.controllerOptions.confirmToolUse,
         toolContext: {
           cwd: this.runtime.cwd,
           config: {
@@ -1226,7 +1248,9 @@ export class AgentChatController {
           permissionMode: effectivePermissionMode,
           toolAllowlist: this.resolveToolAllowlist(),
           toolConfirmation: this.runtime.config.toolConfirmation,
-          confirmToolUse: this.controllerOptions.confirmToolUse,
+          confirmToolUse:
+            effectivePermissionMode === 'auto' ? undefined : this.controllerOptions.confirmToolUse,
+          onPlanModeChange,
         },
         abortSignal,
         harness,

@@ -219,47 +219,15 @@ describe('command index branch coverage', () => {
     });
   });
 
-  it.each([
-    ['default', 'interactive'],
-    ['interactive', 'interactive'],
-    ['plan', 'plan'],
-    ['readonly', 'plan'],
-    ['read-only', 'plan'],
-    ['auto', 'auto'],
-    ['full-auto', 'auto'],
-  ])('normalizes /mode %s to agent mode %s', async (input, expected) => {
-    const ctx = makeContext(root);
-    const result = await execute(ctx, 'mode', input);
-
-    expect(result.success).toBe(true);
-    expect(ctx.store.getSnapshot().agentMode).toBe(expected);
-    expect(ctx.store.getSnapshot().permissionMode).toBe('default');
-  });
-
-  it.each(['accept', 'acceptedits', 'accept-edits', 'edit'])(
-    'maps legacy /mode %s to edit policy without changing agent mode',
-    async input => {
-      const ctx = makeContext(root);
-      const result = await execute(ctx, 'mode', input);
-      expect(result.success).toBe(true);
-      expect(ctx.store.getSnapshot()).toMatchObject({
-        agentMode: 'interactive',
-        permissionMode: 'acceptEdits',
-      });
-    }
-  );
-
-  it('covers mode help, cycling, aliases, and invalid input', async () => {
+  it('covers permission help and invalid input without a mode-command compatibility path', async () => {
     const ctx = makeContext(root);
 
-    for (const arg of ['', '?', 'help']) {
+    for (const arg of ['', '?', 'help', 'show', 'audit']) {
       expect((await execute(ctx, 'permissions', arg)).success).toBe(true);
     }
-    expect((await execute(ctx, 'perm', 'next')).success).toBe(true);
-    expect(ctx.store.getSnapshot().agentMode).toBe('plan');
-    const invalid = await execute(ctx, 'mode', 'danger');
+    const invalid = await execute(ctx, 'permissions', 'danger');
     expect(invalid).toMatchObject({ success: false });
-    expect(invalid.error).toContain('Unknown agent mode');
+    expect(invalid.error).toContain('Unknown tool policy');
   });
 
   it('prints agents, memory, safety, and configuration with rich runtime data', async () => {

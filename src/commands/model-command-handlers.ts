@@ -1,13 +1,7 @@
 /** Handler implementations for the model-command-handlers boundary. */
 
 import chalk from 'chalk';
-import {
-  AGENT_MODES,
-  getModeDisplayText,
-  type AgentMode,
-  type CommandContext,
-  type CommandResult,
-} from './types';
+import type { CommandContext, CommandResult } from './types';
 import {
   createModelPickerState,
   createStatusSnapshot,
@@ -346,66 +340,6 @@ function handleModels(ctx: CommandContext, _args: string): CommandResult {
   return { success: true, output: lines.join('\n') };
 }
 
-function handleMode(ctx: CommandContext, args: string): CommandResult {
-  const current = ctx.store.getSnapshot().agentMode;
-  const trimmed = args.trim();
-
-  if (!trimmed || trimmed === '?' || trimmed === 'help') {
-    return {
-      success: true,
-      output: [
-        '',
-        HEADER('Agent Mode'),
-        DIM('─'.repeat(40)),
-        `  Current  ${ACCENT(current)} ${DIM(getModeDisplayText(current))}`,
-        '',
-        `  ${ACCENT('/mode interactive')}    Normal agent workflow`,
-        `  ${ACCENT('/mode plan')}           Plan first; block execution and edits`,
-        `  ${ACCENT('/mode auto')}           Auto-run actions allowed by tool policy`,
-        `  ${DIM('Tool approval is configured separately with /permissions.')}`,
-        '',
-      ].join('\n'),
-    };
-  }
-
-  const normalized = trimmed.toLowerCase();
-  if (['accept', 'acceptedits', 'accept-edits', 'edit'].includes(normalized)) {
-    ctx.store.setPermissionMode('acceptEdits');
-    return {
-      success: true,
-      output:
-        'Legacy /mode accept-edits mapped to tool policy only. Agent mode was unchanged. Use /permissions allow-edits.',
-    };
-  }
-
-  const next: AgentMode | null =
-    normalized === 'next'
-      ? AGENT_MODES[(AGENT_MODES.indexOf(current) + 1) % AGENT_MODES.length]
-      : normalized === 'default'
-        ? 'interactive'
-        : normalized === 'readonly' || normalized === 'read-only'
-          ? 'plan'
-          : normalized === 'full-auto'
-            ? 'auto'
-            : AGENT_MODES.includes(normalized as AgentMode)
-              ? (normalized as AgentMode)
-              : null;
-
-  if (!next) {
-    return {
-      success: false,
-      error: `Unknown agent mode: ${trimmed}. Use one of: interactive, plan, auto, next.`,
-    };
-  }
-
-  ctx.store.setAgentMode(next);
-  const display = getModeDisplayText(next);
-  return {
-    success: true,
-    output: `Mode changed to ${next}${display ? ` (${display})` : ''}.`,
-  };
-}
-
 function handlePermissions(ctx: CommandContext, args: string): CommandResult {
   const value = args.trim().toLowerCase();
   const snapshot = ctx.store.getSnapshot();
@@ -587,4 +521,4 @@ function handleEffort(ctx: CommandContext, args: string): CommandResult {
   };
 }
 
-export { handleModel, handleModels, handleMode, handlePermissions, handleEffort, showConfig };
+export { handleModel, handleModels, handlePermissions, handleEffort, showConfig };

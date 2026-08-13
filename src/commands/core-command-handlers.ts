@@ -638,6 +638,7 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
     projectInstructionsContent: snapshot.projectInstructionsContent,
     activeSkillsContent: skillResolution.promptInjection,
     referencedFilesContent: buildReferencedFilesPrompt(input, ctx.cwd),
+    planMode: snapshot.planMode || snapshot.agentMode === 'plan',
   };
   const systemPrompt = getSystemPrompt(promptCtx);
 

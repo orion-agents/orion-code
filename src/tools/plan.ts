@@ -1,8 +1,8 @@
 /**
  * orion code - Plan Mode Tools
  *
- * enter_plan_mode: Enter planning mode for complex tasks
- * exit_plan_mode: Exit planning mode with a plan
+ * /plan is the only user-facing entry into planning mode.
+ * exit_plan_mode is the model-facing completion transition.
  *
  * State is held in the shared tool-state module so the CLI can mirror it
  * into the main Store.
@@ -11,33 +11,13 @@
 import { buildTool, type OrionCodeTool } from '../framework/tool';
 import { getToolState, setToolState } from '../framework/tool-state';
 
-export const enterPlanModeTool: OrionCodeTool = buildTool({
-  name: 'enter_plan_mode',
-  description: `Enter plan mode for complex tasks requiring exploration and planning.
-In plan mode, you should explore the project structure, understand the problem,
-and create a detailed implementation plan WITHOUT executing any code changes.
-Use this when the task is complex, ambiguous, or requires careful consideration.`,
-  parameters: {
-    type: 'object',
-    properties: {},
-  },
-  execute: async () => {
-    setToolState({ planMode: true, currentPlan: null });
-    return {
-      success: true,
-      output: 'Entered plan mode. Explore the project, understand the problem, and create a plan. Use exit_plan_mode when ready with your plan.',
-    };
-  },
-  isReadOnly: () => true,
-  isConcurrencySafe: () => true,
-  checkPermissions: () => ({ behavior: 'allow', reason: 'Safe mode change' }),
-  userFacingName: () => 'Enter plan mode',
-});
-
 export const exitPlanModeTool: OrionCodeTool = buildTool({
   name: 'exit_plan_mode',
-  description: `Exit plan mode and save the implementation plan.
-This tool finalizes the plan and returns to execution mode.`,
+  description: `Submit the decision-complete implementation plan and finish the read-only planning phase.
+Call this exactly once when read-only exploration is complete. A successful call saves the plan
+and automatically restores the selected execution mode. The runtime starts implementation in a
+separate logical request so this planning turn stays read-only. Do not call it with a draft, and do
+not ask the user to run a separate exit command.`,
   parameters: {
     type: 'object',
     properties: {
@@ -48,7 +28,14 @@ This tool finalizes the plan and returns to execution mode.`,
     },
     required: ['plan'],
   },
-  execute: async (args) => {
+  execute: async (args, context) => {
+    if (!getToolState().planMode) {
+      return {
+        success: false,
+        output: '',
+        error: 'exit_plan_mode is available only after the user starts a task with /plan.',
+      };
+    }
     const plan = args.plan;
     if (typeof plan !== 'string' || plan.trim().length === 0) {
       return {
@@ -57,16 +44,30 @@ This tool finalizes the plan and returns to execution mode.`,
         error: 'exit_plan_mode requires a non-empty plan parameter',
       };
     }
-    setToolState({ planMode: false, currentPlan: plan });
+    const savedPlan = plan.trim();
+    const returnMode = getToolState().planReturnMode ?? 'interactive';
+    setToolState({ planMode: false, currentPlan: savedPlan, planReturnMode: returnMode });
+    const selectedMode =
+      context.onPlanModeChange?.({
+        active: false,
+        currentPlan: savedPlan,
+        returnMode,
+      }) ?? returnMode;
     return {
       success: true,
-      output: `Exited plan mode. Plan saved:\n\n${plan}`,
+      output: `Plan saved. Plan mode exited automatically; execution will start in ${selectedMode}.\n\n${savedPlan}`,
+      metadata: {
+        action: 'plan_completed',
+        returnMode: selectedMode,
+      },
     };
   },
-  isReadOnly: () => false,
+  // This changes only bounded in-process planning metadata. It must remain
+  // executable while plan mode blocks workspace, process and external writes.
+  isReadOnly: () => true,
   isConcurrencySafe: () => true,
-  checkPermissions: () => ({ behavior: 'allow', reason: 'Safe mode change' }),
-  userFacingName: () => 'Exit plan mode',
+  checkPermissions: () => ({ behavior: 'allow', reason: 'Bounded plan lifecycle transition' }),
+  userFacingName: () => 'Complete plan mode',
 });
 
 /** Check if currently in plan mode */
@@ -79,4 +80,4 @@ export function getCurrentPlan(): string {
   return getToolState().currentPlan ?? '';
 }
 
-export const PLAN_TOOLS: OrionCodeTool[] = [enterPlanModeTool, exitPlanModeTool];
+export const PLAN_TOOLS: OrionCodeTool[] = [exitPlanModeTool];

@@ -150,6 +150,20 @@ Orion Code 必须像一个可信赖的开发工具，而不是偶尔可用的演
 - 历史数据不会被静默重写，兼容入口有明确弃用窗口；
 - 项目目录、用户目录和 session 数据之间没有隐式串用。
 
+### G7 — 自动化与可嵌入
+
+Orion Code 必须同时是可靠的交互式 CLI 和可组合的工程基础设施；自动化或客户端接入不能
+通过复制、简化或绕过主 runtime 获得能力。
+
+必须保证：
+
+- 非交互执行具有稳定的 stdin/stdout/stderr、JSONL、schema、exit code、cancel 和 resume 契约；
+- TUI 与 exec 进入同一个 Application API，消费同一版本化 runtime event；
+- App Server 和 SDK 若以 beta 交付，也必须复用该 API；SDK 不得保留 mock 或平行执行路径；
+- beta App Server 的 approval、session、Goal、tool、artifact 和 usage 语义与 TUI 一致；
+- CI/脚本默认使用最小权限，遇到必须询问的动作时 fail closed；
+- 协议、配置和事件支持 capability negotiation、版本迁移和明确的弃用窗口。
+
 ## 5. 不可破坏的产品原则
 
 以下原则优先于短期功能数量：
@@ -162,7 +176,8 @@ Orion Code 必须像一个可信赖的开发工具，而不是偶尔可用的演
 6. **安全默认值**：无确认不执行破坏性动作；无能力探测不发送终端图像协议。
 7. **兼容必须有期限**：旧命令、旧品牌、旧配置和废弃 renderer 只在声明的迁移窗口内保留。
 8. **文档不得超前声称**：实验、兼容和条件能力不能被写成无条件稳定能力。
-9. **真实环境验收**：本地 PATH、真实 PTY、生成 tarball 和外部服务状态都是发布证据。
+9. **控制面也是产品**：交互、exec、App Server 和 SDK 的输入、事件、错误和退出语义必须稳定。
+10. **真实环境验收**：本地 PATH、真实 PTY、生成 tarball 和外部服务状态都是发布证据。
 
 ## 6. 当前基线与主要缺口
 
@@ -193,8 +208,8 @@ Orion Code 必须像一个可信赖的开发工具，而不是偶尔可用的演
 
 1. **候选不等于发布。** 本次已将最终版本源、merge SHA、tag、npm 和 registry install
    作为分离证据记录。
-2. **Goal 必须可控退出。** 模型不能隐式创建 Goal；非用户 continuation 必须有界；退出统一使用
-   `/goal exit`，旧 clear 语法不保留兼容。
+2. **Goal 必须可控退出。** 模型不能隐式创建 Goal；非用户 continuation 必须有界；审计完成后
+   自动退出 Goal 模式，未完成时统一使用 `/goal exit` 放弃，旧 clear 语法不保留兼容。
 3. **终端与 shell 信任边界必须一致。** terminal-ui 不执行模型注入的控制序列；seatbelt secret
    deny 锚定 project root；`exec_command` precheck 与执行使用同一 cwd。
 4. **发布验证必须来自最终包。** source tests 不能替代 tarball identity、Node 20/22/24 clean install、
@@ -262,6 +277,7 @@ Orion Code 必须像一个可信赖的开发工具，而不是偶尔可用的演
 | G4 终端原生体验           | CJK/scrollback/resume/Ctrl+C 稳定                  | **functional（加固中）**      | TUI/terminal/research/Goal PTY 已有回归；每个新 picker/协议入口仍必须重做真实 PTY                        |
 | G5 Provider 可替换        | Provider/Model 显式建模、错误可定位                | **functional（effort 缺口）** | registry/fallback/diagnostics/runtime matrix 已有；能力级别和 provider-aware effort wire 尚未建立        |
 | G6 本地优先、可恢复       | 数据可解释、迁移可恢复、清理不破坏源               | **functional（加固中）**      | atomic/CAS/quarantine/native ABI 边界已加固；极端 stale-lock 回收与未来 cleanup 边界仍待硬化             |
+| G7 自动化与可嵌入         | exec/SDK/App Server 共享 runtime、协议稳定         | **stub**                      | print 仍是实验入口；SDK query 仍为 mock；尚无稳定 JSONL/schema/exit-code 和 App Server                   |
 
 **关键认知**：G1 仍是使命核心。当前不再是“Goal pre-commit candidate”阶段；单 Session
 Goal 已发布。v0.1.5 的重点是不让命令重构、effort 或 ACP 新客户端绕过这条
@@ -317,45 +333,78 @@ Goal 已发布。v0.1.5 的重点是不让命令重构、effort 或 ACP 新客�
 
 **v0.1.6（已发布至 npm next）：Goal 控制与发布可信度收敛**
 
-- Goal 创建只接受显式用户授权，自动 continuation 有界，并以 `/goal exit` 作为唯一清理入口；
+- Goal 创建只接受显式用户授权，自动 continuation 有界；审计完成自动解除 active 绑定，
+  `/goal exit` 作为未完成 Goal 的显式清理入口；
 - 收敛 migration/native ABI、测试确定性、terminal control sequence 与 shell sandbox cwd 边界；
 - 让 memory drift 校验具有真实、显式且有界的 `/memory validate` 运行入口；
 - 在最终发布 SHA 上重建 Node 矩阵、coverage、PTY、tarball、clean install 和 provider 证据。
 
+**v0.1.7（本地已实现，待发布）：一流 TUI 体验与 Orion Pixel**
+
+- 用 typed Chrome view-model 重构模式、Goal、模型、权限、队列和工作活动的信息层级；
+- 将运行中 Enter steering 与 Tab follow-up queue 明确分轴，并接通历史搜索、外部编辑、
+  Esc interrupt 和空 Composer 退出；
+- 建立 Orion Pixel 终端设计系统与原创“星际小猎人”，同时保证 classic、高对比、NO_COLOR、
+  窄屏和 CJK 降级；
+- 所有新交互继续复用 shared runtime、权限与 Goal 协议，并由真实 PTY 和最终 tarball 验收。
+
 **范围约束**：v0.1.x 仍只承诺单 Session、单 Active Goal 的可靠性闭环，不提前承诺
 v0.2 的多目标、跨 Session 调度或 unattended 后台执行。
 
-退出条件：已发布能力与文档相符；v0.1.6 的 P0 不破坏 G1/G2/G3，并从最终 merge SHA 重建
+退出条件：已发布能力与文档相符；v0.1.7 的 P0 不破坏 G1/G2/G3，并从最终 merge SHA 重建
 Node 矩阵、coverage、PTY、tarball、clean install 和发布证据。
 
-### 阶段 B - v0.2：完整的项目目标运行时
+### 阶段 B - v0.2.x：Verified Project Agent
 
-目标：将“项目级目标”从单 Session 能力提升为 Agent Runtime 的核心状态机，扩展到多目标与跨 Session 调度。
+目标：先让 Orion Code 的日常编码、安全控制、恢复和自动化达到一流 CLI 的共同底线，再用
+Project Goal + Task Graph + Isolated Agents + Mission Control + Evidence Gate 形成可感知的
+质变；不把一流误解成在一个版本内堆齐所有扩展协议。
 
-v0.1.2 已关闭单 Session 单 Goal 闭环后，v0.2 承接扩展：
+**v0.2.0：跨 Session 的可验证项目执行**
 
-- 多 Goal 并发、目标队列、优先级与 DAG 调度；
-- 跨 Session 目标恢复与调度，unattended background daemon；
-- Goal、计划、todo、subagent task 与 artifact 的完整关系图；
-- 通用阶段编排器与远程 worker；
-- 稳定的 completion/blocked runtime 协议在多目标下的一致性；
-- 团队策略、云同步与远程审计（基于同一 runtime）；
-- Ink、React、Yoga 的物理删除及相应破坏性 CLI 变更。
+- Goal 从 Session-owned 升级为 project-owned；Session 只代表一次执行尝试；
+- 交付 versioned Task Graph、Artifact、Evidence、Approval 和 crash-safe project journal；
+- 收敛重复 Agent 栈，提供 Explore/Build/Test/Review 四类角色、受控并行和隔离 Writer；
+- 建立 Repository Inventory 与可追溯 context map，发现项目规则、入口、构建和测试命令；
+- 统一 Policy/Approval/Sandbox，保护 dirty worktree，并禁止 requested sandbox 静默降级；
+- 将 TUI 升级为 Mission Control：first-run、task tree、approval、diff/test/evidence review；
+- 稳定 orion exec、JSONL、schema、exit code、cancel、resume 和 CI 契约；
+- 物理删除 Ink/React 正式路径和 mock SDK，不保留第二条正式 UI、Agent 或 SDK runtime；
+- 通过 Atomic Task、Project Mission、安全/恢复和真实安装四层执行型评测证明达到发布门槛。
 
-退出条件：一个非平凡仓库目标能够跨多轮、跨会话执行，并用当前证据证明完成或精确阻塞；多客户端对同一 session、目标和权限状态产生一致结果。
+**v0.2.0 beta 边界**
 
-### 阶段 C — v0.3+：共享协议与多客户端
+- 本地 stdio App Server、真实 TypeScript SDK、session/mission fork 和自定义 Agent manifest
+  可以 beta 交付，但不能阻塞 stable 主循环，也不能冒充稳定能力；
+- beta client 必须共用 Application API、policy 和 RuntimeEvent schema，禁止复制业务逻辑。
 
-目标：在不复制核心引擎的前提下扩展使用场景。
+**v0.2.x 后续：平台扩展与无人值守运行时**
 
-- 稳定的 SDK、App Server 或进程间协议；
+- App Server/SDK stable、网络 transport、multi-client lease 和远程认证；
+- Streamable HTTP MCP/OAuth、Hooks、Plugin、通用 LSP registry 和新增原生 Provider；
+- 多 Goal 并发、目标队列、优先级、DAG 调度、lease/wake/budget 和本地 daemon；
+- 通用阶段编排器、远程 worker、团队策略、云同步与远程审计；
+- completion/blocked 协议在多目标、多客户端和远程执行下的一致性。
+
+v0.2.0 退出条件：一个非平凡项目目标能够跨至少三个 Session 和一次进程重启，经过
+Explore/Build/Test/Review、隔离写入和 Mission Control 审阅后，用当前证据完成或精确阻塞；
+TUI 与 exec 对同一 Goal、Task、权限和 Evidence 产生一致语义。
+
+阶段 B 最终退出条件：上述能力进一步支持稳定嵌入、多 Goal 和无人值守调度，且
+unattended/remote 执行不降低本地优先、显式授权和完成审计标准。
+
+### 阶段 C — v0.3+：多客户端产品化
+
+目标：在 v0.2.0 已建立的 Application API、App Server 和 SDK 上扩展使用场景，不复制核心引擎。
+
+- 扩展 App Server transport、multi-client lease、backpressure、auth 和兼容策略；
 - Desktop、IDE 或远程 UI 只作为受控客户端；
 - 可观察的 task/subagent 树和结构化 artifact；
 - 可移植的 MCP/Skill 扩展契约；
 - 团队策略与审计能力建立在同一 runtime 上。
 
-v0.1.5 的 ACP POC 若达到发布门，只代表“已有受控薄适配层”，不提前改写本阶段对
-稳定 SDK、多客户端一致性、远程运行和团队策略的退出条件。
+v0.2.0 的 stdio App Server 和 SDK 若交付，只代表本地 beta 嵌入边界，不提前声称
+Desktop/IDE、远程监听、多人并发或团队策略已经成为稳定产品能力。
 
 退出条件：不同客户端对同一 session、目标和权限状态产生一致结果。
 
@@ -363,16 +412,18 @@ v0.1.5 的 ACP POC 若达到发布门，只代表“已有受控薄适配层”�
 
 以下指标作为版本和架构决策的共同验收标准：
 
-| 维度            | 成功条件                                                | 主要证据                                                                                  |
-| --------------- | ------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| 目标连续性      | active 目标能跨回合、压缩和 session resume 保持语义     | 状态持久化测试、resume PTY、目标事件日志                                                  |
-| 完成可信度      | 每个完成结论都逐项对应成功条件与当前证据                | completion audit、测试/文件/外部状态记录                                                  |
-| 安全性          | 所有破坏性入口无确认时不产生副作用                      | command contract、negative test、审计日志                                                 |
-| Renderer 一致性 | 共享命令在 TUI/terminal-ui/Print 产生等价 runtime event | parity test、真实 PTY                                                                     |
-| 安装可靠性      | 公共包可从干净环境安装并运行                            | `npm pack`、registry install、`orion --version`                                           |
-| 质量门槛        | 构建、lint、全量测试和聚焦回归全部通过                  | CI/本地日志；覆盖率不低于仓库 70% 指南；仅允许有 owner、期限和明确审批的分支覆盖率 waiver |
-| 文档一致性      | README、帮助、配置示例和版本文档不互相矛盾              | registry 契约测试、文档审计                                                               |
-| 可恢复性        | 中断、失败、迁移和清理都有明确恢复路径                  | recovery test、迁移 hash、rollback 记录                                                   |
+| 维度         | 成功条件                                                   | 主要证据                                                                                  |
+| ------------ | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| 目标连续性   | active 目标能跨回合、压缩和 session resume 保持语义        | 状态持久化测试、resume PTY、目标事件日志                                                  |
+| 完成可信度   | 每个完成结论都逐项对应成功条件与当前证据                   | completion audit、测试/文件/外部状态记录                                                  |
+| 安全性       | 所有破坏性入口无确认时不产生副作用                         | command contract、negative test、审计日志                                                 |
+| 交互一致性   | TUI、exec 和 beta client 产生等价 runtime event            | parity contract、真实 PTY                                                                 |
+| 安装可靠性   | 公共包可从干净环境安装并运行                               | `npm pack`、registry install、`orion --version`                                           |
+| 质量门槛     | 构建、lint、全量测试和聚焦回归全部通过                     | CI/本地日志；覆盖率不低于仓库 70% 指南；仅允许有 owner、期限和明确审批的分支覆盖率 waiver |
+| 文档一致性   | README、帮助、配置示例和版本文档不互相矛盾                 | registry 契约测试、文档审计                                                               |
+| 可恢复性     | 中断、失败、迁移和清理都有明确恢复路径                     | recovery test、迁移 hash、rollback 记录                                                   |
+| 自动化契约   | exec 的 JSONL/schema/exit code/cancel/resume 可稳定进入 CI | protocol fixture、schema validation、shell/CI E2E                                         |
+| 客户端一致性 | TUI、exec 共享 runtime 与权限语义；beta client 不得分叉    | application API contract、client parity；beta server approval/cancel E2E                  |
 
 不得用总测试数量替代未覆盖的 PTY、破坏性动作、外部发布或真实安装验收。
 
@@ -425,6 +476,7 @@ v0.1.5 的 ACP POC 若达到发布门，只代表“已有受控薄适配层”�
 - 将 terminal-ui 继续建设为与 TUI 并行的公众产品，或继续为 Ink 开发新能力；
 - 以命令数量、模型数量或 Demo 效果替代可靠性；
 - 在 CLI 基础语义未稳定前同时扩张 Desktop、Web 和 IDE 产品面。
+- 在 v0.2.0 中同时承诺多 Goal daemon、远程 worker、云同步和团队控制台。
 
 ## 11. 主要风险与控制
 
@@ -469,6 +521,7 @@ v0.1.5 的 ACP POC 若达到发布门，只代表“已有受控薄适配层”�
 - [v0.1.4 发布检查清单](../plan/v0.1.4-release-checklist.md)
 - [v0.1.5 发布收敛、命令、Effort 与 ACP v1 计划](../plan/v0.1.5-plan.md)
 - [v0.1.6 发布检查清单](../plan/v0.1.6-release-checklist.md)
+- [v0.2.0 Coding Agent Platform 计划](../plan/v0.2.0-coding-agent-platform-plan.md)
 - [Goal evidence and recovery](goal-evidence-and-recovery.md)
 - [English README](../../README.md)
 - [简体中文 README](../../README.zh-CN.md)

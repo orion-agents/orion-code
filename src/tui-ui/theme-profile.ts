@@ -23,7 +23,9 @@ function rgb(r: number, g: number, b: number): TuiColor {
   return { kind: 'rgb', r, g, b };
 }
 
-function named(name: 'black' | 'red' | 'green' | 'yellow' | 'blue' | 'magenta' | 'cyan' | 'white'): TuiColor {
+function named(
+  name: 'black' | 'red' | 'green' | 'yellow' | 'blue' | 'magenta' | 'cyan' | 'white'
+): TuiColor {
   return { kind: 'named', value: name };
 }
 
@@ -81,6 +83,10 @@ export interface ThemePresetOverrides {
   error?: TuiStyle;
   userBackground?: TuiStyle;
   userText?: TuiStyle;
+  modeBuild?: TuiStyle;
+  modePlan?: TuiStyle;
+  modeAuto?: TuiStyle;
+  modeGoal?: TuiStyle;
 }
 
 export const DARK_PRESET: ThemePresetOverrides = {
@@ -97,6 +103,10 @@ export const LIGHT_PRESET: ThemePresetOverrides = {
   error: { foreground: rgb(180, 30, 30), bold: true },
   userBackground: { background: rgb(240, 240, 240) },
   userText: { foreground: rgb(50, 50, 50) },
+  modeBuild: { foreground: rgb(51, 65, 85), bold: true },
+  modePlan: { foreground: rgb(3, 105, 161), bold: true },
+  modeAuto: { foreground: rgb(161, 98, 7), bold: true },
+  modeGoal: { foreground: rgb(126, 34, 206), bold: true },
 };
 
 export const HIGH_CONTRAST_PRESET: ThemePresetOverrides = {
@@ -105,12 +115,18 @@ export const HIGH_CONTRAST_PRESET: ThemePresetOverrides = {
   error: { foreground: rgb(255, 80, 80), bold: true },
   userBackground: { background: rgb(20, 20, 20) },
   userText: { foreground: rgb(255, 255, 255) },
+  modeBuild: { foreground: named('white'), bold: true },
+  modePlan: { foreground: named('cyan'), bold: true },
+  modeAuto: { foreground: named('yellow'), bold: true },
+  modeGoal: { foreground: named('magenta'), bold: true },
 };
 
 export function resolvePreset(preset: TuiThemePreset): ThemePresetOverrides {
   switch (preset) {
-    case 'light': return LIGHT_PRESET;
-    case 'high-contrast': return HIGH_CONTRAST_PRESET;
+    case 'light':
+      return LIGHT_PRESET;
+    case 'high-contrast':
+      return HIGH_CONTRAST_PRESET;
     case 'dark':
     case 'auto':
     default:
@@ -122,16 +138,36 @@ export function resolvePreset(preset: TuiThemePreset): ThemePresetOverrides {
 // Color math helpers
 // ============================================================================
 
-function rgbToAnsi16Name(r: number, g: number, b: number): 'black' | 'red' | 'green' | 'yellow' | 'blue' | 'magenta' | 'cyan' | 'white' {
-  const colors: Array<['black' | 'red' | 'green' | 'yellow' | 'blue' | 'magenta' | 'cyan' | 'white', number, number, number]> = [
-    ['black', 0, 0, 0], ['red', 255, 0, 0], ['green', 0, 255, 0], ['yellow', 255, 255, 0],
-    ['blue', 0, 0, 255], ['magenta', 255, 0, 255], ['cyan', 0, 255, 255], ['white', 255, 255, 255],
+function rgbToAnsi16Name(
+  r: number,
+  g: number,
+  b: number
+): 'black' | 'red' | 'green' | 'yellow' | 'blue' | 'magenta' | 'cyan' | 'white' {
+  const colors: Array<
+    [
+      'black' | 'red' | 'green' | 'yellow' | 'blue' | 'magenta' | 'cyan' | 'white',
+      number,
+      number,
+      number,
+    ]
+  > = [
+    ['black', 0, 0, 0],
+    ['red', 255, 0, 0],
+    ['green', 0, 255, 0],
+    ['yellow', 255, 255, 0],
+    ['blue', 0, 0, 255],
+    ['magenta', 255, 0, 255],
+    ['cyan', 0, 255, 255],
+    ['white', 255, 255, 255],
   ];
-  let best: typeof colors[number][0] = 'white';
+  let best: (typeof colors)[number][0] = 'white';
   let bestDist = Infinity;
   for (const [name, cr, cg, cb] of colors) {
     const dist = (r - cr) ** 2 + (g - cg) ** 2 + (b - cb) ** 2;
-    if (dist < bestDist) { bestDist = dist; best = name; }
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = name;
+    }
   }
   return best;
 }
@@ -140,5 +176,7 @@ function rgbToAnsi256(r: number, g: number, b: number): number {
   if (Math.abs(r - g) < 20 && Math.abs(g - b) < 20 && Math.abs(r - b) < 20) {
     return 232 + Math.min(23, Math.round(r / 10.625));
   }
-  return 16 + 36 * Math.round((r / 255) * 5) + 6 * Math.round((g / 255) * 5) + Math.round((b / 255) * 5);
+  return (
+    16 + 36 * Math.round((r / 255) * 5) + 6 * Math.round((g / 255) * 5) + Math.round((b / 255) * 5)
+  );
 }

@@ -6,6 +6,7 @@ export type TuiInputEvent =
 export type TuiKey =
   | 'enter'
   | 'tab'
+  | 'shift+tab'
   | 'escape'
   | 'backspace'
   | 'delete'
@@ -49,6 +50,7 @@ const PASTE_START = '\x1b[200~';
 const PASTE_END = '\x1b[201~';
 
 const CSI_KEYS: Record<string, TuiKey> = {
+  '\x1b[Z': 'shift+tab',
   '\x1b[A': 'up',
   '\x1b[B': 'down',
   '\x1b[C': 'right',

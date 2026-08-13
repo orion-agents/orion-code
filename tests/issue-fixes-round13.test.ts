@@ -26,9 +26,7 @@ describe('#43 memory entry names cannot escape the memory directory', () => {
   });
 
   it('rejects absolute paths', () => {
-    expect(() => resolveMemoryEntryPath(dir, '/etc/orion-canary')).toThrow(
-      InvalidMemoryNameError
-    );
+    expect(() => resolveMemoryEntryPath(dir, '/etc/orion-canary')).toThrow(InvalidMemoryNameError);
   });
 
   it('rejects null bytes and control characters', () => {
@@ -216,7 +214,10 @@ describe('#50 extension extraction keeps the leading dot', () => {
   });
 
   it('detectAutoFixConfig clears commands the project does not define', () => {
-    const { detectAutoFixConfig, DEFAULT_AUTOFIX_CONFIG } = require('../src/services/auto-fix/autoFixConfig');
+    const {
+      detectAutoFixConfig,
+      DEFAULT_AUTOFIX_CONFIG,
+    } = require('../src/services/auto-fix/autoFixConfig');
     writeFileSync(join(root, 'package.json'), JSON.stringify({ scripts: { build: 'tsc' } }));
 
     const config = detectAutoFixConfig(root);
@@ -229,7 +230,10 @@ describe('#50 extension extraction keeps the leading dot', () => {
   });
 
   it('the catch path returns a copy, so setEnabled cannot poison the defaults', () => {
-    const { detectAutoFixConfig, DEFAULT_AUTOFIX_CONFIG } = require('../src/services/auto-fix/autoFixConfig');
+    const {
+      detectAutoFixConfig,
+      DEFAULT_AUTOFIX_CONFIG,
+    } = require('../src/services/auto-fix/autoFixConfig');
     const missing = join(root, 'no-such-dir');
     const config = detectAutoFixConfig(missing);
 
@@ -314,7 +318,7 @@ describe('#52.1 /target reserved subcommands never fall through to create', () =
   it('/target clear -y is a removed-command error, not a goal named "clear -y"', () => {
     const result = parseTargetCommand('/target clear -y');
     expect(result.ok).toBe(false);
-    expect(result.error).toContain('Use /target exit');
+    expect(result.error).toContain('Use /goal exit');
   });
 
   it('the /goal alias reports its own name in the usage string', () => {
@@ -342,8 +346,8 @@ describe('#52.1 /target reserved subcommands never fall through to create', () =
 });
 
 describe('#52.2 unquoteGitPath decodes multi-byte UTF-8 correctly', () => {
-  const unquote: (p: string) => string =
-    require('../src/services/workspace-diff').__testables.unquoteGitPath;
+  const unquote: (p: string) => string = require('../src/services/workspace-diff').__testables
+    .unquoteGitPath;
 
   it('accumulates consecutive octal escapes into one UTF-8 decode', () => {
     expect(unquote('"uni\\346\\226\\207.txt"')).toBe('uni文.txt');

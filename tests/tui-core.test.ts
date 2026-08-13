@@ -91,6 +91,26 @@ describe('tui-core input parser', () => {
     expect(parser.feed(Buffer.from('D'))).toEqual([{ type: 'key', key: 'left', raw: '\x1b[D' }]);
   });
 
+  it('parses Shift+Tab from complete and fragmented CSI input without changing Tab', () => {
+    const parser = new TuiInputParser();
+
+    expect(parser.feed(Buffer.from('\t'))).toEqual([{ type: 'key', key: 'tab', raw: '\t' }]);
+    expect(parser.feed(Buffer.from('\x1b[Z'))).toEqual([
+      { type: 'key', key: 'shift+tab', raw: '\x1b[Z' },
+    ]);
+    expect(parser.feed(Buffer.from('\x1b['))).toEqual([]);
+    expect(parser.feed(Buffer.from('Z'))).toEqual([
+      { type: 'key', key: 'shift+tab', raw: '\x1b[Z' },
+    ]);
+  });
+
+  it('keeps Shift+Tab bytes literal inside bracketed paste', () => {
+    const parser = new TuiInputParser();
+    expect(parser.feed(Buffer.from('\x1b[200~a\x1b[Zb\x1b[201~'))).toEqual([
+      { type: 'paste', value: 'a\x1b[Zb' },
+    ]);
+  });
+
   // --- 切片2: emoji / grapheme / long input ---
 
   it('handles emoji as grapheme clusters without splitting', () => {

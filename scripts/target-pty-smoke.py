@@ -41,7 +41,7 @@ def kill(proc: subprocess.Popen, master: int) -> None:
 
 def main() -> int:
     repo = Path(__file__).resolve().parents[1]
-    command = resolve_orion_command(repo)
+    command = resolve_orion_command(repo, ["npm", "run", "start", "--"])
 
     master, slave = pty.openpty()
     isolated_config = tempfile.TemporaryDirectory(prefix="orion-target-pty-")
@@ -127,20 +127,27 @@ def main() -> int:
         wait_for(master, out, "Target: [active] updated objective text", timeout=5)
         print("✓ /target resume")
 
-        # 10. Clear with --yes
+        # 10. The removed clear command must fail closed and keep Goal mode active.
         out.clear()
         send(master, "/target clear --yes")
-        time.sleep(0.5)
-        out.append(drain(master))
-        plain = strip(b"".join(out).decode("utf-8", errors="replace"))
-        assert "no active goal" in plain.lower(), f"Expected cleared target. Tail:\n{plain[-1000:]}"
-        print("✓ /target clear --yes")
-
-        # 11. Re-create and exit
+        wait_for(master, out, "clear was removed. Use /goal exit", timeout=5)
         out.clear()
-        send(master, "/target final pty test")
-        time.sleep(0.5)
-        out.append(drain(master))
+        send(master, "/goal status")
+        wait_for(master, out, "Target: [", timeout=5)
+        plain = strip(b"".join(out).decode("utf-8", errors="replace"))
+        assert "no active goal" not in plain.lower(), f"Removed clear command deleted the Goal:\n{plain[-1000:]}"
+        print("✓ removed /target clear --yes rejected")
+
+        # 11. /goal exit is the sole explicit Goal-mode exit.
+        send_raw(master, b"\x15"); time.sleep(0.15)
+        out.clear()
+        send(master, "/goal exit")
+        wait_for(master, out, "Goal cleared:", timeout=5)
+        send(master, "/goal status")
+        wait_for(master, out, "no active goal", timeout=5)
+        print("✓ /goal exit")
+
+        # 12. Exit Orion independently of Goal mode.
         send_raw(master, b"\x03\x03")
         deadline = time.time() + 5
         while proc.poll() is None and time.time() < deadline:

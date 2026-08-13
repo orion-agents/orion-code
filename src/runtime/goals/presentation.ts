@@ -49,6 +49,12 @@ export function formatGoalRuntimeEvent(event: GoalRuntimeEvent): string {
     case 'goal_evidence_recorded':
       return `Goal evidence ${event.evidence.result} [${event.evidence.id}] ${event.evidence.kind}: ${event.evidence.subject}`;
     case 'goal_cleared':
+      if (
+        event.reason === 'completion_auto_exit' ||
+        event.reason === 'completion_recovery_auto_exit'
+      ) {
+        return `Goal complete · exited Goal mode: ${event.goalId}`;
+      }
       return `Goal cleared: ${event.goalId}`;
   }
 }

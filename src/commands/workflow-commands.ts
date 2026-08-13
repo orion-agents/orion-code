@@ -1,7 +1,12 @@
 /** Command definitions extracted from the stable slash-command registry. */
 
 import type { SlashCommand } from './types';
-import { handleDiff, handleCommitPlan, continueAsSlashChat } from './workflow-command-handlers';
+import {
+  handlePlan,
+  handleDiff,
+  handleCommitPlan,
+  continueAsSlashChat,
+} from './workflow-command-handlers';
 import { handleTodos } from './context-tool-command-handlers';
 
 export const WORKFLOW_COMMANDS: SlashCommand[] = [
@@ -30,6 +35,17 @@ export const WORKFLOW_COMMANDS: SlashCommand[] = [
       success: false,
       error: '/goal must be routed through the shared AgentRuntimeController.',
     }),
+  },
+  {
+    name: 'plan',
+    description: 'Explore a task read-only, save a decision-complete plan, then exit automatically',
+    argumentHint: '[task description]',
+    category: 'workflow',
+    priority: 4,
+    type: 'builtin',
+    execution: 'builtin',
+    risk: 'state-write',
+    execute: (ctx, args) => handlePlan(ctx, args),
   },
   {
     name: 'diff',

@@ -1,3 +1,4 @@
+import stringWidth from 'string-width';
 import { renderFrameRows } from '../src/tui-core/frame';
 import {
   measureTuiLiveFrameHeight,
@@ -34,7 +35,7 @@ describe('tui-ui layout', () => {
     expect(rows[1]).toContain('› 你好');
     expect(rows[2].trim()).toBe('');
     expect(rows[3]).toContain('收到');
-    expect(rows[6]).toContain('ready');
+    expect(rows[6]).toContain('MODE BUILD');
     expect(rows[6]).toContain('model=glm-5');
     expect(rows[7]).toBe('┌──────────────────────────────┐');
     expect(rows[8]).toContain('│ › 开源小？事收到');
@@ -45,6 +46,45 @@ describe('tui-ui layout', () => {
       visible: true,
     });
   });
+
+  it('keeps MODE first and visible even when statusLine omits it or the terminal is narrow', () => {
+    const state = reduce([
+      { type: 'setStatus', message: 'model=very-long-model-name' },
+      {
+        type: 'agentModeChanged',
+        snapshot: { baseMode: 'interactive', pendingBaseMode: 'plan' },
+      },
+    ]);
+    const rows = renderFrameRows(
+      renderTuiUiFrame(state, { width: 24, height: 8, statusLine: ['model'] })
+    );
+
+    expect(rows[4]).toMatch(/^MODE BUILD → PLAN NEXT/u);
+  });
+
+  it.each([
+    ['interactive', 'MODE BUILD', { r: 248, g: 250, b: 252 }],
+    ['plan', 'MODE PLAN', { r: 88, g: 190, b: 255 }],
+    ['auto', 'MODE AUTO', { r: 255, g: 189, b: 92 }],
+  ] as const)(
+    'renders %s mode badge, border and marker with a transparent input body',
+    (mode, label, rgb) => {
+      const state = reduce([
+        { type: 'agentModeChanged', snapshot: { baseMode: mode, pendingBaseMode: null } },
+        { type: 'setPrompt', value: 'draft', cursor: 5 },
+      ]);
+      const frame = renderTuiUiFrame(state, { width: 40, height: 8 });
+      const rows = renderFrameRows(frame);
+      const expected = { kind: 'rgb', ...rgb };
+
+      expect(rows[4]).toContain(label);
+      expect(frame.rows[4][0].style.foreground).toEqual(expected);
+      expect(frame.rows[5][0].style.foreground).toEqual(expected);
+      expect(frame.rows[6][0].style.foreground).toEqual(expected);
+      expect(frame.rows[6][2].style.foreground).toEqual(expected);
+      expect(frame.rows[6][4].style.background).toBeUndefined();
+    }
+  );
 
   it('preserves transcript semantic styles in frame cells', () => {
     const state = reduce([
@@ -262,8 +302,44 @@ describe('tui-ui layout', () => {
     expect(rows[6]).toContain('│ ›');
     expect(rows[7]).toBe('└──────────────────────┘');
     // Status row is above prompt (height=8 → status row = 4)
-    expect(rows[4]).toContain('ready');
+    expect(rows[4]).toContain('MODE BUILD');
   });
+
+  it.each([24, 30, 40, 60, 80, 120, 154])(
+    'keeps the frame, Unicode transcript, multiline prompt, and cursor valid at %i columns',
+    width => {
+      const prompt = '第一行 🚀\nsecond line 日本語';
+      const state = reduce([
+        {
+          type: 'appendTranscript',
+          entry: { id: 'u-unicode', role: 'user', content: '修复终端布局 🧭' },
+        },
+        {
+          type: 'appendTranscript',
+          entry: { id: 'a-unicode', role: 'assistant', content: '完成 CJK / emoji 校验 ✅' },
+        },
+        { type: 'setStatus', message: 'model=ark-code-latest session=99113588' },
+        { type: 'setPrompt', value: prompt, cursor: prompt.length },
+      ]);
+
+      const frame = renderTuiUiFrame(state, { width, height: 12 });
+      const rows = renderFrameRows(frame);
+      expect(rows).toHaveLength(12);
+      expect(rows.every(row => stringWidth(row) === width)).toBe(true);
+      expect(rows.at(-4)).toBe(`┌${'─'.repeat(width - 2)}┐`);
+      expect(rows.at(-1)).toBe(`└${'─'.repeat(width - 2)}┘`);
+      expect(frame.cursor.visible).toBe(true);
+      expect(frame.cursor.row).toBeGreaterThanOrEqual(0);
+      expect(frame.cursor.row).toBeLessThan(frame.height);
+      expect(frame.cursor.column).toBeGreaterThanOrEqual(0);
+      expect(frame.cursor.column).toBeLessThan(frame.width);
+      expect(state.prompt.value).toBe(prompt);
+      expect(state.transcript.map(entry => entry.content)).toEqual([
+        '修复终端布局 🧭',
+        '完成 CJK / emoji 校验 ✅',
+      ]);
+    }
+  );
 
   it('renders Goal objective, phase, budget and next action in the owned status row', () => {
     const state = reduce([
@@ -370,6 +446,32 @@ describe('tui-ui layout', () => {
     expect(status.match(/criterion:release/g)).toHaveLength(1);
   });
 
+  it('keeps a Goal evidence decision visible before the next permission prompt', () => {
+    const state = reduce([
+      {
+        type: 'goalEvent',
+        event: {
+          type: 'goal_restored',
+          goal: {
+            goalId: 'goal-evidence-layout',
+            revision: 1,
+            objective: 'Repair a failing verification',
+            status: 'active',
+            tokensUsed: 20,
+            timeUsedMs: 10,
+            continuationCount: 1,
+            updatedAt: 100,
+            criteria: { passed: 0, total: 1, failed: 1, stale: 0 },
+          },
+        },
+      },
+      { type: 'setStatus', message: 'Goal evidence failed: lifecycle-test-check' },
+    ]);
+
+    const status = renderFrameRows(renderTuiUiFrame(state, { width: 80, height: 8 }))[4];
+    expect(status).toContain('Goal evidence failed');
+  });
+
   it.each([80, 120, 154])('keeps Goal status and prompt ownership intact at %i columns', width => {
     const state = reduce([
       {
@@ -401,6 +503,45 @@ describe('tui-ui layout', () => {
     expect(rows[6]).toContain('│ › 继续验证');
     expect(rows[7]).toBe(`└${'─'.repeat(width - 2)}┘`);
     expect(frame.cursor.visible).toBe(true);
+  });
+
+  it('uses a purple Goal override while preserving and restoring the underlying base mode', () => {
+    const active = reduce([
+      { type: 'agentModeChanged', snapshot: { baseMode: 'auto', pendingBaseMode: null } },
+      {
+        type: 'goalEvent',
+        event: {
+          type: 'goal_restored',
+          goal: {
+            goalId: 'goal-mode-overlay',
+            revision: 1,
+            objective: 'Finish mode rendering',
+            status: 'active',
+            tokensUsed: 0,
+            timeUsedMs: 0,
+            continuationCount: 0,
+            updatedAt: 100,
+          },
+        },
+      },
+    ]);
+    const activeFrame = renderTuiUiFrame(active, { width: 80, height: 8 });
+
+    expect(renderFrameRows(activeFrame)[4]).toContain('MODE GOAL · AUTO');
+    expect(activeFrame.rows[4][0].style.foreground).toEqual({
+      kind: 'rgb',
+      r: 196,
+      g: 144,
+      b: 255,
+    });
+
+    const cleared = tuiUiReducer(active, {
+      type: 'goalEvent',
+      event: { type: 'goal_cleared', goalId: 'goal-mode-overlay', reason: 'done' },
+    });
+    expect(renderFrameRows(renderTuiUiFrame(cleared, { width: 80, height: 8 }))[4]).toContain(
+      'MODE AUTO'
+    );
   });
 
   it.each([80, 120])('keeps the #150 Goal escape commands visible at %i columns', width => {
@@ -439,7 +580,7 @@ describe('tui-ui layout', () => {
     const frame = renderTuiUiFrame(state, { width: 30, height: 8 });
     const rows = renderFrameRows(frame);
 
-    expect(rows[0]).toContain('ready');
+    expect(rows[0]).toContain('MODE BUILD');
     expect(rows.filter(row => row.startsWith('┌'))).toHaveLength(1);
     expect(rows.filter(row => row.startsWith('└'))).toHaveLength(1);
     expect(rows[1]).toBe('┌────────────────────────────┐');
@@ -466,7 +607,7 @@ describe('tui-ui layout', () => {
     expect(rows[8]).toContain('│ ›');
     expect(rows[9]).toBe('└────────────────────────────┘');
     // Status row must be above prompt
-    expect(rows[6]).toContain('ready');
+    expect(rows[6]).toContain('MODE BUILD');
     expect(rows[6]).toContain('model=gpt-4o');
   });
 
@@ -491,7 +632,7 @@ describe('tui-ui layout', () => {
     const frame = renderTuiUiFrame(state, { width: 72, height: 10 });
     const rows = renderFrameRows(frame);
     // Overlay occupies transcript rows, not status/prompt rows
-    expect(rows[6]).toContain('ready'); // status
+    expect(rows[6]).toContain('MODE BUILD'); // status
     expect(rows[7]).toContain('┌'); // prompt top border
     expect(rows[8]).toContain('│ ›'); // prompt input
     expect(rows[9]).toContain('└'); // prompt bottom border
@@ -597,7 +738,7 @@ describe('tui-ui layout', () => {
     expect(rows[16]).toContain('│ › test');
     expect(rows[17]).toBe('└──────────────────────────────────────┘');
     // status at bandRows-4 = 14
-    expect(rows[14]).toContain('ready');
+    expect(rows[14]).toContain('MODE BUILD');
     expect(rows[14]).toContain('model=glm-5');
     // live transcript visible in rows above status
     expect(rows[0]).toContain('• #1 grep pattern');
@@ -619,7 +760,7 @@ describe('tui-ui layout', () => {
     expect(rows[6]).toContain('│ › min');
     expect(rows[7]).toContain('└');
     // status at bandRows-4 = 4
-    expect(rows[4]).toContain('ready');
+    expect(rows[4]).toContain('MODE BUILD');
   });
 
   it('renderTuiLiveFrame excludes committed transcript entries', () => {
@@ -647,6 +788,6 @@ describe('tui-ui layout', () => {
     expect(rows).not.toContain('old committed');
     expect(rows).not.toContain('more committed');
     // Status row still present
-    expect(rows).toContain('ready');
+    expect(rows).toContain('MODE BUILD');
   });
 });

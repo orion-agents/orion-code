@@ -3,7 +3,7 @@
 > **Orion Code — 通用 Agent 驾驭框架**
 > 一个 CLI 驱动的编码 Agent，具备安全边界、工具编排、记忆系统和上下文管理。
 >
-> v0.1.6 — 有界 Goal 控制、确定性发布门与终端安全加固
+> v0.1.7 — Orion Pixel TUI、类型化状态 Chrome 与后续任务队列
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20.0-green.svg)](https://nodejs.org)
@@ -107,8 +107,8 @@ npm start -- --print "review the current git diff"
 固定安装审计过的精确版本：
 
 ```bash
-npm install -g @orion-agents/orion-code@0.1.6
-# 或使用预发布渠道（next=0.1.6）：
+npm install -g @orion-agents/orion-code@0.1.7
+# v0.1.7 候选发布到预发布渠道后：
 npm install -g @orion-agents/orion-code@next
 # 任意目录运行
 orion
@@ -116,8 +116,9 @@ orion
 
 也可以在源码工作树中使用 `npm ci && npm run build && npm start`。
 
-> **发布状态**：`0.1.6` 已通过 npm `next` 发布；稳定版 `latest` 仍为 `0.1.4`。
-> PR 合并、Git tag/GitHub Release、npm 发布、registry 安装和稳定版提升分别记录。
+> **发布状态**：`0.1.7` 是未发布候选；上面的精确安装命令仅在 registry 发布后生效。
+> 已发布的 `next` 仍为 `0.1.6`，稳定版 `latest` 仍为 `0.1.4`。PR 合并、Git tag/GitHub
+> Release、npm 发布、registry 安装和稳定版提升分别记录。
 
 公众体验、交互优化和新增工作流优先落在 TUI。`terminal-ui` 不作为与
 TUI 并行发展的公众产品；Ink 只保留迁移期兼容，不再增加产品能力。
@@ -134,8 +135,12 @@ TUI 并行发展的公众产品；Ink 只保留迁移期兼容，不再增加产
 evidence，模型工具不能伪造该确认。
 v0.1.2 只覆盖单 Session、单 Active Goal，不承诺多 Goal 调度或无人值守后台执行。
 
-使用 `/goal exit` 会中止当前 turn、拒绝待确认工具并清除持久 Goal。v0.1.6
-明确不再支持旧 `/goal clear --yes` 与 `/target clear --yes` 语法。
+完成审计通过后，Orion 会自动清除 session 的 Active Goal 绑定，回到当前
+BUILD/PLAN/AUTO 基础模式，并保留 terminal Goal sidecar 作为可审计的完成凭据。若要在完成前
+放弃 Goal，使用 `/goal exit`：它会中止当前 turn、拒绝待确认工具并删除持久 Goal。明确的自然语言请求（如
+`退出 goal 模式`）会走同一个确定性 runtime 边界，不再依赖模型自行判断。完成请求被拒绝后，
+同一 turn 没有新增 runtime 证据就不能重复提交；自动 continuation 的模型/工具预算也低于新的
+用户 turn。v0.1.6 明确不再支持旧 `/goal clear --yes` 与 `/target clear --yes` 语法。
 
 ---
 
@@ -336,11 +341,10 @@ Orion Code 跟踪每个模型的上下文窗口，在 **95% 用量时自动压�
 
 ### 任务管理
 
-| 工具              | 说明              |
-| ----------------- | ----------------- |
-| `todo_write`      | 创建/更新任务列表 |
-| `enter_plan_mode` | 进入计划模式      |
-| `exit_plan_mode`  | 退出计划模式      |
+| 工具             | 说明                                       |
+| ---------------- | ------------------------------------------ |
+| `todo_write`     | 创建/更新任务列表                          |
+| `exit_plan_mode` | 提交计划并自动退出计划模式（模型内部工具） |
 
 ---
 
@@ -414,13 +418,14 @@ ctxPercent = (promptTokens / 模型上下文窗口) × 100
 | 命令                   | 说明                                                |
 | ---------------------- | --------------------------------------------------- |
 | `/help`                | 显示当前 renderer 可用的完整命令列表                |
-| `/target`（`/goal`）   | 创建、查看、暂停、恢复、替换、预算或退出持久 Goal   |
+| `/goal`                | 创建、查看、暂停、恢复、替换、预算或退出持久 Goal   |
+| `/plan [任务]`         | 先只读规划，再自动进入独立执行阶段                  |
 | `/status`              | 系统状态总览                                        |
 | `/model`               | 查看或切换模型                                      |
 | `/config`              | 显示当前生效配置                                    |
 | `/usage`               | 显示详细 Token 用量和成本                           |
 | `/compact`             | 手动触发上下文压缩                                  |
-| `/sessions`            | 列出或搜索最近会话                                  |
+| `/session list`        | 列出或搜索最近会话                                  |
 | `/resume`              | 恢复已有会话                                        |
 | `/memory`              | 记忆状态、引用漂移校验与语义索引重建                |
 | `/skills`              | 列出已加载技能                                      |
@@ -428,13 +433,32 @@ ctxPercent = (promptTokens / 模型上下文窗口) × 100
 | `/mcp`                 | 查看 MCP Server 状态                                |
 | `/doctor`              | 运行配置、工具、MCP、Skill、Session 和 Harness 诊断 |
 | `/diff`                | 只读汇总当前 Git 工作区改动                         |
-| `/commit`              | 生成只读 commit 计划和建议消息                      |
-| `/context-clear --yes` | 清除当前内存中的模型上下文，保留已保存 session      |
+| `/commit-plan`         | 生成只读 commit 计划和建议消息                      |
+| `/context clear --yes` | 清除当前内存中的模型上下文，保留已保存 session      |
 | `/clear`               | 只清理当前视图，不删除 session 数据                 |
 | `/exit`                | 安全关闭并退出                                      |
 
-完整列表及 renderer 范围以 `/help` 为准。`/cost` 是 `/usage` 的废弃兼容入口；
-`/task`、`/run`、`/clear-history` 仅保留为隐藏的迁移兼容命令，不属于公开工作流。
+Agent mode 是 TUI 交互状态：使用 `Shift+Tab` 循环 `BUILD → PLAN → AUTO`；`/mode` 与 `/perm`
+不再注册。其余旧拼写保留到 v0.3.0 兼容窗口结束：`/target` → `/goal`、`/commit` →
+`/commit-plan`、`/sessions` → `/session list`、`/session-rename` → `/session rename`、
+`/context-clear` 与 `/clear-history` → `/context clear`、`/models` → `/model`、
+`/loop-stats` → `/usage loop`、`/checkpoint` → `/rewind`、`/cost` → `/usage`、`/agents` →
+`/subagents`、`/task` → `/goal`，以及 `/run`、`/chat` → 直接输入自然语言。
+
+完整列表及 renderer 范围以 `/help` 为准；deprecated/compatibility 命令不属于公开主工作流。
+
+---
+
+### 任务级 Plan 模式
+
+执行 `/plan` 后，下一条消息进入计划任务；也可以用 `/plan <任务>` 立即开始，或使用
+`Shift+Tab` 在 `BUILD → PLAN → AUTO → BUILD` 间循环并保留输入草稿。Plan 模式先只读探索，
+禁止文件修改、变更命令和外部操作；计划完整后，模型只调用一次 `exit_plan_mode`，Orion
+保存计划并在独立 logical request 中自动开始执行。Build 是普通协作模式；Auto 不弹权限或
+澄清问题，但仍执行 hard deny、沙箱、危险命令和用户明确边界。基础模式只通过 `Shift+Tab`
+切换；已移除的 `/mode` 与 `/perm` 不保留兼容入口。
+
+详见 [Plan 模式生命周期契约](docs/plan/plan-mode-contract.md)。
 
 ---
 
@@ -469,6 +493,13 @@ orion-code/
 ---
 
 ## 版本历史
+
+### v0.1.7（当前版本，未发布候选）
+
+- 引入原创 Orion Pixel 与“星际小猎人”，并为 classic、NO_COLOR、窄终端提供安全降级；
+- 使用类型化 Chrome 统一 Goal、权限、模型、上下文、队列与 Active Work 状态层级；
+- Enter 继续 steering，Tab 加入有界 FIFO follow-up 队列，Shift+Tab 循环 BUILD/PLAN/AUTO；
+- 未创建 tag、GitHub Release 或 npm 发布记录。
 
 ### v0.1.6（已发布至 next）
 

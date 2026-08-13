@@ -255,6 +255,17 @@ export interface RuntimeSessionRestoredEvent {
   transcriptMessages?: number;
 }
 
+export interface FollowupQueueItem {
+  id: string;
+  text: string;
+  queuedAt: number;
+}
+
+export interface FollowupQueueSnapshot {
+  items: FollowupQueueItem[];
+  limit: number;
+}
+
 export type RuntimeLoopStats = LoopStats;
 export type RuntimeTraceEvent = SessionTraceEvent;
 
@@ -321,7 +332,11 @@ export interface UiEventSink {
   /** Shared Goal lifecycle event; renderers only project this event. */
   goalEvent?: (event: GoalRuntimeEvent) => void;
   effortEvent?: (event: RuntimeEffortEvent) => void;
+  /** Ordered user follow-ups that run after the active logical request. */
+  followupQueueChanged?: (snapshot: FollowupQueueSnapshot) => void;
   setProcessing: (processing: boolean) => void;
+  /** Shared BUILD / PLAN / AUTO mode snapshot, including a deferred next-turn change. */
+  agentModeChanged?: (snapshot: import('../framework/agent-mode').AgentModeSnapshot) => void;
   /** v0.1.1: request the renderer to clear its viewport without affecting session state. */
   clearView?: () => void;
   /** v0.1.1: request graceful shutdown with an optional reason string. */

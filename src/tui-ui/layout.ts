@@ -1,11 +1,10 @@
 import stringWidth from 'string-width';
 import { createTuiFrame, setFrameCursor, writeFrameText, type TuiFrame } from '../tui-core/frame';
-import type { StyledRow, TuiTheme } from '../tui-core/style';
+import { DEFAULT_THEME, type StyledRow, type TuiTheme } from '../tui-core/style';
 import {
   createEditPreviewPickerState,
   createModelPickerState,
   createPermissionDecisionPickerState,
-  researchProjectionLabel,
 } from '../runtime/ui-view-model';
 import { formatBytes } from '../services/format';
 import type { ToolConfirmationPolicy } from '../services/global-config';
@@ -16,6 +15,11 @@ import {
   type TuiUiState,
 } from './state';
 import { layoutTranscriptEntry, writeStyledRowToFrame } from './transcript-layout';
+import { createTuiChromeViewModel } from './chrome-view-model';
+import { pixelHunterBadge } from './pixel-mascot';
+import type { TuiStatusItem } from '../services/global-config';
+import type { TuiStyle } from '../tui-core/style';
+import type { TuiChromeSegment } from './chrome-view-model';
 
 export type TranscriptRecordLayout = (entry: TuiTranscriptRecord, width: number) => StyledRow[];
 
@@ -26,6 +30,9 @@ export interface TuiTranscriptLayoutOptions {
   toolOutputMode?: 'adaptive' | 'collapsed' | 'full';
   /** Runner-provided cached layout. Pure render callers use the shared default. */
   layoutTranscriptRecord?: TranscriptRecordLayout;
+  statusLine?: readonly TuiStatusItem[];
+  mascot?: boolean;
+  animationFrame?: number;
 }
 
 export interface TuiLayoutOptions extends TuiTranscriptLayoutOptions {
@@ -154,9 +161,10 @@ export function renderTuiUiFrame(state: TuiUiState, options: TuiLayoutOptions): 
   const timelineTop = statusRow - budget.timelineRows;
 
   renderTranscript(frame, state, 0, transcriptRows, options);
-  if (budget.timelineRows > 0) renderTimeline(frame, state, timelineTop, budget.timelineRows);
-  renderStatus(frame, state, statusRow);
-  renderPrompt(frame, state, promptTop, width, budget.promptLineCount);
+  if (budget.timelineRows > 0)
+    renderTimeline(frame, state, timelineTop, budget.timelineRows, options.theme);
+  renderStatus(frame, state, statusRow, options);
+  renderPrompt(frame, state, promptTop, width, budget.promptLineCount, options.theme);
   // Overlay covers the region above status (transcript + timeline).
   renderOverlay(frame, state, statusRow);
 
@@ -186,9 +194,10 @@ export function renderTuiLiveFrame(state: TuiUiState, options: TuiLiveLayoutOpti
   const timelineTop = statusRow - budget.timelineRows;
 
   renderLiveTranscript(frame, state, 0, budget.transcriptRows, options);
-  if (budget.timelineRows > 0) renderTimeline(frame, state, timelineTop, budget.timelineRows);
-  renderStatus(frame, state, statusRow);
-  renderPrompt(frame, state, promptTop, width, budget.promptLineCount);
+  if (budget.timelineRows > 0)
+    renderTimeline(frame, state, timelineTop, budget.timelineRows, options.theme);
+  renderStatus(frame, state, statusRow, options);
+  renderPrompt(frame, state, promptTop, width, budget.promptLineCount, options.theme);
   renderOverlay(frame, state, statusRow);
 
   return frame;
@@ -231,85 +240,79 @@ function renderTranscript(
 }
 
 /** Render the activity timeline (subtasks + running tools) just above status. */
-function renderTimeline(frame: TuiFrame, state: TuiUiState, top: number, maxRows: number): void {
+function renderTimeline(
+  frame: TuiFrame,
+  state: TuiUiState,
+  top: number,
+  maxRows: number,
+  theme?: TuiTheme
+): void {
   const items: string[] = [];
   for (const t of activeSubtaskTimelineEntries(state)) {
     const mark = t.state === 'running' ? '▶' : '◦';
     const label = t.summary ?? t.objective ?? t.role;
-    items.push(`${mark} ${t.taskId.slice(0, 8)} ${t.state} ${truncateCells(label, 24)}`);
+    const sequence = state.subtaskTimeline.findIndex(entry => entry.taskId === t.taskId) + 1;
+    items.push(`${mark} #${sequence} ${t.role} · ${truncateCells(label, 34)} · ${t.state}`);
   }
   for (const e of activeToolStarts(state)) {
     items.push(`⚙ #${e.sequence} ${e.name} running`);
   }
   const visible = items.slice(-maxRows);
   visible.forEach((line, index) => {
-    writeFrameText(frame, top + index, 0, truncateCells(line, frame.width));
+    writeFrameText(frame, top + index, 0, truncateCells(line, frame.width), theme?.activityRunning);
   });
 }
 
-function renderStatus(frame: TuiFrame, state: TuiUiState, row: number): void {
+function renderStatus(
+  frame: TuiFrame,
+  state: TuiUiState,
+  row: number,
+  options: TuiTranscriptLayoutOptions
+): void {
   if (row < 0) return;
-  const left = state.processing ? 'working' : 'ready';
-  const statusDuplicatesGoalSnapshot = Boolean(
-    state.goal &&
-    (state.statusMessage.startsWith('Goal restored ') ||
-      (state.goal.status !== 'complete' &&
-        state.statusMessage.startsWith(`Goal ${state.goal.status}:`)))
-  );
-  const right = statusDuplicatesGoalSnapshot ? '' : state.statusMessage || '';
-  const activity: string[] = [];
-  if (state.goal) {
-    const criteria = state.goal.criteria;
-    const progress = criteria?.total ? ` ${criteria.passed}/${criteria.total}` : '';
-    const objective = ` ${truncateCells(state.goal.objective, 20)}`;
-    const phase = state.goal.planPhase ? ` ${state.goal.planPhase}` : '';
-    const turn = state.goal.continuationCount > 0 ? ` t${state.goal.continuationCount}` : '';
-    const budget = state.goal.tokenBudget
-      ? ` ${state.goal.tokensUsed}/${state.goal.tokenBudget}tok`
-      : '';
-    const statusAlreadyShowsAudit = state.statusMessage.startsWith('Goal audit failed (');
-    const audit =
-      !statusAlreadyShowsAudit && state.goal.auditRemaining?.[0]
-        ? ` audit:${truncateCells(state.goal.auditRemaining[0], 32)}`
-        : '';
-    const nextActionAlreadyShown = Boolean(
-      statusAlreadyShowsAudit &&
-      state.goal.nextAction &&
-      state.statusMessage.includes(state.goal.nextAction)
-    );
-    const next =
-      state.goal.nextAction && !nextActionAlreadyShown
-        ? ` next:${truncateCells(state.goal.nextAction, 24)}`
-        : '';
-    const stop = goalStopProjection(state.goal.stopReason);
-    activity.push(
-      `goal:${state.goal.status}${stop}${progress}${audit}${objective}${phase}${turn}${budget}${next}`
-    );
-  }
-  if (state.statusState.activeTools > 0) activity.push(`tools:${state.statusState.activeTools}`);
-  if (state.statusState.activeSubtasks > 0)
-    activity.push(`sub:${state.statusState.activeSubtasks}`);
-  if (state.research) activity.push(researchProjectionLabel(state.research));
-  if (state.effort) {
-    const effective =
-      'effective' in state.effort ? (state.effort.effective ?? 'auto') : 'unavailable';
-    activity.push(`effort:${effective}`);
-  }
-  activity.push(`perm:${state.permissionMode}`);
-  const activityStr = activity.length ? `[${activity.join(' ')}] ` : '';
-  const rightFull = right ? `${right} ${activityStr}`.trimEnd() : activityStr.trimEnd();
-  const available = Math.max(0, frame.width - stringWidth(left) - 1);
-  const status = rightFull
-    ? `${left}${' '.repeat(Math.max(1, available - stringWidth(rightFull)))}${truncateCells(rightFull, available)}`
-    : left;
-  writeFrameText(frame, row, 0, truncateCells(status, frame.width));
-}
+  const chrome = createTuiChromeViewModel(state, options.statusLine);
+  const mode = chrome.segments.find(segment => segment.id === 'mode');
+  const secondary = chrome.segments
+    .filter(segment => segment.id !== 'mode')
+    .sort((a, b) => b.priority - a.priority);
+  let column = 0;
 
-function goalStopProjection(stopReason: string | undefined): string {
-  if (!stopReason) return '';
-  const commands = [...new Set(stopReason.match(/\/(?:goal|target)\s+(?:resume|exit)\b/giu) ?? [])];
-  if (commands.length > 0) return ` action:${commands.join('|')}`;
-  return ` resume:${truncateCells(stopReason, 24)}`;
+  const write = (text: string, style?: TuiStyle): boolean => {
+    const remaining = Math.max(0, frame.width - column);
+    if (remaining <= 0) return false;
+    const clipped = truncateCells(text, remaining);
+    writeFrameText(frame, row, column, clipped, style);
+    column += stringWidth(clipped);
+    return clipped === text;
+  };
+
+  if (mode) write(mode.label, segmentStyle(mode, options.theme ?? DEFAULT_THEME, state));
+
+  if (options.mascot !== false && frame.width >= 48) {
+    const badge = ` │ ${pixelHunterBadge(chrome.pose, options.animationFrame)}`;
+    if (column + stringWidth(badge) <= frame.width) write(badge, options.theme?.mascot);
+  }
+
+  for (const segment of secondary) {
+    const separator = column > 0 ? ' │ ' : '';
+    const needed = stringWidth(separator) + stringWidth(segment.label);
+    if (column + needed <= frame.width) {
+      write(separator, options.theme?.statusText);
+      write(segment.label, segmentStyle(segment, options.theme ?? DEFAULT_THEME, state));
+      continue;
+    }
+    if (segment.critical) {
+      const remaining = frame.width - column - stringWidth(separator);
+      if (remaining >= 8) {
+        write(separator, options.theme?.statusText);
+        write(
+          truncateCells(segment.label, remaining),
+          segmentStyle(segment, options.theme ?? DEFAULT_THEME, state)
+        );
+      }
+    }
+    break;
+  }
 }
 
 /**
@@ -322,7 +325,8 @@ function renderPrompt(
   state: TuiUiState,
   top: number,
   width: number,
-  visibleLineCount: number
+  visibleLineCount: number,
+  theme?: TuiTheme
 ): void {
   const value = state.prompt.value;
   const lines = value.split('\n');
@@ -331,7 +335,9 @@ function renderPrompt(
   const viewportStart = Math.max(0, Math.min(cursorLine, lines.length - visibleLineCount));
   const viewportLines = lines.slice(viewportStart, viewportStart + visibleLineCount);
 
-  writeFrameText(frame, top, 0, `┌${'─'.repeat(innerWidth)}┐`);
+  const resolvedTheme = theme ?? DEFAULT_THEME;
+  const borderStyle = promptModeStyle(state, resolvedTheme);
+  writeFrameText(frame, top, 0, `┌${'─'.repeat(innerWidth)}┐`, borderStyle);
   for (let i = 0; i < viewportLines.length; i++) {
     const absoluteLine = viewportStart + i;
     const prefix = absoluteLine === 0 ? '› ' : '  ';
@@ -341,11 +347,21 @@ function renderPrompt(
       absoluteLine === cursorLine
         ? promptLineViewport(viewportLines[i], cursorCol, bodyWidth)
         : { text: truncateCells(viewportLines[i], bodyWidth), cursorCells: 0 };
-    const content = `${fixed}${viewport.text}`;
-    const padding = ' '.repeat(Math.max(0, innerWidth - stringWidth(content)));
-    writeFrameText(frame, top + 1 + i, 0, `│${content}${padding}│`);
+    const contentRow = top + 1 + i;
+    writeFrameText(frame, contentRow, 0, '│', borderStyle);
+    writeFrameText(frame, contentRow, 1, ' ');
+    if (absoluteLine === 0) writeFrameText(frame, contentRow, 2, '›', borderStyle);
+    writeFrameText(frame, contentRow, 3, ' ');
+    writeFrameText(frame, contentRow, 4, viewport.text, resolvedTheme.userText);
+    writeFrameText(frame, contentRow, width - 1, '│', borderStyle);
   }
-  writeFrameText(frame, top + 1 + viewportLines.length, 0, `└${'─'.repeat(innerWidth)}┘`);
+  writeFrameText(
+    frame,
+    top + 1 + viewportLines.length,
+    0,
+    `└${'─'.repeat(innerWidth)}┘`,
+    borderStyle
+  );
 
   const cursorPrefix = cursorLine === 0 ? '› ' : '  ';
   const cursorFixed = ` ${cursorPrefix}`;
@@ -353,6 +369,38 @@ function renderPrompt(
   const cursorViewport = promptLineViewport(lines[cursorLine], cursorCol, cursorBodyWidth);
   const cursorColumn = 1 + stringWidth(cursorFixed) + cursorViewport.cursorCells;
   setFrameCursor(frame, top + 1 + cursorLine - viewportStart, cursorColumn, true);
+}
+
+function promptModeStyle(state: TuiUiState, theme?: TuiTheme): TuiStyle | undefined {
+  if (state.goal) return theme?.modeGoal;
+  if (state.agentMode.baseMode === 'plan') return theme?.modePlan;
+  if (state.agentMode.baseMode === 'auto') return theme?.modeAuto;
+  return theme?.modeBuild;
+}
+
+function segmentStyle(
+  segment: TuiChromeSegment,
+  theme: TuiTheme | undefined,
+  state: TuiUiState
+): TuiStyle | undefined {
+  switch (segment.tone) {
+    case 'mode-goal':
+      return theme?.modeGoal;
+    case 'mode-plan':
+      return theme?.modePlan;
+    case 'mode-auto':
+      return theme?.modeAuto;
+    case 'mode-build':
+      return theme?.modeBuild;
+    case 'warning':
+      return theme?.warning;
+    case 'muted':
+      return theme?.statusText;
+    default:
+      if (segment.id === 'queue') return theme?.queueBadge;
+      if (segment.id === 'activity' && state.statusState.phase === 'error') return theme?.error;
+      return theme?.statusText;
+  }
 }
 
 function promptLineViewport(
@@ -583,10 +631,12 @@ function renderOverlay(frame: TuiFrame, state: TuiUiState, maxRows: number): voi
 
   if (state.overlay.type === 'shortcuts') {
     const rows = [
-      'Shortcuts',
-      '/ commands    @ files    ? shortcuts',
-      'Enter submit/select    Tab complete    Esc cancel',
-      'scroll terminal (↑/↓) to review history    Ctrl+C interrupt / twice exits',
+      'Orion Pixel · Shortcuts',
+      '/ commands   @ files   ? help   Ctrl+O tools',
+      'Enter send/steer   Tab complete/queue   Shift+Tab cycle mode',
+      'Esc cancel/stop    Ctrl+O tools          Ctrl+R history',
+      'Ctrl+R history   Ctrl+E editor   Ctrl+L redraw   Ctrl+D exit',
+      'Ctrl+C interrupt / twice exits   /goal exit leaves Goal mode',
     ].map(row => truncateCells(row, frame.width));
 
     rows.slice(0, maxRows).forEach((line, index) => {

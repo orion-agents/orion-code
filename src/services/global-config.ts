@@ -10,6 +10,7 @@ import { randomBytes } from 'crypto';
 import { join } from 'path';
 import { ensureConfigDir, getGlobalConfigPath, getConfigDir } from './config-dir';
 import { atomicWriteFileSync } from './atomic-write';
+import { withFileLockSync } from './file-lock';
 import type { ModelPricing } from '../core/cost-tracker';
 import { isEffortPreference, type EffortPreference } from './effort';
 
@@ -72,12 +73,46 @@ export type UIRenderer = 'terminal' | 'tui' | 'ink';
 /** How UI permission prompts should be handled. */
 export type UIConfirmationMode = 'config' | 'interactive';
 
+/** Stable TUI theme ids. Orion Pixel is the product default from v0.1.7. */
+export type TuiThemePreference = 'orion-pixel' | 'classic' | 'high-contrast' | 'auto';
+export type TuiMotionPreference = 'full' | 'reduced' | 'off';
+export type TuiStatusItem =
+  | 'mode'
+  | 'goal'
+  | 'model'
+  | 'effort'
+  | 'context'
+  | 'permission'
+  | 'queue'
+  | 'activity';
+
+/** Semantic keymap actions. Raw escape sequences are deliberately unsupported. */
+export type TuiKeymapAction =
+  | 'submit'
+  | 'queue'
+  | 'interrupt'
+  | 'history-search'
+  | 'external-editor'
+  | 'transcript'
+  | 'redraw'
+  | 'exit';
+
 /** UI configuration that is safe to persist globally. */
 export interface UIConfig {
   /** Runtime-only renderer override. This is ignored in orion.json. */
   renderer?: UIRenderer;
   /** Whether confirmations are handled by config fallback or interactive UI. */
   confirmations?: UIConfirmationMode;
+  /** Product theme. Existing configs without this field receive Orion Pixel. */
+  theme?: TuiThemePreference;
+  /** Motion policy for bounded terminal animations. */
+  motion?: TuiMotionPreference;
+  /** Show the Orion pixel hunter when space permits. */
+  mascot?: boolean;
+  /** Ordered, renderer-owned status items. */
+  statusLine?: TuiStatusItem[];
+  /** Optional semantic key bindings; invalid/conflicting bindings are ignored. */
+  keymap?: Partial<Record<TuiKeymapAction, string[]>>;
 }
 
 /** Remote MCP service used by the built-in web_search tool. */
@@ -212,6 +247,95 @@ const DEFAULT_CONFIG: GlobalConfig = {
 
 const CONFIG_SCHEMA_VERSION = 1;
 
+const TUI_THEME_PREFERENCES = new Set<TuiThemePreference>([
+  'orion-pixel',
+  'classic',
+  'high-contrast',
+  'auto',
+]);
+const TUI_MOTION_PREFERENCES = new Set<TuiMotionPreference>(['full', 'reduced', 'off']);
+const TUI_STATUS_ITEMS = new Set<TuiStatusItem>([
+  'mode',
+  'goal',
+  'model',
+  'effort',
+  'context',
+  'permission',
+  'queue',
+  'activity',
+]);
+const TUI_KEYMAP_ACTIONS = new Set<TuiKeymapAction>([
+  'submit',
+  'queue',
+  'interrupt',
+  'history-search',
+  'external-editor',
+  'transcript',
+  'redraw',
+  'exit',
+]);
+const TUI_KEY_BINDINGS = new Set([
+  'enter',
+  'tab',
+  'escape',
+  'ctrl+c',
+  'ctrl+d',
+  'ctrl+e',
+  'ctrl+l',
+  'ctrl+o',
+  'ctrl+r',
+]);
+
+function sanitizeUiConfig(value: unknown): UIConfig | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const ui: UIConfig = {};
+  if (raw.confirmations === 'config' || raw.confirmations === 'interactive') {
+    ui.confirmations = raw.confirmations;
+  }
+  if (typeof raw.theme === 'string' && TUI_THEME_PREFERENCES.has(raw.theme as TuiThemePreference)) {
+    ui.theme = raw.theme as TuiThemePreference;
+  }
+  if (
+    typeof raw.motion === 'string' &&
+    TUI_MOTION_PREFERENCES.has(raw.motion as TuiMotionPreference)
+  ) {
+    ui.motion = raw.motion as TuiMotionPreference;
+  }
+  if (typeof raw.mascot === 'boolean') ui.mascot = raw.mascot;
+  if (Array.isArray(raw.statusLine)) {
+    ui.statusLine = [
+      ...new Set(
+        raw.statusLine.filter(
+          (item): item is TuiStatusItem =>
+            typeof item === 'string' && TUI_STATUS_ITEMS.has(item as TuiStatusItem)
+        )
+      ),
+    ];
+  }
+  if (raw.keymap && typeof raw.keymap === 'object' && !Array.isArray(raw.keymap)) {
+    const keymap: UIConfig['keymap'] = {};
+    const claimedBindings = new Set<string>();
+    for (const [action, bindings] of Object.entries(raw.keymap as Record<string, unknown>)) {
+      if (!TUI_KEYMAP_ACTIONS.has(action as TuiKeymapAction) || !Array.isArray(bindings)) continue;
+      const normalized = bindings.filter(
+        (binding): binding is string =>
+          typeof binding === 'string' && TUI_KEY_BINDINGS.has(binding.trim().toLowerCase())
+      );
+      const unique = [...new Set(normalized.map(binding => binding.trim().toLowerCase()))].filter(
+        binding => {
+          if (claimedBindings.has(binding)) return false;
+          claimedBindings.add(binding);
+          return true;
+        }
+      );
+      if (unique.length > 0) keymap[action as TuiKeymapAction] = unique;
+    }
+    if (Object.keys(keymap).length > 0) ui.keymap = keymap;
+  }
+  return Object.keys(ui).length > 0 ? ui : undefined;
+}
+
 interface LegacyUsageFields {
   totalSessions?: unknown;
   totalTokens?: unknown;
@@ -300,10 +424,9 @@ function sanitizeGlobalConfig(config: GlobalConfig & LegacyUsageFields): GlobalC
     );
   }
 
-  // UI renderer is a runtime choice, not persisted global configuration.
-  if (ui?.confirmations && ui.confirmations !== 'config') {
-    sanitized.ui = { confirmations: ui.confirmations };
-  }
+  // UI renderer is a runtime choice, but product preferences are persisted.
+  const persistedUi = sanitizeUiConfig(ui);
+  if (persistedUi) sanitized.ui = persistedUi;
 
   return sanitized;
 }
@@ -339,6 +462,10 @@ export function loadGlobalConfig(): GlobalConfig {
 export function saveGlobalConfig(config: GlobalConfig & LegacyUsageFields): void {
   ensureConfigDir();
   const path = getGlobalConfigPath();
+  withFileLockSync(path, () => saveGlobalConfigUnlocked(path, config), { waitMs: 10_000 });
+}
+
+function saveGlobalConfigUnlocked(path: string, config: GlobalConfig & LegacyUsageFields): void {
   // orion.json holds provider credentials; an interrupted in-place write makes
   // it unparseable and the loader falls back to defaults, wiping the config.
   atomicWriteFileSync(path, JSON.stringify(sanitizeGlobalConfig(config), null, 2), {
@@ -351,10 +478,18 @@ export function saveGlobalConfig(config: GlobalConfig & LegacyUsageFields): void
  * 更新全局配置（部分更新）
  */
 export function updateGlobalConfig(updates: Partial<GlobalConfig>): GlobalConfig {
-  const config = loadGlobalConfig();
-  const newConfig = { ...config, ...updates };
-  saveGlobalConfig(newConfig);
-  return newConfig;
+  ensureConfigDir();
+  const path = getGlobalConfigPath();
+  return withFileLockSync(
+    path,
+    () => {
+      const config = loadGlobalConfig();
+      const newConfig = { ...config, ...updates };
+      saveGlobalConfigUnlocked(path, newConfig);
+      return newConfig;
+    },
+    { waitMs: 10_000 }
+  );
 }
 
 // ============================================================================
@@ -367,12 +502,20 @@ export function getProjectConfig(projectPath: string): ProjectConfig {
 }
 
 export function saveProjectConfig(projectPath: string, projectConfig: ProjectConfig): void {
-  const config = loadGlobalConfig();
-  config.projects = {
-    ...config.projects,
-    [projectPath]: projectConfig,
-  };
-  saveGlobalConfig(config);
+  ensureConfigDir();
+  const path = getGlobalConfigPath();
+  withFileLockSync(
+    path,
+    () => {
+      const config = loadGlobalConfig();
+      config.projects = {
+        ...config.projects,
+        [projectPath]: projectConfig,
+      };
+      saveGlobalConfigUnlocked(path, config);
+    },
+    { waitMs: 10_000 }
+  );
 }
 
 // ============================================================================
@@ -380,22 +523,34 @@ export function saveProjectConfig(projectPath: string, projectConfig: ProjectCon
 // ============================================================================
 
 export function getOrCreateUserId(): string {
-  const config = loadGlobalConfig();
-
-  if (config.userId) {
-    return config.userId;
-  }
-
-  const userId = randomBytes(16).toString('hex');
-  updateGlobalConfig({ userId });
-  return userId;
+  ensureConfigDir();
+  const path = getGlobalConfigPath();
+  return withFileLockSync(
+    path,
+    () => {
+      const config = loadGlobalConfig();
+      if (config.userId) return config.userId;
+      const userId = randomBytes(16).toString('hex');
+      saveGlobalConfigUnlocked(path, { ...config, userId });
+      return userId;
+    },
+    { waitMs: 10_000 }
+  );
 }
 
 export function recordFirstStartTime(): void {
-  const config = loadGlobalConfig();
-  if (!config.firstStartTime) {
-    updateGlobalConfig({ firstStartTime: new Date().toISOString() });
-  }
+  ensureConfigDir();
+  const path = getGlobalConfigPath();
+  withFileLockSync(
+    path,
+    () => {
+      const config = loadGlobalConfig();
+      if (!config.firstStartTime) {
+        saveGlobalConfigUnlocked(path, { ...config, firstStartTime: new Date().toISOString() });
+      }
+    },
+    { waitMs: 10_000 }
+  );
 }
 
 export { incrementSessionCount, updateTokenStats } from './usage-state';

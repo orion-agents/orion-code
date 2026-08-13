@@ -43,6 +43,8 @@ export interface GoalToolExecutionContext {
     retryable: boolean;
   };
   evidenceRecords: GoalEvidenceRecord[];
+  /** Prevent repeated completion retries when the runtime has captured no new evidence. */
+  completionRejectedEvidenceFingerprint?: string;
 }
 
 const goalToolContext = new AsyncLocalStorage<GoalToolExecutionContext>();
@@ -118,11 +120,11 @@ export function authorizeGoalAbandonment(request: AgentTurnRequest): GoalAbandon
   }
 
   const englishIntent =
-    /^(?:(?:ok(?:ay)?|alright)[,!]?\s+)?(?:please\s+)?(?:(?:let(?:'|’)s|we should|i (?:want|would like) to|can you|could you|would you)\s+)?(?:just\s+)?(?:(?:abandon|cancel|drop|delete|clear|withdraw|exit|quit|stop|end)\s+(?:(?:this|the|our)\s+)?(?:(?:current|active)\s+)?(?:goal|target|objective)|(?:stop|cease)\s+pursuing\s+(?:(?:this|the|our)\s+)?(?:(?:current|active)\s+)?(?:goal|target|objective)|give\s+up\s+on\s+(?:(?:this|the|our)\s+)?(?:(?:current|active)\s+)?(?:goal|target|objective))(?:\s+(?:now|entirely|completely))?(?:\s+because\s+.+)?[.!?]*$/iu;
+    /^(?:(?:ok(?:ay)?|alright)[,!]?\s+)?(?:please\s+)?(?:(?:let(?:'|’)s|we should|i (?:want|would like) to|can you|could you|would you)\s+)?(?:just\s+)?(?:(?:abandon|cancel|drop|delete|clear|withdraw|exit|quit|stop|end)\s+(?:(?:this|the|our)\s+)?(?:(?:current|active)\s+)?(?:goal|target|objective)(?:\s+mode)?|(?:stop|cease)\s+pursuing\s+(?:(?:this|the|our)\s+)?(?:(?:current|active)\s+)?(?:goal|target|objective)(?:\s+mode)?|give\s+up\s+on\s+(?:(?:this|the|our)\s+)?(?:(?:current|active)\s+)?(?:goal|target|objective)(?:\s+mode)?)(?:\s+(?:now|entirely|completely))?(?:\s+because\s+.+)?[.!?]*$/iu;
   const chineseIntent =
-    /^(?:好的?|好吧|行)?[，,\s]*(?:我们|我)?(?:请)?(?:现在)?(?:放弃|取消|删除|清除|终止|结束|退出|停止)(?:这个|当前|该|本)?(?:目标|Goal|Target)(?:吧|了|即可)?(?:[，,]\s*(?:因为|原因是).+)?[。！!？?]*$/iu;
+    /^(?:好的?|好吧|行)?[，,\s]*(?:我们|我)?(?:请)?(?:现在)?(?:放弃|取消|删除|清除|终止|结束|退出|停止)(?:这个|当前|该|本)?(?:目标|Goal|Target)(?:模式)?(?:吧|了|即可)?(?:[，,]\s*(?:因为|原因是).+)?[。！!？?]*$/iu;
   const chineseStopIntent =
-    /^(?:好的?|好吧|行)?[，,\s]*(?:我们|我)?(?:请)?不要再?继续(?:这个|当前|该|本)?(?:目标|Goal|Target)(?:吧|了)?[。！!？?]*$/iu;
+    /^(?:好的?|好吧|行)?[，,\s]*(?:我们|我)?(?:请)?不要再?继续(?:这个|当前|该|本)?(?:目标|Goal|Target)(?:模式)?(?:吧|了)?[。！!？?]*$/iu;
 
   if (!englishIntent.test(text) && !chineseIntent.test(text) && !chineseStopIntent.test(text)) {
     return {
@@ -336,6 +338,17 @@ export const updateGoalTool: OrionCodeTool = buildTool({
           )
           .map(record => [record.id, record])
       );
+      const evidenceFingerprint = [...availableEvidence.keys()].sort().join('\n');
+      const completionFailure = (detail: string): ToolResult => {
+        context.completionRejectedEvidenceFingerprint = evidenceFingerprint;
+        const error = `Goal completion rejected: ${detail} The Goal remains active. Do not claim completion; capture new runtime evidence, then call get_goal before retrying.`;
+        return { success: false, output: error, error };
+      };
+      if (context.completionRejectedEvidenceFingerprint === evidenceFingerprint) {
+        const error =
+          'Goal completion retry rejected: no new runtime evidence was captured after the previous rejection. The Goal remains active; stop retrying update_goal in this turn.';
+        return { success: false, output: error, error };
+      }
       const rawMappings = Array.isArray(args.criterion_evidence)
         ? (args.criterion_evidence as Array<Record<string, unknown>>)
         : [];
@@ -348,13 +361,9 @@ export const updateGoalTool: OrionCodeTool = buildTool({
       }));
 
       if (!criterionEvidence || criterionEvidence.length !== criteria.length) {
-        return {
-          success: false,
-          output:
-            'Completion requires an evidence mapping for every success criterion. Call get_goal after verification to read captured evidence IDs.',
-          error:
-            'Completion requires an evidence mapping for every success criterion. Call get_goal after verification to read captured evidence IDs.',
-        };
+        return completionFailure(
+          'Completion requires an evidence mapping for every success criterion.'
+        );
       }
       const seenCriteria = new Set<string>();
       const seenEvidence = new Set<string>();
@@ -365,28 +374,22 @@ export const updateGoalTool: OrionCodeTool = buildTool({
           seenCriteria.has(mapping.criterionId) ||
           mapping.evidenceIds.length === 0
         ) {
-          return {
-            success: false,
-            output: `Invalid or duplicate evidence mapping for criterion ${mapping.criterionId || '(empty)'}.`,
-            error: `Invalid or duplicate evidence mapping for criterion ${mapping.criterionId || '(empty)'}.`,
-          };
+          return completionFailure(
+            `Invalid or duplicate evidence mapping for criterion ${mapping.criterionId || '(empty)'}.`
+          );
         }
         seenCriteria.add(mapping.criterionId);
         for (const evidenceId of mapping.evidenceIds) {
           if (seenEvidence.has(evidenceId)) {
-            return {
-              success: false,
-              output: `Evidence ${evidenceId} cannot be reused across success criteria.`,
-              error: `Evidence ${evidenceId} cannot be reused across success criteria.`,
-            };
+            return completionFailure(
+              `Evidence ${evidenceId} cannot be reused across success criteria.`
+            );
           }
           const record = availableEvidence.get(evidenceId);
           if (!record || !criterion.requiredEvidenceKinds.includes(record.kind)) {
-            return {
-              success: false,
-              output: `Evidence ${evidenceId} is unavailable or irrelevant to ${mapping.criterionId}.`,
-              error: `Evidence ${evidenceId} is unavailable or irrelevant to ${mapping.criterionId}.`,
-            };
+            return completionFailure(
+              `Evidence ${evidenceId} is unavailable or irrelevant to ${mapping.criterionId}.`
+            );
           }
           seenEvidence.add(evidenceId);
         }
@@ -443,7 +446,7 @@ export const updateGoalTool: OrionCodeTool = buildTool({
       output:
         status === 'blocked'
           ? `Goal blocked request recorded; this does not mean blocked was applied. Audit requires the same eligible blocker for >= ${GOAL_INVARIANTS.maxConsecutiveBlockerTurns} consecutive Goal turns and no progress for >= ${GOAL_INVARIANTS.maxConsecutiveNoProgressTurns} consecutive Goal turns. Current persisted counts: blocker ${goal.blocker?.consecutiveTurns ?? 0}, no progress ${goal.noProgressCount}.`
-          : 'Goal complete request recorded. Audit will verify before applying.',
+          : 'Goal completion request recorded for end-of-turn audit. Do not state that the Goal is complete in this response; only a persisted passed completion audit makes it complete.',
     };
   },
   isReadOnly: () => false,

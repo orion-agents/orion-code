@@ -1,5 +1,6 @@
 import { DEFAULT_LOOP_BUDGET } from '../src/framework';
-import { resolveRuntimeLoopBudget } from '../src/runtime/loop-budget';
+import { GOAL_INVARIANTS } from '../src/runtime/goals/types';
+import { capAutonomousGoalLoopBudget, resolveRuntimeLoopBudget } from '../src/runtime/loop-budget';
 
 describe('runtime loop budget', () => {
   it('keeps the conservative default for simple chat', () => {
@@ -39,10 +40,16 @@ describe('runtime loop budget', () => {
   });
 
   it('inherits complex task budget from restored harness context for continuation inputs', () => {
-    expect(resolveRuntimeLoopBudget('继续', {}, {
-      rootObjective: '完成一个大的任务：多步骤修复 agent-loop、harness、session 并验证',
-      activeInstruction: '接着执行当前计划',
-    })).toMatchObject({
+    expect(
+      resolveRuntimeLoopBudget(
+        '继续',
+        {},
+        {
+          rootObjective: '完成一个大的任务：多步骤修复 agent-loop、harness、session 并验证',
+          activeInstruction: '接着执行当前计划',
+        }
+      )
+    ).toMatchObject({
       maxLlmRequestsPerUserTurn: 48,
       maxToolCallsPerUserTurn: 180,
     });
@@ -59,19 +66,41 @@ describe('runtime loop budget', () => {
   });
 
   it('lets config override adaptive defaults', () => {
-    expect(resolveRuntimeLoopBudget('push, PR, npm publish', {
-      agentLoop: {
-        budget: {
-          maxLlmRequestsPerUserTurn: 96,
-          maxToolCallsPerUserTurn: 360,
+    expect(
+      resolveRuntimeLoopBudget('push, PR, npm publish', {
+        agentLoop: {
+          budget: {
+            maxLlmRequestsPerUserTurn: 96,
+            maxToolCallsPerUserTurn: 360,
+          },
         },
-      },
-    })).toMatchObject({
+      })
+    ).toMatchObject({
       maxLlmRequestsPerUserTurn: 96,
       maxToolCallsPerUserTurn: 360,
       profile: 'config',
       baseProfile: 'release',
       configOverride: true,
+    });
+  });
+
+  it('caps autonomous Goal continuations below user-turn and config profiles', () => {
+    const configured = resolveRuntimeLoopBudget('push, PR, npm publish', {
+      agentLoop: {
+        budget: {
+          maxLlmRequestsPerUserTurn: 96,
+          maxToolCallsPerUserTurn: 360,
+          maxModelVisibleToolBytes: 256 * 1024,
+        },
+      },
+    });
+
+    expect(capAutonomousGoalLoopBudget(configured)).toMatchObject({
+      maxLlmRequestsPerUserTurn: GOAL_INVARIANTS.maxAutonomousLlmRequestsPerTurn,
+      maxToolCallsPerUserTurn: GOAL_INVARIANTS.maxAutonomousToolCallsPerTurn,
+      maxModelVisibleToolBytes: GOAL_INVARIANTS.maxAutonomousModelVisibleBytesPerTurn,
+      profile: 'config',
+      baseProfile: 'release',
     });
   });
 });

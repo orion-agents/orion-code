@@ -15,6 +15,7 @@ import { loadUsageState } from '../src/services/usage-state';
 import { existsSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { spawn } from 'child_process';
 
 describe('global-config', () => {
   const testDir = mkdtempSync(join(tmpdir(), 'orion-global-config-'));
@@ -117,6 +118,31 @@ describe('global-config', () => {
       expect(loadGlobalConfig().ui).toEqual({ confirmations: 'interactive' });
     });
 
+    test('persists valid TUI preferences and drops invalid or conflicting key bindings', () => {
+      saveGlobalConfig({
+        ...loadGlobalConfig(),
+        ui: {
+          theme: 'orion-pixel',
+          motion: 'off',
+          mascot: false,
+          statusLine: ['goal', 'model', 'queue', 'future' as any],
+          keymap: {
+            queue: ['tab', 'future-key'],
+            submit: ['tab', 'enter'],
+            unknown: ['ctrl+x'],
+          } as any,
+        },
+      });
+
+      expect(loadGlobalConfig().ui).toEqual({
+        theme: 'orion-pixel',
+        motion: 'off',
+        mascot: false,
+        statusLine: ['goal', 'model', 'queue'],
+        keymap: { queue: ['tab'], submit: ['enter'] },
+      });
+    });
+
     test('does not persist legacy usage counters in openhorse.json', () => {
       saveGlobalConfig({
         ...loadGlobalConfig(),
@@ -184,6 +210,37 @@ describe('global-config', () => {
 
       saveGlobalConfig({ ...loadGlobalConfig(), defaultEffort: 'turbo' as any });
       expect(loadGlobalConfig().defaultEffort).toBeUndefined();
+    });
+  });
+
+  test('serializes cross-process updates so disjoint fields are not lost', async () => {
+    const worker = join(__dirname, 'fixtures', 'global-config-update-worker.js');
+    const barrier = join(testDir, `config-update-${Date.now()}.barrier`);
+    saveGlobalConfig({ ...loadGlobalConfig(), defaultModel: 'baseline' });
+
+    const run = (key: string, value: string) =>
+      new Promise<void>((resolve, reject) => {
+        const child = spawn(
+          process.execPath,
+          ['-r', 'ts-node/register', worker, testDir, barrier, key, value],
+          { cwd: join(__dirname, '..'), stdio: ['ignore', 'ignore', 'pipe'] }
+        );
+        let stderr = '';
+        child.stderr.on('data', chunk => (stderr += String(chunk)));
+        child.once('error', reject);
+        child.once('exit', code =>
+          code === 0 ? resolve() : reject(new Error(`config worker exited ${code}: ${stderr}`))
+        );
+      });
+
+    const first = run('defaultModel', 'concurrent-model');
+    const second = run('fallbackModel', 'concurrent-fallback');
+    writeFileSync(barrier, 'go');
+    await Promise.all([first, second]);
+
+    expect(loadGlobalConfig()).toMatchObject({
+      defaultModel: 'concurrent-model',
+      fallbackModel: 'concurrent-fallback',
     });
   });
 

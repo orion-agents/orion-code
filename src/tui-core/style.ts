@@ -10,7 +10,10 @@
  */
 
 export type TuiColor =
-  | { kind: 'named'; value: 'black' | 'red' | 'green' | 'yellow' | 'blue' | 'magenta' | 'cyan' | 'white' }
+  | {
+      kind: 'named';
+      value: 'black' | 'red' | 'green' | 'yellow' | 'blue' | 'magenta' | 'cyan' | 'white';
+    }
   | { kind: 'indexed'; value: number }
   | { kind: 'rgb'; r: number; g: number; b: number };
 
@@ -83,9 +86,12 @@ export function styleKey(style: TuiStyle): string {
 
 function colorKey(color: TuiColor): string {
   switch (color.kind) {
-    case 'named': return color.value;
-    case 'indexed': return `i${color.value}`;
-    case 'rgb': return `r${color.r}.${color.g}.${color.b}`;
+    case 'named':
+      return color.value;
+    case 'indexed':
+      return `i${color.value}`;
+    case 'rgb':
+      return `r${color.r}.${color.g}.${color.b}`;
   }
 }
 
@@ -129,6 +135,17 @@ export interface TuiTheme {
   commandMarker?: TuiStyle;
   commandText?: TuiStyle;
   statusText?: TuiStyle;
+  brand?: TuiStyle;
+  chromeBorder?: TuiStyle;
+  chromeFocus?: TuiStyle;
+  modeBuild?: TuiStyle;
+  modePlan?: TuiStyle;
+  modeAuto?: TuiStyle;
+  modeGoal?: TuiStyle;
+  modePermission?: TuiStyle;
+  pickerSelected?: TuiStyle;
+  queueBadge?: TuiStyle;
+  mascot?: TuiStyle;
 }
 
 /** Default dark-theme semantic tokens. */
@@ -148,9 +165,12 @@ export const DEFAULT_THEME: TuiTheme = {
   activitySuccess: { foreground: { kind: 'named', value: 'green' } },
   activityFailed: { foreground: { kind: 'named', value: 'red' } },
   muted: { dim: true },
-  userMarker: { foreground: { kind: 'rgb', r: 0, g: 96, b: 116 }, bold: true },
-  userText: { foreground: { kind: 'rgb', r: 32, g: 35, b: 40 } },
-  userBackground: { background: { kind: 'rgb', r: 218, g: 221, b: 226 } },
+  // ANSI terminals do not expose a portable alpha channel. Keep the user row
+  // close to the terminal canvas so it reads like a translucent surface rather
+  // than an opaque white bar, while retaining a clear cyan focus marker.
+  userMarker: { foreground: { kind: 'rgb', r: 103, g: 232, b: 249 }, bold: true },
+  userText: { foreground: { kind: 'rgb', r: 226, g: 232, b: 240 } },
+  userBackground: { background: { kind: 'rgb', r: 43, g: 52, b: 68 } },
   inlineCode: {
     foreground: { kind: 'named', value: 'yellow' },
     background: { kind: 'rgb', r: 43, g: 47, b: 54 },
@@ -166,6 +186,21 @@ export const DEFAULT_THEME: TuiTheme = {
   commandMarker: { foreground: { kind: 'named', value: 'cyan' }, bold: true },
   commandText: { foreground: { kind: 'named', value: 'white' } },
   statusText: { dim: true },
+  brand: { foreground: { kind: 'rgb', r: 88, g: 190, b: 255 }, bold: true },
+  chromeBorder: { foreground: { kind: 'rgb', r: 89, g: 103, b: 128 }, dim: true },
+  chromeFocus: { foreground: { kind: 'rgb', r: 88, g: 190, b: 255 }, bold: true },
+  modeBuild: { foreground: { kind: 'rgb', r: 248, g: 250, b: 252 }, bold: true },
+  modePlan: { foreground: { kind: 'rgb', r: 88, g: 190, b: 255 }, bold: true },
+  modeAuto: { foreground: { kind: 'rgb', r: 255, g: 189, b: 92 }, bold: true },
+  modeGoal: { foreground: { kind: 'rgb', r: 196, g: 144, b: 255 }, bold: true },
+  modePermission: { foreground: { kind: 'rgb', r: 255, g: 189, b: 92 }, bold: true },
+  pickerSelected: {
+    foreground: { kind: 'rgb', r: 15, g: 23, b: 42 },
+    background: { kind: 'rgb', r: 125, g: 211, b: 252 },
+    bold: true,
+  },
+  queueBadge: { foreground: { kind: 'rgb', r: 125, g: 211, b: 252 }, bold: true },
+  mascot: { foreground: { kind: 'rgb', r: 103, g: 232, b: 249 }, bold: true },
 };
 
 // ============================================================================
@@ -174,7 +209,8 @@ export const DEFAULT_THEME: TuiTheme = {
 
 /** Check if NO_COLOR is set or output is not a TTY. */
 export function shouldSuppressColor(): boolean {
-  if (process.env.NO_COLOR !== undefined && process.env.NO_COLOR !== '') return true;
+  // NO_COLOR is presence-based; shells commonly export it as an empty value.
+  if (Object.prototype.hasOwnProperty.call(process.env, 'NO_COLOR')) return true;
   if (process.env.FORCE_COLOR === '0') return true;
   return false;
 }
@@ -207,8 +243,14 @@ function encodeColorSgr(color: TuiColor, baseSingle: string, baseExtended: strin
   switch (color.kind) {
     case 'named': {
       const map: Record<string, number> = {
-        black: 0, red: 1, green: 2, yellow: 3,
-        blue: 4, magenta: 5, cyan: 6, white: 7,
+        black: 0,
+        red: 1,
+        green: 2,
+        yellow: 3,
+        blue: 4,
+        magenta: 5,
+        cyan: 6,
+        white: 7,
       };
       const code = map[color.value];
       if (code === undefined) return [];
@@ -261,6 +303,17 @@ export function sanitizeTerminalText(text: string, tabWidth = 2): string {
       continue;
     }
 
+    // 8-bit C1 forms of CSI/OSC are valid terminal control sequences too.
+    // Consume their payload instead of leaving visible parameter bytes behind.
+    if (codePoint === 0x9b) {
+      i = skipCsiSequence(text, i + 1);
+      continue;
+    }
+    if (codePoint === 0x9d) {
+      i = skipOscSequence(text, i + 1);
+      continue;
+    }
+
     if (char === '\n') {
       result += '\n';
     } else if (char === '\t') {
@@ -274,6 +327,26 @@ export function sanitizeTerminalText(text: string, tabWidth = 2): string {
     i += char.length;
   }
   return result;
+}
+
+function skipCsiSequence(text: string, start: number): number {
+  let i = start;
+  while (i < text.length) {
+    const code = text.charCodeAt(i++);
+    if (code >= 0x40 && code <= 0x7e) break;
+  }
+  return i;
+}
+
+function skipOscSequence(text: string, start: number): number {
+  let i = start;
+  while (i < text.length) {
+    const code = text.charCodeAt(i);
+    if (code === 0x07 || code === 0x9c) return i + 1;
+    if (code === 0x1b && text.charCodeAt(i + 1) === 0x5c) return i + 2;
+    i++;
+  }
+  return i;
 }
 
 /**

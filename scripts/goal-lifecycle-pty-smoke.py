@@ -670,7 +670,7 @@ def run_renderer(repo: Path, renderer: str) -> None:
                 restarted_output.wait("›", timeout=10)
                 time.sleep(0.2)
             else:
-                restarted_output.wait("ready", timeout=10)
+                restarted_output.wait("MODE BUILD", timeout=10)
                 restarted_output.wait("›", timeout=10)
                 time.sleep(0.5)
             resume_mark = restarted_output.mark()
@@ -733,6 +733,11 @@ def run_renderer(repo: Path, renderer: str) -> None:
                     "Persisted Goal did not pass the three-criterion completion audit:\n"
                     + json.dumps(final_goal, indent=2)
                 )
+            exit_mark = restarted_output.mark()
+            send(restarted_output, "/goal exit")
+            restarted_output.wait("no active goal", timeout=10, start=exit_mark)
+            send(restarted_output, "/goal status")
+            restarted_output.wait("no active goal", timeout=10, start=exit_mark)
             exit_interactively(restarted, restarted_output)
         finally:
             stop_process(restarted, restarted_master)

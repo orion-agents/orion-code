@@ -80,6 +80,15 @@ export interface ToolContext {
     reason?: string;
     abortSignal?: AbortSignal;
   }) => Promise<boolean>;
+  /**
+   * Runtime bridge for the bounded Plan lifecycle. Plan tools cannot import a
+   * renderer Store directly, so the active runtime projects the transition.
+   */
+  onPlanModeChange?: (transition: {
+    active: boolean;
+    currentPlan: string | null;
+    returnMode: 'interactive' | 'auto';
+  }) => 'interactive' | 'auto' | void;
 }
 
 /** Minimal config needed by tools */

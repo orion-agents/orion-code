@@ -119,6 +119,20 @@ const INTERNAL_DEFAULTS = {
   ui: {
     renderer: DEFAULT_UI_RENDERER,
     confirmations: 'config' as UIConfirmationMode,
+    theme: 'orion-pixel' as const,
+    motion: 'reduced' as const,
+    mascot: true,
+    statusLine: [
+      'mode',
+      'goal',
+      'model',
+      'effort',
+      'context',
+      'permission',
+      'queue',
+      'activity',
+    ] as const,
+    keymap: {},
   },
 } as const;
 
@@ -221,6 +235,18 @@ function loadUIConfig(
       normalizeUIConfirmationMode(overrides.ui?.confirmations) ??
       normalizeUIConfirmationMode(globalConfig.ui?.confirmations) ??
       INTERNAL_DEFAULTS.ui.confirmations,
+    theme: overrides.ui?.theme ?? globalConfig.ui?.theme ?? INTERNAL_DEFAULTS.ui.theme,
+    motion: overrides.ui?.motion ?? globalConfig.ui?.motion ?? INTERNAL_DEFAULTS.ui.motion,
+    mascot: overrides.ui?.mascot ?? globalConfig.ui?.mascot ?? INTERNAL_DEFAULTS.ui.mascot,
+    statusLine: [
+      ...(overrides.ui?.statusLine ??
+        globalConfig.ui?.statusLine ??
+        INTERNAL_DEFAULTS.ui.statusLine),
+    ],
+    keymap: {
+      ...globalConfig.ui?.keymap,
+      ...overrides.ui?.keymap,
+    },
   };
 }
 
@@ -354,9 +380,7 @@ export function loadConfig(overrides: Partial<OrionCodeCLIConfig> = {}): OrionCo
       }
     }
     resolvedModel =
-      toNonEmptyString(overrides.model) ??
-      toNonEmptyString(globalConfig.defaultModel) ??
-      'gpt-4o';
+      toNonEmptyString(overrides.model) ?? toNonEmptyString(globalConfig.defaultModel) ?? 'gpt-4o';
     resolvedFallback =
       toNonEmptyString(overrides.fallbackModel) ??
       toNonEmptyString(globalConfig.fallbackModel) ??
@@ -364,14 +388,8 @@ export function loadConfig(overrides: Partial<OrionCodeCLIConfig> = {}): OrionCo
   }
 
   const config: OrionCodeCLIConfig = {
-    apiKey:
-      toNonEmptyString(overrides.apiKey) ??
-      globalConfig.apiKey ??
-      '',
-    apiBaseUrl:
-      toNonEmptyString(overrides.apiBaseUrl) ??
-      globalConfig.apiBaseUrl ??
-      undefined,
+    apiKey: toNonEmptyString(overrides.apiKey) ?? globalConfig.apiKey ?? '',
+    apiBaseUrl: toNonEmptyString(overrides.apiBaseUrl) ?? globalConfig.apiBaseUrl ?? undefined,
     model: resolvedModel,
     fallbackModel: resolvedFallback,
     modelRegistry,
@@ -411,9 +429,7 @@ export function isConfigured(config: OrionCodeCLIConfig): boolean {
 export function getConfigErrors(config: OrionCodeCLIConfig): string[] {
   const errors: string[] = [];
   if (!isConfigured(config)) {
-    errors.push(
-      'Missing API key. Set it in ~/.orion-code/orion.json.'
-    );
+    errors.push('Missing API key. Set it in ~/.orion-code/orion.json.');
   }
   return errors;
 }

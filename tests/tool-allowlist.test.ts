@@ -374,7 +374,7 @@ describe('resolveEffectivePermission precedence', () => {
     expect(decision).toMatchObject({ outcome: 'block', source: 'plan_mode' });
   });
 
-  test('an ask rule overrides auto mode', () => {
+  test('auto mode resolves an ask rule without prompting after hard safety checks', () => {
     const decision = resolve({
       toolName: 'exec_command',
       tool: execTool,
@@ -383,7 +383,7 @@ describe('resolveEffectivePermission precedence', () => {
       permissionMode: 'auto',
       allowlist: { effect: 'ask', rule: 'ask:exec_command(git push*)' },
     });
-    expect(decision.outcome).toBe('confirm');
+    expect(decision).toMatchObject({ outcome: 'allow', source: 'mode_auto' });
   });
 
   test('an ask rule escalates an otherwise auto-allowed tool', () => {
@@ -502,7 +502,7 @@ describe('tool scheduler with a project allowlist', () => {
     expect(executed[0].permissionDecision?.source).toBe('allowlist_deny');
   });
 
-  test('an ask rule still prompts while permissionMode=auto', async () => {
+  test('an ask rule does not open an interactive prompt while permissionMode=auto', async () => {
     const confirmToolUse = jest.fn(async () => false);
     const allowlist = createAllowlistEvaluator(
       parseAllowlistRules(['ask:exec_command(git push*)']).rules
@@ -513,9 +513,9 @@ describe('tool scheduler with a project allowlist', () => {
       { allowlist, permissionMode: 'auto', toolConfirmation: 'ask', confirmToolUse }
     );
 
-    expect(confirmToolUse).toHaveBeenCalledTimes(1);
-    expect(executedNames).toEqual([]);
-    expect(executed[0].permissionDecision).toMatchObject({ approved: false, source: 'user' });
+    expect(confirmToolUse).not.toHaveBeenCalled();
+    expect(executedNames).toEqual(['exec_command']);
+    expect(executed[0].permissionDecision).toMatchObject({ approved: true, source: 'mode_auto' });
   });
 
   test('plan mode is not weakened by an allow rule', async () => {

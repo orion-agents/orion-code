@@ -2,7 +2,7 @@
 
 > **Goal-driven coding agent for the terminal.**
 >
-> v0.1.6 — bounded Goal control, deterministic release gates, terminal hardening
+> v0.1.7 — Orion Pixel TUI, typed status chrome, and queued follow-ups
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20.0-green.svg)](https://nodejs.org)
@@ -36,8 +36,8 @@ Orion Code is a terminal-based coding agent. It wraps LLM APIs in a harness of s
 
 ```bash
 # Install the exact audited version:
-npm install -g @orion-agents/orion-code@0.1.6
-# Or use the prerelease channel (next=0.1.6):
+npm install -g @orion-agents/orion-code@0.1.7
+# After the v0.1.7 candidate is published to the prerelease channel:
 npm install -g @orion-agents/orion-code@next
 
 # Or run from a checked-out source tree:
@@ -75,18 +75,17 @@ orion -p "review the current git diff"
 echo "summarize this project" | orion --print
 ```
 
-> **Release status.** `0.1.6` is published through npm `next`; stable `latest` remains
-> `0.1.4`. The merge, Git tag/GitHub Release, npm publication, registry installation,
-> and stable promotion are recorded as separate delivery states.
+> **Release status.** `0.1.7` is an unreleased candidate. The exact install command above becomes
+> valid only after registry publication. Published `next` remains `0.1.6`, and stable `latest`
+> remains `0.1.4`; merge, tag, GitHub Release, npm publication, registry installation, and stable
+> promotion are separate delivery states.
 
 ### TUI startup banner
 
-The default TUI displays a portable sky-blue pixel banner: a compact landscape
-rectangle with a line-drawn Orion constellation on the left and a full,
-centered `OC` mark on the right, beside `ORION CODE | 猎户座`. The mark uses
-three pixel densities and cyan depth levels for a finely layered appearance. It
-is designed for terminals without inline-image support and automatically becomes
-a compact text banner in narrow terminals.
+The default TUI uses the original Orion Pixel theme and a portable “little star hunter” mascot.
+Typed chrome keeps Goal, permission, model, context, queue, and active-work state visible without
+polluting code or tool output. It uses only safe terminal character cells: classic mode,
+`NO_COLOR`, and narrow terminals automatically fall back to compact text with no image protocol.
 
 ```bash
 # Default portable pixel banner
@@ -256,11 +255,11 @@ backend is probed at runtime and a configured-but-unusable sandbox **fails close
 | Command                | Description                                                                |
 | ---------------------- | -------------------------------------------------------------------------- |
 | `/help`                | Show help                                                                  |
-| `/goal` (`/target`)    | Create, inspect, pause, resume, replace, budget, or exit a persistent goal |
+| `/goal`                | Create, inspect, pause, resume, replace, budget, or exit a persistent goal |
+| `/plan [task]`         | Explore read-only, save a plan, then restore the previous agent mode       |
 | `/status`              | System status                                                              |
 | `/model`               | View or switch models                                                      |
 | `/effort`              | View or change supported reasoning effort                                  |
-| `/mode`                | View or change agent working mode                                          |
 | `/permissions`         | View or change tool confirmation and edit policy                           |
 | `/config`              | Show configuration                                                         |
 | `/usage`               | Token usage and cost                                                       |
@@ -277,10 +276,30 @@ backend is probed at runtime and a configured-but-unusable sandbox **fails close
 | `/context clear --yes` | Clear in-memory model context; preserve the saved session                  |
 | `/exit`                | Exit                                                                       |
 
+Agent modes are TUI actions: use `Shift+Tab` to cycle `BUILD → PLAN → AUTO`; `/mode` and `/perm`
+are not registered commands. The remaining deprecated spellings keep their v0.3.0 compatibility
+window: `/target` → `/goal`, `/commit` → `/commit-plan`, `/sessions` → `/session list`,
+`/session-rename` → `/session rename`, `/context-clear` and `/clear-history` → `/context clear`,
+`/models` → `/model`, `/loop-stats` → `/usage loop`, `/checkpoint` → `/rewind`, `/cost` → `/usage`,
+`/agents` → `/subagents`, `/task` → `/goal`, and `/run` or `/chat` → plain text.
+
 TUI is the public product interface and the default launch path. `terminal-ui`
 is maintained as a technical diagnostics/compatibility renderer, not a second
 public product. Ink is deprecated, receives no new product features, and is
 scheduled for removal in v0.2.0.
+
+### Task-scoped Plan mode
+
+Use `/plan` to arm planning for the next message, `/plan <task>` to start immediately, or press
+`Shift+Tab` to cycle `BUILD → PLAN → AUTO → BUILD` while preserving the draft. Orion allows
+read-only repository exploration and blocks edits, mutating commands, and external actions during
+the planning request. When the plan is decision-complete, the model calls `exit_plan_mode` once;
+Orion saves it, exits Plan, and starts implementation in a separate logical request. Base modes are
+changed only with `Shift+Tab`; the retired `/mode` and `/perm` commands are not compatibility entry
+points. Auto runs without permission or clarification prompts, while hard safety policies and
+explicit user boundaries remain enforced.
+
+See [the Plan-mode lifecycle contract](docs/plan/plan-mode-contract.md).
 
 ### Persistent Goal safety contract
 
@@ -297,9 +316,15 @@ Goal open. Criteria that require human acceptance can only receive trusted
 that confirmation. v0.1.2 remains single-session and single-active-Goal; it does not
 promise multi-Goal scheduling or unattended background execution.
 
-Use `/goal exit` to abort the active turn, reject any pending permission request,
-and clear the persisted Goal. The old `/goal clear --yes` and `/target clear --yes`
-syntax is intentionally unsupported in v0.1.6.
+After a completion audit passes, Orion automatically clears the session's active Goal binding,
+returns the TUI to its current BUILD/PLAN/AUTO base mode, and retains the terminal Goal sidecar as
+the durable completion receipt. Use `/goal exit` to abandon before completion: it aborts the active
+turn, rejects pending permission requests, and removes the persisted Goal. Explicit natural-language
+requests such as `exit goal mode` or `退出 goal 模式` route through the same deterministic runtime
+boundary. Rejected completion requests
+cannot be retried in the same turn until new runtime evidence exists, and autonomous continuation
+turns have stricter model/tool budgets than fresh user turns. The old `/goal clear --yes` and
+`/target clear --yes` syntax is intentionally unsupported in v0.1.6.
 
 ## Migration from OpenHorse
 

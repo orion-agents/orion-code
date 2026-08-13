@@ -33,21 +33,24 @@ describe('v0.1.5 command migration roots', () => {
     expect(visible.has('agents')).toBe(false);
   });
 
-  it('keeps the default slash surface at twelve stable roots', () => {
+  it('adds the v0.1.7 TUI discovery roots to the stable primary slash surface', () => {
     const primary = getVisibleCommands('tui').filter(command => command.audience === 'primary');
     expect(primary.map(command => command.name)).toEqual([
       'goal',
+      'plan',
       'diff',
       'review',
       'resume',
       'compact',
       'context',
       'model',
-      'mode',
       'effort',
       'permissions',
       'help',
       'status',
+      'theme',
+      'keymap',
+      'queue',
     ]);
   });
 

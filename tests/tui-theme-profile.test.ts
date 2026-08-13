@@ -7,6 +7,7 @@ import {
   degradeColorForProfile,
   resolvePreset,
 } from '../src/tui-ui/theme-profile';
+import { DEFAULT_TUI_THEME, resolveTuiThemePreference } from '../src/tui-ui/theme';
 
 describe('TUI color profile detection', () => {
   it('returns none when NO_COLOR is set', () => {
@@ -14,7 +15,9 @@ describe('TUI color profile detection', () => {
   });
 
   it('returns truecolor when COLORTERM=truecolor', () => {
-    expect(detectColorProfile({ COLORTERM: 'truecolor', TERM: 'xterm-256color' } as any)).toBe('truecolor');
+    expect(detectColorProfile({ COLORTERM: 'truecolor', TERM: 'xterm-256color' } as any)).toBe(
+      'truecolor'
+    );
   });
 
   it('returns truecolor when COLORTERM=24bit', () => {
@@ -66,5 +69,45 @@ describe('theme presets', () => {
   it('auto defaults to dark', () => {
     const preset = resolvePreset('auto');
     expect(preset.muted).toBeDefined();
+  });
+});
+
+describe('persisted TUI theme preferences', () => {
+  const originalColorFgBg = process.env.COLORFGBG;
+
+  afterEach(() => {
+    if (originalColorFgBg === undefined) delete process.env.COLORFGBG;
+    else process.env.COLORFGBG = originalColorFgBg;
+  });
+
+  it('resolves high contrast and classic to distinct semantic theme tokens', () => {
+    const highContrast = resolveTuiThemePreference('high-contrast');
+    const classic = resolveTuiThemePreference('classic');
+
+    expect(highContrast.error).not.toEqual(DEFAULT_TUI_THEME.error);
+    expect(classic.brand).toEqual(DEFAULT_TUI_THEME.heading);
+    expect(classic.chromeFocus).toEqual(DEFAULT_TUI_THEME.heading);
+  });
+
+  it('selects a light semantic profile for auto on a light terminal background', () => {
+    process.env.COLORFGBG = '0;15';
+    expect(resolveTuiThemePreference('auto').userBackground).not.toEqual(
+      DEFAULT_TUI_THEME.userBackground
+    );
+  });
+
+  it('uses contrast-safe mode colors for light and high-contrast profiles', () => {
+    process.env.COLORFGBG = '0;15';
+    const light = resolveTuiThemePreference('auto');
+    expect(light.modeBuild.foreground).toEqual({ kind: 'rgb', r: 51, g: 65, b: 85 });
+    expect(light.modePlan.foreground).toEqual({ kind: 'rgb', r: 3, g: 105, b: 161 });
+    expect(light.modeAuto.foreground).toEqual({ kind: 'rgb', r: 161, g: 98, b: 7 });
+    expect(light.modeGoal.foreground).toEqual({ kind: 'rgb', r: 126, g: 34, b: 206 });
+
+    const highContrast = resolveTuiThemePreference('high-contrast');
+    expect(highContrast.modeBuild.foreground).toEqual({ kind: 'named', value: 'white' });
+    expect(highContrast.modePlan.foreground).toEqual({ kind: 'named', value: 'cyan' });
+    expect(highContrast.modeAuto.foreground).toEqual({ kind: 'named', value: 'yellow' });
+    expect(highContrast.modeGoal.foreground).toEqual({ kind: 'named', value: 'magenta' });
   });
 });
