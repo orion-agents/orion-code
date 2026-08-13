@@ -6,7 +6,12 @@ import type { ToolDetailRepository } from '../runtime/tool-detail-repository';
 import { findCommand, getCommands } from '../commands';
 import { measureTuiLiveFrameHeight, renderTuiLiveFrame, renderTuiUiFrame } from './layout';
 import { getFileQuery, visibleCommandItems, visibleFileItems, type TuiPickerItem } from './pickers';
-import type { ToolConfirmationPolicy } from '../services/global-config';
+import type {
+  ToolConfirmationPolicy,
+  TuiMotionPreference,
+  TuiStatusItem,
+  UIConfig,
+} from '../services/global-config';
 import type { ToolPermissionScope } from '../services/tool-allowlist';
 import { createPermissionDecisionPickerState } from '../runtime/ui-view-model';
 import {
@@ -46,9 +51,10 @@ import {
   pushHistoryEntry,
   type InputHistoryState,
 } from '../runtime/composer/history';
-import { mkdtemp, rm } from 'fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import type { AgentModeSnapshot } from '../framework/agent-mode';
 
 /** Actions that should use 'stream' priority (FPS-capped). */
 const STREAM_ACTIONS: ReadonlySet<string> = new Set([
@@ -59,6 +65,7 @@ const STREAM_ACTIONS: ReadonlySet<string> = new Set([
   'toolFinished',
   'subtaskEvent',
   'researchEvent',
+  'agentModeChanged',
 ]);
 
 export interface TuiRunnerOptions {
@@ -67,7 +74,11 @@ export interface TuiRunnerOptions {
   height: number;
   cwd?: string;
   onSubmit?: (input: string) => void | Promise<void>;
+  onQueueSubmit?: (input: string) => void | Promise<void>;
   onCtrlC?: () => void;
+  onInterrupt?: () => void;
+  onExit?: () => void | Promise<void>;
+  onQueueClear?: () => void | Promise<void>;
   onPermissionDecision?: (
     requestId: string,
     approved: boolean,
@@ -75,8 +86,11 @@ export interface TuiRunnerOptions {
   ) => void | Promise<void>;
   /** Called when the user changes the tool confirmation policy via /permissions. */
   onPermissionModeChange?: (value: ToolConfirmationPolicy) => void | Promise<void>;
+  /** Fixed Shift+Tab shortcut. Deliberately not remappable. */
+  onCycleAgentMode?: () => void | Promise<void>;
   /** Initial tool confirmation policy, surfaced in the status bar until changed. */
   initialPermissionMode?: ToolConfirmationPolicy;
+  initialAgentMode?: AgentModeSnapshot;
   /** Inject scheduler deps for testing (fake timers). */
   schedulerDeps?: Partial<TuiRenderSchedulerDeps>;
   /** Inline surface for committed scrollback + live region rendering. */
@@ -89,6 +103,10 @@ export interface TuiRunnerOptions {
   detailRepository?: ToolDetailRepository;
   inspectorSurface?: TranscriptInspectorSurface;
   onOpenExternalEditor?: (filePath: string) => void | Promise<void>;
+  statusLine?: readonly TuiStatusItem[];
+  mascot?: boolean;
+  keymap?: UIConfig['keymap'];
+  motion?: TuiMotionPreference;
 }
 
 export interface TuiRunnerCounters {
@@ -110,6 +128,11 @@ export class TuiRunner {
   private readonly inspectorController: TranscriptInspectorController | null;
   private readonly inspectorSurface: TranscriptInspectorSurface | null;
   private history: InputHistoryState = initialHistoryState;
+  private historySearchQuery = '';
+  private historySearchIndex = 0;
+  private historySearchMatch = '';
+  private animationFrame = 0;
+  private animationTimer: ReturnType<typeof setInterval> | null = null;
   private surfaceFailed = false;
   private inspectorReady = false;
   private inspectorSearchActive = false;
@@ -135,6 +158,7 @@ export class TuiRunner {
     this.state = {
       ...initialTuiUiState,
       permissionMode: options.initialPermissionMode ?? initialTuiUiState.permissionMode,
+      agentMode: options.initialAgentMode ?? initialTuiUiState.agentMode,
     };
     this.width = options.width;
     this.height = options.height;
@@ -166,6 +190,11 @@ export class TuiRunner {
   /** Get the scheduler for external lifecycle management (flush, stop). */
   getScheduler(): TuiRenderScheduler {
     return this.scheduler;
+  }
+
+  stop(): void {
+    this.stopAnimation();
+    this.scheduler.stop();
   }
 
   /** Stop stale-width paints as soon as the terminal reports SIGWINCH. */
@@ -229,6 +258,10 @@ export class TuiRunner {
   dispatch(action: TuiUiAction): void {
     const prevState = this.state;
     this.state = tuiUiReducer(this.state, action);
+    if (action.type === 'setProcessing') {
+      if (action.processing) this.startAnimation();
+      else this.stopAnimation();
+    }
     if (action.type === 'setToolOutputViewMode' && action.mode !== prevState.toolOutputViewMode) {
       this.transcriptCache.clear();
     }
@@ -467,9 +500,29 @@ export class TuiRunner {
       transcriptWidth: this.transcriptWidth,
       theme: this.theme,
       toolOutputMode: this.state.toolOutputViewMode,
+      statusLine: this.options.statusLine,
+      mascot: this.options.mascot,
+      animationFrame: this.animationFrame,
       layoutTranscriptRecord: (entry: TuiTranscriptRecord, width: number) =>
         this.layoutTranscriptRecord(entry, width),
     };
+  }
+
+  private startAnimation(): void {
+    if (this.animationTimer || this.options.motion !== 'full' || this.options.mascot === false) {
+      return;
+    }
+    this.animationTimer = setInterval(() => {
+      this.animationFrame = (this.animationFrame + 1) % 2;
+      this.scheduler.request('stream');
+    }, 250);
+    this.animationTimer.unref?.();
+  }
+
+  private stopAnimation(): void {
+    if (this.animationTimer) clearInterval(this.animationTimer);
+    this.animationTimer = null;
+    this.animationFrame = 0;
   }
 
   private handleSurfaceError(error: unknown): void {
@@ -533,6 +586,14 @@ export class TuiRunner {
   private applyKey(key: TuiKey): void {
     const { value, cursor } = this.state.prompt;
     const overlay = this.state.overlay;
+
+    if (key === 'shift+tab') {
+      // Mode changes are runtime-owned. While work or a permission decision is
+      // active, the runtime stages the change for the next logical request and
+      // leaves the current turn/overlay untouched.
+      void this.options.onCycleAgentMode?.();
+      return;
+    }
 
     if (overlay?.type === 'sessions') {
       switch (key) {
@@ -728,12 +789,54 @@ export class TuiRunner {
       return;
     }
 
+    const configuredAction = this.configuredActionForKey(key);
+    if (configuredAction) {
+      switch (configuredAction) {
+        case 'submit':
+          this.submitPrompt();
+          return;
+        case 'queue':
+          if (this.state.processing) {
+            this.queuePrompt();
+            return;
+          }
+          break;
+        case 'interrupt':
+          this.options.onInterrupt?.();
+          return;
+        case 'history-search':
+          this.reverseHistorySearch();
+          return;
+        case 'external-editor':
+          this.openComposerInExternalEditor();
+          return;
+        case 'transcript':
+          this.openToolInspector();
+          return;
+        case 'redraw':
+          this.forceOwnedRedraw();
+          return;
+        case 'exit':
+          if (!value) void this.options.onExit?.();
+          return;
+      }
+    }
+
     switch (key) {
       case 'ctrl+o':
         this.openToolInspector();
         return;
       case 'ctrl+l':
         this.forceOwnedRedraw();
+        return;
+      case 'ctrl+r':
+        this.reverseHistorySearch();
+        return;
+      case 'ctrl+e':
+        this.openComposerInExternalEditor();
+        return;
+      case 'ctrl+d':
+        if (!value) void this.options.onExit?.();
         return;
       case 'enter':
         this.submitPrompt();
@@ -771,8 +874,13 @@ export class TuiRunner {
         return;
       case 'escape':
         this.dispatch({ type: 'closeOverlay' });
+        if (this.state.processing) this.options.onInterrupt?.();
         return;
       case 'tab':
+        if (this.state.processing && value.trim()) {
+          this.queuePrompt();
+          return;
+        }
         if (value.startsWith('/')) {
           this.syncPromptOverlay(value);
         } else if (getFileQuery(value)) {
@@ -786,6 +894,82 @@ export class TuiRunner {
         this.moveCursorDownOrHistory();
         return;
     }
+  }
+
+  private configuredActionForKey(key: TuiKey): keyof NonNullable<UIConfig['keymap']> | null {
+    const matches = Object.entries(this.options.keymap ?? {}).filter(([, bindings]) =>
+      bindings?.includes(key)
+    );
+    return (matches[0]?.[0] as keyof NonNullable<UIConfig['keymap']> | undefined) ?? null;
+  }
+
+  private queuePrompt(): void {
+    const input = this.state.prompt.value.trim();
+    if (!input) return;
+    this.history = pushHistoryEntry(this.history, input);
+    this.dispatch({ type: 'setPrompt', value: '', cursor: 0 });
+    this.dispatch({ type: 'closeOverlay' });
+    try {
+      const queued = this.options.onQueueSubmit?.(input);
+      if (queued) void queued.catch(() => this.reportSubmitFailure());
+    } catch {
+      this.reportSubmitFailure();
+    }
+  }
+
+  private reverseHistorySearch(): void {
+    const currentValue = this.state.prompt.value;
+    const query =
+      this.historySearchIndex > 0 && currentValue === this.historySearchMatch
+        ? this.historySearchQuery
+        : currentValue.trim().toLowerCase();
+    if (query !== this.historySearchQuery) {
+      this.historySearchQuery = query;
+      this.historySearchIndex = 0;
+    }
+    const matches = [...this.history.entries]
+      .reverse()
+      .filter(entry => !query || entry.toLowerCase().includes(query));
+    if (matches.length === 0) {
+      this.historySearchMatch = '';
+      this.dispatch({ type: 'setStatus', message: 'No matching input history.' });
+      return;
+    }
+    const match = matches[this.historySearchIndex % matches.length];
+    this.historySearchIndex += 1;
+    this.historySearchMatch = match;
+    this.dispatch({ type: 'setPrompt', value: match, cursor: match.length });
+    this.dispatch({
+      type: 'setStatus',
+      message: `History ${((this.historySearchIndex - 1) % matches.length) + 1}/${matches.length}`,
+    });
+  }
+
+  private openComposerInExternalEditor(): void {
+    if (!this.options.onOpenExternalEditor) {
+      this.dispatch({ type: 'setStatus', message: 'External editor is unavailable.' });
+      return;
+    }
+    const original = this.state.prompt.value;
+    this.modalTransition = this.modalTransition
+      .then(async () => {
+        const directory = await mkdtemp(join(tmpdir(), 'orion-code-prompt-'));
+        const filePath = join(directory, 'prompt.md');
+        try {
+          await writeFile(filePath, original, { encoding: 'utf8', mode: 0o600 });
+          await this.options.onOpenExternalEditor!(filePath);
+          const next = await readFile(filePath, 'utf8');
+          this.dispatch({ type: 'setPrompt', value: next, cursor: next.length });
+        } finally {
+          await rm(directory, { recursive: true, force: true });
+        }
+      })
+      .catch(error => {
+        this.dispatch({
+          type: 'setStatus',
+          message: `External editor failed: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      });
   }
 
   /** Navigate to previous history entry. */
@@ -886,6 +1070,22 @@ export class TuiRunner {
     const command = input.trim();
     if (command === '/redraw') {
       this.forceOwnedRedraw();
+      return true;
+    }
+    if (command === '/queue') {
+      const items = this.state.followupQueue.items;
+      this.dispatch({
+        type: 'setStatus',
+        message: items.length
+          ? `Queue ${items.length}/${this.state.followupQueue.limit}: ${items
+              .map((item, index) => `${index + 1}. ${item.text.replace(/\s+/gu, ' ').slice(0, 28)}`)
+              .join(' · ')}`
+          : 'Follow-up queue is empty.',
+      });
+      return true;
+    }
+    if (command === '/queue clear') {
+      void this.options.onQueueClear?.();
       return true;
     }
     const match = command.match(/^\/tool-output(?:\s+(adaptive|collapsed|full))?$/u);

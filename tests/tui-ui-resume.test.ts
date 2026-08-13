@@ -19,7 +19,10 @@ function makeEntries(count: number): TranscriptEntry[] {
 
 /** Walk the reducer state to a post-resume shape, exactly as the runtime does. */
 function resumeState(count: number): TuiUiState {
-  return tuiUiReducer(initialTuiUiState, { type: 'replaceTranscript', entries: makeEntries(count) });
+  return tuiUiReducer(initialTuiUiState, {
+    type: 'replaceTranscript',
+    entries: makeEntries(count),
+  });
 }
 
 describe('resume: replaceTranscript creates an append-only committed prefix', () => {
@@ -50,7 +53,7 @@ describe('resume: live frame geometry after restore', () => {
     const joined = rows.join('\n');
     expect(joined).not.toContain('restored-000');
     expect(joined).not.toContain('restored-059');
-    expect(joined).toContain('ready');
+    expect(joined).toContain('MODE BUILD');
     expect(joined).toContain('┌');
     expect(joined).toContain('└');
   });

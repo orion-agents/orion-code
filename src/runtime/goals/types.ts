@@ -357,7 +357,12 @@ export interface RuntimeGoalSnapshot {
 // Turn protocol
 // ============================================================================
 
-export type AgentInputKind = 'user' | 'revision' | 'goal_continuation' | 'command';
+export type AgentInputKind =
+  | 'user'
+  | 'revision'
+  | 'goal_continuation'
+  | 'plan_execution'
+  | 'command';
 
 export interface GoalTurnContext {
   goalId: string;
@@ -581,5 +586,8 @@ export const GOAL_INVARIANTS = {
   maxConsecutiveBlockerTurns: 3,
   maxConsecutiveNoProgressTurns: 3,
   maxAutomaticContinuationTurns: 5,
+  maxAutonomousLlmRequestsPerTurn: 8,
+  maxAutonomousToolCallsPerTurn: 32,
+  maxAutonomousModelVisibleBytesPerTurn: 32 * 1024,
   tokenBudgetMin: 1,
 } as const;

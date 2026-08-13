@@ -21,6 +21,7 @@ import {
 import { resolveUiRendererCapabilities } from './ui-events';
 import type {
   OrionCodeUiRuntime,
+  FollowupQueueItem,
   ToolPermissionRequest,
   TranscriptAppendEntry,
   UiEventSink,
@@ -30,6 +31,7 @@ import type { CommandUiRenderer } from '../commands/types';
 import { TurnController, type TurnControllerOptions } from './turn-controller';
 import type { AgentTurnRequest, GoalEvidenceRecord, GoalRuntimeEvent } from './goals/types';
 import {
+  authorizeGoalAbandonment,
   currentGoalToolContext,
   runWithGoalToolContext,
   type GoalToolExecutionContext,
@@ -48,6 +50,7 @@ import {
   isToolPermissionScope,
   type ToolPermissionScope,
 } from '../services/tool-allowlist';
+import { AgentModeLifecycleController } from '../framework/agent-mode';
 
 export type {
   AgentRuntimeInput,
@@ -90,6 +93,8 @@ export interface AgentRuntimeControllerOptions extends TurnControllerOptions {
   beforeTurn?: (input: string) => void;
   afterTurnLoop?: () => void;
   onTurnError?: (error: unknown) => void;
+  /** Optional lifecycle injection for deterministic runtime tests and embedders. */
+  agentModeLifecycle?: AgentModeLifecycleController;
 }
 
 function isExitInput(input: string): boolean {
@@ -170,6 +175,7 @@ export class AgentRuntimeController {
   private readonly turnController: TurnController;
   private readonly runner: AgentRuntimeRunner;
   private readonly eventSink: AgentRuntimeEventSink;
+  private readonly agentModeLifecycle: AgentModeLifecycleController;
   private readonly pendingPermissions = new Map<
     string,
     { request: AgentRuntimeToolPermissionRequest; finish: (approved: boolean) => void }
@@ -181,6 +187,9 @@ export class AgentRuntimeController {
   private goalProviderReservedTokens = 0;
   private nextPermissionRequestId = 1;
   private readonly queuedCommands: string[] = [];
+  private readonly followupQueue: FollowupQueueItem[] = [];
+  private readonly followupQueueLimit = 16;
+  private nextFollowupId = 1;
   /** v0.2.24: optional goal coordinator for /target mode. */
   private goalCoordinator: import('./goals/coordinator').GoalCoordinator | null = null;
   private goalCoordinatorSessionId: string | null = null;
@@ -208,18 +217,32 @@ export class AgentRuntimeController {
         this.captureGoalEvidence(event);
         const result = downstream.emit(event);
         if (event.type === 'session_restored') {
+          if (this.followupQueue.length > 0) {
+            this.followupQueue.splice(0);
+            this.emitFollowupQueue();
+          }
           this.restoreGoalForSession(event.event.sessionId, event.event.projectPath);
         }
         return result;
       },
     };
+    this.agentModeLifecycle =
+      options.agentModeLifecycle ?? new AgentModeLifecycleController(options.runtime.store);
+    this.agentModeLifecycle.subscribe(snapshot => {
+      this.eventSink.emit({ type: 'agent_mode_changed', snapshot });
+    });
     const events = createUiEventSinkFromAgentRuntimeEvents(this.eventSink);
     this.runner =
       options.runner ?? new AgentChatController(options.runtime, events, this.createChatOptions());
+    this.emitAgentModeSnapshot();
   }
 
   hasActiveTurn(): boolean {
     return this.turnController.hasActiveTurn();
+  }
+
+  getFollowupQueue(): readonly FollowupQueueItem[] {
+    return this.followupQueue;
   }
 
   /** v0.1.1: shared /target command handling for all renderers. */
@@ -351,6 +374,10 @@ export class AgentRuntimeController {
               executionRevoked = true;
             }
             success = coord.clear();
+            if (success && this.followupQueue.length > 0) {
+              this.followupQueue.splice(0);
+              this.emitFollowupQueue();
+            }
             if (hadGoal && !success) {
               error = this.failClosedGoalMutation(
                 coord,
@@ -485,6 +512,10 @@ export class AgentRuntimeController {
     switch (input.type) {
       case 'submit':
         return this.submit(input.text);
+      case 'queue_followup':
+        return this.queueFollowup(input.text);
+      case 'manage_followup_queue':
+        return this.manageFollowupQueue(input.action, input.itemId);
       case 'select_session':
         return this.submit(resumeSessionInput(input.sessionId, input.allProjects));
       case 'permission_decision':
@@ -498,7 +529,50 @@ export class AgentRuntimeController {
         return this.handleGoalControl(input as unknown as import('./goals/types').GoalControlInput);
       case 'permission_mode_change':
         return this.applyPermissionModeChange(input.value);
+      case 'cycle_agent_mode':
+        return this.cycleAgentMode();
     }
+  }
+
+  private queueFollowup(input: string): AgentRuntimeInputResult {
+    const text = input.trim();
+    if (!text) return { type: 'empty' };
+    if (!this.turnController.hasActiveTurn()) {
+      this.emitStatus('Nothing is running; press Enter to submit this message now.');
+      return { type: 'command_ignored' };
+    }
+    if (this.followupQueue.length >= this.followupQueueLimit) {
+      this.emitStatus(`Follow-up queue is full (${this.followupQueueLimit}).`);
+      return { type: 'followup_queue_full' };
+    }
+    const item: FollowupQueueItem = {
+      id: `followup-${this.nextFollowupId++}`,
+      text,
+      queuedAt: Date.now(),
+    };
+    this.followupQueue.push(item);
+    this.emitFollowupQueue();
+    this.emitStatus(`Queued follow-up ${this.followupQueue.length}/${this.followupQueueLimit}.`);
+    return { type: 'followup_queued', itemId: item.id };
+  }
+
+  private manageFollowupQueue(
+    action: 'clear' | 'remove',
+    itemId?: string
+  ): AgentRuntimeInputResult {
+    if (action === 'clear') {
+      this.followupQueue.splice(0);
+    } else if (itemId) {
+      const index = this.followupQueue.findIndex(item => item.id === itemId);
+      if (index >= 0) this.followupQueue.splice(index, 1);
+    }
+    this.emitFollowupQueue();
+    this.emitStatus(
+      this.followupQueue.length > 0
+        ? `${this.followupQueue.length} follow-up(s) queued.`
+        : 'Follow-up queue is empty.'
+    );
+    return { type: 'followup_queue_changed' };
   }
 
   submit(input: string): AgentRuntimeSubmitResult {
@@ -512,6 +586,23 @@ export class AgentRuntimeController {
 
     if (isTargetCommand(submitted)) {
       return this.handleTargetInput(submitted).runtimeResult;
+    }
+
+    const activeSession = this.options.runtime.getSession();
+    const activeGoalCoordinator = this.ensureGoalCoordinator(false);
+    if (activeSession && activeGoalCoordinator?.goal) {
+      const abandonment = authorizeGoalAbandonment({
+        inputKind: 'user',
+        text: submitted,
+        sessionId: activeSession.id,
+        persistAsUserMessage: true,
+        echoToTranscript: true,
+        generation: activeGoalCoordinator.generation,
+      });
+      if (abandonment.authorized) {
+        this.emitAppend(submittedEntry(submitted));
+        return this.handleTargetInput('/goal exit').runtimeResult;
+      }
     }
 
     const parsedInput = parseInput(submitted);
@@ -983,7 +1074,58 @@ export class AgentRuntimeController {
       // overwriting the user-facing terminal result.
       this.emitGoalEvent({ type: 'goal_updated', goal: snapshot, reason: 'turn_finalized' });
       if (terminalEvent) this.emitGoalEvent(terminalEvent);
+      if (terminalEvent?.type === 'goal_completed') {
+        this.autoExitCompletedGoal(coord, snapshot.goalId, 'completion_auto_exit');
+      }
     }
+  }
+
+  /**
+   * Leave Goal mode after a passed completion audit while retaining the
+   * terminal sidecar as the durable completion receipt. The conditional
+   * session mutation prevents a stale completion from clearing a newer Goal.
+   */
+  private autoExitCompletedGoal(
+    coord: import('./goals/coordinator').GoalCoordinator,
+    goalId: string,
+    reason: 'completion_auto_exit' | 'completion_recovery_auto_exit'
+  ): boolean {
+    if (
+      coord.goal?.goalId !== goalId ||
+      coord.goal.status !== 'complete' ||
+      coord.goal.completionAudit?.passed !== true
+    ) {
+      return false;
+    }
+
+    try {
+      const { clearSessionGoalBinding } =
+        require('../services/session-storage') as typeof import('../services/session-storage');
+      clearSessionGoalBinding(coord.boundSessionId, goalId);
+    } catch (cause) {
+      const detail = redactTraceText(cause instanceof Error ? cause.message : String(cause)).slice(
+        0,
+        600
+      );
+      const message = `Goal completed, but automatic Goal-mode exit could not clear the session binding. The completed Goal remains terminal and will be reconciled on restore. ${detail}`;
+      this.emitAppend({
+        role: 'error',
+        title: 'goal auto-exit',
+        content: message,
+        errorLayer: 'session',
+      });
+      this.emitStatus(message);
+      return false;
+    }
+
+    this.continuationScheduleEpoch += 1;
+    this.rejectPendingPermissions();
+    if (this.followupQueue.length > 0) {
+      this.followupQueue.splice(0);
+      this.emitFollowupQueue();
+    }
+    this.emitGoalEvent({ type: 'goal_cleared', goalId, reason });
+    return true;
   }
 
   private failClosedGoalPersistence(
@@ -1163,6 +1305,7 @@ export class AgentRuntimeController {
       this.goalProviderReservedTokens = 0;
       if (!this.requestIsCurrent(nextRequest)) break;
       const request: AgentTurnRequest = nextRequest;
+      const planCompletionBeforeRequest = this.agentModeLifecycle.completionRevision();
       const nextInput =
         request.text?.trim() ||
         'Continue pursuing the active goal from its persisted plan and evidence.';
@@ -1235,6 +1378,14 @@ export class AgentRuntimeController {
             finalizedGoal?.status !== 'blocked')
         );
 
+        const completedPlan =
+          this.agentModeLifecycle.completedPlanSince(planCompletionBeforeRequest) ?? undefined;
+        // A shortcut pressed during the turn affects the next logical request,
+        // never the permissions or tools of the request that just completed.
+        // exit_plan_mode consumes a pending next mode while saving the plan;
+        // every other request applies it here at the same boundary.
+        if (!completedPlan) this.agentModeLifecycle.applyPending();
+
         if (revision?.trim()) {
           const currentCoord = this.ensureGoalCoordinator(false);
           const currentGoal =
@@ -1264,12 +1415,35 @@ export class AgentRuntimeController {
               generation: currentCoord?.generation ?? 0,
             };
           }
+        } else if (completedPlan) {
+          const currentCoord = this.ensureGoalCoordinator(false);
+          const currentGoal =
+            currentCoord?.goal?.status === 'active' ? currentCoord.goal : undefined;
+          nextRequest = {
+            inputKind: 'plan_execution',
+            text: `Execute the saved plan now. Continue autonomously from the plan and verify the result.\n\n${completedPlan}`,
+            sessionId: this.options.runtime.getSession()?.id ?? request.sessionId,
+            goal: currentGoal
+              ? {
+                  goalId: currentGoal.goalId,
+                  revision: currentGoal.revision,
+                  continuationIndex: currentGoal.continuationCount,
+                }
+              : undefined,
+            persistAsUserMessage: false,
+            echoToTranscript: false,
+            generation: currentCoord?.generation ?? 0,
+          };
+          this.emitStatus('Plan saved · starting execution in the selected mode.');
         } else {
           const queuedCommand = this.queuedCommands.shift();
-          nextRequest = queuedCommand
+          const queuedFollowup = queuedCommand ? undefined : this.followupQueue.shift();
+          if (queuedFollowup) this.emitFollowupQueue();
+          const queuedInput = queuedCommand ?? queuedFollowup?.text;
+          nextRequest = queuedInput
             ? {
                 inputKind: 'user',
-                text: queuedCommand,
+                text: queuedInput,
                 sessionId: this.options.runtime.getSession()?.id ?? request.sessionId,
                 persistAsUserMessage: true,
                 echoToTranscript: false,
@@ -1328,6 +1502,30 @@ export class AgentRuntimeController {
 
   private emitProcessing(processing: boolean): void {
     this.eventSink.emit({ type: 'processing_changed', processing });
+  }
+
+  private emitFollowupQueue(): void {
+    this.eventSink.emit({
+      type: 'followup_queue_changed',
+      snapshot: { items: [...this.followupQueue], limit: this.followupQueueLimit },
+    });
+  }
+
+  private emitAgentModeSnapshot(): void {
+    this.eventSink.emit({
+      type: 'agent_mode_changed',
+      snapshot: this.agentModeLifecycle.snapshot(),
+    });
+  }
+
+  private cycleAgentMode(): AgentRuntimeInputResult {
+    const deferred = this.turnController.hasActiveTurn();
+    const snapshot = this.agentModeLifecycle.cycle({ defer: deferred });
+    return {
+      type: 'agent_mode_changed',
+      snapshot,
+      appliesFrom: deferred ? 'next-logical-request' : 'immediate',
+    };
   }
 
   private emitGoalEvent(event: GoalRuntimeEvent): void {
@@ -1457,7 +1655,25 @@ export class AgentRuntimeController {
     this.goalCoordinatorSessionId = null;
     const coord = this.bindGoalCoordinator(sessionId, true, projectPath);
     const snapshot = coord?.snapshot();
-    if (snapshot) this.emitGoalEvent({ type: 'goal_restored', goal: snapshot });
+    if (!snapshot) return;
+    if (snapshot.status === 'complete' && coord.goal?.completionAudit?.passed === true) {
+      const { loadSessionMeta } =
+        require('../services/session-storage') as typeof import('../services/session-storage');
+      // A completed sidecar with no active binding is a historical receipt,
+      // not an active Goal to restore. Only replay the completion lifecycle
+      // when recovering the crash window between the terminal write and the
+      // conditional binding clear.
+      if (loadSessionMeta(sessionId)?.activeGoalId !== snapshot.goalId) return;
+      this.emitGoalEvent({ type: 'goal_restored', goal: snapshot });
+      this.emitGoalEvent({
+        type: 'goal_completed',
+        goal: snapshot,
+        audit: coord.goal.completionAudit,
+      });
+      this.autoExitCompletedGoal(coord, snapshot.goalId, 'completion_recovery_auto_exit');
+      return;
+    }
+    this.emitGoalEvent({ type: 'goal_restored', goal: snapshot });
   }
 
   async requestToolPermission(request: AgentRuntimeToolPermissionRequest): Promise<boolean> {
@@ -1750,6 +1966,7 @@ export class AgentRuntimeController {
     const chatOptions: AgentChatControllerOptions = {
       uiCapabilities,
       uiRenderer: resolvedRenderer,
+      agentModeLifecycle: this.agentModeLifecycle,
       onVerificationStateChange: state => this.turnController.setVerificationState(state),
       ...(this.options.chatOptions ?? {}),
     };

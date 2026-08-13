@@ -348,7 +348,7 @@ def run_pty_renderer(
                 # The static header is painted before the TUI input parser owns
                 # the PTY. Wait for the first complete status/prompt frame.
                 output.wait("/ commands", timeout=25)
-                output.wait("[perm:allow]", timeout=10)
+                output.wait("PERM allow", timeout=10)
                 time.sleep(0.1)
             os.write(master, (ROOT_PROMPT + "\r").encode("utf-8"))
             plain = output.wait(ROOT_COMPLETE, timeout=45)

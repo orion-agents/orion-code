@@ -29,7 +29,12 @@ import { PrintEventSink } from '../src/print-ui/launch';
 import { formatTerminalStatusMessage, TerminalEventSink } from '../src/terminal-ui/launch';
 import { renderFrameRows } from '../src/tui-core/frame';
 import { renderTuiUiFrame } from '../src/tui-ui/layout';
-import { initialTuiUiState, tuiUiReducer } from '../src/tui-ui/state';
+import { initialTuiUiState, tuiUiReducer, type TuiUiState } from '../src/tui-ui/state';
+import {
+  createSession,
+  loadSessionMeta,
+  updateSessionGoalBinding,
+} from '../src/services/session-storage';
 
 function runtime(
   projectPath: string,
@@ -322,14 +327,17 @@ describe('Goal renderer projection parity', () => {
     const root = mkdtempSync(join(tmpdir(), 'orion-goal-renderer-projection-'));
     const projectPath = join(root, 'project');
     const configPath = join(root, 'config');
-    const sessionId = 'renderer-projection-session';
     const previousConfigDir = process.env.ORION_CODE_CONFIG_DIR;
     process.env.ORION_CODE_CONFIG_DIR = configPath;
     mkdirSync(projectPath);
     execFileSync('git', ['init', '--quiet', projectPath]);
 
+    const session = createSession(projectPath, 'test-model');
+    const sessionId = session.id;
+
     const seed = new GoalCoordinator(projectPath, sessionId);
     expect(seed.create('Verify renderer projection')).toEqual({ ok: true });
+    updateSessionGoalBinding(sessionId, seed.goal);
 
     const protocolEvents: AgentRuntimeEvent[] = [];
     const eventSink: AgentRuntimeEventSink = {
@@ -425,7 +433,13 @@ describe('Goal renderer projection parity', () => {
       await flushImmediate();
 
       expect(turnIndex).toBe(2);
-      expect(controller.submit('/goal exit')).toEqual({ type: 'command_handled' });
+      expect(loadSessionMeta(sessionId)?.activeGoalId).toBeUndefined();
+      const completedReceipt = new GoalCoordinator(projectPath, sessionId);
+      expect(completedReceipt.load(false)).toBe(true);
+      expect(completedReceipt.goal).toMatchObject({
+        status: 'complete',
+        completionAudit: expect.objectContaining({ passed: true }),
+      });
 
       const events = goalEvents(protocolEvents);
       const eventTypes = events.map(event => event.type);
@@ -515,6 +529,20 @@ describe('Goal renderer projection parity', () => {
         );
       expect(completedState.statusMessage).toBe(formatGoalRuntimeEvent(completedEvent));
       expect(completedState.statusMessage).toContain('criterion:primary=passed');
+
+      const exitedState = events.reduce<TuiUiState>(
+        (state, event) => tuiUiReducer(state, { type: 'goalEvent', event }),
+        {
+          ...initialTuiUiState,
+          agentMode: { baseMode: 'auto', pendingBaseMode: null },
+        }
+      );
+      expect(exitedState.goal).toBeNull();
+      expect(exitedState.agentMode.baseMode).toBe('auto');
+      expect(exitedState.statusMessage).toContain('exited Goal mode');
+      expect(
+        renderFrameRows(renderTuiUiFrame(exitedState, { width: 160, height: 8 })).join('\n')
+      ).toContain('MODE AUTO');
 
       const terminalWrites: string[] = [];
       const terminal = new TerminalEventSink(testRuntime, {

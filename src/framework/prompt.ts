@@ -7,6 +7,7 @@
  */
 
 import type { OrionCodeTool } from './tool';
+import type { AgentMode } from '../commands/types';
 
 // ============================================================================
 // 类型
@@ -29,6 +30,10 @@ export interface PromptContext {
   referencedFilesContent?: string;
   /** v0.2.24: Persistent goal context fragment (from GoalCoordinator). */
   goalContent?: string;
+  /** Task-scoped read-only planning lifecycle started by /plan. */
+  planMode?: boolean;
+  /** Active BUILD / PLAN / AUTO behavior contract. */
+  agentMode?: AgentMode;
 }
 
 /** A named prompt section */
@@ -71,7 +76,7 @@ Execution strategy:
   {
     name: 'tools',
     dynamic: false,
-    render: (ctx) => {
+    render: ctx => {
       const toolNames = ctx.tools.map(t => t.name).join(', ');
       return `Available tools: ${toolNames}.
 Use tools when they help complete the task. Prefer the right tool for the job.
@@ -88,7 +93,7 @@ Batched tool strategy:
   {
     name: 'env_info',
     dynamic: true,
-    render: (ctx) => `Current environment:
+    render: ctx => `Current environment:
 - Working directory: ${ctx.cwd}
 - Platform: ${ctx.platform}
 - Node.js: ${ctx.nodeVersion}`,
@@ -96,7 +101,7 @@ Batched tool strategy:
   {
     name: 'project_instructions',
     dynamic: true,
-    render: (ctx) => {
+    render: ctx => {
       if (!ctx.projectInstructionsContent) return '';
       return ctx.projectInstructionsContent;
     },
@@ -104,7 +109,7 @@ Batched tool strategy:
   {
     name: 'memory',
     dynamic: true,
-    render: (ctx) => {
+    render: ctx => {
       if (!ctx.memoryContent) return '';
       return `Project memory:\n${ctx.memoryContent}`;
     },
@@ -112,7 +117,7 @@ Batched tool strategy:
   {
     name: 'skills',
     dynamic: true,
-    render: (ctx) => {
+    render: ctx => {
       if (!ctx.skillsContent) return '';
       return ctx.skillsContent;
     },
@@ -120,7 +125,7 @@ Batched tool strategy:
   {
     name: 'active_skills',
     dynamic: true,
-    render: (ctx) => {
+    render: ctx => {
       if (!ctx.activeSkillsContent) return '';
       return ctx.activeSkillsContent;
     },
@@ -128,7 +133,7 @@ Batched tool strategy:
   {
     name: 'referenced_files',
     dynamic: true,
-    render: (ctx) => {
+    render: ctx => {
       if (!ctx.referencedFilesContent) return '';
       return ctx.referencedFilesContent;
     },
@@ -136,7 +141,7 @@ Batched tool strategy:
   {
     name: 'subagents',
     dynamic: true,
-    render: (ctx) => {
+    render: ctx => {
       // Only render when the runtime-bound `subtask` tool is exposed this turn.
       if (!ctx.tools.some(t => t.name === 'subtask')) return '';
       return `Subagent capability:
@@ -151,9 +156,44 @@ Batched tool strategy:
   {
     name: 'goal',
     dynamic: true,
-    render: (ctx) => {
+    render: ctx => {
       if (!ctx.goalContent) return '';
       return ctx.goalContent;
+    },
+  },
+  {
+    name: 'agent_mode',
+    dynamic: true,
+    render: ctx => {
+      if (ctx.agentMode === 'auto') {
+        return `[Auto Mode]
+- Execute immediately and work autonomously until the user's goal is achieved and verified.
+- Do not ask permission questions or clarifying questions. Resolve uncertainty from repository evidence and make the safest reasonable assumption.
+- If a hard safety policy blocks an action, do not ask the user to approve it; choose a reversible in-scope alternative and continue.
+- Respect explicit user boundaries, protected paths, sandbox restrictions, hard deny rules, and destructive-action safeguards.`;
+      }
+      if (ctx.agentMode === 'plan') {
+        return `[Plan-to-Execution Mode]
+- First produce and save a decision-complete plan using the read-only Plan lifecycle.
+- After exit_plan_mode succeeds, the runtime starts a separate execution request in the selected next mode.
+- Never edit or execute the plan in the planning request itself.`;
+      }
+      return `[Build Mode]
+- Use the normal collaborative coding workflow.
+- Make reasonable progress autonomously, while using the configured permission policy for actions that require confirmation.`;
+    },
+  },
+  {
+    name: 'plan_mode',
+    dynamic: true,
+    render: ctx => {
+      if (!ctx.planMode) return '';
+      return `[Plan Mode]
+- Explore and reason read-only. Do not edit files, run mutating commands, or perform external actions.
+- Resolve material unknowns from repository evidence; ask the user only when a decision cannot be inferred safely.
+- Produce a decision-complete implementation plan with scope, ordered changes, tests, risks, and acceptance checks.
+- When the plan is ready, call exit_plan_mode exactly once with the final plan. A successful call saves it and exits plan mode automatically.
+- Do not ask the user to run another exit command, and do not start implementing the plan in this turn. The runtime will start execution as a separate logical request.`;
     },
   },
 ];

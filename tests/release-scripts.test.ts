@@ -114,6 +114,15 @@ describe('release-check script contract', () => {
     expect(buildIndex).toBeGreaterThanOrEqual(0);
     expect(buildIndex).toBeGreaterThan(dependencyPolicyIndex);
     expect(releaseCheckIndex).toBeGreaterThan(buildIndex);
+    expect(prepublishOnly).toContain('npm run test:coverage -- --runInBand');
+  });
+
+  it('pins third-party GitHub Actions to immutable commit SHAs', () => {
+    const workflow = readFileSync(join(projectRoot, '.github', 'workflows', 'ci.yml'), 'utf8');
+    const uses = [...workflow.matchAll(/^\s*uses:\s*([^\s#]+)/gmu)].map(match => match[1]);
+
+    expect(uses.length).toBeGreaterThan(0);
+    expect(uses.filter(value => !/@[0-9a-f]{40}$/u.test(value))).toEqual([]);
   });
 
   it('keeps the dependency policy as a blocking release-gate step', () => {

@@ -59,7 +59,7 @@ describe('TOOLS array', () => {
     expect(names).toContain('mcp_list');
     expect(names).toContain('mcp_call');
     expect(names).toContain('todo_write');
-    expect(names).toContain('enter_plan_mode');
+    expect(names).not.toContain('enter_plan_mode');
     expect(names).toContain('exit_plan_mode');
   });
 });
@@ -593,6 +593,46 @@ describe('exec_command tool', () => {
       expect(fs.realpathSync(result.output.trim())).toBe(fs.realpathSync(path.join(dir, 'child')));
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects absolute and traversing cwd outside ToolContext.cwd', async () => {
+    const workspace = fs.mkdtempSync(path.join(tmpdir(), 'orion-code-tool-workspace-'));
+    const outside = fs.mkdtempSync(path.join(tmpdir(), 'orion-code-tool-outside-'));
+
+    try {
+      const context = { ...ctx, cwd: workspace };
+      const absolute = await tool.execute({ command: 'pwd', cwd: outside }, context);
+      const traversal = await tool.execute({ command: 'pwd', cwd: '../' }, context);
+      const permission = tool.checkPermissions?.({ command: 'pwd', cwd: outside }, context);
+
+      expect(absolute).toMatchObject({ success: false, output: '' });
+      expect(absolute.error).toContain('workspace-relative');
+      expect(traversal).toMatchObject({ success: false, output: '' });
+      expect(traversal.error).toContain('within the workspace');
+      expect(permission).toMatchObject({ behavior: 'deny' });
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects workspace symlinks that point an exec cwd outside the workspace', async () => {
+    const workspace = fs.mkdtempSync(path.join(tmpdir(), 'orion-code-tool-workspace-'));
+    const outside = fs.mkdtempSync(path.join(tmpdir(), 'orion-code-tool-outside-'));
+    fs.symlinkSync(outside, path.join(workspace, 'escape'));
+
+    try {
+      const result = await tool.execute(
+        { command: 'pwd', cwd: 'escape' },
+        { ...ctx, cwd: workspace }
+      );
+
+      expect(result).toMatchObject({ success: false, output: '' });
+      expect(result.error).toContain('within the workspace');
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
     }
   });
 });

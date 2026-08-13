@@ -143,7 +143,7 @@ export function parseTargetCommand(rawInput: string): TargetParseResult {
   if (rest === 'clear' || /^clear\s+-/u.test(rest)) {
     return {
       ok: false,
-      error: `${cmdPrefix} clear was removed. Use ${cmdPrefix} exit to stop execution and remove the Goal.`,
+      error: `${cmdPrefix} clear was removed. Use /goal exit to stop execution and remove the Goal.`,
     };
   }
 

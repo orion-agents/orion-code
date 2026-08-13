@@ -14,6 +14,7 @@ import {
   encodeStyleToSgr,
   SGR_RESET,
   sanitizeTerminalText,
+  shouldSuppressColor,
   DEFAULT_THEME,
   DEFAULT_STYLE,
   type TuiStyle,
@@ -54,10 +55,12 @@ describe('tui style: equality', () => {
 
   it('stylesEqual returns false for different styles', () => {
     expect(stylesEqual({ bold: true }, { bold: false })).toBe(false);
-    expect(stylesEqual(
-      { foreground: { kind: 'named', value: 'red' } },
-      { foreground: { kind: 'named', value: 'green' } }
-    )).toBe(false);
+    expect(
+      stylesEqual(
+        { foreground: { kind: 'named', value: 'red' } },
+        { foreground: { kind: 'named', value: 'green' } }
+      )
+    ).toBe(false);
   });
 
   it('styleKey is stable for same input', () => {
@@ -70,6 +73,13 @@ describe('tui style: equality', () => {
 // ============================================================================
 
 describe('tui style: SGR encoding', () => {
+  const originalNoColor = process.env.NO_COLOR;
+
+  afterEach(() => {
+    if (originalNoColor === undefined) delete process.env.NO_COLOR;
+    else process.env.NO_COLOR = originalNoColor;
+  });
+
   it('returns empty string for default style', () => {
     expect(encodeStyleToSgr(DEFAULT_STYLE)).toBe('');
   });
@@ -79,13 +89,15 @@ describe('tui style: SGR encoding', () => {
   });
 
   it('encodes named foreground color', () => {
-    expect(encodeStyleToSgr({ foreground: { kind: 'named', value: 'red' } }, false)).toBe('\x1b[31m');
+    expect(encodeStyleToSgr({ foreground: { kind: 'named', value: 'red' } }, false)).toBe(
+      '\x1b[31m'
+    );
   });
 
   it('encodes multiple attributes in order', () => {
     const sgr = encodeStyleToSgr(
       { bold: true, foreground: { kind: 'named', value: 'green' } },
-      false,
+      false
     );
     expect(sgr).toBe('\x1b[1;32m');
   });
@@ -96,10 +108,7 @@ describe('tui style: SGR encoding', () => {
   });
 
   it('encodes rgb color', () => {
-    const sgr = encodeStyleToSgr(
-      { foreground: { kind: 'rgb', r: 10, g: 20, b: 30 } },
-      false,
-    );
+    const sgr = encodeStyleToSgr({ foreground: { kind: 'rgb', r: 10, g: 20, b: 30 } }, false);
     expect(sgr).toBe('\x1b[38;2;10;20;30m');
   });
 
@@ -116,13 +125,23 @@ describe('tui style: SGR encoding', () => {
   });
 
   it('suppresses semantic foreground and background while preserving attributes', () => {
-    const sgr = encodeStyleToSgr({
-      ...DEFAULT_THEME.userMarker,
-      ...DEFAULT_THEME.userBackground,
-    }, true);
+    const sgr = encodeStyleToSgr(
+      {
+        ...DEFAULT_THEME.userMarker,
+        ...DEFAULT_THEME.userBackground,
+      },
+      true
+    );
     expect(sgr).toBe('\x1b[1m');
     expect(sgr).not.toContain('38');
     expect(sgr).not.toContain('48');
+  });
+
+  it('treats an empty NO_COLOR value as an active no-color request', () => {
+    process.env.NO_COLOR = '';
+
+    expect(shouldSuppressColor()).toBe(true);
+    expect(encodeStyleToSgr(DEFAULT_THEME.modePlan ?? {})).toBe('\x1b[1m');
   });
 
   it('SGR_RESET is the reset sequence', () => {
@@ -276,6 +295,10 @@ describe('tui style: theme', () => {
     expect(DEFAULT_THEME.userMarker).toBeDefined();
     expect(DEFAULT_THEME.userText).toBeDefined();
     expect(DEFAULT_THEME.userBackground).toBeDefined();
+    expect(DEFAULT_THEME.modeBuild?.foreground).toEqual({ kind: 'rgb', r: 248, g: 250, b: 252 });
+    expect(DEFAULT_THEME.modePlan?.foreground).toEqual({ kind: 'rgb', r: 88, g: 190, b: 255 });
+    expect(DEFAULT_THEME.modeAuto?.foreground).toEqual({ kind: 'rgb', r: 255, g: 189, b: 92 });
+    expect(DEFAULT_THEME.modeGoal?.foreground).toEqual({ kind: 'rgb', r: 196, g: 144, b: 255 });
     expect(DEFAULT_THEME.inlineCode).toBeDefined();
     expect(DEFAULT_THEME.link).toBeDefined();
     expect(DEFAULT_THEME.toolRunning).toBeDefined();
@@ -304,15 +327,21 @@ describe('tui style: theme', () => {
     expect(DEFAULT_THEME.userBackground?.background?.kind).toBe('rgb');
     expect(DEFAULT_THEME.userBackground?.background).toEqual({
       kind: 'rgb',
-      r: 218,
-      g: 221,
-      b: 226,
+      r: 43,
+      g: 52,
+      b: 68,
     });
     expect(DEFAULT_THEME.userText?.foreground).toEqual({
       kind: 'rgb',
-      r: 32,
-      g: 35,
-      b: 40,
+      r: 226,
+      g: 232,
+      b: 240,
+    });
+    expect(DEFAULT_THEME.userMarker?.foreground).toEqual({
+      kind: 'rgb',
+      r: 103,
+      g: 232,
+      b: 249,
     });
     expect(DEFAULT_THEME.code.background?.kind).toBe('rgb');
     expect(DEFAULT_THEME.inlineCode?.background?.kind).toBe('rgb');

@@ -220,9 +220,9 @@ function isSafeReadOnly(risk: ToolRiskAssessment): boolean {
  * Resolve an `ask` permission against the permission mode.
  *
  * Historically this logic was inlined as `permissionMode === 'default'`, which meant
- * every non-default mode (plan / acceptEdits / auto) silently skipped confirmation and
- * executed the tool. That defeated plan mode's read-only guarantee and widened
- * acceptEdits from "auto-accept file edits" to "auto-accept everything".
+ * every non-default mode silently skipped confirmation without a complete safety
+ * decision. Plan and acceptEdits stay restrictive here; Auto delegates to the full
+ * policy/risk gate below and never opens an interactive prompt.
  */
 export function resolveAskPermission(
   permissionMode: string | undefined,
@@ -233,9 +233,9 @@ export function resolveAskPermission(
     case 'plan':
       return 'block';
     case 'auto':
-      // Auto mode is not a risk override. The caller must establish that the
-      // invocation is explicitly safe/read-only before allowing it.
-      return 'confirm';
+      // Auto never opens an interactive permission prompt. The full gate below
+      // still enforces hard denies, workspace/sandbox guards and risk metadata.
+      return 'allow';
     case 'acceptEdits':
       return tool?.isFileEdit?.(args) === true ? 'allow' : 'confirm';
     default:
@@ -267,11 +267,12 @@ export interface EffectivePermission {
  *   1. tool `checkPermissions() === 'deny'`  — never overridable by config
  *   2. allowlist `deny:` rule                — project can always tighten
  *   3. plan mode                             — only explicit safe read-only metadata runs
- *   4. allowlist `ask:` rule                 — explicit escalation beats modes
- *   5. acceptEdits                           — only explicit file edits auto-run
- *   6. allowlist `allow:` rule               — known tools except destructive non-file operations
- *   7. safe read-only tools                  — auto-run in every non-plan mode
- *   8. otherwise confirm (fail closed)
+ *   4. auto mode                             — decide locally; no interactive permission prompt
+ *   5. allowlist `ask:` rule                 — explicit escalation in collaborative modes
+ *   6. acceptEdits                           — only explicit file edits auto-run
+ *   7. allowlist `allow:` rule               — known tools except destructive non-file operations
+ *   8. safe read-only tools                  — auto-run in every non-plan mode
+ *   9. otherwise confirm (fail closed)
  */
 export function resolveEffectivePermission(input: {
   toolName: string;
@@ -324,6 +325,31 @@ export function resolveEffectivePermission(input: {
     };
   }
 
+  if (permissionMode === 'auto') {
+    if (!risk.known) {
+      return {
+        outcome: 'deny',
+        source: 'missing_risk_metadata',
+        reason: riskReason,
+        risk: risk.risk,
+      };
+    }
+    if (risk.risk === 'destructive' && !risk.isFileEdit) {
+      return {
+        outcome: 'deny',
+        source: 'mode_auto',
+        reason: `Auto safety blocked destructive non-file tool ${toolName}. Choose a reversible alternative.`,
+        risk: risk.risk,
+      };
+    }
+    return {
+      outcome: 'allow',
+      source: 'mode_auto',
+      reason: 'Auto mode approved this invocation after local policy and risk checks.',
+      risk: risk.risk,
+    };
+  }
+
   if (allowlist?.effect === 'ask') {
     return { outcome: 'confirm', source: 'allowlist_ask', reason, risk: risk.risk };
   }
@@ -368,8 +394,6 @@ export function resolveEffectivePermission(input: {
     };
   }
 
-  // `auto` is deliberately not a blanket approval. It can only use the same
-  // explicit safe-read risk envelope as the regular mode.
   if (isSafeReadOnly(risk)) return { outcome: 'allow', risk: risk.risk };
 
   return {

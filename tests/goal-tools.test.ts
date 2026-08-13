@@ -334,6 +334,55 @@ describe('Goal model tools', () => {
       expect(lastContext.pendingTerminalRequest).toBeUndefined();
     });
 
+    it('stops completion retries until the runtime captures new evidence', async () => {
+      coordinator.create('test');
+      const criterion = coordinator.goal!.contract!.successCriteria[0];
+      const first = await execute(updateGoalTool, {
+        status: 'complete',
+        criterion_evidence: [{ criterion_id: criterion.id, evidence_ids: ['invented-1'] }],
+      });
+      expect(first.success).toBe(false);
+
+      const retry = await runWithGoalToolContext(lastContext, () =>
+        updateGoalTool.execute(
+          {
+            status: 'complete',
+            criterion_evidence: [{ criterion_id: criterion.id, evidence_ids: ['invented-2'] }],
+          },
+          { cwd: '/test', config: { name: 'test', mode: 'test' } }
+        )
+      );
+      expect(retry.success).toBe(false);
+      expect(retry.error).toContain('no new runtime evidence');
+      expect(retry.error).toContain('stop retrying');
+
+      lastContext.evidenceRecords.push({
+        id: 'evidence-after-rejection',
+        goalId: coordinator.goal!.goalId,
+        goalRevision: coordinator.goal!.revision,
+        objectiveRevision: coordinator.goal!.contract?.objectiveRevision ?? 0,
+        turnId: 'turn-1',
+        kind: 'test',
+        subject: 'goal test after rejection',
+        result: 'passed',
+        sourceRef: 'tool:turn-1:exec_command',
+        capturedAt: Date.now(),
+        redacted: true,
+      });
+      const afterEvidence = await runWithGoalToolContext(lastContext, () =>
+        updateGoalTool.execute(
+          {
+            status: 'complete',
+            criterion_evidence: [
+              { criterion_id: criterion.id, evidence_ids: ['evidence-after-rejection'] },
+            ],
+          },
+          { cwd: '/test', config: { name: 'test', mode: 'test' } }
+        )
+      );
+      expect(afterEvidence.success).toBe(true);
+    });
+
     it('rejects reuse of one evidence record across multiple criteria', async () => {
       coordinator.create('test');
       const primary = coordinator.goal!.contract!.successCriteria[0];
@@ -531,15 +580,18 @@ describe('Goal model tools', () => {
       expect(coordinator.goal).toBeNull();
     });
 
-    it.each(['Can you abandon this goal?', '请结束当前目标？'])(
-      'accepts an explicit abandonment request with question punctuation: %s',
-      async text => {
-        coordinator.create('待取消目标');
-        const result = await abandon(text, 'user', '用户明确要求结束目标');
-        expect(result.success).toBe(true);
-        expect(coordinator.goal).toBeNull();
-      }
-    );
+    it.each([
+      'Can you abandon this goal?',
+      'exit goal mode',
+      '请结束当前目标？',
+      '退出goal模式',
+      '退出目标模式',
+    ])('accepts an explicit abandonment request with question punctuation: %s', async text => {
+      coordinator.create('待取消目标');
+      const result = await abandon(text, 'user', '用户明确要求结束目标');
+      expect(result.success).toBe(true);
+      expect(coordinator.goal).toBeNull();
+    });
 
     it('registers a destructive typed tool and denies permission without runtime context', () => {
       expect(GOAL_TOOLS).toContain(abandonGoalTool);

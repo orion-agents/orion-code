@@ -13,6 +13,8 @@ import {
   appendSessionMessage,
   commitSessionCompactCheckpoint,
   createSession,
+  loadSessionMeta,
+  renameSession,
   type SessionMeta,
 } from '../src/services/session-storage';
 import type { CommandContext } from '../src/commands/types';
@@ -246,5 +248,70 @@ describe('session commands', () => {
     expect(printed).toContain('(compact checkpoint)');
     expect(printed).toContain('Covers: 2 source messages');
     expect(printed).toContain('Restored 1 model-context messages / 1 transcript messages');
+  });
+
+  test('/session-rename accepts a picker number and synchronizes the active session', async () => {
+    const active = createRestorableSession('rename active session');
+    const { ctx, restored } = makeContext('terminal');
+    ctx.setSession?.(active);
+
+    const result = await findCommand('session-rename')!.execute(ctx, '#1 pixel command center');
+
+    expect(result.success).toBe(true);
+    expect(loadSessionMeta(active.id)?.name).toBe('pixel command center');
+    expect(restored.at(-1)).toMatchObject({ id: active.id, name: 'pixel command center' });
+  });
+
+  test('/session rename accepts a full session id', async () => {
+    const session = createRestorableSession('compound rename target');
+    const { ctx } = makeContext('terminal');
+
+    const result = await findCommand('session')!.execute(
+      ctx,
+      `rename ${session.id} compound command`
+    );
+
+    expect(result.success).toBe(true);
+    expect(loadSessionMeta(session.id)?.name).toBe('compound command');
+  });
+
+  test('/session-rename reports ambiguous names without modifying either session', async () => {
+    const first = createRestorableSession('first duplicate target');
+    const second = createRestorableSession('second duplicate target');
+    renameSession(first.id, 'duplicate-name');
+    renameSession(second.id, 'duplicate-name');
+    const { ctx } = makeContext('terminal');
+
+    const result = await findCommand('session-rename')!.execute(
+      ctx,
+      'duplicate-name must-not-apply'
+    );
+
+    expect(result.success).toBe(false);
+    expect(loadSessionMeta(first.id)?.name).toBe('duplicate-name');
+    expect(loadSessionMeta(second.id)?.name).toBe('duplicate-name');
+  });
+
+  test('/session-rename honors --project and --all lookup scopes', async () => {
+    const otherProject = mkdtempSync(join(tmpdir(), 'openhorse-rename-other-'));
+    try {
+      const other = createSession(otherProject, 'gpt-4o');
+      const { ctx } = makeContext('terminal');
+
+      const projectResult = await findCommand('session-rename')!.execute(
+        ctx,
+        `${other.id} scoped-name --project ${otherProject}`
+      );
+      const allResult = await findCommand('session-rename')!.execute(
+        ctx,
+        `${other.id} all-project-name --all`
+      );
+
+      expect(projectResult.success).toBe(true);
+      expect(allResult.success).toBe(true);
+      expect(loadSessionMeta(other.id)?.name).toBe('all-project-name');
+    } finally {
+      rmSync(otherProject, { recursive: true, force: true });
+    }
   });
 });

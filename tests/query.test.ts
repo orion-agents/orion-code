@@ -1758,6 +1758,67 @@ describe('query generator', () => {
     });
   });
 
+  test('stops the query loop when the Context Harness drift guard blocks a tool', async () => {
+    const llm = makeMockLLM([
+      {
+        content: '',
+        model: 'test-model',
+        toolCalls: [
+          {
+            id: 'call-drift',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{"path":"/drifted"}' },
+          },
+        ],
+      },
+    ]);
+    const toolExecutor = jest.fn(async () => JSON.stringify({ success: true, output: 'unsafe' }));
+    const harness = {
+      assembleMessages: jest.fn((messages: Message[]) => messages),
+      getCapsule: jest.fn(() => ({ summary: '' })),
+      toJSON: jest.fn(() => ({})),
+      recordAssistantResponse: jest.fn(),
+      beforeToolUse: jest.fn(() => ({ status: 'block', reason: 'context drift' })),
+      asToolBlockedResult: jest.fn(() =>
+        JSON.stringify({ success: false, error: 'blocked by Context Harness' })
+      ),
+      beforeComplete: jest.fn(() => ({ canComplete: true })),
+      asCompletionBlockedMessage: jest.fn(),
+      recordToolResult: jest.fn(),
+    };
+    const events: QueryEvent[] = [];
+
+    for await (const event of query({
+      messages: [
+        { role: 'system', content: 'You are a bot.' },
+        { role: 'user', content: 'Read drifted context' },
+      ],
+      tools: [mockTool],
+      toolExecutor,
+      llm,
+      harness: harness as any,
+    })) {
+      events.push(event);
+    }
+
+    expect(toolExecutor).not.toHaveBeenCalled();
+    expect(harness.beforeToolUse).toHaveBeenCalledWith({
+      name: 'read_file',
+      args: { path: '/drifted' },
+    });
+    expect(events.find(event => event.type === 'permission_decision')).toMatchObject({
+      decision: { approved: false, source: 'drift_guard' },
+    });
+    expect(events.find(event => event.type === 'tool_result')).toMatchObject({
+      success: false,
+      result: expect.stringContaining('blocked by Context Harness'),
+    });
+    expect(events.find(event => event.type === 'complete')).toMatchObject({
+      stats: { finishReason: 'blocked', toolCalls: 1 },
+    });
+    expect(llm.chatStream).toHaveBeenCalledTimes(1);
+  });
+
   test('permission denial seals every remaining result in a tool-call batch', async () => {
     const llm = makeMockLLM([
       {

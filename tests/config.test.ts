@@ -67,7 +67,9 @@ describe('loadConfig', () => {
     expect(config.logLevel).toBe('info');
     expect(config.apiKey).toBe('');
     expect(config.toolConfirmation).toBe('allow');
-    expect(config.ui).toEqual({ renderer: 'tui', confirmations: 'config' });
+    expect(config.ui).toEqual(
+      expect.objectContaining({ renderer: 'tui', confirmations: 'config', theme: 'orion-pixel' })
+    );
   });
 
   test('overrides take priority', () => {
@@ -88,7 +90,36 @@ describe('loadConfig', () => {
     expect(config.mode).toBe('production');
     expect(config.logLevel).toBe('debug');
     expect(config.toolConfirmation).toBe('deny');
-    expect(config.ui).toEqual({ renderer: 'ink', confirmations: 'interactive' });
+    expect(config.ui).toEqual(
+      expect.objectContaining({
+        renderer: 'ink',
+        confirmations: 'interactive',
+        theme: 'orion-pixel',
+      })
+    );
+  });
+
+  test('resolves Orion Pixel preferences and semantic status configuration', () => {
+    jest.spyOn(require('../src/services/global-config'), 'loadGlobalConfig').mockReturnValue({
+      defaultModel: 'gpt-4o',
+      ui: {
+        theme: 'high-contrast',
+        motion: 'off',
+        mascot: false,
+        statusLine: ['goal', 'model', 'queue'],
+        keymap: { queue: ['tab'] },
+      },
+    });
+
+    expect(loadConfig().ui).toEqual(
+      expect.objectContaining({
+        theme: 'high-contrast',
+        motion: 'off',
+        mascot: false,
+        statusLine: ['goal', 'model', 'queue'],
+        keymap: { queue: ['tab'] },
+      })
+    );
   });
 
   test('loads valid custom model pricing and drops invalid rates', () => {
@@ -171,7 +202,13 @@ describe('loadConfig', () => {
     expect(config.fallbackModel).toBe('qwen-plus');
     expect(config.toolConfirmation).toBe('deny');
     // orion.json no longer controls renderer; TUI is the product default.
-    expect(config.ui).toEqual({ renderer: 'tui', confirmations: 'interactive' });
+    expect(config.ui).toEqual(
+      expect.objectContaining({
+        renderer: 'tui',
+        confirmations: 'interactive',
+        theme: 'orion-pixel',
+      })
+    );
     expect(config.webSearch?.endpoint).toBe('https://dashscope.example/mcp');
     expect(config.webSearch?.apiKey).toBe('sk-websearch-global');
     expect(config.webSearch?.toolName).toBe('web_search');
@@ -212,7 +249,9 @@ describe('loadConfig', () => {
     });
 
     const config = loadConfig({ ui: { renderer: 'ink' } });
-    expect(config.ui).toEqual({ renderer: 'ink', confirmations: 'config' });
+    expect(config.ui).toEqual(
+      expect.objectContaining({ renderer: 'ink', confirmations: 'config', theme: 'orion-pixel' })
+    );
   });
 
   test('cli renderer override can switch to renderer-owned tui preview', () => {
@@ -221,7 +260,9 @@ describe('loadConfig', () => {
     });
 
     const config = loadConfig({ ui: { renderer: 'tui' } });
-    expect(config.ui).toEqual({ renderer: 'tui', confirmations: 'config' });
+    expect(config.ui).toEqual(
+      expect.objectContaining({ renderer: 'tui', confirmations: 'config', theme: 'orion-pixel' })
+    );
   });
 
   test('ignores env renderer so npm run start stays on the default TUI', () => {
@@ -233,7 +274,9 @@ describe('loadConfig', () => {
     process.env.ORION_CODE_UI_RENDERER = 'ink';
 
     const config = loadConfig();
-    expect(config.ui).toEqual({ renderer: 'tui', confirmations: 'config' });
+    expect(config.ui).toEqual(
+      expect.objectContaining({ renderer: 'tui', confirmations: 'config', theme: 'orion-pixel' })
+    );
   });
 
   test('ignores invalid tool confirmation values', () => {
@@ -248,7 +291,9 @@ describe('loadConfig', () => {
 
     const config = loadConfig();
     expect(config.toolConfirmation).toBe('allow');
-    expect(config.ui).toEqual({ renderer: 'tui', confirmations: 'config' });
+    expect(config.ui).toEqual(
+      expect.objectContaining({ renderer: 'tui', confirmations: 'config', theme: 'orion-pixel' })
+    );
   });
 });
 

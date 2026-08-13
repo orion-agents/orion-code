@@ -864,7 +864,17 @@ function parseRmInvocation(segment: string): RmInvocation | null {
  */
 export function containsRecursiveRm(cmd: string): boolean {
   const scan = scanShellCommand(cmd);
-  if (!scan.supported) return true;
+  if (!scan.supported) {
+    // Unsupported substitutions remain non-read-only and therefore require an
+    // explicit policy decision, but uncertainty alone is not proof that the
+    // command is destructive. Preserve the recursive-rm guard when a visible
+    // rm invocation is actually present inside the unmodelled text.
+    const candidates = cmd.matchAll(/(?:^|[\s;&|(`])((?:[^\s/]+\/)*rm\b[^`)$;&|\n]*)/gu);
+    for (const candidate of candidates) {
+      if (parseRmInvocation(candidate[1])?.recursive) return true;
+    }
+    return false;
+  }
   return scan.segments.some(segment => parseRmInvocation(segment)?.recursive === true);
 }
 

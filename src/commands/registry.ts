@@ -25,7 +25,7 @@ const raw = (subcommands?: string[]): CommandArgumentSchema => ({
   ...(subcommands ? { subcommands } : {}),
 });
 const none = (): CommandArgumentSchema => ({ kind: 'none', opaqueTail: false });
-const stable = (): CommandLifecycle => ({ status: 'stable', since: 'v0.1.5' });
+const stable = (since: string = 'v0.1.5'): CommandLifecycle => ({ status: 'stable', since });
 const internal = (): CommandLifecycle => ({ status: 'internal', since: 'v0.1.5' });
 const compatibility = (replacement: string): CommandLifecycle => ({
   status: 'deprecated',
@@ -57,6 +57,15 @@ const BUILTIN_METADATA: Record<string, BuiltinCommandMetadata> = {
       'clear',
       'budget',
     ]),
+  },
+  plan: {
+    id: 'builtin.workflow.plan',
+    audience: 'primary',
+    sideEffects: ['session-state'],
+    busyPolicy: 'queue-next',
+    defaultAction: 'execute',
+    lifecycle: stable('v0.1.7'),
+    argumentSchema: raw(),
   },
   diff: {
     id: 'builtin.workflow.diff',
@@ -302,15 +311,6 @@ const BUILTIN_METADATA: Record<string, BuiltinCommandMetadata> = {
     lifecycle: compatibility('/model'),
     argumentSchema: none(),
   },
-  mode: {
-    id: 'builtin.agent.mode',
-    audience: 'primary',
-    sideEffects: ['session-state'],
-    busyPolicy: 'queue-next',
-    defaultAction: 'show-status',
-    lifecycle: stable(),
-    argumentSchema: raw(['interactive', 'plan', 'auto']),
-  },
   config: {
     id: 'builtin.model.config',
     audience: 'advanced',
@@ -355,6 +355,42 @@ const BUILTIN_METADATA: Record<string, BuiltinCommandMetadata> = {
     defaultAction: 'show-status',
     lifecycle: stable(),
     argumentSchema: raw(),
+  },
+  theme: {
+    id: 'builtin.renderer.theme',
+    audience: 'primary',
+    sideEffects: ['global-config'],
+    busyPolicy: 'immediate',
+    defaultAction: 'show-status',
+    lifecycle: stable(),
+    argumentSchema: raw(['orion-pixel', 'classic', 'high-contrast', 'auto']),
+  },
+  keymap: {
+    id: 'builtin.renderer.keymap',
+    audience: 'primary',
+    sideEffects: ['none'],
+    busyPolicy: 'immediate',
+    defaultAction: 'show-status',
+    lifecycle: stable(),
+    argumentSchema: raw(),
+  },
+  statusline: {
+    id: 'builtin.renderer.statusline',
+    audience: 'advanced',
+    sideEffects: ['global-config'],
+    busyPolicy: 'immediate',
+    defaultAction: 'show-status',
+    lifecycle: stable(),
+    argumentSchema: raw(),
+  },
+  queue: {
+    id: 'builtin.renderer.queue',
+    audience: 'primary',
+    sideEffects: ['session-state'],
+    busyPolicy: 'immediate',
+    defaultAction: 'show-status',
+    lifecycle: stable(),
+    argumentSchema: raw(['clear']),
   },
   permissions: {
     id: 'builtin.tool.permissions',
@@ -552,6 +588,9 @@ export function registerBuiltinCommands(definitions: SlashCommand[]): Registered
       if (!COMMAND_NAME.test(alias.name)) {
         throw new Error(`Invalid compatibility command alias: ${alias.name}`);
       }
+    }
+    if (!Object.prototype.hasOwnProperty.call(command, 'risk')) {
+      throw new Error(`Built-in command ${command.name} must declare explicit risk metadata`);
     }
     const metadata = BUILTIN_METADATA[command.name];
     return {

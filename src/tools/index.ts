@@ -312,10 +312,16 @@ export const TOOLS: OrionCodeTool[] = [
 
       // v0.1.3-2 §1.2: a configured-but-unusable sandbox is a hard deny, decided
       // here so the user sees the reason instead of an opaque execution failure.
-      const { workdir, projectRoot } = resolveExecCommandPaths(
-        args.cwd as string | undefined,
-        context?.cwd
-      );
+      let paths: { workdir: string; projectRoot: string };
+      try {
+        paths = resolveExecCommandPaths(args.cwd as string | undefined, context?.cwd);
+      } catch (error) {
+        return {
+          behavior: 'deny',
+          reason: error instanceof Error ? error.message : 'exec_command cwd is outside workspace',
+        };
+      }
+      const { workdir, projectRoot } = paths;
       const sandboxSettings = resolveSandboxSettings(projectRoot);
       let sandboxNote = '';
       if ((sandboxSettings.profile ?? 'none') !== 'none') {
@@ -1071,6 +1077,26 @@ function isWithinWorkspace(resolved: string, cwd: string): boolean {
   return true;
 }
 
+function isExecCwdWithinWorkspace(workdir: string, projectRoot: string): boolean {
+  const root = resolve(projectRoot);
+  const rel = relative(root, workdir);
+  if (!(rel === '' || (!rel.startsWith('..') && !isAbsolute(rel)))) return false;
+
+  try {
+    const rootReal = realpathSync(root);
+    let existingAncestor = workdir;
+    while (!existsSync(existingAncestor) && existingAncestor !== root) {
+      existingAncestor = dirname(existingAncestor);
+    }
+    return isUnderRealRoot(realpathSync(existingAncestor), rootReal);
+  } catch {
+    // A missing synthetic root can only fail at spawn time; lexical containment
+    // still prevents it from selecting an external directory. Real workspaces
+    // exist and therefore take the symlink-aware path above.
+    return !existsSync(root);
+  }
+}
+
 /**
  * Truncate text to at most maxBytes UTF-8 bytes, cutting on a character
  * boundary (never inside a multi-byte sequence or surrogate pair). Returns the
@@ -1249,9 +1275,19 @@ function resolveExecCommandPaths(
   cwd?: string,
   baseCwd?: string
 ): { workdir: string; projectRoot: string } {
-  const projectRoot = baseCwd ?? process.cwd();
+  const projectRoot = resolve(baseCwd ?? process.cwd());
+  if (!cwd) return { workdir: projectRoot, projectRoot };
+
+  const normalizedCwd = normalizeToolPath(cwd);
+  if (isAbsolute(normalizedCwd)) {
+    throw new Error('exec_command cwd must be a workspace-relative path');
+  }
+  const workdir = safePath(normalizedCwd, projectRoot);
+  if (!isExecCwdWithinWorkspace(workdir, projectRoot)) {
+    throw new Error('exec_command cwd must stay within the workspace');
+  }
   return {
-    workdir: cwd ? safePath(cwd, projectRoot) : projectRoot,
+    workdir,
     projectRoot,
   };
 }
@@ -1265,7 +1301,17 @@ async function execCommand_(
   baseCwd?: string,
   sandbox?: SandboxConfig
 ): Promise<ToolResult> {
-  const { workdir, projectRoot } = resolveExecCommandPaths(cwd, baseCwd);
+  let paths: { workdir: string; projectRoot: string };
+  try {
+    paths = resolveExecCommandPaths(cwd, baseCwd);
+  } catch (error) {
+    return {
+      success: false,
+      output: '',
+      error: error instanceof Error ? error.message : 'exec_command cwd is outside workspace',
+    };
+  }
+  const { workdir, projectRoot } = paths;
 
   // v0.1.3-2 §1.2: plan the (possibly sandboxed) argv before spawning. A
   // configured sandbox that cannot be honoured must refuse the command rather
@@ -1818,9 +1864,29 @@ export function validateRegexPattern(pattern: string): string | null {
   if (!pattern) return 'pattern must not be empty';
   if (pattern.length > 2000) return 'pattern is too long (max 2000 characters)';
   // A group containing an internal quantifier, then quantified again: the
-  // canonical exponential-backtracking construction.
-  if (/\([^()]*[*+?][^()]*\)\s*[*+?]/.test(pattern)) {
+  // canonical exponential-backtracking construction. Quantifier families
+  // include braces; treating only `*+?` as quantifiers lets `(a{1,})+` hang
+  // the event loop on a long near miss.
+  const quantifier = String.raw`(?:[*+?]|\{\d+(?:,\d*)?\})`;
+  if (new RegExp(String.raw`\([^()]*${quantifier}[^()]*\)\s*${quantifier}`).test(pattern)) {
     return 'pattern contains a quantified group with an internal quantifier — this risks catastrophic backtracking (ReDoS)';
+  }
+  // Reject the common overlapping-alternative form `(a|aa)+`: either branch
+  // can consume the same prefix, creating exponentially many partitions.
+  const quantifiedGroup = new RegExp(String.raw`\(([^()]*)\)\s*${quantifier}`, 'gu');
+  for (const match of pattern.matchAll(quantifiedGroup)) {
+    const alternatives = match[1].split('|');
+    if (
+      alternatives.length > 1 &&
+      alternatives.some((left, index) =>
+        alternatives.some(
+          (right, otherIndex) =>
+            index !== otherIndex && left.length > 0 && right.length > 0 && right.startsWith(left)
+        )
+      )
+    ) {
+      return 'pattern contains overlapping alternatives inside a quantified group — this risks catastrophic backtracking (ReDoS)';
+    }
   }
   try {
     new RegExp(pattern);
@@ -2412,6 +2478,7 @@ export async function executeTool(
     toolAllowlist: toolContext?.toolAllowlist,
     toolConfirmation: toolContext?.toolConfirmation,
     confirmToolUse: toolContext?.confirmToolUse,
+    onPlanModeChange: toolContext?.onPlanModeChange,
   };
 
   const result = await tool.execute(args, context);

@@ -4,7 +4,6 @@ import type { SlashCommand } from './types';
 import {
   handleModel,
   handleModels,
-  handleMode,
   handlePermissions,
   handleEffort,
   showConfig,
@@ -32,28 +31,6 @@ export const MODEL_COMMANDS: SlashCommand[] = [
     execution: 'builtin',
     risk: 'state-write',
     execute: (ctx, args) => handleModels(ctx, args),
-  },
-  {
-    name: 'mode',
-    compatibilityAliases: [
-      {
-        name: 'perm',
-        lifecycle: {
-          status: 'deprecated',
-          since: 'v0.1.5',
-          removeIn: 'v0.3.0',
-          replacement: '/mode',
-        },
-      },
-    ],
-    description: 'Show or change the agent working mode',
-    argumentHint: '[interactive|plan|auto|next]',
-    category: 'model',
-    priority: 20,
-    type: 'builtin',
-    execution: 'builtin',
-    risk: 'state-write',
-    execute: (ctx, args) => handleMode(ctx, args),
   },
   {
     name: 'permissions',

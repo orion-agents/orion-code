@@ -19,6 +19,7 @@ import {
   deleteSession,
   updateSessionSummary,
   truncateSessionToLastComplete,
+  listSessions,
   listProjectSessions,
   findSession,
   lookupSessionRef,
@@ -28,12 +29,15 @@ import {
   resolveProjectPath,
   updateSessionHarnessState,
   loadSessionHarnessState,
+  updateSessionGoalBinding,
+  clearSessionGoalBinding,
   appendSessionTraceEvent,
   readSessionTraceEvents,
   type SessionMeta,
   type HistoryEntry,
   type SessionMessage,
 } from '../src/services/session-storage';
+import { spawnSync } from 'child_process';
 import { loadSessionIndex, saveSessionIndex, searchSessions } from '../src/services/session-index';
 import { createContextHarness } from '../src/harness';
 import {
@@ -95,6 +99,23 @@ describe('session-storage', () => {
       expect(session.tokenCount).toBe(0);
       expect(session.cost).toBe(0);
       expect(session.endTime).toBeUndefined();
+    });
+
+    test('clears only the expected completed Goal binding', () => {
+      const session = createSession('/tmp/project-goal-binding', 'gpt-4o');
+      updateSessionGoalBinding(session.id, {
+        goalId: 'goal-current',
+        objective: 'Finish the current Goal',
+      });
+
+      expect(() => clearSessionGoalBinding(session.id, 'goal-stale')).toThrow(
+        'refusing to clear the newer Goal'
+      );
+      expect(loadSessionMeta(session.id)).toMatchObject({ activeGoalId: 'goal-current' });
+
+      clearSessionGoalBinding(session.id, 'goal-current');
+      expect(loadSessionMeta(session.id)?.activeGoalId).toBeUndefined();
+      expect(loadSessionMeta(session.id)?.activeGoalObjective).toBeUndefined();
     });
 
     test('stores session meta in the project scope only', () => {
@@ -1208,6 +1229,53 @@ describe('session-storage', () => {
       expect(renamed?.name).toBe('api cleanup');
       expect(loaded?.name).toBe('api cleanup');
       expect(byName?.id).toBe(session.id);
+    });
+
+    test('catalog keeps hot lookup independent from the number of project directories', () => {
+      const sessions = Array.from({ length: 24 }, (_, index) =>
+        createSession(`/tmp/project-catalog-lookup-${index}`, 'gpt-4o')
+      );
+      const target = sessions[17];
+      const worker = spawnSync(
+        process.execPath,
+        [
+          '-r',
+          'ts-node/register',
+          join(__dirname, 'fixtures/session-catalog-worker.js'),
+          'lookup',
+          target.id,
+        ],
+        { encoding: 'utf-8', env: process.env }
+      );
+
+      expect(worker.status).toBe(0);
+      const metrics = JSON.parse(worker.stdout);
+      expect(metrics).toMatchObject({ found: target.id, metaReads: 1 });
+      expect(metrics.projectDirectoryReads).toBeLessThanOrEqual(1);
+    });
+
+    test('limited global listing reads the catalog without parsing every session file', () => {
+      Array.from({ length: 24 }, (_, index) =>
+        createSession(`/tmp/project-catalog-list-${index}`, 'gpt-4o')
+      );
+      expect(listSessions(3)).toHaveLength(3);
+
+      const worker = spawnSync(
+        process.execPath,
+        [
+          '-r',
+          'ts-node/register',
+          join(__dirname, 'fixtures/session-catalog-worker.js'),
+          'list',
+          '3',
+        ],
+        { encoding: 'utf-8', env: process.env }
+      );
+
+      expect(worker.status).toBe(0);
+      const metrics = JSON.parse(worker.stdout);
+      expect(metrics).toMatchObject({ count: 3, metaReads: 0 });
+      expect(metrics.projectDirectoryReads).toBeLessThanOrEqual(1);
     });
 
     test('getLastSession ignores empty sessions and returns most recently updated project session', () => {

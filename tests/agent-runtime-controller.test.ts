@@ -8,6 +8,7 @@ import {
 } from '../src/runtime/agent-runtime-controller';
 import {
   type AgentRuntimeEvent,
+  type AgentRuntimeEventSink,
   createAgentRuntimeEventSinkFromUiEvents,
   createUiEventSinkFromAgentRuntimeEvents,
 } from '../src/runtime/agent-runtime-protocol';
@@ -24,9 +25,11 @@ import {
   createSession,
   loadSessionCompactCheckpoint,
   loadSessionHistory,
+  loadSessionMeta,
   readSessionMessages,
   readSessionTraceEvents,
   updateSessionHarnessState,
+  updateSessionGoalBinding,
   type SessionMeta,
 } from '../src/services/session-storage';
 import { Store } from '../src/framework/store';
@@ -48,6 +51,8 @@ import {
 } from '../src/runtime/goals/tools';
 import { findCommand } from '../src/commands';
 import type { CommandContext } from '../src/commands/types';
+import { AgentModeLifecycleController } from '../src/framework/agent-mode';
+import type { AgentTurnRequest } from '../src/runtime/goals/types';
 import {
   makeToolStartedEvent,
   makeToolFinishedEvent,
@@ -2037,6 +2042,71 @@ describe('AgentRuntimeController', () => {
     expect(controller.hasActiveTurn()).toBe(false);
   });
 
+  it('queues follow-up input without aborting the active turn and drains in FIFO order', async () => {
+    const runtime = createRuntime();
+    const { events } = createEvents();
+    const runner = createDeferredRunner();
+    const controller = new AgentRuntimeController({ runtime, events, runner });
+
+    expect(controller.submit('first task')).toEqual({ type: 'started' });
+    expect(controller.handle({ type: 'queue_followup', text: 'second task' })).toMatchObject({
+      type: 'followup_queued',
+    });
+    expect(controller.handle({ type: 'queue_followup', text: 'third task' })).toMatchObject({
+      type: 'followup_queued',
+    });
+    expect(runner.calls[0].signal?.aborted).toBe(false);
+    expect(controller.getFollowupQueue().map(item => item.text)).toEqual([
+      'second task',
+      'third task',
+    ]);
+
+    runner.calls[0].resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(runner.calls.map(call => call.input)).toEqual(['first task', 'second task']);
+    expect(controller.getFollowupQueue().map(item => item.text)).toEqual(['third task']);
+
+    runner.calls[1].resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(runner.calls.map(call => call.input)).toEqual([
+      'first task',
+      'second task',
+      'third task',
+    ]);
+    expect(controller.getFollowupQueue()).toHaveLength(0);
+
+    runner.calls[2].resolve();
+    await controller.waitForIdle();
+  });
+
+  it('bounds the follow-up queue at sixteen items without interrupting active work', () => {
+    const runtime = createRuntime();
+    const { events, statuses } = createEvents();
+    const runner = createDeferredRunner();
+    const controller = new AgentRuntimeController({ runtime, events, runner });
+
+    expect(controller.submit('active task')).toEqual({ type: 'started' });
+    for (let index = 1; index <= 16; index += 1) {
+      expect(
+        controller.handle({ type: 'queue_followup', text: `follow-up ${index}` })
+      ).toMatchObject({ type: 'followup_queued' });
+    }
+    expect(controller.handle({ type: 'queue_followup', text: 'overflow' })).toEqual({
+      type: 'followup_queue_full',
+    });
+    expect(controller.getFollowupQueue()).toHaveLength(16);
+    expect(runner.calls[0].signal?.aborted).toBe(false);
+    expect(statuses).toContain('Follow-up queue is full (16).');
+
+    expect(controller.handle({ type: 'manage_followup_queue', action: 'clear' })).toEqual({
+      type: 'followup_queue_changed',
+    });
+    expect(controller.getFollowupQueue()).toHaveLength(0);
+    controller.interrupt();
+  });
+
   it('aborts an active turn and restarts with accumulated consecutive revisions', async () => {
     const runtime = createRuntime();
     const { events, statuses } = createEvents();
@@ -2085,9 +2155,9 @@ describe('AgentRuntimeController', () => {
     const controller = new AgentRuntimeController({ runtime, events, runner });
 
     expect(controller.submit('long task')).toEqual({ type: 'started' });
-    expect(controller.submit('/mode plan')).toEqual({
+    expect(controller.submit('/model gpt-4o')).toEqual({
       type: 'command_queued',
-      commandId: 'builtin.agent.mode',
+      commandId: 'builtin.model.model',
     });
     expect(controller.submit('/resume abc')).toEqual({
       type: 'command_rejected_busy',
@@ -2097,16 +2167,87 @@ describe('AgentRuntimeController', () => {
 
     runner.calls[0].resolve();
     await Promise.resolve();
-    expect(runner.calls.map(call => call.input)).toEqual(['long task', '/mode plan']);
+    expect(runner.calls.map(call => call.input)).toEqual(['long task', '/model gpt-4o']);
     expect(statuses).toEqual(
       expect.arrayContaining([
-        'Queued /mode; it will apply after the active logical request.',
+        'Queued /model; it will apply after the active logical request.',
         '/resume rejected: an agent turn is active.',
       ])
     );
 
     runner.calls[1].resolve();
     await controller.waitForIdle();
+  });
+
+  it('cycles Agent mode immediately while idle and stages repeated cycles while busy', async () => {
+    const config = loadConfig({ apiKey: 'test-key', model: 'test-model' });
+    const store = new Store({ config, tools: TOOLS, currentModel: config.model });
+    const runtime = createRuntime({ config, store });
+    const { events } = createEvents();
+    const runner = createDeferredRunner();
+    const controller = new AgentRuntimeController({ runtime, events, runner });
+
+    expect(controller.handle({ type: 'cycle_agent_mode', source: 'keyboard' })).toEqual({
+      type: 'agent_mode_changed',
+      snapshot: { baseMode: 'plan', pendingBaseMode: null },
+      appliesFrom: 'immediate',
+    });
+    expect(runtime.store.getSnapshot().agentMode).toBe('plan');
+
+    expect(controller.submit('plan this')).toEqual({ type: 'started' });
+    expect(controller.handle({ type: 'cycle_agent_mode', source: 'keyboard' })).toMatchObject({
+      snapshot: { baseMode: 'plan', pendingBaseMode: 'auto' },
+      appliesFrom: 'next-logical-request',
+    });
+    expect(controller.handle({ type: 'cycle_agent_mode', source: 'keyboard' })).toMatchObject({
+      snapshot: { baseMode: 'plan', pendingBaseMode: 'interactive' },
+    });
+    expect(runtime.store.getSnapshot().agentMode).toBe('plan');
+
+    runner.calls[0].resolve();
+    await controller.waitForIdle();
+    expect(runtime.store.getSnapshot().agentMode).toBe('interactive');
+  });
+
+  it('starts saved Plan execution as a separate request in the pending Auto mode', async () => {
+    const config = loadConfig({ apiKey: 'test-key', model: 'test-model' });
+    const store = new Store({ config, tools: TOOLS, currentModel: config.model });
+    const runtime = createRuntime({ config, store });
+    const { events } = createEvents();
+    const lifecycle = new AgentModeLifecycleController(store);
+    let runCount = 0;
+    let controller!: AgentRuntimeController;
+    const requests: AgentTurnRequest[] = [];
+    const runner: AgentRuntimeRunner = {
+      runInput: jest.fn(async () => undefined),
+      runRequest: jest.fn(async request => {
+        requests.push(request);
+        if (runCount++ === 0) {
+          controller.handle({ type: 'cycle_agent_mode', source: 'keyboard' });
+          lifecycle.completePlan('Implement the parser and verify it.', 'interactive');
+        }
+      }),
+    };
+    controller = new AgentRuntimeController({
+      runtime,
+      events,
+      runner,
+      agentModeLifecycle: lifecycle,
+    });
+    controller.handle({ type: 'cycle_agent_mode', source: 'keyboard' });
+
+    expect(controller.submit('plan the parser')).toEqual({ type: 'started' });
+    await controller.waitForIdle();
+
+    expect(requests).toHaveLength(2);
+    expect(requests[0].inputKind).toBe('user');
+    expect(requests[1]).toMatchObject({
+      inputKind: 'plan_execution',
+      persistAsUserMessage: false,
+      echoToTranscript: false,
+    });
+    expect(requests[1].text).toContain('Implement the parser and verify it.');
+    expect(store.getSnapshot()).toMatchObject({ agentMode: 'auto', planMode: false });
   });
 
   it('uses double Ctrl+C semantics while running', () => {
@@ -2416,6 +2557,7 @@ describe('AgentRuntimeController', () => {
       })
     );
     expect(emitted.map(event => event.type)).toEqual([
+      'agent_mode_changed',
       'transcript_append',
       'processing_changed',
       'processing_changed',
@@ -5710,6 +5852,99 @@ describe('AgentRuntimeController', () => {
           expect.objectContaining({ type: 'goal_continuation', phase: 'deferred' }),
         ])
       );
+    });
+  });
+
+  it('exits an active Goal immediately from explicit natural-language mode intent', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      mkdirSync(projectDir, { recursive: true });
+      const session = createSession(projectDir, 'test-model');
+      const runtime = createRuntime({
+        cwd: projectDir,
+        ensureSession: jest.fn(() => session),
+        getSession: jest.fn(() => session),
+      });
+      const runner = createDeferredRunner();
+      const { events, appended, goalEvents } = createEvents();
+      const controller = new AgentRuntimeController({ runtime, events, runner });
+      const coordinator = new GoalCoordinator(projectDir, session.id);
+      expect(coordinator.create('Goal that the user can exit')).toEqual({ ok: true });
+      const goalId = coordinator.goal!.goalId;
+      controller.setGoalCoordinator(coordinator);
+
+      expect(controller.submit('continue goal work')).toEqual({ type: 'started' });
+      expect(runner.calls[0].signal?.aborted).toBe(false);
+      expect(controller.submit('退出goal模式')).toEqual({ type: 'command_handled' });
+
+      expect(runner.calls[0].signal?.aborted).toBe(true);
+      expect(coordinator.goal).toBeNull();
+      expect(appended).toEqual(
+        expect.arrayContaining([expect.objectContaining({ role: 'user', content: '退出goal模式' })])
+      );
+      expect(goalEvents).toEqual(
+        expect.arrayContaining([expect.objectContaining({ type: 'goal_cleared', goalId })])
+      );
+
+      runner.calls[0].resolve();
+      await controller.waitForIdle();
+    });
+  });
+
+  it('reconciles a completed Goal left bound by a crash and exits Goal mode on restore', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      mkdirSync(projectDir, { recursive: true });
+      const session = createSession(projectDir, 'test-model');
+      const coordinator = new GoalCoordinator(projectDir, session.id);
+      expect(coordinator.create('Restore completed Goal receipt')).toEqual({ ok: true });
+      updateSessionGoalBinding(session.id, coordinator.goal);
+      completeGoal(coordinator, 'restore-completed');
+      expect(loadSessionMeta(session.id)?.activeGoalId).toBe(coordinator.goal?.goalId);
+
+      const runtime = createRuntime({
+        cwd: projectDir,
+        ensureSession: jest.fn(() => session),
+        getSession: jest.fn(() => session),
+      });
+      const { events, goalEvents } = createEvents();
+      const controller = new AgentRuntimeController({
+        runtime,
+        events,
+        runner: createDeferredRunner(),
+      });
+      const controllerSink = (controller as unknown as { eventSink: AgentRuntimeEventSink })
+        .eventSink;
+
+      controllerSink.emit({
+        type: 'session_restored',
+        event: {
+          sessionId: session.id,
+          projectPath: projectDir,
+          model: 'test-model',
+          restoredMessages: 0,
+        },
+      });
+
+      expect(loadSessionMeta(session.id)?.activeGoalId).toBeUndefined();
+      expect(goalEvents.map(event => event.type)).toEqual([
+        'goal_restored',
+        'goal_completed',
+        'goal_cleared',
+      ]);
+      expect(goalEvents.at(-1)).toMatchObject({
+        type: 'goal_cleared',
+        reason: 'completion_recovery_auto_exit',
+      });
+
+      controllerSink.emit({
+        type: 'session_restored',
+        event: {
+          sessionId: session.id,
+          projectPath: projectDir,
+          model: 'test-model',
+          restoredMessages: 0,
+        },
+      });
+      expect(goalEvents).toHaveLength(3);
     });
   });
 

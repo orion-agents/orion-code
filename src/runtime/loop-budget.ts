@@ -1,6 +1,7 @@
 import { DEFAULT_LOOP_BUDGET, type LoopBudget, type LoopBudgetBaseProfile } from '../framework';
 import type { OrionCodeCLIConfig } from '../services/config';
 import type { HarnessState } from '../harness/types';
+import { GOAL_INVARIANTS } from './goals/types';
 
 const COMPLEX_TASK_LLM_BUDGET = 48;
 const RELEASE_TASK_LLM_BUDGET = 64;
@@ -15,13 +16,13 @@ function toBaseProfile(value: LoopBudget['profile'] | undefined): LoopBudgetBase
 
 function applyConfigOverrides(
   budget: LoopBudget,
-  overrides: OrionCodeCLIConfig['agentLoop'] | undefined,
+  overrides: OrionCodeCLIConfig['agentLoop'] | undefined
 ): LoopBudget {
   const configured = overrides?.budget;
   if (!configured) return budget;
   const numericOverrides = Object.fromEntries(
-    Object.entries(configured).filter(([, value]) =>
-      typeof value === 'number' && Number.isFinite(value) && value > 0
+    Object.entries(configured).filter(
+      ([, value]) => typeof value === 'number' && Number.isFinite(value) && value > 0
     )
   );
   if (Object.keys(numericOverrides).length === 0) return budget;
@@ -36,21 +37,29 @@ function applyConfigOverrides(
 }
 
 function looksLikeReleaseTask(input: string): boolean {
-  return /\b(push|pull request|pr|publish|release|npm publish|prepublish)\b/i.test(input)
-    || /(发布|发版|提交|推送)/.test(input);
+  return (
+    /\b(push|pull request|pr|publish|release|npm publish|prepublish)\b/i.test(input) ||
+    /(发布|发版|提交|推送)/.test(input)
+  );
 }
 
 function looksLikeComplexTask(input: string): boolean {
   const normalized = input.replace(/\s+/g, ' ').trim();
   if (normalized.length >= 120 || input.includes('\n')) return true;
-  return /\b(implement|refactor|migrate|optimi[sz]e|debug|fix|complete|review|plan|large|complex|multi[- ]?step|continue)\b/i.test(normalized)
-    || /(开发|实现|重构|迁移|优化|修复|完成|完整|复杂|大任务|大的任务|大型任务|大规模|长任务|长期任务|多步骤|检查|审查|按计划|执行计划|继续)/.test(normalized);
+  return (
+    /\b(implement|refactor|migrate|optimi[sz]e|debug|fix|complete|review|plan|large|complex|multi[- ]?step|continue)\b/i.test(
+      normalized
+    ) ||
+    /(开发|实现|重构|迁移|优化|修复|完成|完整|复杂|大任务|大的任务|大型任务|大规模|长任务|长期任务|多步骤|检查|审查|按计划|执行计划|继续)/.test(
+      normalized
+    )
+  );
 }
 
 export function resolveRuntimeLoopBudget(
   input: string,
   config: Pick<OrionCodeCLIConfig, 'agentLoop'>,
-  harnessState?: Pick<HarnessState, 'rootObjective' | 'activeInstruction' | 'contract' | 'capsule'>,
+  harnessState?: Pick<HarnessState, 'rootObjective' | 'activeInstruction' | 'contract' | 'capsule'>
 ): LoopBudget {
   let budget: LoopBudget = {
     ...DEFAULT_LOOP_BUDGET,
@@ -65,7 +74,9 @@ export function resolveRuntimeLoopBudget(
     harnessState?.contract?.objective,
     harnessState?.capsule?.contract?.objective,
     harnessState?.capsule?.nextAction,
-  ].filter((segment): segment is string => typeof segment === 'string' && segment.trim().length > 0);
+  ].filter(
+    (segment): segment is string => typeof segment === 'string' && segment.trim().length > 0
+  );
 
   if (taskSegments.some(looksLikeReleaseTask)) {
     budget = {
@@ -88,4 +99,26 @@ export function resolveRuntimeLoopBudget(
   }
 
   return applyConfigOverrides(budget, config.agentLoop);
+}
+
+/**
+ * Autonomous Goal continuations have no fresh human decision boundary. Cap
+ * each one even when task heuristics or config select a larger loop profile.
+ */
+export function capAutonomousGoalLoopBudget(budget: LoopBudget): LoopBudget {
+  return {
+    ...budget,
+    maxLlmRequestsPerUserTurn: Math.min(
+      budget.maxLlmRequestsPerUserTurn,
+      GOAL_INVARIANTS.maxAutonomousLlmRequestsPerTurn
+    ),
+    maxToolCallsPerUserTurn: Math.min(
+      budget.maxToolCallsPerUserTurn,
+      GOAL_INVARIANTS.maxAutonomousToolCallsPerTurn
+    ),
+    maxModelVisibleToolBytes: Math.min(
+      budget.maxModelVisibleToolBytes,
+      GOAL_INVARIANTS.maxAutonomousModelVisibleBytesPerTurn
+    ),
+  };
 }

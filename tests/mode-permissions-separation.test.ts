@@ -3,10 +3,11 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { findCommand } from '../src/commands';
 import { Store } from '../src/framework/store';
+import { AgentModeLifecycleController } from '../src/framework/agent-mode';
 import { loadConfig } from '../src/services/config';
 import type { CommandContext } from '../src/commands/types';
 
-describe('/mode and /permissions state axes', () => {
+describe('Agent mode and /permissions state axes', () => {
   let root: string;
 
   beforeEach(() => {
@@ -27,10 +28,10 @@ describe('/mode and /permissions state axes', () => {
     };
   }
 
-  it('keeps agent plan mode independent from edit confirmation policy', async () => {
+  it('starts plan mode through /plan while keeping edit confirmation independent', async () => {
     const ctx = context();
     await findCommand('permissions')!.execute(ctx, 'allow-edits');
-    await findCommand('mode')!.execute(ctx, 'plan');
+    await findCommand('plan')!.execute(ctx, '');
 
     expect(ctx.store.getSnapshot()).toMatchObject({
       agentMode: 'plan',
@@ -38,18 +39,13 @@ describe('/mode and /permissions state axes', () => {
     });
     expect(ctx.store.getEffectivePermissionMode()).toBe('plan');
 
-    await findCommand('mode')!.execute(ctx, 'interactive');
+    new AgentModeLifecycleController(ctx.store).setMode('interactive');
     expect(ctx.store.getSnapshot().permissionMode).toBe('acceptEdits');
     expect(ctx.store.getEffectivePermissionMode()).toBe('acceptEdits');
   });
 
-  it('maps legacy accept-edits without mutating the agent axis', async () => {
-    const ctx = context();
-    const result = await findCommand('mode')!.execute(ctx, 'accept-edits');
-    expect(result).toMatchObject({ success: true });
-    expect(ctx.store.getSnapshot()).toMatchObject({
-      agentMode: 'interactive',
-      permissionMode: 'acceptEdits',
-    });
+  it('does not retain /mode or its /perm compatibility alias', () => {
+    expect(findCommand('mode')).toBeUndefined();
+    expect(findCommand('perm')).toBeUndefined();
   });
 });

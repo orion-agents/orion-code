@@ -15,6 +15,7 @@ import {
   isReadOnlyCommand,
   isValidationCommand,
   assessCommandSecurity,
+  containsRecursiveRm,
 } from '../src/tools/bash_security';
 
 describe('bash_security read-only bypasses', () => {
@@ -36,11 +37,11 @@ describe('bash_security read-only bypasses', () => {
 
   describe('awk with code execution / file output', () => {
     it('awk system() must NOT be read-only (arbitrary command exec)', () => {
-      expect(isReadOnlyCommand("awk 'BEGIN{system(\"rm -rf /tmp/x\")}'")).toBe(false);
+      expect(isReadOnlyCommand('awk \'BEGIN{system("rm -rf /tmp/x")}\'')).toBe(false);
     });
 
     it('awk with output redirect must NOT be read-only', () => {
-      expect(isReadOnlyCommand("awk '{print > \"/tmp/out\"}' file.txt")).toBe(false);
+      expect(isReadOnlyCommand('awk \'{print > "/tmp/out"}\' file.txt')).toBe(false);
     });
   });
 
@@ -104,6 +105,12 @@ describe('bash_security read-only bypasses', () => {
     ])('must NOT be read-only: %j', command => {
       expect(isReadOnlyCommand(command)).toBe(false);
       expect(assessCommandSecurity(command).level).not.toBe('safe');
+    });
+
+    it('distinguishes unmodelled substitution from visible recursive rm', () => {
+      expect(containsRecursiveRm('echo "v: $(node --version)"')).toBe(false);
+      expect(containsRecursiveRm('echo "$(rm -rf $HOME)"')).toBe(true);
+      expect(containsRecursiveRm('echo `command rm --recursive /tmp/data`')).toBe(true);
     });
   });
 

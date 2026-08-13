@@ -323,6 +323,8 @@ class MockOpenAIHandler(BaseHTTPRequestHandler):
                 self.write_permission_tool_stream()
             elif "修正目标" in last_user:
                 self.write_text_stream(["revision-final-response "], delay=0.05)
+            elif "queued follow-up" in last_user:
+                self.write_text_stream(["queued-followup-response "], delay=0.05)
             else:
                 self.write_text_stream([
                     "first-response-part-1 ",
@@ -635,6 +637,21 @@ def main() -> int:
         if b"\x1b[?1049h" in b"".join(output):
             raise AssertionError("TUI entered alternate screen (should stay on primary screen)")
 
+        # Shift+Tab is a fixed product shortcut. It cycles the base Agent mode
+        # without modifying the draft or stealing ordinary Tab completion.
+        wait_for(master, output, "MODE BUILD", timeout=8)
+        os.write(master, b"mode-draft")
+        wait_for(master, output, "mode-draft", timeout=5)
+        os.write(master, b"\x1b[Z")
+        wait_for(master, output, "MODE PLAN", timeout=5)
+        wait_for(master, output, "mode-draft", timeout=5)
+        os.write(master, b"\x1b[Z")
+        wait_for(master, output, "MODE AUTO", timeout=5)
+        os.write(master, b"\x1b[Z")
+        wait_for(master, output, "MODE BUILD", timeout=5)
+        os.write(master, b"\x15")
+        expect_prompt_frame("after mode cycle")
+
         os.write(master, "开源小？事收到".encode("utf-8"))
         wait_for(master, output, "开源小？事收到", timeout=5)
         os.write(master, b"\x7f")
@@ -731,6 +748,35 @@ def main() -> int:
         expect_prompt_frame("after revised response")
         sync_screen()
         assert_retained("revision-final-response", "TUI did not keep the restarted response visible", model)
+
+        # Tab queues a bounded FIFO follow-up without aborting the active turn.
+        queue_start = len(b"".join(output))
+        os.write(master, b"queue origin\r")
+        wait_for(master, output, "first-response-part-1", timeout=8, start_offset=queue_start)
+        os.write(master, b"\x1b[Z")
+        wait_for(master, output, "MODE BUILD \u2192 PLAN NEXT", timeout=5, start_offset=queue_start)
+        os.write(master, b"queued follow-up")
+        wait_for(master, output, "queued follow-up", timeout=5, start_offset=queue_start)
+        os.write(master, b"\t")
+        wait_for(master, output, "Queued follow-up 1/16.", timeout=8, start_offset=queue_start)
+        wait_for(master, output, "queued-followup-response", timeout=12, start_offset=queue_start)
+        wait_for(master, output, "MODE PLAN", timeout=8, start_offset=queue_start)
+        # Return to BUILD so the remainder of the smoke keeps its established
+        # mutation/permission semantics.
+        os.write(master, b"\x1b[Z\x1b[Z")
+        wait_for(master, output, "MODE BUILD", timeout=5, start_offset=queue_start)
+        expect_prompt_frame("after queued follow-up")
+
+        # Escape owns interruption; it must not enter the Ctrl+C exit flow.
+        interrupt_start = len(b"".join(output))
+        os.write(master, b"escape interrupt test\r")
+        wait_for(master, output, "first-response-part-1", timeout=8, start_offset=interrupt_start)
+        os.write(master, b"\x1bX")
+        wait_for(master, output, "Interrupted current work.", timeout=8, start_offset=interrupt_start)
+        if process.poll() is not None:
+            raise AssertionError("Escape interruption unexpectedly exited Orion")
+        os.write(master, b"\x15")
+        expect_prompt_frame("after Escape interrupt")
 
         tool_start = len(b"".join(output))
         os.write(master, b"tool order test\r")

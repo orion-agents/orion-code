@@ -202,10 +202,17 @@ async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OrionCodeUiRunt
 
   resetToolState();
   subscribeToolState(state => {
+    const snapshot = store.getSnapshot();
+    const agentMode = state.planMode
+      ? 'plan'
+      : snapshot.agentMode === 'plan'
+        ? (state.planReturnMode ?? 'interactive')
+        : snapshot.agentMode;
     store.setState({
       todos: state.todos,
       planMode: state.planMode,
       currentPlan: state.currentPlan,
+      agentMode,
     });
   });
 

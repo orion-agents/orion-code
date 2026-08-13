@@ -95,6 +95,181 @@ describe('tui-ui runner', () => {
     expect(runner.renderFullFrame().cursor).toEqual({ row: 7, column: 4, visible: true });
   });
 
+  it('uses Tab to queue a follow-up while processing without submitting a revision', () => {
+    const { output } = createOutput();
+    const submitted: string[] = [];
+    const queued: string[] = [];
+    const runner = new TuiRunner({
+      output,
+      width: 60,
+      height: 10,
+      onSubmit: input => {
+        submitted.push(input);
+      },
+      onQueueSubmit: input => {
+        queued.push(input);
+      },
+    });
+    runner.events.setProcessing(true);
+    runner.feedInput(Buffer.from('run tests'));
+    runner.feedInput(Buffer.from('\t'));
+
+    expect(queued).toEqual(['run tests']);
+    expect(submitted).toEqual([]);
+    expect(runner.getState().prompt.value).toBe('');
+  });
+
+  it('uses Shift+Tab to cycle mode without changing the draft, cursor, history, or Tab queue', () => {
+    const { output } = createOutput();
+    const onCycleAgentMode = jest.fn();
+    const queued: string[] = [];
+    const runner = new TuiRunner({
+      output,
+      width: 60,
+      height: 10,
+      onCycleAgentMode,
+      onQueueSubmit: input => {
+        queued.push(input);
+      },
+    });
+    runner.feedInput(Buffer.from('draft'));
+    runner.feedInput(Buffer.from('\x1b[D'));
+
+    const before = runner.getState().prompt;
+    runner.feedInput(Buffer.from('\x1b[Z'));
+    expect(onCycleAgentMode).toHaveBeenCalledTimes(1);
+    expect(runner.getState().prompt).toEqual(before);
+
+    runner.events.setProcessing(true);
+    runner.feedInput(Buffer.from('\t'));
+    expect(queued).toEqual(['draft']);
+    expect(onCycleAgentMode).toHaveBeenCalledTimes(1);
+  });
+
+  it('stages a mode cycle without dismissing a modal permission decision', () => {
+    const { output } = createOutput();
+    const onCycleAgentMode = jest.fn();
+    const runner = new TuiRunner({ output, width: 60, height: 10, onCycleAgentMode });
+    runner.events.showPermissionRequest?.({ id: 'p1', name: 'exec_command', args: {} });
+
+    runner.feedInput(Buffer.from('\x1b[Z'));
+    expect(onCycleAgentMode).toHaveBeenCalledTimes(1);
+    expect(runner.getState().overlay?.type).toBe('permission');
+  });
+
+  it('uses Escape to interrupt work without invoking the Ctrl+C exit flow', () => {
+    const { output } = createOutput();
+    const onInterrupt = jest.fn();
+    const onCtrlC = jest.fn();
+    const runner = new TuiRunner({ output, width: 60, height: 10, onInterrupt, onCtrlC });
+    runner.events.setProcessing(true);
+    runner.feedInput(Buffer.from('\x1bX'));
+
+    expect(onInterrupt).toHaveBeenCalledTimes(1);
+    expect(onCtrlC).not.toHaveBeenCalled();
+  });
+
+  it('cycles matching input history with repeated Ctrl+R', () => {
+    const { output } = createOutput();
+    const runner = new TuiRunner({ output, width: 60, height: 10, onSubmit: jest.fn() });
+
+    runner.feedInput(Buffer.from('alpha task\r'));
+    runner.feedInput(Buffer.from('beta alpha task\r'));
+    runner.feedInput(Buffer.from('alpha'));
+    runner.feedInput(Buffer.from('\x12'));
+    expect(runner.getState().prompt.value).toBe('beta alpha task');
+
+    runner.feedInput(Buffer.from('\x12'));
+    expect(runner.getState().prompt.value).toBe('alpha task');
+    expect(runner.getState().statusMessage).toBe('History 2/2');
+  });
+
+  it('round-trips the draft through Ctrl+E and deletes the private temporary file', async () => {
+    const { output } = createOutput();
+    let editorPath = '';
+    const runner = new TuiRunner({
+      output,
+      width: 60,
+      height: 10,
+      onOpenExternalEditor: filePath => {
+        editorPath = filePath;
+        expect(readFileSync(filePath, 'utf8')).toBe('draft');
+        writeFileSync(filePath, 'edited 日本語 🚀');
+      },
+    });
+
+    runner.feedInput(Buffer.from('draft'));
+    runner.feedInput(Buffer.from('\x05'));
+    await runner.waitForModalSurface();
+
+    expect(runner.getState().prompt.value).toBe('edited 日本語 🚀');
+    expect(editorPath).toContain('orion-code-prompt-');
+    expect(() => readFileSync(editorPath, 'utf8')).toThrow();
+  });
+
+  it('exits on empty Ctrl+D and preserves a non-empty draft', () => {
+    const { output } = createOutput();
+    const onExit = jest.fn();
+    const runner = new TuiRunner({ output, width: 60, height: 10, onExit });
+
+    runner.feedInput(Buffer.from('keep me'));
+    runner.feedInput(Buffer.from('\x04'));
+    expect(onExit).not.toHaveBeenCalled();
+    expect(runner.getState().prompt.value).toBe('keep me');
+
+    runner.feedInput(Buffer.from('\x15\x04'));
+    expect(onExit).toHaveBeenCalledTimes(1);
+  });
+
+  it('animates at no more than four frames per second and stops repainting when idle', () => {
+    jest.useFakeTimers();
+    try {
+      const { output } = createOutput();
+      const runner = new TuiRunner({
+        output,
+        width: 60,
+        height: 10,
+        mascot: true,
+        motion: 'full',
+      });
+      const baseline = runner.counters.paintCount;
+
+      runner.events.setProcessing(true);
+      jest.advanceTimersByTime(1000);
+      const activePaints = runner.counters.paintCount - baseline;
+      expect(activePaints).toBeGreaterThan(0);
+      expect(activePaints).toBeLessThanOrEqual(5);
+
+      runner.events.setProcessing(false);
+      jest.runOnlyPendingTimers();
+      const idlePaints = runner.counters.paintCount;
+      jest.advanceTimersByTime(2000);
+      expect(runner.counters.paintCount).toBe(idlePaints);
+      runner.stop();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('honors a conflict-free semantic keymap override', () => {
+    const { output } = createOutput();
+    const queued: string[] = [];
+    const runner = new TuiRunner({
+      output,
+      width: 60,
+      height: 10,
+      keymap: { queue: ['ctrl+r'] },
+      onQueueSubmit: input => {
+        queued.push(input);
+      },
+    });
+    runner.events.setProcessing(true);
+    runner.feedInput(Buffer.from('follow up'));
+    runner.feedInput(Buffer.from('\x12'));
+
+    expect(queued).toEqual(['follow up']);
+  });
+
   it('routes permissions through the shared runtime instead of a TUI-local branch', () => {
     const { output } = createOutput();
     const submitted: string[] = [];
@@ -576,7 +751,7 @@ describe('tui-ui runner', () => {
     expect(rows.join('\n')).toContain('┌');
     expect(rows.join('\n')).toContain('└');
     // Status row is still present
-    expect(rows.join('\n')).toContain('ready');
+    expect(rows.join('\n')).toContain('MODE BUILD');
   });
 
   it('does not leak paste content past submit', () => {
@@ -1344,7 +1519,7 @@ describe('tui-ui runner', () => {
     await surface.unmount();
   });
 
-  it('writes user background styling to scrollback and resets the row', async () => {
+  it('writes the low-contrast user surface to scrollback and resets the row', async () => {
     const previousNoColor = process.env.NO_COLOR;
     const previousForceColor = process.env.FORCE_COLOR;
     delete process.env.NO_COLOR;
@@ -1359,7 +1534,8 @@ describe('tui-ui runner', () => {
       runner.events.append({ role: 'user', content: '你好 question' });
       await surface.whenIdle();
 
-      expect(out.text()).toMatch(/\x1b\[[0-9;]*48;2;218;221;226m/);
+      expect(out.text()).toMatch(/\x1b\[[0-9;]*48;2;43;52;68m/);
+      expect(out.text()).not.toContain('48;2;218;221;226');
       expect(out.text()).toContain('你好 question');
       expect(out.text()).toContain('\x1b[0m\n');
       await surface.unmount();

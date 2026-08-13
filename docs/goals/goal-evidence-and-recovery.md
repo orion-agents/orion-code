@@ -15,7 +15,9 @@ ACP clients must reuse the same Goal, evidence, permission, and recovery rules.
 ```
 
 Use `/goal` to inspect the current state, `/goal pause` to stop automatic continuation, and
-`/goal resume` to continue a recoverable Goal. `/goal replace <objective>` creates a new goalId;
+`/goal resume` to continue a recoverable Goal. A passed completion audit automatically clears the
+session's active Goal binding and exits Goal mode while retaining the completed sidecar as a durable
+receipt. `/goal replace <objective>` creates a new goalId;
 `/goal confirm <criterion-id>` records trusted human acceptance only for a criterion that explicitly requires
 `user` evidence; `/goal exit` immediately stops Goal-owned execution and removes the Goal sidecar.
 The old `/goal clear --yes` and `/target clear --yes` forms are intentionally rejected in v0.1.6.

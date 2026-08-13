@@ -98,6 +98,13 @@ describe('grep pattern hardening (Issue #79)', () => {
     expect(err).toMatch(/ReDoS|catastrophic backtracking/);
   });
 
+  it.each(['(a{1,})+$', '((a{1,})+)+$', '(a|aa)+$'])(
+    'validateRegexPattern rejects brace and overlapping ReDoS pattern %s',
+    pattern => {
+      expect(validateRegexPattern(pattern)).toMatch(/ReDoS|catastrophic backtracking/);
+    }
+  );
+
   it('validateRegexPattern rejects an invalid regular expression', () => {
     expect(validateRegexPattern('(')).toMatch(/valid regular expression/);
   });
@@ -125,6 +132,12 @@ describe('grep pattern hardening (Issue #79)', () => {
 
   it('grep tool rejects a nested-quantifier ReDoS pattern', async () => {
     const result = await grepTool().execute({ pattern: '(a+)+$', path: tmpDir }, ctx);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/ReDoS|catastrophic backtracking|Invalid grep pattern/);
+  });
+
+  it.each(['(a{1,})+$', '(a|aa)+$'])('grep tool rejects ReDoS pattern %s', async pattern => {
+    const result = await grepTool().execute({ pattern, path: tmpDir }, ctx);
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/ReDoS|catastrophic backtracking|Invalid grep pattern/);
   });

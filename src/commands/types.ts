@@ -59,6 +59,8 @@ export interface CommandContext {
   uiRenderer?: CommandUiRenderer;
   /** Renderer adapter capabilities. Business commands should prefer these over renderer-name checks. */
   uiCapabilities?: UiRendererCapabilities;
+  /** Shared BUILD / PLAN / AUTO lifecycle owned by the runtime controller. */
+  agentModeLifecycle?: import('../framework/agent-mode').AgentModeLifecycleController;
 }
 
 /** 命令执行结果 */
@@ -107,8 +109,6 @@ export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'auto';
 /** Agent working mode. This is deliberately independent from tool confirmation policy. */
 export type AgentMode = 'interactive' | 'plan' | 'auto';
 
-export const AGENT_MODES: AgentMode[] = ['interactive', 'plan', 'auto'];
-
 /** Permission mode cycle order */
 export const PERMISSION_MODES: PermissionMode[] = ['default', 'acceptEdits', 'plan', 'auto'];
 
@@ -118,7 +118,7 @@ export function getNextPermissionMode(current: PermissionMode): PermissionMode {
   return PERMISSION_MODES[(idx + 1) % PERMISSION_MODES.length];
 }
 
-/** Get mode display text */
+/** Get the legacy renderer label for the current Agent mode. */
 export function getModeDisplayText(mode: AgentMode): string {
   switch (mode) {
     case 'plan':

@@ -28,6 +28,7 @@ import {
   getProjectSessionMetaPath,
   getProjectSessionTracePath,
   getProjectSessionsDir,
+  getConfigDir,
   getProjectsDir,
 } from './config-dir';
 import { atomicWriteFileSync } from './atomic-write';
@@ -424,6 +425,29 @@ export type SessionLookupResult =
 // ============================================================================
 
 const MAX_CACHE_SIZE = 256;
+const SESSION_CATALOG_VERSION = 1;
+
+interface SessionCatalog {
+  version: typeof SESSION_CATALOG_VERSION;
+  sessions: Record<string, SessionMeta>;
+}
+
+interface SessionCatalogCache {
+  path: string;
+  mtimeMs: number;
+  size: number;
+  catalog: SessionCatalog;
+}
+
+let sessionCatalogCache: SessionCatalogCache | null = null;
+
+function getSessionCatalogPath(): string {
+  return join(getConfigDir(), 'session-catalog.json');
+}
+
+function emptySessionCatalog(): SessionCatalog {
+  return { version: SESSION_CATALOG_VERSION, sessions: {} };
+}
 
 /**
  * Evict the oldest entries when a Map exceeds MAX_CACHE_SIZE.
@@ -580,6 +604,132 @@ export const SESSION_SIDECAR_SUFFIXES = [
   '.index.json',
 ];
 
+function readSessionCatalogFile(path: string): SessionCatalog | null {
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as Partial<SessionCatalog>;
+    if (
+      parsed.version !== SESSION_CATALOG_VERSION ||
+      !parsed.sessions ||
+      typeof parsed.sessions !== 'object' ||
+      Array.isArray(parsed.sessions)
+    ) {
+      return null;
+    }
+
+    for (const [id, session] of Object.entries(parsed.sessions)) {
+      if (
+        !session ||
+        session.id !== id ||
+        typeof session.projectPath !== 'string' ||
+        !session.projectPath
+      ) {
+        return null;
+      }
+    }
+    return parsed as SessionCatalog;
+  } catch (error) {
+    debugError('session-storage.readCatalog', error, path);
+    return null;
+  }
+}
+
+function cacheSessionCatalog(path: string, catalog: SessionCatalog): SessionCatalog {
+  try {
+    const stat = statSync(path);
+    sessionCatalogCache = { path, mtimeMs: stat.mtimeMs, size: stat.size, catalog };
+  } catch (error) {
+    debugError('session-storage.cacheCatalog', error, path);
+    sessionCatalogCache = null;
+  }
+  return catalog;
+}
+
+function readCachedSessionCatalog(path: string): SessionCatalog | null {
+  if (!existsSync(path)) return null;
+  try {
+    const stat = statSync(path);
+    if (
+      sessionCatalogCache?.path === path &&
+      sessionCatalogCache.mtimeMs === stat.mtimeMs &&
+      sessionCatalogCache.size === stat.size
+    ) {
+      return sessionCatalogCache.catalog;
+    }
+  } catch (error) {
+    debugError('session-storage.statCatalog', error, path);
+    return null;
+  }
+
+  const catalog = readSessionCatalogFile(path);
+  return catalog ? cacheSessionCatalog(path, catalog) : null;
+}
+
+function scanSessionCatalog(): SessionCatalog {
+  const catalog = emptySessionCatalog();
+  const projectsDir = getProjectsDir();
+  if (!existsSync(projectsDir)) return catalog;
+
+  for (const projectKey of readdirSync(projectsDir)) {
+    const projectSessionsDir = join(projectsDir, projectKey, 'sessions');
+    if (!existsSync(projectSessionsDir)) continue;
+    for (const file of readdirSync(projectSessionsDir).filter(isSessionMetaFile)) {
+      const sourcePath = join(projectSessionsDir, file);
+      const rawSession = parseSessionMetaFile(sourcePath);
+      if (!rawSession) continue;
+      const normalized = tryNormalizeSessionMeta(rawSession, sourcePath);
+      if (!normalized) continue;
+
+      const previous = catalog.sessions[normalized.id];
+      if (
+        !previous ||
+        (normalized.updatedAt ?? normalized.startTime) > (previous.updatedAt ?? previous.startTime)
+      ) {
+        catalog.sessions[normalized.id] = normalized;
+      }
+    }
+  }
+  return catalog;
+}
+
+function writeSessionCatalog(path: string, catalog: SessionCatalog): void {
+  atomicWriteFileSync(path, JSON.stringify(catalog), { mode: 0o600 });
+  cacheSessionCatalog(path, catalog);
+}
+
+function loadOrRebuildSessionCatalog(): SessionCatalog {
+  ensureConfigDir();
+  const path = getSessionCatalogPath();
+  const cached = readCachedSessionCatalog(path);
+  if (cached) return cached;
+
+  return withFileLockSync(
+    path,
+    () => {
+      const current = readCachedSessionCatalog(path);
+      if (current) return current;
+      const rebuilt = scanSessionCatalog();
+      writeSessionCatalog(path, rebuilt);
+      return rebuilt;
+    },
+    { waitMs: 10_000 }
+  );
+}
+
+function updateSessionCatalog(update: (catalog: SessionCatalog) => void): SessionCatalog {
+  ensureConfigDir();
+  const path = getSessionCatalogPath();
+  return withFileLockSync(
+    path,
+    () => {
+      const catalog = readSessionCatalogFile(path) ?? scanSessionCatalog();
+      update(catalog);
+      writeSessionCatalog(path, catalog);
+      return catalog;
+    },
+    { waitMs: 10_000 }
+  );
+}
+
 function parseHarnessSidecarFile(path: string): HarnessSidecar | null {
   try {
     const content = readFileSync(path, 'utf-8');
@@ -614,16 +764,6 @@ function parseCompactCheckpointFile(path: string): CompactCheckpointV1 | null {
     // history instead of the summary — degraded, not fatal.
     debugError('session-storage.parseCompactCheckpoint', error, path);
     return null;
-  }
-}
-
-function upsertNewestSession(sessionsById: Map<string, SessionMeta>, session: SessionMeta): void {
-  const existing = sessionsById.get(session.id);
-  const existingTime = existing ? (existing.updatedAt ?? existing.startTime) : 0;
-  const nextTime = session.updatedAt ?? session.startTime;
-
-  if (!existing || nextTime >= existingTime) {
-    sessionsById.set(session.id, session);
   }
 }
 
@@ -693,21 +833,42 @@ export function saveSessionMeta(session: SessionMeta): void {
 function writeSessionMetaUnlocked(session: SessionMeta): void {
   const normalized = normalizeSessionMeta(session);
   ensureProjectDir(normalized.projectPath);
-  atomicWriteFileSync(
-    getProjectSessionMetaPath(normalized.projectPath, normalized.id),
-    JSON.stringify(normalized, null, 2),
-    { mode: 0o600 }
-  );
+  const metaPath = getProjectSessionMetaPath(normalized.projectPath, normalized.id);
+  atomicWriteFileSync(metaPath, JSON.stringify(normalized, null, 2), { mode: 0o600 });
+  updateSessionCatalog(catalog => {
+    catalog.sessions[normalized.id] = normalized;
+  });
 }
 
 function findSessionMetaPath(sessionId: string): string | null {
-  const projectsDir = getProjectsDir();
-  if (!existsSync(projectsDir)) return null;
+  const catalog = loadOrRebuildSessionCatalog();
+  const indexed = catalog.sessions[sessionId];
+  const findUnindexedCandidate = (): string | null => {
+    const projectsDir = getProjectsDir();
+    if (!existsSync(projectsDir)) return null;
+    for (const projectKey of readdirSync(projectsDir)) {
+      const candidate = join(projectsDir, projectKey, 'sessions', `${sessionId}.json`);
+      const session = existsSync(candidate) ? readSessionMetaAtPath(candidate) : null;
+      if (!session) continue;
+      updateSessionCatalog(current => {
+        current.sessions[session.id] = session;
+      });
+      return candidate;
+    }
+    return null;
+  };
 
-  for (const projectKey of readdirSync(projectsDir)) {
-    const path = join(projectsDir, projectKey, 'sessions', `${sessionId}.json`);
-    if (existsSync(path) && readSessionMetaAtPath(path)) return path;
-  }
+  if (!indexed) return findUnindexedCandidate();
+
+  const path = getProjectSessionMetaPath(indexed.projectPath, sessionId);
+  if (existsSync(path)) return path;
+
+  const migratedPath = findUnindexedCandidate();
+  if (migratedPath) return migratedPath;
+
+  updateSessionCatalog(current => {
+    delete current.sessions[sessionId];
+  });
   return null;
 }
 
@@ -801,6 +962,28 @@ export function updateSessionGoalBinding(
   return mutateSessionMeta(sessionId, session => {
     session.activeGoalId = goal?.goalId;
     session.activeGoalObjective = goal?.objective;
+    session.updatedAt = Date.now();
+    session.updatedAtIso = new Date(session.updatedAt).toISOString();
+  });
+}
+
+/**
+ * Clear a completed Goal binding without clobbering a newer Goal selected by
+ * another Orion process. A missing binding is already converged; a different
+ * binding is a lifecycle conflict and fails closed.
+ */
+export function clearSessionGoalBinding(
+  sessionId: string,
+  expectedGoalId: string
+): SessionMeta | null {
+  return mutateSessionMeta(sessionId, session => {
+    if (session.activeGoalId && session.activeGoalId !== expectedGoalId) {
+      throw new Error(
+        `Session Goal binding changed from ${expectedGoalId} to ${session.activeGoalId}; refusing to clear the newer Goal.`
+      );
+    }
+    session.activeGoalId = undefined;
+    session.activeGoalObjective = undefined;
     session.updatedAt = Date.now();
     session.updatedAtIso = new Date(session.updatedAt).toISOString();
   });
@@ -1436,27 +1619,7 @@ function sessionMessageToModelMessage(message: SessionMessage): Message {
  * 列出所有会话
  */
 export function listSessions(limit?: number): SessionMeta[] {
-  ensureConfigDir();
-  const sessionsById = new Map<string, SessionMeta>();
-
-  const projectsDir = getProjectsDir();
-  if (existsSync(projectsDir)) {
-    for (const projectKey of readdirSync(projectsDir)) {
-      const projectSessionsDir = join(projectsDir, projectKey, 'sessions');
-      if (!existsSync(projectSessionsDir)) continue;
-
-      const files = readdirSync(projectSessionsDir).filter(isSessionMetaFile);
-      for (const file of files) {
-        const rawSession = parseSessionMetaFile(join(projectSessionsDir, file));
-        if (!rawSession) continue;
-        const sourcePath = join(projectSessionsDir, file);
-        const normalized = tryNormalizeSessionMeta(rawSession, sourcePath);
-        if (normalized) upsertNewestSession(sessionsById, normalized);
-      }
-    }
-  }
-
-  const sessions = sortSessionsNewestFirst(Array.from(sessionsById.values()));
+  const sessions = sortSessionsNewestFirst(Object.values(loadOrRebuildSessionCatalog().sessions));
   return limit ? sessions.slice(0, limit) : sessions;
 }
 
@@ -1465,21 +1628,11 @@ export function listSessions(limit?: number): SessionMeta[] {
  */
 export function listProjectSessions(projectPath: string, limit?: number): SessionMeta[] {
   const canonicalProjectPath = resolveProjectPath(projectPath);
-  const sessionsById = new Map<string, SessionMeta>();
-
-  const projectSessionsDir = getProjectSessionsDir(canonicalProjectPath);
-  if (existsSync(projectSessionsDir)) {
-    const files = readdirSync(projectSessionsDir).filter(isSessionMetaFile);
-    for (const file of files) {
-      const rawSession = parseSessionMetaFile(join(projectSessionsDir, file));
-      if (!rawSession) continue;
-      const sourcePath = join(projectSessionsDir, file);
-      const normalized = tryNormalizeSessionMeta(rawSession, sourcePath);
-      if (normalized) upsertNewestSession(sessionsById, normalized);
-    }
-  }
-
-  const sessions = sortSessionsNewestFirst(Array.from(sessionsById.values()));
+  const sessions = sortSessionsNewestFirst(
+    Object.values(loadOrRebuildSessionCatalog().sessions).filter(
+      session => session.projectPath === canonicalProjectPath
+    )
+  );
   return limit ? sessions.slice(0, limit) : sessions;
 }
 
@@ -1579,6 +1732,10 @@ export function deleteSession(sessionId: string): boolean {
           deleted = true;
         }
       }
+
+      updateSessionCatalog(catalog => {
+        delete catalog.sessions[sessionId];
+      });
 
       return deleted;
     }) ?? false

@@ -40,7 +40,16 @@
   "toolConfirmation": "allow",
   "allowedTools": [],
   "ui": {
-    "confirmations": "config"
+    "confirmations": "config",
+    "theme": "orion-pixel",
+    "motion": "reduced",
+    "mascot": true,
+    "statusLine": ["mode", "goal", "model", "context", "permission", "queue", "activity"],
+    "keymap": {
+      "queue": ["tab"],
+      "history-search": ["ctrl+r"],
+      "external-editor": ["ctrl+e"]
+    }
   },
   "subagents": {
     "mode": "auto",
