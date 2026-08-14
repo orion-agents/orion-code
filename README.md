@@ -2,7 +2,7 @@
 
 > **Goal-driven coding agent for the terminal.**
 >
-> v0.1.7 — Orion Pixel TUI, typed status chrome, and queued follow-ups
+> v0.1.8 candidate — repository hygiene, audited issue fixes, and actionable runtime recovery
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20.0-green.svg)](https://nodejs.org)
@@ -35,8 +35,8 @@ Orion Code is a terminal-based coding agent. It wraps LLM APIs in a harness of s
 ### Install & Run
 
 ```bash
-# Install the exact audited version:
-npm install -g @orion-agents/orion-code@0.1.7
+# Install this exact version after the candidate is published:
+npm install -g @orion-agents/orion-code@0.1.8
 # Install the current prerelease channel:
 npm install -g @orion-agents/orion-code@next
 
@@ -75,9 +75,9 @@ orion -p "review the current git diff"
 echo "summarize this project" | orion --print
 ```
 
-> **Release status.** `0.1.7` is published through the npm `next` dist-tag and is identified by the
-> `v0.1.7` tag and GitHub prerelease. Stable `latest` remains `0.1.4`; promotion is a separate
-> decision.
+> **Release status.** The source tree is an unpublished `0.1.8` candidate: it has no release tag,
+> GitHub Release, or npm artifact yet. `0.1.7` remains the published `next` version and stable
+> `latest` remains `0.1.4`; promotion is a separate release decision.
 
 ### TUI startup banner
 
@@ -303,6 +303,8 @@ points. Auto runs without permission or clarification prompts, while hard safety
 explicit user boundaries remain enforced.
 
 See [the Plan-mode lifecycle contract](docs/plan/plan-mode-contract.md).
+Authorization precedence, AUTO network behavior, and audit provenance are defined in the
+[Agent Mode and Tool Permission Contract](docs/architecture/agent-mode-permission-contract.md).
 
 ### Persistent Goal safety contract
 
@@ -346,7 +348,7 @@ orion migrate openhorse --yes [--include-env]
 
 See the [v0.1.2 release notes](https://github.com/orion-agents/orion-code/blob/main/docs/mvp/v0.1.2.md),
 [Goal evidence and recovery guide](https://github.com/orion-agents/orion-code/blob/main/docs/goals/goal-evidence-and-recovery.md),
-and [execution plan](https://github.com/orion-agents/orion-code/blob/main/docs/plan/v0.1.2-execution-plan.md).
+and [execution plan](https://github.com/orion-agents/orion-code/blob/main/docs/archive/releases/v0.1.x/v0.1.2-execution-plan.md).
 
 ## Research-to-Evidence (v0.1.4, experimental)
 

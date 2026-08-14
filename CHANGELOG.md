@@ -16,11 +16,53 @@ This project distinguishes three delivery states. **Never present unreleased wor
 | **Merged**        | In the default branch, not yet installable   | merged, **no** tag / not published         |
 | **Candidate**     | Reviewable source, no release promise        | committed PR branch or owned worktree      |
 
-Evidence labels follow `docs/plan/targets-v0.1.3-v0.1.3-2.md`:
+Evidence labels follow `docs/archive/releases/v0.1.x/targets-v0.1.3-v0.1.3-2.md`:
 `met` / `partial` / `unmet` / `not_run` — where `not_run` means "blocked by environment",
 which is **not** a pass.
 
 ## [Unreleased]
+
+## [0.1.8] — 2026-08-14
+
+> **Status: candidate.** The source and package metadata identify `0.1.8`, but no `v0.1.8` tag,
+> GitHub Release, or npm artifact exists yet. The published channels remain unchanged until a
+> separately authorized release operation.
+
+### Added
+
+- Add schema-level and scheduler-level finite safe-integer validation for bounded tool inputs,
+  including `exec_command.timeout`, `exec_command.maxOutputBytes`, and `list_files.maxDepth` (#203).
+- Add a renderer-neutral budget-stop view with usage, last completed work, and visible recovery
+  actions across TUI, terminal, print, JSON, and `/loop-stats` (#204).
+- Add typed tool-authorization provenance and an explicit BUILD/PLAN/AUTO network-permission
+  architecture contract; AUTO stays prompt-free after hard policy and explicit deny checks (#175).
+- Add repository-layout, cleanup-manifest, and per-issue verification ledgers for auditable release
+  ownership and recovery.
+
+### Changed
+
+- Restrict the npm package to the single runtime icon and enforce packed size, unpacked size, entry
+  count, required files, and unexpected-path budgets during release checks.
+- Move maintained scripts into `scripts/release`, `scripts/smoke`, and `scripts/maintenance`; archive
+  historical v0.1.x plans under `docs/archive/releases/v0.1.x`.
+- Enforce renderer command scope before special command dispatch, integrating the behavior reviewed
+  in PR #201 for issue #179.
+- Keep session transcript append metadata incremental and cover a 5,000-row history without a
+  full JSONL rescan (#172).
+
+### Fixed
+
+- Verify the existing security, persistence, TUI/performance, release/dependency, and Goal lifecycle
+  candidate fixes for issues #170–#200 with focused regression batches and real renderer smokes.
+- Keep Goal completion evidence durable across failure, compact, restart, and resume, then
+  automatically leave Goal mode after a passing audit (#189).
+- Update PTY harnesses to current provider profiles and durable trace/status assertions so the
+  release matrix exercises source code without deprecated configuration fallbacks.
+
+### Removed
+
+- Remove 18 unreferenced tracked documentation images, 15 superseded `test-runtime` probes, the
+  unused `src/ink` helper, and the unreferenced `src/ui-v2` experiment after replacement mapping.
 
 ## [0.1.7] — 2026-08-13
 
@@ -281,7 +323,7 @@ plan-mode bypass, SSRF / API-key leakage) and rounds out developer-facing toolin
 ### Out of scope (this release)
 
 Deliberately deferred to a later version per the architecture review
-(`docs/plan/v0.1.3-2-plan.md`):
+(`docs/archive/releases/v0.1.x/v0.1.3-2-plan.md`):
 
 - **Hook system (#27)** — external scripts expand the permission / timeout / secret / audit surface and
   need a standalone technical design.
@@ -316,7 +358,7 @@ was not changed. The PTY smoke scripts `scripts/terminal-ui-pty-smoke.py` /
 
 ### Still open (release gate)
 
-- `docs/plan/targets-v0.1.3-v0.1.3-2.md` P0-C Goal sidecar overwrite protection — `unverified`.
+- `docs/archive/releases/v0.1.x/targets-v0.1.3-v0.1.3-2.md` P0-C Goal sidecar overwrite protection — `unverified`.
 - Worktree not yet frozen into a commit (index currently holds the 42 in-scope files).
 - No `v0.1.3` tag; not published.
 

@@ -3,7 +3,7 @@
 > **Orion Code — 通用 Agent 驾驭框架**
 > 一个 CLI 驱动的编码 Agent，具备安全边界、工具编排、记忆系统和上下文管理。
 >
-> v0.1.7 — Orion Pixel TUI、类型化状态 Chrome 与后续任务队列
+> v0.1.8 候选版 — 仓库治理、经审计的 issue 修复与可操作的运行时恢复
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20.0-green.svg)](https://nodejs.org)
@@ -104,10 +104,10 @@ npm start -- --print "review the current git diff"
 
 ### 全局安装
 
-固定安装审计过的精确版本：
+候选版发布后固定安装该精确版本：
 
 ```bash
-npm install -g @orion-agents/orion-code@0.1.7
+npm install -g @orion-agents/orion-code@0.1.8
 # 安装当前预发布渠道：
 npm install -g @orion-agents/orion-code@next
 # 任意目录运行
@@ -116,8 +116,9 @@ orion
 
 也可以在源码工作树中使用 `npm ci && npm run build && npm start`。
 
-> **发布状态**：`0.1.7` 已通过 npm `next` dist-tag 发布，并由 `v0.1.7` tag 和 GitHub
-> prerelease 标识。稳定版 `latest` 仍为 `0.1.4`；稳定版提升是独立决策。
+> **发布状态**：当前源码是尚未发布的 `0.1.8` 候选版，还没有 release tag、GitHub
+> Release 或 npm artifact。`0.1.7` 仍是 npm `next` 已发布版本，稳定版 `latest` 仍为
+> `0.1.4`；发布与稳定版提升是独立决策。
 
 公众体验、交互优化和新增工作流优先落在 TUI。`terminal-ui` 不作为与
 TUI 并行发展的公众产品；Ink 只保留迁移期兼容，不再增加产品能力。
@@ -480,7 +481,7 @@ orion-code/
 │   ├── print-ui/                 # 实验性 Print/Text 与 Print/JSON
 │   └── skills/                   # 内置 Skill
 ├── tests/                        # Jest 测试套件
-├── test-runtime/                 # 运行时 smoke 脚本
+├── scripts/smoke/                # 真实终端与 PTY smoke 脚本
 ├── docs/
 │   ├── goals/                    # 项目 Goal、证据与恢复说明
 │   ├── mvp/                      # 版本计划与发布说明
@@ -493,7 +494,14 @@ orion-code/
 
 ## 版本历史
 
-### v0.1.7（当前版本，已发布至 next）
+### v0.1.8（候选版，尚未发布）
+
+- 收敛 npm 发布白名单与包体积门禁，归档历史计划并删除已证明无引用的旧资产、脚本和 UI 实验目录；
+- 完成 33 个 open issues 的逐项账本，补齐数值型工具参数边界、budget-stop 恢复提示、renderer scope 与 AUTO 网络授权可见性；
+- 真实验证 BUILD/PLAN/AUTO、Goal 自动退出、TUI/Terminal/Print/Research 以及旧 Ink 兼容入口；
+- 当前仅为源码候选，不代表 tag、GitHub Release 或 npm 发布已完成。
+
+### v0.1.7（已发布至 next）
 
 - 引入原创 Orion Pixel 与“星际小猎人”，并为 classic、NO_COLOR、窄终端提供安全降级；
 - 使用类型化 Chrome 统一 Goal、权限、模型、上下文、队列与 Active Work 状态层级；
