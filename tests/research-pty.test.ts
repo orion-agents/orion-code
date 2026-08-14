@@ -13,7 +13,7 @@ function findPython(): string | null {
 
 describe('Research renderer real-process parity', () => {
   const python = findPython();
-  const smokeScript = join(__dirname, '..', 'scripts', 'research-renderer-pty-smoke.py');
+  const smokeScript = join(__dirname, '..', 'scripts', 'smoke', 'research-renderer-pty-smoke.py');
   const maybeIt =
     python && existsSync(smokeScript) && process.platform !== 'win32' && canRunPtySmoke
       ? it

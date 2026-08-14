@@ -27,7 +27,7 @@ function findPython(): string | null {
 
 describe('print mode smoke', () => {
   const python = findPython();
-  const smokeScript = join(__dirname, '..', 'scripts', 'print-mode-smoke.py');
+  const smokeScript = join(__dirname, '..', 'scripts', 'smoke', 'print-mode-smoke.py');
   const maybeIt =
     python && existsSync(smokeScript) && process.platform !== 'win32' && canRunCliSmoke
       ? it

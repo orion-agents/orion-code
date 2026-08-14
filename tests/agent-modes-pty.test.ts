@@ -13,7 +13,7 @@ function findPython(): string | null {
 
 describe('agent mode PTY tool execution', () => {
   const python = findPython();
-  const smokeScript = join(__dirname, '..', 'scripts', 'agent-modes-pty-smoke.py');
+  const smokeScript = join(__dirname, '..', 'scripts', 'smoke', 'agent-modes-pty-smoke.py');
   const maybeIt =
     python && existsSync(smokeScript) && process.platform !== 'win32' && canRunPtySmoke
       ? it

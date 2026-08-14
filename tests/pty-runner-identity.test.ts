@@ -12,7 +12,7 @@ import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { spawnSync } from 'child_process';
 
-const helper = resolve(__dirname, '..', 'scripts', 'pty_runner_identity.py');
+const helper = resolve(__dirname, '..', 'scripts', 'smoke', 'pty_runner_identity.py');
 
 function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
@@ -112,7 +112,7 @@ describe('PTY runner identity', () => {
 
   it('routes both PTY acceptance scripts through the identity resolver', () => {
     for (const script of ['tui-ui-pty-smoke.py', 'target-pty-smoke.py']) {
-      const source = readFileSync(resolve(__dirname, '..', 'scripts', script), 'utf8');
+      const source = readFileSync(resolve(__dirname, '..', 'scripts', 'smoke', script), 'utf8');
       expect(source).toContain('from pty_runner_identity import resolve_orion_command');
       expect(source).toContain('resolve_orion_command(repo');
     }

@@ -17,8 +17,8 @@ type ReleaseReport = {
 };
 
 const projectRoot = resolve(__dirname, '..');
-const releaseScript = join(projectRoot, 'scripts', 'release-check.js');
-const depHealthScript = join(projectRoot, 'scripts', 'dep-health-check.sh');
+const releaseScript = join(projectRoot, 'scripts', 'release', 'release-check.js');
+const depHealthScript = join(projectRoot, 'scripts', 'release', 'dep-health-check.sh');
 const fixtures: string[] = [];
 
 function git(cwd: string, args: string[]): string {
@@ -66,8 +66,8 @@ function commitAll(cwd: string, message: string): void {
 function createFixture(version: string, changelog: string): string {
   const cwd = mkdtempSync(join(tmpdir(), 'orion-release-check-'));
   fixtures.push(cwd);
-  mkdirSync(join(cwd, 'scripts'), { recursive: true });
-  cpSync(releaseScript, join(cwd, 'scripts', 'release-check.js'));
+  mkdirSync(join(cwd, 'scripts', 'release'), { recursive: true });
+  cpSync(releaseScript, join(cwd, 'scripts', 'release', 'release-check.js'));
   writeVersionFiles(cwd, version, changelog);
   git(cwd, ['init', '-q']);
   git(cwd, ['config', 'user.email', 'release-check@example.test']);
@@ -79,7 +79,7 @@ function createFixture(version: string, changelog: string): string {
 function runReleaseCheck(cwd: string): { status: number | null; report: ReleaseReport } {
   const result = spawnSync(
     process.execPath,
-    [join(cwd, 'scripts', 'release-check.js'), '--skip-tests', '--skip-pack', '--json'],
+    [join(cwd, 'scripts', 'release', 'release-check.js'), '--skip-tests', '--skip-pack', '--json'],
     { cwd, encoding: 'utf8' }
   );
   if (!result.stdout.trim()) {
@@ -117,6 +117,18 @@ describe('release-check script contract', () => {
     expect(releaseCheckIndex).toBeGreaterThan(buildIndex);
     expect(prepublishOnly).toContain('npm run test:coverage -- --runInBand');
     expect(pkg.files).toContain('npm-shrinkwrap.json');
+    expect(pkg.files).toContain('assets/orion-tui-icon.png');
+    expect(pkg.files).not.toContain('assets/');
+  });
+
+  it('enforces exact package contents and hard package-size budgets', () => {
+    const script = readFileSync(releaseScript, 'utf8');
+
+    expect(script).toContain('MAX_PACKED_PACKAGE_BYTES = 2 * 1024 * 1024');
+    expect(script).toContain('MAX_UNPACKED_PACKAGE_BYTES = 10 * 1024 * 1024');
+    expect(script).toContain('MAX_PACKAGE_ENTRIES = 1500');
+    expect(script).toContain("'assets/orion-tui-icon.png'");
+    expect(script).toContain('unexpected tarball entries');
   });
 
   it('pins third-party GitHub Actions to immutable commit SHAs', () => {
@@ -159,7 +171,7 @@ describe('release-check script contract', () => {
 
     const result = spawnSync(
       process.execPath,
-      [join(cwd, 'scripts', 'release-check.js'), '--skip-tests', '--json'],
+      [join(cwd, 'scripts', 'release', 'release-check.js'), '--skip-tests', '--json'],
       {
         cwd,
         encoding: 'utf8',

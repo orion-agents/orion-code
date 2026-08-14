@@ -36,7 +36,6 @@ import {
   type ParsedToolActivity,
 } from '../src/ink-ui/components/ToolActivity';
 import type { OrionCodeUiRuntime, TranscriptEntry } from '../src/ink-ui/types';
-import { renderEditPreview } from '../src/ui-v2/components/edit-preview-picker';
 import { mcpManager } from '../src/tools/mcp';
 
 function task(overrides: Partial<Task> = {}): Task {
@@ -543,59 +542,5 @@ describe('legacy Ink pure component branch coverage', () => {
         maxVisibleItems: 0,
       }).type
     ).toBeDefined();
-  });
-
-  test('edit preview renderer covers empty, scrolling, truncation and context branches', () => {
-    const theme = {
-      accent: (text: string) => text,
-      dim: (text: string) => text,
-      selected: (text: string) => text,
-    };
-    expect(
-      renderEditPreview({
-        path: '/tmp/empty.ts',
-        newString: '',
-        kind: 'exact',
-        candidates: [],
-        selectedIndex: -1,
-        width: 40,
-        theme,
-      }).join('\n')
-    ).toContain('No matches found');
-
-    const candidates = Array.from({ length: 6 }, (_, index) => ({
-      index,
-      line: index + 1,
-      match: index === 4 ? 'm'.repeat(80) : `old ${index}`,
-      contextBefore: index % 2 === 0 ? 'before one\nbefore two\nbefore three' : '',
-      contextAfter: index % 3 === 0 ? 'after one\nafter two\nafter three' : '',
-      isReplaceAll: index === 5,
-    }));
-    const paged = renderEditPreview({
-      title: 'Custom preview',
-      path: '/tmp/file.ts',
-      newString: 'n'.repeat(80),
-      kind: 'fuzzy',
-      candidates,
-      selectedIndex: 99,
-      maxVisibleItems: 2.9,
-      width: 72,
-      theme,
-    }).join('\n');
-    expect(paged).toContain('Custom preview');
-    expect(paged).toContain('Showing 5-6/6');
-    expect(paged).toContain('Line 6');
-
-    expect(
-      renderEditPreview({
-        path: '/tmp/all.ts',
-        newString: 'new',
-        kind: 'exact',
-        candidates: candidates.slice(0, 2),
-        maxVisibleItems: 0,
-        width: 50,
-        theme,
-      }).join('\n')
-    ).not.toContain('Showing');
   });
 });

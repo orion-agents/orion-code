@@ -16,16 +16,16 @@ describe('npm package lifecycle', () => {
     ) as PackageManifest;
 
     expect(manifest.scripts).toMatchObject({
-      clean: 'node scripts/clean-dist.js',
+      clean: 'node scripts/maintenance/clean-dist.js',
       build: 'npm run clean && tsc',
       prepack: 'npm run build',
     });
   });
 
   it('restricts the clean script to the project dist directory', () => {
-    const cleanScript = readFileSync(resolve(rootDir, 'scripts/clean-dist.js'), 'utf8');
+    const cleanScript = readFileSync(resolve(rootDir, 'scripts/maintenance/clean-dist.js'), 'utf8');
 
-    expect(cleanScript).toContain("const projectRoot = resolve(__dirname, '..');");
+    expect(cleanScript).toContain("const projectRoot = resolve(__dirname, '../..');");
     expect(cleanScript).toContain("const distDir = resolve(projectRoot, 'dist');");
     expect(cleanScript).toContain("relative(projectRoot, distDir) !== 'dist'");
     expect(cleanScript).toContain('rmSync(distDir, { recursive: true, force: true });');

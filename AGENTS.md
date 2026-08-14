@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-Orion Code is a TypeScript CLI and agent harness. Source lives in `src/`, with the CLI entry point at `src/cli.ts` and public exports in `src/index.ts`. Key areas include `src/core/` for agent state, `src/framework/` for query/tool abstractions, `src/services/` for configuration, LLM, storage, and MCP services, `src/tools/` for tool implementations, `src/ui/` for terminal UI helpers, and `src/skills/` for built-in skills. Jest tests are in `tests/*.test.ts`; runtime smoke scripts are in `test-runtime/`. Docs and release notes are under `docs/`. Treat `dist/` as generated build output.
+Orion Code is a TypeScript CLI and agent harness. Source lives in `src/`, with the CLI entry point at `src/cli.ts` and public exports in `src/index.ts`. Key areas include `src/core/` for agent state, `src/framework/` for query/tool abstractions, `src/services/` for configuration, LLM, storage, and MCP services, `src/tools/` for tool implementations, `src/tui-core/` and `src/tui-ui/` for the product terminal UI, and `src/skills/` for built-in skills. Jest tests are in `tests/*.test.ts`; maintained runtime smoke scripts are in `scripts/smoke/`. Current docs and historical release evidence are separated under `docs/plan/`, `docs/architecture/`, and `docs/archive/`. Treat `dist/` as generated build output.
 
 ## Build, Test, and Development Commands
 

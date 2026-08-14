@@ -517,10 +517,10 @@ Desktop/IDE、远程监听、多人并发或团队策略已经成为稳定产品
 
 - [v0.1.0～v0.1.3 已发布历史](../../CHANGELOG.md)
 - v0.1.2 Goal 骨架端到端闭环（已完成、已发布）
-- [v0.1.4 Research-to-Evidence 计划](../plan/v0.1.4-plan.md)
-- [v0.1.4 发布检查清单](../plan/v0.1.4-release-checklist.md)
-- [v0.1.5 发布收敛、命令、Effort 与 ACP v1 计划](../plan/v0.1.5-plan.md)
-- [v0.1.6 发布检查清单](../plan/v0.1.6-release-checklist.md)
+- [v0.1.4 Research-to-Evidence 计划](../archive/releases/v0.1.x/v0.1.4-plan.md)
+- [v0.1.4 发布检查清单](../archive/releases/v0.1.x/v0.1.4-release-checklist.md)
+- [v0.1.5 发布收敛、命令、Effort 与 ACP v1 计划](../archive/releases/v0.1.x/v0.1.5-plan.md)
+- [v0.1.6 发布检查清单](../archive/releases/v0.1.x/v0.1.6-release-checklist.md)
 - [v0.2.0 Coding Agent Platform 计划](../plan/v0.2.0-coding-agent-platform-plan.md)
 - [Goal evidence and recovery](goal-evidence-and-recovery.md)
 - [English README](../../README.md)

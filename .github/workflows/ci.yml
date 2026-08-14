@@ -153,4 +153,4 @@ jobs:
         run: npm ci
 
       - name: dep-health-check
-        run: bash scripts/dep-health-check.sh
+        run: bash scripts/release/dep-health-check.sh

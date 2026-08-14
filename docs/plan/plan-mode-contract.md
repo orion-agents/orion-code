@@ -38,6 +38,9 @@ One entry and one completion transition prevent Store/tool-state drift.
 - Cycling away from Plan with `Shift+Tab` is an explicit cancellation and discards an unfinished
   plan.
 
+The full precedence and audit contract is defined in
+[Agent Mode and Tool Permission Contract](../architecture/agent-mode-permission-contract.md).
+
 ## Reference alignment
 
 - [Claude Code permission modes](https://code.claude.com/docs/en/permission-modes) treats Plan as a
