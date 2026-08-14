@@ -121,6 +121,7 @@ import {
 } from './chat-presentation';
 import { applySessionEffort } from './chat-effort';
 import { createPlanModeChangeHandler } from '../framework/agent-mode';
+import { rejectUnsupportedRenderer } from './chat-command-scope';
 
 export {
   createAssistantStreamPresenter,
@@ -219,22 +220,6 @@ export class AgentChatController {
       return;
     }
 
-    if (parsed.name === 'clear') {
-      if (this.events.clearView) {
-        this.events.clearView();
-      } else {
-        this.events.clearTranscript();
-      }
-      this.events.setStatus('View cleared. Conversation context is preserved.');
-      return;
-    }
-
-    if (parsed.name === 'exit' || parsed.name === 'quit' || parsed.name === 'q') {
-      this.events.shutdownRequested?.('user request');
-      await this.runtime.shutdown();
-      return;
-    }
-
     const command = findCommand(parsed.name);
     if (!command) {
       if (hasMatchingSkill(text, this.runtime.cwd)) {
@@ -252,6 +237,26 @@ export class AgentChatController {
             : `Unknown command: /${parsed.name}`,
         errorLayer: 'runtime',
       });
+      return;
+    }
+
+    const activeRenderer =
+      this.controllerOptions.uiRenderer ?? this.runtime.config.ui?.renderer ?? 'terminal';
+    if (rejectUnsupportedRenderer(this.events, command, activeRenderer)) return;
+
+    if (parsed.name === 'clear') {
+      if (this.events.clearView) {
+        this.events.clearView();
+      } else {
+        this.events.clearTranscript();
+      }
+      this.events.setStatus('View cleared. Conversation context is preserved.');
+      return;
+    }
+
+    if (parsed.name === 'exit' || parsed.name === 'quit' || parsed.name === 'q') {
+      this.events.shutdownRequested?.('user request');
+      await this.runtime.shutdown();
       return;
     }
 
