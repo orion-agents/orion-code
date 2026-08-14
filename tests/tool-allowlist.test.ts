@@ -400,7 +400,7 @@ describe('resolveEffectivePermission precedence', () => {
     expect(decision.reason).toContain('ask:read_file(*.env)');
   });
 
-  test('an explicit allow rule auto-approves a destructive non-file invocation', () => {
+  test('an explicit durable allow rule approves a destructive non-file invocation', () => {
     const decision = resolve({
       toolName: 'exec_command',
       tool: execTool,
@@ -593,6 +593,52 @@ describe('tool scheduler with a project allowlist', () => {
     expect(confirmToolUse).not.toHaveBeenCalled();
     expect(executedNames).toEqual(['web_fetch']);
     expect(executed[0].permissionDecision).toMatchObject({
+      approved: true,
+      source: 'allowlist_allow',
+    });
+  });
+
+  test('a new durable grant suppresses later prompts in the same model response', async () => {
+    let granted = false;
+    const confirmToolUse = jest.fn(async () => {
+      granted = true;
+      return true;
+    });
+    const evaluator: ToolAllowlistEvaluator = () =>
+      granted ? { effect: 'allow', rule: 'allow:exec_command' } : undefined;
+    const executedNames: string[] = [];
+    const toolExecutor = async (name: string) => {
+      executedNames.push(name);
+      return JSON.stringify({ success: true, output: 'ran' });
+    };
+    const prepared = prepareToolCalls({
+      toolCalls: calls([
+        ['exec_command', { command: 'printf first' }],
+        ['exec_command', { command: 'printf second' }],
+      ]),
+      tools,
+      toolExecutor,
+      toolContext,
+      toolAllowlist: evaluator,
+      permissionMode: 'default',
+      toolConfirmation: 'ask',
+      confirmToolUse: confirmToolUse as never,
+    });
+    const executed: ExecutedToolCall[] = [];
+
+    for await (const item of executeToolCalls(prepared, {
+      toolExecutor,
+      permissionMode: 'default',
+      toolConfirmation: 'ask',
+      toolAllowlist: evaluator,
+      confirmToolUse: confirmToolUse as never,
+    })) {
+      executed.push(item);
+    }
+
+    expect(confirmToolUse).toHaveBeenCalledTimes(1);
+    expect(executedNames).toEqual(['exec_command', 'exec_command']);
+    expect(executed[1].permissionDecision).toMatchObject({
       approved: true,
       source: 'allowlist_allow',
     });

@@ -175,11 +175,11 @@ the waiting tool continues. A write failure denies the call.
 Machine-wide rules live at root `allowedTools`; project rules live under
 `projects["<absolute path>"].allowedTools`. Both sets are evaluated, and the most restrictive
 matching effect wins (`deny` > `ask` > `allow`). Choosing project or machine scope is explicit
-durable consent for that tool, so later calls skip confirmation, including destructive shell
-operations that are not hard-blocked by the command safety policy. AUTO skips all interactive
-permission prompts and authorizes every invocation after hard tool-policy and explicit `deny`
-checks. PLAN exposes the same tool registry as BUILD and inherits the independently selected
-permission policy, including durable project or machine grants.
+durable consent for that tool, so a durable `allow` skips repeated prompts for external tools, file
+edits, and shell operations that are not hard-blocked by command safety policy. AUTO skips all
+interactive prompts and authorizes every invocation after hard tool-policy and explicit `deny`
+checks. PLAN exposes the same registry as BUILD and inherits the independently selected permission
+policy, including durable project or machine grants.
 
 ```json
 {

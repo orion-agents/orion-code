@@ -685,7 +685,7 @@ describe('permission mode semantics for ask tools', () => {
     return { results, prepared };
   };
 
-  test('legacy plan permission follows the normal confirmation policy for external tools', async () => {
+  test('legacy plan permission follows normal confirmation for external tools', async () => {
     const executed: string[] = [];
     let prompted = 0;
     const { results } = await runOne('web_search', {
@@ -756,7 +756,7 @@ describe('permission mode semantics for ask tools', () => {
     expect(perm.risk).toBe('read_only');
   });
 
-  test('plan mode routes external read-only tools (web/MCP) through confirmation', () => {
+  test('legacy plan permission routes external read-only tools through confirmation', () => {
     const perm = resolveEffectivePermission({
       toolName: 'web_search',
       tool: askTool,
@@ -992,7 +992,7 @@ describe('fail-closed permission matrix', () => {
     expect(executed).toEqual([]);
   });
 
-  test('an explicit durable allow approves a tool even when risk metadata is missing', () => {
+  test('durable allow explicitly approves a tool with missing risk metadata', () => {
     const decision = resolveEffectivePermission({
       toolName: 'unknown_risk',
       tool: buildTool({
@@ -1007,7 +1007,7 @@ describe('fail-closed permission matrix', () => {
     expect(decision).toMatchObject({ outcome: 'allow', source: 'allowlist_allow' });
   });
 
-  test('an explicit durable allow approves non-catastrophic recursive rm variants', () => {
+  test('durable exec grant approves recursive rm variants after hard policy checks', () => {
     const execTool = TOOLS.find(tool => tool.name === 'exec_command');
     if (!execTool) throw new Error('exec_command tool is missing');
 
@@ -1028,7 +1028,7 @@ describe('fail-closed permission matrix', () => {
     }
   });
 
-  test('broad durable exec grant approves benign and destructive invocations after consent', () => {
+  test('broad durable exec grant covers benign and destructive command substitution', () => {
     const execTool = TOOLS.find(tool => tool.name === 'exec_command');
     if (!execTool) throw new Error('exec_command tool is missing');
     const allowlist = { effect: 'allow' as const, rule: 'allow:exec_command(*)' };
@@ -1047,7 +1047,7 @@ describe('fail-closed permission matrix', () => {
       resolveEffectivePermission({
         toolName: 'exec_command',
         tool: execTool,
-        args: { command: 'rm -rf build' },
+        args: { command: 'echo "$(rm -rf $HOME)"' },
         permission: { behavior: 'ask', reason: 'Command requires confirmation' },
         allowlist,
       })
