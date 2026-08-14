@@ -13,10 +13,10 @@ import { getToolState, setToolState } from '../framework/tool-state';
 
 export const exitPlanModeTool: OrionCodeTool = buildTool({
   name: 'exit_plan_mode',
-  description: `Submit the decision-complete implementation plan and finish the read-only planning phase.
-Call this exactly once when read-only exploration is complete. A successful call saves the plan
+  description: `Submit the decision-complete implementation plan and finish the planning phase.
+Call this exactly once when planning is complete. A successful call saves the plan
 and automatically restores the selected execution mode. The runtime starts implementation in a
-separate logical request so this planning turn stays read-only. Do not call it with a draft, and do
+separate logical request so the completed plan remains a distinct phase. Do not call it with a draft, and do
 not ask the user to run a separate exit command.`,
   parameters: {
     type: 'object',
@@ -53,17 +53,18 @@ not ask the user to run a separate exit command.`,
         currentPlan: savedPlan,
         returnMode,
       }) ?? returnMode;
+    const selectedModeLabel = selectedMode === 'auto' ? 'AUTO' : 'BUILD';
     return {
       success: true,
-      output: `Plan saved. Plan mode exited automatically; execution will start in ${selectedMode}.\n\n${savedPlan}`,
+      output: `Plan saved. Plan mode exited automatically; execution will start in ${selectedModeLabel}.\n\n${savedPlan}`,
       metadata: {
         action: 'plan_completed',
         returnMode: selectedMode,
       },
     };
   },
-  // This changes only bounded in-process planning metadata. It must remain
-  // executable while plan mode blocks workspace, process and external writes.
+  // This tool changes only bounded in-process planning metadata, so it is safe
+  // to execute without a separate permission prompt in every Agent mode.
   isReadOnly: () => true,
   isConcurrencySafe: () => true,
   checkPermissions: () => ({ behavior: 'allow', reason: 'Bounded plan lifecycle transition' }),

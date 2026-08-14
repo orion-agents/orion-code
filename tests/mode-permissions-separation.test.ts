@@ -37,7 +37,7 @@ describe('Agent mode and /permissions state axes', () => {
       agentMode: 'plan',
       permissionMode: 'acceptEdits',
     });
-    expect(ctx.store.getEffectivePermissionMode()).toBe('plan');
+    expect(ctx.store.getEffectivePermissionMode()).toBe('acceptEdits');
 
     new AgentModeLifecycleController(ctx.store).setMode('interactive');
     expect(ctx.store.getSnapshot().permissionMode).toBe('acceptEdits');

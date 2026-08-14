@@ -1180,6 +1180,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
         confirmToolUse: params.confirmToolUse,
         permissionMode: params.permissionMode,
         toolConfirmation: params.toolConfirmation,
+        toolAllowlist: params.toolAllowlist,
         harnessBlockedResult: harness ? drift => harness.asToolBlockedResult(drift) : undefined,
         maxParallelToolCalls,
       })) {

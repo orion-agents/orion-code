@@ -42,10 +42,10 @@ describe('/plan lifecycle', () => {
       currentPlan: null,
       planReturnMode: 'interactive',
     });
-    expect(ctx.store.getEffectivePermissionMode()).toBe('plan');
+    expect(ctx.store.getEffectivePermissionMode()).toBe('default');
   });
 
-  it('allows exit_plan_mode inside the read-only gate and restores the previous mode', async () => {
+  it('allows exit_plan_mode without a prompt and restores the previous mode', async () => {
     const ctx = context();
     ctx.store.setAgentMode('auto');
     await findCommand('plan')!.execute(ctx, 'plan an upgrade');
@@ -83,6 +83,8 @@ describe('/plan lifecycle', () => {
     );
 
     expect(result.success).toBe(true);
+    expect(result.output).toContain('execution will start in AUTO');
+    expect(result.output).not.toContain('execution will start in interactive');
     expect(ctx.store.getSnapshot()).toMatchObject({
       agentMode: 'auto',
       planMode: false,
@@ -110,7 +112,9 @@ describe('/plan lifecycle', () => {
     expect(planning).toContain('[Plan Mode]');
     expect(planning).toContain('call exit_plan_mode exactly once');
     expect(planning).toContain('exits plan mode automatically');
-    expect(planning).toContain('do not start implementing');
+    expect(planning).toContain('current permission policy and durable grants');
+    expect(planning).not.toContain('Explore and reason read-only');
+    expect(planning).not.toContain('Do not edit files');
   });
 
   it('injects distinct Build, Plan-to-execution, and Auto behavior contracts', () => {
@@ -126,6 +130,8 @@ describe('/plan lifecycle', () => {
 
     expect(render('interactive')).toContain('[Build Mode]');
     expect(render('plan')).toContain('[Plan-to-Execution Mode]');
+    expect(render('plan')).toContain('same tool registry as BUILD');
+    expect(render('plan')).toContain('Never reject a tool solely because PLAN is active');
     expect(render('plan')).toContain('separate execution request');
     expect(render('auto')).toContain('[Auto Mode]');
     expect(render('auto')).toContain('Do not ask permission questions or clarifying questions');

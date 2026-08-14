@@ -1299,12 +1299,6 @@ describe('AgentRuntimeController', () => {
 
   test.each([
     {
-      label: 'plan mode',
-      mode: 'plan' as const,
-      allowedTools: undefined,
-      expectedReason: /plan mode/i,
-    },
-    {
       label: 'project deny rule',
       mode: 'default' as const,
       allowedTools: ['deny:exec_command(*)'],
@@ -1358,6 +1352,46 @@ describe('AgentRuntimeController', () => {
       expect(store.getSnapshot().lastLoopStats).toMatchObject({
         finishReason: 'blocked',
         toolCalls: 0,
+        localFastPathUsed: true,
+      });
+    });
+  });
+
+  it('runs the local exec fast path in PLAN with a reusable project grant', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      mkdirSync(projectDir, { recursive: true });
+      saveProjectConfig(projectDir, { allowedTools: ['allow:exec_command'] });
+      const config = loadConfig({ apiKey: 'test-key', model: 'test-model' });
+      const store = new Store({ config, tools: TOOLS, currentModel: 'test-model' });
+      store.setAgentMode('plan');
+      const llm = {
+        getModel: jest.fn(() => 'test-model'),
+        chatStream: jest.fn(async () => ({ content: 'should not run', model: 'test-model' })),
+      };
+      const runtime = createRuntime({
+        cwd: projectDir,
+        config,
+        store,
+        llm: llm as any,
+        isConfigured: true,
+        ensureSession: jest.fn(() => null as never),
+        getSession: jest.fn(() => null),
+      });
+      const { events, appended } = createEvents();
+      const controller = new AgentChatController(runtime, events);
+
+      await controller.runInput('run test: printf PLAN_FAST_PATH > plan-fast.txt', {
+        persistAsUserMessage: false,
+      });
+
+      expect(llm.chatStream).not.toHaveBeenCalled();
+      expect(readFileSync(join(projectDir, 'plan-fast.txt'), 'utf8')).toBe('PLAN_FAST_PATH');
+      expect(appended).toEqual(
+        expect.arrayContaining([expect.objectContaining({ role: 'tool', title: 'local' })])
+      );
+      expect(store.getSnapshot().lastLoopStats).toMatchObject({
+        finishReason: 'completed',
+        toolCalls: 1,
         localFastPathUsed: true,
       });
     });

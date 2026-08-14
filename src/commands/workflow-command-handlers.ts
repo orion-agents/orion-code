@@ -20,13 +20,14 @@ function handlePlan(ctx: CommandContext, args: string): CommandResult {
     return {
       success: true,
       output:
-        'Plan mode started. Send the task to explore read-only; Orion will save the plan, exit Plan, and execute it in the next logical request.',
+        'Plan mode started with the current tool permission policy. Send the task; Orion will save the plan, exit Plan, and execute it in the next logical request.',
     };
   }
 
   return {
     success: true,
-    output: 'Plan mode started. Orion will plan read-only, then execute the saved plan.',
+    output:
+      'Plan mode started with full tool availability under the current permission policy. Orion will save the plan, then execute it in a separate request.',
     continueAsChat: true,
     chatInput: task,
   };

@@ -38,10 +38,10 @@
  *
  * Safety envelope (enforced by the scheduler, documented here)
  * -----------------------------------------------------------
- * `allow` is an explicit durable approval and can downgrade an interactive
- * confirmation for tools with known risk metadata. It can never override
- * `checkPermissions() === 'deny'`, plan mode, an `ask`/`deny` rule, or missing
- * risk metadata.
+ * `allow` is an explicit durable user approval and skips later interactive
+ * confirmations for that tool. It can never override `checkPermissions() ===
+ * 'deny'` or an explicit `ask`/`deny` rule. Agent modes do not remove tools;
+ * PLAN inherits the current permission policy and AUTO supplies its own grant.
  *
  * Compatibility
  * -------------
