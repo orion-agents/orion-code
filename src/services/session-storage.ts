@@ -298,6 +298,9 @@ export interface SessionTraceEvent {
   providerUsingFallback?: boolean;
   continuationActions?: LoopContinuationAction[];
   continuationHint?: string;
+  lastToolName?: string;
+  lastToolSummary?: string;
+  lastToolSuccess?: boolean;
   workspacePhase?: 'pre_turn' | 'post_turn';
   workspaceGitAvailable?: boolean;
   workspaceDirty?: boolean;
@@ -336,6 +339,8 @@ function sanitizeTraceEvent(
     'permissionReason',
     'continuationHint',
     'goalStopReason',
+    'budgetExceededReason',
+    'lastToolSummary',
   ] as const) {
     if (typeof sanitized[key] === 'string') {
       sanitized[key] = redactTraceText(sanitized[key]);

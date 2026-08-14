@@ -210,6 +210,40 @@ describe('prepareToolCalls', () => {
     }
   );
 
+  test('rejects bounded numeric arguments before policy, tracking, or execution', async () => {
+    const calls = toolCalls(['exec_command']);
+    calls[0].function.arguments = JSON.stringify({ command: 'echo unsafe', timeout: Infinity });
+    const toolExecutor = jest.fn(async () => JSON.stringify({ success: true, output: 'unsafe' }));
+    const startApproach = jest.fn(() => 'attempt');
+    const addToolToTracker = jest.fn();
+    const harnessDriftCheck = jest.fn(() => ({ status: 'warn' as const }));
+
+    const prepared = prepareToolCalls({
+      toolCalls: calls,
+      tools: TOOLS,
+      toolExecutor,
+      toolContext,
+      startApproach,
+      addToolToTracker,
+      harnessDriftCheck,
+    });
+
+    expect(prepared[0]).toMatchObject({
+      canRunConcurrently: false,
+      argumentError: expect.stringContaining('timeout must be a safe integer'),
+    });
+    expect(startApproach).not.toHaveBeenCalled();
+    expect(addToolToTracker).not.toHaveBeenCalled();
+    expect(harnessDriftCheck).not.toHaveBeenCalled();
+
+    const results = [];
+    for await (const result of executeToolCalls(prepared, { toolExecutor })) {
+      results.push(result);
+    }
+    expect(toolExecutor).not.toHaveBeenCalled();
+    expect(results[0]).toMatchObject({ success: false, strategyResult: 'failed' });
+  });
+
   test('serializes drift blocks while warn results preserve safe concurrency', () => {
     const warning = prepareToolCalls({
       toolCalls: toolCalls(['read_file']),

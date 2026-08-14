@@ -198,6 +198,10 @@ export interface LoopStats {
   usageAccountingComplete?: boolean;
   continuationActions?: LoopContinuationAction[];
   continuationHint?: string;
+  /** Last tool boundary reached before the turn stopped. */
+  lastToolName?: string;
+  lastToolSummary?: string;
+  lastToolSuccess?: boolean;
   verificationProfile?: string;
   verificationRequired?: boolean;
   verificationClaimAllowed?: boolean;
@@ -1208,6 +1212,12 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
         stats.toolResultBytes += executed.outputBytes ?? byteLength(executed.result);
         stats.modelVisibleToolBytes += modelVisible.bytes;
         stats.summarizedBytes += modelVisible.summarizedBytes;
+        stats.lastToolName = tc.function.name;
+        stats.lastToolSummary = (executed.summary ?? executed.error ?? '')
+          .replace(/\s+/gu, ' ')
+          .trim()
+          .slice(0, 240);
+        stats.lastToolSuccess = executed.success;
 
         strategyTracker.recordResult(
           attemptId,
@@ -1299,6 +1309,9 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
             });
             stats.toolResultBytes += skippedBytes;
             stats.modelVisibleToolBytes += skippedBytes;
+            stats.lastToolName = skipped.function.name;
+            stats.lastToolSummary = skippedError;
+            stats.lastToolSuccess = false;
             yield {
               type: 'tool_result',
               name: skipped.function.name,

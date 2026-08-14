@@ -951,6 +951,47 @@ describe('session-storage', () => {
       expect(index?.files).toContain('src/index.ts');
     });
 
+    test('appendSessionMessages updates summary metadata without rescanning a long transcript', () => {
+      const session = createSession('/tmp/project-incremental-summary', 'gpt-4o');
+      const messagesPath = getProjectSessionMessagesPath(session.projectPath, session.id);
+      const historicalMessages = Array.from({ length: 5_000 }, (_, index) =>
+        JSON.stringify({ role: 'user', content: `historical ${index}`, timestamp: index })
+      ).join('\n');
+      writeFileSync(messagesPath, `${historicalMessages}\n`);
+      session.messageCount = 5_000;
+      saveSessionMeta(session);
+
+      const fsModule = jest.requireActual<typeof import('fs')>('fs');
+      const readSpy = jest.spyOn(fsModule, 'readFileSync');
+      try {
+        appendSessionMessages(session.id, [
+          {
+            role: 'assistant',
+            content: '',
+            timestamp: 5_001,
+            tool_calls: [
+              {
+                id: 'call-incremental',
+                type: 'function',
+                function: { name: 'read_file', arguments: '{"path":"src/index.ts"}' },
+              },
+            ],
+          },
+        ]);
+
+        const transcriptReads = readSpy.mock.calls.filter(
+          ([file]) => String(file) === messagesPath
+        );
+        expect(transcriptReads).toHaveLength(0);
+        expect(loadSessionMeta(session.id)).toMatchObject({
+          messageCount: 5_001,
+          toolsUsed: ['read_file'],
+        });
+      } finally {
+        readSpy.mockRestore();
+      }
+    });
+
     test('redacts secret-like values from session summaries and indexes', () => {
       const session = createSession('/tmp/project-index-redaction', 'gpt-4o');
       appendSessionMessages(session.id, [

@@ -143,6 +143,11 @@ function formatLoopStatsLines(stats: LoopStats, detail = false): string[] {
   if (stats.continuationActions && stats.continuationActions.length > 0) {
     lines.push(`Next       ${stats.continuationActions.join(', ')}`);
   }
+  if (stats.lastToolName) {
+    lines.push(
+      `Stopped at ${stats.lastToolName}${stats.lastToolSummary ? ` — ${stats.lastToolSummary}` : ''}`
+    );
+  }
   if ((stats.providerRetryCount ?? 0) > 0) {
     const retryParts = [
       `${stats.providerRetryCount} retries`,

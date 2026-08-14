@@ -38,6 +38,7 @@ export interface PrintModeResult {
   errors: string[];
   goalEvents: GoalRuntimeEvent[];
   researchEvents: ResearchLifecycleEvent[];
+  budgetStops: import('../runtime/ui-events').LoopBudgetStopView[];
   effortEvents: import('../runtime/ui-events').RuntimeEffortEvent[];
   research: ResearchStatusProjection | null;
   sessionId: string | null;
@@ -242,6 +243,7 @@ export class PrintEventSink implements UiEventSink {
       errors: [...this.errors],
       goalEvents: [...this.goalEvents],
       researchEvents: [...this.researchEvents],
+      budgetStops: entries.flatMap(entry => (entry.budgetStop ? [entry.budgetStop] : [])),
       effortEvents: [...this.effortEvents],
       research: this.researchProjection
         ? {

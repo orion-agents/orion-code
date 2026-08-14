@@ -218,6 +218,7 @@ describe('tui transcript layout', () => {
           summary: 'read complete',
           outputBytes: 2048,
           artifactHint: '/artifacts show tool-1 --full',
+          authorization: { approved: true, source: 'mode_auto', behavior: 'ask' },
           body: '\x1b[32mstructured body\x1b[0m',
         }),
       },
@@ -230,6 +231,7 @@ describe('tui transcript layout', () => {
     expect(rendered).toContain('$ cat src/index.ts');
     expect(rendered).toContain('output 2.0 KB');
     expect(rendered).toContain('artifact /artifacts show tool-1 --full');
+    expect(rendered).toContain('auth mode_auto');
     expect(rendered).toContain('structured body');
     expect(rendered).not.toContain('legacy duplicate header');
   });

@@ -404,9 +404,25 @@ export function prepareToolCalls(options: ToolSchedulerOptions): PreparedToolCal
     // Re-serialize to ensure valid JSON for next API call
     tc.function.arguments = JSON.stringify(args);
 
+    const tool = tools.find(t => t.name === tc.function.name);
+    const inputError = tool?.validateInput?.(args);
+    if (inputError) {
+      preparedCalls.push({
+        index: i,
+        tc,
+        args,
+        tool,
+        attemptId: `invalid-tool-${i}`,
+        argumentError: inputError,
+        drift: undefined,
+        permission: undefined,
+        canRunConcurrently: false,
+      });
+      continue;
+    }
+
     const attemptId = options.startApproach?.(tc.function.name) ?? `tool-${i}`;
     options.addToolToTracker?.(attemptId, tc.function.name);
-    const tool = tools.find(t => t.name === tc.function.name);
     const drift = options.harnessDriftCheck?.({ name: tc.function.name, args });
     const permission = checkToolPermission(tool, args, options.toolContext);
     const allowlist = options.toolAllowlist?.(tc.function.name, args);

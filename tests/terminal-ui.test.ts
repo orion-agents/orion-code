@@ -840,6 +840,42 @@ describe('terminal UI renderer adapter', () => {
     expect(output).toContain('🔧 exec (2B output)');
   });
 
+  it('keeps automatic authorization provenance visible after tool completion', () => {
+    const { sink, writes } = makeTerminalSink();
+    const presenter = createToolEventPresenter(sink);
+
+    presenter.start({
+      type: 'tool_call',
+      callId: 'call-web',
+      name: 'web_search',
+      args: { query: 'orion' },
+    });
+    presenter.permission({
+      type: 'permission_decision',
+      callId: 'call-web',
+      name: 'web_search',
+      args: { query: 'orion' },
+      decision: {
+        approved: true,
+        behavior: 'ask',
+        source: 'mode_auto',
+        reason: 'Auto mode fully authorized this invocation after hard policy checks.',
+      },
+    });
+    presenter.finish({
+      type: 'tool_result',
+      callId: 'call-web',
+      name: 'web_search',
+      args: { query: 'orion' },
+      result: JSON.stringify({ success: true, output: 'result' }),
+      modelVisibleResult: JSON.stringify({ success: true, output: 'result' }),
+      success: true,
+      duration: 4,
+    });
+
+    expect(stripAnsi(writes.join(''))).toContain('Authorization: mode_auto');
+  });
+
   it('renders tool artifact references for summarized long output', () => {
     const { sink, writes } = makeTerminalSink();
     const presenter = createToolEventPresenter(sink);

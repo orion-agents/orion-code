@@ -213,6 +213,7 @@ export function resolveTerminalModelPickerInput(
 function formatTranscriptEntry(entry: TranscriptEntry): string {
   const content = sanitizeTerminalText(stripTrailingNewlines(entry.content));
   if (!content) return '';
+  if (entry.budgetStop) return WARNING(`⏸ ${content}`);
 
   switch (entry.role) {
     case 'user':

@@ -1628,8 +1628,8 @@ describe('AgentRuntimeController', () => {
         entry => entry.role === 'status' && entry.title === 'budget'
       );
       expect(budgetNotice).toBeDefined();
-      expect(budgetNotice?.content).toContain('Loop budget reached');
-      expect(budgetNotice?.content).toContain('Progress:');
+      expect(budgetNotice?.content).toContain('Turn paused:');
+      expect(budgetNotice?.content).toContain('Stopped after: read_file');
       expect(budgetNotice?.content).toContain('Next:');
     });
   });
@@ -5322,6 +5322,9 @@ describe('AgentRuntimeController', () => {
       const traceSerialized = JSON.stringify(persistedTrace);
       expect(traceSerialized).not.toContain('sk-secret123');
       expect(traceSerialized).not.toContain('sk-ant-secret456');
+      expect(persistedTrace.find(event => event.type === 'complete')?.lastToolSummary).toContain(
+        '[REDACTED_SECRET]'
+      );
 
       // Verify artifact indexes do not store the raw secret
       const artifacts = listArtifacts(projectDir);

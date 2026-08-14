@@ -72,6 +72,32 @@ export const BATCH_READ_ALLOWED_TOOLS = new Set([
 ]);
 export const BATCH_READ_MAX_STEPS = 8;
 const BATCH_READ_STEP_OUTPUT_MAX_BYTES = 1600;
+const LIST_FILES_MAX_DEPTH = 8;
+const EXEC_COMMAND_MIN_TIMEOUT_MS = 1;
+const EXEC_COMMAND_MAX_TIMEOUT_MS = 600_000;
+const EXEC_COMMAND_MIN_OUTPUT_BYTES = 1024;
+const EXEC_COMMAND_MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
+
+function validateOptionalSafeInteger(
+  args: Record<string, unknown>,
+  toolName: string,
+  field: string,
+  minimum: number,
+  maximum: number
+): string | undefined {
+  const value = args[field];
+  if (value === undefined) return undefined;
+  if (
+    typeof value !== 'number' ||
+    !Number.isFinite(value) ||
+    !Number.isSafeInteger(value) ||
+    value < minimum ||
+    value > maximum
+  ) {
+    return `${toolName} ${field} must be a safe integer between ${minimum} and ${maximum}`;
+  }
+  return undefined;
+}
 
 function compactOneLine(text: string, maxLength: number): string {
   const compact = text.replace(/\s+/g, ' ').trim();
@@ -228,7 +254,9 @@ export const TOOLS: OrionCodeTool[] = [
         },
         maxDepth: {
           type: 'number',
-          description: '最大递归深度（可选，默认 2）',
+          description: '最大递归深度（可选，默认 2，范围 0-8）',
+          minimum: 0,
+          maximum: LIST_FILES_MAX_DEPTH,
         },
       },
       required: ['path'],
@@ -241,6 +269,8 @@ export const TOOLS: OrionCodeTool[] = [
       }
       return listFiles_(path, args.maxDepth as number | undefined, context.cwd);
     },
+    validateInput: args =>
+      validateOptionalSafeInteger(args, 'list_files', 'maxDepth', 0, LIST_FILES_MAX_DEPTH),
     isReadOnly: () => true,
     isConcurrencySafe: () => true,
     userFacingName: args => `List ${args.path as string}`,
@@ -268,11 +298,15 @@ export const TOOLS: OrionCodeTool[] = [
         },
         timeout: {
           type: 'number',
-          description: '超时时间 ms（可选，默认 30000）',
+          description: '超时时间 ms（可选，默认 30000，范围 1-600000）',
+          minimum: EXEC_COMMAND_MIN_TIMEOUT_MS,
+          maximum: EXEC_COMMAND_MAX_TIMEOUT_MS,
         },
         maxOutput: {
           type: 'number',
-          description: '最大输出字节数（可选，默认 51200 = 50KB，超出截断）',
+          description: '最大输出字节数（可选，默认 51200，范围 1024-10485760，超出截断）',
+          minimum: EXEC_COMMAND_MIN_OUTPUT_BYTES,
+          maximum: EXEC_COMMAND_MAX_OUTPUT_BYTES,
         },
       },
       required: ['command'],
@@ -293,6 +327,21 @@ export const TOOLS: OrionCodeTool[] = [
         context.cwd
       );
     },
+    validateInput: args =>
+      validateOptionalSafeInteger(
+        args,
+        'exec_command',
+        'timeout',
+        EXEC_COMMAND_MIN_TIMEOUT_MS,
+        EXEC_COMMAND_MAX_TIMEOUT_MS
+      ) ??
+      validateOptionalSafeInteger(
+        args,
+        'exec_command',
+        'maxOutput',
+        EXEC_COMMAND_MIN_OUTPUT_BYTES,
+        EXEC_COMMAND_MAX_OUTPUT_BYTES
+      ),
     isDestructive: args => {
       const cmd = (args.command as string) || '';
       return containsRecursiveRm(cmd) || /(?:^|[;&|]\s*)(?:[^\s]+\/)?(?:mkfs|dd)(?:\s|$)/.test(cmd);
