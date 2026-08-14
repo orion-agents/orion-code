@@ -185,9 +185,10 @@ export class Store {
 
   /** Compatibility bridge used by the scheduler while legacy edit policy remains readable. */
   getEffectivePermissionMode(): PermissionMode {
-    if (this.state.agentMode === 'plan') return 'plan';
     if (this.state.agentMode === 'auto') return 'auto';
-    // Preserve legacy persisted/direct state until the v0.3 removal window.
-    return this.state.permissionMode;
+    // PLAN is a workflow mode, not a permission boundary. Preserve the
+    // independently selected BUILD edit/confirmation policy while planning.
+    // A persisted legacy `plan` permission value now has default semantics.
+    return this.state.permissionMode === 'plan' ? 'default' : this.state.permissionMode;
   }
 }

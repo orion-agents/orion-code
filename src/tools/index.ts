@@ -2312,9 +2312,9 @@ async function executeBatchRead(
 
     // The scheduler resolved permissions for `batch_read` itself, not for the
     // tools it fans out to. Without re-running the gate here, a project
-    // `deny: read_file(*.env)` rule -- and the plan-mode block -- apply to the
-    // flat call but not to the batched one, so the model can read a denied path
-    // simply by wrapping it in `batch_read`.
+    // `deny: read_file(*.env)` rule applies to the flat call and must also apply
+    // to the batched one, otherwise the model could read a denied path simply
+    // by wrapping it in `batch_read`.
     const stepPermission =
       getToolMetadataPresence(tool).hasPermissionCheck && tool.checkPermissions
         ? tool.checkPermissions(step.args, context)
@@ -2327,7 +2327,7 @@ async function executeBatchRead(
       permissionMode: context.permissionMode,
       allowlist: context.toolAllowlist?.(step.tool, step.args),
     });
-    if (effective.outcome === 'deny' || effective.outcome === 'block') {
+    if (effective.outcome === 'deny') {
       const error =
         effective.reason || `Tool ${step.tool} is not permitted (${effective.source ?? 'policy'})`;
       return buildBatchReadPayload(

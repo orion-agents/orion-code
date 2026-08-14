@@ -44,7 +44,7 @@ describe('forkSubagent security boundary', () => {
     expect(queryMock).not.toHaveBeenCalled();
   });
 
-  it('defaults to a minimal read-only tool set and the plan-mode scheduler gate', async () => {
+  it('defaults to a minimal read-only tool set without relying on an Agent-mode gate', async () => {
     const result = await forkSubagent({
       inheritContext: false,
       taskDescription: 'inspect files',

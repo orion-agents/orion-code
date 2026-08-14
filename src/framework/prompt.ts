@@ -30,7 +30,7 @@ export interface PromptContext {
   referencedFilesContent?: string;
   /** v0.2.24: Persistent goal context fragment (from GoalCoordinator). */
   goalContent?: string;
-  /** Task-scoped read-only planning lifecycle started by /plan. */
+  /** Task-scoped planning lifecycle started by /plan. */
   planMode?: boolean;
   /** Active BUILD / PLAN / AUTO behavior contract. */
   agentMode?: AgentMode;
@@ -174,9 +174,10 @@ Batched tool strategy:
       }
       if (ctx.agentMode === 'plan') {
         return `[Plan-to-Execution Mode]
-- First produce and save a decision-complete plan using the read-only Plan lifecycle.
+- First produce and save a decision-complete plan using the Plan lifecycle.
+- PLAN exposes the same tool registry as BUILD and uses the independently selected permission policy. Never reject a tool solely because PLAN is active.
 - After exit_plan_mode succeeds, the runtime starts a separate execution request in the selected next mode.
-- Never edit or execute the plan in the planning request itself.`;
+- Keep implementation of the completed plan in that separate execution request.`;
       }
       return `[Build Mode]
 - Use the normal collaborative coding workflow.
@@ -189,11 +190,11 @@ Batched tool strategy:
     render: ctx => {
       if (!ctx.planMode) return '';
       return `[Plan Mode]
-- Explore and reason read-only. Do not edit files, run mutating commands, or perform external actions.
+- Use any available tool needed to inspect, validate, or prepare the plan. Writes, commands, and external actions follow the current permission policy and durable grants; hard denials remain enforced.
 - Resolve material unknowns from repository evidence; ask the user only when a decision cannot be inferred safely.
 - Produce a decision-complete implementation plan with scope, ordered changes, tests, risks, and acceptance checks.
 - When the plan is ready, call exit_plan_mode exactly once with the final plan. A successful call saves it and exits plan mode automatically.
-- Do not ask the user to run another exit command, and do not start implementing the plan in this turn. The runtime will start execution as a separate logical request.`;
+- Do not ask the user to run another exit command. The runtime will start implementation as a separate logical request.`;
     },
   },
 ];
