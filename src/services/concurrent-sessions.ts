@@ -51,6 +51,7 @@ export class SessionManager {
   private sessionPath: string;
   private config: SessionManagerConfig;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private terminated = false;
 
   constructor(config?: Partial<SessionManagerConfig>) {
     this.config = {
@@ -88,6 +89,7 @@ export class SessionManager {
    * 注册当前会话
    */
   register(options?: { model?: string }): SessionInfo {
+    this.terminated = false;
     const session: SessionInfo = {
       id: this.sessionId,
       pid: process.pid,
@@ -154,17 +156,20 @@ export class SessionManager {
    * 更新会话活动
    */
   updateActivity(): void {
+    if (this.terminated) return;
     const filePath = this.getSessionFilePath(this.sessionId);
-    if (!existsSync(filePath)) return;
 
     try {
-      const content = readFileSync(filePath, 'utf-8');
-      const session = JSON.parse(content) as SessionInfo;
-      session.lastActivity = Date.now();
-      session.status = 'active';
-      // Atomic replacement prevents another process from observing a
-      // truncated heartbeat record and under-counting active sessions.
-      atomicWriteFileSync(filePath, JSON.stringify(session, null, 2), { mode: 0o600 });
+      withFileLockSync(filePath, () => {
+        if (this.terminated || !existsSync(filePath)) return;
+        const content = readFileSync(filePath, 'utf-8');
+        const session = JSON.parse(content) as SessionInfo;
+        session.lastActivity = Date.now();
+        session.status = 'active';
+        // Atomic replacement prevents another process from observing a
+        // truncated heartbeat record and under-counting active sessions.
+        atomicWriteFileSync(filePath, JSON.stringify(session, null, 2), { mode: 0o600 });
+      });
     } catch (error) {
       // A failed heartbeat makes this session look dead to every other
       // process, so it eventually gets reaped. Keep going, but record why.
@@ -176,14 +181,17 @@ export class SessionManager {
    * 标记会话为空闲
    */
   setIdle(): void {
+    if (this.terminated) return;
     const filePath = this.getSessionFilePath(this.sessionId);
-    if (!existsSync(filePath)) return;
 
     try {
-      const content = readFileSync(filePath, 'utf-8');
-      const session = JSON.parse(content) as SessionInfo;
-      session.status = 'idle';
-      atomicWriteFileSync(filePath, JSON.stringify(session, null, 2), { mode: 0o600 });
+      withFileLockSync(filePath, () => {
+        if (this.terminated || !existsSync(filePath)) return;
+        const content = readFileSync(filePath, 'utf-8');
+        const session = JSON.parse(content) as SessionInfo;
+        session.status = 'idle';
+        atomicWriteFileSync(filePath, JSON.stringify(session, null, 2), { mode: 0o600 });
+      });
     } catch (error) {
       // The session stays marked 'active' and keeps occupying a slot.
       debugError('concurrent-sessions.setIdle', error, filePath);
@@ -194,16 +202,18 @@ export class SessionManager {
    * 结束会话
    */
   terminate(): void {
+    this.terminated = true;
     this.stopHeartbeat();
 
     const filePath = this.getSessionFilePath(this.sessionId);
-    if (existsSync(filePath)) {
-      try {
+    try {
+      withFileLockSync(filePath, () => {
+        if (!existsSync(filePath)) return;
         unlinkSync(filePath);
-      } catch (error) {
-        // Leaves a stale session file behind; `cleanup()` reaps it later.
-        debugError('concurrent-sessions.terminate', error, filePath);
-      }
+      });
+    } catch (error) {
+      // Leaves a stale session file behind; `cleanup()` reaps it later.
+      debugError('concurrent-sessions.terminate', error, filePath);
     }
   }
 

@@ -38,7 +38,8 @@ export const WORKFLOW_COMMANDS: SlashCommand[] = [
   },
   {
     name: 'plan',
-    description: 'Explore a task read-only, save a decision-complete plan, then exit automatically',
+    description:
+      'Plan with normal tool access, save a decision-complete plan, then exit automatically',
     argumentHint: '[task description]',
     category: 'workflow',
     priority: 4,

@@ -161,6 +161,11 @@ describe('concurrent-sessions (Issue #80)', () => {
 
     m.terminate();
     expect(fs.existsSync(filePath)).toBe(false);
+
+    // A callback captured before clearInterval must not recreate the slot.
+    m.updateActivity();
+    m.setIdle();
+    expect(fs.existsSync(filePath)).toBe(false);
   });
 
   it('reaps expired/dead sessions while retaining a live isolated session', () => {

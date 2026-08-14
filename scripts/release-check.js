@@ -15,13 +15,15 @@
  * Options:
  *   --allow-dirty   Downgrade the dirty-worktree check from FAIL to WARN.
  *   --skip-tests    Skip the Jest suite (use only for a fast pre-flight).
- *   --skip-pack     Skip `npm pack --dry-run`.
+ *   --skip-pack     Skip exact tarball creation and runtime smoke validation.
  *   --json          Emit machine-readable JSON instead of the text report.
  *   --help          Show this help.
  */
 
 const { spawnSync } = require('child_process');
-const { readFileSync, existsSync } = require('fs');
+const { readFileSync, existsSync, mkdtempSync, realpathSync, rmSync } = require('fs');
+const { createHash } = require('crypto');
+const { tmpdir } = require('os');
 const { resolve, join } = require('path');
 
 const projectRoot = resolve(__dirname, '..');
@@ -151,17 +153,17 @@ function checkVersionConsistency() {
     }
   };
 
-  // package-lock.json: both the root version and the "" workspace entry.
+  // npm-shrinkwrap.json is published with the CLI and locks consumer installs.
   let lock = null;
   try {
-    lock = readJson('package-lock.json');
+    lock = readJson('npm-shrinkwrap.json');
   } catch {
-    mismatches.push('package-lock.json: unreadable or missing');
+    mismatches.push('npm-shrinkwrap.json: unreadable or missing');
   }
   if (lock) {
-    expect('package-lock.version', lock.version);
+    expect('npm-shrinkwrap.version', lock.version);
     const rootEntry = lock.packages && lock.packages[''];
-    expect('package-lock.packages[""].version', rootEntry && rootEntry.version);
+    expect('npm-shrinkwrap.packages[""].version', rootEntry && rootEntry.version);
   }
 
   // README install pins: `npm install -g @orion-agents/orion-code@X.Y.Z`
@@ -564,20 +566,25 @@ function checkTests() {
 }
 
 // ---------------------------------------------------------------------------
-// 9. Package dry-run
+// 9. Exact package artifact and clean-install smoke
 // ---------------------------------------------------------------------------
 
 function checkPack() {
   if (options.skipPack) {
-    return record('pack', 'npm pack --dry-run', STATUS.SKIP, 'skipped via --skip-pack');
+    return record('pack', 'npm package artifact', STATUS.SKIP, 'skipped via --skip-pack');
   }
-  // `--ignore-scripts` keeps this check read-only: it must not trigger `prepack`
-  // (which would run a full clean + build and mutate dist/).
-  const outcome = run('npm', ['pack', '--dry-run', '--ignore-scripts', '--json']);
+  // Build the exact tarball in an isolated directory. `--ignore-scripts` keeps
+  // this gate read-only with respect to the repository; callers build first.
+  // Canonicalize macOS' /var -> /private/var alias before npm records the
+  // tarball file spec. Otherwise `npm ls` reports the correctly installed
+  // package as invalid solely because the spec and real path spellings differ.
+  const packDir = realpathSync(mkdtempSync(join(tmpdir(), 'orion-release-pack-')));
+  const outcome = run('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', packDir]);
   if (outcome.code !== 0) {
+    rmSync(packDir, { recursive: true, force: true });
     return record(
       'pack',
-      'npm pack --dry-run',
+      'npm package artifact',
       STATUS.FAIL,
       `${outcome.stdout}${outcome.stderr}`.trim().slice(-1500)
     );
@@ -586,25 +593,27 @@ function checkPack() {
   try {
     parsed = JSON.parse(outcome.stdout);
   } catch {
+    rmSync(packDir, { recursive: true, force: true });
     return record(
       'pack',
-      'npm pack --dry-run',
-      STATUS.WARN,
+      'npm package artifact',
+      STATUS.FAIL,
       'could not parse npm pack JSON output'
     );
   }
   const tarball = Array.isArray(parsed) ? parsed[0] : parsed;
   if (!tarball) {
+    rmSync(packDir, { recursive: true, force: true });
     return record(
       'pack',
-      'npm pack --dry-run',
-      STATUS.WARN,
+      'npm package artifact',
+      STATUS.FAIL,
       'npm pack returned no tarball metadata'
     );
   }
 
   const entryNames = (tarball.files || []).map(file => file.path);
-  const missing = ['bin/orion', 'README.md', 'LICENSE'].filter(
+  const missing = ['bin/orion', 'README.md', 'LICENSE', 'npm-shrinkwrap.json'].filter(
     required => !entryNames.includes(required)
   );
   const hasDist = entryNames.some(name => name.startsWith('dist/'));
@@ -615,14 +624,98 @@ function checkPack() {
     `unpacked ${(tarball.unpackedSize / 1024 / 1024).toFixed(2)} MB`;
 
   if (missing.length > 0) {
+    rmSync(packDir, { recursive: true, force: true });
     return record(
       'pack',
-      'npm pack --dry-run',
+      'npm package artifact',
       STATUS.FAIL,
       `${detail}\nmissing from tarball: ${missing.join(', ')}`
     );
   }
-  record('pack', 'npm pack --dry-run', STATUS.PASS, detail);
+
+  const tarballPath = join(packDir, tarball.filename || '');
+  const tarballSha256 = createHash('sha256').update(readFileSync(tarballPath)).digest('hex');
+  const extract = run('tar', ['-xzf', tarballPath, '-C', packDir]);
+  if (extract.code !== 0) {
+    rmSync(packDir, { recursive: true, force: true });
+    return record(
+      'pack',
+      'npm package artifact',
+      STATUS.FAIL,
+      `unable to extract exact tarball: ${extract.stderr || extract.stdout}`
+    );
+  }
+
+  const installDir = join(packDir, 'install');
+  const install = run('npm', [
+    'install',
+    '--prefix',
+    installDir,
+    '--no-audit',
+    '--no-fund',
+    '--package-lock=false',
+    tarballPath,
+  ]);
+  if (install.code !== 0) {
+    rmSync(packDir, { recursive: true, force: true });
+    return record(
+      'pack',
+      'npm package artifact',
+      STATUS.FAIL,
+      `clean tarball install failed: ${`${install.stdout}${install.stderr}`.trim().slice(-1500)}`
+    );
+  }
+
+  const installedPackage = join(installDir, 'node_modules', '@orion-agents', 'orion-code');
+  const smokeEnv = {
+    ...process.env,
+    ORION_CODE_CONFIG_DIR: join(packDir, 'config'),
+  };
+  const versionSmoke = run(
+    process.execPath,
+    [join(installedPackage, 'bin', 'orion'), '--version'],
+    { cwd: installDir, env: smokeEnv }
+  );
+  const helpSmoke = run(process.execPath, [join(installedPackage, 'bin', 'orion'), '--help'], {
+    cwd: installDir,
+    env: smokeEnv,
+  });
+  const treeProbe = run('npm', ['ls', '--prefix', installDir, '--omit=dev', '--all']);
+  const nativeProbe = run(
+    process.execPath,
+    [
+      '-e',
+      "const {createRequire}=require('module');const r=createRequire(process.cwd()+'/probe.js');const L=r('better-sqlite3');const D=L.default||L;const db=new D(':memory:',{allowExtension:true});const V=r('sqlite-vec');const vec=V.default||V;vec.load(db);if(!db.prepare('SELECT vec_version() AS version').get().version)process.exit(2);db.close();",
+    ],
+    {
+      cwd: installDir,
+      env: smokeEnv,
+    }
+  );
+  const smokeFailure = [
+    ['version', versionSmoke],
+    ['help', helpSmoke],
+    ['dependency tree', treeProbe],
+    ['native dependency', nativeProbe],
+  ].find(([, outcome]) => outcome.code !== 0);
+  const versionMatches = versionSmoke.stdout.includes(String(tarball.version));
+  const helpMatches = /Usage:|Orion Code/u.test(helpSmoke.stdout);
+  const installedShrinkwrap = existsSync(join(installedPackage, 'npm-shrinkwrap.json'));
+  const smokeSummary = smokeFailure
+    ? `${smokeFailure[0]} probe failed: ${`${smokeFailure[1].stdout}${smokeFailure[1].stderr}`.trim().slice(-1500)}`
+    : !versionMatches || !helpMatches || !installedShrinkwrap
+      ? `artifact identity mismatch (version=${versionMatches}, help=${helpMatches}, shrinkwrap=${installedShrinkwrap})`
+      : '';
+  rmSync(packDir, { recursive: true, force: true });
+  if (smokeSummary) {
+    return record('pack', 'npm package artifact', STATUS.FAIL, smokeSummary);
+  }
+  record(
+    'pack',
+    'npm package artifact',
+    STATUS.PASS,
+    `${detail} · sha256 ${tarballSha256} · clean install/version/help/native ok`
+  );
 }
 
 // ---------------------------------------------------------------------------

@@ -9,9 +9,10 @@
  *   - git_push: 安全推送（验证 + commit）
  */
 
-import { buildTool, type OrionCodeTool } from '../framework/tool';
+import { buildTool, type OrionCodeTool, type ToolContext } from '../framework/tool';
 import { execFile } from 'child_process';
 import { posix } from 'path';
+import { resolveWorkspacePath } from '../services/workspace-containment';
 
 // ============================================================================
 // 辅助函数
@@ -21,6 +22,17 @@ interface ExecResult {
   success: boolean;
   output: string;
   error?: string;
+}
+
+function resolveGitCwd(value: unknown, context: ToolContext): { cwd: string } | { error: string } {
+  if (value !== undefined && typeof value !== 'string') {
+    return { error: 'Git cwd must be a string' };
+  }
+  const workspace = context.cwd || process.cwd();
+  const cwd = resolveWorkspacePath(workspace, (value as string | undefined) ?? '.');
+  return cwd
+    ? { cwd }
+    : { error: `Refusing to run Git outside the active workspace: ${String(value ?? '.')}` };
 }
 
 type WorkingTreeStatus =
@@ -198,8 +210,12 @@ export const gitStatusTool: OrionCodeTool = buildTool({
     },
     required: [],
   },
-  execute: async args => {
-    const cwd = args.cwd as string | undefined;
+  execute: async (args, context) => {
+    const resolvedCwd = resolveGitCwd(args.cwd, context);
+    if ('error' in resolvedCwd) {
+      return { success: false, output: '', error: resolvedCwd.error };
+    }
+    const { cwd } = resolvedCwd;
 
     // `-z` gives NUL-separated records and, per git-status(1), disables path
     // quoting entirely -- so a non-ASCII filename arrives verbatim instead of
@@ -347,11 +363,15 @@ Issue #18/#23 修复：不再在未验证的情况下声称成功。`,
     },
     required: ['message'],
   },
-  execute: async args => {
+  execute: async (args, context) => {
     const message = args.message as string;
     const addAll = (args.add_all as boolean) ?? false;
     const rawPaths = args.paths;
-    const cwd = args.cwd as string | undefined;
+    const resolvedCwd = resolveGitCwd(args.cwd, context);
+    if ('error' in resolvedCwd) {
+      return { success: false, output: '', error: resolvedCwd.error };
+    }
+    const { cwd } = resolvedCwd;
     const verify = (args.verify as boolean) ?? true;
 
     if (!message || typeof message !== 'string') {
@@ -745,11 +765,15 @@ export const gitCommitTool: OrionCodeTool = buildTool({
     },
     required: ['message'],
   },
-  execute: async args => {
+  execute: async (args, context) => {
     const message = args.message as string;
     const rawPaths = args.paths;
     const all = (args.all as boolean) ?? false;
-    const cwd = args.cwd as string | undefined;
+    const resolvedCwd = resolveGitCwd(args.cwd, context);
+    if ('error' in resolvedCwd) {
+      return { success: false, output: '', error: resolvedCwd.error };
+    }
+    const { cwd } = resolvedCwd;
 
     if (!message || typeof message !== 'string') {
       return {
@@ -929,11 +953,15 @@ export const gitDiffTool: OrionCodeTool = buildTool({
     },
     required: [],
   },
-  execute: async args => {
+  execute: async (args, context) => {
     const staged = (args.staged as boolean) ?? false;
     const stat = (args.stat as boolean) ?? false;
     const rawPaths = args.paths;
-    const cwd = args.cwd as string | undefined;
+    const resolvedCwd = resolveGitCwd(args.cwd, context);
+    if ('error' in resolvedCwd) {
+      return { success: false, output: '', error: resolvedCwd.error };
+    }
+    const { cwd } = resolvedCwd;
     if (rawPaths !== undefined && !Array.isArray(rawPaths)) {
       return { success: false, output: '', error: 'git_diff paths must be an array of strings' };
     }
@@ -994,11 +1022,15 @@ export const gitLogTool: OrionCodeTool = buildTool({
     },
     required: [],
   },
-  execute: async args => {
+  execute: async (args, context) => {
     const maxCount =
       typeof args.max_count === 'number' ? Math.min(Math.max(args.max_count, 1), 200) : 20;
     const oneline = (args.oneline as boolean) ?? true;
-    const cwd = args.cwd as string | undefined;
+    const resolvedCwd = resolveGitCwd(args.cwd, context);
+    if ('error' in resolvedCwd) {
+      return { success: false, output: '', error: resolvedCwd.error };
+    }
+    const { cwd } = resolvedCwd;
     const fmt = oneline ? '%h %s (%an, %ar)' : '%H%nAuthor: %an <%ae>%nDate: %ad%n%n%B';
     const cmd = ['log', `--max-count=${maxCount}`, `--pretty=format:${fmt}`, '--no-color'];
     if (!oneline) cmd.push('--date=iso');
@@ -1046,11 +1078,15 @@ action:
     },
     required: [],
   },
-  execute: async args => {
+  execute: async (args, context) => {
     const action = (args.action as string) ?? 'list';
     const name = args.name as string | undefined;
     const force = (args.force as boolean) ?? false;
-    const cwd = args.cwd as string | undefined;
+    const resolvedCwd = resolveGitCwd(args.cwd, context);
+    if ('error' in resolvedCwd) {
+      return { success: false, output: '', error: resolvedCwd.error };
+    }
+    const { cwd } = resolvedCwd;
     const log: string[] = [];
 
     if (action === 'list') {

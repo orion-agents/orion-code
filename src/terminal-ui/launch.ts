@@ -308,7 +308,10 @@ export function formatTerminalStatusMessage(
   message: string,
   width = terminalContentWidth(120)
 ): string {
-  return truncateTerminalText(message.replace(/\s+/g, ' ').trim(), Math.max(1, width));
+  return truncateTerminalText(
+    sanitizeTerminalText(message).replace(/\s+/g, ' ').trim(),
+    Math.max(1, width)
+  );
 }
 
 export function formatTerminalSessionRestored(event: RuntimeSessionRestoredEvent): string {
@@ -414,13 +417,17 @@ export function formatTerminalSessionPickerItem(
   width = terminalContentWidth(120)
 ): string {
   const safeWidth = Math.max(1, width);
-  const prefixPlain = `${String(item.globalIndex).padStart(2, ' ')}. ${item.shortId}  `;
-  const prefix = `${String(item.globalIndex).padStart(2, ' ')}. ${ACCENT(item.shortId)}  `;
+  const shortId = sanitizeTerminalText(item.shortId).replace(/\n/gu, ' ');
+  const titleValue = sanitizeTerminalText(item.title).replace(/\n/gu, ' ');
+  const model = sanitizeTerminalText(item.model).replace(/\n/gu, ' ');
+  const projectPath = sanitizeTerminalText(item.projectPath).replace(/\n/gu, ' ');
+  const prefixPlain = `${String(item.globalIndex).padStart(2, ' ')}. ${shortId}  `;
+  const prefix = `${String(item.globalIndex).padStart(2, ' ')}. ${ACCENT(shortId)}  `;
   const size = formatBytes(item.historySizeBytes);
-  const project = item.showProject ? `  ${item.projectPath}` : '';
+  const project = item.showProject ? `  ${projectPath}` : '';
   const metadataCandidates = [
-    `${item.messageCount} msgs  ${size}  ${item.model}${project}`,
-    `${item.messageCount} msgs  ${size}  ${item.model}`,
+    `${item.messageCount} msgs  ${size}  ${model}${project}`,
+    `${item.messageCount} msgs  ${size}  ${model}`,
     `${item.messageCount} msgs  ${size}`,
     `${item.messageCount} msgs`,
     '',
@@ -431,13 +438,13 @@ export function formatTerminalSessionPickerItem(
     const titleBudget = safeWidth - visibleLength(prefixPlain) - visibleLength(suffixPlain);
     if (titleBudget < 8) continue;
 
-    const title = truncateTerminalText(item.title, titleBudget);
+    const title = truncateTerminalText(titleValue, titleBudget);
     const row = `${prefix}${title}${metadata ? `  ${DIM(metadata)}` : ''}`;
     if (visibleLength(row) <= safeWidth) return row;
   }
 
   return truncateTerminalText(
-    `${String(item.globalIndex).padStart(2, ' ')}. ${item.shortId} ${item.title}`,
+    `${String(item.globalIndex).padStart(2, ' ')}. ${shortId} ${titleValue}`,
     safeWidth
   );
 }
@@ -449,6 +456,7 @@ export function formatTerminalSessionPickerHeader(
   width = terminalContentWidth(120)
 ): string {
   const safeWidth = Math.max(1, width);
+  title = sanitizeTerminalText(title).replace(/\n/gu, ' ');
   const pageLabelPlain = ` page ${page}/${pageCount}`;
   const titleBudget = safeWidth - visibleLength(pageLabelPlain);
   if (titleBudget < 4) {
@@ -478,14 +486,16 @@ export function formatTerminalModelPickerItem(
 ): string {
   const safeWidth = Math.max(1, width);
   const marker = item.isCurrent ? ACCENT('●') : DIM('○');
-  const alias = item.alias ? ` (${item.alias})` : '';
+  const name = sanitizeTerminalText(item.name).replace(/\n/gu, ' ');
+  const aliasValue = item.alias ? sanitizeTerminalText(item.alias).replace(/\n/gu, ' ') : '';
+  const alias = aliasValue ? ` (${aliasValue})` : '';
   const context = formatModelTokenCount(item.contextWindow);
   const output = item.maxOutputTokens
     ? formatModelTokenCount(item.maxOutputTokens).replace('ctx', 'out')
     : '';
-  const provider = item.provider ?? 'unknown';
+  const provider = sanitizeTerminalText(item.provider ?? 'unknown').replace(/\n/gu, ' ');
   const description = [provider, context, output].filter(Boolean).join('  ');
-  const row = `${marker} ${ACCENT(`${item.name}${alias}`)}  ${DIM(description)}`;
+  const row = `${marker} ${ACCENT(`${name}${alias}`)}  ${DIM(description)}`;
   return visibleLength(row) <= safeWidth ? row : truncateTerminalText(row, safeWidth);
 }
 
@@ -496,6 +506,7 @@ export function formatTerminalModelPickerHeader(
   width = terminalContentWidth(120)
 ): string {
   const safeWidth = Math.max(1, width);
+  title = sanitizeTerminalText(title).replace(/\n/gu, ' ');
   const pageLabelPlain = ` page ${page}/${pageCount}`;
   const titleBudget = safeWidth - visibleLength(pageLabelPlain);
   if (titleBudget < 4) return truncateTerminalText(`${title}${pageLabelPlain}`, safeWidth);
@@ -750,7 +761,7 @@ export class TerminalEventSink implements UiEventSink {
             source: 'picker',
           };
         case 'error':
-          this.writer.write(`${ERROR(selection.message)}\n`);
+          this.writer.write(`${ERROR(sanitizeTerminalText(selection.message))}\n`);
           return '';
       }
     }
@@ -785,7 +796,7 @@ export class TerminalEventSink implements UiEventSink {
           this.modelPickerOffset = 0;
           return `/model ${selection.model}`;
         case 'error':
-          this.writer.write(`${ERROR(selection.message)}\n`);
+          this.writer.write(`${ERROR(sanitizeTerminalText(selection.message))}\n`);
           return '';
       }
     }
@@ -959,7 +970,9 @@ export class TerminalEventSink implements UiEventSink {
   researchEvent(event: ResearchLifecycleEvent): void {
     this.researchEvents = appendResearchEventHistory(this.researchEvents, event);
     this.researchProjection = projectResearchLifecycleEvent(this.researchProjection, event);
-    this.writer.write(`${DIM(formatResearchLifecycleEvent(event, 'terminal'))}\n`);
+    this.writer.write(
+      `${DIM(sanitizeTerminalText(formatResearchLifecycleEvent(event, 'terminal')))}\n`
+    );
   }
 
   effortEvent(event: import('../runtime/ui-events').RuntimeEffortEvent): void {
@@ -1209,8 +1222,11 @@ export interface TerminalComposeResult {
 }
 
 export class TerminalInputComposer {
+  private static readonly MAX_BYTES = 256 * 1024;
+  private static readonly MAX_LINES = 10_000;
   private mode: 'paste' | 'continuation' | null = null;
   private readonly lines: string[] = [];
+  private byteLength = 0;
 
   isActive(): boolean {
     return this.mode !== null;
@@ -1246,13 +1262,15 @@ export class TerminalInputComposer {
           ? { input: submitted }
           : { cancelled: true, notice: DIM('Multiline input was empty.') };
       }
-      this.lines.push(input);
+      if (!this.appendLine(input)) return this.inputLimitExceeded();
       return {};
     }
 
     if (this.mode === 'continuation') {
       const continued = input.endsWith('\\');
-      this.lines.push(continued ? input.slice(0, -1) : input);
+      if (!this.appendLine(continued ? input.slice(0, -1) : input)) {
+        return this.inputLimitExceeded();
+      }
       if (continued) return {};
 
       const submitted = this.lines.join('\n').trimEnd();
@@ -1263,7 +1281,8 @@ export class TerminalInputComposer {
     if (input.endsWith('\\')) {
       this.mode = 'continuation';
       this.lines.length = 0;
-      this.lines.push(input.slice(0, -1));
+      this.byteLength = 0;
+      if (!this.appendLine(input.slice(0, -1))) return this.inputLimitExceeded();
       return {};
     }
 
@@ -1273,6 +1292,29 @@ export class TerminalInputComposer {
   private reset(): void {
     this.mode = null;
     this.lines.length = 0;
+    this.byteLength = 0;
+  }
+
+  private appendLine(line: string): boolean {
+    const nextBytes =
+      this.byteLength + Buffer.byteLength(line, 'utf8') + (this.lines.length ? 1 : 0);
+    if (
+      this.lines.length >= TerminalInputComposer.MAX_LINES ||
+      nextBytes > TerminalInputComposer.MAX_BYTES
+    ) {
+      return false;
+    }
+    this.lines.push(line);
+    this.byteLength = nextBytes;
+    return true;
+  }
+
+  private inputLimitExceeded(): TerminalComposeResult {
+    this.reset();
+    return {
+      cancelled: true,
+      notice: DIM('Multiline input exceeded 256 KiB or 10,000 lines and was cancelled; use /edit.'),
+    };
   }
 }
 

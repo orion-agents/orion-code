@@ -35,18 +35,24 @@ interface GateWaiter {
   onAbort?: () => void;
 }
 
+interface ProviderCooldown {
+  until: number;
+  reason: string;
+}
+
 export class ProviderRequestGate {
   private readonly maxConcurrent: number;
   private activeCount = 0;
+  private readonly activeByProvider = new Map<string, number>();
   private waiters: GateWaiter[] = [];
-  private cooldownUntil = 0;
-  private cooldownReason = '';
+  private readonly cooldowns = new Map<string, ProviderCooldown>();
+  private cooldownTimer: ReturnType<typeof setTimeout> | null = null;
+  private cooldownTimerDue = 0;
 
   constructor(options: ProviderRequestGateOptions = {}) {
     const configured = Number(options.maxConcurrent ?? 6);
-    this.maxConcurrent = Number.isFinite(configured) && configured >= 1
-      ? Math.floor(configured)
-      : 1;
+    this.maxConcurrent =
+      Number.isFinite(configured) && configured >= 1 ? Math.floor(configured) : 1;
   }
 
   /**
@@ -66,6 +72,7 @@ export class ProviderRequestGate {
           if (idx >= 0) {
             this.waiters.splice(idx, 1);
             reject(new Error('aborted'));
+            this.tryDispatch();
           }
           request.abortSignal?.removeEventListener('abort', onAbort);
         };
@@ -81,50 +88,97 @@ export class ProviderRequestGate {
   }
 
   /**
-   * Enter cooldown for a provider key. All new requests wait until
-   * the cooldown expires. Existing requests are not aborted.
+   * Enter cooldown for one provider key. Other providers may continue to use
+   * the shared concurrency budget. Existing requests are not aborted.
    */
   enterCooldown(providerKey: string, until: number, reason: string): void {
-    if (until > this.cooldownUntil) {
-      this.cooldownUntil = until;
-      this.cooldownReason = reason;
+    const current = this.cooldowns.get(providerKey);
+    if (!current || until > current.until) {
+      this.cooldowns.set(providerKey, { until, reason });
+      this.tryDispatch();
     }
   }
 
   /** Snapshot for diagnostics / UI. */
-  snapshot(): GateSnapshot {
+  snapshot(providerKey?: string): GateSnapshot {
+    this.clearExpiredCooldowns();
+    const cooldown = providerKey
+      ? this.cooldowns.get(providerKey)
+      : [...this.cooldowns.values()].sort((a, b) => b.until - a.until)[0];
     return {
-      activeCount: this.activeCount,
-      waitingCount: this.waiters.length,
-      cooldownUntil: this.cooldownUntil > Date.now() ? this.cooldownUntil : null,
-      cooldownReason: this.cooldownUntil > Date.now() ? this.cooldownReason : null,
+      activeCount: providerKey ? (this.activeByProvider.get(providerKey) ?? 0) : this.activeCount,
+      waitingCount: providerKey
+        ? this.waiters.filter(waiter => waiter.request.providerKey === providerKey).length
+        : this.waiters.length,
+      cooldownUntil: cooldown?.until ?? null,
+      cooldownReason: cooldown?.reason ?? null,
     };
   }
 
   private tryDispatch(): void {
+    this.clearExpiredCooldowns();
     while (this.waiters.length > 0 && this.activeCount < this.maxConcurrent) {
-      // Check cooldown.
-      if (Date.now() < this.cooldownUntil) {
-        // Still in cooldown — dispatch after cooldown expires.
-        const remaining = this.cooldownUntil - Date.now();
-        setTimeout(() => this.tryDispatch(), remaining + 50);
-        return;
-      }
-
-      const next = this.waiters.shift()!;
+      const nextIndex = this.waiters.findIndex(
+        waiter => !this.cooldowns.has(waiter.request.providerKey)
+      );
+      if (nextIndex < 0) break;
+      const [next] = this.waiters.splice(nextIndex, 1);
       if (next.request.abortSignal && next.onAbort) {
         next.request.abortSignal.removeEventListener('abort', next.onAbort);
       }
       this.activeCount++;
+      const providerKey = next.request.providerKey;
+      this.activeByProvider.set(providerKey, (this.activeByProvider.get(providerKey) ?? 0) + 1);
       let released = false;
       next.resolve({
         release: () => {
           if (released) return;
           released = true;
           this.activeCount = Math.max(0, this.activeCount - 1);
+          const providerActive = Math.max(0, (this.activeByProvider.get(providerKey) ?? 1) - 1);
+          if (providerActive === 0) this.activeByProvider.delete(providerKey);
+          else this.activeByProvider.set(providerKey, providerActive);
           this.tryDispatch();
         },
       });
     }
+    this.scheduleCooldownWake();
+  }
+
+  private clearExpiredCooldowns(): void {
+    const now = Date.now();
+    for (const [key, cooldown] of this.cooldowns) {
+      if (cooldown.until <= now) this.cooldowns.delete(key);
+    }
+  }
+
+  private scheduleCooldownWake(): void {
+    const waitingKeys = new Set(this.waiters.map(waiter => waiter.request.providerKey));
+    const earliest = [...waitingKeys]
+      .map(key => this.cooldowns.get(key)?.until)
+      .filter((until): until is number => until !== undefined)
+      .sort((a, b) => a - b)[0];
+
+    if (earliest === undefined || this.activeCount >= this.maxConcurrent) {
+      if (this.cooldownTimer && earliest === undefined) {
+        clearTimeout(this.cooldownTimer);
+        this.cooldownTimer = null;
+        this.cooldownTimerDue = 0;
+      }
+      return;
+    }
+    if (this.cooldownTimer && this.cooldownTimerDue <= earliest) return;
+    if (this.cooldownTimer) clearTimeout(this.cooldownTimer);
+    this.cooldownTimerDue = earliest;
+    this.cooldownTimer = setTimeout(
+      () => {
+        this.cooldownTimer = null;
+        this.cooldownTimerDue = 0;
+        this.tryDispatch();
+      },
+      Math.max(0, earliest - Date.now()) + 1
+    );
+    const timer = this.cooldownTimer as { unref?: () => void };
+    timer.unref?.();
   }
 }

@@ -15,6 +15,7 @@ import { execFileSync } from 'child_process';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import type { ToolContext } from '../src/framework/tool';
 
 // ---------------------------------------------------------------------------
 // #36 -- command wrappers must not launder a dangerous command into `safe`
@@ -100,8 +101,9 @@ function gitAvailable(): boolean {
   }
 }
 
-// 接口签名：execute(args, context) / checkPermissions(args, context)
-const CTX = {} as never;
+function contextFor(cwd: string): ToolContext {
+  return { cwd, config: { name: 'issue-40', mode: 'development' } };
+}
 
 const GIT_OK = gitAvailable();
 const describeGit = GIT_OK ? describe : describe.skip;
@@ -134,7 +136,7 @@ describeGit('issue #40.1: git_branch switch must not revert a working-tree file'
 
     const result = await gitBranchTool.execute(
       { action: 'switch', name: 'tracked.txt', cwd: repo },
-      CTX
+      contextFor(repo)
     );
 
     expect(result.success).toBe(false);
@@ -148,7 +150,7 @@ describeGit('issue #40.1: git_branch switch must not revert a working-tree file'
 
     const result = await gitBranchTool.execute(
       { action: 'switch', name: 'feature', cwd: repo },
-      CTX
+      contextFor(repo)
     );
 
     expect(result.success).toBe(true);
@@ -160,7 +162,10 @@ describeGit('issue #40.1: git_branch switch must not revert a working-tree file'
   });
 
   it('warns that a switch touches working-tree files', () => {
-    const decision = gitBranchTool.checkPermissions?.({ action: 'switch', name: 'feature' }, CTX);
+    const decision = gitBranchTool.checkPermissions?.(
+      { action: 'switch', name: 'feature', cwd: repo },
+      contextFor(repo)
+    );
     expect(decision?.behavior).toBe('ask');
     expect(decision?.reason).toMatch(/working-tree/);
   });
@@ -174,7 +179,7 @@ describeGit('issue #40.2: git_status must surface renames and merge conflicts', 
   });
 
   async function status(cwd: string): Promise<Record<string, unknown>> {
-    const result = await gitStatusTool.execute({ cwd }, CTX);
+    const result = await gitStatusTool.execute({ cwd }, contextFor(cwd));
     expect(result.success).toBe(true);
     return JSON.parse(result.output as string);
   }

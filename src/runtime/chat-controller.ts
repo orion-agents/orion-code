@@ -75,7 +75,7 @@ import {
   verifyingStatus,
   verificationGateStatus,
 } from './agent-status';
-import { capAutonomousGoalLoopBudget, resolveRuntimeLoopBudget } from './loop-budget';
+import { resolveAutonomousGoalLoopBudget, resolveRuntimeLoopBudget } from './loop-budget';
 import { setDiagnosticTraceContext } from '../utils/observability';
 import {
   appendAssistantNotice,
@@ -173,10 +173,13 @@ export class AgentChatController {
     this.goalCoordinator = coord;
   }
 
-  private resolveToolAllowlist(): ToolAllowlistEvaluator | undefined {
-    // Reload on every scheduling boundary so a project/global approval selected
-    // by the interactive prompt affects the very next tool call in this process.
-    return resolveProjectToolAllowlist(this.runtime.cwd).evaluator;
+  private resolveToolAllowlist(): ToolAllowlistEvaluator {
+    // Resolve on every evaluation, including execution. A model response can
+    // contain several serial calls prepared before the first permission prompt;
+    // once the user chooses project/global scope, the next call in that same
+    // response must observe the persisted grant instead of prompting again.
+    return (toolName, args) =>
+      resolveProjectToolAllowlist(this.runtime.cwd).evaluator?.(toolName, args);
   }
 
   constructor(
@@ -517,14 +520,7 @@ export class AgentChatController {
         toolConfirmation: this.runtime.config.toolConfirmation,
       });
 
-      // Local exec is a hidden shortcut rather than a plan artifact. Even a
-      // read-only command must not execute through that shortcut in plan mode.
-      if (effectivePermissionMode === 'plan' && action.tool === 'exec_command') {
-        throw new LocalFastPathBlockedError(
-          'Local run-test fast path is blocked in plan mode; switch mode before executing commands.'
-        );
-      }
-      if (effective.outcome === 'deny' || effective.outcome === 'block') {
+      if (effective.outcome === 'deny') {
         throw new LocalFastPathBlockedError(
           effective.reason ||
             `Local fast path blocked by ${effective.source ?? 'permission policy'}.`
@@ -651,10 +647,6 @@ export class AgentChatController {
           content: assistantContent,
           timestamp: Date.now(),
         });
-        const recordedMessages = readSessionMessages(sessionId);
-        if (recordedMessages.length > 0) {
-          updateSessionSummary(sessionId, recordedMessages);
-        }
       }
 
       this.events.setStatus(
@@ -1176,15 +1168,10 @@ export class AgentChatController {
       });
     };
 
-    const resolvedLoopBudget = resolveRuntimeLoopBudget(
-      input,
-      this.runtime.config,
-      harness.toJSON()
-    );
     const loopBudget =
       options.inputKind === 'goal_continuation'
-        ? capAutonomousGoalLoopBudget(resolvedLoopBudget)
-        : resolvedLoopBudget;
+        ? resolveAutonomousGoalLoopBudget(this.runtime.config)
+        : resolveRuntimeLoopBudget(input, this.runtime.config, harness.toJSON());
     let observedTurnsStarted = 0;
     let observedLlmRequests = 0;
     let observedToolCalls = 0;
@@ -1776,10 +1763,6 @@ export class AgentChatController {
         }
         updateSessionSkills(sessionId, appliedSkillNames);
         updateSessionHarnessState(sessionId, harnessState);
-        const recordedMessages = readSessionMessages(sessionId);
-        if (recordedMessages.length > 0) {
-          updateSessionSummary(sessionId, recordedMessages);
-        }
       }
       this.events.setStatus(finalModel ? `Completed with ${finalModel}` : 'Completed');
     } catch (error: unknown) {

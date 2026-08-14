@@ -566,7 +566,7 @@ const BUILTIN_METADATA: Record<string, BuiltinCommandMetadata> = {
 };
 
 const COMMAND_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
-const RESERVED_BUILTIN_NAMES = new Set(Object.keys(BUILTIN_METADATA));
+let reservedBuiltinNames = new Set(Object.keys(BUILTIN_METADATA));
 
 export function registerBuiltinCommands(definitions: SlashCommand[]): RegisteredSlashCommand[] {
   const definitionNames = new Set(definitions.map(command => command.name));
@@ -602,6 +602,7 @@ export function registerBuiltinCommands(definitions: SlashCommand[]): Registered
 
   const ids = new Set<string>();
   const names = new Map<string, string>();
+  const nextReservedNames = new Set(Object.keys(BUILTIN_METADATA));
   for (const command of registered) {
     if (ids.has(command.id)) throw new Error(`Duplicate command id: ${command.id}`);
     ids.add(command.id);
@@ -614,12 +615,15 @@ export function registerBuiltinCommands(definitions: SlashCommand[]): Registered
       const owner = names.get(normalized);
       if (owner) throw new Error(`Command name collision: ${value} (${owner}, ${command.id})`);
       names.set(normalized, command.id);
-      RESERVED_BUILTIN_NAMES.add(normalized);
+      nextReservedNames.add(normalized);
     }
   }
+  // Publish the complete snapshot only after every descriptor validates. A
+  // failed or repeated registration must not leak aliases into global state.
+  reservedBuiltinNames = nextReservedNames;
   return registered;
 }
 
 export function isBuiltinCommandName(name: string): boolean {
-  return RESERVED_BUILTIN_NAMES.has(name.toLowerCase());
+  return reservedBuiltinNames.has(name.toLowerCase());
 }

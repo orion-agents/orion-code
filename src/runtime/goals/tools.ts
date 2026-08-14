@@ -24,6 +24,7 @@ import type {
 import { GOAL_INVARIANTS } from './types';
 import type { GoalCoordinator } from './coordinator';
 import { updateSessionGoalBinding } from '../../services/session-storage';
+import { clearGoalLifecycle } from './lifecycle';
 
 // ---------------------------------------------------------------------------
 // Runtime/session-scoped binding. AsyncLocalStorage prevents one session from
@@ -502,11 +503,10 @@ export const abandonGoalTool: OrionCodeTool = buildTool({
       abandonedAt: Date.now(),
     };
     try {
-      if (!context.coordinator.clear()) {
+      if (!clearGoalLifecycle(context.coordinator)) {
         const error = 'Goal abandonment failed because the Goal was no longer active.';
         return { success: false, output: error, error };
       }
-      updateSessionGoalBinding(context.coordinator.boundSessionId, null);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return {

@@ -38,8 +38,9 @@ function applyConfigOverrides(
 
 function looksLikeReleaseTask(input: string): boolean {
   return (
-    /\b(push|pull request|pr|publish|release|npm publish|prepublish)\b/i.test(input) ||
-    /(发布|发版|提交|推送)/.test(input)
+    /(?<![\p{L}\p{N}_])(?:push|pull request|pr|publish|release|npm publish|prepublish)(?![\p{L}\p{N}_])/iu.test(
+      input
+    ) || /(发布|发版|提交|推送)/.test(input)
   );
 }
 
@@ -121,4 +122,11 @@ export function capAutonomousGoalLoopBudget(budget: LoopBudget): LoopBudget {
       GOAL_INVARIANTS.maxAutonomousModelVisibleBytesPerTurn
     ),
   };
+}
+
+/** Resolve a continuation from config only; model-authored Goal text must not promote its profile. */
+export function resolveAutonomousGoalLoopBudget(
+  config: Pick<OrionCodeCLIConfig, 'agentLoop'>
+): LoopBudget {
+  return capAutonomousGoalLoopBudget(resolveRuntimeLoopBudget('', config));
 }

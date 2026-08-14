@@ -1,5 +1,6 @@
 import { findCommand, getCommands, getVisibleCommands } from '../src/commands';
-import { isBuiltinCommandName } from '../src/commands/registry';
+import { isBuiltinCommandName, registerBuiltinCommands } from '../src/commands/registry';
+import type { SlashCommand } from '../src/commands/types';
 import { createCommandPickerState } from '../src/runtime/ui-view-model';
 
 describe('v0.1.5 command descriptor contract', () => {
@@ -8,6 +9,23 @@ describe('v0.1.5 command descriptor contract', () => {
     expect(isBuiltinCommandName('target')).toBe(true);
     expect(isBuiltinCommandName('reasoning')).toBe(true);
     expect(isBuiltinCommandName('not-a-builtin')).toBe(false);
+  });
+
+  it('replaces the reserved-name snapshot without leaking aliases across registrations', () => {
+    const definitions = getCommands().map(command => ({ ...command })) as SlashCommand[];
+    const temporaryAlias = 'temporary-test-alias';
+    const withTemporaryAlias = definitions.map((command, index) =>
+      index === 0 ? { ...command, aliases: [...(command.aliases ?? []), temporaryAlias] } : command
+    );
+
+    try {
+      registerBuiltinCommands(withTemporaryAlias);
+      expect(isBuiltinCommandName(temporaryAlias)).toBe(true);
+      registerBuiltinCommands(definitions);
+      expect(isBuiltinCommandName(temporaryAlias)).toBe(false);
+    } finally {
+      registerBuiltinCommands(definitions);
+    }
   });
 
   it('registers complete, unique, lower-kebab built-in descriptors', () => {

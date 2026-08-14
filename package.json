@@ -13,7 +13,8 @@
     "assets/",
     "LICENSE",
     "README.md",
-    "README.zh-CN.md"
+    "README.zh-CN.md",
+    "npm-shrinkwrap.json"
   ],
   "scripts": {
     "start": "ts-node src/cli.ts",
@@ -103,5 +104,10 @@
   },
   "engines": {
     "node": "^20.0.0 || ^22.0.0 || ^24.0.0"
-  }
+  },
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "type": "commonjs"
 }

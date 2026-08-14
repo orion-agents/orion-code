@@ -47,6 +47,39 @@ describe('Command Panel', () => {
       const { showCommandPanel } = require('../src/ui/command-panel');
       expect(typeof showCommandPanel).toBe('function');
     });
+
+    it('attaches one resize listener only while the panel is visible', () => {
+      const originalIsTty = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
+      const before = process.stdout.listenerCount('resize');
+      Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: true });
+      const {
+        disposeCommandPanel,
+        hideCommandPanel,
+        showCommandPanel,
+      } = require('../src/ui/command-panel');
+
+      try {
+        expect(process.stdout.listenerCount('resize')).toBe(before);
+        showCommandPanel('s');
+        showCommandPanel('m');
+        expect(process.stdout.listenerCount('resize')).toBe(before + 1);
+
+        hideCommandPanel();
+        expect(process.stdout.listenerCount('resize')).toBe(before);
+
+        showCommandPanel('s');
+        expect(process.stdout.listenerCount('resize')).toBe(before + 1);
+        disposeCommandPanel();
+        expect(process.stdout.listenerCount('resize')).toBe(before);
+      } finally {
+        disposeCommandPanel();
+        if (originalIsTty) {
+          Object.defineProperty(process.stdout, 'isTTY', originalIsTty);
+        } else {
+          Reflect.deleteProperty(process.stdout, 'isTTY');
+        }
+      }
+    });
   });
 
   describe('hideCommandPanel', () => {
@@ -95,7 +128,11 @@ describe('Command Panel', () => {
     });
 
     it('keeps the panel visible on empty matches so backspace can recover', () => {
-      const { showCommandPanel, updatePanelFilter, isPanelVisible } = require('../src/ui/command-panel');
+      const {
+        showCommandPanel,
+        updatePanelFilter,
+        isPanelVisible,
+      } = require('../src/ui/command-panel');
 
       showCommandPanel('zzzz');
 

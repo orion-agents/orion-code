@@ -316,6 +316,10 @@ export function classifyGoalEvidenceKind(
   args: Record<string, unknown>
 ): GoalEvidenceKind | null {
   const normalizedName = name.toLowerCase();
+  // These bounded internal tools are direct runtime probes of Goal mode. They
+  // are deliberately narrower than update_goal: requesting completion must
+  // never become evidence for its own success.
+  if (normalizedName === 'get_goal' || normalizedName === 'update_goal_plan') return 'runtime';
   if (normalizedName === 'exec_command') {
     const command = typeof args.command === 'string' ? args.command : '';
     if (hasStatusMaskingControlFlow(command)) return null;
@@ -330,4 +334,20 @@ export function classifyGoalEvidenceKind(
   if (normalizedName === 'git_push') return 'external';
   if (/web|http|browser|github/u.test(normalizedName)) return 'external';
   return null;
+}
+
+/**
+ * Give trusted Goal-runtime probes a bilingual, semantically useful subject.
+ * The completion audit still requires overlap with the criterion, so these
+ * records cannot close unrelated coding, release, or external-state goals.
+ */
+export function describeGoalRuntimeEvidence(input: {
+  name: string;
+  success: boolean;
+  error?: string;
+}): string | undefined {
+  const name = input.name.toLowerCase();
+  if (name !== 'get_goal' && name !== 'update_goal_plan') return undefined;
+  const outcome = input.success ? 'succeeded' : `failed${input.error ? `: ${input.error}` : ''}`;
+  return `Goal mode / 目标模式 runtime tool ${name} ${outcome}`;
 }

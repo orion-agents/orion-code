@@ -572,6 +572,10 @@ function getInputHistoryPath(): string {
 
 export function getInputHistory(): InputHistoryEntry[] {
   const path = getInputHistoryPath();
+  return readInputHistory(path);
+}
+
+function readInputHistory(path: string): InputHistoryEntry[] {
   if (!existsSync(path)) {
     return [];
   }
@@ -591,24 +595,21 @@ function saveInputHistory(history: InputHistoryEntry[]): void {
 
 export function addToInputHistory(content: string): void {
   if (!content.trim()) return;
+  ensureConfigDir();
+  const path = getInputHistoryPath();
+  withFileLockSync(
+    path,
+    () => {
+      const history = readInputHistory(path);
+      const existingIndex = history.findIndex(h => h.content === content);
+      if (existingIndex >= 0) history.splice(existingIndex, 1);
 
-  const history = getInputHistory();
-
-  const existingIndex = history.findIndex(h => h.content === content);
-  if (existingIndex >= 0) {
-    history.splice(existingIndex, 1);
-  }
-
-  history.unshift({
-    content,
-    timestamp: Date.now(),
-  });
-
-  if (history.length > MAX_INPUT_HISTORY) {
-    history.splice(MAX_INPUT_HISTORY);
-  }
-
-  saveInputHistory(history);
+      history.unshift({ content, timestamp: Date.now() });
+      if (history.length > MAX_INPUT_HISTORY) history.splice(MAX_INPUT_HISTORY);
+      saveInputHistory(history);
+    },
+    { waitMs: 10_000 }
+  );
 }
 
 export function searchInputHistory(query: string): InputHistoryEntry[] {

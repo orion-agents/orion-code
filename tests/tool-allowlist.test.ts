@@ -2,8 +2,9 @@
  * v0.1.3-2 §1.3 — project-scoped allowlist rule engine.
  *
  * Covers the rule grammar, the "most restrictive wins" precedence, the
- * safety envelope (allowlist can tighten but never loosen tool policy,
- * plan mode or destructive gates) and the scheduler wiring.
+ * safety envelope (allowlist can tighten and can persist explicit user consent,
+ * but never loosens hard tool-policy denies) and the scheduler wiring. Agent
+ * workflow modes remain independent from these permission rules.
  */
 
 import { existsSync, mkdtempSync, rmSync } from 'fs';
@@ -134,6 +135,7 @@ async function runAll(
     toolExecutor,
     permissionMode: options.permissionMode,
     toolConfirmation: options.toolConfirmation,
+    toolAllowlist: options.allowlist,
     confirmToolUse: options.confirmToolUse as never,
   })) {
     executed.push(item);
@@ -362,7 +364,7 @@ describe('resolveEffectivePermission precedence', () => {
     expect(decision.reason).toContain('deny:read_file(*.env)');
   });
 
-  test('plan mode still blocks a tool covered by an allow rule', () => {
+  test('legacy plan permission reuses an allow rule for a state-writing tool', () => {
     const decision = resolve({
       toolName: 'exec_command',
       tool: execTool,
@@ -371,7 +373,7 @@ describe('resolveEffectivePermission precedence', () => {
       permissionMode: 'plan',
       allowlist: { effect: 'allow', rule: 'exec_command(git status*)' },
     });
-    expect(decision).toMatchObject({ outcome: 'block', source: 'plan_mode' });
+    expect(decision).toMatchObject({ outcome: 'allow', source: 'allowlist_allow' });
   });
 
   test('auto mode resolves an ask rule without prompting after hard safety checks', () => {
@@ -398,7 +400,7 @@ describe('resolveEffectivePermission precedence', () => {
     expect(decision.reason).toContain('ask:read_file(*.env)');
   });
 
-  test('an explicit allow rule cannot auto-approve a destructive non-file invocation', () => {
+  test('an explicit allow rule auto-approves a destructive non-file invocation', () => {
     const decision = resolve({
       toolName: 'exec_command',
       tool: execTool,
@@ -407,8 +409,8 @@ describe('resolveEffectivePermission precedence', () => {
       allowlist: { effect: 'allow', rule: 'exec_command' },
     });
     expect(decision).toMatchObject({
-      outcome: 'confirm',
-      source: 'risk_guard',
+      outcome: 'allow',
+      source: 'allowlist_allow',
       risk: 'destructive',
     });
   });
@@ -467,6 +469,51 @@ describe('tool scheduler with a project allowlist', () => {
     });
   });
 
+  test('project approval prevents a repeated prompt for destructive exec commands', async () => {
+    const confirmToolUse = jest.fn(async () => false);
+    const allowlist = createAllowlistEvaluator(parseAllowlistRules(['exec_command']).rules);
+
+    const { executed, executedNames } = await runAll(
+      [['exec_command', { command: 'rm -rf /tmp/orion-auto-permission-fixture/' }]],
+      { allowlist, toolConfirmation: 'ask', confirmToolUse }
+    );
+
+    expect(confirmToolUse).not.toHaveBeenCalled();
+    expect(executedNames).toEqual(['exec_command']);
+    expect(executed[0].permissionDecision).toMatchObject({
+      approved: true,
+      source: 'allowlist_allow',
+    });
+  });
+
+  test('a project approval takes effect for the next serial call in the same tool batch', async () => {
+    let granted = false;
+    const allowlist: ToolAllowlistEvaluator = (name, _args) =>
+      granted && name === 'exec_command'
+        ? { effect: 'allow', rule: 'allow:exec_command', scope: 'project' }
+        : undefined;
+    const confirmToolUse = jest.fn(async () => {
+      granted = true;
+      return true;
+    });
+
+    const { executed, executedNames } = await runAll(
+      [
+        ['exec_command', { command: 'rm -rf build/one' }],
+        ['exec_command', { command: 'rm -rf build/two' }],
+      ],
+      { allowlist, toolConfirmation: 'ask', confirmToolUse }
+    );
+
+    expect(confirmToolUse).toHaveBeenCalledTimes(1);
+    expect(executedNames).toEqual(['exec_command', 'exec_command']);
+    expect(executed[0].permissionDecision).toMatchObject({ approved: true, source: 'user' });
+    expect(executed[1].permissionDecision).toMatchObject({
+      approved: true,
+      source: 'allowlist_allow',
+    });
+  });
+
   test('deny rule blocks execution entirely and names the rule', async () => {
     const confirmToolUse = jest.fn(async () => true);
     const allowlist = createAllowlistEvaluator(
@@ -518,7 +565,7 @@ describe('tool scheduler with a project allowlist', () => {
     expect(executed[0].permissionDecision).toMatchObject({ approved: true, source: 'mode_auto' });
   });
 
-  test('plan mode is not weakened by an allow rule', async () => {
+  test('plan mode reuses a project grant for workspace writes without prompting', async () => {
     const allowlist = createAllowlistEvaluator(parseAllowlistRules(['exec_command']).rules);
 
     const { executed, executedNames } = await runAll([['exec_command', { command: 'ls' }]], {
@@ -527,9 +574,28 @@ describe('tool scheduler with a project allowlist', () => {
       toolConfirmation: 'allow',
     });
 
-    expect(executedNames).toEqual([]);
-    expect(executed[0].permissionDecision?.source).toBe('plan_mode');
-    expect(executed[0].error).toContain('blocked in plan mode');
+    expect(executedNames).toEqual(['exec_command']);
+    expect(executed[0].permissionDecision).toMatchObject({
+      approved: true,
+      source: 'allowlist_allow',
+    });
+  });
+
+  test('plan mode reuses a project grant for external read-only tools without prompting', async () => {
+    const confirmToolUse = jest.fn(async () => false);
+    const allowlist = createAllowlistEvaluator(parseAllowlistRules(['web_fetch']).rules);
+
+    const { executed, executedNames } = await runAll(
+      [['web_fetch', { url: 'https://example.com' }]],
+      { allowlist, permissionMode: 'plan', toolConfirmation: 'ask', confirmToolUse }
+    );
+
+    expect(confirmToolUse).not.toHaveBeenCalled();
+    expect(executedNames).toEqual(['web_fetch']);
+    expect(executed[0].permissionDecision).toMatchObject({
+      approved: true,
+      source: 'allowlist_allow',
+    });
   });
 
   test('allowlisted external ask tools are persistently approved and may retain safe concurrency', async () => {

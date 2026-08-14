@@ -119,6 +119,7 @@ describe('Goal invariants', () => {
 
   it('max consecutive no-progress turns is 3', () => {
     expect(GOAL_INVARIANTS.maxConsecutiveNoProgressTurns).toBe(3);
+    expect(GOAL_INVARIANTS.maxConsecutiveBlockedContinuationTurns).toBe(2);
   });
 
   it('max automatic continuation turns is 5', () => {

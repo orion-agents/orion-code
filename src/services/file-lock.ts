@@ -61,8 +61,12 @@ function recoverStaleLock(lockPath: string, staleMs: number): boolean {
     return true;
   }
   const firstOwner = readOwner(lockPath);
-  const lastActivity = Math.max(firstStat.mtimeMs, firstOwner?.createdAt ?? 0);
-  if (Date.now() - lastActivity <= staleMs || (firstOwner && processIsAlive(firstOwner.pid))) {
+  // Unreadable ownership is not evidence that a lock is abandoned. Recovering
+  // it would let a contender reclaim a live lock while its owner metadata is
+  // only partially written or temporarily unreadable.
+  if (!firstOwner) return false;
+  const lastActivity = Math.max(firstStat.mtimeMs, firstOwner.createdAt);
+  if (Date.now() - lastActivity <= staleMs || processIsAlive(firstOwner.pid)) {
     return false;
   }
 
@@ -76,7 +80,8 @@ function recoverStaleLock(lockPath: string, staleMs: number): boolean {
   if (
     currentStat.ino !== firstStat.ino ||
     currentStat.mtimeMs !== firstStat.mtimeMs ||
-    currentOwner?.token !== firstOwner?.token
+    !currentOwner ||
+    currentOwner.token !== firstOwner.token
   ) {
     return false;
   }

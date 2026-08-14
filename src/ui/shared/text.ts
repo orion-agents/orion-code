@@ -1,7 +1,12 @@
-const ANSI_PATTERN = /\x1b\[[0-9;]*m/g;
+import { sanitizeTerminalText } from '../../tui-core/style';
+
+/** Sanitize untrusted labels before adding renderer-owned ANSI styling. */
+export function sanitizeTerminalLine(text: string): string {
+  return sanitizeTerminalText(String(text)).replace(/\n/gu, ' ');
+}
 
 export function stripAnsi(text: string): string {
-  return text.replace(ANSI_PATTERN, '');
+  return sanitizeTerminalText(String(text));
 }
 
 export function visualWidth(text: string): number {
@@ -39,16 +44,19 @@ export function truncateVisible(text: string, targetWidth: number): string {
 }
 
 function isWideCodePoint(cp: number): boolean {
-  return cp >= 0x1100 && (
-    cp <= 0x115F || cp === 0x2329 || cp === 0x232A ||
-    (cp >= 0x2E80 && cp <= 0xA4CF && cp !== 0x303F) ||
-    (cp >= 0xAC00 && cp <= 0xD7A3) ||
-    (cp >= 0xF900 && cp <= 0xFAFF) ||
-    (cp >= 0xFE10 && cp <= 0xFE19) ||
-    (cp >= 0xFE30 && cp <= 0xFE6F) ||
-    (cp >= 0xFF01 && cp <= 0xFF60) ||
-    (cp >= 0xFFE0 && cp <= 0xFFE6) ||
-    (cp >= 0x20000 && cp <= 0x2FFFD) ||
-    (cp >= 0x30000 && cp <= 0x3FFFD)
+  return (
+    cp >= 0x1100 &&
+    (cp <= 0x115f ||
+      cp === 0x2329 ||
+      cp === 0x232a ||
+      (cp >= 0x2e80 && cp <= 0xa4cf && cp !== 0x303f) ||
+      (cp >= 0xac00 && cp <= 0xd7a3) ||
+      (cp >= 0xf900 && cp <= 0xfaff) ||
+      (cp >= 0xfe10 && cp <= 0xfe19) ||
+      (cp >= 0xfe30 && cp <= 0xfe6f) ||
+      (cp >= 0xff01 && cp <= 0xff60) ||
+      (cp >= 0xffe0 && cp <= 0xffe6) ||
+      (cp >= 0x20000 && cp <= 0x2fffd) ||
+      (cp >= 0x30000 && cp <= 0x3fffd))
   );
 }

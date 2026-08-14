@@ -10,6 +10,7 @@ import {
   updateTokenStats,
   type GlobalConfig,
   type ProjectConfig,
+  getInputHistory,
 } from '../src/services/global-config';
 import { loadUsageState } from '../src/services/usage-state';
 import { existsSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'fs';
@@ -242,6 +243,34 @@ describe('global-config', () => {
       defaultModel: 'concurrent-model',
       fallbackModel: 'concurrent-fallback',
     });
+  });
+
+  test('serializes cross-process input-history updates without dropping entries', async () => {
+    const worker = join(__dirname, 'fixtures', 'input-history-worker.js');
+    const barrier = join(testDir, `input-history-${Date.now()}.barrier`);
+    const run = (content: string) =>
+      new Promise<void>((resolve, reject) => {
+        const child = spawn(
+          process.execPath,
+          ['-r', 'ts-node/register', worker, testDir, barrier, content],
+          { cwd: join(__dirname, '..'), stdio: ['ignore', 'ignore', 'pipe'] }
+        );
+        let stderr = '';
+        child.stderr.on('data', chunk => (stderr += String(chunk)));
+        child.once('error', reject);
+        child.once('exit', code =>
+          code === 0 ? resolve() : reject(new Error(`history worker exited ${code}: ${stderr}`))
+        );
+      });
+
+    const first = run('concurrent history alpha');
+    const second = run('concurrent history beta');
+    writeFileSync(barrier, 'go');
+    await Promise.all([first, second]);
+
+    expect(getInputHistory().map(entry => entry.content)).toEqual(
+      expect.arrayContaining(['concurrent history alpha', 'concurrent history beta'])
+    );
   });
 
   describe('updateGlobalConfig', () => {

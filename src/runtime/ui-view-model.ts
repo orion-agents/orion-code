@@ -23,6 +23,7 @@ import type {
   ResearchLifecycleSummary,
   ResearchStage,
 } from './subagents/research-renderer';
+import { sanitizeTerminalText } from '../tui-core/style';
 
 export type TranscriptBlockKind =
   | 'user'
@@ -252,10 +253,7 @@ export function projectResearchLifecycleEvent(
 }
 
 function inlineResearchText(value: string, limit = 160): string {
-  const singleLine = value
-    .replace(/[\u0000-\u001f\u007f]+/gu, ' ')
-    .replace(/\s+/gu, ' ')
-    .trim();
+  const singleLine = sanitizeTerminalText(value).replace(/\n/gu, ' ').replace(/\s+/gu, ' ').trim();
   return singleLine.length <= limit ? singleLine : `${singleLine.slice(0, limit - 1)}…`;
 }
 

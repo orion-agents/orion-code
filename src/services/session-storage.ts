@@ -990,6 +990,33 @@ export function clearSessionGoalBinding(
 }
 
 /**
+ * Restore a Goal binding after a later sidecar mutation failed. A different
+ * active binding belongs to a newer lifecycle and must never be overwritten.
+ */
+export function restoreSessionGoalBinding(
+  sessionId: string,
+  goal: { goalId: string; objective: string },
+  expectedClearedAt: number
+): SessionMeta | null {
+  return mutateSessionMeta(sessionId, session => {
+    if (session.activeGoalId && session.activeGoalId !== goal.goalId) {
+      throw new Error(
+        `Session Goal binding changed from ${goal.goalId} to ${session.activeGoalId}; refusing to overwrite the newer Goal during rollback.`
+      );
+    }
+    if (!session.activeGoalId && session.updatedAt !== expectedClearedAt) {
+      throw new Error(
+        `Session metadata changed after Goal ${goal.goalId} was cleared; refusing to overwrite newer session state during rollback.`
+      );
+    }
+    session.activeGoalId = goal.goalId;
+    session.activeGoalObjective = goal.objective;
+    session.updatedAt = Date.now();
+    session.updatedAtIso = new Date(session.updatedAt).toISOString();
+  });
+}
+
+/**
  * 更新会话 Harness 状态。
  */
 export function updateSessionHarnessState(sessionId: string, harnessState: HarnessState): void {
@@ -1217,8 +1244,9 @@ export function endSession(sessionId: string): void {
  * 更新会话任务摘要
  * 从会话消息中提取关键信息并更新元数据
  */
-export function updateSessionSummary(sessionId: string, messages: SessionMessage[]): void {
-  // 提取工具使用列表
+function summarizeSessionMessages(
+  messages: SessionMessage[]
+): Pick<SessionMeta, 'toolsUsed' | 'filesModified' | 'taskSummary' | 'messageCount'> {
   const toolsUsed: string[] = [];
   const filesModified: string[] = [];
 
@@ -1246,16 +1274,53 @@ export function updateSessionSummary(sessionId: string, messages: SessionMessage
 
   // 提取任务摘要（从第一个用户消息）
   const firstUserMsg = messages.find(m => m.role === 'user' && m.content);
-  const taskSummary = redactTraceText(firstUserMsg?.content ?? '').slice(0, 100);
+  const taskText = redactTraceText(firstUserMsg?.content ?? '');
+  const taskSummary = taskText.length > 100 ? `${taskText.slice(0, 100)}...` : taskText;
 
-  mutateSessionMeta(sessionId, session => {
-    session.toolsUsed = [...new Set(toolsUsed)]; // unique
-    session.filesModified = [...new Set(filesModified)]; // unique
-    session.taskSummary =
-      taskSummary.length > 100 ? taskSummary.slice(0, 100) + '...' : taskSummary;
-    session.messageCount = messages.length;
+  return {
+    toolsUsed: [...new Set(toolsUsed)],
+    filesModified: [...new Set(filesModified)],
+    taskSummary,
+    messageCount: messages.length,
+  };
+}
+
+function mergeMessageSummary(session: SessionMeta, message: SessionMessage): void {
+  if (!session.taskSummary && message.role === 'user' && message.content) {
+    const taskText = redactTraceText(message.content);
+    session.taskSummary = taskText.length > 100 ? `${taskText.slice(0, 100)}...` : taskText;
+  }
+  if (message.role !== 'assistant' || !message.tool_calls) return;
+
+  const tools = new Set(session.toolsUsed ?? []);
+  const files = new Set(session.filesModified ?? []);
+  for (const toolCall of message.tool_calls) {
+    tools.add(toolCall.function.name);
+    if (toolCall.function.name !== 'write_file' && toolCall.function.name !== 'edit_file') continue;
+    try {
+      const args = JSON.parse(toolCall.function.arguments) as Record<string, unknown>;
+      if (typeof args.path === 'string') files.add(args.path);
+    } catch (error) {
+      debugError('session-storage.parseToolArgs', error, toolCall.function.name);
+    }
+  }
+  session.toolsUsed = [...tools];
+  session.filesModified = [...files];
+}
+
+export function updateSessionSummary(sessionId: string, _messages: SessionMessage[]): void {
+  // Callers may hold a stale transcript snapshot. Re-read under the same lock
+  // used by append/delete so reconciliation can never roll metadata backwards.
+  withLockedSession(sessionId, session => {
+    const summary = summarizeSessionMessages(readSessionMessagesForSession(session));
+
+    session.toolsUsed = summary.toolsUsed;
+    session.filesModified = summary.filesModified;
+    session.taskSummary = summary.taskSummary;
+    session.messageCount = summary.messageCount;
     session.updatedAt = Date.now();
     session.updatedAtIso = new Date(session.updatedAt).toISOString();
+    writeSessionMetaUnlocked(session);
   });
 }
 
@@ -1347,6 +1412,7 @@ export function appendSessionMessage(sessionId: string, message: SessionMessage)
     // Keep transcript, metadata, and search index inside the same session
     // critical section so concurrent processes cannot lose counters.
     updateSessionIndex(sessionId, session.projectPath, message);
+    mergeMessageSummary(session, message);
     session.updatedAt = Date.now();
     session.updatedAtIso = new Date(session.updatedAt).toISOString();
     session.messageCount = (session.messageCount ?? 0) + 1;
@@ -1370,6 +1436,7 @@ export function appendSessionMessages(sessionId: string, messages: SessionMessag
 
     for (const message of messages) {
       updateSessionIndex(sessionId, session.projectPath, message);
+      mergeMessageSummary(session, message);
     }
     session.updatedAt = Date.now();
     session.updatedAtIso = new Date(session.updatedAt).toISOString();
@@ -1414,6 +1481,10 @@ function overwriteSessionMessagesUnlocked(session: SessionMeta, messages: Sessio
     updateSessionIndex(session.id, session.projectPath, message);
   }
   session.messageCount = messages.length;
+  const summary = summarizeSessionMessages(messages);
+  session.toolsUsed = summary.toolsUsed;
+  session.filesModified = summary.filesModified;
+  session.taskSummary = summary.taskSummary;
   session.updatedAt = Date.now();
   session.updatedAtIso = new Date(session.updatedAt).toISOString();
   writeSessionMetaUnlocked(session);
@@ -1510,67 +1581,66 @@ export function appendSessionTraceEvent(
   sessionId: string,
   event: Omit<SessionTraceEvent, 'sessionId' | 'timestamp'> & { timestamp?: number }
 ): SessionTraceEvent | null {
-  const session = loadSessionMeta(sessionId);
-  if (!session) return null;
+  return withLockedSession(sessionId, session => {
+    ensureConfigDir();
+    const safeEvent = sanitizeTraceEvent(event);
+    const traceEvent: SessionTraceEvent = {
+      ...safeEvent,
+      sessionId,
+      turnId: String(safeEvent.turnId),
+      timestamp: safeEvent.timestamp ?? Date.now(),
+    };
 
-  ensureConfigDir();
-
-  const safeEvent = sanitizeTraceEvent(event);
-  const traceEvent: SessionTraceEvent = {
-    ...safeEvent,
-    sessionId,
-    turnId: String(safeEvent.turnId),
-    timestamp: safeEvent.timestamp ?? Date.now(),
-  };
-
-  appendFileSync(
-    getProjectSessionTracePath(session.projectPath, sessionId),
-    `${JSON.stringify(traceEvent)}\n`,
-    { mode: 0o600 }
-  );
-  return traceEvent;
+    appendFileSync(
+      getProjectSessionTracePath(session.projectPath, sessionId),
+      `${JSON.stringify(traceEvent)}\n`,
+      { mode: 0o600 }
+    );
+    return traceEvent;
+  });
 }
 
 export function readSessionTraceEvents(sessionId: string): SessionTraceEvent[] {
-  const session = loadSessionMeta(sessionId);
-  if (!session) return [];
+  return (
+    withLockedSession(sessionId, session => {
+      const path = getProjectSessionTracePath(session.projectPath, sessionId);
+      if (!existsSync(path)) return [];
 
-  const path = getProjectSessionTracePath(session.projectPath, sessionId);
-  if (!existsSync(path)) return [];
-
-  try {
-    const content = readFileSync(path, 'utf-8');
-    return content
-      .trim()
-      .split('\n')
-      .filter(Boolean)
-      .flatMap(line => {
-        try {
-          const parsed = JSON.parse(line) as Partial<SessionTraceEvent>;
-          if (!parsed.type || !parsed.turnId || !parsed.timestamp) return [];
-          const sanitized = sanitizeTraceEvent({
-            ...parsed,
-            turnId: String(parsed.turnId),
-          } as Omit<SessionTraceEvent, 'sessionId' | 'timestamp'> & { timestamp?: number });
-          return [
-            {
-              ...sanitized,
-              sessionId,
-              turnId: String(sanitized.turnId),
-            } as SessionTraceEvent,
-          ];
-        } catch (error) {
-          // Drop only the malformed trace line, keep the rest of the trace.
-          debugError('session-storage.parseTraceLine', error);
-          return [];
-        }
-      });
-  } catch (error) {
-    // An empty trace looks like "nothing happened" instead of "trace
-    // unreadable", which misleads anyone debugging a past run.
-    debugError('session-storage.readTraceEvents', error, path);
-    return [];
-  }
+      try {
+        const content = readFileSync(path, 'utf-8');
+        return content
+          .trim()
+          .split('\n')
+          .filter(Boolean)
+          .flatMap(line => {
+            try {
+              const parsed = JSON.parse(line) as Partial<SessionTraceEvent>;
+              if (!parsed.type || !parsed.turnId || !parsed.timestamp) return [];
+              const sanitized = sanitizeTraceEvent({
+                ...parsed,
+                turnId: String(parsed.turnId),
+              } as Omit<SessionTraceEvent, 'sessionId' | 'timestamp'> & { timestamp?: number });
+              return [
+                {
+                  ...sanitized,
+                  sessionId,
+                  turnId: String(sanitized.turnId),
+                } as SessionTraceEvent,
+              ];
+            } catch (error) {
+              // Drop only the malformed trace line, keep the rest of the trace.
+              debugError('session-storage.parseTraceLine', error);
+              return [];
+            }
+          });
+      } catch (error) {
+        // An empty trace looks like "nothing happened" instead of "trace
+        // unreadable", which misleads anyone debugging a past run.
+        debugError('session-storage.readTraceEvents', error, path);
+        return [];
+      }
+    }) ?? []
+  );
 }
 
 /**

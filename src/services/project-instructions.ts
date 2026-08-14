@@ -11,18 +11,17 @@ export interface ProjectInstructionFile {
 export interface ProjectInstructionOptions {
   maxFileBytes?: number;
   maxTotalChars?: number;
+  maxTotalReadBytes?: number;
+  maxFiles?: number;
   root?: string;
 }
 
 const DEFAULT_MAX_FILE_BYTES = 32 * 1024;
 const DEFAULT_MAX_TOTAL_CHARS = 96_000;
+const DEFAULT_MAX_TOTAL_READ_BYTES = 256 * 1024;
+const DEFAULT_MAX_FILES = 128;
 
-const DIRECT_FILES = [
-  'AGENTS.md',
-  'CLAUDE.md',
-  '.orion-code/instructions.md',
-  '.cursorrules',
-];
+const DIRECT_FILES = ['AGENTS.md', 'CLAUDE.md', '.orion-code/instructions.md', '.cursorrules'];
 
 function parent(path: string): string {
   const next = dirname(path);
@@ -58,7 +57,10 @@ function directoriesFromRoot(root: string, cwd: string): string[] {
   return dirs.filter(dir => dir === resolvedRoot || !relative(resolvedRoot, dir).startsWith('..'));
 }
 
-function readTextPrefix(path: string, maxBytes: number): { content: string; truncated: boolean } | null {
+function readTextPrefix(
+  path: string,
+  maxBytes: number
+): { content: string; truncated: boolean } | null {
   try {
     const stat = statSync(path);
     if (!stat.isFile()) return null;
@@ -72,52 +74,87 @@ function readTextPrefix(path: string, maxBytes: number): { content: string; trun
   }
 }
 
-function candidateFiles(dir: string): string[] {
-  const files = DIRECT_FILES.map(file => join(dir, file));
-  const cursorRulesDir = join(dir, '.cursor', 'rules');
+interface ProjectInstructionDiscovery {
+  candidates: string[];
+  watchPaths: string[];
+}
 
-  if (existsSync(cursorRulesDir)) {
+function discoverProjectInstructionFiles(
+  root: string,
+  cwd: string,
+  maxFiles: number
+): ProjectInstructionDiscovery {
+  const candidates: string[] = [];
+  const watchPaths = new Set<string>([join(root, '.git')]);
+  const addCandidate = (path: string): void => {
+    watchPaths.add(path);
+    if (candidates.length < maxFiles && existsSync(path)) candidates.push(path);
+  };
+
+  for (const dir of directoriesFromRoot(root, cwd)) {
+    DIRECT_FILES.forEach(file => addCandidate(join(dir, file)));
+    const cursorRulesDir = join(dir, '.cursor', 'rules');
+    watchPaths.add(cursorRulesDir);
+    if (!existsSync(cursorRulesDir)) continue;
     try {
-      const ruleFiles = readdirSync(cursorRulesDir)
+      for (const file of readdirSync(cursorRulesDir)
         .filter(file => file.endsWith('.md') || file.endsWith('.mdc'))
-        .sort((a, b) => a.localeCompare(b))
-        .map(file => join(cursorRulesDir, file));
-      files.push(...ruleFiles);
+        .sort((a, b) => a.localeCompare(b))) {
+        addCandidate(join(cursorRulesDir, file));
+      }
     } catch {
       // Ignore unreadable rule directories.
     }
   }
-
-  return files;
+  return { candidates, watchPaths: [...watchPaths] };
 }
 
-export function loadProjectInstructionFiles(cwd: string, options: ProjectInstructionOptions = {}): ProjectInstructionFile[] {
-  const root = resolve(options.root ?? findProjectRoot(cwd));
+function loadDiscoveredFiles(
+  root: string,
+  discovery: ProjectInstructionDiscovery,
+  options: ProjectInstructionOptions
+): ProjectInstructionFile[] {
   const maxFileBytes = options.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
+  let remainingReadBytes = options.maxTotalReadBytes ?? DEFAULT_MAX_TOTAL_READ_BYTES;
   const files: ProjectInstructionFile[] = [];
   const seen = new Set<string>();
 
-  for (const dir of directoriesFromRoot(root, cwd)) {
-    for (const filePath of candidateFiles(dir)) {
-      const absolutePath = resolve(filePath);
-      if (seen.has(absolutePath) || !existsSync(absolutePath)) continue;
-      seen.add(absolutePath);
-
-      const read = readTextPrefix(absolutePath, maxFileBytes);
-      if (!read || !read.content.trim()) continue;
-      files.push({
-        path: relative(root, absolutePath) || absolutePath,
-        absolutePath,
-        content: read.content.trimEnd(),
-        truncated: read.truncated,
-      });
-    }
+  for (const filePath of discovery.candidates) {
+    const absolutePath = resolve(filePath);
+    if (seen.has(absolutePath) || remainingReadBytes <= 0) continue;
+    seen.add(absolutePath);
+    const readLimit = Math.min(maxFileBytes, remainingReadBytes);
+    const read = readTextPrefix(absolutePath, readLimit);
+    if (!read) continue;
+    remainingReadBytes -= Buffer.byteLength(read.content, 'utf8');
+    if (!read.content.trim()) continue;
+    files.push({
+      path: relative(root, absolutePath) || absolutePath,
+      absolutePath,
+      content: read.content.trimEnd(),
+      truncated: read.truncated,
+    });
   }
-
   return files;
 }
 
-export function renderProjectInstructions(files: ProjectInstructionFile[], options: ProjectInstructionOptions = {}): string {
+export function loadProjectInstructionFiles(
+  cwd: string,
+  options: ProjectInstructionOptions = {}
+): ProjectInstructionFile[] {
+  const root = resolve(options.root ?? findProjectRoot(cwd));
+  const discovery = discoverProjectInstructionFiles(
+    root,
+    cwd,
+    options.maxFiles ?? DEFAULT_MAX_FILES
+  );
+  return loadDiscoveredFiles(root, discovery, options);
+}
+
+export function renderProjectInstructions(
+  files: ProjectInstructionFile[],
+  options: ProjectInstructionOptions = {}
+): string {
   if (files.length === 0) return '';
 
   let remaining = options.maxTotalChars ?? DEFAULT_MAX_TOTAL_CHARS;
@@ -125,10 +162,9 @@ export function renderProjectInstructions(files: ProjectInstructionFile[], optio
 
   for (const file of files) {
     if (remaining <= 0) break;
-    let block = [
-      `## ${file.path}${file.truncated ? ' (truncated)' : ''}`,
-      file.content,
-    ].join('\n\n');
+    let block = [`## ${file.path}${file.truncated ? ' (truncated)' : ''}`, file.content].join(
+      '\n\n'
+    );
 
     if (block.length > remaining) {
       block = `${block.slice(0, Math.max(0, remaining - 32))}\n[truncated by instruction budget]`;
@@ -147,6 +183,67 @@ export function renderProjectInstructions(files: ProjectInstructionFile[], optio
   ].join('\n');
 }
 
-export function loadProjectInstructions(cwd: string, options: ProjectInstructionOptions = {}): string {
-  return renderProjectInstructions(loadProjectInstructionFiles(cwd, options), options);
+export function loadProjectInstructions(
+  cwd: string,
+  options: ProjectInstructionOptions = {}
+): string {
+  const cacheKey = [
+    resolve(cwd),
+    options.root ? resolve(options.root) : 'auto',
+    options.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES,
+    options.maxTotalChars ?? DEFAULT_MAX_TOTAL_CHARS,
+    options.maxTotalReadBytes ?? DEFAULT_MAX_TOTAL_READ_BYTES,
+    options.maxFiles ?? DEFAULT_MAX_FILES,
+  ].join('|');
+  const cached = projectInstructionCache.get(cacheKey);
+  if (cached && watchFingerprint(cached.watchPaths) === cached.fingerprint) {
+    return cached.content;
+  }
+
+  const root = resolve(options.root ?? findProjectRoot(cwd));
+  const discovery = discoverProjectInstructionFiles(
+    root,
+    cwd,
+    options.maxFiles ?? DEFAULT_MAX_FILES
+  );
+  const content = renderProjectInstructions(loadDiscoveredFiles(root, discovery, options), options);
+  projectInstructionReloads += 1;
+  projectInstructionCache.set(cacheKey, {
+    content,
+    watchPaths: discovery.watchPaths,
+    fingerprint: watchFingerprint(discovery.watchPaths),
+  });
+  return content;
+}
+
+interface CachedProjectInstructions {
+  content: string;
+  watchPaths: string[];
+  fingerprint: string;
+}
+
+const projectInstructionCache = new Map<string, CachedProjectInstructions>();
+let projectInstructionReloads = 0;
+
+function watchFingerprint(paths: string[]): string {
+  return paths
+    .map(path => {
+      try {
+        const stat = statSync(path);
+        return `${path}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+      } catch {
+        return `${path}:missing`;
+      }
+    })
+    .join('|');
+}
+
+export function clearProjectInstructionsCache(): void {
+  projectInstructionCache.clear();
+  projectInstructionReloads = 0;
+}
+
+/** Lightweight diagnostics used by doctor/tests without exposing cached content. */
+export function getProjectInstructionsCacheStats(): { entries: number; reloads: number } {
+  return { entries: projectInstructionCache.size, reloads: projectInstructionReloads };
 }

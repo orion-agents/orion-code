@@ -174,10 +174,12 @@ the waiting tool continues. A write failure denies the call.
 
 Machine-wide rules live at root `allowedTools`; project rules live under
 `projects["<absolute path>"].allowedTools`. Both sets are evaluated, and the most restrictive
-matching effect wins (`deny` > `ask` > `allow`). A durable `allow` can skip repeated prompts for
-a tool with known risk metadata, including external tools and explicit file edits, but it cannot
-auto-approve destructive shell/system operations or override a hard tool-policy denial, plan mode,
-an explicit `ask`/`deny` rule, or missing risk metadata.
+matching effect wins (`deny` > `ask` > `allow`). Choosing project or machine scope is explicit
+durable consent for that tool, so later calls skip confirmation, including destructive shell
+operations that are not hard-blocked by the command safety policy. AUTO skips all interactive
+permission prompts and authorizes every invocation after hard tool-policy and explicit `deny`
+checks. PLAN exposes the same tool registry as BUILD and inherits the independently selected
+permission policy, including durable project or machine grants.
 
 ```json
 {
@@ -203,8 +205,8 @@ an explicit `ask`/`deny` rule, or missing risk metadata.
 - Interactive persistent choices add an exact tool rule such as `allow:exec_command`; edit
   `~/.orion-code/orion.json` to audit or revoke a stored rule. `/permissions show` reports the
   active machine-wide and project rule counts.
-- `allow` only skips an interactive confirmation. It never overrides a tool's own `deny`,
-  never escapes plan mode, and never applies when risk metadata is missing.
+- `allow` skips an interactive confirmation. It never overrides a tool's own `deny`, an explicit
+  allowlist `deny`, workspace containment, sandbox restrictions, or hard command safety policy.
 - Malformed entries are ignored and listed by `/config` rather than silently applied.
 
 ### Shell execution sandbox (`sandbox`)
@@ -251,29 +253,29 @@ backend is probed at runtime and a configured-but-unusable sandbox **fails close
 
 ## Interactive Commands
 
-| Command                | Description                                                                |
-| ---------------------- | -------------------------------------------------------------------------- |
-| `/help`                | Show help                                                                  |
-| `/goal`                | Create, inspect, pause, resume, replace, budget, or exit a persistent goal |
-| `/plan [task]`         | Explore read-only, save a plan, then restore the previous agent mode       |
-| `/status`              | System status                                                              |
-| `/model`               | View or switch models                                                      |
-| `/effort`              | View or change supported reasoning effort                                  |
-| `/permissions`         | View or change tool confirmation and edit policy                           |
-| `/config`              | Show configuration                                                         |
-| `/usage`               | Token usage and cost                                                       |
-| `/compact`             | Trigger context compact                                                    |
-| `/session`             | List, inspect, or rename sessions                                          |
-| `/resume`              | Resume last session                                                        |
-| `/memory`              | Memory status, reference validation, and semantic reindexing               |
-| `/skills`              | List loaded skills                                                         |
-| `/mcp`                 | MCP server status                                                          |
-| `/doctor`              | Run diagnostics                                                            |
-| `/diff`                | Workspace diff                                                             |
-| `/commit-plan`         | Create a read-only commit plan                                             |
-| `/clear`               | Clear screen                                                               |
-| `/context clear --yes` | Clear in-memory model context; preserve the saved session                  |
-| `/exit`                | Exit                                                                       |
+| Command                | Description                                                                 |
+| ---------------------- | --------------------------------------------------------------------------- |
+| `/help`                | Show help                                                                   |
+| `/goal`                | Create, inspect, pause, resume, replace, budget, or exit a persistent goal  |
+| `/plan [task]`         | Plan with normal tool access, save it, then restore the previous agent mode |
+| `/status`              | System status                                                               |
+| `/model`               | View or switch models                                                       |
+| `/effort`              | View or change supported reasoning effort                                   |
+| `/permissions`         | View or change tool confirmation and edit policy                            |
+| `/config`              | Show configuration                                                          |
+| `/usage`               | Token usage and cost                                                        |
+| `/compact`             | Trigger context compact                                                     |
+| `/session`             | List, inspect, or rename sessions                                           |
+| `/resume`              | Resume last session                                                         |
+| `/memory`              | Memory status, reference validation, and semantic reindexing                |
+| `/skills`              | List loaded skills                                                          |
+| `/mcp`                 | MCP server status                                                           |
+| `/doctor`              | Run diagnostics                                                             |
+| `/diff`                | Workspace diff                                                              |
+| `/commit-plan`         | Create a read-only commit plan                                              |
+| `/clear`               | Clear screen                                                                |
+| `/context clear --yes` | Clear in-memory model context; preserve the saved session                   |
+| `/exit`                | Exit                                                                        |
 
 Agent modes are TUI actions: use `Shift+Tab` to cycle `BUILD → PLAN → AUTO`; `/mode` and `/perm`
 are not registered commands. The remaining deprecated spellings keep their v0.3.0 compatibility
@@ -291,8 +293,10 @@ scheduled for removal in v0.2.0.
 
 Use `/plan` to arm planning for the next message, `/plan <task>` to start immediately, or press
 `Shift+Tab` to cycle `BUILD → PLAN → AUTO → BUILD` while preserving the draft. Orion allows
-read-only repository exploration and blocks edits, mutating commands, and external actions during
-the planning request. When the plan is decision-complete, the model calls `exit_plan_mode` once;
+the complete tool registry in every Agent mode. PLAN never blocks a call solely because of the
+mode: writes, commands, and external tools use the current `/permissions` policy and reusable
+project/machine grants. Explicit denies, workspace containment, sandboxing, and hard safety rules
+remain enforced. When the plan is decision-complete, the model calls `exit_plan_mode` once;
 Orion saves it, exits Plan, and starts implementation in a separate logical request. Base modes are
 changed only with `Shift+Tab`; the retired `/mode` and `/perm` commands are not compatibility entry
 points. Auto runs without permission or clarification prompts, while hard safety policies and
@@ -317,12 +321,17 @@ promise multi-Goal scheduling or unattended background execution.
 
 After a completion audit passes, Orion automatically clears the session's active Goal binding,
 returns the TUI to its current BUILD/PLAN/AUTO base mode, and retains the terminal Goal sidecar as
-the durable completion receipt. Use `/goal exit` to abandon before completion: it aborts the active
+the durable completion receipt. A trailing lifecycle clause such as `测试一轮，然后退出目标模式`
+is separated from the auditable work: Orion verifies `测试一轮`, then performs the same runtime-owned
+automatic exit after the audit passes. It is not treated as an impossible success criterion. Use
+`/goal exit` to abandon before completion: it aborts the active
 turn, rejects pending permission requests, and removes the persisted Goal. Explicit natural-language
 requests such as `exit goal mode` or `退出 goal 模式` route through the same deterministic runtime
-boundary. Rejected completion requests
+boundary. Session binding and Goal-sidecar cleanup fail closed as one lifecycle operation; Orion
+never reports a successful exit after only one persisted object changed. Rejected completion requests
 cannot be retried in the same turn until new runtime evidence exists, and autonomous continuation
-turns have stricter model/tool budgets than fresh user turns. The old `/goal clear --yes` and
+turns have stricter model/tool budgets than fresh user turns. Two consecutive blocked autonomous
+continuations pause for review instead of spending the full continuation window. The old `/goal clear --yes` and
 `/target clear --yes` syntax is intentionally unsupported in v0.1.6.
 
 ## Migration from OpenHorse

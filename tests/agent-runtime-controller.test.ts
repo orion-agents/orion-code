@@ -22,6 +22,7 @@ import {
 import {
   appendSessionMessage,
   appendSessionMessages,
+  clearSessionGoalBinding,
   createSession,
   loadSessionCompactCheckpoint,
   loadSessionHistory,
@@ -1299,12 +1300,6 @@ describe('AgentRuntimeController', () => {
 
   test.each([
     {
-      label: 'plan mode',
-      mode: 'plan' as const,
-      allowedTools: undefined,
-      expectedReason: /plan mode/i,
-    },
-    {
       label: 'project deny rule',
       mode: 'default' as const,
       allowedTools: ['deny:exec_command(*)'],
@@ -1358,6 +1353,46 @@ describe('AgentRuntimeController', () => {
       expect(store.getSnapshot().lastLoopStats).toMatchObject({
         finishReason: 'blocked',
         toolCalls: 0,
+        localFastPathUsed: true,
+      });
+    });
+  });
+
+  it('runs the local exec fast path in PLAN with a reusable project grant', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      mkdirSync(projectDir, { recursive: true });
+      saveProjectConfig(projectDir, { allowedTools: ['allow:exec_command'] });
+      const config = loadConfig({ apiKey: 'test-key', model: 'test-model' });
+      const store = new Store({ config, tools: TOOLS, currentModel: 'test-model' });
+      store.setAgentMode('plan');
+      const llm = {
+        getModel: jest.fn(() => 'test-model'),
+        chatStream: jest.fn(async () => ({ content: 'should not run', model: 'test-model' })),
+      };
+      const runtime = createRuntime({
+        cwd: projectDir,
+        config,
+        store,
+        llm: llm as any,
+        isConfigured: true,
+        ensureSession: jest.fn(() => null as never),
+        getSession: jest.fn(() => null),
+      });
+      const { events, appended } = createEvents();
+      const controller = new AgentChatController(runtime, events);
+
+      await controller.runInput('run test: printf PLAN_FAST_PATH > plan-fast.txt', {
+        persistAsUserMessage: false,
+      });
+
+      expect(llm.chatStream).not.toHaveBeenCalled();
+      expect(readFileSync(join(projectDir, 'plan-fast.txt'), 'utf8')).toBe('PLAN_FAST_PATH');
+      expect(appended).toEqual(
+        expect.arrayContaining([expect.objectContaining({ role: 'tool', title: 'local' })])
+      );
+      expect(store.getSnapshot().lastLoopStats).toMatchObject({
+        finishReason: 'completed',
+        toolCalls: 1,
         localFastPathUsed: true,
       });
     });
@@ -5870,6 +5905,7 @@ describe('AgentRuntimeController', () => {
       const coordinator = new GoalCoordinator(projectDir, session.id);
       expect(coordinator.create('Goal that the user can exit')).toEqual({ ok: true });
       const goalId = coordinator.goal!.goalId;
+      updateSessionGoalBinding(session.id, coordinator.goal);
       controller.setGoalCoordinator(coordinator);
 
       expect(controller.submit('continue goal work')).toEqual({ type: 'started' });
@@ -5878,6 +5914,8 @@ describe('AgentRuntimeController', () => {
 
       expect(runner.calls[0].signal?.aborted).toBe(true);
       expect(coordinator.goal).toBeNull();
+      expect(loadSessionMeta(session.id)?.activeGoalId).toBeUndefined();
+      expect(goalStorage.loadGoal(projectDir, session.id)).toMatchObject({ error: 'not_found' });
       expect(appended).toEqual(
         expect.arrayContaining([expect.objectContaining({ role: 'user', content: '退出goal模式' })])
       );
@@ -5887,6 +5925,49 @@ describe('AgentRuntimeController', () => {
 
       runner.calls[0].resolve();
       await controller.waitForIdle();
+    });
+  });
+
+  it('fails closed without deleting the sidecar when explicit exit cannot clear the session binding', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      mkdirSync(projectDir, { recursive: true });
+      const session = createSession(projectDir, 'test-model');
+      const runtime = createRuntime({
+        cwd: projectDir,
+        ensureSession: jest.fn(() => session),
+        getSession: jest.fn(() => session),
+      });
+      const runner = createDeferredRunner();
+      const { events, goalEvents } = createEvents();
+      const controller = new AgentRuntimeController({ runtime, events, runner });
+      const coordinator = new GoalCoordinator(projectDir, session.id);
+      expect(coordinator.create('Keep Goal durable on binding failure')).toEqual({ ok: true });
+      updateSessionGoalBinding(session.id, coordinator.goal);
+      const goalId = coordinator.goal!.goalId;
+      controller.setGoalCoordinator(coordinator);
+      const clearSpy = jest
+        .spyOn(require('../src/services/session-storage'), 'clearSessionGoalBinding')
+        .mockReturnValue(null);
+
+      try {
+        expect(controller.submit('/goal exit')).toEqual({ type: 'command_handled' });
+      } finally {
+        clearSpy.mockRestore();
+      }
+
+      expect(coordinator.goal).toMatchObject({
+        goalId,
+        status: 'paused',
+        stopReason: { kind: 'runtime_error', message: expect.stringContaining('was not found') },
+      });
+      expect(goalStorage.loadGoal(projectDir, session.id)).toMatchObject({
+        ok: true,
+        value: expect.objectContaining({ goalId }),
+      });
+      expect(loadSessionMeta(session.id)?.activeGoalId).toBe(goalId);
+      expect(goalEvents).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ type: 'goal_cleared', goalId })])
+      );
     });
   });
 
@@ -5945,6 +6026,57 @@ describe('AgentRuntimeController', () => {
         },
       });
       expect(goalEvents).toHaveLength(3);
+    });
+  });
+
+  it('restores an unfinished Goal binding after a crash between explicit-exit persistence steps', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      mkdirSync(projectDir, { recursive: true });
+      const session = createSession(projectDir, 'test-model');
+      const coordinator = new GoalCoordinator(projectDir, session.id);
+      expect(coordinator.create('Recover interrupted explicit Goal exit')).toEqual({ ok: true });
+      updateSessionGoalBinding(session.id, coordinator.goal);
+      const goalId = coordinator.goal!.goalId;
+
+      // Simulate a process dying after clearSessionGoalBinding() committed but
+      // before the matching sidecar delete. The durable sidecar must win.
+      expect(clearSessionGoalBinding(session.id, goalId)?.activeGoalId).toBeUndefined();
+      expect(goalStorage.loadGoal(projectDir, session.id)).toMatchObject({
+        ok: true,
+        value: expect.objectContaining({ goalId, status: 'active' }),
+      });
+
+      const runtime = createRuntime({
+        cwd: projectDir,
+        ensureSession: jest.fn(() => session),
+        getSession: jest.fn(() => session),
+      });
+      const { events, goalEvents } = createEvents();
+      const controller = new AgentRuntimeController({
+        runtime,
+        events,
+        runner: createDeferredRunner(),
+      });
+      const controllerSink = (controller as unknown as { eventSink: AgentRuntimeEventSink })
+        .eventSink;
+
+      controllerSink.emit({
+        type: 'session_restored',
+        event: {
+          sessionId: session.id,
+          projectPath: projectDir,
+          model: 'test-model',
+          restoredMessages: 0,
+        },
+      });
+
+      expect(loadSessionMeta(session.id)?.activeGoalId).toBe(goalId);
+      expect(goalEvents).toEqual([
+        expect.objectContaining({
+          type: 'goal_restored',
+          goal: expect.objectContaining({ goalId, status: 'paused' }),
+        }),
+      ]);
     });
   });
 

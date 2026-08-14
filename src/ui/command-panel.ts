@@ -22,15 +22,17 @@ import { stripAnsi, visualWidth } from './shared/text';
 const NO_COLOR = process.env.NO_COLOR !== undefined || process.env.TERM === 'dumb';
 
 // 如果 NO_COLOR 设置，使用无颜色的 chalk
-const colorize = NO_COLOR ? {
-  accent: (s: string) => s,
-  dim: (s: string) => s,
-  selected: (s: string) => s,
-} : {
-  accent: chalk.hex('#00D4AA'),
-  dim: chalk.dim,
-  selected: chalk.bgHex('#1E293B').hex('#E2E8F0'),
-};
+const colorize = NO_COLOR
+  ? {
+      accent: (s: string) => s,
+      dim: (s: string) => s,
+      selected: (s: string) => s,
+    }
+  : {
+      accent: chalk.hex('#00D4AA'),
+      dim: chalk.dim,
+      selected: chalk.bgHex('#1E293B').hex('#E2E8F0'),
+    };
 
 const ACCENT = colorize.accent;
 const DIM = colorize.dim;
@@ -63,16 +65,34 @@ export function setInputStatusText(statusText: string): void {
 // ============================================================================
 
 let terminalWidth = process.stdout.columns || 80;
+let resizeListenerAttached = false;
+let pendingResizeRender: NodeJS.Immediate | null = null;
 
-// 监听终端大小变化
-if (process.stdout.isTTY) {
-  process.stdout.on('resize', () => {
-    terminalWidth = process.stdout.columns || 80;
-    // 如果面板可见，重新渲染
-    if (state.visible) {
-      render();
-    }
+const handleTerminalResize = (): void => {
+  terminalWidth = process.stdout.columns || 80;
+  if (!state.visible || pendingResizeRender) return;
+  pendingResizeRender = setImmediate(() => {
+    pendingResizeRender = null;
+    if (state.visible) render();
   });
+};
+
+function attachResizeListener(): void {
+  terminalWidth = process.stdout.columns || 80;
+  if (!process.stdout.isTTY || resizeListenerAttached) return;
+  process.stdout.on('resize', handleTerminalResize);
+  resizeListenerAttached = true;
+}
+
+function detachResizeListener(): void {
+  if (resizeListenerAttached) {
+    process.stdout.off('resize', handleTerminalResize);
+    resizeListenerAttached = false;
+  }
+  if (pendingResizeRender) {
+    clearImmediate(pendingResizeRender);
+    pendingResizeRender = null;
+  }
 }
 
 // ============================================================================
@@ -114,6 +134,7 @@ let pendingCommand: string | null = null;
  * @param filter 过滤字符串（不含 "/"）
  */
 export function showCommandPanel(filter: string = ''): void {
+  attachResizeListener();
   state.visible = true;
   state.filter = filter;
   state.selectedIndex = 0;
@@ -134,6 +155,13 @@ export function hideCommandPanel(): void {
     state.moreCount = 0;
     state.totalMatches = 0;
   }
+  detachResizeListener();
+}
+
+/** Release process listeners when a renderer is disposed. */
+export function disposeCommandPanel(): void {
+  hideCommandPanel();
+  detachResizeListener();
 }
 
 /**
@@ -255,14 +283,14 @@ function render(): void {
   panelHeight = lines.length;
 
   // 使用更安全的渲染方式：保存光标位置，清除下方区域，写入面板，恢复光标
-  process.stdout.write('\x1b7');  // 保存光标位置
+  process.stdout.write('\x1b7'); // 保存光标位置
 
   if (panelOffset > 0) {
     process.stdout.write(`\x1b[${panelOffset}B\r`);
   }
 
   // 清除从面板起点到屏幕底部的内容（不移动输入光标）
-  process.stdout.write('\x1b[J');  // 清除从光标到屏幕底部
+  process.stdout.write('\x1b[J'); // 清除从光标到屏幕底部
 
   // 现在写入面板内容
   for (let index = 0; index < lines.length; index++) {
@@ -399,10 +427,7 @@ function redrawFramedInput(input: string, modeIndicator: string): void {
   }
 
   const context = inputRenderContextProvider();
-  const frameInput = [
-    ...(context.prefixLines || []),
-    input,
-  ].join('\n');
+  const frameInput = [...(context.prefixLines || []), input].join('\n');
   const frame = renderFramedInputFrame({
     input: frameInput,
     modeIndicator,

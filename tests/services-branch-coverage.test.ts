@@ -628,11 +628,19 @@ describe('services branch coverage: web-search adapters', () => {
     );
   });
 
-  test('runs Brave with clamped limits and alternate result fields', async () => {
+  test('runs Brave with bounded limits and alternate result fields', async () => {
     await expect(runWebSearchAdapters({ query: 'q', limit: 1 }, 'brave')).rejects.toThrow(
       'Brave search is not configured'
     );
     process.env.BRAVE_API_KEY = 'brave-key';
+    await expect(runWebSearchAdapters({ query: 'q', limit: 0 }, 'brave')).rejects.toThrow(
+      'safe integer between 1 and 20'
+    );
+    await expect(runWebSearchAdapters({ query: 'q', limit: 99 }, 'brave')).rejects.toThrow(
+      'safe integer between 1 and 20'
+    );
+    expect(global.fetch).not.toHaveBeenCalled();
+
     (global.fetch as jest.Mock)
       .mockResolvedValueOnce(
         jsonResponse({
@@ -645,9 +653,9 @@ describe('services branch coverage: web-search adapters', () => {
         jsonResponse({ organic_results: [{ heading: 'H', uri: 'https://h', summary: 'S' }] })
       )
       .mockResolvedValueOnce(new Response('bad', { status: 500 }));
-    await runWebSearchAdapters({ query: 'q', limit: 0 }, 'brave');
+    await runWebSearchAdapters({ query: 'q', limit: 1 }, 'brave');
     expect(String((global.fetch as jest.Mock).mock.calls[0][0])).toContain('count=1');
-    await runWebSearchAdapters({ query: 'q', limit: 99 }, 'brave');
+    await runWebSearchAdapters({ query: 'q', limit: 20 }, 'brave');
     expect(String((global.fetch as jest.Mock).mock.calls[1][0])).toContain('count=20');
     await expect(runWebSearchAdapters({ query: 'q', limit: 1 }, 'brave')).rejects.toThrow(
       'HTTP 500 bad'
@@ -872,7 +880,7 @@ describe('services branch coverage: WebSearch MCP', () => {
     }
   );
 
-  test('normalizes text, structured, and raw tool outputs and omits nonpositive limits', async () => {
+  test('normalizes text, structured, and raw tool outputs and rejects nonpositive limits', async () => {
     global.fetch = rpcFetch(
       [{ name: 'search', inputSchema: { properties: { query: {}, limit: {} } } }],
       {
@@ -883,13 +891,14 @@ describe('services branch coverage: WebSearch MCP', () => {
         ],
       }
     );
-    await expect(
-      new WebSearchMcpClient({
-        endpoint: 'https://mcp.example',
-        authType: 'none',
-        provider: 'p',
-      }).search('q', 0)
-    ).resolves.toMatchObject({
+    const textClient = new WebSearchMcpClient({
+      endpoint: 'https://mcp.example',
+      authType: 'none',
+      provider: 'p',
+    });
+    await expect(textClient.search('q', 0)).rejects.toThrow('safe integer between 1 and 20');
+    expect(global.fetch).not.toHaveBeenCalled();
+    await expect(textClient.search('q', 1)).resolves.toMatchObject({
       output: 'one\ntwo',
       provider: 'p',
       toolName: 'search',

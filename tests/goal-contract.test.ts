@@ -15,6 +15,7 @@ import {
   buildContinuationInstruction,
   buildGoalContextFragment,
 } from '../src/runtime/goals/prompt';
+import { normalizeGoalObjective } from '../src/runtime/goals/objective';
 import { goalTransition } from '../src/runtime/goals/types';
 import type {
   AgentTurnOutcome,
@@ -52,6 +53,72 @@ describe('Goal contract creation', () => {
     expect(primary.statement).toBe('Fix the login bug');
     expect(primary.requiredEvidenceKinds.length).toBeGreaterThan(0);
     expect(primary.evidenceRefs).toEqual([]);
+  });
+
+  it.each([
+    ['push仓库，然后退出goal模式', 'push仓库'],
+    ['测试一下目标模式，然后退出', '测试一下目标模式'],
+    ['测试目标模式，测试1轮后，退出目标模式', '测试目标模式，测试1轮'],
+    ['测试目标模式并自动退出目标模式', '测试目标模式'],
+    ['Run focused tests, then exit goal mode.', 'Run focused tests'],
+    ['Implement the fix and exit the active goal mode', 'Implement the fix'],
+  ])('separates a trailing completion lifecycle action: %s', (input, executableObjective) => {
+    expect(coord.create(input)).toEqual({ ok: true });
+    expect(coord.goal?.objective).toBe(executableObjective);
+    expect(coord.goal?.contract).toMatchObject({
+      originalObjective: input,
+      completionAction: 'exit_goal',
+      successCriteria: [expect.objectContaining({ statement: executableObjective })],
+    });
+
+    if (coord.goal?.status === 'paused') {
+      expect(coord.goal.boundaryConfirmation?.requiredAt).toEqual(expect.any(Number));
+      expect(
+        coord.resume({
+          confirmBoundary: true,
+          expectedGoalId: coord.goal.goalId,
+          expectedRevision: coord.goal.revision,
+        })
+      ).toBe(true);
+    }
+    const prompt = buildGoalContextFragment(coord.goal);
+    expect(prompt?.text).toContain(
+      'Completion action: exit Goal mode automatically after the completion audit passes.'
+    );
+    expect(prompt?.text).toContain('Do not call abandon_goal to satisfy it');
+  });
+
+  it('does not treat exit wording used as a subject as a lifecycle action', () => {
+    const objective = 'Fix the exit goal mode button and its tests';
+    expect(normalizeGoalObjective(objective)).toEqual({
+      originalObjective: objective,
+      objective,
+    });
+  });
+
+  it('does not infer an omitted Goal object without explicit Goal-mode context', () => {
+    const objective = '完成任务，然后退出';
+    expect(normalizeGoalObjective(objective)).toEqual({
+      originalObjective: objective,
+      objective,
+    });
+  });
+
+  it('teaches Goal-mode self-tests to use same-turn runtime evidence instead of echo', () => {
+    expect(coord.create('测试一下目标模式，然后退出')).toEqual({ ok: true });
+
+    const prompt = buildGoalContextFragment(coord.goal);
+
+    expect(prompt?.text).toContain('get_goal and update_goal_plan calls are runtime evidence');
+    expect(prompt?.text).toContain('call get_goal again in the same turn');
+    expect(prompt?.text).toContain('echo/printf output is not verification evidence');
+  });
+
+  it('rejects an exit-only phrase as an auditable Goal objective', () => {
+    expect(coord.create('退出 goal 模式')).toEqual({
+      ok: false,
+      error: 'Goal exit is a lifecycle command, not an objective. Use /goal exit.',
+    });
   });
 
   it.each([
@@ -402,6 +469,43 @@ describe('Goal contract creation', () => {
     expect(restarted.goal?.status).toBe('paused');
     expect(restarted.goal?.recentNoProgressTurns).toEqual(coord.goal!.recentNoProgressTurns);
     expect(restarted.goal?.stopReason).toEqual(coord.goal!.stopReason);
+  });
+
+  it('pauses after two blocked autonomous continuations instead of burning the full streak', () => {
+    coord.create('Resolve an external dependency or stop for review');
+    const finalizeBlocked = (turnId: string) => {
+      const goal = coord.goal!;
+      coord.finalizeTurn({
+        turnId,
+        inputKind: 'goal_continuation',
+        sessionId: goal.sessionId,
+        goalId: goal.goalId,
+        goalRevision: goal.revision,
+        goalGeneration: coord.generation,
+        startedAt: 10,
+        endedAt: 20,
+        finishReason: 'blocked',
+        usage: { promptTokens: 1, completionTokens: 1, subagentTokens: 0, totalTokens: 2 },
+        usageComplete: true,
+        madeProgress: false,
+        workspaceChanged: false,
+        evidenceRecords: [],
+      });
+    };
+
+    finalizeBlocked('blocked-auto-1');
+    expect(coord.goal?.status).toBe('active');
+    finalizeBlocked('blocked-auto-2');
+
+    expect(coord.goal).toMatchObject({
+      status: 'paused',
+      automaticContinuationStreak: 2,
+      noProgressCount: 2,
+      stopReason: {
+        kind: 'user',
+        message: expect.stringContaining('2 blocked autonomous continuations'),
+      },
+    });
   });
 
   it('resets no-progress only for stable step completion or an objective-traceable criterion', () => {
@@ -759,6 +863,20 @@ describe('edit() preserves originalObjective', () => {
     expect(coord.goal!.contract!.originalObjective).toBe('Original objective wording');
   });
 
+  it('persists a completion action even when an edit keeps the executable objective unchanged', () => {
+    const revision = coord.goal!.contract!.objectiveRevision;
+
+    expect(coord.edit('Original objective wording, then exit goal mode')).toBe(true);
+
+    expect(coord.goal).toMatchObject({
+      objective: 'Original objective wording',
+      contract: {
+        completionAction: 'exit_goal',
+        objectiveRevision: revision + 1,
+      },
+    });
+  });
+
   it('records edit time and reason while resetting the primary criterion', () => {
     const changedAtFloor = Date.now();
     coord.goal!.contract!.successCriteria[0].status = 'passed';
@@ -859,6 +977,77 @@ describe('v0.1.1 sidecar normalization', () => {
     expect(coord.goal!.contract!.originalObjective).toBe('Legacy objective');
     expect(coord.goal!.contract!.successCriteria.length).toBeGreaterThan(0);
     expect(coord.goal!.contract!.successCriteria[0].status).toBe('pending');
+  });
+
+  it('migrates a paused legacy exit clause out of the auditable criterion on load', () => {
+    const { saveGoal } = require('../src/services/goal-storage');
+    const project = `/tmp/test-contract-exit-migration-${randomUUID()}`;
+    const sessionId = 'legacy-exit-clause';
+    const originalObjective = '测试一下目标模式，然后退出';
+    const goal: SessionGoalV1 = {
+      version: 1,
+      goalId: 'legacy-exit-goal',
+      sessionId,
+      revision: 4,
+      objective: originalObjective,
+      status: 'paused',
+      tokensUsed: 500,
+      timeUsedMs: 1000,
+      createdAt: 1000,
+      updatedAt: 2000,
+      continuationCount: 5,
+      automaticContinuationStreak: 5,
+      noProgressCount: 3,
+      contract: {
+        originalObjective,
+        objectiveRevision: 0,
+        constraints: [],
+        successCriteria: [
+          {
+            id: 'criterion:primary',
+            statement: originalObjective,
+            source: 'user',
+            status: 'failed',
+            requiredEvidenceKinds: ['test'],
+            evidenceRefs: [],
+          },
+        ],
+        planSnapshot: {
+          revision: 2,
+          phase: 'verification',
+          steps: [],
+          nextAction: '退出目标模式无法验证',
+          updatedAt: 2000,
+        },
+      },
+      completionAudit: {
+        requestedAt: 1900,
+        auditedAt: 2000,
+        passed: false,
+        verificationSummary: 'exit clause could not be proven',
+        remainingRequirements: [originalObjective],
+        evidenceRefs: [],
+      },
+    };
+    expect(saveGoal(project, sessionId, goal).ok).toBe(true);
+
+    const restored = new GoalCoordinator(project, sessionId);
+    expect(restored.load()).toBe(true);
+    expect(restored.goal).toMatchObject({
+      objective: '测试一下目标模式',
+      contract: {
+        originalObjective,
+        completionAction: 'exit_goal',
+        successCriteria: [
+          expect.objectContaining({ statement: '测试一下目标模式', status: 'pending' }),
+        ],
+        planSnapshot: {
+          phase: 'execution',
+          nextAction: 'Verify and complete: 测试一下目标模式',
+        },
+      },
+    });
+    expect(restored.goal?.completionAudit).toBeUndefined();
   });
 
   it('a goal that already has a contract is not rewritten on load', () => {

@@ -19,6 +19,8 @@ import {
   formatTerminalSessionRestored,
   formatTerminalSessionPickerHeader,
   formatTerminalSessionPickerItem,
+  formatTerminalModelPickerHeader,
+  formatTerminalModelPickerItem,
   formatTerminalStatusMessage,
   inferTerminalErrorLayer,
   normalizeTerminalAnswer,
@@ -571,6 +573,43 @@ describe('terminal UI renderer adapter', () => {
     expect(plain).toContain('page 12/30');
   });
 
+  it('sanitizes control sequences from session and model picker fields', () => {
+    const sessionRow = formatTerminalSessionPickerItem({
+      session: {} as never,
+      globalIndex: 1,
+      sessionId: 'session-1',
+      shortId: 'safe\x1b[2J-id',
+      title: 'task\x9b31m-owned',
+      messageCount: 2,
+      historySizeBytes: 100,
+      model: 'model\x1b]0;hijack\x07',
+      projectPath: '/tmp/project\x9d0;title\x9c',
+      showProject: true,
+    });
+    const modelRow = formatTerminalModelPickerItem({
+      model: { name: 'safe-model' },
+      name: 'safe\x1b[2J-model',
+      value: 'safe-model',
+      alias: 'alias\x9b31m-owned',
+      provider: 'provider\x1b]0;hijack\x07',
+      isCurrent: true,
+      label: 'safe-model',
+      description: '',
+    });
+    const headers = [
+      formatTerminalSessionPickerHeader('Sessions\x1b[2J-owned', 1, 1),
+      formatTerminalModelPickerHeader('Models\x9b31m-owned', 1, 1),
+    ].join('\n');
+    const rendered = `${sessionRow}\n${modelRow}\n${headers}`;
+
+    expect(rendered).not.toContain('\x1b[2J');
+    expect(rendered).not.toContain('\x1b]0;');
+    expect(rendered).not.toContain('\x9b');
+    expect(rendered).not.toContain('\x9d');
+    expect(stripAnsi(rendered)).toContain('safe-id');
+    expect(stripAnsi(rendered)).toContain('safe-model');
+  });
+
   it('keeps session picker output within narrow terminal widths', () => {
     const { sink, writes } = makeTerminalSink();
 
@@ -1053,6 +1092,40 @@ describe('terminal UI renderer adapter', () => {
     expect(status).toContain('...');
   });
 
+  it('strips ESC and C1 lifecycle controls from terminal status lines', () => {
+    const status = formatTerminalStatusMessage('Working\x1b[2J: safe\x9b31m-status\x9d0;title\x9c');
+
+    expect(status).toBe('Working: safe-status');
+    expect(status).not.toMatch(/[\x1b\x80-\x9f]/u);
+  });
+
+  it('sanitizes Goal and research lifecycle fields at the terminal sink boundary', () => {
+    const { sink, writes } = makeTerminalSink();
+    sink.goalEvent({
+      type: 'goal_plan_updated',
+      goalId: 'goal-1',
+      planRevision: 2,
+      phase: 'execution',
+      nextAction: 'continue\x1b[2J-safe\x9b31m-now',
+    });
+    sink.researchEvent({
+      type: 'research_source',
+      packetId: 'packet-1',
+      sourceId: 'source\x9b31m-safe',
+      status: 'retrieved',
+      provider: 'provider\x1b]0;hijack\x07',
+      displayUrl: 'https://example.test/\x9d0;title\x9c',
+    });
+    const output = writes.join('');
+
+    expect(output).not.toContain('\x1b[2J');
+    expect(output).not.toContain('\x1b]0;');
+    expect(output).not.toContain('\x9b');
+    expect(output).not.toContain('\x9d');
+    expect(stripAnsi(output)).toContain('continue-safe-now');
+    expect(stripAnsi(output)).toContain('provider=provider');
+  });
+
   it('bounds emitted terminal status lines to the active terminal width', () => {
     const { sink, writes } = makeTerminalSink();
 
@@ -1525,6 +1598,26 @@ describe('terminal UI multiline composer', () => {
     const composer = new TerminalInputComposer();
 
     expect(composer.receive('/help')).toEqual({ input: '/help' });
+  });
+
+  it('cancels multiline input that exceeds the shared byte budget', () => {
+    const composer = new TerminalInputComposer();
+    composer.receive('/paste');
+    const result = composer.receive('x'.repeat(256 * 1024 + 1));
+
+    expect(result).toMatchObject({ cancelled: true });
+    expect(result.notice).toContain('256 KiB');
+    expect(result.notice).toContain('/edit');
+    expect(composer.isActive()).toBe(false);
+  });
+
+  it('cancels multiline input with too many small lines', () => {
+    const composer = new TerminalInputComposer();
+    composer.receive('/paste');
+    for (let index = 0; index < 10_000; index++) composer.receive('x');
+
+    expect(composer.receive('overflow')).toMatchObject({ cancelled: true });
+    expect(composer.isActive()).toBe(false);
   });
 });
 

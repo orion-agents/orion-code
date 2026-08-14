@@ -170,14 +170,45 @@ describe('prepareToolCalls', () => {
     expect(JSON.parse(calls[0].function.arguments)).toEqual({ path: 'a.ts', extra: true });
   });
 
-  test('handles invalid JSON arguments gracefully', () => {
-    const calls = toolCalls(['read_file']);
-    calls[0].function.arguments = 'not json at all';
+  test.each(['not json at all', 'null', '[]', '"path"'])(
+    'rejects invalid or non-object tool arguments before policy and tracking: %s',
+    async rawArguments => {
+      const calls = toolCalls(['read_file']);
+      calls[0].function.arguments = rawArguments;
+      const toolExecutor = jest.fn(async () => JSON.stringify({ success: true, output: 'unsafe' }));
+      const startApproach = jest.fn(() => 'attempt');
+      const addToolToTracker = jest.fn();
+      const harnessDriftCheck = jest.fn(() => ({ status: 'warn' as const }));
 
-    const prepared = prepareToolCalls({ toolCalls: calls, tools, toolExecutor: async () => '' });
+      const prepared = prepareToolCalls({
+        toolCalls: calls,
+        tools,
+        toolExecutor,
+        toolContext,
+        startApproach,
+        addToolToTracker,
+        harnessDriftCheck,
+      });
 
-    expect(prepared[0].args).toEqual({});
-  });
+      expect(prepared[0]).toMatchObject({
+        args: {},
+        canRunConcurrently: false,
+      });
+      expect(prepared[0].argumentError).toMatch(
+        /arguments (are not valid JSON|must be a JSON object)/
+      );
+      expect(startApproach).not.toHaveBeenCalled();
+      expect(addToolToTracker).not.toHaveBeenCalled();
+      expect(harnessDriftCheck).not.toHaveBeenCalled();
+
+      const results = [];
+      for await (const result of executeToolCalls(prepared, { toolExecutor })) {
+        results.push(result);
+      }
+      expect(toolExecutor).not.toHaveBeenCalled();
+      expect(results[0]).toMatchObject({ success: false, strategyResult: 'failed' });
+    }
+  );
 
   test('serializes drift blocks while warn results preserve safe concurrency', () => {
     const warning = prepareToolCalls({
@@ -654,35 +685,51 @@ describe('permission mode semantics for ask tools', () => {
     return { results, prepared };
   };
 
-  test('plan mode blocks ask tools and never executes them', async () => {
+  test('legacy plan permission follows the normal confirmation policy for external tools', async () => {
     const executed: string[] = [];
+    let prompted = 0;
     const { results } = await runOne('web_search', {
       permissionMode: 'plan',
-      toolConfirmation: 'allow',
+      toolConfirmation: 'ask',
+      confirmToolUse: async () => {
+        prompted++;
+        return true;
+      },
       onExec: n => executed.push(n),
     });
 
-    expect(executed).toEqual([]);
-    expect(results[0].success).toBe(false);
-    expect(results[0].error).toContain('blocked in plan mode');
+    expect(prompted).toBe(1);
+    expect(executed).toEqual(['web_search']);
+    expect(results[0].success).toBe(true);
     expect(results[0].permissionDecision).toMatchObject({
       behavior: 'ask',
-      approved: false,
-      source: 'plan_mode',
+      approved: true,
+      source: 'user',
       reason: 'External query',
     });
   });
 
-  test('plan mode blocks file-edit tools too', async () => {
+  test('legacy plan permission confirms and runs file-edit tools', async () => {
     const executed: string[] = [];
+    let prompted = 0;
     const { results } = await runOne('write_file', {
       permissionMode: 'plan',
+      toolConfirmation: 'ask',
+      confirmToolUse: async () => {
+        prompted++;
+        return true;
+      },
       onExec: n => executed.push(n),
     });
 
-    expect(executed).toEqual([]);
-    expect(results[0].success).toBe(false);
-    expect(results[0].permissionDecision.source).toBe('plan_mode');
+    expect(prompted).toBe(1);
+    expect(executed).toEqual(['write_file']);
+    expect(results[0].success).toBe(true);
+    expect(results[0].permissionDecision).toMatchObject({
+      behavior: 'ask',
+      approved: true,
+      source: 'user',
+    });
   });
 
   test('plan mode permits a local read-only exec_command even when it asks (Issue #19)', () => {
@@ -709,7 +756,7 @@ describe('permission mode semantics for ask tools', () => {
     expect(perm.risk).toBe('read_only');
   });
 
-  test('plan mode still blocks external read-only tools (web/MCP) that ask', () => {
+  test('plan mode routes external read-only tools (web/MCP) through confirmation', () => {
     const perm = resolveEffectivePermission({
       toolName: 'web_search',
       tool: askTool,
@@ -717,7 +764,7 @@ describe('permission mode semantics for ask tools', () => {
       permission: { behavior: 'ask', reason: 'External query' },
       permissionMode: 'plan',
     });
-    expect(perm.outcome).toBe('block');
+    expect(perm).toMatchObject({ outcome: 'confirm', risk: 'external' });
   });
 
   test('acceptEdits auto-approves file-edit tools without prompting', async () => {
@@ -868,7 +915,7 @@ describe('fail-closed permission matrix', () => {
     label: string;
     tool: OrionCodeTool;
     permission?: { behavior: 'allow' | 'ask' | 'deny'; reason?: string };
-    expected: Record<string, 'allow' | 'confirm' | 'block' | 'deny'>;
+    expected: Record<string, 'allow' | 'confirm' | 'deny'>;
   }> = [
     {
       label: 'safe/read-only',
@@ -879,18 +926,18 @@ describe('fail-closed permission matrix', () => {
       label: 'caution/external',
       tool: askTool,
       permission: { behavior: 'ask', reason: 'External query' },
-      expected: { default: 'confirm', acceptEdits: 'confirm', plan: 'block', auto: 'allow' },
+      expected: { default: 'confirm', acceptEdits: 'confirm', plan: 'confirm', auto: 'allow' },
     },
     {
       label: 'state-write',
       tool: stateWriteTool,
-      expected: { default: 'confirm', acceptEdits: 'confirm', plan: 'block', auto: 'allow' },
+      expected: { default: 'confirm', acceptEdits: 'confirm', plan: 'confirm', auto: 'allow' },
     },
     {
       label: 'destructive',
       tool: dangerousTool,
       permission: { behavior: 'ask', reason: 'Dangerous operation' },
-      expected: { default: 'confirm', acceptEdits: 'confirm', plan: 'block', auto: 'deny' },
+      expected: { default: 'confirm', acceptEdits: 'confirm', plan: 'confirm', auto: 'allow' },
     },
   ];
 
@@ -945,7 +992,7 @@ describe('fail-closed permission matrix', () => {
     expect(executed).toEqual([]);
   });
 
-  test('allowlist allow does not auto-approve missing risk metadata', () => {
+  test('an explicit durable allow approves a tool even when risk metadata is missing', () => {
     const decision = resolveEffectivePermission({
       toolName: 'unknown_risk',
       tool: buildTool({
@@ -957,10 +1004,10 @@ describe('fail-closed permission matrix', () => {
       args: {},
       allowlist: { effect: 'allow', rule: 'unknown_risk' },
     });
-    expect(decision).toMatchObject({ outcome: 'confirm', source: 'missing_risk_metadata' });
+    expect(decision).toMatchObject({ outcome: 'allow', source: 'allowlist_allow' });
   });
 
-  test('allowlist allow cannot auto-approve recursive rm variants', () => {
+  test('an explicit durable allow approves non-catastrophic recursive rm variants', () => {
     const execTool = TOOLS.find(tool => tool.name === 'exec_command');
     if (!execTool) throw new Error('exec_command tool is missing');
 
@@ -973,11 +1020,15 @@ describe('fail-closed permission matrix', () => {
         allowlist: { effect: 'allow', rule: 'exec_command' },
         toolConfirmation: 'ask',
       });
-      expect(decision).toMatchObject({ outcome: 'confirm', risk: 'destructive' });
+      expect(decision).toMatchObject({
+        outcome: 'allow',
+        source: 'allowlist_allow',
+        risk: 'destructive',
+      });
     }
   });
 
-  test('broad durable exec grant can approve benign substitution but not visible recursive rm', () => {
+  test('broad durable exec grant approves benign and destructive invocations after consent', () => {
     const execTool = TOOLS.find(tool => tool.name === 'exec_command');
     if (!execTool) throw new Error('exec_command tool is missing');
     const allowlist = { effect: 'allow' as const, rule: 'allow:exec_command(*)' };
@@ -996,10 +1047,53 @@ describe('fail-closed permission matrix', () => {
       resolveEffectivePermission({
         toolName: 'exec_command',
         tool: execTool,
-        args: { command: 'echo "$(rm -rf $HOME)"' },
+        args: { command: 'rm -rf build' },
         permission: { behavior: 'ask', reason: 'Command requires confirmation' },
         allowlist,
       })
-    ).toMatchObject({ outcome: 'confirm', risk: 'destructive' });
+    ).toMatchObject({ outcome: 'allow', source: 'allowlist_allow', risk: 'destructive' });
+  });
+
+  test('auto mode fully authorizes destructive and unknown-risk tools without prompting', () => {
+    const unknownTool: OrionCodeTool = buildTool({
+      name: 'unknown_risk',
+      description: 'No risk metadata',
+      parameters: { type: 'object', properties: {}, required: [] },
+      execute: async () => ({ success: true, output: 'ran' }),
+    });
+
+    expect(
+      resolveEffectivePermission({
+        toolName: dangerousTool.name,
+        tool: dangerousTool,
+        args: {},
+        permission: { behavior: 'ask', reason: 'Dangerous operation' },
+        permissionMode: 'auto',
+      })
+    ).toMatchObject({ outcome: 'allow', source: 'mode_auto', risk: 'destructive' });
+    expect(
+      resolveEffectivePermission({
+        toolName: unknownTool.name,
+        tool: unknownTool,
+        args: {},
+        permissionMode: 'auto',
+      })
+    ).toMatchObject({ outcome: 'allow', source: 'mode_auto', risk: 'unknown' });
+  });
+
+  test('auto mode still respects a hard tool-policy denial', () => {
+    expect(
+      resolveEffectivePermission({
+        toolName: 'blocked_tool',
+        tool: dangerousTool,
+        args: {},
+        permission: { behavior: 'deny', reason: 'Catastrophic target is blocked' },
+        permissionMode: 'auto',
+      })
+    ).toMatchObject({
+      outcome: 'deny',
+      source: 'tool_policy',
+      reason: 'Catastrophic target is blocked',
+    });
   });
 });

@@ -10,6 +10,7 @@ ORION_GOAL_PTY_RENDERERS=tui or terminal to isolate one renderer while debugging
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import os
 import pty
@@ -131,7 +132,11 @@ def send(output: PtyOutput, value: str) -> None:
     # sleep before Enter chooses submission over palette completion.
     mark = output.mark()
     os.write(output.fd, value.encode("utf-8"))
-    output.wait(f"│ › {value}", timeout=8, start=mark)
+    # Long commands are left-truncated by the TUI to keep the cursor visible.
+    # Waiting for a stable tail proves that Ink has consumed the entire draft
+    # without coupling the smoke test to a particular terminal width.
+    visible_tail = value[-48:]
+    output.wait(visible_tail, timeout=8, start=mark)
     os.write(output.fd, b"\r")
 
 
@@ -557,10 +562,32 @@ def spawn_orion(
 
 
 def find_goal_sidecar(config_dir: Path) -> Path:
-    matches = list(config_dir.rglob("*.goal.json"))
+    # Goal locks are transient directories named `<session>.goal.json.lock`.
+    # A recursive walk can enter one just before Orion removes it and fail with
+    # FileNotFoundError under full-suite load. The storage layout is fixed, so
+    # scan only the sessions directory level and never traverse lock contents.
+    matches = list(config_dir.glob("projects/*/sessions/*.goal.json"))
     if len(matches) != 1:
         raise AssertionError(f"Expected one Goal sidecar, found {matches}")
     return matches[0]
+
+
+def encode_project_path(project_path: Path) -> str:
+    normalized = str(project_path.resolve()).replace("\\", "/")
+    encoded = re.sub(r"[^A-Za-z0-9]+", "-", normalized).strip("-")
+    suffix = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:8]
+    return f"{encoded or 'root'}-{suffix}"
+
+
+def load_session_meta(config_dir: Path, project: Path, session_id: str) -> dict[str, Any]:
+    path = (
+        config_dir
+        / "projects"
+        / encode_project_path(project)
+        / "sessions"
+        / f"{session_id}.json"
+    )
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def run_renderer(repo: Path, renderer: str) -> None:
@@ -595,21 +622,26 @@ def run_renderer(repo: Path, renderer: str) -> None:
             # Otherwise the harness's automatic `y` can race the following slash
             # command and turn `/target pause` into a single invalid input line.
             output.auto_approve_permissions = False
-            send(output, "/target Make lifecycle-test-check pass with durable evidence")
+            send(
+                output,
+                "/goal Make lifecycle-test-check pass with durable evidence, then exit goal mode",
+            )
             # Wait for the command result, not its immediately echoed input. Under
             # full-suite load the echo can arrive before the TUI has submitted the
             # command, and sending the next slash command would only edit the draft.
             output.wait("Target: [active]", timeout=8, start=create_mark)
-            send(output, "/target pause")
+            if renderer == "terminal":
+                output.wait("Goal continuation started", timeout=8, start=create_mark)
+            send(output, "/goal pause")
             output.wait("Target: [paused]", timeout=8, start=create_mark)
-            send(output, "/target budget 100000")
+            send(output, "/goal budget 100000")
             # Pausing can race with the first provider usage. The contract is the
             # configured ceiling, not an assumption that no tokens were charged.
             output.wait("/100000", timeout=8, start=create_mark)
             output.auto_approve_permissions = True
 
             lifecycle_mark = output.mark()
-            send(output, "/target resume")
+            send(output, "/goal resume")
             output.wait("Goal evidence failed", timeout=25, start=lifecycle_mark)
             output.wait("FAILED_TEST_REPAIRED_WITH_FILE_CHANGE", timeout=25, start=lifecycle_mark)
             output.wait("FRESH_TEST_AND_BUILD_REVERIFY_COMPLETE", timeout=30, start=lifecycle_mark)
@@ -623,10 +655,10 @@ def run_renderer(repo: Path, renderer: str) -> None:
                 raise AssertionError("The Goal turn did not repair lifecycle-fixture.txt")
 
             pause_mark = output.mark()
-            send(output, "/target pause")
+            send(output, "/goal pause")
             paused = output.wait("Target: [paused]", timeout=10, start=pause_mark)
             if "0/3" not in paused and "criteria 0/3" not in paused:
-                send(output, "/target status")
+                send(output, "/goal status")
                 paused = output.wait("criteria 0/3", timeout=8, start=pause_mark)
             if "100000" not in paused:
                 raise AssertionError(f"Token budget was not preserved:\n{paused[-2500:]}")
@@ -638,7 +670,7 @@ def run_renderer(repo: Path, renderer: str) -> None:
 
             scenario.set_phase("restart_hold")
             output.mark()
-            send(output, "/target resume")
+            send(output, "/goal resume")
             restart_deadline = time.time() + 20
             while (
                 not scenario.restart_hold_started.is_set() and time.time() < restart_deadline
@@ -676,13 +708,13 @@ def run_renderer(repo: Path, renderer: str) -> None:
             resume_mark = restarted_output.mark()
             send(restarted_output, f"/resume {session_id}")
             restarted_output.wait("Restored", timeout=15, start=resume_mark)
-            send(restarted_output, "/target status")
+            send(restarted_output, "/goal status")
             recovered = restarted_output.wait("Target: [paused]", timeout=10, start=resume_mark)
             if "Recovered after restart" not in recovered:
                 raise AssertionError(f"Missing safe-recovery reason:\n{recovered[-3000:]}")
 
             completion_mark = restarted_output.mark()
-            send(restarted_output, "/target resume")
+            send(restarted_output, "/goal resume")
             provider_deadline = time.time() + 25
             while not scenario.completed.is_set() and time.time() < provider_deadline:
                 restarted_output.drain()
@@ -704,10 +736,27 @@ def run_renderer(repo: Path, renderer: str) -> None:
                     "Goal did not reach persisted complete state:\n"
                     + json.dumps(final_goal, indent=2)
                 )
-            send(restarted_output, "/target status")
-            status = restarted_output.wait("3/3 passed", timeout=10, start=completion_mark)
-            if "100000" not in status:
-                raise AssertionError(f"Completion lost token budget:\n{status[-3000:]}")
+            if (final_goal.get("contract") or {}).get("completionAction") != "exit_goal":
+                raise AssertionError(
+                    "Chained exit directive was not stored as a completion action:\n"
+                    + json.dumps(final_goal, indent=2)
+                )
+            if renderer == "tui":
+                restarted_output.wait("MODE BUILD", timeout=10, start=completion_mark)
+            else:
+                restarted_output.wait("exited Goal mode", timeout=10, start=completion_mark)
+            session_meta = load_session_meta(config_dir, project, session_id)
+            if session_meta.get("activeGoalId") is not None or session_meta.get(
+                "activeGoalObjective"
+            ) is not None:
+                raise AssertionError(
+                    "Completion did not clear the session Goal binding:\n"
+                    + json.dumps(session_meta, indent=2)
+                )
+            send(restarted_output, "/goal status")
+            status = restarted_output.wait("no active goal", timeout=10, start=completion_mark)
+            if renderer == "tui" and "MODE BUILD" not in status:
+                raise AssertionError(f"Completion did not return TUI to BUILD mode:\n{status[-3000:]}")
             completion_audit = final_goal.get("completionAudit") or {}
             criteria = ((final_goal.get("contract") or {}).get("successCriteria") or [])
             evidence_ids = [
@@ -733,11 +782,6 @@ def run_renderer(repo: Path, renderer: str) -> None:
                     "Persisted Goal did not pass the three-criterion completion audit:\n"
                     + json.dumps(final_goal, indent=2)
                 )
-            exit_mark = restarted_output.mark()
-            send(restarted_output, "/goal exit")
-            restarted_output.wait("no active goal", timeout=10, start=exit_mark)
-            send(restarted_output, "/goal status")
-            restarted_output.wait("no active goal", timeout=10, start=exit_mark)
             exit_interactively(restarted, restarted_output)
         finally:
             stop_process(restarted, restarted_master)

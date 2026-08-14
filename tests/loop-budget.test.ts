@@ -1,6 +1,10 @@
 import { DEFAULT_LOOP_BUDGET } from '../src/framework';
 import { GOAL_INVARIANTS } from '../src/runtime/goals/types';
-import { capAutonomousGoalLoopBudget, resolveRuntimeLoopBudget } from '../src/runtime/loop-budget';
+import {
+  capAutonomousGoalLoopBudget,
+  resolveAutonomousGoalLoopBudget,
+  resolveRuntimeLoopBudget,
+} from '../src/runtime/loop-budget';
 
 describe('runtime loop budget', () => {
   it('keeps the conservative default for simple chat', () => {
@@ -65,6 +69,17 @@ describe('runtime loop budget', () => {
     });
   });
 
+  it('does not classify an English release token joined to Chinese text as a release command', () => {
+    expect(resolveRuntimeLoopBudget('push仓库', {})).toMatchObject({
+      profile: 'default',
+      baseProfile: 'default',
+    });
+    expect(resolveRuntimeLoopBudget('推送仓库', {})).toMatchObject({
+      profile: 'release',
+      baseProfile: 'release',
+    });
+  });
+
   it('lets config override adaptive defaults', () => {
     expect(
       resolveRuntimeLoopBudget('push, PR, npm publish', {
@@ -101,6 +116,15 @@ describe('runtime loop budget', () => {
       maxModelVisibleToolBytes: GOAL_INVARIANTS.maxAutonomousModelVisibleBytesPerTurn,
       profile: 'config',
       baseProfile: 'release',
+    });
+  });
+
+  it('resolves autonomous Goal budgets without promoting model-authored objective text', () => {
+    expect(resolveAutonomousGoalLoopBudget({})).toMatchObject({
+      profile: 'default',
+      baseProfile: 'default',
+      maxLlmRequestsPerUserTurn: GOAL_INVARIANTS.maxAutonomousLlmRequestsPerTurn,
+      maxToolCallsPerUserTurn: GOAL_INVARIANTS.maxAutonomousToolCallsPerTurn,
     });
   });
 });

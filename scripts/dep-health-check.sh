@@ -18,10 +18,11 @@ const { join } = require('path');
 
 const root = process.cwd();
 const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
-const lock = JSON.parse(readFileSync(join(root, 'package-lock.json'), 'utf8'));
+const lock = JSON.parse(readFileSync(join(root, 'npm-shrinkwrap.json'), 'utf8'));
 const production = manifest.dependencies ?? {};
 const development = manifest.devDependencies ?? {};
 const lockRoot = lock.packages?.[''] ?? {};
+const overrides = manifest.overrides ?? {};
 const errors = [];
 
 const failUnless = (condition, message) => {
@@ -57,7 +58,16 @@ failUnless(
 failUnless(
   !('@types/better-sqlite3' in (lockRoot.dependencies ?? {})) &&
     '@types/better-sqlite3' in (lockRoot.devDependencies ?? {}),
-  'package-lock root metadata must preserve @types/better-sqlite3 as development-only',
+  'npm-shrinkwrap root metadata must preserve @types/better-sqlite3 as development-only',
+);
+failUnless(
+  overrides['shell-quote'] === '^1.10.0',
+  'package overrides must pin shell-quote to the reviewed ^1.10.0 range',
+);
+const lockedShellQuote = lock.packages?.['node_modules/shell-quote']?.version;
+failUnless(
+  typeof lockedShellQuote === 'string' && major(lockedShellQuote) === 1,
+  `npm-shrinkwrap must resolve the shell-quote override, found ${lockedShellQuote ?? '<missing>'}`,
 );
 
 // Ink is a deprecated compatibility renderer. Upgrading it in-place would

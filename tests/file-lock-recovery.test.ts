@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { setTimeout as delay } from 'timers/promises';
+import { withFileLockSync } from '../src/services/file-lock';
 
 const RECOVERY_WORKER = String.raw`
 const fs = require('fs');
@@ -70,6 +71,28 @@ async function waitForFile(file: string, timeoutMs = 10_000): Promise<void> {
 }
 
 describe('file-lock stale recovery serialization', () => {
+  it('fails closed when stale owner metadata is unreadable', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orion-file-lock-corrupt-'));
+    const targetPath = path.join(tempDir, 'registry');
+    const lockPath = `${targetPath}.lock`;
+    try {
+      fs.writeFileSync(lockPath, '{partial-json', { mode: 0o600 });
+      const staleTime = new Date(Date.now() - 10_000);
+      fs.utimesSync(lockPath, staleTime, staleTime);
+
+      expect(() =>
+        withFileLockSync(targetPath, () => undefined, {
+          waitMs: 30,
+          retryMs: 5,
+          staleMs: 1,
+        })
+      ).toThrow(/Timed out waiting for file lock/);
+      expect(fs.readFileSync(lockPath, 'utf8')).toBe('{partial-json');
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('does not let a stale recovery move a replacement owner lock', async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orion-file-lock-recovery-'));
     const targetPath = path.join(tempDir, 'registry');

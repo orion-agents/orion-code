@@ -2,7 +2,7 @@
  * v0.2.24 — Goal sidecar unit tests.
  */
 
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, mkdirSync, rmSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
@@ -46,7 +46,10 @@ function makeGoal(overrides: Partial<SessionGoalV1> = {}): SessionGoalV1 {
 describe('Goal sidecar storage', () => {
   afterEach(() => {
     // Clean up test goal files.
-    const files = [join(sessionsDir, `${sessionId}.goal.json`)];
+    const files = [
+      join(sessionsDir, `${sessionId}.goal.json`),
+      join(sessionsDir, `${sessionId}.goal.json.lock`),
+    ];
     for (const f of files) {
       try {
         rmSync(f, { force: true });
@@ -111,5 +114,20 @@ describe('Goal sidecar storage', () => {
     const result = loadGoal(projectPath, sessionId);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toBe('corrupt');
+  });
+
+  it('does not reclaim a stale lock whose owner metadata is unreadable', () => {
+    const lockPath = join(sessionsDir, `${sessionId}.goal.json.lock`);
+    mkdirSync(lockPath, { recursive: true });
+    const ownerPath = join(lockPath, 'owner.json');
+    writeFileSync(ownerPath, '{partial-json');
+    const staleTime = new Date(Date.now() - 60_000);
+    utimesSync(ownerPath, staleTime, staleTime);
+    utimesSync(lockPath, staleTime, staleTime);
+
+    const result = saveGoal(projectPath, sessionId, makeGoal());
+    expect(result).toMatchObject({ ok: false, error: 'io_error' });
+    if (!result.ok) expect(result.message).toContain('Timed out waiting for Goal sidecar lock');
+    expect(existsSync(lockPath)).toBe(true);
   });
 });

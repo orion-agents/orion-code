@@ -22,6 +22,7 @@ import {
   projectResearchLifecycleEvent,
   type ResearchStatusProjection,
 } from '../runtime/ui-view-model';
+import { sanitizeTerminalText } from '../tui-core/style';
 
 export type PrintOutputFormat = 'text' | 'json';
 
@@ -52,8 +53,9 @@ function stripTrailingNewlines(text: string): string {
 }
 
 function stderrLine(text: string): void {
-  if (!text.trim()) return;
-  process.stderr.write(`${stripTrailingNewlines(text)}\n`);
+  const safeText = sanitizeTerminalText(text);
+  if (!safeText.trim()) return;
+  process.stderr.write(`${stripTrailingNewlines(safeText)}\n`);
 }
 
 function flushStdout(text: string = ''): Promise<void> {

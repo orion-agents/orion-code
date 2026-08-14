@@ -214,6 +214,8 @@ export interface GoalObjectiveRevision {
 export interface GoalContract {
   originalObjective: string;
   objectiveRevision: number;
+  /** Explicit user lifecycle instruction, separated from auditable work. */
+  completionAction?: import('./objective').GoalCompletionAction;
   /** Additive edit history; absent on v0.1.1 and early v0.1.2 sidecars. */
   objectiveHistory?: GoalObjectiveRevision[];
   constraints: GoalConstraint[];
@@ -585,6 +587,8 @@ export const GOAL_INVARIANTS = {
   maxObjectiveChars: 4000,
   maxConsecutiveBlockerTurns: 3,
   maxConsecutiveNoProgressTurns: 3,
+  /** Two blocked autonomous loops are enough to stop and ask for review. */
+  maxConsecutiveBlockedContinuationTurns: 2,
   maxAutomaticContinuationTurns: 5,
   maxAutonomousLlmRequestsPerTurn: 8,
   maxAutonomousToolCallsPerTurn: 32,

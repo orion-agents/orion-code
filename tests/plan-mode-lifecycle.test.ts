@@ -2,8 +2,13 @@ import { findCommand } from '../src/commands';
 import type { CommandContext } from '../src/commands/types';
 import { buildSystemPrompt } from '../src/framework/prompt';
 import { Store } from '../src/framework/store';
+import type { ToolContext } from '../src/framework/tool';
 import { getToolState, resetToolState } from '../src/framework/tool-state';
-import { resolveEffectivePermission } from '../src/framework/tool-scheduler';
+import {
+  executeToolCalls,
+  prepareToolCalls,
+  resolveEffectivePermission,
+} from '../src/framework/tool-scheduler';
 import { loadConfig } from '../src/services/config';
 import { TOOLS } from '../src/tools';
 
@@ -42,10 +47,10 @@ describe('/plan lifecycle', () => {
       currentPlan: null,
       planReturnMode: 'interactive',
     });
-    expect(ctx.store.getEffectivePermissionMode()).toBe('plan');
+    expect(ctx.store.getEffectivePermissionMode()).toBe('default');
   });
 
-  it('allows exit_plan_mode inside the read-only gate and restores the previous mode', async () => {
+  it('allows exit_plan_mode without a prompt and restores the previous mode', async () => {
     const ctx = context();
     ctx.store.setAgentMode('auto');
     await findCommand('plan')!.execute(ctx, 'plan an upgrade');
@@ -83,12 +88,80 @@ describe('/plan lifecycle', () => {
     );
 
     expect(result.success).toBe(true);
+    expect(result.output).toContain('execution will start in AUTO');
+    expect(result.output).not.toContain('execution will start in interactive');
     expect(ctx.store.getSnapshot()).toMatchObject({
       agentMode: 'auto',
       planMode: false,
       currentPlan: 'Upgrade plan',
     });
     expect(getToolState().planMode).toBe(false);
+  });
+
+  it('executes exit_plan_mode through the plan scheduler without a permission prompt', async () => {
+    const ctx = context();
+    await findCommand('plan')!.execute(ctx, 'plan a safe change');
+    const exitPlan = TOOLS.find(tool => tool.name === 'exit_plan_mode')!;
+    const confirmToolUse = jest.fn(async () => false);
+    const toolContext: ToolContext = {
+      cwd: ctx.cwd,
+      config: { name: 'test', mode: 'test' },
+      onPlanModeChange: (transition: {
+        active: boolean;
+        currentPlan: string | null;
+        returnMode: 'interactive' | 'auto';
+      }) => {
+        ctx.store.setState({
+          agentMode: transition.active ? 'plan' : transition.returnMode,
+          planMode: transition.active,
+          currentPlan: transition.currentPlan,
+        });
+        return transition.returnMode;
+      },
+    };
+    const toolExecutor = async (name: string, args: Record<string, unknown>) =>
+      JSON.stringify(await exitPlan.execute(args, toolContext));
+    const calls = [
+      {
+        id: 'exit-plan-1',
+        type: 'function' as const,
+        function: {
+          name: exitPlan.name,
+          arguments: JSON.stringify({ plan: 'Safe implementation plan' }),
+        },
+      },
+    ];
+    const prepared = prepareToolCalls({
+      toolCalls: calls,
+      tools: [exitPlan],
+      toolExecutor,
+      toolContext,
+      permissionMode: 'plan',
+      toolConfirmation: 'deny',
+      confirmToolUse,
+    });
+    const results = [];
+
+    for await (const result of executeToolCalls(prepared, {
+      toolExecutor,
+      permissionMode: 'plan',
+      toolConfirmation: 'deny',
+      confirmToolUse,
+    })) {
+      results.push(result);
+    }
+
+    expect(confirmToolUse).not.toHaveBeenCalled();
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ success: true });
+    expect(JSON.parse(results[0].result)).toMatchObject({
+      output: expect.stringContaining('execution will start in BUILD'),
+    });
+    expect(ctx.store.getSnapshot()).toMatchObject({
+      agentMode: 'interactive',
+      planMode: false,
+      currentPlan: 'Safe implementation plan',
+    });
   });
 
   it('injects the automatic, non-executing completion contract only in plan mode', () => {
@@ -110,7 +183,9 @@ describe('/plan lifecycle', () => {
     expect(planning).toContain('[Plan Mode]');
     expect(planning).toContain('call exit_plan_mode exactly once');
     expect(planning).toContain('exits plan mode automatically');
-    expect(planning).toContain('do not start implementing');
+    expect(planning).toContain('current permission policy and durable grants');
+    expect(planning).not.toContain('Explore and reason read-only');
+    expect(planning).not.toContain('Do not edit files');
   });
 
   it('injects distinct Build, Plan-to-execution, and Auto behavior contracts', () => {
@@ -126,6 +201,8 @@ describe('/plan lifecycle', () => {
 
     expect(render('interactive')).toContain('[Build Mode]');
     expect(render('plan')).toContain('[Plan-to-Execution Mode]');
+    expect(render('plan')).toContain('same tool registry as BUILD');
+    expect(render('plan')).toContain('Never reject a tool solely because PLAN is active');
     expect(render('plan')).toContain('separate execution request');
     expect(render('auto')).toContain('[Auto Mode]');
     expect(render('auto')).toContain('Do not ask permission questions or clarifying questions');

@@ -31,7 +31,7 @@ describe('read_file literal percent in filename (bug-hunt round 7)', () => {
     const file = path.join(dir, 'lit%41.txt'); // %41 is the hex code for 'A'
     fs.writeFileSync(file, 'percent-body', 'utf-8');
 
-    const result = await readFileTool.execute({ path: file }, ctx);
+    const result = await readFileTool.execute({ path: file }, { ...ctx, cwd: dir });
     expect(result.success).toBe(true);
     expect(result.output).toContain('percent-body');
   });
@@ -40,7 +40,7 @@ describe('read_file literal percent in filename (bug-hunt round 7)', () => {
     const file = path.join(dir, 'lit%20file.txt');
     fs.writeFileSync(file, 'twenty-body', 'utf-8');
 
-    const result = await readFileTool.execute({ path: file }, ctx);
+    const result = await readFileTool.execute({ path: file }, { ...ctx, cwd: dir });
     expect(result.success).toBe(true);
     expect(result.output).toContain('twenty-body');
   });

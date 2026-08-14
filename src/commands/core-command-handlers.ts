@@ -874,10 +874,6 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
       if (sessionId) {
         updateSessionSkills(sessionId, appliedSkillNames);
         updateSessionHarnessState(sessionId, harnessState);
-        const recordedMessages = readSessionMessages(sessionId);
-        if (recordedMessages.length > 0) {
-          updateSessionSummary(sessionId, recordedMessages);
-        }
       }
     }
 

@@ -15,6 +15,7 @@ import { GoalCoordinator } from '../src/runtime/goals/coordinator';
 import { formatGoalRuntimeEvent } from '../src/runtime/goals/presentation';
 import {
   currentGoalToolContext,
+  getGoalTool,
   updateGoalPlanTool,
   updateGoalTool,
 } from '../src/runtime/goals/tools';
@@ -90,6 +91,156 @@ function goalEvents(events: AgentRuntimeEvent[]): GoalRuntimeEvent[] {
 }
 
 describe('Goal renderer projection parity', () => {
+  it('auto-exits the exact Chinese Goal-mode test objective with runtime tool evidence', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'orion-goal-meta-exit-'));
+    const projectPath = join(root, 'project');
+    const configPath = join(root, 'config');
+    const previousConfigDir = process.env.ORION_CODE_CONFIG_DIR;
+    process.env.ORION_CODE_CONFIG_DIR = configPath;
+    mkdirSync(projectPath);
+    execFileSync('git', ['init', '--quiet', projectPath]);
+
+    const session = createSession(projectPath, 'test-model');
+    const sessionId = session.id;
+    const seed = new GoalCoordinator(projectPath, sessionId);
+    expect(seed.create('测试一下目标模式，然后退出')).toEqual({ ok: true });
+    expect(seed.goal).toMatchObject({
+      objective: '测试一下目标模式',
+      contract: { completionAction: 'exit_goal' },
+    });
+    updateSessionGoalBinding(sessionId, seed.goal);
+
+    const protocolEvents: AgentRuntimeEvent[] = [];
+    const eventSink: AgentRuntimeEventSink = {
+      emit: event => {
+        protocolEvents.push(event);
+        return event.type === 'transcript_append' ? `entry-${protocolEvents.length}` : undefined;
+      },
+    };
+    let controller!: AgentRuntimeController;
+    let turnCount = 0;
+    const runner: AgentRuntimeRunner = {
+      runInput: jest.fn(async () => undefined),
+      runRequest: jest.fn(async () => {
+        turnCount += 1;
+        const context = currentGoalToolContext();
+        expect(context).toBeDefined();
+        if (!context) throw new Error('Goal tool context was not established by the controller');
+        const toolContext = { cwd: projectPath, config: { name: 'test', mode: 'test' } };
+        const controllerSink = (controller as unknown as { eventSink: AgentRuntimeEventSink })
+          .eventSink;
+
+        const firstRead = await getGoalTool.execute({}, toolContext);
+        expect(firstRead.success).toBe(true);
+        controllerSink.emit({
+          type: 'tool_finished',
+          event: {
+            callId: 'goal-meta-get-1',
+            name: 'get_goal',
+            args: {},
+            success: true,
+            duration: 1,
+            outputBytes: firstRead.output.length,
+            sequence: 1,
+          },
+        });
+
+        const planResult = await updateGoalPlanTool.execute(
+          {
+            phase: 'verification',
+            steps: [{ description: '验证目标模式工具链', done: true }],
+            next_action: '完成审计并自动退出目标模式',
+          },
+          toolContext
+        );
+        expect(planResult.success).toBe(true);
+        controllerSink.emit({
+          type: 'tool_finished',
+          event: {
+            callId: 'goal-meta-plan-1',
+            name: 'update_goal_plan',
+            args: { phase: 'verification' },
+            success: true,
+            duration: 1,
+            outputBytes: planResult.output.length,
+            sequence: 2,
+          },
+        });
+
+        // A later get_goal in the same turn must expose exact IDs for the
+        // already-finished runtime probes, so completion is not always one
+        // evidence generation behind the model.
+        const evidenceRead = await getGoalTool.execute({}, toolContext);
+        const payload = JSON.parse(evidenceRead.output) as {
+          recentEvidence: Array<{ id: string; kind: string; subject: string }>;
+        };
+        expect(payload.recentEvidence).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              kind: 'runtime',
+              subject: expect.stringContaining('目标模式'),
+            }),
+          ])
+        );
+        const runtimeIds = payload.recentEvidence
+          .filter(record => record.kind === 'runtime')
+          .map(record => record.id);
+        expect(runtimeIds).toHaveLength(2);
+
+        const completionResult = await updateGoalTool.execute(
+          {
+            status: 'complete',
+            criterion_evidence: [{ criterion_id: 'criterion:primary', evidence_ids: runtimeIds }],
+          },
+          toolContext
+        );
+        expect(completionResult.success).toBe(true);
+      }),
+    };
+    controller = new AgentRuntimeController({
+      runtime: runtime(projectPath, sessionId),
+      runner,
+      eventSink,
+      echoSubmittedInput: false,
+    });
+
+    try {
+      const controllerSink = (controller as unknown as { eventSink: AgentRuntimeEventSink })
+        .eventSink;
+      controllerSink.emit({
+        type: 'session_restored',
+        event: { sessionId, projectPath, model: 'test-model', restoredMessages: 0 },
+      });
+      expect(controller.submit('/goal resume')).toEqual({ type: 'started' });
+
+      await controller.waitForIdle();
+      await flushImmediate();
+      await controller.waitForIdle();
+
+      expect(turnCount).toBe(1);
+      expect(loadSessionMeta(sessionId)?.activeGoalId).toBeUndefined();
+      expect(
+        (controller as unknown as { goalCoordinator: GoalCoordinator }).goalCoordinator.goal
+      ).toBeNull();
+      const receipt = new GoalCoordinator(projectPath, sessionId);
+      expect(receipt.load(false)).toBe(true);
+      expect(receipt.goal).toMatchObject({
+        objective: '测试一下目标模式',
+        status: 'complete',
+        contract: { completionAction: 'exit_goal' },
+        completionAudit: { passed: true },
+      });
+      const events = goalEvents(protocolEvents);
+      expect(events.filter(event => event.type === 'goal_audit_failed')).toHaveLength(0);
+      expect(events.filter(event => event.type === 'goal_completed')).toHaveLength(1);
+      expect(events.at(-1)?.type).toBe('goal_cleared');
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.ORION_CODE_CONFIG_DIR;
+      else process.env.ORION_CODE_CONFIG_DIR = previousConfigDir;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('preserves one Goal ledger and accounting across TUI -> terminal -> TUI switches', () => {
     const root = mkdtempSync(join(tmpdir(), 'orion-goal-renderer-switch-'));
     const projectPath = join(root, 'project');
@@ -434,6 +585,9 @@ describe('Goal renderer projection parity', () => {
 
       expect(turnIndex).toBe(2);
       expect(loadSessionMeta(sessionId)?.activeGoalId).toBeUndefined();
+      expect(
+        (controller as unknown as { goalCoordinator: GoalCoordinator }).goalCoordinator.goal
+      ).toBeNull();
       const completedReceipt = new GoalCoordinator(projectPath, sessionId);
       expect(completedReceipt.load(false)).toBe(true);
       expect(completedReceipt.goal).toMatchObject({

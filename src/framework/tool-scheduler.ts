@@ -35,6 +35,8 @@ export interface PreparedToolCall {
   args: Record<string, unknown>;
   tool: OrionCodeTool | undefined;
   attemptId: string;
+  /** Provider arguments rejected before policy, drift, tracking, or execution. */
+  argumentError?: string;
   drift: DriftCheckResult | undefined;
   permission: PermissionResult | undefined;
   /**
@@ -67,7 +69,6 @@ export type PermissionDecisionSource =
   | 'user'
   | 'missing_confirmation'
   | 'drift_guard'
-  | 'plan_mode'
   | 'mode_auto'
   | 'mode_accept_edits'
   | 'allowlist_allow'
@@ -137,23 +138,26 @@ export interface ToolSchedulerOptions {
 // Preparation
 // ============================================================================
 
-function parseToolArgs(tc: ToolCallRecord): Record<string, unknown> {
+function parseToolArgs(tc: ToolCallRecord): { args: Record<string, unknown> } | { error: string } {
   const rawArgs = tc.function.arguments || '';
-  if (!rawArgs) return {};
+  if (!rawArgs) return { args: {} };
   try {
-    return JSON.parse(rawArgs) as Record<string, unknown>;
+    const parsed = JSON.parse(rawArgs) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { error: `Tool ${tc.function.name} arguments must be a JSON object.` };
+    }
+    return { args: parsed as Record<string, unknown> };
   } catch {
-    return {};
+    return { error: `Tool ${tc.function.name} arguments are not valid JSON.` };
   }
 }
 
 /**
  * How a `behavior: 'ask'` permission should be resolved for the active permission mode.
- * - `block`   : plan mode is read-only, the tool must not run at all.
  * - `allow`   : the mode itself grants approval (acceptEdits for file edits).
  * - `confirm` : fall through to toolConfirmation policy / interactive confirmation.
  */
-export type AskResolution = 'block' | 'allow' | 'confirm';
+export type AskResolution = 'allow' | 'confirm';
 
 export type ToolRisk =
   | 'read_only'
@@ -184,11 +188,9 @@ function assessToolRisk(
 
   if (isDestructive) return { risk: 'destructive', known: true, isFileEdit };
   // A read-only tool that asks is normally an external/caution operation
-  // (web/MCP are the important examples), not a safe local read — plan mode
-  // must still block those. But a local read-only exec_command (e.g.
-  // `gh auth status`, `git status`) is a safe read and must be permitted in
-  // plan mode even though checkPermissions returns 'ask' for it (it is not in
-  // the explicit allowlist).
+  // (web/MCP are the important examples), not a safe local read. A local
+  // read-only exec_command (e.g. `gh auth status`, `git status`) stays a safe
+  // read even though its policy asks when it is not explicitly allowlisted.
   if (isReadOnly && permission?.behavior === 'ask' && tool?.name !== 'exec_command') {
     return { risk: 'external', known: true, isFileEdit };
   }
@@ -221,7 +223,8 @@ function isSafeReadOnly(risk: ToolRiskAssessment): boolean {
  *
  * Historically this logic was inlined as `permissionMode === 'default'`, which meant
  * every non-default mode silently skipped confirmation without a complete safety
- * decision. Plan and acceptEdits stay restrictive here; Auto delegates to the full
+ * decision. Agent PLAN is a workflow mode, so the legacy permission value
+ * `plan` follows the normal confirmation path. Auto delegates to the full
  * policy/risk gate below and never opens an interactive prompt.
  */
 export function resolveAskPermission(
@@ -230,11 +233,9 @@ export function resolveAskPermission(
   args: Record<string, unknown>
 ): AskResolution {
   switch (permissionMode) {
-    case 'plan':
-      return 'block';
     case 'auto':
       // Auto never opens an interactive permission prompt. The full gate below
-      // still enforces hard denies, workspace/sandbox guards and risk metadata.
+      // still enforces hard tool-policy and explicit allowlist denies.
       return 'allow';
     case 'acceptEdits':
       return tool?.isFileEdit?.(args) === true ? 'allow' : 'confirm';
@@ -248,13 +249,12 @@ export function resolveAskPermission(
  * and interactive confirmation are considered.
  *
  * - `deny`    : hard refusal, `behavior: 'deny'` (tool policy or allowlist deny rule).
- * - `block`   : the tool asked for confirmation but the mode forbids running it (plan mode).
  * - `allow`   : approved without a prompt. `source` is set when the approval was
  *               an explicit escalation decision worth auditing.
  * - `confirm` : fall through to toolConfirmation / interactive confirmation.
  */
 export interface EffectivePermission {
-  outcome: 'deny' | 'block' | 'allow' | 'confirm';
+  outcome: 'deny' | 'allow' | 'confirm';
   source?: PermissionDecisionSource;
   reason?: string;
   risk?: ToolRisk;
@@ -266,13 +266,16 @@ export interface EffectivePermission {
  * Precedence (most restrictive first, see services/tool-allowlist for the contract):
  *   1. tool `checkPermissions() === 'deny'`  — never overridable by config
  *   2. allowlist `deny:` rule                — project can always tighten
- *   3. plan mode                             — only explicit safe read-only metadata runs
- *   4. auto mode                             — decide locally; no interactive permission prompt
- *   5. allowlist `ask:` rule                 — explicit escalation in collaborative modes
- *   6. acceptEdits                           — only explicit file edits auto-run
- *   7. allowlist `allow:` rule               — known tools except destructive non-file operations
- *   8. safe read-only tools                  — auto-run in every non-plan mode
- *   9. otherwise confirm (fail closed)
+ *   3. auto mode                             — fully authorized; no interactive permission prompt
+ *   4. allowlist `ask:` rule                 — explicit escalation in collaborative modes
+ *   5. acceptEdits                           — only explicit file edits auto-run
+ *   6. allowlist `allow:` rule               — explicit durable user approval
+ *   7. safe read-only tools                  — auto-run in every collaborative mode
+ *   8. otherwise confirm (fail closed)
+ *
+ * Agent PLAN is intentionally absent from this precedence list. It changes the
+ * workflow prompt and lifecycle, not the available tool registry or permission
+ * envelope; the legacy permission string `plan` therefore behaves like default.
  */
 export function resolveEffectivePermission(input: {
   toolName: string;
@@ -313,39 +316,11 @@ export function resolveEffectivePermission(input: {
         ? `Confirmation required by ${allowlist.scope ?? 'configured'} allowedTools rule "${allowlist.rule}"`
         : riskReason;
 
-  if (permissionMode === 'plan') {
-    if (isSafeReadOnly(risk) && allowlist?.effect !== 'ask') {
-      return { outcome: 'allow', risk: risk.risk };
-    }
-    return {
-      outcome: 'block',
-      source: 'plan_mode',
-      reason,
-      risk: risk.risk,
-    };
-  }
-
   if (permissionMode === 'auto') {
-    if (!risk.known) {
-      return {
-        outcome: 'deny',
-        source: 'missing_risk_metadata',
-        reason: riskReason,
-        risk: risk.risk,
-      };
-    }
-    if (risk.risk === 'destructive' && !risk.isFileEdit) {
-      return {
-        outcome: 'deny',
-        source: 'mode_auto',
-        reason: `Auto safety blocked destructive non-file tool ${toolName}. Choose a reversible alternative.`,
-        risk: risk.risk,
-      };
-    }
     return {
       outcome: 'allow',
       source: 'mode_auto',
-      reason: 'Auto mode approved this invocation after local policy and risk checks.',
+      reason: 'Auto mode fully authorized this invocation after hard policy checks.',
       risk: risk.risk,
     };
   }
@@ -372,11 +347,7 @@ export function resolveEffectivePermission(input: {
     };
   }
 
-  if (
-    allowlist?.effect === 'allow' &&
-    risk.known &&
-    !(risk.risk === 'destructive' && !risk.isFileEdit)
-  ) {
+  if (allowlist?.effect === 'allow') {
     return {
       outcome: 'allow',
       source: 'allowlist_allow',
@@ -414,7 +385,22 @@ export function prepareToolCalls(options: ToolSchedulerOptions): PreparedToolCal
 
   for (let i = 0; i < toolCalls.length; i++) {
     const tc = toolCalls[i];
-    const args = parseToolArgs(tc);
+    const parsedArgs = parseToolArgs(tc);
+    if ('error' in parsedArgs) {
+      preparedCalls.push({
+        index: i,
+        tc,
+        args: {},
+        tool: tools.find(tool => tool.name === tc.function.name),
+        attemptId: `invalid-tool-${i}`,
+        argumentError: parsedArgs.error,
+        drift: undefined,
+        permission: undefined,
+        canRunConcurrently: false,
+      });
+      continue;
+    }
+    const { args } = parsedArgs;
     // Re-serialize to ensure valid JSON for next API call
     tc.function.arguments = JSON.stringify(args);
 
@@ -532,6 +518,7 @@ function executePreparedTool(
   confirmToolUse?: ToolSchedulerOptions['confirmToolUse'],
   permissionMode?: string,
   toolConfirmation?: string,
+  toolAllowlist?: ToolAllowlistEvaluator,
   harnessBlockedResult?: ToolSchedulerOptions['harnessBlockedResult']
 ): Promise<ExecutedToolCall> {
   const start = Date.now();
@@ -551,6 +538,9 @@ function executePreparedTool(
   };
 
   const run = async (): Promise<string> => {
+    if (prepared.argumentError) {
+      return JSON.stringify({ success: false, error: prepared.argumentError });
+    }
     if (drift?.status === 'block') {
       permissionDecision = {
         behavior: 'deny',
@@ -565,13 +555,18 @@ function executePreparedTool(
     // Resolve tool policy + project allowlist + permission mode in one place.
     // Previously the `ask` branch was gated on `permissionMode === 'default'`, so
     // plan / acceptEdits / auto fell through to exec() and bypassed confirmation.
+    // Re-evaluate at execution time. A user may approve the first serial call
+    // for the whole project while later calls from the same model response are
+    // already prepared; those calls must observe the newly persisted grant.
+    const currentAllowlist = toolAllowlist ? toolAllowlist(tc.function.name, args) : allowlist;
+    prepared.allowlist = currentAllowlist;
     const effective = resolveEffectivePermission({
       toolName: tc.function.name,
       tool,
       args,
       permission,
       permissionMode,
-      allowlist,
+      allowlist: currentAllowlist,
       toolConfirmation,
     });
 
@@ -585,19 +580,6 @@ function executePreparedTool(
       return JSON.stringify({
         success: false,
         error: effective.reason || 'Permission denied',
-      });
-    }
-
-    if (effective.outcome === 'block') {
-      permissionDecision = {
-        behavior: 'ask',
-        approved: false,
-        source: effective.source ?? 'plan_mode',
-        reason: effective.reason,
-      };
-      return JSON.stringify({
-        success: false,
-        error: `Tool ${tc.function.name} requires confirmation and is blocked in plan mode (read-only).`,
       });
     }
 
@@ -734,6 +716,7 @@ export async function* executeToolCalls(
     confirmToolUse?: ToolSchedulerOptions['confirmToolUse'];
     permissionMode?: string;
     toolConfirmation?: string;
+    toolAllowlist?: ToolAllowlistEvaluator;
     harnessBlockedResult?: ToolSchedulerOptions['harnessBlockedResult'];
     maxParallelToolCalls?: number;
   }
@@ -751,6 +734,7 @@ export async function* executeToolCalls(
           options.confirmToolUse,
           options.permissionMode,
           options.toolConfirmation,
+          options.toolAllowlist,
           options.harnessBlockedResult
         )
       )
@@ -791,6 +775,7 @@ export async function* executeToolCalls(
       options.confirmToolUse,
       options.permissionMode,
       options.toolConfirmation,
+      options.toolAllowlist,
       options.harnessBlockedResult
     ).catch(err => failedExecution(prepared, err));
     yield executed;

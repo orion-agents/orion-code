@@ -29,6 +29,10 @@ describe('Goal model tools', () => {
     coordinator = new GoalCoordinator(`/tmp/goal-tools-${randomUUID()}`, 'test-session');
   });
 
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
   async function execute(
     tool: OrionCodeTool,
     args: Record<string, unknown>,
@@ -538,7 +542,14 @@ describe('Goal model tools', () => {
     it('clears the Goal and session binding after explicit latest-user authorization', async () => {
       coordinator.create('Obsolete objective');
       const goalId = coordinator.goal!.goalId;
-      const binding = jest.spyOn(sessionStorage, 'updateSessionGoalBinding').mockReturnValue(null);
+      const binding = jest.spyOn(sessionStorage, 'clearSessionGoalBinding').mockReturnValue({
+        id: coordinator.boundSessionId,
+        projectPath: '/test',
+        model: 'test',
+        startTime: Date.now(),
+        tokenCount: 0,
+        cost: 0,
+      });
 
       const result = await abandon("ok let's just abandon this goal entirely");
 
@@ -551,7 +562,18 @@ describe('Goal model tools', () => {
         authorizedBy: 'latest_user_explicit_intent',
       });
       expect(coordinator.goal).toBeNull();
-      expect(binding).toHaveBeenCalledWith(coordinator.boundSessionId, null);
+      expect(binding).toHaveBeenCalledWith(coordinator.boundSessionId, goalId);
+    });
+
+    it('keeps the Goal when the session binding cannot be cleared', async () => {
+      coordinator.create('Goal must survive partial exit');
+      jest.spyOn(sessionStorage, 'clearSessionGoalBinding').mockReturnValue(null);
+
+      const result = await abandon('exit goal mode');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('was not found');
+      expect(coordinator.goal?.objective).toBe('Goal must survive partial exit');
     });
 
     it.each([
@@ -571,6 +593,14 @@ describe('Goal model tools', () => {
 
     it('accepts an explicit Chinese abandonment revision and requires an audit reason', async () => {
       coordinator.create('待取消目标');
+      jest.spyOn(sessionStorage, 'clearSessionGoalBinding').mockReturnValue({
+        id: coordinator.boundSessionId,
+        projectPath: '/test',
+        model: 'test',
+        startTime: Date.now(),
+        tokenCount: 0,
+        cost: 0,
+      });
       const missingReason = await abandon('放弃这个目标', 'revision', '');
       expect(missingReason.success).toBe(false);
       expect(coordinator.goal).not.toBeNull();
@@ -588,6 +618,14 @@ describe('Goal model tools', () => {
       '退出目标模式',
     ])('accepts an explicit abandonment request with question punctuation: %s', async text => {
       coordinator.create('待取消目标');
+      jest.spyOn(sessionStorage, 'clearSessionGoalBinding').mockReturnValue({
+        id: coordinator.boundSessionId,
+        projectPath: '/test',
+        model: 'test',
+        startTime: Date.now(),
+        tokenCount: 0,
+        cost: 0,
+      });
       const result = await abandon(text, 'user', '用户明确要求结束目标');
       expect(result.success).toBe(true);
       expect(coordinator.goal).toBeNull();

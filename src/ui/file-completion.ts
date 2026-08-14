@@ -7,6 +7,7 @@
 import chalk from 'chalk';
 import { matchFiles, type FileMatch } from '../services/file-glob';
 import { renderFramedPrompt } from './shared/input-frame';
+import { sanitizeTerminalLine, visualWidth } from './shared/text';
 
 const ACCENT = chalk.hex('#00D4AA');
 const DIM = chalk.dim;
@@ -26,8 +27,8 @@ export function setFileCompletionPromptRenderer(renderer: FilePromptRenderer): v
 
 export interface FileCompletionState {
   visible: boolean;
-  query: string;       // @ 后的路径部分
-  baseInput: string;   // @ 前的文本
+  query: string; // @ 后的路径部分
+  baseInput: string; // @ 前的文本
   matches: FileMatch[];
   selectedIndex: number;
 }
@@ -190,14 +191,24 @@ function render(): void {
     const isSelected = i === state.selectedIndex;
 
     const icon = file.isDirectory ? '📁' : '📄';
-    const pathDisplay = file.path.length > innerWidth - 6
-      ? file.path.slice(0, innerWidth - 9) + '...'
-      : file.path;
+    const safePath = sanitizeTerminalLine(file.path);
+    const pathDisplay =
+      safePath.length > innerWidth - 6 ? safePath.slice(0, innerWidth - 9) + '...' : safePath;
+    const pathWidth = visualWidth(pathDisplay);
 
     if (isSelected) {
-      lines.push(SELECTED(` ${icon} ${pathDisplay} `) + ' '.repeat(innerWidth - pathDisplay.length - 4) + SELECTED(' '));
+      lines.push(
+        SELECTED(` ${icon} ${pathDisplay} `) +
+          ' '.repeat(Math.max(0, innerWidth - pathWidth - 4)) +
+          SELECTED(' ')
+      );
     } else {
-      lines.push(DIM('│ ') + ACCENT(icon + ' ' + pathDisplay) + ' '.repeat(innerWidth - pathDisplay.length - 4) + DIM(' │'));
+      lines.push(
+        DIM('│ ') +
+          ACCENT(icon + ' ' + pathDisplay) +
+          ' '.repeat(Math.max(0, innerWidth - pathWidth - 4)) +
+          DIM(' │')
+      );
     }
   }
 
@@ -237,5 +248,5 @@ function clearPanel(): void {
 export function redrawInputWithFile(input: string): void {
   process.stdout.write('\r\x1b[2K');
   const prompt = filePromptRenderer === 'framed' ? renderFramedPrompt() : ACCENT('❯ ');
-  process.stdout.write(prompt + input);
+  process.stdout.write(prompt + sanitizeTerminalLine(input));
 }

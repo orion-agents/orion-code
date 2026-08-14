@@ -31,6 +31,7 @@ import {
   loadSessionHarnessState,
   updateSessionGoalBinding,
   clearSessionGoalBinding,
+  restoreSessionGoalBinding,
   appendSessionTraceEvent,
   readSessionTraceEvents,
   type SessionMeta,
@@ -56,6 +57,7 @@ import {
   getProjectSessionHarnessPath,
   getProjectSessionMessagesPath,
   getProjectSessionMetaPath,
+  getProjectSessionTracePath,
   getProjectSessionsDir,
 } from '../src/services/config-dir';
 import { createGoal, loadGoal, saveGoal } from '../src/services/goal-storage';
@@ -118,6 +120,32 @@ describe('session-storage', () => {
       expect(loadSessionMeta(session.id)?.activeGoalObjective).toBeUndefined();
     });
 
+    test('restores a just-cleared Goal binding without overwriting newer session state', () => {
+      const session = createSession('/tmp/project-goal-binding-rollback', 'gpt-4o');
+      const goal = { goalId: 'goal-rollback', objective: 'Preserve rollback authority' };
+      updateSessionGoalBinding(session.id, goal);
+      const cleared = clearSessionGoalBinding(session.id, goal.goalId)!;
+
+      expect(
+        restoreSessionGoalBinding(session.id, goal, cleared.updatedAt ?? 0)?.activeGoalId
+      ).toBe(goal.goalId);
+
+      const clearedAgain = clearSessionGoalBinding(session.id, goal.goalId)!;
+      updateSessionGoalBinding(session.id, {
+        goalId: 'goal-newer',
+        objective: 'Newer lifecycle owns the session',
+      });
+      expect(() =>
+        restoreSessionGoalBinding(session.id, goal, clearedAgain.updatedAt ?? 0)
+      ).toThrow('refusing to overwrite the newer Goal');
+      expect(loadSessionMeta(session.id)?.activeGoalId).toBe('goal-newer');
+
+      clearSessionGoalBinding(session.id, 'goal-newer');
+      expect(() => restoreSessionGoalBinding(session.id, goal, -1)).toThrow(
+        'refusing to overwrite newer session state'
+      );
+    });
+
     test('stores session meta in the project scope only', () => {
       const session = createSession('/tmp/project2', 'claude-sonnet');
 
@@ -166,6 +194,29 @@ describe('session-storage', () => {
         expect.objectContaining({ turnId: 'legacy-turn', type: 'message', note: 'legacy row' }),
       ]);
       expect(readSessionTraceEvents(session.id)[0].goalId).toBeUndefined();
+    });
+
+    test('serializes trace deletion and prevents a stale append from recreating it', () => {
+      const session = createSession('/tmp/project-delete-trace', 'gpt-4o');
+      const tracePath = getProjectSessionTracePath(session.projectPath, session.id);
+      appendSessionTraceEvent(session.id, {
+        turnId: 'before-delete',
+        type: 'message',
+        note: 'present before delete',
+      });
+      expect(existsSync(tracePath)).toBe(true);
+
+      expect(deleteSession(session.id)).toBe(true);
+      expect(existsSync(tracePath)).toBe(false);
+      expect(
+        appendSessionTraceEvent(session.id, {
+          turnId: 'stale-writer',
+          type: 'message',
+          note: 'must not reappear',
+        })
+      ).toBeNull();
+      expect(existsSync(tracePath)).toBe(false);
+      expect(readSessionTraceEvents(session.id)).toEqual([]);
     });
   });
 
@@ -935,6 +986,56 @@ describe('session-storage', () => {
       expect(index?.files.join('\n')).toContain('[REDACTED_SECRET]');
       expect(serialized).not.toContain('dashscope-secret-value');
       expect(serialized).not.toContain('sk-secretvalue123456');
+    });
+
+    test('reconciles summary metadata from the locked transcript, not a stale caller snapshot', () => {
+      const session = createSession('/tmp/project-summary-stale-snapshot', 'gpt-4o');
+      appendSessionMessage(session.id, {
+        role: 'user',
+        content: 'Update both files',
+        timestamp: 1,
+      });
+      const staleSnapshot = readSessionMessages(session.id);
+      appendSessionMessages(session.id, [
+        {
+          role: 'assistant',
+          content: '',
+          timestamp: 2,
+          tool_calls: [
+            {
+              id: 'call-write',
+              type: 'function',
+              function: {
+                name: 'write_file',
+                arguments: '{"path":"src/first.ts","content":"first"}',
+              },
+            },
+          ],
+        },
+        {
+          role: 'assistant',
+          content: '',
+          timestamp: 3,
+          tool_calls: [
+            {
+              id: 'call-edit',
+              type: 'function',
+              function: {
+                name: 'edit_file',
+                arguments: '{"path":"src/second.ts","old_string":"old","new_string":"new"}',
+              },
+            },
+          ],
+        },
+      ]);
+
+      updateSessionSummary(session.id, staleSnapshot);
+      expect(loadSessionMeta(session.id)).toMatchObject({
+        messageCount: 3,
+        taskSummary: 'Update both files',
+        toolsUsed: ['write_file', 'edit_file'],
+        filesModified: ['src/first.ts', 'src/second.ts'],
+      });
     });
 
     test('truncateSessionToLastComplete removes trailing aborted turn and rebuilds index', () => {

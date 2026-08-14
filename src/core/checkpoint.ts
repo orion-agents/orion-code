@@ -12,6 +12,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { atomicWriteFileSync } from '../services/atomic-write';
 import { getProjectCheckpointsDir, getProjectSessionsDir } from '../services/config-dir';
+import { resolveWorkspacePath } from '../services/workspace-containment';
 
 export const CHECKPOINT_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
@@ -76,10 +77,8 @@ function resolveCheckpointTarget(
   filePath: string
 ): { absolutePath: string; relativePath: string } | null {
   const projectRoot = path.resolve(projectPath);
-  const absolutePath = path.isAbsolute(filePath)
-    ? path.resolve(filePath)
-    : path.resolve(projectRoot, filePath);
-  if (!isInside(projectRoot, absolutePath)) return null;
+  const absolutePath = resolveWorkspacePath(projectRoot, filePath);
+  if (!absolutePath) return null;
 
   const relativePath = path.relative(projectRoot, absolutePath);
   if (!relativePath || relativePath.startsWith('..') || path.isAbsolute(relativePath)) return null;
@@ -102,6 +101,11 @@ export function createCheckpoint(
 ): Checkpoint | null {
   if (!projectPath || filePaths.length === 0) return null;
 
+  const targets = filePaths
+    .map(filePath => resolveCheckpointTarget(projectPath, filePath))
+    .filter((target): target is NonNullable<typeof target> => target !== null);
+  if (targets.length === 0) return null;
+
   const dir = getTurnDir(projectPath, turnId);
   // Issue #83: avoid the existsSync -> mkdirSync TOCTOU. Creating the turn dir
   // with a single non-recursive mkdir is atomic: if another process already
@@ -122,11 +126,8 @@ export function createCheckpoint(
   }
 
   const files: CheckpointFile[] = [];
-  for (const filePath of filePaths) {
+  for (const target of targets) {
     try {
-      const target = resolveCheckpointTarget(projectPath, filePath);
-      if (!target) continue;
-
       if (!fs.existsSync(target.absolutePath)) {
         files.push({
           path: target.relativePath,

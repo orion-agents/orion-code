@@ -40,7 +40,11 @@ import { budgetPreflight } from './goals/accounting';
 import { randomUUID } from 'crypto';
 import { captureWorkspaceFingerprint } from '../services/workspace-state';
 import { redactTraceText } from '../services/redaction';
-import { classifyGoalEvidenceKind, classifyGoalEvidenceResult } from './goals/evidence';
+import {
+  classifyGoalEvidenceKind,
+  classifyGoalEvidenceResult,
+  describeGoalRuntimeEvidence,
+} from './goals/evidence';
 import { appendSessionTraceEvent } from '../services/session-storage';
 import { externalAssertionMatchesInvocation } from '../framework/external-assertion';
 import { updateGlobalConfig } from '../services/global-config';
@@ -51,6 +55,7 @@ import {
   type ToolPermissionScope,
 } from '../services/tool-allowlist';
 import { AgentModeLifecycleController } from '../framework/agent-mode';
+import { clearGoalLifecycle } from './goals/lifecycle';
 
 export type {
   AgentRuntimeInput,
@@ -373,7 +378,7 @@ export class AgentRuntimeController {
               this.abortGoalOwnedExecution();
               executionRevoked = true;
             }
-            success = coord.clear();
+            success = clearGoalLifecycle(coord) !== null;
             if (success && this.followupQueue.length > 0) {
               this.followupQueue.splice(0);
               this.emitFollowupQueue();
@@ -437,22 +442,21 @@ export class AgentRuntimeController {
       }
     }
 
-    if (success) {
+    if (success && input.action !== 'clear') {
       const { updateSessionGoalBinding } =
         require('../services/session-storage') as typeof import('../services/session-storage');
       updateSessionGoalBinding(coord.boundSessionId, coord.goal);
-      if (input.action === 'clear' && previousGoalId) {
-        this.emitGoalEvent({ type: 'goal_cleared', goalId: previousGoalId, reason: 'user_clear' });
-      } else {
-        const snapshot = coord.snapshot();
-        if (snapshot) {
-          this.emitGoalEvent({
-            type: 'goal_updated',
-            goal: snapshot,
-            reason: `target_${input.action}`,
-          });
-        }
+      const snapshot = coord.snapshot();
+      if (snapshot) {
+        this.emitGoalEvent({
+          type: 'goal_updated',
+          goal: snapshot,
+          reason: `target_${input.action}`,
+        });
       }
+    }
+    if (success && input.action === 'clear' && previousGoalId) {
+      this.emitGoalEvent({ type: 'goal_cleared', goalId: previousGoalId, reason: 'user_clear' });
     }
 
     const statusText = this.formatTargetStatus(coord);
@@ -1101,7 +1105,13 @@ export class AgentRuntimeController {
     try {
       const { clearSessionGoalBinding } =
         require('../services/session-storage') as typeof import('../services/session-storage');
-      clearSessionGoalBinding(coord.boundSessionId, goalId);
+      const session = clearSessionGoalBinding(coord.boundSessionId, goalId);
+      if (!session) {
+        throw new Error(`Session ${coord.boundSessionId} was not found while clearing Goal mode.`);
+      }
+      if (!coord.detachCompletedReceipt(goalId)) {
+        throw new Error(`Completed Goal ${goalId} could not be detached from the live runtime.`);
+      }
     } catch (cause) {
       const detail = redactTraceText(cause instanceof Error ? cause.message : String(cause)).slice(
         0,
@@ -1615,6 +1625,11 @@ export class AgentRuntimeController {
           .filter(Boolean)
           .join(' ')
       : undefined;
+    const goalRuntimeSubject = describeGoalRuntimeEvidence({
+      name: event.event.name,
+      success: event.event.success,
+      error: event.event.error,
+    });
     const record: GoalEvidenceRecord = {
       id: `evidence:${randomUUID()}`,
       goalId: goal.goalId,
@@ -1623,7 +1638,11 @@ export class AgentRuntimeController {
       turnId: context.turnId,
       kind,
       subject: redactTraceText(
-        assertionSubject || event.event.summary || event.event.error || event.event.name
+        assertionSubject ||
+          goalRuntimeSubject ||
+          event.event.summary ||
+          event.event.error ||
+          event.event.name
       ).slice(0, 512),
       result,
       sourceRef: `tool:${event.event.callId}:${event.event.name}`,
@@ -1653,17 +1672,14 @@ export class AgentRuntimeController {
     this.continuationScheduleEpoch += 1;
     this.goalCoordinator = null;
     this.goalCoordinatorSessionId = null;
-    const coord = this.bindGoalCoordinator(sessionId, true, projectPath);
+    const coord = this.bindGoalCoordinator(sessionId, true, projectPath, true);
     const snapshot = coord?.snapshot();
     if (!snapshot) return;
     if (snapshot.status === 'complete' && coord.goal?.completionAudit?.passed === true) {
-      const { loadSessionMeta } =
-        require('../services/session-storage') as typeof import('../services/session-storage');
       // A completed sidecar with no active binding is a historical receipt,
       // not an active Goal to restore. Only replay the completion lifecycle
       // when recovering the crash window between the terminal write and the
       // conditional binding clear.
-      if (loadSessionMeta(sessionId)?.activeGoalId !== snapshot.goalId) return;
       this.emitGoalEvent({ type: 'goal_restored', goal: snapshot });
       this.emitGoalEvent({
         type: 'goal_completed',
@@ -1761,7 +1777,7 @@ export class AgentRuntimeController {
           if (input.payload?.confirmed && coord.goal !== null) {
             this.abortGoalOwnedExecution();
             executionRevoked = true;
-            if (!coord.clear()) {
+            if (!clearGoalLifecycle(coord)) {
               const message = this.failClosedGoalMutation(
                 coord,
                 input.action,
@@ -1822,12 +1838,45 @@ export class AgentRuntimeController {
   private bindGoalCoordinator(
     sessionId: string,
     recoverActive: boolean,
-    projectPath: string
+    projectPath: string,
+    restoreMissingBinding: boolean = false
   ): import('./goals/coordinator').GoalCoordinator {
     const { GoalCoordinator } =
       require('./goals/coordinator') as typeof import('./goals/coordinator');
     const coord = new GoalCoordinator(projectPath, sessionId);
     coord.load(recoverActive);
+    if (coord.goal) {
+      const { loadSessionMeta, restoreSessionGoalBinding } =
+        require('../services/session-storage') as typeof import('../services/session-storage');
+      const session = loadSessionMeta(sessionId);
+      if (
+        coord.goal.status === 'complete' &&
+        coord.goal.completionAudit?.passed === true &&
+        session?.activeGoalId !== coord.goal.goalId
+      ) {
+        coord.detachCompletedReceipt(coord.goal.goalId);
+      } else if (restoreMissingBinding && !session?.activeGoalId) {
+        try {
+          const restored = session
+            ? restoreSessionGoalBinding(
+                sessionId,
+                coord.goal,
+                session.updatedAt ?? session.startTime
+              )
+            : null;
+          if (!restored) {
+            throw new Error(`Session ${sessionId} was not found while restoring its Goal binding.`);
+          }
+        } catch (cause) {
+          this.emitAppend({
+            role: 'error',
+            title: 'target recovery',
+            content: `Goal sidecar ${coord.goal.goalId} remains paused, but its session binding could not be restored safely. ${redactTraceText(cause instanceof Error ? cause.message : String(cause))}`,
+            errorLayer: 'session',
+          });
+        }
+      }
+    }
     if (coord.lastLoadIssue) {
       this.emitAppend({
         role: 'error',

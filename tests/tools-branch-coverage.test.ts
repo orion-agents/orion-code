@@ -171,7 +171,7 @@ describe('git tools branch behavior', () => {
       },
       { stdout: '2\t5\n' }
     );
-    const result = await gitStatusTool.execute({ cwd: '/repo' }, context);
+    const result = await gitStatusTool.execute({ cwd: process.cwd() }, context);
     expect(result.success).toBe(true);
     expect(JSON.parse(result.output)).toEqual({
       clean: false,
@@ -191,7 +191,7 @@ describe('git tools branch behavior', () => {
   test('git_status still succeeds when the branch has no upstream', async () => {
     // Only the porcelain call is scripted; the upstream rev-list call throws.
     scriptGit({ stdout: '' });
-    const result = await gitStatusTool.execute({ cwd: '/repo' }, context);
+    const result = await gitStatusTool.execute({ cwd: process.cwd() }, context);
     expect(result.success).toBe(true);
     expect(JSON.parse(result.output)).toMatchObject({ clean: true, ahead: 0, behind: 0 });
   });

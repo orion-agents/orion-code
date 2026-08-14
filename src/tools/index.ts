@@ -20,7 +20,6 @@ import {
   createReadStream,
   lstatSync,
   mkdirSync,
-  realpathSync,
 } from 'fs';
 import { join, resolve, relative, isAbsolute, dirname } from 'path';
 import { createInterface } from 'readline';
@@ -46,6 +45,7 @@ import {
 import type { MemoryEntry, MemoryType } from '../memory/types';
 import { isSemanticEnabled } from '../memory/semantic-config';
 import { readSessionMessages, loadSessionMeta, listSessions } from '../services/session-storage';
+import { isWorkspacePath } from '../services/workspace-containment';
 import { WEB_TOOLS } from './web';
 import { MCP_TOOLS, mcpManager } from './mcp';
 import { TODO_TOOLS } from './todo';
@@ -1034,67 +1034,18 @@ function safePath(input: string, cwd = process.cwd()): string {
  * under `rootReal`. Used to enforce that a realpath is still inside the
  * workspace even when directories along the path are themselves symlinks.
  */
-function isUnderRealRoot(p: string, rootReal: string): boolean {
-  const rel = relative(rootReal, p);
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
-}
-
-/**
- * Contain a tool-resolved path inside the workspace root (cwd).
- *
- * Blocks `../` traversal and absolute paths outside the workspace, which would
- * otherwise let `write_file`/`edit_file` scribble over `~/.bashrc`, SSH config
- * or other projects — especially dangerous under `acceptEdits` auto-approval,
- * where the write runs without a confirmation prompt (issue #65).
- *
- * Containment is lexical first, then re-checked after resolving symlinks
- * (issue #99): a workspace symlink that points outside the workspace must not
- * be followed into an arbitrary write target. We resolve the realpath of the
- * parent directory (which also collapses any intermediate symlinked dirs) and,
- * if the target already exists, the target itself; if either escapes the
- * workspace we refuse. The workspace root is also realpath-resolved so a
- * symlinked cwd does not produce false rejections. Fail-closed on any
- * filesystem error.
- */
 function isWithinWorkspace(resolved: string, cwd: string): boolean {
-  const root = resolve(cwd);
-  const rel = relative(root, resolved);
-  if (!(rel === '' || (!rel.startsWith('..') && !isAbsolute(rel)))) return false;
-  try {
-    const rootReal = realpathSync(root);
-    const realParent = realpathSync(dirname(resolved));
-    if (!isUnderRealRoot(realParent, rootReal)) return false;
-    // Only the existing target needs its own realpath check; a brand-new file
-    // inherits the (already-validated) containment of its parent directory.
-    if (existsSync(resolved)) {
-      const realTarget = realpathSync(resolved);
-      if (!isUnderRealRoot(realTarget, rootReal)) return false;
-    }
-  } catch {
-    // A missing/unknowable realpath means we cannot prove containment — refuse.
-    return false;
-  }
-  return true;
+  return isWorkspacePath(cwd, resolved);
 }
 
 function isExecCwdWithinWorkspace(workdir: string, projectRoot: string): boolean {
   const root = resolve(projectRoot);
   const rel = relative(root, workdir);
   if (!(rel === '' || (!rel.startsWith('..') && !isAbsolute(rel)))) return false;
-
-  try {
-    const rootReal = realpathSync(root);
-    let existingAncestor = workdir;
-    while (!existsSync(existingAncestor) && existingAncestor !== root) {
-      existingAncestor = dirname(existingAncestor);
-    }
-    return isUnderRealRoot(realpathSync(existingAncestor), rootReal);
-  } catch {
-    // A missing synthetic root can only fail at spawn time; lexical containment
-    // still prevents it from selecting an external directory. Real workspaces
-    // exist and therefore take the symlink-aware path above.
-    return !existsSync(root);
-  }
+  // A missing synthetic root can only fail at spawn time; lexical containment
+  // still prevents it from selecting an external directory. Real workspaces
+  // take the shared symlink-aware boundary check.
+  return existsSync(root) ? isWorkspacePath(root, workdir) : true;
 }
 
 /**
@@ -1130,6 +1081,14 @@ async function readFileSync_(
   try {
     const normalizedPath = normalizeToolPath(path);
     const resolved = safePath(path, cwd);
+    const workspaceRoot = cwd ?? process.cwd();
+    if (!isWithinWorkspace(resolved, workspaceRoot)) {
+      return {
+        success: false,
+        output: '',
+        error: `Refusing to read outside the workspace: ${normalizedPath}`,
+      };
+    }
     if (!existsSync(resolved)) {
       return { success: false, output: '', error: `File not found: ${normalizedPath}` };
     }
@@ -1213,6 +1172,7 @@ async function writeFileSync_(path: string, content: string, cwd?: string): Prom
         error: `Refusing to write outside the workspace: ${normalizedPath}`,
       };
     }
+    mkdirSync(dirname(resolved), { recursive: true });
     writeFileSync(resolved, content, 'utf-8');
     return {
       success: true,
@@ -1226,6 +1186,14 @@ async function writeFileSync_(path: string, content: string, cwd?: string): Prom
 async function listFiles_(path: string, maxDepth?: number, cwd?: string): Promise<ToolResult> {
   const normalizedPath = normalizeToolPath(path);
   const resolved = safePath(path, cwd);
+  const workspaceRoot = cwd ?? process.cwd();
+  if (!isWithinWorkspace(resolved, workspaceRoot)) {
+    return {
+      success: false,
+      output: '',
+      error: `Refusing to list outside the workspace: ${normalizedPath}`,
+    };
+  }
   if (!existsSync(resolved)) {
     return { success: false, output: '', error: `Path not found: ${normalizedPath}` };
   }
@@ -1908,6 +1876,14 @@ async function glob_(pattern: string, basePath?: string, cwd?: string): Promise<
   try {
     const normalizedBasePath = basePath ? normalizeToolPath(basePath) : (cwd ?? process.cwd());
     const base = basePath ? safePath(basePath, cwd) : (cwd ?? process.cwd());
+    const workspaceRoot = cwd ?? process.cwd();
+    if (!isWithinWorkspace(base, workspaceRoot)) {
+      return {
+        success: false,
+        output: '',
+        error: `Refusing to search outside the workspace: ${normalizedBasePath}`,
+      };
+    }
     if (!existsSync(base)) {
       return { success: false, output: '', error: `Path not found: ${normalizedBasePath}` };
     }
@@ -2018,6 +1994,14 @@ async function grep_(
   try {
     const normalizedBasePath = basePath ? normalizeToolPath(basePath) : (cwd ?? process.cwd());
     const base = basePath ? safePath(basePath, cwd) : (cwd ?? process.cwd());
+    const workspaceRoot = cwd ?? process.cwd();
+    if (!isWithinWorkspace(base, workspaceRoot)) {
+      return {
+        success: false,
+        output: '',
+        error: `Refusing to search outside the workspace: ${normalizedBasePath}`,
+      };
+    }
     if (!existsSync(base)) {
       return { success: false, output: '', error: `Path not found: ${normalizedBasePath}` };
     }
@@ -2312,9 +2296,9 @@ async function executeBatchRead(
 
     // The scheduler resolved permissions for `batch_read` itself, not for the
     // tools it fans out to. Without re-running the gate here, a project
-    // `deny: read_file(*.env)` rule -- and the plan-mode block -- apply to the
-    // flat call but not to the batched one, so the model can read a denied path
-    // simply by wrapping it in `batch_read`.
+    // `deny: read_file(*.env)` rule applies to the flat call and must also apply
+    // to the batched one, otherwise the model could read a denied path simply
+    // by wrapping it in `batch_read`.
     const stepPermission =
       getToolMetadataPresence(tool).hasPermissionCheck && tool.checkPermissions
         ? tool.checkPermissions(step.args, context)
@@ -2327,7 +2311,7 @@ async function executeBatchRead(
       permissionMode: context.permissionMode,
       allowlist: context.toolAllowlist?.(step.tool, step.args),
     });
-    if (effective.outcome === 'deny' || effective.outcome === 'block') {
+    if (effective.outcome === 'deny') {
       const error =
         effective.reason || `Tool ${step.tool} is not permitted (${effective.source ?? 'policy'})`;
       return buildBatchReadPayload(

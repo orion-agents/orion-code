@@ -25,7 +25,11 @@ import type { SessionMeta } from '../src/services/session-storage';
 const noop = () => ({ success: true });
 const stripAnsi = (text: string) => text.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
 
-function command(name: string, description = `${name} command`, extras: Partial<SlashCommand> = {}): SlashCommand {
+function command(
+  name: string,
+  description = `${name} command`,
+  extras: Partial<SlashCommand> = {}
+): SlashCommand {
   return {
     name,
     description,
@@ -47,20 +51,24 @@ describe('UI v2 suggestions', () => {
   });
 
   test('filters commands by name and alias', () => {
-    const result = buildCommandSuggestions([
-      command('status', 'Show status', { aliases: ['s'] }),
-      command('sessions', 'List sessions'),
-      command('model', 'Show model'),
-    ], 's');
+    const result = buildCommandSuggestions(
+      [
+        command('status', 'Show status', { aliases: ['s'] }),
+        command('sessions', 'List sessions'),
+        command('model', 'Show model'),
+      ],
+      's'
+    );
 
     expect(result.items.map(item => item.label)).toEqual(['/status', '/sessions']);
     expect(result.items[0].shortcut).toBe('s');
   });
 
   test('keeps argument hints out of visible suggestion rows', () => {
-    const result = buildCommandSuggestions([
-      command('model', 'Show or change model', { argumentHint: '[model|list|help]' }),
-    ], 'm');
+    const result = buildCommandSuggestions(
+      [command('model', 'Show or change model', { argumentHint: '[model|list|help]' })],
+      'm'
+    );
 
     const lines = renderCommandPalette({
       title: 'Matching "m"',
@@ -76,6 +84,33 @@ describe('UI v2 suggestions', () => {
 
     expect(lines.join('\n')).toContain('/model');
     expect(lines.join('\n')).not.toContain('[model|list|help]');
+  });
+
+  test('sanitizes command palette labels, details, headings, and footer text', () => {
+    const lines = renderCommandPalette({
+      title: 'Commands\x1b[2J-owned',
+      items: [
+        {
+          id: 'malicious',
+          kind: 'command',
+          label: '/safe\x9b31m-command',
+          detail: 'detail\x1b]0;hijack\x07',
+        },
+      ],
+      selectedIndex: 0,
+      width: 80,
+      footer: 'footer\x9d0;title\x9c',
+      theme: {
+        accent: text => text,
+        dim: text => text,
+        selected: text => text,
+      },
+    });
+    const rendered = lines.join('\n');
+
+    expect(rendered).not.toMatch(/[\x1b\x80-\x9f]/u);
+    expect(rendered).toContain('/safe-command');
+    expect(rendered).toContain('detail');
   });
 });
 
@@ -95,9 +130,7 @@ describe('UI v2 picker state', () => {
   });
 
   test('keeps picker visible when filtering to an empty list', () => {
-    const state = createPickerState([
-      { id: '1', kind: 'command', label: '/one' },
-    ], '', true);
+    const state = createPickerState([{ id: '1', kind: 'command', label: '/one' }], '', true);
 
     const empty = updatePickerItems(state, [], 'zzz');
     const closed = closePicker(empty);
@@ -160,10 +193,13 @@ describe('UI v2 session picker', () => {
   }
 
   test('builds compact session suggestions with stable numbering', () => {
-    const suggestions = buildSessionSuggestions([
-      session('abcdef123456', { name: 'api cleanup' }),
-      session('fedcba654321', { taskSummary: 'Fix tests' }),
-    ], { now });
+    const suggestions = buildSessionSuggestions(
+      [
+        session('abcdef123456', { name: 'api cleanup' }),
+        session('fedcba654321', { taskSummary: 'Fix tests' }),
+      ],
+      { now }
+    );
 
     expect(suggestions[0]).toMatchObject({
       id: 'session:abcdef123456',
@@ -204,14 +240,16 @@ describe('UI v2 session picker', () => {
 
 describe('UI v2 shell', () => {
   test('renders a visible v2 header with project and model tokens', () => {
-    const header = stripAnsi(renderV2ShellHeader({
-      provider: 'Alibaba Cloud',
-      model: 'glm-5',
-      projectPath: '/Users/hope/ai-project/openhorse',
-      status: 'ready',
-      version: '0.1.20',
-      width: 80,
-    }));
+    const header = stripAnsi(
+      renderV2ShellHeader({
+        provider: 'Alibaba Cloud',
+        model: 'glm-5',
+        projectPath: '/Users/hope/ai-project/openhorse',
+        status: 'ready',
+        version: '0.1.20',
+        width: 80,
+      })
+    );
 
     expect(header).toContain('Orion Code v0.1.20');
     expect(header).toContain('model=glm-5');
@@ -221,18 +259,20 @@ describe('UI v2 shell', () => {
 
   test('renders v2 prompt and status line', () => {
     const prompt = stripAnsi(renderV2Prompt('[Search: s]'));
-    const status = stripAnsi(renderV2StatusLine({
-      model: 'glm-5',
-      tokens: 3984,
-      promptTokens: 3901,
-      completionTokens: 83,
-      cost: 0.0004,
-      ctxPercent: 2,
-      mcpConnected: 1,
-      mcpTotal: 2,
-      sessionId: 'abcdef123456',
-      width: 80,
-    }));
+    const status = stripAnsi(
+      renderV2StatusLine({
+        model: 'glm-5',
+        tokens: 3984,
+        promptTokens: 3901,
+        completionTokens: 83,
+        cost: 0.0004,
+        ctxPercent: 2,
+        mcpConnected: 1,
+        mcpTotal: 2,
+        sessionId: 'abcdef123456',
+        width: 80,
+      })
+    );
 
     expect(prompt).toContain('› [Search: s]');
     expect(prompt).not.toContain('oh');

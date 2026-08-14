@@ -6,9 +6,10 @@ import {
   gitBranchTool,
 } from '../src/tools/git';
 import { execFileSync } from 'child_process';
-import { mkdtempSync, writeFileSync, rmSync } from 'fs';
+import { mkdtempSync, writeFileSync, rmSync, symlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import type { ToolContext } from '../src/framework/tool';
 
 function setupRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), 'orion-git-test-'));
@@ -50,7 +51,12 @@ afterAll(() => {
 });
 
 // 接口签名：execute(args, context) / isReadOnly(args) / checkPermissions(args, context)
-const CTX = {} as never;
+const CTX = {
+  get cwd() {
+    return repo ?? process.cwd();
+  },
+  config: { name: 'test', mode: 'development' },
+} as ToolContext;
 const ARGS = {} as Record<string, unknown>;
 
 const maybeDescribe = GIT_OK ? describe : describe.skip;
@@ -159,5 +165,28 @@ maybeDescribe('git tools (real temp repo)', () => {
     await expect(
       gitBranchTool.execute({ action: 'create', name: '--help', cwd: repo! }, CTX)
     ).resolves.toMatchObject({ success: false, error: expect.stringContaining('safe branch') });
+  });
+
+  it('rejects a Git cwd outside ToolContext.cwd', async () => {
+    await expect(gitStatusTool.execute({ cwd: tmpdir() }, CTX)).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining('outside the active workspace'),
+    });
+  });
+
+  it('rejects a Git cwd symlink that escapes ToolContext.cwd', async () => {
+    const outsideRepo = setupRepo();
+    const link = join(repo!, 'external-repo');
+    symlinkSync(outsideRepo, link);
+
+    try {
+      await expect(gitStatusTool.execute({ cwd: link }, CTX)).resolves.toMatchObject({
+        success: false,
+        error: expect.stringContaining('outside the active workspace'),
+      });
+    } finally {
+      rmSync(link, { force: true });
+      rmSync(outsideRepo, { recursive: true, force: true });
+    }
   });
 });
