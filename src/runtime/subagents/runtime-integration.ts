@@ -276,7 +276,8 @@ export function createSubagentBundleForTurn(inputs: SubagentTurnInputs): Subagen
   const executeQuery = createProductionExecuteQuery({
     rootConfig: rootLlmConfig,
     providerGate,
-    maxTurnsPerTask: config.maxTurnsPerTask,
+    maxModelRequestsPerTask: config.maxModelRequestsPerTask,
+    maxToolCallsPerTask: config.maxToolCallsPerTask,
     resilience: inputs.resilience,
     beforeProviderRequest: inputs.beforeProviderRequest,
   });

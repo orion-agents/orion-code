@@ -11,7 +11,7 @@ import {
 import { findCommand } from '../src/commands';
 import type { SkillDefinition } from '../src/skills/types';
 import { buildTool, type OrionCodeTool } from '../src/framework/tool';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -110,7 +110,10 @@ Automated GitHub contribution workflow.
 ## Usage
 Run the workflow.`;
 
-    const skill = parseSkillFile(content, '/Users/hope/.orion-code/skills/github-contribution/SKILL.md');
+    const skill = parseSkillFile(
+      content,
+      '/Users/hope/.orion-code/skills/github-contribution/SKILL.md'
+    );
 
     expect(skill?.name).toBe('github-contribution');
     expect(skill?.description).toBe('Automated GitHub contribution workflow.');
@@ -256,27 +259,39 @@ describe('Skills runtime', () => {
     process.env.ORION_CODE_CONFIG_DIR = configDir;
     process.chdir(projectDir);
 
-    writeFileSync(join(configDir, 'orion.json'), JSON.stringify({
-      defaultModel: 'gpt-4o',
-      skills: { paths: [externalRoot] },
-    }), 'utf-8');
+    writeFileSync(
+      join(configDir, 'orion.json'),
+      JSON.stringify({
+        defaultModel: 'gpt-4o',
+        skills: { paths: [externalRoot] },
+      }),
+      'utf-8'
+    );
 
-    writeSkill(externalRoot, 'no-trigger-skill', `---
+    writeSkill(
+      externalRoot,
+      'no-trigger-skill',
+      `---
 name: no-trigger-skill
 description: No trigger skill
 ---
-No trigger prompt`);
+No trigger prompt`
+    );
 
     // A skill placed inside the project dir (cwd) is within the allowed roots,
     // so an explicit SKILL.md reference to it still loads (#33 B positive case).
     // It is deliberately NOT configured, so it can only be activated via the
     // explicit reference — isolating the path-load behavior.
     const inProjectDir = join(projectDir, 'linked-skill');
-    writeSkill(inProjectDir, 'linked-skill', `---
+    writeSkill(
+      inProjectDir,
+      'linked-skill',
+      `---
 name: linked-skill
 description: In-project explicit skill
 ---
-In-project prompt`);
+In-project prompt`
+    );
 
     resetSkillsRegistry();
     const resolution = resolveSkillsForTurn({
@@ -301,11 +316,13 @@ In-project prompt`);
       skillPath: join(inProjectDir, 'linked-skill', 'SKILL.md'),
       task: 'inspect it',
     });
-    expect(resolveSkillsForTurn({
-      cwd: projectDir,
-      input: inProjectReference,
-      tools: ['read_file', 'write_file'].map(makeTool),
-    }).skills.map(skill => skill.name)).toEqual(['linked-skill']);
+    expect(
+      resolveSkillsForTurn({
+        cwd: projectDir,
+        input: inProjectReference,
+        tools: ['read_file', 'write_file'].map(makeTool),
+      }).skills.map(skill => skill.name)
+    ).toEqual(['linked-skill']);
 
     process.chdir(originalCwd);
     rmSync(tempRoot, { recursive: true, force: true });
@@ -325,14 +342,22 @@ In-project prompt`);
 
     process.env.ORION_CODE_CONFIG_DIR = configDir;
     process.chdir(projectDir);
-    writeFileSync(join(configDir, 'orion.json'), JSON.stringify({
-      defaultModel: 'gpt-4o',
-    }), 'utf-8');
-    writeSkill(inProjectRoot, 'chronicle', `---
+    writeFileSync(
+      join(configDir, 'orion.json'),
+      JSON.stringify({
+        defaultModel: 'gpt-4o',
+      }),
+      'utf-8'
+    );
+    writeSkill(
+      inProjectRoot,
+      'chronicle',
+      `---
 name: chronicle
 description: Screen history
 ---
-Chronicle prompt`);
+Chronicle prompt`
+    );
 
     resetSkillsRegistry();
     const skillFile = join(inProjectRoot, 'chronicle', 'SKILL.md');
@@ -352,74 +377,113 @@ Chronicle prompt`);
     expect(resolution.skills.map(skill => skill.name)).toEqual(['chronicle']);
     expect(resolution.promptInjection).toContain('Chronicle prompt');
     expect(resolution.skills[0].resourceRoot).toBe(join(inProjectRoot, 'chronicle'));
-    expect(resolveSkillsForTurn({
-      cwd: projectDir,
-      input: `/${input}`,
-      tools: ['read_file', 'write_file'].map(makeTool),
-    }).skills.map(skill => skill.name)).toEqual(['chronicle']);
+    expect(
+      resolveSkillsForTurn({
+        cwd: projectDir,
+        input: `/${input}`,
+        tools: ['read_file', 'write_file'].map(makeTool),
+      }).skills.map(skill => skill.name)
+    ).toEqual(['chronicle']);
 
     const command = findCommand('skill');
-    expect(command!.execute({ cwd: projectDir } as any, input)).toEqual(expect.objectContaining({
-      success: true,
-      continueAsChat: true,
-      chatInput: `/skill [$chronicle](<${skillFile}>) inspect recent work (today)`,
-    }));
-    const noTask = command!.execute(
-      { cwd: projectDir } as any,
-      `[$chronicle](<${skillFile}>)`,
+    expect(command!.execute({ cwd: projectDir } as any, input)).toEqual(
+      expect.objectContaining({
+        success: true,
+        continueAsChat: true,
+        chatInput: `/skill [$chronicle](<${skillFile}>) inspect recent work (today)`,
+      })
     );
-    expect(noTask).toEqual(expect.objectContaining({
-      output: expect.stringContaining('Skill reference chronicle is valid for one turn.'),
-    }));
-    expect(noTask).not.toEqual(expect.objectContaining({
-      output: expect.stringContaining('Skill chronicle is loaded.'),
-    }));
+    const noTask = command!.execute({ cwd: projectDir } as any, `[$chronicle](<${skillFile}>)`);
+    expect(noTask).toEqual(
+      expect.objectContaining({
+        output: expect.stringContaining('Skill reference chronicle is valid for one turn.'),
+      })
+    );
+    expect(noTask).not.toEqual(
+      expect.objectContaining({
+        output: expect.stringContaining('Skill chronicle is loaded.'),
+      })
+    );
 
     // A relative reference that stays inside the project cwd still loads.
     const relativeInside = '[$chronicle](<external root)/chronicle/SKILL.md>) inspect';
     expect(hasMatchingSkill(relativeInside, projectDir)).toBe(true);
+
+    // A lexical in-project path must not follow a SKILL.md symlink to content
+    // outside either allowed root.
+    const linkedExternalRoot = join(tempRoot, 'linked-external');
+    const linkedProjectSkill = join(projectDir, 'linked-external');
+    writeSkill(
+      linkedExternalRoot,
+      'linked-external',
+      `---
+name: linked-external
+description: Must not cross the project boundary
+---
+External prompt`
+    );
+    mkdirSync(linkedProjectSkill, { recursive: true });
+    symlinkSync(
+      join(linkedExternalRoot, 'linked-external', 'SKILL.md'),
+      join(linkedProjectSkill, 'SKILL.md')
+    );
+    const linkedExternalInput = `[$linked-external](${join(linkedProjectSkill, 'SKILL.md')}) inspect`;
+    expect(loadExplicitSkillReference(linkedExternalInput, projectDir)).toBeUndefined();
+    expect(hasMatchingSkill(linkedExternalInput, projectDir)).toBe(false);
 
     process.chdir(originalCwd);
 
     // Bug #33 B: a reference that escapes the project cwd is rejected and must
     // not load a skill from outside the allowed roots.
     const escapedRoot = join(tempRoot, 'escaped');
-    writeSkill(escapedRoot, 'escapist', `---
+    writeSkill(
+      escapedRoot,
+      'escapist',
+      `---
 name: escapist
 description: Escapes the project root
 ---
-Escapist prompt`);
+Escapist prompt`
+    );
     const escapedInput = `[$escapist](<${join(escapedRoot, 'escapist', 'SKILL.md')}>) inspect`;
     expect(hasMatchingSkill(escapedInput, projectDir)).toBe(false);
-    expect(resolveSkillsForTurn({
-      cwd: projectDir,
-      input: escapedInput,
-      tools: ['read_file', 'write_file'].map(makeTool),
-    }).skills).toEqual([]);
+    expect(
+      resolveSkillsForTurn({
+        cwd: projectDir,
+        input: escapedInput,
+        tools: ['read_file', 'write_file'].map(makeTool),
+      }).skills
+    ).toEqual([]);
 
     const oversizedRoot = join(tempRoot, 'oversized');
-    writeSkill(oversizedRoot, 'oversized', `---
+    writeSkill(
+      oversizedRoot,
+      'oversized',
+      `---
 name: oversized
 description: Oversized skill
 ---
-${'x'.repeat(MAX_EXPLICIT_SKILL_BYTES)}`);
+${'x'.repeat(MAX_EXPLICIT_SKILL_BYTES)}`
+    );
     const oversizedInput = `[$oversized](${join(oversizedRoot, 'oversized', 'SKILL.md')}) inspect`;
     expect(loadExplicitSkillReference(oversizedInput, projectDir)).toBeUndefined();
     const invalidBuiltinReference = `[$code-review](${join(oversizedRoot, 'missing', 'SKILL.md')}) inspect`;
     expect(hasMatchingSkill(invalidBuiltinReference, projectDir)).toBe(false);
-    expect(resolveSkillsForTurn({
-      cwd: projectDir,
-      input: invalidBuiltinReference,
-      tools: ['read_file', 'write_file'].map(makeTool),
-    }).skills).toEqual([]);
+    expect(
+      resolveSkillsForTurn({
+        cwd: projectDir,
+        input: invalidBuiltinReference,
+        tools: ['read_file', 'write_file'].map(makeTool),
+      }).skills
+    ).toEqual([]);
 
     rmSync(tempRoot, { recursive: true, force: true });
   });
 
   test('keeps closing parentheses in a markdown skill task', () => {
-    expect(parseSkillCommandInput(
-      '/skill [$code-review](/tmp/code-review/SKILL.md) inspect (src)',
-    )).toEqual({
+    expect(
+      parseSkillCommandInput('/skill [$code-review](/tmp/code-review/SKILL.md) inspect (src)')
+    ).toEqual({
       skillName: 'code-review',
       skillPath: '/tmp/code-review/SKILL.md',
       task: 'inspect (src)',
@@ -437,19 +501,27 @@ ${'x'.repeat(MAX_EXPLICIT_SKILL_BYTES)}`);
     process.env.ORION_CODE_CONFIG_DIR = configDir;
     process.chdir(projectDir);
 
-    writeFileSync(join(configDir, 'orion.json'), JSON.stringify({
-      defaultModel: 'gpt-4o',
-      skills: { paths: [externalRoot] },
-    }), 'utf-8');
+    writeFileSync(
+      join(configDir, 'orion.json'),
+      JSON.stringify({
+        defaultModel: 'gpt-4o',
+        skills: { paths: [externalRoot] },
+      }),
+      'utf-8'
+    );
 
-    writeSkill(externalRoot, 'coding-squad', `---
+    writeSkill(
+      externalRoot,
+      'coding-squad',
+      `---
 name: coding-squad
 description: Squad workflow
 tags:
   - agent-workflow
   - coding
 ---
-Squad prompt`);
+Squad prompt`
+    );
 
     resetSkillsRegistry();
     const resolution = resolveSkillsForTurn({
@@ -472,20 +544,28 @@ Squad prompt`);
 
     const result = command!.execute({} as any, 'code-review inspect src');
 
-    expect(result).toEqual(expect.objectContaining({
-      success: true,
-      continueAsChat: true,
-      chatInput: '/skill code-review inspect src',
-    }));
+    expect(result).toEqual(
+      expect.objectContaining({
+        success: true,
+        continueAsChat: true,
+        chatInput: '/skill code-review inspect src',
+      })
+    );
 
     const codeReview = getSkillsRegistry().getSkill('code-review');
-    const markdownResult = command!.execute({ cwd: process.cwd() } as any,
-      `[$code-review](${codeReview!.resourceRoot}/SKILL.md) inspect src`);
-    expect(markdownResult).toEqual(expect.objectContaining({
-      success: true,
-      continueAsChat: true,
-      chatInput: expect.stringMatching(/^\/skill \[\$code-review\]\(.+\/SKILL\.md\) inspect src$/),
-    }));
+    const markdownResult = command!.execute(
+      { cwd: process.cwd() } as any,
+      `[$code-review](${codeReview!.resourceRoot}/SKILL.md) inspect src`
+    );
+    expect(markdownResult).toEqual(
+      expect.objectContaining({
+        success: true,
+        continueAsChat: true,
+        chatInput: expect.stringMatching(
+          /^\/skill \[\$code-review\]\(.+\/SKILL\.md\) inspect src$/
+        ),
+      })
+    );
   });
 
   test('/skill slash command accepts activation aliases', () => {
@@ -499,28 +579,38 @@ Squad prompt`);
     process.env.ORION_CODE_CONFIG_DIR = configDir;
     process.chdir(projectDir);
 
-    writeFileSync(join(configDir, 'orion.json'), JSON.stringify({
-      defaultModel: 'gpt-4o',
-      skills: { paths: [externalRoot] },
-    }), 'utf-8');
+    writeFileSync(
+      join(configDir, 'orion.json'),
+      JSON.stringify({
+        defaultModel: 'gpt-4o',
+        skills: { paths: [externalRoot] },
+      }),
+      'utf-8'
+    );
 
-    writeSkill(externalRoot, 'coding-squad', `---
+    writeSkill(
+      externalRoot,
+      'coding-squad',
+      `---
 name: coding-squad
 description: Squad workflow
 aliases:
   - 团队开发
 ---
-Squad prompt`);
+Squad prompt`
+    );
 
     resetSkillsRegistry();
     const command = findCommand('skill');
     const result = command!.execute({} as any, '团队开发 修复问题');
 
-    expect(result).toEqual(expect.objectContaining({
-      success: true,
-      continueAsChat: true,
-      chatInput: '/skill coding-squad 修复问题',
-    }));
+    expect(result).toEqual(
+      expect.objectContaining({
+        success: true,
+        continueAsChat: true,
+        chatInput: '/skill coding-squad 修复问题',
+      })
+    );
 
     process.chdir(originalCwd);
     rmSync(tempRoot, { recursive: true, force: true });
@@ -536,21 +626,29 @@ Squad prompt`);
     process.env.ORION_CODE_CONFIG_DIR = configDir;
     process.chdir(projectDir);
 
-    writeSkill(join(configDir, 'skills'), 'code-review', `---
+    writeSkill(
+      join(configDir, 'skills'),
+      'code-review',
+      `---
 name: code-review
 description: User review
 trigger: /review
 priority: 100
 ---
-User skill prompt`);
+User skill prompt`
+    );
 
-    writeSkill(join(projectDir, '.orion-code', 'skills'), 'code-review', `---
+    writeSkill(
+      join(projectDir, '.orion-code', 'skills'),
+      'code-review',
+      `---
 name: code-review
 description: Project review
 trigger: /review
 priority: 1
 ---
-Project skill prompt`);
+Project skill prompt`
+    );
 
     resetSkillsRegistry();
     const skill = getSkillsRegistry().getSkill('code-review');
@@ -575,27 +673,39 @@ Project skill prompt`);
     process.env.ORION_CODE_CONFIG_DIR = configDir;
     process.chdir(projectDir);
 
-    writeFileSync(join(configDir, 'orion.json'), JSON.stringify({
-      defaultModel: 'gpt-4o',
-      skills: {
-        paths: [externalRoot, directSkillDir],
-      },
-    }), 'utf-8');
+    writeFileSync(
+      join(configDir, 'orion.json'),
+      JSON.stringify({
+        defaultModel: 'gpt-4o',
+        skills: {
+          paths: [externalRoot, directSkillDir],
+        },
+      }),
+      'utf-8'
+    );
 
-    writeSkill(externalRoot, 'coding-squad', `---
+    writeSkill(
+      externalRoot,
+      'coding-squad',
+      `---
 name: coding-squad
 description: External squad workflow
 trigger: coding-squad
 ---
-External squad prompt`);
+External squad prompt`
+    );
 
     mkdirSync(directSkillDir, { recursive: true });
-    writeFileSync(join(directSkillDir, 'SKILL.md'), `---
+    writeFileSync(
+      join(directSkillDir, 'SKILL.md'),
+      `---
 name: direct-skill
 description: Direct skill path
 trigger: direct-skill
 ---
-Direct prompt`, 'utf-8');
+Direct prompt`,
+      'utf-8'
+    );
 
     resetSkillsRegistry();
     const registry = getSkillsRegistry();
@@ -620,28 +730,40 @@ Direct prompt`, 'utf-8');
     process.env.ORION_CODE_CONFIG_DIR = configDir;
     process.chdir(projectDir);
 
-    writeFileSync(join(configDir, 'orion.json'), JSON.stringify({
-      defaultModel: 'gpt-4o',
-      skills: {
-        paths: [externalRoot],
-      },
-    }), 'utf-8');
+    writeFileSync(
+      join(configDir, 'orion.json'),
+      JSON.stringify({
+        defaultModel: 'gpt-4o',
+        skills: {
+          paths: [externalRoot],
+        },
+      }),
+      'utf-8'
+    );
 
-    writeSkill(externalRoot, 'code-review', `---
+    writeSkill(
+      externalRoot,
+      'code-review',
+      `---
 name: code-review
 description: Configured review
 trigger: /review
 priority: 100
 ---
-Configured skill prompt`);
+Configured skill prompt`
+    );
 
-    writeSkill(join(projectDir, '.orion-code', 'skills'), 'code-review', `---
+    writeSkill(
+      join(projectDir, '.orion-code', 'skills'),
+      'code-review',
+      `---
 name: code-review
 description: Project review
 trigger: /review
 priority: 1
 ---
-Project skill prompt`);
+Project skill prompt`
+    );
 
     resetSkillsRegistry();
     const skill = getSkillsRegistry().getSkill('code-review');
@@ -664,40 +786,54 @@ Project skill prompt`);
     process.env.ORION_CODE_CONFIG_DIR = configDir;
     process.chdir(projectDir);
 
-    writeFileSync(join(configDir, 'orion.json'), JSON.stringify({
-      defaultModel: 'gpt-4o',
-      skills: {
-        paths: [externalRoot],
-      },
-    }), 'utf-8');
+    writeFileSync(
+      join(configDir, 'orion.json'),
+      JSON.stringify({
+        defaultModel: 'gpt-4o',
+        skills: {
+          paths: [externalRoot],
+        },
+      }),
+      'utf-8'
+    );
 
-    writeSkill(externalRoot, 'code-review', `---
+    writeSkill(
+      externalRoot,
+      'code-review',
+      `---
 name: code-review
 description: Configured review
 trigger: /review
 priority: 100
 ---
-Configured skill prompt`);
+Configured skill prompt`
+    );
 
-    writeSkill(join(projectDir, '.orion-code', 'skills'), 'code-review', `---
+    writeSkill(
+      join(projectDir, '.orion-code', 'skills'),
+      'code-review',
+      `---
 name: code-review
 description: Project review
 trigger: /review
 priority: 1
 ---
-Project skill prompt`);
+Project skill prompt`
+    );
 
     resetSkillsRegistry();
     const summary = getSkillsRegistry().getSummary();
 
     expect(summary.duplicateCount).toBeGreaterThan(0);
-    expect(summary.duplicates).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        name: 'code-review',
-        incomingSelected: true,
-        selectedSourceType: 'project',
-      }),
-    ]));
+    expect(summary.duplicates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'code-review',
+          incomingSelected: true,
+          selectedSourceType: 'project',
+        }),
+      ])
+    );
 
     process.chdir(originalCwd);
     rmSync(tempRoot, { recursive: true, force: true });

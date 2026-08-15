@@ -6,7 +6,15 @@
  * audited or rebuilt after an interrupted write.
  */
 
-import { appendFileSync, existsSync, readFileSync } from 'fs';
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fsyncSync,
+  openSync,
+  readFileSync,
+  writeFileSync,
+} from 'fs';
 import { randomUUID } from 'crypto';
 import { atomicWriteFileSync } from './atomic-write';
 import { withFileLockSync } from './file-lock';
@@ -74,6 +82,26 @@ export interface UsageLedgerSummary {
   byModel: Record<string, { tokens: number; cost: number; count: number }>;
 }
 
+export type UsageLedgerPersistenceErrorCode =
+  | 'invalid_record'
+  | 'lock_timeout'
+  | 'append_failed'
+  | 'durability_failed';
+
+/** A fail-closed usage-ledger error with a stable recovery category. */
+export class UsageLedgerPersistenceError extends Error {
+  readonly code: UsageLedgerPersistenceErrorCode;
+  readonly action: string;
+
+  constructor(code: UsageLedgerPersistenceErrorCode, message: string, action: string) {
+    super(message);
+    this.name = 'UsageLedgerPersistenceError';
+    this.code = code;
+    this.action = action;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
 interface LegacyUsageFields {
   totalSessions?: unknown;
   totalTokens?: unknown;
@@ -96,6 +124,14 @@ function nowIso(): string {
 function toNonNegativeNumber(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return 0;
   return value;
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
+function isNonNegativeFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
 }
 
 function readJsonFile(path: string): unknown | null {
@@ -166,7 +202,23 @@ function isProviderProtocol(value: unknown): value is ProviderProtocol {
 function normalizeLedgerEntry(value: unknown): UsageLedgerEntry | null {
   if (!value || typeof value !== 'object') return null;
   const entry = value as Partial<UsageLedgerEntry>;
-  if (typeof entry.model !== 'string' || !isCostSource(entry.costSource)) return null;
+  if (
+    typeof entry.model !== 'string' ||
+    !entry.model.trim() ||
+    !isCostSource(entry.costSource) ||
+    !isNonNegativeSafeInteger(entry.promptTokens) ||
+    !isNonNegativeSafeInteger(entry.completionTokens) ||
+    !isNonNegativeSafeInteger(entry.cachedPromptTokens) ||
+    entry.cachedPromptTokens > entry.promptTokens ||
+    !isNonNegativeSafeInteger(entry.totalTokens) ||
+    entry.totalTokens !== entry.promptTokens + entry.completionTokens ||
+    !isNonNegativeFiniteNumber(entry.costUsd) ||
+    (entry.reasoningTokens !== undefined &&
+      (!isNonNegativeSafeInteger(entry.reasoningTokens) ||
+        entry.reasoningTokens > entry.completionTokens))
+  ) {
+    return null;
+  }
 
   return {
     schemaVersion: 1,
@@ -175,24 +227,17 @@ function normalizeLedgerEntry(value: unknown): UsageLedgerEntry | null {
     ...(typeof entry.sessionId === 'string' ? { sessionId: entry.sessionId } : {}),
     ...(typeof entry.projectPath === 'string' ? { projectPath: entry.projectPath } : {}),
     model: entry.model,
-    promptTokens: toNonNegativeNumber(entry.promptTokens),
-    completionTokens: toNonNegativeNumber(entry.completionTokens),
-    cachedPromptTokens: toNonNegativeNumber(entry.cachedPromptTokens),
-    totalTokens: toNonNegativeNumber(entry.totalTokens),
-    costUsd: toNonNegativeNumber(entry.costUsd),
+    promptTokens: entry.promptTokens,
+    completionTokens: entry.completionTokens,
+    cachedPromptTokens: entry.cachedPromptTokens,
+    totalTokens: entry.totalTokens,
+    costUsd: entry.costUsd,
     costSource: entry.costSource,
     ...(typeof entry.requestId === 'string' ? { requestId: entry.requestId } : {}),
     ...(typeof entry.requestKind === 'string' ? { requestKind: entry.requestKind } : {}),
     ...(typeof entry.agentId === 'string' ? { agentId: entry.agentId } : {}),
     ...(typeof entry.taskId === 'string' ? { taskId: entry.taskId } : {}),
-    ...(entry.reasoningTokens !== undefined
-      ? {
-          reasoningTokens: Math.min(
-            toNonNegativeNumber(entry.completionTokens),
-            toNonNegativeNumber(entry.reasoningTokens)
-          ),
-        }
-      : {}),
+    ...(entry.reasoningTokens !== undefined ? { reasoningTokens: entry.reasoningTokens } : {}),
     ...(isEffortPreference(entry.effortRequested)
       ? { effortRequested: entry.effortRequested }
       : {}),
@@ -204,7 +249,7 @@ function normalizeLedgerEntry(value: unknown): UsageLedgerEntry | null {
   };
 }
 
-function readUsageLedger(): { entries: UsageLedgerEntry[]; droppedCorruptLines: number } {
+function readUsageLedgerUnlocked(): { entries: UsageLedgerEntry[]; droppedCorruptLines: number } {
   const path = getUsageLedgerPath();
   if (!existsSync(path)) return { entries: [], droppedCorruptLines: 0 };
 
@@ -227,6 +272,27 @@ function readUsageLedger(): { entries: UsageLedgerEntry[]; droppedCorruptLines: 
     }
   }
   return { entries, droppedCorruptLines };
+}
+
+function withUsageLedgerLock<T>(operation: () => T): T {
+  ensureConfigDir();
+  try {
+    return withFileLockSync(getUsageLedgerPath(), operation);
+  } catch (error) {
+    if (error instanceof UsageLedgerPersistenceError) throw error;
+    if (error instanceof Error && error.message.startsWith('Timed out waiting for file lock ')) {
+      throw new UsageLedgerPersistenceError(
+        'lock_timeout',
+        'Usage ledger is busy; the requested ledger operation did not run.',
+        'Retry after the competing Orion process exits; run "orion doctor" if the lock remains.'
+      );
+    }
+    throw error;
+  }
+}
+
+function readUsageLedger(): { entries: UsageLedgerEntry[]; droppedCorruptLines: number } {
+  return withUsageLedgerLock(readUsageLedgerUnlocked);
 }
 
 export function loadUsageLedger(): UsageLedgerEntry[] {
@@ -404,7 +470,7 @@ export function appendUsageRecord(
   record: UsageRecord,
   context: { sessionId?: string; projectPath?: string } = {}
 ): UsageLedgerEntry {
-  ensureConfigDir();
+  assertValidUsageRecord(record);
   const entry: UsageLedgerEntry = {
     schemaVersion: 1,
     id: randomUUID(),
@@ -427,9 +493,87 @@ export function appendUsageRecord(
     ...(record.effortSource !== undefined ? { effortSource: record.effortSource } : {}),
     ...(record.providerProtocol !== undefined ? { providerProtocol: record.providerProtocol } : {}),
   };
-  appendFileSync(getUsageLedgerPath(), `${JSON.stringify(entry)}\n`, {
-    encoding: 'utf-8',
-    mode: 0o600,
+  withUsageLedgerLock(() => {
+    appendUsageLedgerLine(entry);
   });
   return entry;
+}
+
+function assertValidUsageRecord(record: UsageRecord): void {
+  const valid =
+    record.timestamp instanceof Date &&
+    Number.isFinite(record.timestamp.getTime()) &&
+    typeof record.model === 'string' &&
+    Boolean(record.model.trim()) &&
+    isCostSource(record.costSource) &&
+    isNonNegativeSafeInteger(record.promptTokens) &&
+    isNonNegativeSafeInteger(record.completionTokens) &&
+    isNonNegativeSafeInteger(record.cachedPromptTokens) &&
+    record.cachedPromptTokens <= record.promptTokens &&
+    isNonNegativeSafeInteger(record.totalTokens) &&
+    record.totalTokens === record.promptTokens + record.completionTokens &&
+    isNonNegativeFiniteNumber(record.costUsd) &&
+    (record.reasoningTokens === undefined ||
+      (isNonNegativeSafeInteger(record.reasoningTokens) &&
+        record.reasoningTokens <= record.completionTokens));
+  if (valid) return;
+
+  throw new UsageLedgerPersistenceError(
+    'invalid_record',
+    'Usage record failed finite non-negative accounting validation; nothing was written.',
+    'Inspect the provider usage adapter and retry only with validated token and cost values.'
+  );
+}
+
+/**
+ * Append exactly one newline-terminated JSON object while holding the ledger
+ * lock, then fsync the file before reporting success. A failed write may leave
+ * a corrupt tail, which readers reject instead of normalizing into accounting.
+ * The data file is the durability boundary; directory fsync is intentionally
+ * not required on every append because it is not portable across supported
+ * runtimes. A missing newly-created ledger remains absence, never fabricated
+ * usage.
+ */
+function appendUsageLedgerLine(entry: UsageLedgerEntry): void {
+  let descriptor: number;
+  try {
+    descriptor = openSync(
+      getUsageLedgerPath(),
+      constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND,
+      0o600
+    );
+  } catch {
+    throw new UsageLedgerPersistenceError(
+      'append_failed',
+      'Usage ledger could not be opened; no durable append was confirmed.',
+      'Run "orion doctor", verify the config directory is writable, and retry.'
+    );
+  }
+
+  let failure: UsageLedgerPersistenceError | undefined;
+  let writeCompleted = false;
+  try {
+    writeFileSync(descriptor, `${JSON.stringify(entry)}\n`, { encoding: 'utf8' });
+    writeCompleted = true;
+    fsyncSync(descriptor);
+  } catch {
+    failure = new UsageLedgerPersistenceError(
+      writeCompleted ? 'durability_failed' : 'append_failed',
+      writeCompleted
+        ? 'Usage ledger append could not be durably synchronized; record presence is uncertain.'
+        : 'Usage ledger append failed; a corrupt tail may require recovery.',
+      'Run "orion doctor" and inspect /usage before retrying with the same request ID.'
+    );
+  }
+
+  try {
+    closeSync(descriptor);
+  } catch {
+    failure ??= new UsageLedgerPersistenceError(
+      'durability_failed',
+      'Usage ledger descriptor could not be closed cleanly; durability is uncertain.',
+      'Run "orion doctor" and inspect /usage before retrying with the same request ID.'
+    );
+  }
+  if (failure) throw failure;
 }

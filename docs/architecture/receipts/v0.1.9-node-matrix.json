@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "product": "@orion-agents/orion-code",
+  "version": "0.1.9",
+  "implementationCommit": "e350719c3dc66756557f29ec2b89bf53cf1cb682",
+  "implementationTree": "70b10e698165c9978c262e490c8b1d853e772749",
+  "recordedAt": "2026-08-15",
+  "environment": {
+    "os": "macOS 26.2",
+    "architecture": "arm64"
+  },
+  "matrix": [
+    {
+      "node": "v20.20.2",
+      "nodeModuleAbi": "115",
+      "cleanInstall": "passed",
+      "build": "passed",
+      "nativeProbe": "passed",
+      "testSuites": { "passed": 255, "skipped": 1, "total": 256 },
+      "tests": { "passed": 3910, "skipped": 6, "total": 3916 },
+      "durationSeconds": 503.354,
+      "versionAndHelp": "passed"
+    },
+    {
+      "node": "v22.22.3",
+      "nodeModuleAbi": "127",
+      "cleanInstall": "passed",
+      "build": "passed",
+      "nativeProbe": "passed",
+      "testSuites": { "passed": 255, "skipped": 1, "total": 256 },
+      "tests": { "passed": 3910, "skipped": 6, "total": 3916 },
+      "durationSeconds": 444.968,
+      "versionAndHelp": "passed"
+    },
+    {
+      "node": "v24.14.0",
+      "nodeModuleAbi": "137",
+      "cleanInstall": "passed",
+      "build": "passed",
+      "nativeProbe": "passed",
+      "testSuites": { "passed": 255, "skipped": 1, "total": 256 },
+      "tests": { "passed": 3910, "skipped": 6, "total": 3916 },
+      "durationSeconds": 465.097,
+      "versionAndHelp": "passed"
+    }
+  ],
+  "coverage": {
+    "node": "v24.14.1",
+    "statementsPercent": 83.09,
+    "branchesPercent": 72.78,
+    "functionsPercent": 83.86,
+    "linesPercent": 84.74,
+    "testSuites": { "passed": 255, "skipped": 1, "total": 256 },
+    "tests": { "passed": 3910, "skipped": 6, "total": 3916 }
+  },
+  "notes": [
+    "Each runtime ran sequentially from the clean implementation commit, with npm ci replacing node_modules before its build and test run.",
+    "The maintained Goal, mode, TUI, Terminal, Research, persistence, Compact, and Subagent suites are included in the full serial Jest result.",
+    "The legacy Ink yoga-layout asm.js warning is non-fatal and remains covered by the v0.2.0 removal plan."
+  ]
+}

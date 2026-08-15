@@ -10,14 +10,53 @@ export type LedgerEntryType =
   | 'blocker'
   | 'verification';
 
+export type TaskCriterionStatus = 'pending' | 'passed' | 'failed' | 'waived';
+
+export type TaskCriterionScope = 'task' | 'project' | 'release';
+
+export interface TaskCriterionSource {
+  kind: 'user' | 'derived' | 'system';
+  /** Stable message, intent, Goal, or policy reference when one is available. */
+  ref?: string;
+}
+
+export interface TaskCriterionWaiver {
+  /** Waivers are only authoritative when they came from the user. */
+  authorizedBy: 'user';
+  reason: string;
+  at: number;
+  sourceRef?: string;
+}
+
+export interface TaskCriterion {
+  /** Stable across normalization, persistence and compatible state upgrades. */
+  id: string;
+  statement: string;
+  /** Ledger/evidence ids that explicitly support this criterion. */
+  evidenceRefs: string[];
+  /** Additive V3 fields. Legacy records are populated during normalization. */
+  source?: TaskCriterionSource;
+  scope?: TaskCriterionScope;
+  dependencies?: string[];
+  status?: TaskCriterionStatus;
+  waiver?: TaskCriterionWaiver;
+}
+
 export interface TaskContract {
+  /** TaskContract V3 is additive and remains readable inside HarnessState V2. */
+  version?: 3;
   id: string;
   objective: string;
   userIntent: string;
   requirements: string[];
   successCriteria: string[];
+  /** Additive typed projection of legacy successCriteria strings. */
+  criteria?: TaskCriterion[];
+  taskEpoch?: number;
   constraints: string[];
   prohibitions: string[];
+  nonGoals?: string[];
+  openQuestions?: string[];
   allowedScope: {
     cwd: string;
     files?: string[];
@@ -175,6 +214,21 @@ export interface PromptAssemblyStats {
     reason: string;
   }>;
   sections: string[];
+  sectionManifest?: PromptSectionManifestEntry[];
+  overBudget?: boolean;
+  capabilityProfileVersion?: number;
+  capabilityProfileFingerprint?: string;
+}
+
+export interface PromptSectionManifestEntry {
+  name: string;
+  authority: 'system' | 'project' | 'user' | 'tool' | 'session';
+  source: string;
+  selected: boolean;
+  tokenEstimate: number;
+  budgetTokens: number;
+  contentHash: string;
+  reason?: string;
 }
 
 export interface HarnessState {
@@ -194,6 +248,9 @@ export interface HarnessState {
   turnSummaries?: TurnSummary[];
   promptAssemblyStats?: PromptAssemblyStats;
   diagnostics?: string[];
+  progressState?: HarnessProgressState;
+  capabilityProfile?: CapabilityProfile;
+  capabilityHistory?: CapabilityProfile[];
   reconciledAt?: number;
   updatedAt: number;
 }
@@ -228,4 +285,103 @@ export interface CompletionGateResult {
   canComplete: boolean;
   missing: string[];
   evidence: string[];
+  criterionResults?: CompletionCriterionResult[];
+  progressDelta?: ProgressDelta;
+  stopDecision?: import('../framework/stop-decision').StopDecision;
+}
+
+export type VerificationKind =
+  | 'test'
+  | 'build'
+  | 'lint'
+  | 'typecheck'
+  | 'diff'
+  | 'git'
+  | 'ci'
+  | 'release'
+  | 'generic';
+
+export interface CompletionCriterionResult {
+  criterionId: string;
+  statement: string;
+  status: TaskCriterionStatus;
+  applicable: boolean;
+  evidenceRefs: string[];
+  requiredKinds: VerificationKind[];
+  missingKinds: VerificationKind[];
+  failedKinds: VerificationKind[];
+}
+
+export interface ProgressSnapshot {
+  fingerprint: string;
+  criterionStates: Array<{ id: string; status: TaskCriterionStatus }>;
+  evidenceRefs: string[];
+  changedFiles: string[];
+  decisions: string[];
+  blockers: string[];
+  diagnostics: string[];
+  toolSignature?: string;
+  workspaceStateHash: string;
+}
+
+export interface ProgressDelta {
+  schemaVersion: 1;
+  changed: boolean;
+  criterionChanges: Array<{
+    id: string;
+    from?: TaskCriterionStatus;
+    to: TaskCriterionStatus;
+  }>;
+  newEvidenceRefs: string[];
+  newChangedFiles: string[];
+  newDecisions: string[];
+  newBlockers: string[];
+  newDiagnostics: string[];
+  toolSignature?: string;
+  workspaceStateHash: string;
+  repeatedSignatureCount: number;
+  recordedAt: number;
+}
+
+export interface HarnessProgressState {
+  schemaVersion: 1;
+  snapshot?: ProgressSnapshot;
+  lastDelta?: ProgressDelta;
+}
+
+export interface CapabilityProfile {
+  schemaVersion: 1;
+  revision: number;
+  fingerprint: string;
+  createdAt: number;
+  projectRoot: string;
+  model: {
+    id: string;
+    contextWindow: number;
+    toolCalling: boolean;
+    streaming: boolean;
+  };
+  permission: {
+    mode: string;
+    confirmation: string;
+    scope: 'project';
+    source: 'runtime_policy';
+    hardDenyEnforced: true;
+  };
+  tools: string[];
+  features: {
+    network: boolean;
+    mcp: boolean;
+    subagents: boolean;
+    skills: boolean;
+  };
+}
+
+export interface CapabilityProfileInput {
+  modelId: string;
+  contextWindow: number;
+  permissionMode: string;
+  toolConfirmation: string;
+  tools: string[];
+  now?: number;
 }

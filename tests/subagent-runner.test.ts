@@ -51,6 +51,12 @@ describe('subagent runner', () => {
     expect(result.status).toBe('completed');
     expect(result.summary).toBe('Found 2 handlers');
     expect(result.usage.modelRequests).toBe(2);
+    expect(result.stopDecision).toMatchObject({
+      scope: 'subagent',
+      status: 'completed',
+      disposition: 'finish_scope',
+      reason: { code: 'subagent_completed' },
+    });
   });
 
   it('marks non-JSON output as failed', async () => {
@@ -61,6 +67,7 @@ describe('subagent runner', () => {
     const { result } = await runSubtask(PACKET, deps(executeQuery), 'task-1');
     expect(result.status).toBe('failed');
     expect(result.risks).toContain('child returned non-JSON output');
+    expect(result.stopDecision).toMatchObject({ scope: 'subagent', status: 'failed' });
   });
 
   it('times out and returns timed_out status', async () => {
@@ -73,6 +80,11 @@ describe('subagent runner', () => {
     };
     const { result } = await runSubtask(PACKET, deps(executeQuery, { timeoutMs: 50 }), 'task-1');
     expect(result.status).toBe('timed_out');
+    expect(result.stopDecision).toMatchObject({
+      scope: 'subagent',
+      status: 'stopped',
+      disposition: 'resume_allowed',
+    });
   }, 5000);
 
   it('cancels when parent abort signal fires', async () => {

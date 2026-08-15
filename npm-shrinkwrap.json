@@ -1,12 +1,12 @@
 {
   "name": "@orion-agents/orion-code",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "lockfileVersion": 3,
   "requires": true,
   "packages": {
     "": {
       "name": "@orion-agents/orion-code",
-      "version": "0.1.8",
+      "version": "0.1.9",
       "license": "MIT",
       "dependencies": {
         "@clack/prompts": "^0.7.0",
@@ -585,9 +585,7 @@
       "version": "0.7.0",
       "resolved": "https://registry.npmjs.org/@clack/prompts/-/prompts-0.7.0.tgz",
       "integrity": "sha512-0MhX9/B4iL6Re04jPrttDm+BsP8y6mS7byuv0BvXgdXhbV5PdlsHt55dvNsuBCPZ7xq1oTAOOuotR9NFbQyMSA==",
-      "bundleDependencies": [
-        "is-unicode-supported"
-      ],
+      "bundleDependencies": ["is-unicode-supported"],
       "license": "MIT",
       "dependencies": {
         "@clack/core": "^0.3.3",
@@ -3454,9 +3452,7 @@
       "hasInstallScript": true,
       "license": "MIT",
       "optional": true,
-      "os": [
-        "darwin"
-      ],
+      "os": ["darwin"],
       "engines": {
         "node": "^8.16.0 || ^10.6.0 || >=11.0.0"
       }
@@ -6339,66 +6335,46 @@
       "version": "0.1.9",
       "resolved": "https://registry.npmjs.org/sqlite-vec-darwin-arm64/-/sqlite-vec-darwin-arm64-0.1.9.tgz",
       "integrity": "sha512-jSsZpE42OfBkGL/ItyJTVCUwl6o6Ka3U5rc4j+UBDIQzC1ulSSKMEhQLthsOnF/MdAf1MuAkYhkdKmmcjaIZQg==",
-      "cpu": [
-        "arm64"
-      ],
+      "cpu": ["arm64"],
       "license": "MIT OR Apache",
       "optional": true,
-      "os": [
-        "darwin"
-      ]
+      "os": ["darwin"]
     },
     "node_modules/sqlite-vec-darwin-x64": {
       "version": "0.1.9",
       "resolved": "https://registry.npmjs.org/sqlite-vec-darwin-x64/-/sqlite-vec-darwin-x64-0.1.9.tgz",
       "integrity": "sha512-KDlVyqQT7pnOhU1ymB9gs7dMbSoVmKHitT+k1/xkjarcX8bBqPxWrGlK/R+C5WmWkfvWwyq5FfXfiBYCBs6PlA==",
-      "cpu": [
-        "x64"
-      ],
+      "cpu": ["x64"],
       "license": "MIT OR Apache",
       "optional": true,
-      "os": [
-        "darwin"
-      ]
+      "os": ["darwin"]
     },
     "node_modules/sqlite-vec-linux-arm64": {
       "version": "0.1.9",
       "resolved": "https://registry.npmjs.org/sqlite-vec-linux-arm64/-/sqlite-vec-linux-arm64-0.1.9.tgz",
       "integrity": "sha512-5wXVJ9c9kR4CHm/wVqXb/R+XUHTdpZ4nWbPHlS+gc9qQFVHs92Km4bPnCKX4rtcPMzvNis+SIzMJR1SCEwpuUw==",
-      "cpu": [
-        "arm64"
-      ],
+      "cpu": ["arm64"],
       "license": "MIT OR Apache",
       "optional": true,
-      "os": [
-        "linux"
-      ]
+      "os": ["linux"]
     },
     "node_modules/sqlite-vec-linux-x64": {
       "version": "0.1.9",
       "resolved": "https://registry.npmjs.org/sqlite-vec-linux-x64/-/sqlite-vec-linux-x64-0.1.9.tgz",
       "integrity": "sha512-w3tCH8xK2finW8fQJ/m8uqKodXUZ9KAuAar2UIhz4BHILfpE0WM/MTGCRfa7RjYbrYim5Luk3guvMOGI7T7JQA==",
-      "cpu": [
-        "x64"
-      ],
+      "cpu": ["x64"],
       "license": "MIT OR Apache",
       "optional": true,
-      "os": [
-        "linux"
-      ]
+      "os": ["linux"]
     },
     "node_modules/sqlite-vec-windows-x64": {
       "version": "0.1.9",
       "resolved": "https://registry.npmjs.org/sqlite-vec-windows-x64/-/sqlite-vec-windows-x64-0.1.9.tgz",
       "integrity": "sha512-y3gEIyy/17bq2QFPQOWLE68TYWcRZkBQVA2XLrTPHNTOp55xJi/BBBmOm40tVMDMjtP+Elpk6UBUXdaq+46b0Q==",
-      "cpu": [
-        "x64"
-      ],
+      "cpu": ["x64"],
       "license": "MIT OR Apache",
       "optional": true,
-      "os": [
-        "win32"
-      ]
+      "os": ["win32"]
     },
     "node_modules/stack-utils": {
       "version": "2.0.6",

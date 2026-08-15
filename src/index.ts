@@ -44,19 +44,11 @@ export type {
 
 // LLM service module
 export { LLMService } from './services/llm';
-export type {
-  LLMConfig,
-  Message,
-  LLMResponse,
-  StreamCallback,
-} from './services/llm';
+export type { LLMConfig, Message, LLMResponse, StreamCallback } from './services/llm';
 
 // Agent Runner module
 export { AgentRunner } from './services/agent-runner';
-export type {
-  AgentRunnerConfig,
-  AgentRunnerResult,
-} from './services/agent-runner';
+export type { AgentRunnerConfig, AgentRunnerResult } from './services/agent-runner';
 
 // Harness Engine module (public API compatibility)
 export { HarnessEngine } from './harness/harness';
@@ -85,24 +77,70 @@ export type { OrionCodeCLIConfig } from './services/config';
 
 // Framework module
 export {
-  buildTool, toOpenAITool, toOpenAITools,
+  buildTool,
+  toOpenAITool,
+  toOpenAITools,
   query,
-  buildSystemPrompt, getSystemPrompt,
+  buildSystemPrompt,
+  getSystemPrompt,
   Store,
-  ContextHarness, createContextHarness, ContextLedger,
-  createContextCapsule, renderContextCapsule, renderHarnessStateForCompact,
-  assembleHarnessMessages, buildHarnessContext, classifyIntent, rankEvidence, upgradeHarnessState,
+  ContextHarness,
+  HarnessKernel,
+  createContextHarness,
+  createHarnessKernel,
+  ContextLedger,
+  createContextCapsule,
+  renderContextCapsule,
+  renderHarnessStateForCompact,
+  assembleHarnessMessages,
+  buildHarnessContext,
+  classifyIntent,
+  rankEvidence,
+  upgradeHarnessState,
+  ProgressController,
+  StopController,
+  createCapabilityProfile,
+  createStopDecision,
 } from './framework';
 export type {
-  OrionCodeTool, ToolResult, ToolContext, ToolConfig, PermissionResult, ToolInputJSONSchema, OpenAITool,
-  AutoCompactNotice, QueryEvent, QueryParams,
-  PromptContext, PromptSection,
+  OrionCodeTool,
+  ToolResult,
+  ToolContext,
+  ToolConfig,
+  PermissionResult,
+  ToolInputJSONSchema,
+  OpenAITool,
+  AutoCompactNotice,
+  QueryEvent,
+  QueryParams,
+  PromptContext,
+  PromptSection,
   AppState,
-  ContextCapsule, ContextLedgerEntry, EvidenceRecord, HarnessConfig as ContextHarnessConfig,
-  HarnessState, IntentKind, IntentUpdate, PromptAssemblyStats, TaskContract, TurnSummary,
+  ContextCapsule,
+  ContextLedgerEntry,
+  EvidenceRecord,
+  HarnessConfig as ContextHarnessConfig,
+  CapabilityProfile,
+  CapabilityProfileInput,
+  CompletionCriterionResult,
+  CompletionGateResult,
+  HarnessProgressState,
+  HarnessState,
+  IntentKind,
+  IntentUpdate,
+  ProgressDelta,
+  ProgressSnapshot,
+  PromptAssemblyStats,
+  PromptSectionManifestEntry,
+  StopDecision,
+  StopDecisionInput,
+  StopDecisionScope,
+  StopDecisionStatus,
+  TaskContract,
+  TaskCriterion,
+  TaskCriterionStatus,
+  TaskCriterionWaiver,
+  TurnSummary,
 } from './framework';
 
-export type {
-  ContextUsageSnapshot,
-  ContextUsageSource,
-} from './services/model-context';
+export type { ContextUsageSnapshot, ContextUsageSource } from './services/model-context';

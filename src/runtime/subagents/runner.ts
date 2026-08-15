@@ -11,6 +11,7 @@
  */
 
 import { buildChildMessages } from './context-builder';
+import { createStopDecision, type StopDecision } from '../../framework/stop-decision';
 import { parseSubtaskResult } from './result-parser';
 import type { SubtaskPacket, SubtaskResult, SubtaskResultStatus, SubtaskUsage } from './types';
 import { EMPTY_SUBTASK_USAGE, SubtaskExecutionError } from './types';
@@ -56,8 +57,16 @@ export interface ChildToolSet {
 export type ExecuteChildQuery = (
   messages: ReturnType<typeof buildChildMessages>,
   toolSet: ChildToolSet,
-  abortSignal: AbortSignal
-) => Promise<{ content: string; usage: SubtaskUsage }>;
+  abortSignal: AbortSignal,
+  /** Supervisor reservations are required in production; optional for compatibility test callers. */
+  budget?: ChildExecutionBudget
+) => Promise<{ content: string; usage: SubtaskUsage; stopDecision?: StopDecision }>;
+
+/** Reservation enforced inside the child query and provider-attempt boundary. */
+export interface ChildExecutionBudget {
+  maxModelRequests: number;
+  maxToolCalls: number;
+}
 
 export interface SubagentRunnerDeps {
   /** Canonical project root. */
@@ -68,6 +77,8 @@ export interface SubagentRunnerDeps {
   toolSet: ChildToolSet;
   /** Injectable query binding (production wraps query(); tests mock it). */
   executeQuery: ExecuteChildQuery;
+  /** Supervisor-owned reservation for this child. */
+  executionBudget?: ChildExecutionBudget;
   /** Per-child wall-clock timeout. */
   timeoutMs: number;
   /** Parent abort signal; child abort is derived from it. */
@@ -81,6 +92,71 @@ export interface RunSubtaskOutcome {
   result: SubtaskResult;
   /** Whether the child was aborted by the parent (vs its own timeout). */
   parentCancelled: boolean;
+}
+
+function childStopDecision(
+  status: SubtaskResultStatus,
+  usage: SubtaskUsage,
+  budget: ChildExecutionBudget,
+  requestDecision?: StopDecision
+): StopDecision {
+  if (requestDecision && !(requestDecision.status === 'completed' && status !== 'completed')) {
+    return createStopDecision({
+      ...requestDecision,
+      scope: 'subagent',
+      evidence: [
+        ...requestDecision.evidence,
+        {
+          kind: 'runtime',
+          source: 'subagent-runner',
+          detail: 'Child request boundary propagated to the owning subagent scope.',
+        },
+      ],
+      resources: {
+        ...requestDecision.resources,
+        providerAttempts: { used: usage.modelRequests, limit: budget.maxModelRequests },
+        toolCalls: { used: usage.toolCalls, limit: budget.maxToolCalls },
+        elapsedMs: { used: usage.durationMs },
+      },
+    });
+  }
+
+  const completed = status === 'completed';
+  const cancelled = status === 'cancelled';
+  const stopped = status === 'timed_out';
+  const blocked = status === 'rejected';
+  return createStopDecision({
+    scope: 'subagent',
+    status: completed
+      ? 'completed'
+      : cancelled
+        ? 'cancelled'
+        : stopped
+          ? 'stopped'
+          : blocked
+            ? 'blocked'
+            : 'failed',
+    disposition: completed ? 'finish_scope' : blocked ? 'pause_scope' : 'resume_allowed',
+    reason: {
+      code: completed ? 'subagent_completed' : `subagent_${status}`,
+      message: completed ? 'Child completed its assigned scope.' : `Child ended with ${status}.`,
+    },
+    evidence: [
+      {
+        kind: stopped ? 'resource_limit' : 'runtime',
+        source: 'subagent-runner',
+        detail: `Observed terminal child state: ${status}.`,
+      },
+    ],
+    nextActions: completed
+      ? [{ kind: 'inspect', label: 'Inspect and reconcile the child evidence.' }]
+      : [{ kind: 'retry', label: 'Retry the child only after inspecting the stop evidence.' }],
+    resources: {
+      providerAttempts: { used: usage.modelRequests, limit: budget.maxModelRequests },
+      toolCalls: { used: usage.toolCalls, limit: budget.maxToolCalls },
+      elapsedMs: { used: usage.durationMs },
+    },
+  });
 }
 
 /**
@@ -144,11 +220,15 @@ export async function runSubtask(
   });
 
   type QueryOutcome =
-    | { kind: 'done'; content: { content: string; usage: SubtaskUsage } }
+    | {
+        kind: 'done';
+        content: { content: string; usage: SubtaskUsage; stopDecision?: StopDecision };
+      }
     | { kind: 'error'; message: string; usage: SubtaskUsage };
   let settledQueryOutcome: QueryOutcome | undefined;
+  const executionBudget = deps.executionBudget ?? { maxModelRequests: 1, maxToolCalls: 1 };
   const queryPromise: Promise<QueryOutcome> = deps
-    .executeQuery(messages, deps.toolSet, childController.signal)
+    .executeQuery(messages, deps.toolSet, childController.signal, executionBudget)
     .then(content => ({ kind: 'done' as const, content }))
     .catch(err => ({
       kind: 'error' as const,
@@ -238,6 +318,12 @@ export async function runSubtask(
     status,
     usage,
   });
+  result.stopDecision = childStopDecision(
+    result.status,
+    result.usage,
+    executionBudget,
+    settledQueryOutcome?.kind === 'done' ? settledQueryOutcome.content.stopDecision : undefined
+  );
 
   return { result, parentCancelled };
 }

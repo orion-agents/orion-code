@@ -3,6 +3,7 @@ import type { Store } from '../framework/store';
 import type { LoopContinuationAction, LoopStats } from '../framework';
 import type { LLMService } from '../services/llm';
 import type { CompactCoordinator } from '../services/compact';
+import type { ModelCoordinator } from './model-coordinator';
 import type { OrionCodeCLIConfig } from '../services/config';
 import type { SessionMeta, SessionTraceEvent } from '../services/session-storage';
 import type { RuntimeSubtaskEvent } from './subagents/types';
@@ -331,6 +332,7 @@ export interface OrionCodeUiRuntime extends RuntimeSessionAccessors {
   store: Store;
   llm: LLMService | null;
   compactCoordinator?: CompactCoordinator;
+  modelCoordinator?: ModelCoordinator;
   runtime: OrionCodeRuntime;
   isConfigured: boolean;
   mcpReady?: Promise<void>;

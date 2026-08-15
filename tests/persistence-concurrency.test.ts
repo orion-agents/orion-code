@@ -1,5 +1,5 @@
 import { execFile } from 'child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { promisify } from 'util';
@@ -10,7 +10,13 @@ import {
   loadSessionMeta,
   readSessionMessages,
 } from '../src/services/session-storage';
-import { loadUsageState } from '../src/services/usage-state';
+import {
+  loadUsageLedger,
+  loadUsageState,
+  summarizeUsageLedger,
+  UsageLedgerPersistenceError,
+} from '../src/services/usage-state';
+import { getUsageLedgerPath } from '../src/services/config-dir';
 
 const execFileAsync = promisify(execFile);
 
@@ -54,6 +60,105 @@ describe('cross-process persistence coordination', () => {
     );
     expect(loadUsageState().totalSessions).toBe(60);
   });
+
+  test('serializes the usage JSONL ledger with its own cross-process lock', async () => {
+    const marker = join(configDir, 'ledger-lock-held');
+    const holder = runWorker(
+      `const { mkdirSync, writeFileSync } = require('fs'); ` +
+        `const { dirname } = require('path'); ` +
+        `const { getUsageLedgerPath } = require('./src/services/config-dir'); ` +
+        `const { withFileLockSync } = require('./src/services/file-lock'); ` +
+        `const ledger = getUsageLedgerPath(); mkdirSync(dirname(ledger), { recursive: true }); ` +
+        `withFileLockSync(ledger, () => { ` +
+        `writeFileSync(${JSON.stringify(marker)}, 'held'); ` +
+        `const until = Date.now() + 1500; while (Date.now() < until) {} });`
+    );
+    const deadline = Date.now() + 5_000;
+    while (!existsSync(marker) && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    expect(existsSync(marker)).toBe(true);
+
+    const startedAt = Date.now();
+    await runWorker(
+      `const { appendUsageRecord } = require('./src/services/usage-state'); ` +
+        `appendUsageRecord({ timestamp: new Date(), model: 'locked-model', ` +
+        `promptTokens: 1, completionTokens: 1, cachedPromptTokens: 0, totalTokens: 2, ` +
+        `costUsd: 0, costSource: 'fallback', requestId: 'locked-request' });`
+    );
+    const elapsed = Date.now() - startedAt;
+    await holder;
+
+    expect(elapsed).toBeGreaterThanOrEqual(900);
+    expect(loadUsageLedger()).toHaveLength(1);
+  }, 20_000);
+
+  test('preserves every complete JSONL record from concurrent writer processes', async () => {
+    const workers = 4;
+    const recordsPerWorker = 20;
+    await Promise.all(
+      Array.from({ length: workers }, (_, worker) =>
+        runWorker(
+          `const { appendUsageRecord } = require('./src/services/usage-state'); ` +
+            `for (let i = 0; i < ${recordsPerWorker}; i++) appendUsageRecord({ ` +
+            `timestamp: new Date(), model: 'worker-${worker}', promptTokens: 1, ` +
+            `completionTokens: 1, cachedPromptTokens: 0, totalTokens: 2, costUsd: 0, ` +
+            `costSource: 'fallback', requestId: 'worker-${worker}-' + i });`
+        )
+      )
+    );
+
+    const expected = workers * recordsPerWorker;
+    const rawLines = readFileSync(getUsageLedgerPath(), 'utf8').trimEnd().split('\n');
+    expect(rawLines).toHaveLength(expected);
+    expect(rawLines.map(line => JSON.parse(line))).toHaveLength(expected);
+    expect(loadUsageLedger()).toHaveLength(expected);
+    expect(summarizeUsageLedger()).toMatchObject({
+      recordCount: expected,
+      totalTokens: expected * 2,
+    });
+  }, 20_000);
+
+  test('returns a typed actionable error when the usage-ledger lock times out', async () => {
+    const marker = join(configDir, 'ledger-timeout-lock-held');
+    const holder = runWorker(
+      `const { mkdirSync, writeFileSync } = require('fs'); ` +
+        `const { dirname } = require('path'); ` +
+        `const { getUsageLedgerPath } = require('./src/services/config-dir'); ` +
+        `const { withFileLockSync } = require('./src/services/file-lock'); ` +
+        `const ledger = getUsageLedgerPath(); mkdirSync(dirname(ledger), { recursive: true }); ` +
+        `withFileLockSync(ledger, () => { writeFileSync(${JSON.stringify(marker)}, 'held'); ` +
+        `const until = Date.now() + 3000; while (Date.now() < until) {} });`
+    );
+    const deadline = Date.now() + 5_000;
+    while (!existsSync(marker) && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    expect(existsSync(marker)).toBe(true);
+
+    let failure: unknown;
+    try {
+      await runWorker(
+        `const { appendUsageRecord } = require('./src/services/usage-state'); ` +
+          `try { appendUsageRecord({ timestamp: new Date(), model: 'timeout-model', ` +
+          `promptTokens: 1, completionTokens: 1, cachedPromptTokens: 0, totalTokens: 2, ` +
+          `costUsd: 0, costSource: 'fallback', requestId: 'timeout-record' }); } ` +
+          `catch (error) { process.stdout.write(JSON.stringify({ name: error.name, code: error.code, ` +
+          `action: error.action, message: error.message })); }`
+      ).then(result => {
+        failure = JSON.parse((result as { stdout: string }).stdout);
+      });
+    } finally {
+      await holder;
+    }
+
+    expect(failure).toMatchObject<Partial<UsageLedgerPersistenceError>>({
+      name: 'UsageLedgerPersistenceError',
+      code: 'lock_timeout',
+      action: expect.stringContaining('Retry'),
+    });
+    expect(loadUsageLedger()).toEqual([]);
+  }, 20_000);
 
   test('keeps every session-index tool update across processes', async () => {
     const project = JSON.stringify(projectPath);

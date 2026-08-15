@@ -16,7 +16,11 @@ import {
   type UIRenderer,
 } from './services/config';
 import { ensureConfigDir } from './services/config-dir';
-import { recordFirstStartTime, incrementSessionCount } from './services/global-config';
+import {
+  getProjectConfig,
+  recordFirstStartTime,
+  incrementSessionCount,
+} from './services/global-config';
 import { appendUsageRecord } from './services/usage-state';
 import {
   createSession,
@@ -25,7 +29,7 @@ import {
   updateSessionSummary,
   type SessionMeta,
 } from './services/session-storage';
-import { loadAllMemories } from './memory/storage';
+import { buildMemoryPromptContext } from './memory/prompt-context';
 import { loadProjectInstructions } from './services/project-instructions';
 import { getSkillsRegistry } from './skills';
 import { Store, subscribeToolState, resetToolState } from './framework';
@@ -176,11 +180,7 @@ async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OrionCodeUiRunt
 
   const cwd = process.cwd();
   const config = loadConfig({ ui: { renderer: uiRenderer } });
-  const memories = loadAllMemories(cwd);
-  const memoryContent =
-    memories.length > 0
-      ? memories.map(memory => `## ${memory.name} (${memory.type})\n${memory.content}`).join('\n\n')
-      : '';
+  const memoryContent = buildMemoryPromptContext('', cwd).content;
   const projectInstructionsContent = loadProjectInstructions(cwd);
 
   let skillsContent = '';
@@ -217,6 +217,7 @@ async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OrionCodeUiRunt
   });
 
   let llm: LLMService | null = null;
+  let modelCoordinator: ModelCoordinator | undefined;
   // v0.2.26: resolve API key from modelRegistry (new format) or legacy config
   const configured = config.modelRegistry
     ? config.modelRegistry.defaultProfile !== null
@@ -244,7 +245,7 @@ async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OrionCodeUiRunt
     llm.resilience = new ProviderResilienceCoordinator();
 
     // v0.2.26: initialize ModelCoordinator for /model switching.
-    const modelCoordinator = new ModelCoordinator();
+    modelCoordinator = new ModelCoordinator();
     if (config.modelRegistry && config.modelClientPool) {
       modelCoordinator.bind(config.modelRegistry, config.modelClientPool);
       modelCoordinator.initModel(config.model);
@@ -266,6 +267,7 @@ async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OrionCodeUiRunt
     modelId: llm?.getModel() ?? config.model,
     llm,
     outputReserveTokens: llm?.getMaxTokens?.(),
+    compactInstructions: getProjectConfig(cwd).compactInstructions,
     getContextCapsule: () => store.getSnapshot().harnessState?.capsule,
     getHarnessState: () => store.getSnapshot().harnessState,
   });
@@ -346,6 +348,7 @@ async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OrionCodeUiRunt
     store,
     llm,
     compactCoordinator,
+    modelCoordinator,
     runtime,
     isConfigured: isConfigured(config),
     mcpReady,

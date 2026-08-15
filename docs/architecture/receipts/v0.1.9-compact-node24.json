@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "product": "@orion-agents/orion-code",
+  "version": "0.1.9",
+  "implementationCommit": "e350719c3dc66756557f29ec2b89bf53cf1cb682",
+  "implementationTree": "70b10e698165c9978c262e490c8b1d853e772749",
+  "recordedAt": "2026-08-15",
+  "environment": {
+    "os": "macOS 26.2",
+    "architecture": "arm64",
+    "node": "v24.14.1",
+    "nodeModuleAbi": "137",
+    "networkMode": "offline fixture"
+  },
+  "corpus": {
+    "version": 1,
+    "caseCount": 8,
+    "canonicalSha256": "9cb627c56d31ff345aa199edc632fe045d2f95f38490ae4860d5adc8e137fe1d"
+  },
+  "invocation": "npx jest --runInBand --ci --silent tests/compact-benchmark-corpus.test.ts tests/compact-semantic.test.ts tests/compact-robustness.test.ts",
+  "result": {
+    "status": "passed",
+    "testSuites": 3,
+    "tests": 24,
+    "passedTests": 24,
+    "failedTests": 0,
+    "durationSeconds": 1.863
+  },
+  "verifiedInvariants": [
+    "canonical corpus definition and hash",
+    "atomic tool call and result grouping",
+    "typed semantic coverage and criterion evidence links",
+    "canonical source fingerprint and stale source rejection",
+    "dynamic 65 percent target headroom",
+    "bounded manual focus and provider fallback",
+    "model switch receipt gate",
+    "ten sequential compact rounds and bounded context thrash"
+  ],
+  "boundaries": {
+    "externalProductComparison": "not observable",
+    "modelProvider": "not used",
+    "modelId": "not used",
+    "temperature": "not applicable",
+    "rawExternalResult": "not available"
+  }
+}

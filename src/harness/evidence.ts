@@ -55,7 +55,9 @@ function tokenize(text: string): Set<string> {
 }
 
 function tagsFor(content: string, extras: string[] = []): string[] {
-  return [...new Set([...tokenize(content), ...extras.map(item => item.toLowerCase()).filter(Boolean)])].slice(0, 32);
+  return [
+    ...new Set([...tokenize(content), ...extras.map(item => item.toLowerCase()).filter(Boolean)]),
+  ].slice(0, 32);
 }
 
 function evidenceFromLedger(entry: ContextLedgerEntry): EvidenceRecord {
@@ -63,13 +65,14 @@ function evidenceFromLedger(entry: ContextLedgerEntry): EvidenceRecord {
   const path = asString(entry.metadata?.path) || asString(entry.metadata?.changedFile);
   const success = asBool(entry.metadata?.success);
   const kind = ledgerKind(entry.type);
-  const verificationStatus = kind === 'verification'
-    ? success === true
-      ? 'passed'
-      : success === false
-        ? 'failed'
-        : 'unknown'
-    : undefined;
+  const verificationStatus =
+    kind === 'verification'
+      ? success === true
+        ? 'passed'
+        : success === false
+          ? 'failed'
+          : 'unknown'
+      : undefined;
   const content = compact(entry.content);
 
   return {
@@ -90,15 +93,23 @@ function evidenceFromLedger(entry: ContextLedgerEntry): EvidenceRecord {
 }
 
 function evidenceFromTurnSummary(summary: TurnSummary): EvidenceRecord {
-  const content = compact([
-    `Turn ${summary.turn}: ${summary.userIntent}`,
-    summary.assistantOutcome ? `Outcome: ${summary.assistantOutcome}` : '',
-    summary.filesTouched.length > 0 ? `Files: ${summary.filesTouched.join(', ')}` : '',
-    summary.toolsUsed.length > 0 ? `Tools: ${summary.toolsUsed.join(', ')}` : '',
-    summary.verification.passed.length > 0 ? `Passed: ${summary.verification.passed.join('; ')}` : '',
-    summary.verification.failed.length > 0 ? `Failed: ${summary.verification.failed.join('; ')}` : '',
-    summary.unresolved.length > 0 ? `Unresolved: ${summary.unresolved.join('; ')}` : '',
-  ].filter(Boolean).join(' '));
+  const content = compact(
+    [
+      `Turn ${summary.turn}: ${summary.userIntent}`,
+      summary.assistantOutcome ? `Outcome: ${summary.assistantOutcome}` : '',
+      summary.filesTouched.length > 0 ? `Files: ${summary.filesTouched.join(', ')}` : '',
+      summary.toolsUsed.length > 0 ? `Tools: ${summary.toolsUsed.join(', ')}` : '',
+      summary.verification.passed.length > 0
+        ? `Passed: ${summary.verification.passed.join('; ')}`
+        : '',
+      summary.verification.failed.length > 0
+        ? `Failed: ${summary.verification.failed.join('; ')}`
+        : '',
+      summary.unresolved.length > 0 ? `Unresolved: ${summary.unresolved.join('; ')}` : '',
+    ]
+      .filter(Boolean)
+      .join(' ')
+  );
 
   return {
     id: `turn:${summary.id}`,
@@ -113,11 +124,12 @@ function evidenceFromTurnSummary(summary: TurnSummary): EvidenceRecord {
     tags: tagsFor(content, [...summary.filesTouched, ...summary.toolsUsed, summary.intentKind]),
     path: summary.filesTouched[0],
     toolName: summary.toolsUsed[0],
-    verificationStatus: summary.verification.failed.length > 0
-      ? 'failed'
-      : summary.verification.passed.length > 0
-        ? 'passed'
-        : undefined,
+    verificationStatus:
+      summary.verification.failed.length > 0
+        ? 'failed'
+        : summary.verification.passed.length > 0
+          ? 'passed'
+          : undefined,
   };
 }
 
@@ -127,7 +139,11 @@ export function buildEvidenceIndex(params: {
   existing?: EvidenceRecord[];
 }): EvidenceRecord[] {
   const byId = new Map<string, EvidenceRecord>();
+  const liveLedgerIds = new Set((params.ledger ?? []).map(entry => `ledger:${entry.id}`));
+  const liveTurnIds = new Set((params.turnSummaries ?? []).map(summary => `turn:${summary.id}`));
   for (const record of params.existing ?? []) {
+    if (record.id.startsWith('ledger:') && !liveLedgerIds.has(record.id)) continue;
+    if (record.id.startsWith('turn:') && !liveTurnIds.has(record.id)) continue;
     byId.set(record.id, record);
   }
   for (const entry of params.ledger ?? []) {
@@ -143,7 +159,9 @@ export function buildEvidenceIndex(params: {
     if (existing) record.includedCount = existing.includedCount;
     byId.set(record.id, record);
   }
-  return [...byId.values()].sort((a, b) => b.importance - a.importance || b.createdAt - a.createdAt);
+  return [...byId.values()].sort(
+    (a, b) => b.importance - a.importance || b.createdAt - a.createdAt
+  );
 }
 
 /**
@@ -152,7 +170,7 @@ export function buildEvidenceIndex(params: {
  */
 export function bumpIncludedEvidence(
   records: EvidenceRecord[],
-  includedIds: string[],
+  includedIds: string[]
 ): EvidenceRecord[] {
   const idSet = new Set(includedIds);
   return records.map(r =>
@@ -168,68 +186,71 @@ export function rankEvidence(
     activeInstruction?: string;
     rootObjective?: string;
     now?: number;
-  } = {},
+  } = {}
 ): RankedEvidenceRecord[] {
-  const queryTokens = tokenize([
-    params.query ?? '',
-    params.activeInstruction ?? '',
-    params.rootObjective ?? '',
-  ].join(' '));
+  const queryTokens = tokenize(
+    [params.query ?? '', params.activeInstruction ?? '', params.rootObjective ?? ''].join(' ')
+  );
   const now = params.now ?? Date.now();
 
-  return records.map(record => {
-    let score = record.importance * 10;
-    const reasons: string[] = [`importance ${record.importance}`];
+  return records
+    .map(record => {
+      let score = record.importance * 10;
+      const reasons: string[] = [`importance ${record.importance}`];
 
-    if (params.taskEpoch !== undefined && record.taskEpoch === params.taskEpoch) {
-      score += 10;
-      reasons.push('same task epoch');
-    }
+      if (params.taskEpoch !== undefined && record.taskEpoch === params.taskEpoch) {
+        score += 10;
+        reasons.push('same task epoch');
+      }
 
-    const ageHours = Math.max(0, (now - record.createdAt) / 3_600_000);
-    const recency = Math.max(0, 8 - Math.floor(ageHours / 6));
-    if (recency > 0) {
-      score += recency;
-      reasons.push('recent');
-    }
+      const ageHours = Math.max(0, (now - record.createdAt) / 3_600_000);
+      const recency = Math.max(0, 8 - Math.floor(ageHours / 6));
+      if (recency > 0) {
+        score += recency;
+        reasons.push('recent');
+      }
 
-    let overlap = 0;
-    for (const tag of record.tags) {
-      if (queryTokens.has(tag)) overlap++;
-    }
-    if (overlap > 0) {
-      score += overlap * 4;
-      reasons.push(`${overlap} keyword match${overlap === 1 ? '' : 'es'}`);
-    }
+      let overlap = 0;
+      for (const tag of record.tags) {
+        if (queryTokens.has(tag)) overlap++;
+      }
+      if (overlap > 0) {
+        score += overlap * 4;
+        reasons.push(`${overlap} keyword match${overlap === 1 ? '' : 'es'}`);
+      }
 
-    if (record.path && (params.query ?? '').includes(record.path)) {
-      score += 12;
-      reasons.push('mentioned path');
-    }
+      if (record.path && (params.query ?? '').includes(record.path)) {
+        score += 12;
+        reasons.push('mentioned path');
+      }
 
-    if (record.toolName && (params.query ?? '').toLowerCase().includes(record.toolName.toLowerCase())) {
-      score += 8;
-      reasons.push('mentioned tool');
-    }
+      if (
+        record.toolName &&
+        (params.query ?? '').toLowerCase().includes(record.toolName.toLowerCase())
+      ) {
+        score += 8;
+        reasons.push('mentioned tool');
+      }
 
-    if (record.kind === 'verification') {
-      score += record.verificationStatus === 'failed' ? 14 : 10;
-      reasons.push('verification evidence');
-    }
+      if (record.kind === 'verification') {
+        score += record.verificationStatus === 'failed' ? 14 : 10;
+        reasons.push('verification evidence');
+      }
 
-    if (record.kind === 'risk' || record.kind === 'todo') {
-      score += 8;
-      reasons.push('open risk or todo');
-    }
+      if (record.kind === 'risk' || record.kind === 'todo') {
+        score += 8;
+        reasons.push('open risk or todo');
+      }
 
-    // Learning signal: evidence that was frequently included in past prompts
-    // gets a small boost — "if it was useful before, it's likely useful again"
-    if (record.includedCount && record.includedCount > 0) {
-      const boost = Math.min(record.includedCount, 10) * record.importance * 0.5;
-      score += boost;
-      reasons.push(`included ${record.includedCount}x before`);
-    }
+      // Learning signal: evidence that was frequently included in past prompts
+      // gets a small boost — "if it was useful before, it's likely useful again"
+      if (record.includedCount && record.includedCount > 0) {
+        const boost = Math.min(record.includedCount, 10) * record.importance * 0.5;
+        score += boost;
+        reasons.push(`included ${record.includedCount}x before`);
+      }
 
-    return { ...record, score, reasons };
-  }).sort((a, b) => b.score - a.score || b.createdAt - a.createdAt);
+      return { ...record, score, reasons };
+    })
+    .sort((a, b) => b.score - a.score || b.createdAt - a.createdAt);
 }

@@ -67,7 +67,8 @@ describe('agent/service branch coverage: WorkerPool', () => {
     expect(fork.mock.calls[0][0]).toMatchObject({
       inheritContext: true,
       taskDescription: 'description-one',
-      maxTurns: 3,
+      maxModelRequests: 3,
+      maxToolCalls: 12,
     });
     expect(pool.getStatus()).toEqual({
       totalWorkers: 1,
@@ -81,7 +82,7 @@ describe('agent/service branch coverage: WorkerPool', () => {
       success: false,
       error: 'reported failure',
     });
-    expect(fork.mock.calls[1][0]).toMatchObject({ maxTurns: 7 });
+    expect(fork.mock.calls[1][0]).toMatchObject({ maxTurns: 7, maxModelRequests: 7 });
     expect(pool.getStatus().totalWorkers).toBe(1);
 
     await expect(pool.submit(task('three'))).resolves.toMatchObject({
@@ -112,11 +113,13 @@ describe('agent/service branch coverage: WorkerPool', () => {
     expect(fork.mock.calls[0][0]).toMatchObject({
       inheritContext: false,
       maxTurns: 4,
+      maxModelRequests: 4,
       background: true,
     });
     expect(fork.mock.calls[1][0]).toMatchObject({
       inheritContext: true,
       maxTurns: 9,
+      maxModelRequests: 9,
       background: false,
     });
 
@@ -287,7 +290,8 @@ describe('agent/service branch coverage: Coordinator', () => {
     expect(success.assignments).toHaveLength(1);
     expect(pool.submit).toHaveBeenCalledWith(expect.objectContaining({ id: 'success' }), {
       taskDescription: 'description-success',
-      maxTurns: 5,
+      maxModelRequests: 5,
+      maxToolCalls: 20,
     });
     const failure = await coordinator.execute(task('failure'));
     expect(failure).toMatchObject({ success: false, summary: '' });

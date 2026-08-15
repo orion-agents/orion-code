@@ -7,13 +7,13 @@ import type { SessionMessage, SessionTraceEvent } from '../services/session-stor
 import {
   appendSessionMessage,
   appendSessionMessages,
-  commitSessionCompactCheckpoint,
   endSession,
   loadSessionHarnessState,
   loadSessionHistory,
   loadSessionMeta,
   removeLastIncompleteAssistantMessage,
   removeTrailingSessionUserMessage,
+  prepareSessionCompactSourceReceipt,
   readSessionMessages,
   updateSessionHarnessState,
   updateSessionSkills,
@@ -31,6 +31,7 @@ import {
   QueryLoopError,
   createFailedLoopStats,
   createLocalFastPathLoopStats,
+  withLoopFinishReason,
   type LoopFinishReason,
   type LoopStats,
   type PromptContext,
@@ -58,6 +59,7 @@ import {
   type SubagentTurnBundle,
 } from './subagents';
 import { buildReferencedFilesPrompt } from '../services/file-context';
+import { buildMemoryPromptContext } from '../memory/prompt-context';
 import { refreshProjectInstructions } from '../services/prompt-context';
 import { captureWorkspaceSnapshot } from '../services/workspace-state';
 import {
@@ -125,6 +127,7 @@ import {
   type ToolResultEvent,
 } from './chat-presentation';
 import { applySessionEffort } from './chat-effort';
+import { commitChatCompact } from './chat-compact';
 import { createPlanModeChangeHandler } from '../framework/agent-mode';
 import { rejectUnsupportedRenderer } from './chat-command-scope';
 
@@ -646,6 +649,7 @@ export class AgentChatController {
           turnId,
           type: 'complete',
           finishReason: stats.finishReason,
+          stopDecision: stats.stopDecision,
           llmRequests: stats.llmRequests,
           toolCalls: stats.toolCalls,
           readOnlyToolCalls: stats.readOnlyToolCalls,
@@ -687,6 +691,7 @@ export class AgentChatController {
           turnId,
           type: 'complete',
           finishReason: stats.finishReason,
+          stopDecision: stats.stopDecision,
           llmRequests: stats.llmRequests,
           toolCalls: stats.toolCalls,
           localFastPathUsed: true,
@@ -711,6 +716,7 @@ export class AgentChatController {
       store: this.runtime.store,
       llm: this.runtime.llm,
       compactCoordinator: this.runtime.compactCoordinator,
+      modelCoordinator: this.runtime.modelCoordinator,
       runtime: this.runtime.runtime,
       sessionId: this.runtime.getSession()?.id,
       turnId,
@@ -730,6 +736,7 @@ export class AgentChatController {
         this.events.sessionRestored?.(event);
       },
       getSession: this.runtime.getSession,
+      getActiveGoal: () => this.goalCoordinator?.goal ?? null,
       abortSignal,
       writeOutput: text => {
         if (text.trim()) {
@@ -1084,13 +1091,32 @@ export class AgentChatController {
         : null;
     const subtaskTool = subagentBundle?.tool ?? null;
     const turnTools = subtaskTool ? [...skillResolution.tools, subtaskTool] : skillResolution.tools;
+    const memoryPrompt = buildMemoryPromptContext(input, this.runtime.cwd);
+    if (sessionId) {
+      const selected = memoryPrompt.manifest.selected.map(item => `memory:${item.name}`);
+      const omitted = memoryPrompt.manifest.omitted.map(item => `memory:${item.name}`);
+      recordTraceEvent(this.events, sessionId, {
+        turnId: String(turnId),
+        type: 'message',
+        name: 'memory_context',
+        argsSummary: JSON.stringify({
+          budgetChars: memoryPrompt.manifest.budgetChars,
+          usedChars: memoryPrompt.manifest.usedChars,
+          candidateCount: memoryPrompt.manifest.candidateCount,
+          entrypointTruncated: memoryPrompt.manifest.entrypoint.truncated,
+          selected: selected.slice(0, 10),
+          omitted: omitted.slice(0, 10),
+        }),
+        contentBytes: Buffer.byteLength(memoryPrompt.content, 'utf8'),
+      });
+    }
 
     const promptCtx: PromptContext = {
       cwd: this.runtime.cwd,
       platform: process.platform,
       nodeVersion: process.version,
       tools: turnTools,
-      memoryContent: snapshot.memoryContent,
+      memoryContent: memoryPrompt.content,
       skillsContent: snapshot.skillsContent,
       projectInstructionsContent: snapshot.projectInstructionsContent,
       activeSkillsContent: skillResolution.promptInjection,
@@ -1257,6 +1283,9 @@ export class AgentChatController {
           this.runtime.store.setContextUsage(usage);
         },
         compactCoordinator: this.runtime.compactCoordinator,
+        onCompactPrepare: sessionId
+          ? () => prepareSessionCompactSourceReceipt(sessionId)
+          : undefined,
       })) {
         switch (event.type) {
           case 'request_start':
@@ -1289,6 +1318,10 @@ export class AgentChatController {
                 promptOmittedEvidence: event.omittedEvidence,
                 promptIncludedEvidenceCount: event.includedEvidenceCount,
                 promptOmittedEvidenceCount: event.omittedEvidenceCount,
+                promptSectionManifest: event.sectionManifest,
+                promptOverBudget: event.overBudget,
+                promptCapabilityProfileVersion: event.capabilityProfileVersion,
+                promptCapabilityProfileFingerprint: event.capabilityProfileFingerprint,
               });
             }
             break;
@@ -1502,6 +1535,7 @@ export class AgentChatController {
                 model: event.model,
                 contentBytes: byteLength(event.content || ''),
                 finishReason: event.stats.finishReason,
+                stopDecision: event.stats.stopDecision,
                 llmRequests: event.stats.llmRequests,
                 toolCalls: event.stats.toolCalls,
                 readOnlyToolCalls: event.stats.readOnlyToolCalls,
@@ -1634,10 +1668,13 @@ export class AgentChatController {
           }
           const stats = pendingCompleteStats ?? this.runtime.store.getSnapshot().lastLoopStats;
           if (stats) {
-            pendingCompleteStats = {
-              ...withVerificationLoopStats(stats, summary),
-              finishReason: 'completion_gate',
-            };
+            pendingCompleteStats = withLoopFinishReason(
+              withVerificationLoopStats(stats, summary),
+              'completion_gate'
+            );
+            if (pendingCompleteTrace) {
+              pendingCompleteTrace.stopDecision = pendingCompleteStats.stopDecision;
+            }
           }
         } else if (profile.changedFiles.length > 0 && profile.required) {
           this.controllerOptions.onVerificationStateChange?.('passed');
@@ -1674,64 +1711,31 @@ export class AgentChatController {
         appendSessionMessages(sessionId, sessionMessagesToRecord);
       }
 
+      harness.ingestTurn({
+        userInput: input,
+        assistantContent: finalContent,
+        sessionMessages: sessionMessagesToRecord,
+        intent,
+      });
+      const harnessState = harness.toJSON();
+      this.runtime.store.setState({ harnessState });
+      emitHarnessDiagnostics(this.events, harnessState);
+      if (sessionId) {
+        updateSessionHarnessState(sessionId, harnessState);
+      }
+
       if (pendingCompact) {
-        try {
-          let committedCheckpointId: string | undefined;
-          if (sessionId) {
-            const sourceMessageCount = readSessionMessages(sessionId).length;
-            const checkpoint = commitSessionCompactCheckpoint({
-              sessionId,
-              mode: pendingCompact.mode,
-              modelId: finalModel || this.runtime.llm.getModel(),
-              sourceMessageCount,
-              transcriptStartMessageIndex: Math.max(0, sourceMessageCount - 20),
-              modelHistory: pendingCompact.modelHistory,
-              summary: pendingCompact.summary,
-              beforeUsage: pendingCompact.before,
-              afterUsage: pendingCompact.after,
-            });
-            committedCheckpointId = checkpoint.checkpointId;
-            this.runtime.store.setState({ conversationHistory: checkpoint.modelHistory });
-          } else {
-            this.runtime.store.setState({
-              conversationHistory: pendingCompact.modelHistory.filter(
-                message => message.role !== 'system'
-              ),
-            });
-          }
-          this.runtime.store.setContextUsage(pendingCompact.after);
-          if (sessionId) {
-            recordTraceEvent(this.events, sessionId, {
-              turnId,
-              type: 'compact_completed',
-              checkpointId: committedCheckpointId,
-              model: finalModel || this.runtime.llm.getModel(),
-              note: pendingCompact.mode,
-            });
-          }
-          this.events.append({
-            role: 'status',
-            title: 'auto-compact',
-            statusTone: 'neutral',
-            content: `Context reached ${pendingCompact.before.percent}% of the safe input budget. Agent core committed a ${pendingCompact.mode} compact checkpoint; current context is ${pendingCompact.after.percent}%.`,
-          });
-        } catch (error) {
-          if (sessionId) {
-            recordTraceEvent(this.events, sessionId, {
-              turnId,
-              type: 'compact_failed',
-              model: finalModel || this.runtime.llm.getModel(),
-              error: compactTraceError(error),
-              note: pendingCompact.mode,
-            });
-          }
-          this.events.append({
-            role: 'error',
-            title: 'compact-failed',
-            content: `Compact checkpoint failed; the previous model context remains active. ${error instanceof Error ? error.message : String(error)}`,
-            errorLayer: 'runtime',
-          });
-        }
+        commitChatCompact({
+          pendingCompact,
+          sessionId,
+          turnId,
+          modelId: finalModel || this.runtime.llm.getModel(),
+          sessionMessages: sessionMessagesToRecord,
+          harnessState,
+          activeGoal: this.goalCoordinator?.goal,
+          store: this.runtime.store,
+          events: this.events,
+        });
       }
 
       if (finalUsage) {
@@ -1746,21 +1750,11 @@ export class AgentChatController {
         this.runtime.store.setTokenUsage(finalUsage);
       }
 
-      harness.ingestTurn({
-        userInput: input,
-        assistantContent: finalContent,
-        sessionMessages: sessionMessagesToRecord,
-        intent,
-      });
-      const harnessState = harness.toJSON();
-      this.runtime.store.setState({ harnessState });
-      emitHarnessDiagnostics(this.events, harnessState);
       if (sessionId) {
         if (pendingCompleteTrace) {
           recordTraceEvent(this.events, sessionId, pendingCompleteTrace);
         }
         updateSessionSkills(sessionId, appliedSkillNames);
-        updateSessionHarnessState(sessionId, harnessState);
       }
       this.events.setStatus(finalModel ? `Completed with ${finalModel}` : 'Completed');
     } catch (error: unknown) {
@@ -1920,6 +1914,7 @@ export class AgentChatController {
           model: failedStats.providerFinalModel ?? this.runtime.llm.getModel(),
           contentBytes: 0,
           finishReason: failedStats.finishReason,
+          stopDecision: failedStats.stopDecision,
           llmRequests: failedStats.llmRequests,
           toolCalls: failedStats.toolCalls,
           readOnlyToolCalls: failedStats.readOnlyToolCalls,

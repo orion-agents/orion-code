@@ -58,6 +58,7 @@ import {
   normalizePastedInput,
   permissionItems,
   sessionItems,
+  stopAndShutdownInkRuntime,
   visibleCommandItems,
   visibleFileItems,
 } from '../src/ink-ui/screens/ReplScreen';
@@ -70,6 +71,45 @@ import {
 } from '../src/services/session-storage';
 
 describe('Ink UI helpers', () => {
+  it('awaits the active turn before shutting down runtime resources', async () => {
+    const order: string[] = [];
+    let releaseTurn: (() => void) | undefined;
+    const activeTurnStopped = new Promise<void>(resolve => {
+      releaseTurn = resolve;
+    });
+    const controller = {
+      stopActiveTurn: jest.fn(async () => {
+        order.push('stop-start');
+        await activeTurnStopped;
+        order.push('stop-finished');
+      }),
+    };
+    const runtime = {
+      shutdown: jest.fn(async () => {
+        order.push('shutdown');
+      }),
+    };
+
+    const shuttingDown = stopAndShutdownInkRuntime(controller, runtime);
+    await Promise.resolve();
+    expect(runtime.shutdown).not.toHaveBeenCalled();
+    releaseTurn!();
+    await shuttingDown;
+
+    expect(order).toEqual(['stop-start', 'stop-finished', 'shutdown']);
+  });
+
+  it('still releases runtime resources when stopping the active turn fails', async () => {
+    const runtime = { shutdown: jest.fn(async () => undefined) };
+    await expect(
+      stopAndShutdownInkRuntime(
+        { stopActiveTurn: jest.fn(async () => Promise.reject(new Error('stop failed'))) },
+        runtime
+      )
+    ).rejects.toThrow('stop failed');
+    expect(runtime.shutdown).toHaveBeenCalledTimes(1);
+  });
+
   it('filters command palette entries by slash query', () => {
     const items = visibleCommandItems('/s');
     expect(items.some(item => item.value === 'status')).toBe(true);

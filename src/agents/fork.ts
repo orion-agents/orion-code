@@ -30,8 +30,12 @@ export interface ForkOptions {
   toolConfirmation?: ToolConfirmationPolicy;
   /** 项目级工具 allow/ask/deny 规则 */
   toolAllowlist?: ToolAllowlistEvaluator;
-  /** 最大轮次 */
+  /** @deprecated Use maxModelRequests. Treated only as a child request resource cap. */
   maxTurns?: number;
+  /** Maximum provider/model requests in this child logical request. */
+  maxModelRequests?: number;
+  /** Maximum tool calls in this child logical request. */
+  maxToolCalls?: number;
   /** 后台执行（不阻塞父 Agent） */
   background?: boolean;
   /** 任务描述 */
@@ -71,7 +75,9 @@ export async function forkSubagent(options: ForkOptions): Promise<ForkResult> {
     permissionMode = 'plan',
     toolConfirmation,
     toolAllowlist,
-    maxTurns = 5,
+    maxTurns,
+    maxModelRequests,
+    maxToolCalls,
     background = false,
     taskDescription,
     parentMessages = [],
@@ -80,6 +86,8 @@ export async function forkSubagent(options: ForkOptions): Promise<ForkResult> {
     memoryContent = '',
     skillsContent = '',
   } = options;
+  const modelRequestBudget = maxModelRequests ?? maxTurns ?? 5;
+  const toolCallBudget = maxToolCalls ?? Math.max(1, modelRequestBudget * 4);
 
   const startTime = Date.now();
 
@@ -153,13 +161,16 @@ export async function forkSubagent(options: ForkOptions): Promise<ForkResult> {
       tools,
       toolExecutor,
       llm,
-      maxTurns,
+      loopBudget: {
+        maxLlmRequestsPerUserTurn: modelRequestBudget,
+        maxToolCallsPerUserTurn: toolCallBudget,
+      },
       permissionMode,
       toolConfirmation,
       toolAllowlist,
       toolContext,
       streamCallbacks: {
-        onChunk: (chunk) => {
+        onChunk: chunk => {
           if (!background) {
             // 非后台模式：输出到 stdout
             process.stdout.write(chunk);
@@ -203,13 +214,7 @@ export async function forkSubagent(options: ForkOptions): Promise<ForkResult> {
   }
 }
 
-const DEFAULT_FORK_TOOL_NAMES = new Set([
-  'read_file',
-  'list_files',
-  'glob',
-  'grep',
-  'batch_read',
-]);
+const DEFAULT_FORK_TOOL_NAMES = new Set(['read_file', 'list_files', 'glob', 'grep', 'batch_read']);
 
 function getDefaultForkTools(): OrionCodeTool[] {
   return TOOLS.filter(tool => DEFAULT_FORK_TOOL_NAMES.has(tool.name));

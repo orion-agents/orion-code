@@ -16,6 +16,8 @@
  *   --allow-dirty   Downgrade the dirty-worktree check from FAIL to WARN.
  *   --skip-tests    Skip the Jest suite (use only for a fast pre-flight).
  *   --skip-pack     Skip exact tarball creation and runtime smoke validation.
+ *   --expected-version <version>
+ *                   Require package identity to match the intended release.
  *   --json          Emit machine-readable JSON instead of the text report.
  *   --help          Show this help.
  */
@@ -33,6 +35,10 @@ const MAX_PACKAGE_ENTRIES = 1500;
 const REQUIRED_PACKAGE_ENTRIES = [
   'assets/orion-tui-icon.png',
   'bin/orion',
+  'CHANGELOG.md',
+  'docs/readme.md',
+  'docs/migration/v0.1.8-to-v0.1.9.md',
+  'docs/plan/v0.1.9-release-checklist.md',
   'LICENSE',
   'README.md',
   'README.zh-CN.md',
@@ -42,6 +48,12 @@ const REQUIRED_PACKAGE_ENTRIES = [
 const ALLOWED_PACKAGE_PREFIXES = ['dist/'];
 const argv = process.argv.slice(2);
 const hasFlag = flag => argv.includes(flag);
+const optionValue = name => {
+  const inline = argv.find(value => value.startsWith(`${name}=`));
+  if (inline) return inline.slice(name.length + 1);
+  const index = argv.indexOf(name);
+  return index >= 0 ? argv[index + 1] : undefined;
+};
 
 if (hasFlag('--help') || hasFlag('-h')) {
   console.log(
@@ -57,6 +69,7 @@ const options = {
   skipTests: hasFlag('--skip-tests'),
   skipPack: hasFlag('--skip-pack'),
   json: hasFlag('--json'),
+  expectedVersion: optionValue('--expected-version'),
 };
 
 const STATUS = { PASS: 'pass', FAIL: 'fail', WARN: 'warn', SKIP: 'skip' };
@@ -158,6 +171,25 @@ function checkVersionConsistency() {
   const version = pkg.version;
   const mismatches = [];
   const checked = [];
+
+  if (options.expectedVersion) {
+    checked.push(`expected-version=${options.expectedVersion}`);
+    if (version !== options.expectedVersion) {
+      mismatches.push(
+        `package.json version: expected release ${options.expectedVersion}, found ${version}`
+      );
+    }
+  }
+  const branch = run('git', ['branch', '--show-current']).stdout.trim();
+  const releaseBranchVersion = branch.match(/^v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/)?.[1];
+  if (releaseBranchVersion) {
+    checked.push(`release-branch=${branch}`);
+    if (version !== releaseBranchVersion) {
+      mismatches.push(
+        `release branch ${branch}: package.json version expected ${releaseBranchVersion}, found ${version}`
+      );
+    }
+  }
 
   const expect = (label, actual) => {
     checked.push(`${label}=${actual === null || actual === undefined ? '<missing>' : actual}`);

@@ -22,6 +22,56 @@ which is **not** a pass.
 
 ## [Unreleased]
 
+## [0.1.9] — CANDIDATE
+
+> **Status: candidate.** Source, CI, exact tarball, npm `next`, tag, GitHub Release, and stable
+> `latest` are independent receipts. This section must be updated after each delivery action; it
+> does not claim publication in advance.
+
+### Added
+
+- Add a typed semantic Compact pipeline with atomic message groups, canonical fingerprints,
+  structured ContextItems, TaskContract/evidence/capability reinjection, bounded manual focus, and
+  deterministic fallback diagnostics.
+- Add Compact Checkpoint V2 receipts with source/replacement hashes, target-headroom validation,
+  Harness/Goal bindings, transactional candidate installation, rollback, and V1 read compatibility.
+- Add HarnessKernel TaskContract V3 criteria, evidence-to-criterion receipts, deterministic state,
+  Capability Profiles, ProgressDelta, and typed StopDecision projections.
+- Add mature-agent Compact benchmark fixtures and lifecycle trace events for prepare, validate,
+  commit, rollback, and boundary transitions.
+- Add bounded project-level `compactInstructions` for manual and automatic compaction; caller
+  guidance remains subordinate to protocol, safety, criteria, evidence, failures, and pending work.
+
+### Changed
+
+- Replace Goal's fixed five-continuation stop with criterion/evidence completion, no-progress,
+  blocker, provider, explicit budget, and user-abort decisions. Resource circuit breakers remain
+  bounded and resumable.
+- Bind subagent reservations to child query/provider accounting; keep deprecated turn fields only
+  as compatibility inputs rather than task-complete semantics.
+- Load a bounded memory index at startup and retrieve relevant content per turn with an auditable,
+  body-free prompt manifest.
+- Extend `/context explain` with section budgets, capability identity, output/safety reserves, and
+  the latest committed Compact receipt.
+
+### Fixed
+
+- Serialize usage JSONL appends with an independent cross-process lock and replay-safe request IDs
+  (#206).
+- Contain project context, project instructions, and explicit skill reads at a canonical project
+  boundary; project-provided `@file` content remains untrusted data (#207).
+- Make smaller-context model switches run and commit a semantic preflight before changing the
+  active model.
+- Reject stale Compact candidates when the transcript tail or active checkpoint changes between
+  prepare and commit, while preserving append-only session history.
+- Stop treating request/tool budgets or an unsatisfied completion gate as successful task
+  completion; render resumable typed decisions consistently.
+
+### Security
+
+- Reject symlink and non-regular project context paths, revalidate opened descriptors, and redact
+  boundary errors without exposing out-of-project file contents.
+
 ## [0.1.8] — 2026-08-15
 
 > **Status: published.** Tag `v0.1.8` identifies the source;

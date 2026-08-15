@@ -57,6 +57,11 @@ export interface ExecutedToolCall {
   outputBytes?: number;
   artifactRef?: { id: string; outputBytes: number };
   externalAssertion?: ToolExternalAssertion;
+  /**
+   * Whether the executor returned the structured tool-result contract.
+   * Optional for source compatibility; missing legacy values are never trusted.
+   */
+  resultTrust?: 'structured' | 'opaque';
   strategyResult: 'success' | 'failed';
   strategyError?: string;
   permissionDecision?: ToolPermissionDecision;
@@ -480,32 +485,49 @@ function parseToolResult(
   | 'outputBytes'
   | 'artifactRef'
   | 'externalAssertion'
+  | 'resultTrust'
   | 'strategyResult'
   | 'strategyError'
 > {
   try {
-    const parsed = JSON.parse(result);
-    const success = parsed.success === true;
-    const outputBytes = typeof parsed.outputBytes === 'number' ? parsed.outputBytes : undefined;
-    const artifactRef = isArtifactRef(parsed.artifactRef) ? parsed.artifactRef : undefined;
+    const parsed = JSON.parse(result) as unknown;
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      Array.isArray(parsed) ||
+      typeof (parsed as Record<string, unknown>).success !== 'boolean'
+    ) {
+      throw new Error('Tool result is not a structured result envelope.');
+    }
+    const envelope = parsed as Record<string, unknown>;
+    const success = envelope.success === true;
+    const outputBytes = typeof envelope.outputBytes === 'number' ? envelope.outputBytes : undefined;
+    const artifactRef = isArtifactRef(envelope.artifactRef) ? envelope.artifactRef : undefined;
     return {
       success,
-      error: typeof parsed.error === 'string' ? parsed.error : undefined,
-      summary: typeof parsed.summary === 'string' ? parsed.summary : undefined,
+      error: typeof envelope.error === 'string' ? envelope.error : undefined,
+      summary: typeof envelope.summary === 'string' ? envelope.summary : undefined,
       outputBytes,
       artifactRef,
-      externalAssertion: isToolExternalAssertion(parsed.externalAssertion)
-        ? parsed.externalAssertion
+      externalAssertion: isToolExternalAssertion(envelope.externalAssertion)
+        ? envelope.externalAssertion
         : undefined,
+      resultTrust: 'structured',
       strategyResult: success ? ('success' as const) : ('failed' as const),
-      strategyError: success ? undefined : parsed.error || 'Unknown error',
+      strategyError: success
+        ? undefined
+        : typeof envelope.error === 'string'
+          ? envelope.error
+          : 'Unknown error',
     };
   } catch {
     return {
       success: true,
       summary: result,
       outputBytes: Buffer.byteLength(result, 'utf8'),
-      strategyResult: 'success' as const,
+      resultTrust: 'opaque',
+      strategyResult: 'failed' as const,
+      strategyError: 'Tool result was not a structured result envelope.',
     };
   }
 }
@@ -522,6 +544,7 @@ function failedExecution(prepared: PreparedToolCall, err: unknown): ExecutedTool
     duration: 0,
     success: false,
     error: `Tool execution error: ${message}`,
+    resultTrust: 'structured',
     strategyResult: 'failed',
     strategyError: message,
   };

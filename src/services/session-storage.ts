@@ -10,11 +10,12 @@ import {
   readFileSync,
   appendFileSync,
   readdirSync,
+  renameSync,
   unlinkSync,
   realpathSync,
   statSync,
 } from 'fs';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { execFileSync } from 'child_process';
 import { join, resolve } from 'path';
 import {
@@ -34,13 +35,20 @@ import {
 import { atomicWriteFileSync } from './atomic-write';
 import { withFileLockSync } from './file-lock';
 import { deleteSessionIndex, updateSessionIndex } from './session-index';
-import { sealToolCallGroups } from './compact/tool-call-groups';
+import { assertToolCallGroups, sealToolCallGroups } from './compact/tool-call-groups';
 import { redactTraceText } from './redaction';
 import { debugError } from '../utils/debug-log';
 import { deleteGoal } from './goal-storage';
-import type { LoopContinuationAction, LoopFinishReason } from '../framework/query';
+import type {
+  LoopContinuationAction,
+  LoopFinishReason,
+  QueryCompactCommit,
+} from '../framework/query';
+import type { StopDecision } from '../framework/stop-decision';
 import type { Message } from './llm';
 import type { ContextUsageSnapshot } from './model-context';
+import { canonicalMessagesFingerprint } from './compact/fingerprint';
+import { estimateMessagesTokens } from '../utils/token-estimate';
 import type { EffortPreference } from './effort';
 import {
   summarizeHarnessStateForMeta,
@@ -48,6 +56,7 @@ import {
   type ContextCapsule,
   type HarnessSidecar,
   type HarnessState,
+  type PromptSectionManifestEntry,
 } from '../harness';
 
 // ============================================================================
@@ -146,6 +155,95 @@ export interface CompactCheckpointV1 {
   afterUsage: ContextUsageSnapshot;
 }
 
+export interface CompactCheckpointV2 {
+  version: 2;
+  checkpointId: string;
+  sessionId: string;
+  createdAt: number;
+  mode: CompactCheckpointV1['mode'];
+  modelId: string;
+  sourceMessageCount: number;
+  transcriptStartMessageIndex: number;
+  sourceBoundary: {
+    startMessageIndex: 0;
+    endMessageIndexExclusive: number;
+  };
+  sourcePrefixHash: string;
+  modelHistory: Message[];
+  modelHistoryHash: string;
+  summary: CompactCheckpointV1['summary'] & {
+    schemaVersion: 2;
+    strategy: string;
+  };
+  beforeUsage: ContextUsageSnapshot;
+  afterUsage: ContextUsageSnapshot;
+  contractVersion: number;
+  harnessStateVersion: number;
+  harnessBinding?: {
+    schemaVersion: number;
+    stateHash: string;
+  };
+  goalBinding?: {
+    goalId: string;
+    revision: number;
+    stateHash: string;
+  };
+  candidateReceipt: {
+    source: 'semantic_candidate' | 'compatibility_adapter';
+    candidateFingerprint: string;
+    persistedProjectionFingerprint: string;
+    beforeTokens: number;
+    afterTokens: number;
+    targetTokens?: number;
+    targetRatio: number;
+    semanticSummary?: QueryCompactCommit['semanticSummary'];
+    semanticSummaryHash?: string;
+    diagnostics: QueryCompactCommit['diagnostics'];
+    coverageHash?: string;
+    /** Source identity captured before semantic candidate preparation. */
+    prepareSource?: CompactPrepareSourceReceipt;
+    /** Deterministic semantic checks completed before the sidecar was written. */
+    semanticValidation?: CompactSemanticValidationReceipt;
+  };
+  validation: {
+    schemaValid: true;
+    toolCallGroupsValid: true;
+    sourcePrefixVerified: true;
+    targetHeadroomRatio: number;
+    achievedUsageRatio: number;
+    targetMet: true;
+    prepareSourceVerified?: true;
+    candidateTokensVerified?: true;
+    semanticReceiptVerified?: true;
+    bindingHash: string;
+    validatedAt: number;
+  };
+}
+
+/**
+ * Immutable source identity captured before compact candidate preparation.
+ * `activeCheckpointId` is explicit so the first checkpoint can CAS against null.
+ */
+export interface CompactPrepareSourceReceipt {
+  schemaVersion: 1;
+  sessionId: string;
+  sourceMessageCount: number;
+  sourcePrefixHash: string;
+  activeCheckpointId: string | null;
+}
+
+export interface CompactSemanticValidationReceipt {
+  schemaValid: true;
+  coverageValid: true;
+  taskEpoch: number;
+  taskEpochVerified: true;
+  criterionEvidenceRefsValid: true;
+  preservedCriterionIds: string[];
+  validatedEvidenceRefs: string[];
+}
+
+export type CompactCheckpoint = CompactCheckpointV1 | CompactCheckpointV2;
+
 export interface CommitCompactCheckpointInput {
   sessionId: string;
   mode: CompactCheckpointV1['mode'];
@@ -156,6 +254,29 @@ export interface CommitCompactCheckpointInput {
   summary: Omit<CompactCheckpointV1['summary'], 'sourceMessageCount'>;
   beforeUsage: ContextUsageSnapshot;
   afterUsage: ContextUsageSnapshot;
+  /** Named compaction strategy recorded in the durable validation receipt. */
+  strategy?: string;
+  /** Task-contract schema used to construct the replacement history. */
+  contractVersion?: number;
+  /** Harness-state schema bound to this checkpoint. */
+  harnessStateVersion?: number;
+  /** Deterministic Harness snapshot bound to this checkpoint, but not duplicated in it. */
+  harnessState?: HarnessState;
+  /** Harness authority captured when the semantic candidate was prepared. */
+  semanticHarnessState?: HarnessState;
+  /** Active Goal snapshot identity bound to this checkpoint. */
+  goalBinding?: {
+    goalId: string;
+    revision: number;
+    state?: unknown;
+  };
+  /** Candidate-only metadata emitted by the semantic compact pipeline. */
+  candidate?: Pick<
+    QueryCompactCommit,
+    'fingerprint' | 'beforeTokens' | 'afterTokens' | 'plan' | 'semanticSummary' | 'diagnostics'
+  >;
+  /** Required for semantic candidates; captured before candidate preparation. */
+  prepareSource?: CompactPrepareSourceReceipt;
   createdAt?: number;
 }
 
@@ -221,6 +342,11 @@ export type SessionTraceEventType =
   | 'subtask_rejected'
   | 'subtask_timed_out'
   | 'subtask_artifact_stored'
+  | 'compact_prepare'
+  | 'compact_validate'
+  | 'compact_commit'
+  | 'compact_rollback'
+  | 'compact_boundary'
   | 'compact_completed'
   | 'compact_failed'
   | 'goal_state';
@@ -261,6 +387,15 @@ export interface SessionTraceEvent {
   checkpointId?: string;
   checkpointFileCount?: number;
   checkpointFiles?: string[];
+  compactMode?: CompactCheckpointV1['mode'];
+  compactStrategy?: string;
+  compactCandidateFingerprint?: string;
+  compactBeforeTokens?: number;
+  compactAfterTokens?: number;
+  compactTargetTokens?: number;
+  compactTargetRatio?: number;
+  compactDiagnosticsCount?: number;
+  compactSourceMessageCount?: number;
   promptModelId?: string;
   promptEstimatedTokens?: number;
   promptBudgetTokens?: number;
@@ -272,7 +407,13 @@ export interface SessionTraceEvent {
   promptOmittedEvidence?: string[];
   promptIncludedEvidenceCount?: number;
   promptOmittedEvidenceCount?: number;
+  promptSectionManifest?: PromptSectionManifestEntry[];
+  promptOverBudget?: boolean;
+  promptCapabilityProfileVersion?: number;
+  promptCapabilityProfileFingerprint?: string;
   finishReason?: LoopFinishReason;
+  /** Typed boundary result; additive so legacy trace rows remain readable. */
+  stopDecision?: StopDecision;
   llmRequests?: number;
   toolCalls?: number;
   readOnlyToolCalls?: number;
@@ -332,6 +473,53 @@ function sanitizeTraceEvent(
   event: Omit<SessionTraceEvent, 'sessionId' | 'timestamp'> & { timestamp?: number }
 ): Omit<SessionTraceEvent, 'sessionId' | 'timestamp'> & { timestamp?: number } {
   const sanitized = { ...event };
+  if (sanitized.stopDecision) {
+    sanitized.stopDecision = {
+      ...sanitized.stopDecision,
+      reason: {
+        ...sanitized.stopDecision.reason,
+        message: redactTraceText(sanitized.stopDecision.reason.message),
+      },
+      evidence: sanitized.stopDecision.evidence.map(item => ({
+        ...item,
+        source: redactTraceText(item.source),
+        detail: redactTraceText(item.detail),
+      })),
+      nextActions: sanitized.stopDecision.nextActions.map(item => ({
+        ...item,
+        label: redactTraceText(item.label),
+        command: item.command ? redactTraceText(item.command) : undefined,
+      })),
+      resources: Object.fromEntries(
+        Object.entries(sanitized.stopDecision.resources).map(([key, value]) => [
+          key,
+          value ? { ...value } : value,
+        ])
+      ),
+      criterionStates: sanitized.stopDecision.criterionStates?.map(item => ({
+        ...item,
+        id: redactTraceText(item.id),
+      })),
+      evidenceRefs: sanitized.stopDecision.evidenceRefs?.map(redactTraceText),
+      progressDelta: sanitized.stopDecision.progressDelta
+        ? {
+            ...sanitized.stopDecision.progressDelta,
+            criterionChanges: sanitized.stopDecision.progressDelta.criterionChanges.map(item => ({
+              ...item,
+              id: redactTraceText(item.id),
+            })),
+            newEvidenceRefs:
+              sanitized.stopDecision.progressDelta.newEvidenceRefs.map(redactTraceText),
+            newChangedFiles:
+              sanitized.stopDecision.progressDelta.newChangedFiles.map(redactTraceText),
+            newDecisions: sanitized.stopDecision.progressDelta.newDecisions.map(redactTraceText),
+            newBlockers: sanitized.stopDecision.progressDelta.newBlockers.map(redactTraceText),
+            newDiagnostics:
+              sanitized.stopDecision.progressDelta.newDiagnostics.map(redactTraceText),
+          }
+        : undefined,
+    };
+  }
   for (const key of [
     'argsSummary',
     'error',
@@ -360,6 +548,14 @@ function sanitizeTraceEvent(
   }
   if (sanitized.promptOmittedEvidence) {
     sanitized.promptOmittedEvidence = sanitized.promptOmittedEvidence.map(redactTraceText);
+  }
+  if (sanitized.promptSectionManifest) {
+    sanitized.promptSectionManifest = sanitized.promptSectionManifest.map(item => ({
+      ...item,
+      name: redactTraceText(item.name),
+      source: redactTraceText(item.source),
+      reason: item.reason ? redactTraceText(item.reason) : undefined,
+    }));
   }
   if (sanitized.workspaceChangedByTurn) {
     sanitized.workspaceChangedByTurn = sanitized.workspaceChangedByTurn.map(redactTraceText);
@@ -748,11 +944,376 @@ function parseHarnessSidecarFile(path: string): HarnessSidecar | null {
   }
 }
 
-function parseCompactCheckpointFile(path: string): CompactCheckpointV1 | null {
-  try {
-    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as CompactCheckpointV1;
+function canonicalizeForHash(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalizeForHash);
+  if (!value || typeof value !== 'object') return value;
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, canonicalizeForHash(entry)])
+  );
+}
+
+function canonicalContentHash(value: unknown): string {
+  return createHash('sha256')
+    .update(JSON.stringify(canonicalizeForHash(value)), 'utf-8')
+    .digest('hex');
+}
+
+function compactBindingHash(parts: {
+  sourcePrefixHash: string;
+  modelHistoryHash: string;
+  candidateFingerprint: string;
+  persistedProjectionFingerprint: string;
+  semanticSummaryHash?: string;
+  prepareSourceHash?: string;
+  semanticValidationHash?: string;
+  harnessStateHash?: string;
+  goalStateHash?: string;
+}): string {
+  return canonicalContentHash(parts);
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(item => typeof item === 'string' && item.length > 0);
+}
+
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function validatePrepareSourceReceipt(
+  receipt: CompactPrepareSourceReceipt,
+  sessionId: string
+): void {
+  if (
+    receipt.schemaVersion !== 1 ||
+    receipt.sessionId !== sessionId ||
+    !Number.isInteger(receipt.sourceMessageCount) ||
+    receipt.sourceMessageCount < 0 ||
+    !isSha256(receipt.sourcePrefixHash) ||
+    (receipt.activeCheckpointId !== null &&
+      (typeof receipt.activeCheckpointId !== 'string' || !receipt.activeCheckpointId))
+  ) {
+    throw new Error('Invalid compact prepare-source receipt');
+  }
+}
+
+function assertPrepareSourceMatches(
+  receipt: CompactPrepareSourceReceipt,
+  session: SessionMeta,
+  rawMessages: readonly SessionMessage[]
+): void {
+  validatePrepareSourceReceipt(receipt, session.id);
+  const activeCheckpointId = session.activeCompactCheckpointId ?? null;
+  if (activeCheckpointId !== receipt.activeCheckpointId) {
+    throw new Error(
+      `Stale compact candidate: active checkpoint changed from ${receipt.activeCheckpointId ?? 'none'} to ${activeCheckpointId ?? 'none'}`
+    );
+  }
+  if (rawMessages.length !== receipt.sourceMessageCount) {
+    throw new Error(
+      `Stale compact candidate: source message count changed from ${receipt.sourceMessageCount} to ${rawMessages.length}`
+    );
+  }
+  const prefixHash = canonicalContentHash(rawMessages);
+  if (prefixHash !== receipt.sourcePrefixHash) {
+    throw new Error('Stale compact candidate: source transcript hash changed during preparation');
+  }
+}
+
+/** Capture the append-only transcript identity before preparing a compact candidate. */
+export function prepareSessionCompactSourceReceipt(sessionId: string): CompactPrepareSourceReceipt {
+  const receipt = withLockedSession(sessionId, session => {
+    const rawMessages = readSessionMessagesForSession(session);
+    return {
+      schemaVersion: 1,
+      sessionId,
+      sourceMessageCount: rawMessages.length,
+      sourcePrefixHash: canonicalContentHash(rawMessages),
+      activeCheckpointId: session.activeCompactCheckpointId ?? null,
+    } satisfies CompactPrepareSourceReceipt;
+  });
+  if (!receipt) throw new Error(`Session not found: ${sessionId}`);
+  return receipt;
+}
+
+/**
+ * Advance a prepare receipt only across the exact messages written by the
+ * preparing turn. Any interleaved writer fails closed instead of being claimed
+ * by a candidate that never observed its messages.
+ */
+export function advanceSessionCompactSourceReceipt(
+  receipt: CompactPrepareSourceReceipt,
+  appendedMessages: readonly SessionMessage[]
+): CompactPrepareSourceReceipt {
+  const advanced = withLockedSession(receipt.sessionId, session => {
+    validatePrepareSourceReceipt(receipt, session.id);
+    if ((session.activeCompactCheckpointId ?? null) !== receipt.activeCheckpointId) {
+      throw new Error('Stale compact candidate: active checkpoint changed during preparation');
+    }
+    const rawMessages = readSessionMessagesForSession(session);
     if (
-      parsed?.version !== 1 ||
+      rawMessages.length !== receipt.sourceMessageCount + appendedMessages.length ||
+      canonicalContentHash(rawMessages.slice(0, receipt.sourceMessageCount)) !==
+        receipt.sourcePrefixHash ||
+      canonicalContentHash(rawMessages.slice(receipt.sourceMessageCount)) !==
+        canonicalContentHash(appendedMessages)
+    ) {
+      throw new Error(
+        'Stale compact candidate: transcript tail contains concurrent or unexpected messages'
+      );
+    }
+    return {
+      ...receipt,
+      sourceMessageCount: rawMessages.length,
+      sourcePrefixHash: canonicalContentHash(rawMessages),
+    };
+  });
+  if (!advanced) throw new Error(`Session not found: ${receipt.sessionId}`);
+  return advanced;
+}
+
+interface SemanticSummaryView {
+  coverageGroupIds: string[];
+  criterionStates: Array<{
+    id: string;
+    status: string;
+    evidenceRefs: string[];
+  }>;
+  taskEpoch: number;
+  taskEpochs: number[];
+}
+
+function inspectSemanticSummary(value: unknown): SemanticSummaryView {
+  if (!isRecord(value) || value.version !== 1) {
+    throw new Error('Compact semantic summary schema is invalid');
+  }
+  if (!Number.isInteger(value.taskEpoch) || (value.taskEpoch as number) < 1) {
+    throw new Error('Compact semantic summary taskEpoch is invalid');
+  }
+  for (const field of [
+    'constraints',
+    'decisions',
+    'completed',
+    'pending',
+    'blockers',
+    'files',
+    'evidenceRefs',
+  ] as const) {
+    if (!isStringArray(value[field])) {
+      throw new Error(`Compact semantic summary ${field} must be a string array`);
+    }
+  }
+  if (!isRecord(value.coverage) || !isStringArray(value.coverage.groupIds)) {
+    throw new Error('Compact semantic summary coverage is invalid');
+  }
+  const coverageGroupIds = value.coverage.groupIds;
+  if (
+    value.coverage.groupCount !== coverageGroupIds.length ||
+    !Number.isInteger(value.coverage.messageCount) ||
+    (value.coverage.messageCount as number) < 0
+  ) {
+    throw new Error('Compact semantic summary coverage counts are inconsistent');
+  }
+
+  if (!Array.isArray(value.items)) {
+    throw new Error('Compact semantic summary items must be an array');
+  }
+  const taskEpochs: number[] = [];
+  for (const item of value.items) {
+    if (
+      !isRecord(item) ||
+      typeof item.id !== 'string' ||
+      !item.id ||
+      typeof item.groupId !== 'string' ||
+      !item.groupId ||
+      !isStringArray(item.sourceRefs) ||
+      !Number.isInteger(item.tokenEstimate) ||
+      (item.tokenEstimate as number) < 0 ||
+      !Number.isInteger(item.taskEpoch) ||
+      (item.taskEpoch as number) < 1 ||
+      typeof item.text !== 'string'
+    ) {
+      throw new Error('Compact semantic summary contains an invalid ContextItem');
+    }
+    taskEpochs.push(item.taskEpoch as number);
+  }
+
+  const criterionStatesValue = value.criterionStates;
+  if (criterionStatesValue !== undefined && !Array.isArray(criterionStatesValue)) {
+    throw new Error('Compact semantic criterionStates must be an array');
+  }
+  const criterionStates = (criterionStatesValue ?? []).map(item => {
+    if (
+      !isRecord(item) ||
+      typeof item.id !== 'string' ||
+      !item.id ||
+      typeof item.statement !== 'string' ||
+      !['pending', 'passed', 'failed', 'waived'].includes(String(item.status)) ||
+      !isStringArray(item.evidenceRefs)
+    ) {
+      throw new Error('Compact semantic summary contains an invalid criterion state');
+    }
+    return {
+      id: item.id,
+      status: String(item.status),
+      evidenceRefs: item.evidenceRefs,
+    };
+  });
+  if (new Set(criterionStates.map(item => item.id)).size !== criterionStates.length) {
+    throw new Error('Compact semantic summary contains duplicate criterion IDs');
+  }
+
+  return {
+    coverageGroupIds,
+    criterionStates,
+    taskEpoch: value.taskEpoch as number,
+    taskEpochs,
+  };
+}
+
+function semanticValidationReceipt(
+  semanticSummary: unknown,
+  candidate: NonNullable<CommitCompactCheckpointInput['candidate']>,
+  harnessState: HarnessState | undefined
+): CompactSemanticValidationReceipt {
+  const view = inspectSemanticSummary(semanticSummary);
+  const expectedCoverage = candidate.plan.evictedGroups.map(group => group.id);
+  if (!sameStrings(view.coverageGroupIds, expectedCoverage)) {
+    throw new Error('Compact semantic summary does not cover the prepared evicted groups');
+  }
+
+  const expectedTaskEpoch = Math.max(
+    1,
+    Math.floor(
+      harnessState?.taskEpoch ?? harnessState?.contract?.taskEpoch ?? view.taskEpochs[0] ?? 1
+    )
+  );
+  if (
+    view.taskEpoch !== expectedTaskEpoch ||
+    view.taskEpochs.some(taskEpoch => taskEpoch !== expectedTaskEpoch)
+  ) {
+    throw new Error('Compact semantic summary taskEpoch does not match the active Harness epoch');
+  }
+
+  const contractCriteria = harnessState?.contract?.criteria ?? [];
+  const expectedCriteria = contractCriteria.map(criterion => ({
+    id: criterion.id,
+    status: criterion.status ?? 'pending',
+    evidenceRefs: [...criterion.evidenceRefs],
+  }));
+  if (expectedCriteria.length > 0) {
+    if (view.criterionStates.length !== expectedCriteria.length) {
+      throw new Error('Compact semantic summary omitted active task criteria');
+    }
+    for (const [index, expected] of expectedCriteria.entries()) {
+      const actual = view.criterionStates[index];
+      if (
+        actual.id !== expected.id ||
+        actual.status !== expected.status ||
+        !sameStrings(actual.evidenceRefs, expected.evidenceRefs)
+      ) {
+        throw new Error(`Compact semantic criterion mismatch: ${expected.id}`);
+      }
+    }
+  }
+
+  const knownEvidenceRefs = new Set([
+    ...(harnessState?.ledger.flatMap(item => [item.id, `ledger:${item.id}`]) ?? []),
+    ...(harnessState?.evidenceIndex?.flatMap(item => [item.id, `evidence:${item.id}`]) ?? []),
+    ...(harnessState?.capsule?.keyFacts.flatMap(item => [item.id, `fact:${item.id}`]) ?? []),
+  ]);
+  const validatedEvidenceRefs = [
+    ...new Set(view.criterionStates.flatMap(item => item.evidenceRefs)),
+  ];
+  if (validatedEvidenceRefs.length > 0 && !harnessState) {
+    throw new Error('Compact semantic evidence references require an authoritative Harness state');
+  }
+  for (const criterion of view.criterionStates) {
+    if (criterion.status === 'passed' && criterion.evidenceRefs.length === 0) {
+      throw new Error(`Passed compact criterion lacks evidence: ${criterion.id}`);
+    }
+    for (const evidenceRef of criterion.evidenceRefs) {
+      if (!knownEvidenceRefs.has(evidenceRef)) {
+        throw new Error(`Dangling compact criterion evidence reference: ${evidenceRef}`);
+      }
+    }
+  }
+
+  return {
+    schemaValid: true,
+    coverageValid: true,
+    taskEpoch: expectedTaskEpoch,
+    taskEpochVerified: true,
+    criterionEvidenceRefsValid: true,
+    preservedCriterionIds: view.criterionStates.map(item => item.id),
+    validatedEvidenceRefs,
+  };
+}
+
+function validatePersistedSemanticReceipt(
+  semanticSummary: unknown,
+  receipt: CompactSemanticValidationReceipt
+): void {
+  const view = inspectSemanticSummary(semanticSummary);
+  if (
+    receipt.schemaValid !== true ||
+    receipt.coverageValid !== true ||
+    receipt.taskEpochVerified !== true ||
+    receipt.criterionEvidenceRefsValid !== true ||
+    !Number.isInteger(receipt.taskEpoch) ||
+    receipt.taskEpoch < 1 ||
+    !isStringArray(receipt.preservedCriterionIds) ||
+    !Array.isArray(receipt.validatedEvidenceRefs) ||
+    !receipt.validatedEvidenceRefs.every(ref => typeof ref === 'string' && ref.length > 0) ||
+    view.taskEpoch !== receipt.taskEpoch ||
+    view.taskEpochs.some(taskEpoch => taskEpoch !== receipt.taskEpoch) ||
+    !sameStrings(
+      view.criterionStates.map(item => item.id),
+      receipt.preservedCriterionIds
+    ) ||
+    !sameStrings(
+      [...new Set(view.criterionStates.flatMap(item => item.evidenceRefs))],
+      receipt.validatedEvidenceRefs
+    )
+  ) {
+    throw new Error('Compact semantic validation receipt does not match its summary');
+  }
+}
+
+function reportInvalidCompactCheckpoint(path: string, reason: string): null {
+  debugError(
+    'session-storage.validateCompactCheckpoint',
+    new Error(`Invalid compact checkpoint: ${reason}`),
+    path
+  );
+  return null;
+}
+
+function compactCandidatePath(path: string): string {
+  return `${path}.candidate`;
+}
+
+function compactPreviousPath(path: string): string {
+  return `${path}.previous`;
+}
+
+function parseCompactCheckpointFile(path: string): CompactCheckpoint | null {
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as CompactCheckpoint;
+    if (
+      (parsed?.version !== 1 && parsed?.version !== 2) ||
       !parsed.checkpointId ||
       !parsed.sessionId ||
       !Array.isArray(parsed.modelHistory) ||
@@ -761,6 +1322,129 @@ function parseCompactCheckpointFile(path: string): CompactCheckpointV1 | null {
       !parsed.summary ||
       typeof parsed.summary.text !== 'string'
     ) {
+      return reportInvalidCompactCheckpoint(path, 'base schema mismatch');
+    }
+    if (parsed.version === 1) return parsed;
+
+    if (
+      parsed.sourceBoundary?.startMessageIndex !== 0 ||
+      parsed.sourceBoundary.endMessageIndexExclusive !== parsed.sourceMessageCount ||
+      !isSha256(parsed.sourcePrefixHash) ||
+      !isSha256(parsed.modelHistoryHash) ||
+      parsed.summary.schemaVersion !== 2 ||
+      typeof parsed.summary.strategy !== 'string' ||
+      !parsed.summary.strategy ||
+      !Number.isInteger(parsed.contractVersion) ||
+      parsed.contractVersion < 1 ||
+      !Number.isInteger(parsed.harnessStateVersion) ||
+      parsed.harnessStateVersion < 1 ||
+      parsed.validation?.schemaValid !== true ||
+      parsed.validation.toolCallGroupsValid !== true ||
+      parsed.validation.sourcePrefixVerified !== true ||
+      parsed.validation.targetMet !== true ||
+      !isSha256(parsed.validation.bindingHash) ||
+      !Number.isFinite(parsed.validation.targetHeadroomRatio) ||
+      !Number.isFinite(parsed.validation.achievedUsageRatio) ||
+      !parsed.candidateReceipt ||
+      !['semantic_candidate', 'compatibility_adapter'].includes(parsed.candidateReceipt.source) ||
+      !isSha256(parsed.candidateReceipt.candidateFingerprint) ||
+      !isSha256(parsed.candidateReceipt.persistedProjectionFingerprint) ||
+      !Number.isInteger(parsed.candidateReceipt.beforeTokens) ||
+      parsed.candidateReceipt.beforeTokens < 0 ||
+      !Number.isInteger(parsed.candidateReceipt.afterTokens) ||
+      parsed.candidateReceipt.afterTokens < 0 ||
+      (parsed.candidateReceipt.targetTokens !== undefined &&
+        (!Number.isInteger(parsed.candidateReceipt.targetTokens) ||
+          parsed.candidateReceipt.targetTokens < 0)) ||
+      !Number.isFinite(parsed.candidateReceipt.targetRatio) ||
+      !Array.isArray(parsed.candidateReceipt.diagnostics) ||
+      (parsed.harnessBinding !== undefined &&
+        (!Number.isInteger(parsed.harnessBinding.schemaVersion) ||
+          parsed.harnessBinding.schemaVersion < 1 ||
+          !isSha256(parsed.harnessBinding.stateHash))) ||
+      (parsed.goalBinding !== undefined &&
+        (!parsed.goalBinding.goalId ||
+          !Number.isInteger(parsed.goalBinding.revision) ||
+          parsed.goalBinding.revision < 0 ||
+          !isSha256(parsed.goalBinding.stateHash)))
+    ) {
+      return reportInvalidCompactCheckpoint(path, 'V2 receipt mismatch');
+    }
+    if (canonicalContentHash(parsed.modelHistory) !== parsed.modelHistoryHash) {
+      return reportInvalidCompactCheckpoint(path, 'replacement history hash mismatch');
+    }
+    if (
+      canonicalMessagesFingerprint(parsed.modelHistory) !==
+      parsed.candidateReceipt.persistedProjectionFingerprint
+    ) {
+      return reportInvalidCompactCheckpoint(path, 'persisted projection fingerprint mismatch');
+    }
+    const semanticSummaryHash = parsed.candidateReceipt.semanticSummary
+      ? canonicalContentHash(parsed.candidateReceipt.semanticSummary)
+      : undefined;
+    if (semanticSummaryHash !== parsed.candidateReceipt.semanticSummaryHash) {
+      return reportInvalidCompactCheckpoint(path, 'semantic summary hash mismatch');
+    }
+    const coverageHash = parsed.candidateReceipt.semanticSummary
+      ? canonicalContentHash(parsed.candidateReceipt.semanticSummary.coverage)
+      : undefined;
+    if (coverageHash !== parsed.candidateReceipt.coverageHash) {
+      return reportInvalidCompactCheckpoint(path, 'semantic coverage hash mismatch');
+    }
+    if (parsed.candidateReceipt.source === 'semantic_candidate') {
+      if (
+        !parsed.candidateReceipt.prepareSource ||
+        !parsed.candidateReceipt.semanticSummary ||
+        !parsed.candidateReceipt.semanticValidation ||
+        parsed.validation.prepareSourceVerified !== true ||
+        parsed.validation.candidateTokensVerified !== true ||
+        parsed.validation.semanticReceiptVerified !== true
+      ) {
+        return reportInvalidCompactCheckpoint(path, 'semantic candidate validation is incomplete');
+      }
+      try {
+        validatePrepareSourceReceipt(parsed.candidateReceipt.prepareSource, parsed.sessionId);
+        if (
+          parsed.candidateReceipt.prepareSource.sourceMessageCount !== parsed.sourceMessageCount ||
+          parsed.candidateReceipt.prepareSource.sourcePrefixHash !== parsed.sourcePrefixHash
+        ) {
+          return reportInvalidCompactCheckpoint(path, 'prepare-source boundary mismatch');
+        }
+        validatePersistedSemanticReceipt(
+          parsed.candidateReceipt.semanticSummary,
+          parsed.candidateReceipt.semanticValidation
+        );
+      } catch (error) {
+        return reportInvalidCompactCheckpoint(
+          path,
+          error instanceof Error ? error.message : String(error)
+        );
+      }
+    }
+    const prepareSourceHash = parsed.candidateReceipt.prepareSource
+      ? canonicalContentHash(parsed.candidateReceipt.prepareSource)
+      : undefined;
+    const semanticValidationHash = parsed.candidateReceipt.semanticValidation
+      ? canonicalContentHash(parsed.candidateReceipt.semanticValidation)
+      : undefined;
+    const expectedBindingHash = compactBindingHash({
+      sourcePrefixHash: parsed.sourcePrefixHash,
+      modelHistoryHash: parsed.modelHistoryHash,
+      candidateFingerprint: parsed.candidateReceipt.candidateFingerprint,
+      persistedProjectionFingerprint: parsed.candidateReceipt.persistedProjectionFingerprint,
+      semanticSummaryHash,
+      prepareSourceHash,
+      semanticValidationHash,
+      harnessStateHash: parsed.harnessBinding?.stateHash,
+      goalStateHash: parsed.goalBinding?.stateHash,
+    });
+    if (expectedBindingHash !== parsed.validation.bindingHash) {
+      return reportInvalidCompactCheckpoint(path, 'cross-state binding hash mismatch');
+    }
+    try {
+      assertToolCallGroups(parsed.modelHistory);
+    } catch (error) {
+      debugError('session-storage.validateCompactCheckpoint.toolGroups', error, path);
       return null;
     }
     return parsed;
@@ -1130,28 +1814,54 @@ export function persistSessionCompactHistory(
   return markSessionTranscriptDisplayStart(sessionId, timestamp);
 }
 
-export function loadSessionCompactCheckpoint(sessionId: string): CompactCheckpointV1 | null {
-  const session = loadSessionMeta(sessionId);
-  if (!session) return null;
-  const checkpoint = parseCompactCheckpointFile(
-    getProjectSessionCompactPath(session.projectPath, sessionId)
-  );
-  if (!checkpoint || checkpoint.sessionId !== sessionId) return null;
-  if (session.activeCompactCheckpointId !== checkpoint.checkpointId) {
-    return null;
+function loadCompactCheckpointForSession(
+  session: SessionMeta,
+  messages: SessionMessage[]
+): CompactCheckpoint | null {
+  const compactPath = getProjectSessionCompactPath(session.projectPath, session.id);
+  const candidatePaths = [compactPath, compactPreviousPath(compactPath)];
+  for (const path of candidatePaths) {
+    if (!existsSync(path)) continue;
+    const checkpoint = parseCompactCheckpointFile(path);
+    if (!checkpoint || checkpoint.sessionId !== session.id) continue;
+    if (session.activeCompactCheckpointId !== checkpoint.checkpointId) continue;
+    if (checkpoint.sourceMessageCount > messages.length) continue;
+    if (
+      checkpoint.version === 2 &&
+      canonicalContentHash(messages.slice(0, checkpoint.sourceMessageCount)) !==
+        checkpoint.sourcePrefixHash
+    ) {
+      reportInvalidCompactCheckpoint(path, 'covered transcript prefix hash mismatch');
+      continue;
+    }
+    return checkpoint;
   }
+  return null;
+}
 
-  const rawCount = readSessionMessages(sessionId).length;
-  if (checkpoint.sourceMessageCount > rawCount) return null;
-
-  return checkpoint;
+export function loadSessionCompactCheckpoint(sessionId: string): CompactCheckpoint | null {
+  return (
+    withLockedSession(sessionId, session =>
+      loadCompactCheckpointForSession(session, readSessionMessagesForSession(session))
+    ) ?? null
+  );
 }
 
 export function commitSessionCompactCheckpoint(
   input: CommitCompactCheckpointInput
-): CompactCheckpointV1 {
+): CompactCheckpointV2 {
   const checkpoint = withLockedSession(input.sessionId, session => {
-    const rawCount = readSessionMessagesForSession(session).length;
+    const rawMessages = readSessionMessagesForSession(session);
+    const rawCount = rawMessages.length;
+    if (input.candidate && !input.prepareSource) {
+      throw new Error('Semantic compact candidate requires a prepare-source receipt');
+    }
+    if (input.prepareSource) {
+      if (input.prepareSource.sourceMessageCount !== input.sourceMessageCount) {
+        throw new Error('Compact source boundary differs from its prepare-source receipt');
+      }
+      assertPrepareSourceMatches(input.prepareSource, session, rawMessages);
+    }
     if (input.sourceMessageCount < 0 || input.sourceMessageCount > rawCount) {
       throw new Error(
         `Invalid compact source boundary ${input.sourceMessageCount}; transcript has ${rawCount} messages`
@@ -1159,8 +1869,143 @@ export function commitSessionCompactCheckpoint(
     }
 
     const createdAt = input.createdAt ?? Date.now();
-    const nextCheckpoint: CompactCheckpointV1 = {
-      version: 1,
+    const candidateModelHistory = input.modelHistory.map(
+      message => JSON.parse(JSON.stringify(message)) as Message
+    );
+    assertToolCallGroups(candidateModelHistory);
+    const modelHistory = input.modelHistory
+      .filter(message => message.role !== 'system')
+      .map(message => JSON.parse(JSON.stringify(message)) as Message);
+    assertToolCallGroups(modelHistory);
+
+    const targetHeadroomRatio = 0.65;
+    const safeInputBudget = Math.max(
+      1,
+      input.afterUsage.safeInputBudget ?? input.afterUsage.contextWindow
+    );
+    const achievedUsageRatio = input.afterUsage.usedTokens / safeInputBudget;
+    if (!Number.isFinite(achievedUsageRatio) || achievedUsageRatio > targetHeadroomRatio) {
+      throw new Error(
+        `Compact candidate did not reach the required ${Math.round(
+          targetHeadroomRatio * 100
+        )}% safe-input headroom target (${Math.round(achievedUsageRatio * 100)}% used)`
+      );
+    }
+
+    const sourcePrefixHash = canonicalContentHash(rawMessages.slice(0, input.sourceMessageCount));
+    const modelHistoryHash = canonicalContentHash(modelHistory);
+    const persistedProjectionFingerprint = canonicalMessagesFingerprint(modelHistory);
+    const candidateBeforeTokens = input.candidate?.beforeTokens ?? input.beforeUsage.usedTokens;
+    const candidateAfterTokens = input.candidate?.afterTokens ?? input.afterUsage.usedTokens;
+    const candidateTargetRatio = input.candidate?.plan.targetRatio ?? targetHeadroomRatio;
+    const candidateFingerprint = input.candidate?.fingerprint ?? persistedProjectionFingerprint;
+    for (const [name, value] of [
+      ['beforeTokens', candidateBeforeTokens],
+      ['afterTokens', candidateAfterTokens],
+    ] as const) {
+      if (!Number.isInteger(value) || value < 0) {
+        throw new Error(`Compact candidate ${name} must be a non-negative integer`);
+      }
+    }
+    if (!isSha256(candidateFingerprint)) {
+      throw new Error('Compact candidate fingerprint must be a SHA-256 digest');
+    }
+    if (input.candidate) {
+      const actualCandidateTokens = estimateMessagesTokens(candidateModelHistory);
+      if (candidateAfterTokens !== actualCandidateTokens) {
+        throw new Error(
+          `Compact candidate afterTokens ${candidateAfterTokens} does not match actual history ${actualCandidateTokens}`
+        );
+      }
+      if (
+        input.candidate.plan.targetTokens !== undefined &&
+        candidateAfterTokens > input.candidate.plan.targetTokens
+      ) {
+        throw new Error('Compact candidate exceeds its prepared target token budget');
+      }
+    }
+    if (
+      !Number.isFinite(candidateTargetRatio) ||
+      candidateTargetRatio <= 0 ||
+      candidateTargetRatio > targetHeadroomRatio
+    ) {
+      throw new Error(`Compact candidate target ratio must be within (0, ${targetHeadroomRatio}]`);
+    }
+    const semanticSummary = input.candidate
+      ? (JSON.parse(
+          JSON.stringify(input.candidate.semanticSummary)
+        ) as QueryCompactCommit['semanticSummary'])
+      : undefined;
+    const semanticSummaryHash = semanticSummary ? canonicalContentHash(semanticSummary) : undefined;
+    const coverageHash = semanticSummary
+      ? canonicalContentHash(semanticSummary.coverage)
+      : undefined;
+    const semanticValidation =
+      input.candidate && semanticSummary
+        ? semanticValidationReceipt(
+            semanticSummary,
+            input.candidate,
+            input.semanticHarnessState ?? input.harnessState
+          )
+        : undefined;
+    const prepareSource = input.prepareSource
+      ? ({ ...input.prepareSource } satisfies CompactPrepareSourceReceipt)
+      : undefined;
+    const harnessBinding = input.harnessState
+      ? {
+          schemaVersion: input.harnessState.version ?? input.harnessStateVersion ?? 2,
+          stateHash: canonicalContentHash(input.harnessState),
+        }
+      : undefined;
+    const goalBinding = input.goalBinding
+      ? {
+          goalId: input.goalBinding.goalId,
+          revision: input.goalBinding.revision,
+          stateHash: canonicalContentHash(
+            input.goalBinding.state ?? {
+              goalId: input.goalBinding.goalId,
+              revision: input.goalBinding.revision,
+            }
+          ),
+        }
+      : undefined;
+    const candidateReceipt: CompactCheckpointV2['candidateReceipt'] = {
+      source: input.candidate ? 'semantic_candidate' : 'compatibility_adapter',
+      candidateFingerprint,
+      persistedProjectionFingerprint,
+      beforeTokens: candidateBeforeTokens,
+      afterTokens: candidateAfterTokens,
+      targetTokens: input.candidate?.plan.targetTokens,
+      targetRatio: candidateTargetRatio,
+      semanticSummary,
+      semanticSummaryHash,
+      diagnostics:
+        input.candidate?.diagnostics.map(diagnostic => ({
+          ...diagnostic,
+          message: redactTraceText(diagnostic.message),
+        })) ?? [],
+      coverageHash,
+      prepareSource,
+      semanticValidation,
+    };
+    const prepareSourceHash = prepareSource ? canonicalContentHash(prepareSource) : undefined;
+    const semanticValidationHash = semanticValidation
+      ? canonicalContentHash(semanticValidation)
+      : undefined;
+    const bindingHash = compactBindingHash({
+      sourcePrefixHash,
+      modelHistoryHash,
+      candidateFingerprint,
+      persistedProjectionFingerprint,
+      semanticSummaryHash,
+      prepareSourceHash,
+      semanticValidationHash,
+      harnessStateHash: harnessBinding?.stateHash,
+      goalStateHash: goalBinding?.stateHash,
+    });
+
+    const nextCheckpoint: CompactCheckpointV2 = {
+      version: 2,
       checkpointId: randomUUID(),
       sessionId: input.sessionId,
       createdAt,
@@ -1171,38 +2016,140 @@ export function commitSessionCompactCheckpoint(
         0,
         Math.min(input.sourceMessageCount, input.transcriptStartMessageIndex)
       ),
-      modelHistory: input.modelHistory
-        .filter(message => message.role !== 'system')
-        .map(message => ({ ...message })),
+      sourceBoundary: {
+        startMessageIndex: 0,
+        endMessageIndexExclusive: input.sourceMessageCount,
+      },
+      sourcePrefixHash,
+      modelHistory,
+      modelHistoryHash,
       summary: {
         ...input.summary,
         sourceMessageCount: input.sourceMessageCount,
+        schemaVersion: 2,
+        strategy:
+          input.strategy ??
+          (input.summary.source === 'llm' ? 'semantic-llm-v2' : 'deterministic-fallback-v2'),
       },
       beforeUsage: { ...input.beforeUsage },
       afterUsage: { ...input.afterUsage },
+      contractVersion: (() => {
+        const derivedContractVersion = input.harnessState?.contract?.version ?? 1;
+        if (
+          input.contractVersion !== undefined &&
+          input.harnessState?.contract?.version !== undefined &&
+          input.contractVersion !== derivedContractVersion
+        ) {
+          throw new Error(
+            `Compact contractVersion ${input.contractVersion} does not match Harness contract ${derivedContractVersion}`
+          );
+        }
+        return input.contractVersion ?? derivedContractVersion;
+      })(),
+      harnessStateVersion: harnessBinding?.schemaVersion ?? input.harnessStateVersion ?? 2,
+      harnessBinding,
+      goalBinding,
+      candidateReceipt,
+      validation: {
+        schemaValid: true,
+        toolCallGroupsValid: true,
+        sourcePrefixVerified: true,
+        targetHeadroomRatio,
+        achievedUsageRatio,
+        targetMet: true,
+        prepareSourceVerified: prepareSource ? true : undefined,
+        candidateTokensVerified: input.candidate ? true : undefined,
+        semanticReceiptVerified: semanticValidation ? true : undefined,
+        bindingHash,
+        validatedAt: createdAt,
+      },
     };
 
     const previousId = session.activeCompactCheckpointId;
     const previousTime = session.lastCompactAt;
-    session.activeCompactCheckpointId = nextCheckpoint.checkpointId;
-    session.lastCompactAt = createdAt;
-    session.updatedAt = createdAt;
-    session.updatedAtIso = new Date(createdAt).toISOString();
+    const previousUpdatedAt = session.updatedAt;
+    const previousUpdatedAtIso = session.updatedAtIso;
+    const compactPath = getProjectSessionCompactPath(session.projectPath, input.sessionId);
+    const candidatePath = compactCandidatePath(compactPath);
+    const previousPath = compactPreviousPath(compactPath);
 
-    // Commit the pointer before replacing the atomic sidecar. If the process
-    // crashes between writes, the loader safely uses the last valid sidecar.
-    writeSessionMetaUnlocked(session);
+    // Recover a process that crashed after installing a new sidecar but before
+    // committing its pointer. The previous file is keyed by the durable pointer.
+    if (existsSync(previousPath)) {
+      const installed = existsSync(compactPath) ? parseCompactCheckpointFile(compactPath) : null;
+      const previous = parseCompactCheckpointFile(previousPath);
+      if (
+        previousId &&
+        installed?.checkpointId !== previousId &&
+        previous?.checkpointId === previousId
+      ) {
+        if (existsSync(compactPath)) unlinkSync(compactPath);
+        renameSync(previousPath, compactPath);
+      } else if (installed?.checkpointId === previousId) {
+        unlinkSync(previousPath);
+      } else {
+        throw new Error('Cannot reconcile interrupted compact checkpoint transaction');
+      }
+    }
+
+    atomicWriteFileSync(candidatePath, JSON.stringify(nextCheckpoint, null, 2), { mode: 0o600 });
+    const prepared = parseCompactCheckpointFile(candidatePath);
+    if (prepared?.version !== 2 || prepared.checkpointId !== nextCheckpoint.checkpointId) {
+      if (existsSync(candidatePath)) unlinkSync(candidatePath);
+      throw new Error('Compact candidate failed durable reload validation');
+    }
+
+    let previousInstalled = false;
+    let candidateInstalled = false;
     try {
-      atomicWriteFileSync(
-        getProjectSessionCompactPath(session.projectPath, input.sessionId),
-        JSON.stringify(nextCheckpoint, null, 2),
-        { mode: 0o600 }
+      if (existsSync(compactPath)) {
+        renameSync(compactPath, previousPath);
+        previousInstalled = true;
+      }
+      renameSync(candidatePath, compactPath);
+      candidateInstalled = true;
+
+      session.activeCompactCheckpointId = nextCheckpoint.checkpointId;
+      session.lastCompactAt = createdAt;
+      session.updatedAt = createdAt;
+      session.updatedAtIso = new Date(createdAt).toISOString();
+      writeSessionMetaUnlocked(session);
+
+      const persistedSession = readSessionMetaAtPath(
+        getProjectSessionMetaPath(session.projectPath, session.id)
       );
+      const persistedCheckpoint = parseCompactCheckpointFile(compactPath);
+      if (
+        persistedSession?.activeCompactCheckpointId !== nextCheckpoint.checkpointId ||
+        persistedCheckpoint?.checkpointId !== nextCheckpoint.checkpointId
+      ) {
+        throw new Error('Compact checkpoint commit could not be read back atomically');
+      }
     } catch (error) {
       session.activeCompactCheckpointId = previousId;
       session.lastCompactAt = previousTime;
-      writeSessionMetaUnlocked(session);
+      session.updatedAt = previousUpdatedAt;
+      session.updatedAtIso = previousUpdatedAtIso;
+
+      if (candidateInstalled && existsSync(compactPath)) unlinkSync(compactPath);
+      if (previousInstalled && existsSync(previousPath)) renameSync(previousPath, compactPath);
+      if (existsSync(candidatePath)) unlinkSync(candidatePath);
+
+      const persistedSession = readSessionMetaAtPath(
+        getProjectSessionMetaPath(session.projectPath, session.id)
+      );
+      if (persistedSession?.activeCompactCheckpointId === nextCheckpoint.checkpointId) {
+        writeSessionMetaUnlocked(session);
+      }
       throw error;
+    }
+
+    if (existsSync(previousPath)) {
+      try {
+        unlinkSync(previousPath);
+      } catch (error) {
+        debugError('session-storage.compactPreviousCleanup', error, previousPath);
+      }
     }
 
     return nextCheckpoint;
@@ -1212,17 +2159,21 @@ export function commitSessionCompactCheckpoint(
 }
 
 export function loadSessionTranscriptMessages(sessionId: string): SessionMessage[] {
-  const messages = readSessionMessages(sessionId);
-  const checkpoint = loadSessionCompactCheckpoint(sessionId);
-  if (checkpoint) {
-    return messages.slice(checkpoint.transcriptStartMessageIndex);
-  }
+  return (
+    withLockedSession(sessionId, session => {
+      const messages = readSessionMessagesForSession(session);
+      const checkpoint = loadCompactCheckpointForSession(session, messages);
+      if (checkpoint) {
+        return messages.slice(checkpoint.transcriptStartMessageIndex);
+      }
 
-  const session = loadSessionMeta(sessionId);
-  const displayStartTime = session?.transcriptDisplayStartTime;
-  return typeof displayStartTime === 'number'
-    ? messages.filter(message => (message.timestamp ?? 0) >= displayStartTime)
-    : messages;
+      return typeof session.transcriptDisplayStartTime === 'number'
+        ? messages.filter(
+            message => (message.timestamp ?? 0) >= (session.transcriptDisplayStartTime ?? 0)
+          )
+        : messages;
+    }) ?? []
+  );
 }
 
 function hasPersistedCompactContext(messages: SessionMessage[]): boolean {
@@ -1653,27 +2604,42 @@ export function readSessionTraceEvents(sessionId: string): SessionTraceEvent[] {
  * 包含完整的 tool_calls 信息，确保 LLM 能理解之前的工具调用
  */
 export function loadSessionHistory(sessionId: string): Message[] {
-  const messages = readSessionMessages(sessionId);
-  const checkpoint = loadSessionCompactCheckpoint(sessionId);
-  if (checkpoint) {
-    return sealToolCallGroups([
-      ...checkpoint.modelHistory.map(message => ({ ...message })),
-      ...messages.slice(checkpoint.sourceMessageCount).map(sessionMessageToModelMessage),
-    ]);
-  }
-  const session = loadSessionMeta(sessionId);
-  const displayStartTime = session?.transcriptDisplayStartTime;
-  let modelVisibleMessages = messages;
-  if (typeof displayStartTime === 'number') {
-    const afterDisplayStart = messages.filter(
-      message => (message.timestamp ?? 0) >= displayStartTime
-    );
-    modelVisibleMessages = hasPersistedCompactContext(afterDisplayStart)
-      ? afterDisplayStart
-      : messages;
-  }
+  return (
+    withLockedSession(sessionId, session => {
+      const messages = readSessionMessagesForSession(session);
+      const checkpoint = loadCompactCheckpointForSession(session, messages);
+      if (checkpoint) {
+        const restored = [
+          ...checkpoint.modelHistory.map(message => ({ ...message })),
+          ...messages.slice(checkpoint.sourceMessageCount).map(sessionMessageToModelMessage),
+        ];
+        if (checkpoint.version === 2) {
+          try {
+            assertToolCallGroups(restored);
+            return restored;
+          } catch (error) {
+            // Never mutate or synthesize data inside a validated V2
+            // replacement. Fall back to the append-only transcript instead.
+            debugError('session-storage.restoreCompactCheckpoint.toolGroups', error, sessionId);
+            return sealToolCallGroups(messages.map(sessionMessageToModelMessage));
+          }
+        }
+        return sealToolCallGroups(restored);
+      }
 
-  return sealToolCallGroups(modelVisibleMessages.map(sessionMessageToModelMessage));
+      let modelVisibleMessages = messages;
+      if (typeof session.transcriptDisplayStartTime === 'number') {
+        const afterDisplayStart = messages.filter(
+          message => (message.timestamp ?? 0) >= (session.transcriptDisplayStartTime ?? 0)
+        );
+        modelVisibleMessages = hasPersistedCompactContext(afterDisplayStart)
+          ? afterDisplayStart
+          : messages;
+      }
+
+      return sealToolCallGroups(modelVisibleMessages.map(sessionMessageToModelMessage));
+    }) ?? []
+  );
 }
 
 function sessionMessageToModelMessage(message: SessionMessage): Message {
@@ -1783,11 +2749,14 @@ export function deleteSession(sessionId: string): boolean {
   return (
     withLockedSession(sessionId, session => {
       let deleted = false;
+      const compactPath = getProjectSessionCompactPath(session.projectPath, sessionId);
       const paths = [
         getProjectSessionMetaPath(session.projectPath, sessionId),
         getProjectSessionMessagesPath(session.projectPath, sessionId),
         getProjectSessionHarnessPath(session.projectPath, sessionId),
-        getProjectSessionCompactPath(session.projectPath, sessionId),
+        compactPath,
+        compactCandidatePath(compactPath),
+        compactPreviousPath(compactPath),
         getProjectSessionTracePath(session.projectPath, sessionId),
       ];
 

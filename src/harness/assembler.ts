@@ -1,12 +1,14 @@
+import { createHash } from 'crypto';
 import type { Message } from '../services/llm';
 import { getModelContextWindow } from '../services/model-context';
 import { rankEvidence, estimateTokens } from './evidence';
-import type { EvidenceRecord, HarnessConfig, HarnessState, PromptAssemblyStats } from './types';
-
-function truncateByChars(text: string, maxChars: number): string {
-  if (text.length <= maxChars) return text;
-  return text.slice(0, Math.max(0, maxChars - 80)) + '\n[truncated by Context Harness]';
-}
+import type {
+  EvidenceRecord,
+  HarnessConfig,
+  HarnessState,
+  PromptAssemblyStats,
+  PromptSectionManifestEntry,
+} from './types';
 
 export interface PromptAssemblyOptions {
   input?: string;
@@ -18,9 +20,37 @@ export interface HarnessContextBuildResult {
   stats: PromptAssemblyStats;
 }
 
+function contentHash(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex');
+}
+
 function compact(text: string, max = 220): string {
   const normalized = text.replace(/\s+/g, ' ').trim();
-  return normalized.length > max ? normalized.slice(0, max - 3) + '...' : normalized;
+  if (normalized.length <= max) return normalized;
+  const reference = contentHash(normalized).slice(0, 16);
+  const suffix = `… [full-ref:${reference}]`;
+  return `${normalized.slice(0, Math.max(0, max - suffix.length))}${suffix}`;
+}
+
+function sectionManifestEntry(
+  name: string,
+  authority: PromptSectionManifestEntry['authority'],
+  source: string,
+  text: string,
+  budgetTokens: number,
+  selected: boolean,
+  reason?: string
+): PromptSectionManifestEntry {
+  return {
+    name,
+    authority,
+    source,
+    selected,
+    tokenEstimate: estimateTokens(text),
+    budgetTokens,
+    contentHash: contentHash(text),
+    reason,
+  };
 }
 
 function pushList(lines: string[], title: string, values: string[] | undefined, limit = 8): void {
@@ -32,13 +62,22 @@ function pushList(lines: string[], title: string, values: string[] | undefined, 
   }
 }
 
-function relevantTools(tools: PromptAssemblyOptions['tools'], activeInstruction?: string): string[] {
+function relevantTools(
+  tools: PromptAssemblyOptions['tools'],
+  activeInstruction?: string
+): string[] {
   if (!tools || tools.length === 0) return [];
   const query = (activeInstruction ?? '').toLowerCase();
   const scored = tools.map(tool => {
     let score = 0;
     if (query.includes(tool.name.toLowerCase())) score += 5;
-    if (tool.description && tool.description.toLowerCase().split(/\W+/).some(word => word.length > 3 && query.includes(word))) {
+    if (
+      tool.description &&
+      tool.description
+        .toLowerCase()
+        .split(/\W+/)
+        .some(word => word.length > 3 && query.includes(word))
+    ) {
       score += 2;
     }
     return { tool, score };
@@ -46,7 +85,9 @@ function relevantTools(tools: PromptAssemblyOptions['tools'], activeInstruction?
   return scored
     .sort((a, b) => b.score - a.score || a.tool.name.localeCompare(b.tool.name))
     .slice(0, 10)
-    .map(item => item.score > 0 ? `${item.tool.name}: ${item.tool.description ?? ''}` : item.tool.name);
+    .map(item =>
+      item.score > 0 ? `${item.tool.name}: ${item.tool.description ?? ''}` : item.tool.name
+    );
 }
 
 function evidenceLine(record: EvidenceRecord): string {
@@ -54,7 +95,9 @@ function evidenceLine(record: EvidenceRecord): string {
     record.path ? `path=${record.path}` : '',
     record.toolName ? `tool=${record.toolName}` : '',
     record.verificationStatus ? `verification=${record.verificationStatus}` : '',
-  ].filter(Boolean).join(' ');
+  ]
+    .filter(Boolean)
+    .join(' ');
   return `- (${record.id}) [${record.kind}] ${compact(record.content, 320)}${suffix ? ` (${suffix})` : ''}`;
 }
 
@@ -62,10 +105,16 @@ export function buildHarnessContext(
   state: HarnessState,
   modelId: string,
   config: HarnessConfig = {},
-  options: PromptAssemblyOptions = {},
+  options: PromptAssemblyOptions = {}
 ): HarnessContextBuildResult {
   const contract = state.contract;
-  if (!contract && state.ledger.length === 0 && !state.capsule && !state.rootObjective) {
+  if (
+    !contract &&
+    state.ledger.length === 0 &&
+    !state.capsule &&
+    !state.rootObjective &&
+    !state.capabilityProfile
+  ) {
     const emptyStats: PromptAssemblyStats = {
       createdAt: Date.now(),
       modelId,
@@ -77,15 +126,18 @@ export function buildHarnessContext(
       includedEvidence: [],
       omittedEvidence: [],
       sections: [],
+      sectionManifest: [],
+      overBudget: false,
     };
     return { text: '', stats: emptyStats };
   }
 
   const contextWindow = getModelContextWindow(modelId);
   const evidenceBudgetRatio = config.evidenceBudgetRatio ?? 0.3;
-  const budgetTokens = Math.max(700, Math.min(4200, Math.floor(contextWindow * evidenceBudgetRatio * 0.08)));
-  const evidenceBudgetTokens = Math.max(160, Math.floor(budgetTokens * 0.46));
-  const recentTurnBudgetTokens = Math.max(120, Math.floor(budgetTokens * 0.18));
+  const budgetTokens = Math.max(
+    700,
+    Math.min(4200, Math.floor(contextWindow * evidenceBudgetRatio * 0.08))
+  );
 
   const rootObjective = state.rootObjective ?? contract?.objective;
   const activeInstruction = state.activeInstruction ?? contract?.userIntent;
@@ -95,7 +147,15 @@ export function buildHarnessContext(
   if (rootObjective) coreLines.push(`Root objective: ${compact(rootObjective, 260)}`);
   if (activeInstruction) coreLines.push(`Active instruction: ${compact(activeInstruction, 320)}`);
   if (latestIntent) {
-    coreLines.push(`Latest intent: ${latestIntent.kind} (${Math.round(latestIntent.confidence * 100)}%, ${latestIntent.reason})`);
+    coreLines.push(
+      `Latest intent: ${latestIntent.kind} (${Math.round(latestIntent.confidence * 100)}%, ${latestIntent.reason})`
+    );
+  }
+  if (state.capabilityProfile) {
+    const profile = state.capabilityProfile;
+    coreLines.push(
+      `Capability profile: v${profile.revision} model=${profile.model.id} mode=${profile.permission.mode} tools=${profile.tools.length} ref=${profile.fingerprint.slice(0, 16)}`
+    );
   }
   pushList(coreLines, 'Active constraints', state.activeConstraints ?? contract?.constraints, 8);
   pushList(coreLines, 'Non-goals', state.nonGoals ?? contract?.prohibitions, 8);
@@ -104,11 +164,18 @@ export function buildHarnessContext(
 
   if (state.capsule) {
     const verification = state.capsule.verification;
-    if (verification.passed.length > 0 || verification.failed.length > 0 || verification.warnings.length > 0) {
+    if (
+      verification.passed.length > 0 ||
+      verification.failed.length > 0 ||
+      verification.warnings.length > 0
+    ) {
       coreLines.push('Verification state:');
-      for (const item of verification.passed.slice(0, 4)) coreLines.push(`- Passed: ${compact(item)}`);
-      for (const item of verification.failed.slice(0, 4)) coreLines.push(`- Failed: ${compact(item)}`);
-      for (const item of verification.warnings.slice(0, 3)) coreLines.push(`- Warning: ${compact(item)}`);
+      for (const item of verification.passed.slice(0, 4))
+        coreLines.push(`- Passed: ${compact(item)}`);
+      for (const item of verification.failed.slice(0, 4))
+        coreLines.push(`- Failed: ${compact(item)}`);
+      for (const item of verification.warnings.slice(0, 3))
+        coreLines.push(`- Warning: ${compact(item)}`);
     }
     if (state.capsule.nextAction) {
       coreLines.push(`Next action: ${compact(state.capsule.nextAction, 240)}`);
@@ -120,7 +187,28 @@ export function buildHarnessContext(
     pushList(coreLines, 'Relevant available tools', tools, 8);
   }
 
-  const rankedEvidence = rankEvidence(state.evidenceIndex ?? [], {
+  const finalInstruction =
+    'Instruction: preserve the root objective across short feedback or refinements. Do not claim verification unless it is listed above or produced by a tool result in this turn.';
+  const coreText = coreLines.join('\n');
+  const coreTokens = estimateTokens(coreText);
+  const instructionTokens = estimateTokens(finalInstruction);
+  const optionalBudgetTokens = Math.max(0, budgetTokens - coreTokens - instructionTokens);
+  const evidenceBudgetTokens = Math.floor(optionalBudgetTokens * 0.7);
+  const recentTurnBudgetTokens = Math.max(0, optionalBudgetTokens - evidenceBudgetTokens);
+
+  const configuredRecentTurns = Number(config.maxRecentTurns ?? 8);
+  const recentTurnLimit = Number.isFinite(configuredRecentTurns)
+    ? Math.max(0, Math.min(80, Math.floor(configuredRecentTurns)))
+    : 8;
+  const projectedTurnSummaries =
+    recentTurnLimit > 0 ? [...(state.turnSummaries ?? [])].slice(-recentTurnLimit) : [];
+  const projectedTurnEvidenceIds = new Set(
+    projectedTurnSummaries.map(summary => `turn:${summary.id}`)
+  );
+  const projectedEvidence = (state.evidenceIndex ?? []).filter(
+    record => record.kind !== 'turn_summary' || projectedTurnEvidenceIds.has(record.id)
+  );
+  const rankedEvidence = rankEvidence(projectedEvidence, {
     query: options.input,
     taskEpoch: state.taskEpoch,
     activeInstruction,
@@ -134,7 +222,7 @@ export function buildHarnessContext(
     const line = evidenceLine(record);
     // Charge exactly what reaches the prompt after render-time compaction.
     const tokens = estimateTokens(line);
-    if (usedEvidenceTokens + tokens <= evidenceBudgetTokens || includedEvidence.length < 4) {
+    if (usedEvidenceTokens + tokens <= evidenceBudgetTokens) {
       usedEvidenceTokens += tokens;
       evidenceLines.push(line);
       includedEvidence.push({
@@ -157,7 +245,7 @@ export function buildHarnessContext(
 
   const recentTurnLines: string[] = [];
   let usedTurnTokens = 0;
-  const recentTurns = [...(state.turnSummaries ?? [])].slice(-5).reverse();
+  const recentTurns = [...projectedTurnSummaries].reverse();
   for (const summary of recentTurns) {
     const line = `- Turn ${summary.turn} [${summary.intentKind}]: ${compact(summary.userIntent, 120)} -> ${compact(summary.assistantOutcome, 180)}`;
     const tokens = estimateTokens(line);
@@ -168,39 +256,93 @@ export function buildHarnessContext(
 
   const sections: string[] = ['core'];
   const lines = [...coreLines];
+  const sectionManifest: PromptSectionManifestEntry[] = [
+    sectionManifestEntry(
+      'core',
+      'system',
+      'harness_contract',
+      coreText,
+      budgetTokens - instructionTokens,
+      true,
+      coreTokens > budgetTokens - instructionTokens
+        ? 'mandatory contract projection exceeds its reserved prompt budget'
+        : undefined
+    ),
+  ];
+  const evidenceText = evidenceLines.join('\n');
   if (evidenceLines.length > 0) {
     lines.push('', 'Ranked evidence:');
     lines.push(...evidenceLines);
     sections.push('ranked_evidence');
   }
+  sectionManifest.push(
+    sectionManifestEntry(
+      'ranked_evidence',
+      'tool',
+      'harness_evidence_index',
+      evidenceText,
+      evidenceBudgetTokens,
+      evidenceLines.length > 0,
+      evidenceLines.length > 0 ? undefined : 'no evidence item fit the section budget'
+    )
+  );
+  const recentTurnText = recentTurnLines.join('\n');
   if (recentTurnLines.length > 0) {
     lines.push('', 'Recent turn summaries:');
     lines.push(...recentTurnLines);
     sections.push('recent_turns');
   }
-  lines.push('', 'Instruction: preserve the root objective across short feedback or refinements. Do not claim verification unless it is listed above or produced by a tool result in this turn.');
+  sectionManifest.push(
+    sectionManifestEntry(
+      'recent_turns',
+      'session',
+      'turn_summaries',
+      recentTurnText,
+      recentTurnBudgetTokens,
+      recentTurnLines.length > 0,
+      recentTurnLines.length > 0 ? undefined : 'no recent turn fit the section budget'
+    )
+  );
+  lines.push('', finalInstruction);
+  sections.push('instruction');
+  sectionManifest.push(
+    sectionManifestEntry(
+      'instruction',
+      'system',
+      'harness_policy',
+      finalInstruction,
+      instructionTokens,
+      true
+    )
+  );
 
-  const rendered = lines.join('\n');
-  const maxChars = budgetTokens * 4;
-  const text = truncateByChars(rendered, maxChars);
+  const text = lines.join('\n');
   const estimatedTokens = estimateTokens(text);
   const stats: PromptAssemblyStats = {
     createdAt: Date.now(),
     modelId,
     budgetTokens,
     estimatedTokens,
-    coreTokens: estimateTokens(coreLines.join('\n')),
+    coreTokens,
     evidenceBudgetTokens,
     recentTurnBudgetTokens,
     includedEvidence,
     omittedEvidence,
     sections,
+    sectionManifest,
+    overBudget: estimatedTokens > budgetTokens,
+    capabilityProfileVersion: state.capabilityProfile?.revision,
+    capabilityProfileFingerprint: state.capabilityProfile?.fingerprint,
   };
 
   return { text, stats };
 }
 
-export function renderHarnessContext(state: HarnessState, modelId: string, config: HarnessConfig = {}): string {
+export function renderHarnessContext(
+  state: HarnessState,
+  modelId: string,
+  config: HarnessConfig = {}
+): string {
   return buildHarnessContext(state, modelId, config).text;
 }
 
@@ -209,7 +351,7 @@ export function assembleHarnessMessages(
   state: HarnessState,
   modelId: string,
   config: HarnessConfig = {},
-  options: PromptAssemblyOptions = {},
+  options: PromptAssemblyOptions = {}
 ): Message[] {
   if (config.enabled === false) return messages;
 

@@ -17,6 +17,7 @@ import { SubagentProviderGate } from './provider-gate';
 import {
   runSubtask,
   type ExecuteChildQuery,
+  type ChildExecutionBudget,
   type ChildToolSet,
   type SubagentRunnerDeps,
 } from './runner';
@@ -206,6 +207,7 @@ export async function runSubtaskBatch(
   const batchId = nextBatchId();
   const tasks = request.tasks;
   const taskIds = tasks.map(() => nextTaskId());
+  const executionBudgets: ChildExecutionBudget[] = [];
 
   // Reserve a fair share per task: the per-task cap, but no more than an even
   // slice of the turn budget. This lets a 3-task batch fit when the turn limit
@@ -238,6 +240,10 @@ export async function runSubtaskBatch(
         rejectReason: 'budget_exhausted',
       };
     }
+    executionBudgets[i] = {
+      maxModelRequests: reserved.modelRequests,
+      maxToolCalls: deps.config.maxToolCallsPerTask,
+    };
     emit(deps, {
       batchId,
       taskId: taskIds[i],
@@ -252,6 +258,7 @@ export async function runSubtaskBatch(
     canonicalScopePaths: verdict.canonicalScope.get(i),
     toolSet: deps.toolSet,
     executeQuery: deps.executeQuery,
+    executionBudget: executionBudgets[i],
     timeoutMs: deps.config.timeoutMs,
     parentAbortSignal: deps.parentAbortSignal,
     rootObjectiveSummary: deps.rootObjectiveSummary,

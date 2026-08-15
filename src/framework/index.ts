@@ -36,6 +36,7 @@ export {
   QueryLoopError,
   createFailedLoopStats,
   createLocalFastPathLoopStats,
+  withLoopFinishReason,
 } from './query';
 export type {
   AutoCompactNotice,
@@ -49,6 +50,19 @@ export type {
   QueryCompactCommit,
   QueryParams,
 } from './query';
+export { createStopDecision } from './stop-decision';
+export type {
+  StopDecision,
+  StopDecisionInput,
+  StopDecisionScope,
+  StopDecisionStatus,
+  StopDisposition,
+  StopEvidence,
+  StopNextAction,
+  StopReason,
+  StopResourceCounter,
+  StopResourceSnapshot,
+} from './stop-decision';
 
 export { prepareToolCalls, executeToolCalls, inspectSchedule } from './tool-scheduler';
 export type {
@@ -66,7 +80,9 @@ export type { AppState } from './store';
 
 export {
   ContextHarness,
+  HarnessKernel,
   createContextHarness,
+  createHarnessKernel,
   ContextLedger,
   createContextCapsule,
   renderContextCapsule,
@@ -76,18 +92,35 @@ export {
   classifyIntent,
   rankEvidence,
   upgradeHarnessState,
+  ProgressController,
+  StopController,
+  createCapabilityProfile,
 } from '../harness';
 export type {
+  CapabilityProfile,
+  CapabilityProfileInput,
+  CompletionCriterionResult,
+  CompletionGateResult,
   ContextCapsule,
   ContextLedgerEntry,
   EvidenceRecord,
   HarnessConfig,
+  HarnessProgressState,
   IntentKind,
   IntentUpdate,
   HarnessState,
   PromptAssemblyStats,
+  PromptSectionManifestEntry,
+  ProgressDelta,
+  ProgressSnapshot,
   TaskContract,
+  TaskCriterion,
+  TaskCriterionScope,
+  TaskCriterionSource,
+  TaskCriterionStatus,
+  TaskCriterionWaiver,
   TurnSummary,
+  VerificationKind,
 } from '../harness';
 
 export { getToolState, setToolState, subscribeToolState, resetToolState } from './tool-state';

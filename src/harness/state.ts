@@ -59,7 +59,7 @@ export function upgradeHarnessState(
     explicitObjective ??
     state?.rootObjective ??
     contract?.objective ??
-    (firstUser ? firstUser.trim().slice(0, 180) : undefined);
+    (firstUser ? firstUser.trim().replace(/\s+/g, ' ') : undefined);
   const activeInstruction =
     state?.activeInstruction ?? contract?.userIntent ?? lastUser ?? rootObjective;
   const turnSummaries = state?.turnSummaries ?? [];
@@ -120,6 +120,9 @@ export function upgradeHarnessState(
     turnSummaries,
     promptAssemblyStats: state?.promptAssemblyStats,
     diagnostics: unique(diagnostics).slice(-20),
+    progressState: state?.progressState,
+    capabilityProfile: state?.capabilityProfile,
+    capabilityHistory: state?.capabilityHistory?.slice(-10),
     reconciledAt: options.messages ? now : state?.reconciledAt,
     updatedAt: state?.updatedAt ?? now,
   };
@@ -133,6 +136,6 @@ export function summarizeHarnessStateForMeta(state: HarnessState): HarnessState 
     evidenceIndex: upgraded.evidenceIndex?.slice(0, 30),
     intentHistory: upgraded.intentHistory?.slice(-10),
     turnSummaries: upgraded.turnSummaries?.slice(-10),
-    updatedAt: Date.now(),
+    updatedAt: upgraded.updatedAt,
   };
 }

@@ -11,6 +11,8 @@ import type { LLMService } from '../services/llm';
 import type { OrionCodeCLIConfig, UIRenderer } from '../services/config';
 import type { SessionMeta } from '../services/session-storage';
 import type { CompactCoordinator } from '../services/compact';
+import type { ModelCoordinator } from '../runtime/model-coordinator';
+import type { SessionGoalV1 } from '../runtime/goals/types';
 import type {
   EditPreviewRequest,
   ModelPickerRequest,
@@ -32,6 +34,8 @@ export interface CommandContext {
   store: Store;
   llm: LLMService | null;
   compactCoordinator?: CompactCoordinator;
+  /** Transactional model/profile switch owner. */
+  modelCoordinator?: ModelCoordinator;
   runtime: OrionCodeRuntime;
   /** 当前会话 ID（用于记录消息） */
   sessionId?: string;
@@ -43,6 +47,8 @@ export interface CommandContext {
   sessionRestored?: (event: RuntimeSessionRestoredEvent) => void;
   /** Return the active session if one exists. */
   getSession?: () => SessionMeta | null;
+  /** Current durable Goal state for compact checkpoint binding. */
+  getActiveGoal?: () => SessionGoalV1 | null;
   /** Abort signal for the current CLI turn. */
   abortSignal?: AbortSignal;
   /** Optional current turn ID for per-turn command-side context checks. */

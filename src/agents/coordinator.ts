@@ -102,7 +102,8 @@ export class Coordinator {
 
         const result = await this.workerPool.submit(task, {
           taskDescription: task.description,
-          maxTurns: 5,
+          maxModelRequests: 5,
+          maxToolCalls: 20,
         });
 
         this.completedTasks.set(task.id, result);
@@ -148,7 +149,8 @@ export class Coordinator {
 
           const stageResult = await this.workerPool.submit(stage, {
             taskDescription: stage.description,
-            maxTurns: 3,
+            maxModelRequests: 3,
+            maxToolCalls: 12,
           });
 
           pipelineResults.set(stage.id, stageResult);
@@ -252,9 +254,26 @@ export class Coordinator {
     // 根据类别分解
     if (classification.category === 'coding') {
       return [
-        { ...task, id: `${task.id}-impl`, name: `${task.name}-impl`, description: `Implement: ${task.description}` },
-        { ...task, id: `${task.id}-test`, name: `${task.name}-test`, description: `Write tests for: ${task.name}`, assignedTo: 'tester' },
-        { ...task, id: `${task.id}-review`, name: `${task.name}-review`, description: `Review implementation`, assignedTo: 'reviewer' },
+        {
+          ...task,
+          id: `${task.id}-impl`,
+          name: `${task.name}-impl`,
+          description: `Implement: ${task.description}`,
+        },
+        {
+          ...task,
+          id: `${task.id}-test`,
+          name: `${task.name}-test`,
+          description: `Write tests for: ${task.name}`,
+          assignedTo: 'tester',
+        },
+        {
+          ...task,
+          id: `${task.id}-review`,
+          name: `${task.name}-review`,
+          description: `Review implementation`,
+          assignedTo: 'reviewer',
+        },
       ];
     }
 
@@ -267,16 +286,37 @@ export class Coordinator {
    */
   private createPipeline(task: Task): Task[] {
     return [
-      { ...task, id: `${task.id}-plan`, name: `Plan`, description: `Plan approach for: ${task.description}`, assignedTo: 'leader' },
-      { ...task, id: `${task.id}-impl`, name: `Implement`, description: `Execute: ${task.description}`, assignedTo: 'coder' },
-      { ...task, id: `${task.id}-verify`, name: `Verify`, description: `Verify results`, assignedTo: 'reviewer' },
+      {
+        ...task,
+        id: `${task.id}-plan`,
+        name: `Plan`,
+        description: `Plan approach for: ${task.description}`,
+        assignedTo: 'leader',
+      },
+      {
+        ...task,
+        id: `${task.id}-impl`,
+        name: `Implement`,
+        description: `Execute: ${task.description}`,
+        assignedTo: 'coder',
+      },
+      {
+        ...task,
+        id: `${task.id}-verify`,
+        name: `Verify`,
+        description: `Verify results`,
+        assignedTo: 'reviewer',
+      },
     ];
   }
 
   /**
    * 聚合结果
    */
-  private aggregateResults(results: Map<string, ForkResult>): { success: boolean; summary: string } {
+  private aggregateResults(results: Map<string, ForkResult>): {
+    success: boolean;
+    summary: string;
+  } {
     switch (this.config.aggregationStrategy) {
       case 'first':
         const firstResult = results.values().next().value;
@@ -290,7 +330,10 @@ export class Coordinator {
             best = result;
           }
         }
-        return { success: best?.success || false, summary: best?.content || 'No successful results' };
+        return {
+          success: best?.success || false,
+          summary: best?.content || 'No successful results',
+        };
 
       case 'all':
         // 合并所有结果
