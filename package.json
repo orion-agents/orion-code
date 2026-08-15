@@ -70,7 +70,7 @@
     "eventemitter3": "^5.0.1",
     "figlet": "^1.11.0",
     "ink": "^3.2.0",
-    "js-yaml": "^4.3.0",
+    "js-yaml": "^5.2.3",
     "marked": "^11.2.0",
     "marked-terminal": "^6.2.0",
     "openai": "^6.49.0",
