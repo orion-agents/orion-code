@@ -6,7 +6,7 @@
   direction, and product/runtime contracts.
 - [`goals/`](goals/orion-code-项目级目标.md) — durable product goals and Goal evidence/recovery
   guidance.
-- [`plan/`](plan/v0.1.8-plan.md) — active execution plans, current release gates, and future roadmap.
+- [`plan/`](plan/v0.1.9-plan.md) — active execution plans, current release gates, and future roadmap.
 - [`archive/releases/v0.1.x/`](archive/releases/v0.1.x/README.md) — immutable historical plans,
   audits, freeze boundaries, and release receipts.
 - `test/` — maintained manual test references that do not belong in the Jest suite.
