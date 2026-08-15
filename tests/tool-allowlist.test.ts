@@ -469,6 +469,51 @@ describe('tool scheduler with a project allowlist', () => {
     });
   });
 
+  test('project approval prevents a repeated prompt for destructive exec commands', async () => {
+    const confirmToolUse = jest.fn(async () => false);
+    const allowlist = createAllowlistEvaluator(parseAllowlistRules(['exec_command']).rules);
+
+    const { executed, executedNames } = await runAll(
+      [['exec_command', { command: 'rm -rf /tmp/orion-auto-permission-fixture/' }]],
+      { allowlist, toolConfirmation: 'ask', confirmToolUse }
+    );
+
+    expect(confirmToolUse).not.toHaveBeenCalled();
+    expect(executedNames).toEqual(['exec_command']);
+    expect(executed[0].permissionDecision).toMatchObject({
+      approved: true,
+      source: 'allowlist_allow',
+    });
+  });
+
+  test('a project approval takes effect for the next serial call in the same tool batch', async () => {
+    let granted = false;
+    const allowlist: ToolAllowlistEvaluator = (name, _args) =>
+      granted && name === 'exec_command'
+        ? { effect: 'allow', rule: 'allow:exec_command', scope: 'project' }
+        : undefined;
+    const confirmToolUse = jest.fn(async () => {
+      granted = true;
+      return true;
+    });
+
+    const { executed, executedNames } = await runAll(
+      [
+        ['exec_command', { command: 'rm -rf build/one' }],
+        ['exec_command', { command: 'rm -rf build/two' }],
+      ],
+      { allowlist, toolConfirmation: 'ask', confirmToolUse }
+    );
+
+    expect(confirmToolUse).toHaveBeenCalledTimes(1);
+    expect(executedNames).toEqual(['exec_command', 'exec_command']);
+    expect(executed[0].permissionDecision).toMatchObject({ approved: true, source: 'user' });
+    expect(executed[1].permissionDecision).toMatchObject({
+      approved: true,
+      source: 'allowlist_allow',
+    });
+  });
+
   test('deny rule blocks execution entirely and names the rule', async () => {
     const confirmToolUse = jest.fn(async () => true);
     const allowlist = createAllowlistEvaluator(
@@ -530,6 +575,23 @@ describe('tool scheduler with a project allowlist', () => {
     });
 
     expect(executedNames).toEqual(['exec_command']);
+    expect(executed[0].permissionDecision).toMatchObject({
+      approved: true,
+      source: 'allowlist_allow',
+    });
+  });
+
+  test('plan mode reuses a project grant for external read-only tools without prompting', async () => {
+    const confirmToolUse = jest.fn(async () => false);
+    const allowlist = createAllowlistEvaluator(parseAllowlistRules(['web_fetch']).rules);
+
+    const { executed, executedNames } = await runAll(
+      [['web_fetch', { url: 'https://example.com' }]],
+      { allowlist, permissionMode: 'plan', toolConfirmation: 'ask', confirmToolUse }
+    );
+
+    expect(confirmToolUse).not.toHaveBeenCalled();
+    expect(executedNames).toEqual(['web_fetch']);
     expect(executed[0].permissionDecision).toMatchObject({
       approved: true,
       source: 'allowlist_allow',

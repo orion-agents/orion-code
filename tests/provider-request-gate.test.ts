@@ -21,7 +21,9 @@ describe('ProviderRequestGate', () => {
     const first = await gate.acquire(request(1));
     const second = await gate.acquire(request(1));
     let thirdLease: Awaited<ReturnType<typeof gate.acquire>> | undefined;
-    const third = gate.acquire(request(1)).then(lease => { thirdLease = lease; });
+    const third = gate.acquire(request(1)).then(lease => {
+      thirdLease = lease;
+    });
 
     await Promise.resolve();
     expect(gate.snapshot()).toMatchObject({ activeCount: 2, waitingCount: 1 });
@@ -42,8 +44,14 @@ describe('ProviderRequestGate', () => {
     const order: string[] = [];
     let lowLease: Awaited<ReturnType<typeof gate.acquire>> | undefined;
     let highLease: Awaited<ReturnType<typeof gate.acquire>> | undefined;
-    const low = gate.acquire(request(10)).then(lease => { lowLease = lease; order.push('low'); });
-    const high = gate.acquire(request(1)).then(lease => { highLease = lease; order.push('high'); });
+    const low = gate.acquire(request(10)).then(lease => {
+      lowLease = lease;
+      order.push('low');
+    });
+    const high = gate.acquire(request(1)).then(lease => {
+      highLease = lease;
+      order.push('high');
+    });
 
     held.release();
     await high;
@@ -105,11 +113,41 @@ describe('ProviderRequestGate', () => {
     expect(gate.snapshot()).toMatchObject({ cooldownUntil: null, cooldownReason: null });
   });
 
+  it('isolates cooldown by provider while keeping the concurrency budget global', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2030-01-01T00:00:00.000Z'));
+    const gate = new ProviderRequestGate({ maxConcurrent: 2 });
+    gate.enterCooldown('provider-a', Date.now() + 500, 'provider-a-retry');
+
+    let leaseA: Awaited<ReturnType<typeof gate.acquire>> | undefined;
+    const waitingA = gate.acquire(request(1)).then(lease => (leaseA = lease));
+    const leaseB = await gate.acquire({ priority: 2, providerKey: 'provider-b' });
+
+    expect(gate.snapshot('provider-a')).toMatchObject({
+      activeCount: 0,
+      waitingCount: 1,
+      cooldownReason: 'provider-a-retry',
+    });
+    expect(gate.snapshot('provider-b')).toMatchObject({
+      activeCount: 1,
+      waitingCount: 0,
+      cooldownUntil: null,
+    });
+
+    await jest.advanceTimersByTimeAsync(501);
+    await waitingA;
+    expect(gate.snapshot()).toMatchObject({ activeCount: 2, waitingCount: 0 });
+    leaseA?.release();
+    leaseB.release();
+  });
+
   it('clamps invalid concurrency to one slot', async () => {
     const gate = new ProviderRequestGate({ maxConcurrent: Number.NaN });
     const first = await gate.acquire(request(1));
     let secondLease: Awaited<ReturnType<typeof gate.acquire>> | undefined;
-    const second = gate.acquire(request(1)).then(lease => { secondLease = lease; });
+    const second = gate.acquire(request(1)).then(lease => {
+      secondLease = lease;
+    });
     expect(gate.snapshot()).toMatchObject({ activeCount: 1, waitingCount: 1 });
     first.release();
     await second;
@@ -134,20 +172,26 @@ describe('ProviderResilienceCoordinator backoff', () => {
     });
     const networkError = Object.assign(new Error('reset'), { code: 'ECONNRESET' });
     const transport = jest.fn().mockRejectedValue(networkError);
-    const execution = coordinator.execute({
-      logicalRequestId: 'request-1',
-      operation: 'root_chat',
-      providerKey: 'provider-a',
-      requestedModel: 'model-a',
-    }, transport).catch(error => error);
+    const execution = coordinator
+      .execute(
+        {
+          logicalRequestId: 'request-1',
+          operation: 'root_chat',
+          providerKey: 'provider-a',
+          requestedModel: 'model-a',
+        },
+        transport
+      )
+      .catch(error => error);
 
     await jest.advanceTimersByTimeAsync(50);
     await jest.advanceTimersByTimeAsync(100);
     const error = await execution;
 
     expect(error).toBeInstanceOf(ProviderRetryExhaustedError);
-    expect(error.diagnostics.attempts.map((attempt: { backoffMs?: number }) => attempt.backoffMs))
-      .toEqual([50, 100, undefined]);
+    expect(
+      error.diagnostics.attempts.map((attempt: { backoffMs?: number }) => attempt.backoffMs)
+    ).toEqual([50, 100, undefined]);
     expect(error.diagnostics.totalBackoffMs).toBe(150);
     expect(transport).toHaveBeenCalledTimes(3);
   });

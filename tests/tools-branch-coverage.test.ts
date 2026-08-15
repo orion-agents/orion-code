@@ -82,7 +82,21 @@ describe('core tool validation and result summaries', () => {
     ['write_file', {}, 'requires a path'],
     ['write_file', { path: 'x' }, 'requires a content'],
     ['list_files', {}, 'requires a path'],
+    ['list_files', { path: 'src', maxDepth: -1 }, 'maxDepth must be a safe integer'],
+    ['list_files', { path: 'src', maxDepth: 1.5 }, 'maxDepth must be a safe integer'],
+    ['list_files', { path: 'src', maxDepth: '2' }, 'maxDepth must be a safe integer'],
+    ['list_files', { path: 'src', maxDepth: Number.NaN }, 'maxDepth must be a safe integer'],
+    ['list_files', { path: 'src', maxDepth: Number.POSITIVE_INFINITY }, 'maxDepth must be'],
+    ['list_files', { path: 'src', maxDepth: 9 }, 'maxDepth must be a safe integer'],
     ['exec_command', {}, 'requires a command'],
+    ['exec_command', { command: 'echo no', timeout: 0 }, 'timeout must be a safe integer'],
+    ['exec_command', { command: 'echo no', timeout: 1.5 }, 'timeout must be a safe integer'],
+    ['exec_command', { command: 'echo no', timeout: '10' }, 'timeout must be a safe integer'],
+    ['exec_command', { command: 'echo no', timeout: Number.NaN }, 'timeout must be'],
+    ['exec_command', { command: 'echo no', timeout: Number.POSITIVE_INFINITY }, 'timeout must be'],
+    ['exec_command', { command: 'echo no', timeout: 600001 }, 'timeout must be a safe integer'],
+    ['exec_command', { command: 'echo no', maxOutput: 1023 }, 'maxOutput must be'],
+    ['exec_command', { command: 'echo no', maxOutput: 10485761 }, 'maxOutput must be'],
     ['edit_file', {}, 'requires a path'],
     ['edit_file', { path: 'x' }, 'requires an old_string'],
     ['edit_file', { path: 'x', old_string: 'a' }, 'requires a new_string'],
@@ -171,7 +185,7 @@ describe('git tools branch behavior', () => {
       },
       { stdout: '2\t5\n' }
     );
-    const result = await gitStatusTool.execute({ cwd: '/repo' }, context);
+    const result = await gitStatusTool.execute({ cwd: process.cwd() }, context);
     expect(result.success).toBe(true);
     expect(JSON.parse(result.output)).toEqual({
       clean: false,
@@ -191,7 +205,7 @@ describe('git tools branch behavior', () => {
   test('git_status still succeeds when the branch has no upstream', async () => {
     // Only the porcelain call is scripted; the upstream rev-list call throws.
     scriptGit({ stdout: '' });
-    const result = await gitStatusTool.execute({ cwd: '/repo' }, context);
+    const result = await gitStatusTool.execute({ cwd: process.cwd() }, context);
     expect(result.success).toBe(true);
     expect(JSON.parse(result.output)).toMatchObject({ clean: true, ahead: 0, behind: 0 });
   });

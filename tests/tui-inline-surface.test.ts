@@ -4,7 +4,12 @@ import {
   type CommittedEntry,
   type TranscriptCommitBatch,
 } from '../src/tui-ui/inline-surface';
-import { createTuiFrame, writeFrameText, setFrameCursor, type TuiFrame } from '../src/tui-core/frame';
+import {
+  createTuiFrame,
+  writeFrameText,
+  setFrameCursor,
+  type TuiFrame,
+} from '../src/tui-core/frame';
 import {
   BackpressureOutput,
   TerminalModelOutput,
@@ -32,7 +37,11 @@ function makeCommittedEntry(key: string, rows: string[][]): CommittedEntry {
   };
 }
 
-function makeBatch(entries: CommittedEntry[], generation = 1, reason: 'append' | 'finalize' | 'restore' | 'replace' | 'clear-divider' = 'append'): TranscriptCommitBatch {
+function makeBatch(
+  entries: CommittedEntry[],
+  generation = 1,
+  reason: 'append' | 'finalize' | 'restore' | 'replace' | 'clear-divider' = 'append'
+): TranscriptCommitBatch {
   return { generation, reason, entries };
 }
 
@@ -128,16 +137,22 @@ describe('inline surface: commit', () => {
     const output = new TerminalModelOutput(terminal);
     const surface = new InlineTerminalSurface({ output });
     await surface.mount(40, 10);
-    await surface.renderLive(makeRowsFrame(40, [
-      'OLD-LIVE',
-      '',
-      '',
-      '',
-      'ready',
-      '┌OLD-PROMPT──────────────────────────┐',
-      '│ › old input',
-      '└OLD-PROMPT──────────────────────────┘',
-    ], 6));
+    await surface.renderLive(
+      makeRowsFrame(
+        40,
+        [
+          'OLD-LIVE',
+          '',
+          '',
+          '',
+          'ready',
+          '┌OLD-PROMPT──────────────────────────┐',
+          '│ › old input',
+          '└OLD-PROMPT──────────────────────────┘',
+        ],
+        6
+      )
+    );
 
     const batch = makeBatch([makeCommittedEntry('e1', [['committed']])]);
     await surface.commit(batch, () => makeFrame(40, 8, 'NEW-LIVE'));
@@ -159,6 +174,24 @@ describe('inline surface: commit', () => {
     expect(terminal.visibleRows().join('\n')).toContain('post-commit live');
   });
 
+  it('hides the native cursor before clearing the live block for a commit', async () => {
+    const output = new MemoryOutput();
+    const surface = new InlineTerminalSurface({ output });
+    await surface.mount(40, 10);
+    await surface.renderLive(makeFrame(39, 4, 'prompt'));
+    output.chunks = [];
+
+    await surface.commit(makeBatch([makeCommittedEntry('assistant-1', [['final answer']])]), () =>
+      makeFrame(39, 4, 'next prompt')
+    );
+
+    const commitOutput = output.text();
+    expect(commitOutput.indexOf('\x1b[?25l')).toBe(0);
+    expect(commitOutput.lastIndexOf('\x1b[?25h')).toBeGreaterThan(
+      commitOutput.indexOf('next prompt')
+    );
+  });
+
   it('retains incremental commits while keeping the latest live frame visible', async () => {
     const terminal = new TerminalStateModel(40, 10);
     const output = new TerminalModelOutput(terminal);
@@ -168,15 +201,13 @@ describe('inline surface: commit', () => {
 
     await surface.commit(
       makeBatch([makeCommittedEntry('e1', [['turn-1-line-a'], ['turn-1-line-b']])]),
-      () => makeFrame(40, 8, 'live-1'),
+      () => makeFrame(40, 8, 'live-1')
     );
-    await surface.commit(
-      makeBatch([makeCommittedEntry('e2', [['turn-2']])]),
-      () => makeFrame(40, 8, 'live-2'),
+    await surface.commit(makeBatch([makeCommittedEntry('e2', [['turn-2']])]), () =>
+      makeFrame(40, 8, 'live-2')
     );
-    await surface.commit(
-      makeBatch([makeCommittedEntry('e3', [['turn-3']])]),
-      () => makeFrame(40, 8, 'live-3'),
+    await surface.commit(makeBatch([makeCommittedEntry('e3', [['turn-3']])]), () =>
+      makeFrame(40, 8, 'live-3')
     );
 
     expect(terminal.text()).toContain('turn-1-line-a');
@@ -197,17 +228,26 @@ describe('inline surface: commit', () => {
       await surface.mount(40, 10);
       output.chunks = [];
 
-      await surface.commit(makeBatch([{
-        displayKey: 'user-1',
-        rows: [[{
-          text: '› question',
-          style: {
-            bold: true,
-            foreground: { kind: 'named', value: 'white' },
-            background: { kind: 'indexed', value: 236 },
+      await surface.commit(
+        makeBatch([
+          {
+            displayKey: 'user-1',
+            rows: [
+              [
+                {
+                  text: '› question',
+                  style: {
+                    bold: true,
+                    foreground: { kind: 'named', value: 'white' },
+                    background: { kind: 'indexed', value: 236 },
+                  },
+                },
+              ],
+            ],
           },
-        }]],
-      }]), noLiveFrame);
+        ]),
+        noLiveFrame
+      );
 
       expect(output.text()).toMatch(/\x1b\[[0-9;]*48;5;236m› question\x1b\[0m\n/);
     } finally {
@@ -229,13 +269,20 @@ describe('inline surface: commit', () => {
       await surface.mount(40, 10);
       output.chunks = [];
 
-      await surface.commit(makeBatch([{
-        displayKey: 'mixed',
-        rows: [[
-          { text: 'code', style: { background: { kind: 'named', value: 'blue' } } },
-          { text: ' plain', style: {} },
-        ]],
-      }]), noLiveFrame);
+      await surface.commit(
+        makeBatch([
+          {
+            displayKey: 'mixed',
+            rows: [
+              [
+                { text: 'code', style: { background: { kind: 'named', value: 'blue' } } },
+                { text: ' plain', style: {} },
+              ],
+            ],
+          },
+        ]),
+        noLiveFrame
+      );
 
       expect(output.text()).toContain('\x1b[44mcode\x1b[0m plain\x1b[0m\n');
     } finally {
@@ -282,17 +329,26 @@ describe('inline surface: commit', () => {
       await surface.mount(40, 10);
       output.chunks = [];
 
-      await surface.commit(makeBatch([{
-        displayKey: 'user-1',
-        rows: [[{
-          text: '› question',
-          style: {
-            bold: true,
-            foreground: { kind: 'named', value: 'white' },
-            background: { kind: 'indexed', value: 236 },
+      await surface.commit(
+        makeBatch([
+          {
+            displayKey: 'user-1',
+            rows: [
+              [
+                {
+                  text: '› question',
+                  style: {
+                    bold: true,
+                    foreground: { kind: 'named', value: 'white' },
+                    background: { kind: 'indexed', value: 236 },
+                  },
+                },
+              ],
+            ],
           },
-        }]],
-      }]), noLiveFrame);
+        ]),
+        noLiveFrame
+      );
 
       const committed = output.text();
       expect(committed).toContain('\x1b[1m› question\x1b[0m\n');
@@ -338,6 +394,42 @@ describe('inline surface: live render', () => {
     // Render restores cursor visibility (SHOW_CURSOR) based on frame.cursor.visible.
     expect(output.text()).toContain('\x1b[?25h');
   });
+
+  it('keeps the native IME cursor hidden until a CJK prompt repaint is parked', async () => {
+    const output = new MemoryOutput();
+    const surface = new InlineTerminalSurface({ output });
+    await surface.mount(40, 12);
+
+    const makeCjkPromptFrame = (value: string, cursorColumn: number): TuiFrame => {
+      const frame = createTuiFrame(39, 4);
+      writeFrameText(frame, 0, 0, 'MODE AUTO');
+      writeFrameText(frame, 1, 0, `┌${'─'.repeat(37)}┐`);
+      writeFrameText(frame, 2, 0, `│ › ${value}`);
+      writeFrameText(frame, 2, 38, '│');
+      writeFrameText(frame, 3, 0, `└${'─'.repeat(37)}┘`);
+      setFrameCursor(frame, 2, cursorColumn);
+      return frame;
+    };
+
+    await surface.renderLive(makeCjkPromptFrame('所以146减仓位', 17));
+    output.chunks = [];
+
+    // A committed IME candidate changes the prompt row while the hardware
+    // cursor from the previous frame is visible at the edit position.
+    await surface.renderLive(makeCjkPromptFrame('所以146减仓位好', 19));
+
+    const repaint = output.text();
+    const cursorHide = repaint.indexOf('\x1b[?25l');
+    const committedCandidate = repaint.indexOf('好');
+    const autowrapRestore = repaint.lastIndexOf('\x1b[?7h');
+    const cursorShow = repaint.lastIndexOf('\x1b[?25h');
+
+    expect(cursorHide).toBe(0);
+    expect(committedCandidate).toBeGreaterThan(cursorHide);
+    expect(autowrapRestore).toBeGreaterThan(committedCandidate);
+    expect(cursorShow).toBeGreaterThan(autowrapRestore);
+    expect(surface.getState().cursorColumn).toBe(19);
+  });
 });
 
 // ============================================================================
@@ -360,19 +452,15 @@ describe('inline surface: resize', () => {
 
   it('clears every physical live row after terminal resize reflow', async () => {
     const terminal = new TerminalStateModel(40, 14);
-    terminal.write([
-      'history-1',
-      'history-2',
-      'history-3',
-      'history-4',
-      'history-5',
-      '',
-    ].join('\r\n'));
+    terminal.write(
+      ['history-1', 'history-2', 'history-3', 'history-4', 'history-5', ''].join('\r\n')
+    );
     const output = new TerminalModelOutput(terminal);
     const surface = new InlineTerminalSurface({ output });
     await surface.mount(40, 14);
-    const oldRows = ['old-status', 'OLD-TOP', 'OLD-INPUT', 'OLD-BOTTOM']
-      .map(row => row.padEnd(40, '-'));
+    const oldRows = ['old-status', 'OLD-TOP', 'OLD-INPUT', 'OLD-BOTTOM'].map(row =>
+      row.padEnd(40, '-')
+    );
     await surface.renderLive(makeRowsFrame(40, oldRows, 2));
     expect(terminal.visibleRows().join('\n')).toContain('OLD-BOTTOM');
 
@@ -380,22 +468,15 @@ describe('inline surface: resize', () => {
     // physical rows before the debounced SIGWINCH repaint runs.
     terminal.reflowRegion(5, 4, 20);
 
-    await surface.resize(20, 14, () => makeRowsFrame(20, [
-      'new-status',
-      'NEW-TOP',
-      'NEW-INPUT',
-      'NEW-BOTTOM',
-    ], 2));
+    await surface.resize(20, 14, () =>
+      makeRowsFrame(20, ['new-status', 'NEW-TOP', 'NEW-INPUT', 'NEW-BOTTOM'], 2)
+    );
 
     expect(terminal.visibleRows().join('\n')).not.toContain('OLD-BOTTOM');
     expect(terminal.visibleRows()).toContain('NEW-BOTTOM');
-    expect(terminal.allRows()).toEqual(expect.arrayContaining([
-      'history-1',
-      'history-2',
-      'history-3',
-      'history-4',
-      'history-5',
-    ]));
+    expect(terminal.allRows()).toEqual(
+      expect.arrayContaining(['history-1', 'history-2', 'history-3', 'history-4', 'history-5'])
+    );
   });
 
   it('uses blank viewport rows before moving reflowed live content into scrollback', async () => {
@@ -404,17 +485,15 @@ describe('inline surface: resize', () => {
     const output = new TerminalModelOutput(terminal);
     const surface = new InlineTerminalSurface({ output });
     await surface.mount(40, 14);
-    const oldRows = ['OLD-STATUS', 'OLD-TOP', 'OLD-INPUT', 'OLD-BOTTOM']
-      .map(row => row.padEnd(40, '-'));
+    const oldRows = ['OLD-STATUS', 'OLD-TOP', 'OLD-INPUT', 'OLD-BOTTOM'].map(row =>
+      row.padEnd(40, '-')
+    );
     await surface.renderLive(makeRowsFrame(40, oldRows, 2));
 
     terminal.reflowRegion(1, 4, 20);
-    await surface.resize(20, 14, () => makeRowsFrame(20, [
-      'new-status',
-      'NEW-TOP',
-      'NEW-INPUT',
-      'NEW-BOTTOM',
-    ], 2));
+    await surface.resize(20, 14, () =>
+      makeRowsFrame(20, ['new-status', 'NEW-TOP', 'NEW-INPUT', 'NEW-BOTTOM'], 2)
+    );
 
     expect(terminal.scrollback.join('\n')).not.toMatch(/OLD-(?:STATUS|TOP|INPUT|BOTTOM)/u);
     expect(terminal.visibleRows().join('\n')).not.toMatch(/OLD-(?:STATUS|TOP|INPUT|BOTTOM)/u);
@@ -450,7 +529,7 @@ describe('inline surface: resize', () => {
       30,
       14,
       () => makeFrame(29, 4, 'intermediate'),
-      firstGeneration,
+      firstGeneration
     );
     await new Promise<void>(resolve => setImmediate(resolve));
 
@@ -459,7 +538,7 @@ describe('inline surface: resize', () => {
       20,
       14,
       () => makeFrame(19, 4, 'final-frame'),
-      finalGeneration,
+      finalGeneration
     );
     const stalePaint = surface.renderLive(makeFrame(29, 4, 'STALE-LIVE'));
 
@@ -473,7 +552,9 @@ describe('inline surface: resize', () => {
 
   it('preserves an already-queued old-width commit across resize', async () => {
     const terminal = new TerminalStateModel(40, 14);
-    terminal.write(['history-1', 'history-2', 'history-3', 'history-4', 'history-5', ''].join('\r\n'));
+    terminal.write(
+      ['history-1', 'history-2', 'history-3', 'history-4', 'history-5', ''].join('\r\n')
+    );
     const output = new TerminalModelOutput(terminal);
     const surface = new InlineTerminalSurface({ output });
     await surface.mount(40, 14);
@@ -484,14 +565,9 @@ describe('inline surface: resize', () => {
     const content = 'abcdefghijklmnopqrstuvwxyz0123456789';
     const commit = surface.commit(
       makeBatch([makeCommittedEntry('queued-before-resize', [[content]])]),
-      () => makeFrame(19, 4, 'after-commit'),
+      () => makeFrame(19, 4, 'after-commit')
     );
-    const resize = surface.resize(
-      20,
-      14,
-      () => makeFrame(19, 4, 'after-resize'),
-      generation,
-    );
+    const resize = surface.resize(20, 14, () => makeFrame(19, 4, 'after-resize'), generation);
 
     await Promise.all([commit, resize]);
 
@@ -510,10 +586,10 @@ describe('inline surface: serialized queue', () => {
     await surface.mount(80, 24);
     const order: string[] = [];
     // Enqueue commits and renders - they should not interleave.
-    const p1 = surface.commit(makeBatch([makeCommittedEntry('e1', [['first']])]), noLiveFrame)
+    const p1 = surface
+      .commit(makeBatch([makeCommittedEntry('e1', [['first']])]), noLiveFrame)
       .then(() => order.push('commit1'));
-    const p2 = surface.renderLive(makeFrame(40, 2, 'render1'))
-      .then(() => order.push('render1'));
+    const p2 = surface.renderLive(makeFrame(40, 2, 'render1')).then(() => order.push('render1'));
     await Promise.all([p1, p2]);
     expect(order).toEqual(['commit1', 'render1']);
   });
@@ -525,8 +601,9 @@ describe('inline surface: serialized queue', () => {
     output.blocked = true;
 
     let resolved = false;
-    const render = surface.renderLive(makeFrame(40, 4, 'blocked'))
-      .then(() => { resolved = true; });
+    const render = surface.renderLive(makeFrame(40, 4, 'blocked')).then(() => {
+      resolved = true;
+    });
     await Promise.resolve();
     expect(resolved).toBe(false);
 
@@ -555,6 +632,21 @@ describe('inline surface: serialized queue', () => {
 // ============================================================================
 
 describe('inline surface: state', () => {
+  it('flushes the FIFO queue without timer polling', async () => {
+    const output = new MemoryOutput();
+    const surface = new InlineTerminalSurface({ output });
+    const timerSpy = jest.spyOn(global, 'setTimeout');
+
+    try {
+      await surface.mount(80, 24);
+      timerSpy.mockClear();
+      await surface.flush();
+      expect(timerSpy).not.toHaveBeenCalled();
+    } finally {
+      timerSpy.mockRestore();
+    }
+  });
+
   it('reports phase transitions', async () => {
     const output = new MemoryOutput();
     const surface = new InlineTerminalSurface({ output });

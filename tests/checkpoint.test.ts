@@ -19,6 +19,7 @@ const OUTSIDE_FILE = path.join(
   path.dirname(TEST_PROJECT),
   `${path.basename(TEST_PROJECT)}-outside.txt`
 );
+const OUTSIDE_DIR = `${OUTSIDE_FILE}-dir`;
 
 describe('checkpoint', () => {
   beforeEach(() => {
@@ -41,6 +42,8 @@ describe('checkpoint', () => {
     if (fs.existsSync(checkpointDir)) {
       fs.rmSync(checkpointDir, { recursive: true, force: true });
     }
+    fs.rmSync(OUTSIDE_FILE, { force: true });
+    fs.rmSync(OUTSIDE_DIR, { recursive: true, force: true });
   });
 
   test('CHECKPOINT_TTL_MS is 7 days', () => {
@@ -81,6 +84,31 @@ describe('checkpoint', () => {
         sizeBytes: 0,
       }),
     ]);
+  });
+
+  test('createCheckpoint rejects an in-project symlink to an outside file without artifacts', () => {
+    fs.writeFileSync(OUTSIDE_FILE, 'outside secret', 'utf8');
+    const link = path.join(TEST_PROJECT, 'outside-link.txt');
+    fs.symlinkSync(OUTSIDE_FILE, link);
+
+    expect(createCheckpoint(TEST_PROJECT, 'turn-symlink-file', [link])).toBeNull();
+    expect(
+      fs.existsSync(path.join(getProjectCheckpointsDir(TEST_PROJECT), 'turn-symlink-file'))
+    ).toBe(false);
+    expect(fs.readFileSync(OUTSIDE_FILE, 'utf8')).toBe('outside secret');
+  });
+
+  test('createCheckpoint rejects a missing target below an outside directory symlink', () => {
+    fs.mkdirSync(OUTSIDE_DIR);
+    const linkDir = path.join(TEST_PROJECT, 'outside-dir');
+    fs.symlinkSync(OUTSIDE_DIR, linkDir);
+
+    expect(
+      createCheckpoint(TEST_PROJECT, 'turn-symlink-parent', [path.join(linkDir, 'future.txt')])
+    ).toBeNull();
+    expect(
+      fs.existsSync(path.join(getProjectCheckpointsDir(TEST_PROJECT), 'turn-symlink-parent'))
+    ).toBe(false);
   });
 
   test('createCheckpoint is idempotent — second call returns null', () => {
@@ -213,6 +241,27 @@ describe('checkpoint', () => {
     const result = restoreCheckpoint(TEST_PROJECT, 'evil-turn');
     expect(result.error).toContain('Invalid checkpoint path');
     expect(fs.existsSync(OUTSIDE_FILE)).toBe(false);
+  });
+
+  test('restoreCheckpoint refuses metadata that targets an outside symlink', () => {
+    fs.writeFileSync(OUTSIDE_FILE, 'outside current', 'utf8');
+    fs.symlinkSync(OUTSIDE_FILE, path.join(TEST_PROJECT, 'outside-link.txt'));
+    const checkpointDir = path.join(getProjectCheckpointsDir(TEST_PROJECT), 'symlink-turn');
+    fs.mkdirSync(checkpointDir, { recursive: true });
+    fs.writeFileSync(path.join(checkpointDir, 'outside-link.txt'), 'checkpoint data', 'utf8');
+    fs.writeFileSync(
+      path.join(checkpointDir, '.checkpoint.json'),
+      JSON.stringify({
+        turnId: 'symlink-turn',
+        createdAt: Date.now(),
+        files: [{ path: 'outside-link.txt', content: '', sizeBytes: 15, existed: true }],
+      }),
+      'utf8'
+    );
+
+    const result = restoreCheckpoint(TEST_PROJECT, 'symlink-turn');
+    expect(result.error).toContain('Invalid checkpoint path');
+    expect(fs.readFileSync(OUTSIDE_FILE, 'utf8')).toBe('outside current');
   });
 
   test('restoreCheckpoint returns error for non-existent checkpoint', () => {

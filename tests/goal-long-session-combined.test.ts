@@ -28,6 +28,7 @@ import {
   appendSessionMessages,
   createSession,
   loadSessionCompactCheckpoint,
+  loadSessionMeta,
   readSessionTraceEvents,
   updateSessionHarnessState,
   type SessionMeta,
@@ -523,7 +524,7 @@ describe('Goal combined long-session regression', () => {
         await flushImmediate();
         const coordinator = (restartedController as unknown as { goalCoordinator: GoalCoordinator })
           .goalCoordinator;
-        if (coordinator.goal?.status === 'complete') break;
+        if (!loadSessionMeta(session.id)?.activeGoalId) break;
       }
 
       const completedCoordinator = (
@@ -546,12 +547,17 @@ describe('Goal combined long-session regression', () => {
           }),
         ])
       );
-      expect(completedCoordinator.goal).toMatchObject({
+      expect(completedCoordinator.goal).toBeNull();
+
+      // A final fresh coordinator proves terminal state and its receipt came from the sidecar.
+      const recoveredFromSidecar = new GoalCoordinator(projectDir, session.id);
+      expect(recoveredFromSidecar.load()).toBe(true);
+      expect(recoveredFromSidecar.goal).toMatchObject({
         goalId,
         status: 'complete',
         continuationCount: 24,
       });
-      expect(completedCoordinator.goal!.completionAudit).toMatchObject({
+      expect(recoveredFromSidecar.goal!.completionAudit).toMatchObject({
         passed: true,
         remainingRequirements: [],
         finalSummary: {
@@ -563,15 +569,10 @@ describe('Goal combined long-session regression', () => {
           },
         },
       });
-      expect(completedCoordinator.goal!.completionAudit!.evidenceRefs).toContain(finalEvidenceId);
-      expect(completedCoordinator.goal!.completionAudit!.evidenceRefs).not.toContain(
+      expect(recoveredFromSidecar.goal!.completionAudit!.evidenceRefs).toContain(finalEvidenceId);
+      expect(recoveredFromSidecar.goal!.completionAudit!.evidenceRefs).not.toContain(
         failedEvidenceId
       );
-
-      // A final fresh coordinator proves terminal state and its receipt came from the sidecar.
-      const recoveredFromSidecar = new GoalCoordinator(projectDir, session.id);
-      expect(recoveredFromSidecar.load()).toBe(true);
-      expect(recoveredFromSidecar.goal).toEqual(completedCoordinator.goal);
       expect(recoveredFromSidecar.goal!.completionAudit!.finalSummary).toMatchObject({
         originalObjective: 'Complete the combined long session artifact verification',
         stopReason: 'completed',

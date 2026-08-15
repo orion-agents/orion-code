@@ -2,6 +2,7 @@ import {
   resolveUiRendererCapabilities,
   type EditPreviewRequest,
   type ErrorLayer,
+  type LoopBudgetStopView,
   type ResolvedUiRendererCapabilities,
   type RuntimeLoopStats,
   type RuntimeSessionRestoredEvent,
@@ -23,6 +24,121 @@ import type {
   ResearchLifecycleSummary,
   ResearchStage,
 } from './subagents/research-renderer';
+import { sanitizeTerminalText } from '../tui-core/style';
+
+export type BudgetStopLocale = 'en' | 'zh-CN';
+
+/** Build the renderer-neutral recovery card for a recoverable loop-budget stop. */
+export function createLoopBudgetStopView(stats: RuntimeLoopStats): LoopBudgetStopView {
+  const reason = sanitizeTerminalText(stats.budgetExceededReason ?? 'agent loop budget reached', 1)
+    .replace(/\s+/gu, ' ')
+    .trim();
+  const kind: LoopBudgetStopView['kind'] = /LLM request budget/iu.test(reason)
+    ? 'llm_request_limit'
+    : /tool call budget/iu.test(reason)
+      ? 'tool_call_limit'
+      : /preflight|provider/iu.test(reason)
+        ? 'provider_preflight_limit'
+        : 'other';
+  const tool = stats.lastToolName
+    ? sanitizeTerminalText(stats.lastToolName, 1).replace(/\s+/gu, ' ').trim()
+    : '';
+  const summary = stats.lastToolSummary
+    ? sanitizeTerminalText(stats.lastToolSummary, 1).replace(/\s+/gu, ' ').trim().slice(0, 240)
+    : '';
+
+  return {
+    schemaVersion: 1,
+    kind,
+    reason,
+    recoverable: true,
+    statePreserved: true,
+    source: stats.loopBudgetSource,
+    llmRequests: {
+      current: stats.llmRequests,
+      ...(typeof stats.loopBudgetMaxLlmRequests === 'number'
+        ? { maximum: stats.loopBudgetMaxLlmRequests }
+        : {}),
+    },
+    toolCalls: {
+      current: stats.toolCalls,
+      ...(typeof stats.loopBudgetMaxToolCalls === 'number'
+        ? { maximum: stats.loopBudgetMaxToolCalls }
+        : {}),
+    },
+    ...(tool
+      ? {
+          stopPoint: {
+            tool,
+            ...(summary ? { summary } : {}),
+            ...(typeof stats.lastToolSuccess === 'boolean'
+              ? { success: stats.lastToolSuccess }
+              : {}),
+          },
+        }
+      : {}),
+    actions: stats.continuationActions?.length
+      ? [...stats.continuationActions]
+      : ['reply_continue', 'narrow_instruction', 'inspect_loop_stats', 'raise_budget'],
+  };
+}
+
+/** Select Chinese only when the current user instruction contains Han characters. */
+export function budgetStopLocaleForInput(input: string): BudgetStopLocale {
+  return /\p{Script=Han}/u.test(input) ? 'zh-CN' : 'en';
+}
+
+/** Format every recovery action explicitly; no renderer may hide it in collapsed details. */
+export function formatLoopBudgetStopView(
+  view: LoopBudgetStopView,
+  locale: BudgetStopLocale = 'en'
+): string {
+  const count = (current: number, maximum: number | undefined, unit: string): string =>
+    maximum === undefined ? `${current} ${unit}` : `${current}/${maximum} ${unit}`;
+  const llm = count(
+    view.llmRequests.current,
+    view.llmRequests.maximum,
+    locale === 'zh-CN' ? '次模型请求' : 'model requests'
+  );
+  const tools = count(
+    view.toolCalls.current,
+    view.toolCalls.maximum,
+    locale === 'zh-CN' ? '次工具调用' : 'tool calls'
+  );
+  const stopPoint = view.stopPoint
+    ? `${view.stopPoint.tool}${view.stopPoint.summary ? ` — ${view.stopPoint.summary}` : ''}`
+    : undefined;
+
+  if (locale === 'zh-CN') {
+    const lines = [
+      `本轮已暂停：达到单次响应的执行预算（${llm}，${tools}）。`,
+      '这不是任务失败；当前会话状态已保存。',
+    ];
+    if (stopPoint) lines.push(`停止位置：${stopPoint}`);
+    lines.push(
+      '下一步：',
+      '• 回复 `继续`，按同一目标接着执行。',
+      '• 或给出一个更小、更具体的下一步。',
+      '• 运行 `/loop-stats` 查看请求与工具用量。',
+      '• 对确实需要更长运行的任务，在 orion.json 中调高 `agentLoop.budget`。'
+    );
+    return lines.join('\n');
+  }
+
+  const lines = [
+    `Turn paused: the per-response execution budget was reached (${llm}, ${tools}).`,
+    'This is recoverable, not a task failure; the current session state is saved.',
+  ];
+  if (stopPoint) lines.push(`Stopped after: ${stopPoint}`);
+  lines.push(
+    'Next:',
+    '• Reply `继续` to continue the same objective.',
+    '• Or give a smaller, concrete next step.',
+    '• Run `/loop-stats` to inspect request and tool usage.',
+    '• For intentional long work, raise `agentLoop.budget` in orion.json.'
+  );
+  return lines.join('\n');
+}
 
 export type TranscriptBlockKind =
   | 'user'
@@ -67,6 +183,7 @@ export interface ToolActivity {
   error?: string;
   outputBytes?: number;
   artifactRef?: { id: string; outputBytes: number };
+  authorization?: import('./ui-events').ToolAuthorizationView;
   /** Monotonic tool invocation sequence (1-based). Stable across transcript/trace/last-tool. */
   seq?: number;
   batchCount?: number;
@@ -252,10 +369,7 @@ export function projectResearchLifecycleEvent(
 }
 
 function inlineResearchText(value: string, limit = 160): string {
-  const singleLine = value
-    .replace(/[\u0000-\u001f\u007f]+/gu, ' ')
-    .replace(/\s+/gu, ' ')
-    .trim();
+  const singleLine = sanitizeTerminalText(value).replace(/\n/gu, ' ').replace(/\s+/gu, ' ').trim();
   return singleLine.length <= limit ? singleLine : `${singleLine.slice(0, limit - 1)}…`;
 }
 
@@ -1338,6 +1452,7 @@ export function toolActivityFromFinished(
     error?: string;
     outputBytes?: number;
     artifactRef?: { id: string; outputBytes: number };
+    authorization?: import('./ui-events').ToolAuthorizationView;
     sequence?: number;
     batchCount?: number;
     batchIndex?: number;
@@ -1358,6 +1473,7 @@ export function toolActivityFromFinished(
     error: event.error,
     outputBytes: event.outputBytes,
     artifactRef: event.artifactRef,
+    authorization: event.authorization,
     seq: event.sequence,
     batchCount: event.batchCount,
     batchIndex: event.batchIndex,
@@ -1388,6 +1504,10 @@ export function formatToolActivityTranscript(activity: ToolActivity): string {
 
   if (activity.command) {
     lines.push(`  $ ${activity.command}`);
+  }
+
+  if (activity.authorization) {
+    lines.push(`  Authorization: ${activity.authorization.source}`);
   }
 
   if (activity.artifactRef) {

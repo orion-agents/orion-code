@@ -67,6 +67,12 @@ describe('Goal evidence command classification', () => {
     expect(classifyGoalEvidenceKind('git_push', { message: 'release' })).toBe('external');
   });
 
+  it('classifies bounded Goal inspection/plan tools as runtime evidence only', () => {
+    expect(classifyGoalEvidenceKind('get_goal', {})).toBe('runtime');
+    expect(classifyGoalEvidenceKind('update_goal_plan', {})).toBe('runtime');
+    expect(classifyGoalEvidenceKind('update_goal', { status: 'complete' })).toBeNull();
+  });
+
   it.each([
     {
       name: 'npm publish',

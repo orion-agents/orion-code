@@ -17,6 +17,18 @@ import { LLMService, ProviderRequestPreflightError } from '../src/services/llm';
 import { getProjectSessionsDir } from '../src/services/config-dir';
 import { GoalCoordinator } from '../src/runtime/goals/coordinator';
 import * as goalStorage from '../src/services/goal-storage';
+import * as sessionStorage from '../src/services/session-storage';
+
+function sessionMeta(id: string): sessionStorage.SessionMeta {
+  return {
+    id,
+    projectPath: '/test',
+    model: 'test-model',
+    startTime: Date.now(),
+    tokenCount: 0,
+    cost: 0,
+  };
+}
 
 function createRuntime(): OrionCodeUiRuntime {
   const session = { id: `runtime-safety-${randomUUID()}` };
@@ -113,6 +125,9 @@ async function flushImmediate(): Promise<void> {
 }
 
 describe('goal runtime safety', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
   it('does not let a programmatic goal_control resume confirm a high-impact boundary', async () => {
     const { controller, runner } = createController();
 
@@ -333,6 +348,9 @@ describe('goal runtime safety', () => {
     expect(runner.calls).toHaveLength(1);
     expect(runner.calls[0].signal?.aborted).toBe(false);
     const coordinator = (controller as any).goalCoordinator as GoalCoordinator;
+    jest
+      .spyOn(sessionStorage, 'clearSessionGoalBinding')
+      .mockReturnValue(sessionMeta(coordinator.boundSessionId));
     const clearGoal = coordinator.clear.bind(coordinator);
     const permission = controller.requestToolPermission({
       name: 'exec_command',
@@ -364,6 +382,12 @@ describe('goal runtime safety', () => {
       type: 'started',
     });
     const coordinator = (controller as any).goalCoordinator as GoalCoordinator;
+    jest
+      .spyOn(sessionStorage, 'clearSessionGoalBinding')
+      .mockReturnValue(sessionMeta(coordinator.boundSessionId));
+    jest
+      .spyOn(sessionStorage, 'restoreSessionGoalBinding')
+      .mockReturnValue(sessionMeta(coordinator.boundSessionId));
     const permission = controller.requestToolPermission({
       name: 'exec_command',
       args: { command: 'touch must-not-run-after-clear-failure' },
@@ -398,6 +422,9 @@ describe('goal runtime safety', () => {
       type: 'started',
     });
     const coordinator = (controller as any).goalCoordinator as GoalCoordinator;
+    jest
+      .spyOn(sessionStorage, 'clearSessionGoalBinding')
+      .mockReturnValue(sessionMeta(coordinator.boundSessionId));
     const clearGoal = coordinator.clear.bind(coordinator);
     const permission = controller.requestToolPermission({
       name: 'exec_command',

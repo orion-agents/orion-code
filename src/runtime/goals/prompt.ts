@@ -31,6 +31,11 @@ export function buildGoalContextFragment(goal: SessionGoalV1 | null): GoalPrompt
     lines.push(
       `Contract: objective revision ${contract.objectiveRevision}; original: ${compactGoalLine(contract.originalObjective)}`
     );
+    if (contract.completionAction === 'exit_goal') {
+      lines.push(
+        'Completion action: exit Goal mode automatically after the completion audit passes.'
+      );
+    }
     if (contract.constraints.length > 0) {
       lines.push('Constraints:');
       lines.push(
@@ -83,11 +88,17 @@ export function buildGoalContextFragment(goal: SessionGoalV1 | null): GoalPrompt
     '- Before requesting completion, call get_goal and use only exact recentEvidence IDs returned by the runtime. Never invent or guess evidence IDs.',
     '- update_goal success records a request only. Do not tell the user the Goal is complete unless a later authoritative Goal snapshot has status=complete and a passed completion audit.',
     '- If update_goal rejects completion, the Goal remains active. Do not repeat the request without newly captured runtime evidence.',
+    '- A completion action is runtime-owned. Do not call abandon_goal to satisfy it; complete the auditable objective and let Orion exit Goal mode after the audit passes.',
     '- Evidence kinds listed for a criterion are accepted alternatives, not a requirement to produce every kind.',
     '- Name verification for its criterion or include the exact criterion id so evidence can be matched safely.',
     `- Do not mark blocked unless the same eligible non-retryable blocker persisted for >= ${GOAL_INVARIANTS.maxConsecutiveBlockerTurns} consecutive Goal turns and no progress persisted for >= ${GOAL_INVARIANTS.maxConsecutiveNoProgressTurns} consecutive Goal turns.`,
     '- User corrections refine the work but do not replace the objective unless /target edit/replace occurs.'
   );
+  if (/(?:goal|target)(?:\s+mode)?|目标\s*模式/iu.test(goal.objective)) {
+    lines.push(
+      '- For a Goal-mode lifecycle self-test, successful get_goal and update_goal_plan calls are runtime evidence. After they finish, call get_goal again in the same turn to read their exact IDs; echo/printf output is not verification evidence.'
+    );
+  }
 
   const text = lines.join('\n');
   // Rough estimate: ~1.3 tokens per word for English text.

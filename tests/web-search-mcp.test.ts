@@ -150,6 +150,38 @@ describe('web_search MCP delegation', () => {
     expect(result.error).toContain('ORION_CODE_WEBSEARCH_API_KEY');
   });
 
+  test.each([0, 21, 1.5, Number.NaN])(
+    'rejects invalid result limit %p before fetch',
+    async limit => {
+      const fetchMock = jest.fn();
+      global.fetch = fetchMock as any;
+
+      const result = await webSearchTool.execute({ query: 'openhorse', limit }, ctx);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('safe integer between 1 and 20');
+      expect(fetchMock).not.toHaveBeenCalled();
+    }
+  );
+
+  test('rejects oversized MCP response bodies', async () => {
+    process.env.ORION_CODE_WEBSEARCH_PROVIDER = 'native';
+    global.fetch = jest.fn().mockResolvedValueOnce(
+      new Response('too large', {
+        status: 200,
+        headers: {
+          'content-type': 'application/json',
+          'content-length': String(1024 * 1024 + 1),
+        },
+      })
+    ) as any;
+
+    const result = await webSearchTool.execute({ query: 'openhorse' }, ctx);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('WEBSEARCH_MCP_RESPONSE_TOO_LARGE');
+  });
+
   test('falls back to DuckDuckGo when auto MCP rejects configured Coding Plan key', async () => {
     delete process.env.ORION_CODE_WEBSEARCH_API_KEY;
     process.env.ORION_CODE_API_KEY = 'sk-sp-test-dedicated';

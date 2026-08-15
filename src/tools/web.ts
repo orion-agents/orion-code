@@ -31,6 +31,7 @@ import {
 import { ORION_USER_AGENT } from '../product/version';
 import { errorMessage } from '../utils/errors';
 import { maskSecret } from '../utils/mask';
+import { validateWebSearchLimit } from '../services/bounded-response';
 
 // ============================================================================
 // SSRF Protection - Issue #32 #3.7
@@ -290,7 +291,11 @@ function createPinnedDispatcher(hostname: string, addresses: ResolvedAddress[]):
       // Ignore the hostname at connect time and return only the addresses we
       // already validated. undici's lookup callback accepts an array of
       // { address, family } and will try each in order.
-      lookup: ((_lookupHostname: string, _opts: unknown, cb: (err: Error | null, res: unknown) => void) => {
+      lookup: ((
+        _lookupHostname: string,
+        _opts: unknown,
+        cb: (err: Error | null, res: unknown) => void
+      ) => {
         cb(
           null,
           addresses.map(a => ({ address: a.address, family: a.family }))
@@ -300,17 +305,21 @@ function createPinnedDispatcher(hostname: string, addresses: ResolvedAddress[]):
   });
 }
 
-type PinnedDispatcherBuilder = (hostname: string, addresses: ResolvedAddress[]) => Dispatcher | null;
+type PinnedDispatcherBuilder = (
+  hostname: string,
+  addresses: ResolvedAddress[]
+) => Dispatcher | null;
 
 let buildPinnedDispatcher: PinnedDispatcherBuilder = (hostname, addresses) =>
   addresses.length > 0 ? createPinnedDispatcher(hostname, addresses) : null;
 
 /** Test seam: replace the pinned-dispatcher builder (e.g. to capture pinned addresses). */
 export function setBuildPinnedDispatcherForTests(builder?: PinnedDispatcherBuilder): void {
-  buildPinnedDispatcher = builder ?? ((hostname, addresses) =>
-    addresses.length > 0 ? createPinnedDispatcher(hostname, addresses) : null);
+  buildPinnedDispatcher =
+    builder ??
+    ((hostname, addresses) =>
+      addresses.length > 0 ? createPinnedDispatcher(hostname, addresses) : null);
 }
-
 
 /**
  * 将各种 IPv4 编码形式归一化为点分十进制。
@@ -918,7 +927,6 @@ You MUST include the Sources section with markdown hyperlinks in your response.`
   },
   execute: async args => {
     const query = args.query as string;
-    const limit = (args.limit as number) || 5;
 
     if (!query || typeof query !== 'string') {
       return { success: false, output: '', error: 'web_search requires a query parameter' };
@@ -926,6 +934,13 @@ You MUST include the Sources section with markdown hyperlinks in your response.`
 
     if (query.length < 2) {
       return { success: false, output: '', error: 'Query must be at least 2 characters' };
+    }
+
+    let limit: number;
+    try {
+      limit = validateWebSearchLimit(args.limit);
+    } catch (error) {
+      return { success: false, output: '', error: errorMessage(error) };
     }
 
     const config = loadConfig();

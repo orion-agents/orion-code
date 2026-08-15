@@ -1207,6 +1207,24 @@ describe('goal storage compatibility', () => {
       expect(loaded.value.objective).toBe('Fresh Goal after deletion');
     }, 15_000);
 
+    it('does not delete a replacement Goal that reused the expected revision', () => {
+      const sessionId = 'sess-delete-goal-identity-cas';
+      const first = createGoal(project, sessionId, 'First Goal');
+      if (!first.ok) throw new Error(first.message);
+      expect(deleteGoal(project, sessionId, first.value.revision, first.value.goalId).ok).toBe(
+        true
+      );
+
+      const replacement = createGoal(project, sessionId, 'Replacement Goal');
+      if (!replacement.ok) throw new Error(replacement.message);
+      expect(replacement.value.revision).toBe(first.value.revision);
+
+      const staleDelete = deleteGoal(project, sessionId, first.value.revision, first.value.goalId);
+      expect(staleDelete).toEqual(expect.objectContaining({ ok: false, error: 'revision_stale' }));
+      const loaded = loadGoal(project, sessionId);
+      expect(loaded.ok && loaded.value.goalId).toBe(replacement.value.goalId);
+    });
+
     it('rejects a stale replacement after deletion while allowing a fresh unversioned create', () => {
       const sessionId = 'sess-cas-delete-stale-replacement';
       const created = createGoal(project, sessionId, 'Goal before deletion');

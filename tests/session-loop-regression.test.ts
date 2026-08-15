@@ -36,7 +36,7 @@ describe('session loop regressions', () => {
 
       const result = await readFileTool!.execute(
         { path: file, offset: 3, maxLines: 2 },
-        toolContext
+        { ...toolContext, cwd: directory }
       );
 
       expect(result.success).toBe(true);
@@ -50,7 +50,7 @@ describe('session loop regressions', () => {
 
       const result = await readFileTool!.execute(
         { path: file, offset: 9, maxLines: 2 },
-        toolContext
+        { ...toolContext, cwd: directory }
       );
 
       expect(result.success).toBe(false);

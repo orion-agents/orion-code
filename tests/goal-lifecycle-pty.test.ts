@@ -13,7 +13,7 @@ function findPython(): string | null {
 
 describe('v0.1.2 Goal lifecycle PTY acceptance', () => {
   const python = findPython();
-  const smokeScript = join(__dirname, '..', 'scripts', 'goal-lifecycle-pty-smoke.py');
+  const smokeScript = join(__dirname, '..', 'scripts', 'smoke', 'goal-lifecycle-pty-smoke.py');
   const maybeIt =
     python && existsSync(smokeScript) && process.platform !== 'win32' && canRunPtySmoke
       ? it

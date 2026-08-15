@@ -9,6 +9,7 @@
 import * as path from 'path';
 import type { Message } from '../services/llm';
 import { createCheckpoint, shouldCreateMultiFileCheckpoint } from '../core/checkpoint';
+import { resolveWorkspacePath } from '../services/workspace-containment';
 import type { UiEventSink } from './ui-events';
 import { recordTraceEvent } from './chat-trace';
 
@@ -26,10 +27,7 @@ export function parseToolCallArgsForRuntime(
 }
 
 function resolveProjectScopedPath(cwd: string, filePath: string): string | null {
-  const absolute = path.resolve(cwd, filePath);
-  const relative = path.relative(cwd, absolute);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
-  return absolute;
+  return resolveWorkspacePath(cwd, filePath);
 }
 
 export function checkpointTargetsFromToolCalls(

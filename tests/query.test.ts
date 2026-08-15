@@ -728,6 +728,8 @@ describe('query generator', () => {
           'inspect_loop_stats',
           'raise_budget',
         ],
+        lastToolName: 'read_file',
+        lastToolSuccess: true,
       },
     });
     expect(complete.stats?.continuationHint).toContain('Reply `继续`');

@@ -20,7 +20,6 @@ import {
   createReadStream,
   lstatSync,
   mkdirSync,
-  realpathSync,
 } from 'fs';
 import { join, resolve, relative, isAbsolute, dirname } from 'path';
 import { createInterface } from 'readline';
@@ -46,6 +45,7 @@ import {
 import type { MemoryEntry, MemoryType } from '../memory/types';
 import { isSemanticEnabled } from '../memory/semantic-config';
 import { readSessionMessages, loadSessionMeta, listSessions } from '../services/session-storage';
+import { isWorkspacePath } from '../services/workspace-containment';
 import { WEB_TOOLS } from './web';
 import { MCP_TOOLS, mcpManager } from './mcp';
 import { TODO_TOOLS } from './todo';
@@ -72,6 +72,32 @@ export const BATCH_READ_ALLOWED_TOOLS = new Set([
 ]);
 export const BATCH_READ_MAX_STEPS = 8;
 const BATCH_READ_STEP_OUTPUT_MAX_BYTES = 1600;
+const LIST_FILES_MAX_DEPTH = 8;
+const EXEC_COMMAND_MIN_TIMEOUT_MS = 1;
+const EXEC_COMMAND_MAX_TIMEOUT_MS = 600_000;
+const EXEC_COMMAND_MIN_OUTPUT_BYTES = 1024;
+const EXEC_COMMAND_MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
+
+function validateOptionalSafeInteger(
+  args: Record<string, unknown>,
+  toolName: string,
+  field: string,
+  minimum: number,
+  maximum: number
+): string | undefined {
+  const value = args[field];
+  if (value === undefined) return undefined;
+  if (
+    typeof value !== 'number' ||
+    !Number.isFinite(value) ||
+    !Number.isSafeInteger(value) ||
+    value < minimum ||
+    value > maximum
+  ) {
+    return `${toolName} ${field} must be a safe integer between ${minimum} and ${maximum}`;
+  }
+  return undefined;
+}
 
 function compactOneLine(text: string, maxLength: number): string {
   const compact = text.replace(/\s+/g, ' ').trim();
@@ -228,7 +254,9 @@ export const TOOLS: OrionCodeTool[] = [
         },
         maxDepth: {
           type: 'number',
-          description: '最大递归深度（可选，默认 2）',
+          description: '最大递归深度（可选，默认 2，范围 0-8）',
+          minimum: 0,
+          maximum: LIST_FILES_MAX_DEPTH,
         },
       },
       required: ['path'],
@@ -241,6 +269,8 @@ export const TOOLS: OrionCodeTool[] = [
       }
       return listFiles_(path, args.maxDepth as number | undefined, context.cwd);
     },
+    validateInput: args =>
+      validateOptionalSafeInteger(args, 'list_files', 'maxDepth', 0, LIST_FILES_MAX_DEPTH),
     isReadOnly: () => true,
     isConcurrencySafe: () => true,
     userFacingName: args => `List ${args.path as string}`,
@@ -268,11 +298,15 @@ export const TOOLS: OrionCodeTool[] = [
         },
         timeout: {
           type: 'number',
-          description: '超时时间 ms（可选，默认 30000）',
+          description: '超时时间 ms（可选，默认 30000，范围 1-600000）',
+          minimum: EXEC_COMMAND_MIN_TIMEOUT_MS,
+          maximum: EXEC_COMMAND_MAX_TIMEOUT_MS,
         },
         maxOutput: {
           type: 'number',
-          description: '最大输出字节数（可选，默认 51200 = 50KB，超出截断）',
+          description: '最大输出字节数（可选，默认 51200，范围 1024-10485760，超出截断）',
+          minimum: EXEC_COMMAND_MIN_OUTPUT_BYTES,
+          maximum: EXEC_COMMAND_MAX_OUTPUT_BYTES,
         },
       },
       required: ['command'],
@@ -293,6 +327,21 @@ export const TOOLS: OrionCodeTool[] = [
         context.cwd
       );
     },
+    validateInput: args =>
+      validateOptionalSafeInteger(
+        args,
+        'exec_command',
+        'timeout',
+        EXEC_COMMAND_MIN_TIMEOUT_MS,
+        EXEC_COMMAND_MAX_TIMEOUT_MS
+      ) ??
+      validateOptionalSafeInteger(
+        args,
+        'exec_command',
+        'maxOutput',
+        EXEC_COMMAND_MIN_OUTPUT_BYTES,
+        EXEC_COMMAND_MAX_OUTPUT_BYTES
+      ),
     isDestructive: args => {
       const cmd = (args.command as string) || '';
       return containsRecursiveRm(cmd) || /(?:^|[;&|]\s*)(?:[^\s]+\/)?(?:mkfs|dd)(?:\s|$)/.test(cmd);
@@ -1034,67 +1083,18 @@ function safePath(input: string, cwd = process.cwd()): string {
  * under `rootReal`. Used to enforce that a realpath is still inside the
  * workspace even when directories along the path are themselves symlinks.
  */
-function isUnderRealRoot(p: string, rootReal: string): boolean {
-  const rel = relative(rootReal, p);
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
-}
-
-/**
- * Contain a tool-resolved path inside the workspace root (cwd).
- *
- * Blocks `../` traversal and absolute paths outside the workspace, which would
- * otherwise let `write_file`/`edit_file` scribble over `~/.bashrc`, SSH config
- * or other projects — especially dangerous under `acceptEdits` auto-approval,
- * where the write runs without a confirmation prompt (issue #65).
- *
- * Containment is lexical first, then re-checked after resolving symlinks
- * (issue #99): a workspace symlink that points outside the workspace must not
- * be followed into an arbitrary write target. We resolve the realpath of the
- * parent directory (which also collapses any intermediate symlinked dirs) and,
- * if the target already exists, the target itself; if either escapes the
- * workspace we refuse. The workspace root is also realpath-resolved so a
- * symlinked cwd does not produce false rejections. Fail-closed on any
- * filesystem error.
- */
 function isWithinWorkspace(resolved: string, cwd: string): boolean {
-  const root = resolve(cwd);
-  const rel = relative(root, resolved);
-  if (!(rel === '' || (!rel.startsWith('..') && !isAbsolute(rel)))) return false;
-  try {
-    const rootReal = realpathSync(root);
-    const realParent = realpathSync(dirname(resolved));
-    if (!isUnderRealRoot(realParent, rootReal)) return false;
-    // Only the existing target needs its own realpath check; a brand-new file
-    // inherits the (already-validated) containment of its parent directory.
-    if (existsSync(resolved)) {
-      const realTarget = realpathSync(resolved);
-      if (!isUnderRealRoot(realTarget, rootReal)) return false;
-    }
-  } catch {
-    // A missing/unknowable realpath means we cannot prove containment — refuse.
-    return false;
-  }
-  return true;
+  return isWorkspacePath(cwd, resolved);
 }
 
 function isExecCwdWithinWorkspace(workdir: string, projectRoot: string): boolean {
   const root = resolve(projectRoot);
   const rel = relative(root, workdir);
   if (!(rel === '' || (!rel.startsWith('..') && !isAbsolute(rel)))) return false;
-
-  try {
-    const rootReal = realpathSync(root);
-    let existingAncestor = workdir;
-    while (!existsSync(existingAncestor) && existingAncestor !== root) {
-      existingAncestor = dirname(existingAncestor);
-    }
-    return isUnderRealRoot(realpathSync(existingAncestor), rootReal);
-  } catch {
-    // A missing synthetic root can only fail at spawn time; lexical containment
-    // still prevents it from selecting an external directory. Real workspaces
-    // exist and therefore take the symlink-aware path above.
-    return !existsSync(root);
-  }
+  // A missing synthetic root can only fail at spawn time; lexical containment
+  // still prevents it from selecting an external directory. Real workspaces
+  // take the shared symlink-aware boundary check.
+  return existsSync(root) ? isWorkspacePath(root, workdir) : true;
 }
 
 /**
@@ -1130,6 +1130,14 @@ async function readFileSync_(
   try {
     const normalizedPath = normalizeToolPath(path);
     const resolved = safePath(path, cwd);
+    const workspaceRoot = cwd ?? process.cwd();
+    if (!isWithinWorkspace(resolved, workspaceRoot)) {
+      return {
+        success: false,
+        output: '',
+        error: `Refusing to read outside the workspace: ${normalizedPath}`,
+      };
+    }
     if (!existsSync(resolved)) {
       return { success: false, output: '', error: `File not found: ${normalizedPath}` };
     }
@@ -1213,6 +1221,7 @@ async function writeFileSync_(path: string, content: string, cwd?: string): Prom
         error: `Refusing to write outside the workspace: ${normalizedPath}`,
       };
     }
+    mkdirSync(dirname(resolved), { recursive: true });
     writeFileSync(resolved, content, 'utf-8');
     return {
       success: true,
@@ -1226,6 +1235,14 @@ async function writeFileSync_(path: string, content: string, cwd?: string): Prom
 async function listFiles_(path: string, maxDepth?: number, cwd?: string): Promise<ToolResult> {
   const normalizedPath = normalizeToolPath(path);
   const resolved = safePath(path, cwd);
+  const workspaceRoot = cwd ?? process.cwd();
+  if (!isWithinWorkspace(resolved, workspaceRoot)) {
+    return {
+      success: false,
+      output: '',
+      error: `Refusing to list outside the workspace: ${normalizedPath}`,
+    };
+  }
   if (!existsSync(resolved)) {
     return { success: false, output: '', error: `Path not found: ${normalizedPath}` };
   }
@@ -1908,6 +1925,14 @@ async function glob_(pattern: string, basePath?: string, cwd?: string): Promise<
   try {
     const normalizedBasePath = basePath ? normalizeToolPath(basePath) : (cwd ?? process.cwd());
     const base = basePath ? safePath(basePath, cwd) : (cwd ?? process.cwd());
+    const workspaceRoot = cwd ?? process.cwd();
+    if (!isWithinWorkspace(base, workspaceRoot)) {
+      return {
+        success: false,
+        output: '',
+        error: `Refusing to search outside the workspace: ${normalizedBasePath}`,
+      };
+    }
     if (!existsSync(base)) {
       return { success: false, output: '', error: `Path not found: ${normalizedBasePath}` };
     }
@@ -2018,6 +2043,14 @@ async function grep_(
   try {
     const normalizedBasePath = basePath ? normalizeToolPath(basePath) : (cwd ?? process.cwd());
     const base = basePath ? safePath(basePath, cwd) : (cwd ?? process.cwd());
+    const workspaceRoot = cwd ?? process.cwd();
+    if (!isWithinWorkspace(base, workspaceRoot)) {
+      return {
+        success: false,
+        output: '',
+        error: `Refusing to search outside the workspace: ${normalizedBasePath}`,
+      };
+    }
     if (!existsSync(base)) {
       return { success: false, output: '', error: `Path not found: ${normalizedBasePath}` };
     }

@@ -6,6 +6,8 @@ import {
   loadProjectInstructionFiles,
   loadProjectInstructions,
   renderProjectInstructions,
+  clearProjectInstructionsCache,
+  getProjectInstructionsCacheStats,
 } from '../src/services/project-instructions';
 
 describe('project instructions loader', () => {
@@ -23,6 +25,7 @@ describe('project instructions loader', () => {
   });
 
   afterEach(() => {
+    clearProjectInstructionsCache();
     if (existsSync(root)) rmSync(root, { recursive: true, force: true });
   });
 
@@ -51,7 +54,9 @@ describe('project instructions loader', () => {
     const rendered = loadProjectInstructions(join(root, 'packages', 'cli'));
 
     expect(rendered).toContain('Project instructions loaded');
-    expect(rendered.indexOf('## AGENTS.md')).toBeLessThan(rendered.indexOf('## packages/cli/AGENTS.md'));
+    expect(rendered.indexOf('## AGENTS.md')).toBeLessThan(
+      rendered.indexOf('## packages/cli/AGENTS.md')
+    );
     expect(rendered).toContain('Later sections are from more specific directories');
   });
 
@@ -70,5 +75,24 @@ describe('project instructions loader', () => {
 
     expect(rendered).toContain('[truncated by instruction budget]');
     expect(rendered.length).toBeLessThan(320);
+  });
+
+  it('reuses cached content without rereading unchanged guidance files', () => {
+    const cwd = join(root, 'packages', 'cli');
+    loadProjectInstructions(cwd);
+    const before = getProjectInstructionsCacheStats();
+
+    expect(loadProjectInstructions(cwd)).toContain('Root agent rules');
+    expect(getProjectInstructionsCacheStats()).toEqual(before);
+  });
+
+  it('invalidates cached content for file changes and new cursor rules', () => {
+    const cwd = join(root, 'packages', 'cli');
+    expect(loadProjectInstructions(cwd)).not.toContain('Updated root rules');
+    writeFileSync(join(root, 'AGENTS.md'), 'Updated root rules with a different size\n');
+    expect(loadProjectInstructions(cwd)).toContain('Updated root rules');
+
+    writeFileSync(join(root, '.cursor', 'rules', 'new.mdc'), 'New cursor rule\n');
+    expect(loadProjectInstructions(cwd)).toContain('New cursor rule');
   });
 });

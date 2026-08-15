@@ -2,6 +2,12 @@ import type { OrionCodeCLIConfig } from './config';
 import axios from 'axios';
 import { webSearchEnv } from '../product/environment';
 import { PACKAGE_VERSION } from '../product/version';
+import {
+  MAX_WEB_SEARCH_RESPONSE_BYTES,
+  boundedErrorSnippet,
+  readBoundedResponseText,
+  validateWebSearchLimit,
+} from './bounded-response';
 
 export interface WebSearchAdapterInput {
   query: string;
@@ -99,11 +105,20 @@ function isFetchMocked(): boolean {
 async function adapterFetch(url: string, init: RequestInit = {}): Promise<AdapterHttpResponse> {
   if (!hasProxyEnv() || isFetchMocked()) {
     const response = await fetch(url, init);
+    let cachedText: string | undefined;
+    const readText = async (): Promise<string> => {
+      cachedText ??= await readBoundedResponseText(
+        response,
+        MAX_WEB_SEARCH_RESPONSE_BYTES,
+        'web_search adapter'
+      );
+      return cachedText;
+    };
     return {
       ok: response.ok,
       status: response.status,
-      text: () => response.text(),
-      json: () => response.json(),
+      text: readText,
+      json: async () => JSON.parse(await readText()) as unknown,
     };
   }
   const response = await axios.request({
@@ -112,15 +127,23 @@ async function adapterFetch(url: string, init: RequestInit = {}): Promise<Adapte
     headers: init.headers as Record<string, string> | undefined,
     data: init.body,
     timeout: 30_000,
+    maxContentLength: MAX_WEB_SEARCH_RESPONSE_BYTES,
+    maxBodyLength: MAX_WEB_SEARCH_RESPONSE_BYTES,
+    responseType: 'text',
+    transformResponse: [(data: unknown) => data],
     validateStatus: () => true,
   });
+  const text =
+    typeof response.data === 'string' ? response.data : JSON.stringify(response.data ?? null);
+  const bytes = Buffer.byteLength(text, 'utf8');
+  if (bytes > MAX_WEB_SEARCH_RESPONSE_BYTES) {
+    throw new Error(`web_search adapter response exceeds ${MAX_WEB_SEARCH_RESPONSE_BYTES} bytes`);
+  }
   return {
     ok: response.status >= 200 && response.status < 300,
     status: response.status,
-    text: async () =>
-      typeof response.data === 'string' ? response.data : JSON.stringify(response.data),
-    json: async () =>
-      typeof response.data === 'string' ? JSON.parse(response.data) : response.data,
+    text: async () => text,
+    json: async () => JSON.parse(text) as unknown,
   };
 }
 
@@ -225,9 +248,7 @@ function extractHits(payload: unknown): WebSearchHit[] {
   ];
   for (const candidate of candidates) {
     if (!Array.isArray(candidate)) continue;
-    const hits = candidate
-      .map(normalizeHit)
-      .filter((hit): hit is WebSearchHit => hit !== null);
+    const hits = candidate.map(normalizeHit).filter((hit): hit is WebSearchHit => hit !== null);
     if (hits.length > 0) return hits;
   }
   if (Array.isArray(payload)) {
@@ -259,7 +280,9 @@ const tavilyAdapter: WebSearchAdapter = {
       body: JSON.stringify({ query: input.query, max_results: input.limit, search_depth: 'basic' }),
     });
     if (!response.ok)
-      throw new Error(`Tavily search failed: HTTP ${response.status} ${await response.text()}`);
+      throw new Error(
+        `Tavily search failed: HTTP ${response.status} ${boundedErrorSnippet(await response.text())}`
+      );
     const payload = await response.json();
     return withDuration('tavily', start, limitHits(extractHits(payload), input.limit));
   },
@@ -281,7 +304,9 @@ const braveAdapter: WebSearchAdapter = {
       headers: { Accept: 'application/json', 'X-Subscription-Token': process.env.BRAVE_API_KEY },
     });
     if (!response.ok)
-      throw new Error(`Brave search failed: HTTP ${response.status} ${await response.text()}`);
+      throw new Error(
+        `Brave search failed: HTTP ${response.status} ${boundedErrorSnippet(await response.text())}`
+      );
     const payload = await response.json();
     return withDuration('brave', start, limitHits(extractHits(payload), input.limit));
   },
@@ -323,7 +348,9 @@ const customAdapter: WebSearchAdapter = {
       response = await adapterFetch(url.toString(), { headers });
     }
     if (!response.ok)
-      throw new Error(`Custom search failed: HTTP ${response.status} ${await response.text()}`);
+      throw new Error(
+        `Custom search failed: HTTP ${response.status} ${boundedErrorSnippet(await response.text())}`
+      );
     const payload = await response.json();
     return withDuration('custom', start, limitHits(extractHits(payload), input.limit));
   },
@@ -384,6 +411,7 @@ export async function runWebSearchAdapters(
   input: WebSearchAdapterInput,
   mode: WebSearchMode
 ): Promise<WebSearchAdapterOutput> {
+  input = { ...input, limit: validateWebSearchLimit(input.limit) };
   const chain = mode === 'auto' ? autoAdapterChain() : explicitAdapterChain(mode);
   if (chain.length === 0) throw new Error(`No web search adapter is available for mode "${mode}".`);
   const errors: Error[] = [];

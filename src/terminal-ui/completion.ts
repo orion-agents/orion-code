@@ -1,6 +1,7 @@
 import { getVisibleCommands } from '../commands';
 import { createFilePickerState, getFileMentionQuery } from '../runtime/ui-view-model';
 import { matchFiles } from '../services/file-glob';
+import { sanitizeTerminalLine } from '../ui/shared/text';
 
 export type ReadlineCompleter = (line: string) => [string[], string];
 
@@ -26,9 +27,10 @@ export function completeSlashCommand(line: string): [string[], string] {
   const partial = match[1];
   const commands = getVisibleCommands('terminal');
   const nameMatches = commands.filter(command => command.name.startsWith(partial));
-  const aliasMatches = nameMatches.length > 0
-    ? []
-    : commands.filter(command => command.aliases?.some(alias => alias.startsWith(partial)));
+  const aliasMatches =
+    nameMatches.length > 0
+      ? []
+      : commands.filter(command => command.aliases?.some(alias => alias.startsWith(partial)));
   const completions = [...nameMatches, ...aliasMatches].map(command => `/${command.name} `);
 
   return [unique(completions), line];
@@ -43,9 +45,8 @@ export function completeFileMention(line: string, cwd: string): [string[], strin
     files: matchFiles(query.query, cwd),
   });
   const prefix = `${query.base}@`;
-  const completions = state?.visibleItems.map(file =>
-    `${prefix}${file.value}${file.isDirectory ? '' : ' '}`
-  ) ?? [];
+  const completions =
+    state?.visibleItems.map(file => `${prefix}${file.value}${file.isDirectory ? '' : ' '}`) ?? [];
 
   return [unique(completions), line];
 }
@@ -65,7 +66,10 @@ export interface TerminalTabCompletionResult {
   changed: boolean;
 }
 
-export function applySingleTerminalTabCompletion(input: string, cwd: string): TerminalTabCompletionResult {
+export function applySingleTerminalTabCompletion(
+  input: string,
+  cwd: string
+): TerminalTabCompletionResult {
   const completer = createTerminalCompleter(cwd);
   const [matches] = completer(input);
   if (matches.length === 1) {
@@ -82,7 +86,10 @@ export function applySingleTerminalTabCompletion(input: string, cwd: string): Te
 
 export function summarizeTerminalCompletions(matches: string[], maxItems = 8): string {
   if (matches.length === 0) return 'No completions.';
-  const visible = matches.slice(0, maxItems).map(match => match.trim()).join('  ');
+  const visible = matches
+    .slice(0, maxItems)
+    .map(match => sanitizeTerminalLine(match.trim()))
+    .join('  ');
   const suffix = matches.length > maxItems ? `  +${matches.length - maxItems} more` : '';
   return `Completions: ${visible}${suffix}`;
 }

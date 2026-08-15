@@ -4,6 +4,12 @@ import {
   type TuiRenderSchedulerDeps,
 } from '../src/tui-ui/render-scheduler';
 import { TuiRunner, type TuiRunnerCounters } from '../src/tui-ui/runner';
+import {
+  initialTuiUiState,
+  tuiUiReducer,
+  type TuiTranscriptRecord,
+  type TuiUiState,
+} from '../src/tui-ui/state';
 
 // ============================================================================
 // Helpers
@@ -19,11 +25,18 @@ function fakeDeps(): FakeDeps {
   let nowValue = 0;
   return {
     now: () => nowValue,
-    queueMicrotask: (cb: () => void) => { Promise.resolve().then(cb); },
-    setTimeout: (cb: () => void, ms: number) => { timers.push({ cb, ms }); return timers.length; },
+    queueMicrotask: (cb: () => void) => {
+      Promise.resolve().then(cb);
+    },
+    setTimeout: (cb: () => void, ms: number) => {
+      timers.push({ cb, ms });
+      return timers.length;
+    },
     clearTimeout: () => {},
     timers,
-    advance: (ms: number) => { nowValue += ms; },
+    advance: (ms: number) => {
+      nowValue += ms;
+    },
   };
 }
 
@@ -37,7 +50,9 @@ function syncDeps(): SyncDeps {
   const pendingMicrotasks: Array<() => void> = [];
   return {
     now: () => nowValue,
-    queueMicrotask: (cb: () => void) => { pendingMicrotasks.push(cb); },
+    queueMicrotask: (cb: () => void) => {
+      pendingMicrotasks.push(cb);
+    },
     setTimeout: (cb: () => void, _ms: number) => {
       // For sync tests, execute immediately.
       cb();
@@ -50,7 +65,9 @@ function syncDeps(): SyncDeps {
         cb();
       }
     },
-    advance: (ms: number) => { nowValue += ms; },
+    advance: (ms: number) => {
+      nowValue += ms;
+    },
   };
 }
 
@@ -72,9 +89,9 @@ class FakeOutput {
 describe('TuiRenderScheduler', () => {
   it('paints immediately on first immediate request', () => {
     const paints: number[] = [];
-    const scheduler = createTuiRenderScheduler(
-      () => { paints.push(1); },
-    );
+    const scheduler = createTuiRenderScheduler(() => {
+      paints.push(1);
+    });
     scheduler.request('immediate');
     // microtask hasn't run yet; flush to execute.
     scheduler.flush();
@@ -85,10 +102,9 @@ describe('TuiRenderScheduler', () => {
   it('coalesces multiple immediate requests in same tick', () => {
     const paints: number[] = [];
     const deps = syncDeps();
-    const scheduler = createTuiRenderScheduler(
-      () => { paints.push(1); },
-      deps,
-    );
+    const scheduler = createTuiRenderScheduler(() => {
+      paints.push(1);
+    }, deps);
     scheduler.request('immediate');
     scheduler.request('immediate');
     scheduler.request('immediate');
@@ -100,9 +116,9 @@ describe('TuiRenderScheduler', () => {
 
   it('does not paint when state has not changed (flush on same frame)', () => {
     const paints: number[] = [];
-    const scheduler = createTuiRenderScheduler(
-      () => { paints.push(1); },
-    );
+    const scheduler = createTuiRenderScheduler(() => {
+      paints.push(1);
+    });
     // Request then flush paints once.
     scheduler.request('immediate');
     scheduler.flush();
@@ -116,10 +132,9 @@ describe('TuiRenderScheduler', () => {
   it('caps stream paints at ~30 FPS', () => {
     const paints: number[] = [];
     const deps = fakeDeps();
-    const scheduler = createTuiRenderScheduler(
-      () => { paints.push(1); },
-      deps,
-    );
+    const scheduler = createTuiRenderScheduler(() => {
+      paints.push(1);
+    }, deps);
     // First stream request at time 0.
     scheduler.request('stream');
     // Timer should be scheduled.
@@ -141,10 +156,9 @@ describe('TuiRenderScheduler', () => {
   it('immediate request cancels pending stream timer', () => {
     const paints: number[] = [];
     const deps = fakeDeps();
-    const scheduler = createTuiRenderScheduler(
-      () => { paints.push(1); },
-      deps,
-    );
+    const scheduler = createTuiRenderScheduler(() => {
+      paints.push(1);
+    }, deps);
     scheduler.request('stream');
     expect(deps.timers.length).toBe(1);
     // Before stream timer fires, request immediate.
@@ -158,9 +172,9 @@ describe('TuiRenderScheduler', () => {
 
   it('flush executes pending paint immediately', () => {
     const paints: number[] = [];
-    const scheduler = createTuiRenderScheduler(
-      () => { paints.push(1); },
-    );
+    const scheduler = createTuiRenderScheduler(() => {
+      paints.push(1);
+    });
     scheduler.request('stream');
     // Stream timer is pending; flush should execute paint now.
     scheduler.flush();
@@ -180,9 +194,9 @@ describe('TuiRenderScheduler', () => {
 
   it('requests after stop are no-ops', () => {
     const paints: number[] = [];
-    const scheduler = createTuiRenderScheduler(
-      () => { paints.push(1); },
-    );
+    const scheduler = createTuiRenderScheduler(() => {
+      paints.push(1);
+    });
     scheduler.stop();
     scheduler.request('immediate');
     scheduler.flush();
@@ -233,7 +247,10 @@ describe('TuiRunner with scheduler', () => {
       height: 10,
     });
     // updateTranscript is a stream action — should not block.
-    runner.dispatch({ type: 'appendTranscript', entry: { id: 'a1', role: 'assistant', content: 'hello', live: true } });
+    runner.dispatch({
+      type: 'appendTranscript',
+      entry: { id: 'a1', role: 'assistant', content: 'hello', live: true },
+    });
     runner.dispatch({ type: 'updateTranscript', id: 'a1', patch: { content: 'hello world' } });
     // Force paint.
     runner.getScheduler().flush();
@@ -286,13 +303,18 @@ describe('TuiRunner with scheduler', () => {
       width: 40,
       height: 10,
     });
-    runner.dispatch({ type: 'appendTranscript', entry: { id: 'u1', role: 'user', content: 'hello' } });
+    runner.dispatch({
+      type: 'appendTranscript',
+      entry: { id: 'u1', role: 'user', content: 'hello' },
+    });
     runner.dispatch({ type: 'finalizeTranscript', id: 'u1' });
     const frame = runner.renderFullFrame();
     expect(frame.width).toBe(40);
     expect(frame.height).toBe(10);
     // Full frame should contain both static and live transcript.
-    const rows = frame.rows.map(row => row.map(cell => cell.width === 0 ? '' : cell.char).join('')).join('\n');
+    const rows = frame.rows
+      .map(row => row.map(cell => (cell.width === 0 ? '' : cell.char)).join(''))
+      .join('\n');
     expect(rows).toContain('hello');
   });
 });
@@ -302,6 +324,56 @@ describe('TuiRunner with scheduler', () => {
 // ============================================================================
 
 describe('slice 6: performance fixture', () => {
+  it('updates 1,000 live deltas without scanning or cloning a 5,000-record prefix', () => {
+    let prefixIdReads = 0;
+    const retained = Array.from({ length: 5_000 }, (_, index) => {
+      const record = {
+        role: 'user' as const,
+        content: `Message ${index}`,
+        finalized: true,
+        revision: 1,
+      } as TuiTranscriptRecord;
+      Object.defineProperty(record, 'id', {
+        enumerable: true,
+        get: () => {
+          prefixIdReads += 1;
+          return `retained-${index}`;
+        },
+      });
+      return record;
+    });
+    const live: TuiTranscriptRecord = {
+      id: 'live-performance',
+      role: 'assistant',
+      content: '',
+      finalized: false,
+      revision: 1,
+    };
+    let state: TuiUiState = {
+      ...initialTuiUiState,
+      transcript: [...retained, live],
+      committableTranscriptCount: retained.length,
+    };
+    const original = state;
+
+    for (let index = 0; index < 1_000; index += 1) {
+      state = tuiUiReducer(state, {
+        type: 'updateTranscript',
+        id: live.id,
+        patch: { content: `delta ${index}` },
+      });
+    }
+
+    expect(prefixIdReads).toBe(0);
+    expect(Array.isArray(state.transcript)).toBe(true);
+    expect(state.transcript[0]).toBe(retained[0]);
+    expect(original.transcript.at(-1)?.content).toBe('');
+    expect(state.transcript.at(-1)).toMatchObject({
+      content: 'delta 999',
+      revision: 1_001,
+    });
+  });
+
   it('500 committed entries + 1 live delta produces correct state', () => {
     const output = new FakeOutput();
     const runner = new TuiRunner({

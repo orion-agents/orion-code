@@ -13,25 +13,29 @@ function findPython(): string | null {
 
 describe('Default renderer-owned TUI PTY smoke', () => {
   const python = findPython();
-  const smokeScript = join(__dirname, '..', 'scripts', 'tui-ui-pty-smoke.py');
+  const smokeScript = join(__dirname, '..', 'scripts', 'smoke', 'tui-ui-pty-smoke.py');
   const maybeIt =
     python && existsSync(smokeScript) && process.platform !== 'win32' && canRunPtySmoke
       ? it
       : it.skip;
 
-  maybeIt('keeps the prompt, CJK input, Backspace, and terminal restoration stable by default', () => {
-    const result = spawnSync(python as string, [smokeScript], {
-      cwd: join(__dirname, '..'),
-      encoding: 'utf8',
-      timeout: 60000,
-      maxBuffer: 1024 * 1024,
-    });
+  maybeIt(
+    'keeps the prompt, CJK input, Backspace, and terminal restoration stable by default',
+    () => {
+      const result = spawnSync(python as string, [smokeScript], {
+        cwd: join(__dirname, '..'),
+        encoding: 'utf8',
+        timeout: 60000,
+        maxBuffer: 1024 * 1024,
+      });
 
-    expect({
-      status: result.status,
-      signal: result.signal,
-      stdout: result.stdout,
-      stderr: result.stderr,
-    }).toEqual(expect.objectContaining({ status: 0, signal: null }));
-  }, 65000);
+      expect({
+        status: result.status,
+        signal: result.signal,
+        stdout: result.stdout,
+        stderr: result.stderr,
+      }).toEqual(expect.objectContaining({ status: 0, signal: null }));
+    },
+    65000
+  );
 });

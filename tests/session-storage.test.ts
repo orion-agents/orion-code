@@ -31,6 +31,7 @@ import {
   loadSessionHarnessState,
   updateSessionGoalBinding,
   clearSessionGoalBinding,
+  restoreSessionGoalBinding,
   appendSessionTraceEvent,
   readSessionTraceEvents,
   type SessionMeta,
@@ -45,8 +46,10 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from 'fs';
 import { join } from 'path';
@@ -56,6 +59,7 @@ import {
   getProjectSessionHarnessPath,
   getProjectSessionMessagesPath,
   getProjectSessionMetaPath,
+  getProjectSessionTracePath,
   getProjectSessionsDir,
 } from '../src/services/config-dir';
 import { createGoal, loadGoal, saveGoal } from '../src/services/goal-storage';
@@ -118,6 +122,32 @@ describe('session-storage', () => {
       expect(loadSessionMeta(session.id)?.activeGoalObjective).toBeUndefined();
     });
 
+    test('restores a just-cleared Goal binding without overwriting newer session state', () => {
+      const session = createSession('/tmp/project-goal-binding-rollback', 'gpt-4o');
+      const goal = { goalId: 'goal-rollback', objective: 'Preserve rollback authority' };
+      updateSessionGoalBinding(session.id, goal);
+      const cleared = clearSessionGoalBinding(session.id, goal.goalId)!;
+
+      expect(
+        restoreSessionGoalBinding(session.id, goal, cleared.updatedAt ?? 0)?.activeGoalId
+      ).toBe(goal.goalId);
+
+      const clearedAgain = clearSessionGoalBinding(session.id, goal.goalId)!;
+      updateSessionGoalBinding(session.id, {
+        goalId: 'goal-newer',
+        objective: 'Newer lifecycle owns the session',
+      });
+      expect(() =>
+        restoreSessionGoalBinding(session.id, goal, clearedAgain.updatedAt ?? 0)
+      ).toThrow('refusing to overwrite the newer Goal');
+      expect(loadSessionMeta(session.id)?.activeGoalId).toBe('goal-newer');
+
+      clearSessionGoalBinding(session.id, 'goal-newer');
+      expect(() => restoreSessionGoalBinding(session.id, goal, -1)).toThrow(
+        'refusing to overwrite newer session state'
+      );
+    });
+
     test('stores session meta in the project scope only', () => {
       const session = createSession('/tmp/project2', 'claude-sonnet');
 
@@ -166,6 +196,29 @@ describe('session-storage', () => {
         expect.objectContaining({ turnId: 'legacy-turn', type: 'message', note: 'legacy row' }),
       ]);
       expect(readSessionTraceEvents(session.id)[0].goalId).toBeUndefined();
+    });
+
+    test('serializes trace deletion and prevents a stale append from recreating it', () => {
+      const session = createSession('/tmp/project-delete-trace', 'gpt-4o');
+      const tracePath = getProjectSessionTracePath(session.projectPath, session.id);
+      appendSessionTraceEvent(session.id, {
+        turnId: 'before-delete',
+        type: 'message',
+        note: 'present before delete',
+      });
+      expect(existsSync(tracePath)).toBe(true);
+
+      expect(deleteSession(session.id)).toBe(true);
+      expect(existsSync(tracePath)).toBe(false);
+      expect(
+        appendSessionTraceEvent(session.id, {
+          turnId: 'stale-writer',
+          type: 'message',
+          note: 'must not reappear',
+        })
+      ).toBeNull();
+      expect(existsSync(tracePath)).toBe(false);
+      expect(readSessionTraceEvents(session.id)).toEqual([]);
     });
   });
 
@@ -900,6 +953,47 @@ describe('session-storage', () => {
       expect(index?.files).toContain('src/index.ts');
     });
 
+    test('appendSessionMessages updates summary metadata without rescanning a long transcript', () => {
+      const session = createSession('/tmp/project-incremental-summary', 'gpt-4o');
+      const messagesPath = getProjectSessionMessagesPath(session.projectPath, session.id);
+      const historicalMessages = Array.from({ length: 5_000 }, (_, index) =>
+        JSON.stringify({ role: 'user', content: `historical ${index}`, timestamp: index })
+      ).join('\n');
+      writeFileSync(messagesPath, `${historicalMessages}\n`);
+      session.messageCount = 5_000;
+      saveSessionMeta(session);
+
+      const fsModule = jest.requireActual<typeof import('fs')>('fs');
+      const readSpy = jest.spyOn(fsModule, 'readFileSync');
+      try {
+        appendSessionMessages(session.id, [
+          {
+            role: 'assistant',
+            content: '',
+            timestamp: 5_001,
+            tool_calls: [
+              {
+                id: 'call-incremental',
+                type: 'function',
+                function: { name: 'read_file', arguments: '{"path":"src/index.ts"}' },
+              },
+            ],
+          },
+        ]);
+
+        const transcriptReads = readSpy.mock.calls.filter(
+          ([file]) => String(file) === messagesPath
+        );
+        expect(transcriptReads).toHaveLength(0);
+        expect(loadSessionMeta(session.id)).toMatchObject({
+          messageCount: 5_001,
+          toolsUsed: ['read_file'],
+        });
+      } finally {
+        readSpy.mockRestore();
+      }
+    });
+
     test('redacts secret-like values from session summaries and indexes', () => {
       const session = createSession('/tmp/project-index-redaction', 'gpt-4o');
       appendSessionMessages(session.id, [
@@ -935,6 +1029,56 @@ describe('session-storage', () => {
       expect(index?.files.join('\n')).toContain('[REDACTED_SECRET]');
       expect(serialized).not.toContain('dashscope-secret-value');
       expect(serialized).not.toContain('sk-secretvalue123456');
+    });
+
+    test('reconciles summary metadata from the locked transcript, not a stale caller snapshot', () => {
+      const session = createSession('/tmp/project-summary-stale-snapshot', 'gpt-4o');
+      appendSessionMessage(session.id, {
+        role: 'user',
+        content: 'Update both files',
+        timestamp: 1,
+      });
+      const staleSnapshot = readSessionMessages(session.id);
+      appendSessionMessages(session.id, [
+        {
+          role: 'assistant',
+          content: '',
+          timestamp: 2,
+          tool_calls: [
+            {
+              id: 'call-write',
+              type: 'function',
+              function: {
+                name: 'write_file',
+                arguments: '{"path":"src/first.ts","content":"first"}',
+              },
+            },
+          ],
+        },
+        {
+          role: 'assistant',
+          content: '',
+          timestamp: 3,
+          tool_calls: [
+            {
+              id: 'call-edit',
+              type: 'function',
+              function: {
+                name: 'edit_file',
+                arguments: '{"path":"src/second.ts","old_string":"old","new_string":"new"}',
+              },
+            },
+          ],
+        },
+      ]);
+
+      updateSessionSummary(session.id, staleSnapshot);
+      expect(loadSessionMeta(session.id)).toMatchObject({
+        messageCount: 3,
+        taskSummary: 'Update both files',
+        toolsUsed: ['write_file', 'edit_file'],
+        filesModified: ['src/first.ts', 'src/second.ts'],
+      });
     });
 
     test('truncateSessionToLastComplete removes trailing aborted turn and rebuilds index', () => {
@@ -1304,6 +1448,27 @@ describe('session-storage', () => {
       const resumed = resumeSession(session.id);
       expect(resumed?.endTime).toBeUndefined();
       expect(resumed?.updatedAt).toBeGreaterThanOrEqual(session.startTime);
+    });
+
+    test('resumeSession recovers a stale zero-byte recovery sentinel from an interrupted writer', () => {
+      const session = createSession('/tmp/project-resume-stale-recovery', 'gpt-4o');
+      endSession(session.id);
+      const metaPath = getProjectSessionMetaPath(session.projectPath, session.id);
+      const recoveryPath = `${metaPath}.lock.recovery`;
+      writeFileSync(recoveryPath, '', { mode: 0o600 });
+      const staleTime = new Date(Date.now() - 60_000);
+      utimesSync(recoveryPath, staleTime, staleTime);
+
+      const resumed = resumeSession(session.id);
+
+      expect(resumed?.id).toBe(session.id);
+      expect(resumed?.endTime).toBeUndefined();
+      expect(existsSync(recoveryPath)).toBe(false);
+      expect(
+        readdirSync(getProjectSessionsDir(session.projectPath)).some(entry =>
+          entry.startsWith(`${session.id}.json.lock.recovery.quarantine-`)
+        )
+      ).toBe(true);
     });
 
     test('stores full harness state in project sidecar and loads sidecar on resume', () => {

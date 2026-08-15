@@ -35,7 +35,7 @@ function supportedNodeExecutable(): string {
 }
 
 function policyResult(nodeExecutable = process.execPath) {
-  return spawnSync('bash', ['scripts/dep-health-check.sh', '--policy-only'], {
+  return spawnSync('bash', ['scripts/release/dep-health-check.sh', '--policy-only'], {
     cwd: root,
     encoding: 'utf8',
     env: {
@@ -79,7 +79,7 @@ describe('dependency governance contract', () => {
   });
 
   it('probes the native binding at its real open boundary with actionable recovery', () => {
-    const script = readFileSync(join(root, 'scripts', 'dep-health-check.sh'), 'utf8');
+    const script = readFileSync(join(root, 'scripts', 'release', 'dep-health-check.sh'), 'utf8');
 
     expect(script).toContain("new Database(':memory:')");
     expect(script).toContain('process.versions.modules');

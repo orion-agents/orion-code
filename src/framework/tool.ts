@@ -13,6 +13,8 @@ export interface ToolInputJSONSchemaProperty {
   type: string;
   description?: string;
   enum?: string[];
+  minimum?: number;
+  maximum?: number;
   properties?: Record<string, ToolInputJSONSchemaProperty>;
   required?: string[];
   items?: ToolInputJSONSchemaProperty;
@@ -116,6 +118,12 @@ export interface OrionCodeTool {
   /** Execute the tool */
   execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult>;
 
+  /**
+   * Reject malformed provider arguments before policy, tracking, or execution.
+   * The same validator is also applied by buildTool() for direct callers.
+   */
+  validateInput?(args: Record<string, unknown>): string | undefined;
+
   /** Check permissions before execution */
   checkPermissions?(args: Record<string, unknown>, context: ToolContext): PermissionResult;
 
@@ -212,6 +220,13 @@ const TOOL_DEFAULTS = {
  * });
  */
 export function buildTool(def: OrionCodeTool): OrionCodeTool {
+  const execute = def.validateInput
+    ? async (args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> => {
+        const inputError = def.validateInput?.(args);
+        if (inputError) return { success: false, output: '', error: inputError };
+        return def.execute(args, context);
+      }
+    : def.execute;
   const tool: OrionCodeTool = {
     isConcurrencySafe: TOOL_DEFAULTS.isConcurrencySafe,
     isReadOnly: TOOL_DEFAULTS.isReadOnly,
@@ -219,6 +234,7 @@ export function buildTool(def: OrionCodeTool): OrionCodeTool {
     isFileEdit: TOOL_DEFAULTS.isFileEdit,
     checkPermissions: TOOL_DEFAULTS.checkPermissions,
     ...def,
+    execute,
   };
 
   TOOL_METADATA.set(tool, {

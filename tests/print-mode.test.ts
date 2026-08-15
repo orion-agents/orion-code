@@ -27,7 +27,7 @@ function findPython(): string | null {
 
 describe('print mode smoke', () => {
   const python = findPython();
-  const smokeScript = join(__dirname, '..', 'scripts', 'print-mode-smoke.py');
+  const smokeScript = join(__dirname, '..', 'scripts', 'smoke', 'print-mode-smoke.py');
   const maybeIt =
     python && existsSync(smokeScript) && process.platform !== 'win32' && canRunCliSmoke
       ? it
@@ -157,6 +157,41 @@ describe('print mode event sink', () => {
         ],
       })
     );
+  });
+
+  it('sanitizes Goal and research lifecycle fields before text stderr output', () => {
+    const writes: string[] = [];
+    const stderr = jest.spyOn(process.stderr, 'write').mockImplementation(chunk => {
+      writes.push(String(chunk));
+      return true;
+    });
+    const sink = new PrintEventSink(runtime(), 'text');
+
+    try {
+      sink.goalEvent({
+        type: 'goal_plan_updated',
+        goalId: 'goal-1',
+        planRevision: 1,
+        phase: 'execution',
+        nextAction: 'next\x1b[2J-safe\x9b31m-step',
+      });
+      sink.researchEvent({
+        type: 'research_source',
+        packetId: 'packet-1',
+        sourceId: 'source-safe',
+        status: 'failed',
+        provider: 'provider\x1b]0;hijack\x07',
+        failureReason: 'reason\x9d52;c;payload\x9c-safe',
+      });
+    } finally {
+      stderr.mockRestore();
+    }
+
+    const output = writes.join('');
+    expect(output).not.toMatch(/[\x1b\x80-\x9f]/u);
+    expect(output).toContain('next-safe-step');
+    expect(output).toContain('provider=provider');
+    expect(output).toContain('failure=reason-safe');
   });
 
   it('fails print mode when Goal shutdown state cannot be persisted', () => {

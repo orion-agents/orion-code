@@ -5,10 +5,7 @@ import { segmentGraphemes } from '../runtime/composer/grapheme';
 import { parseAnsiToStyledSpans } from '../runtime/rich-text/ansi-parser';
 import { layoutRichText } from '../runtime/rich-text/layout';
 import { parseRichText } from '../runtime/rich-text/markdown-parser';
-import type {
-  StructuredToolActivity,
-  TranscriptEntry,
-} from '../runtime/ui-events';
+import type { StructuredToolActivity, TranscriptEntry } from '../runtime/ui-events';
 import type { ToolOutputStepSummary } from '../runtime/tool-output-presentation';
 import { writeFrameText, type TuiFrame } from '../tui-core/frame';
 import {
@@ -19,11 +16,7 @@ import {
   type TuiStyle,
   type TuiTheme,
 } from '../tui-core/style';
-import {
-  resolveTuiTheme,
-  richTextThemeResolver,
-  type ResolvedTuiTheme,
-} from './theme';
+import { resolveTuiTheme, richTextThemeResolver, type ResolvedTuiTheme } from './theme';
 
 export type TranscriptLayoutEntry = Omit<TranscriptEntry, 'id'> & {
   id?: string;
@@ -49,13 +42,15 @@ interface StyledUnit {
  */
 export function layoutTranscriptEntry(
   entry: TranscriptLayoutEntry,
-  options: TranscriptLayoutOptions,
+  options: TranscriptLayoutOptions
 ): StyledRow[] {
   const width = normalizeWidth(options.width);
   const theme = resolveTuiTheme(options.theme);
   let rows: StyledRow[];
 
-  if (isToolEntry(entry)) {
+  if (entry.budgetStop) {
+    rows = layoutLiteralRole(entry.content, width, '⏸ ', theme.warning, theme.warning);
+  } else if (isToolEntry(entry)) {
     rows = layoutToolEntry(entry, width, theme, options.toolOutputMode ?? 'adaptive');
   } else {
     switch (entry.role) {
@@ -77,7 +72,7 @@ export function layoutTranscriptEntry(
           width,
           'system  ',
           theme.systemText,
-          theme.systemText,
+          theme.systemText
         );
         break;
       case 'command':
@@ -86,32 +81,21 @@ export function layoutTranscriptEntry(
           width,
           '$ ',
           theme.commandMarker,
-          theme.commandText,
+          theme.commandText
         );
         break;
-      case 'status':
-        {
-          const statusStyle = entry.statusTone === 'warning'
-            ? theme.warning
-            : theme.statusText;
-        rows = layoutLiteralRole(
-          entry.content,
-          width,
-          '· ',
-          statusStyle,
-          statusStyle,
-        );
+      case 'status': {
+        const statusStyle = entry.statusTone === 'warning' ? theme.warning : theme.statusText;
+        rows = layoutLiteralRole(entry.content, width, '· ', statusStyle, statusStyle);
         break;
-        }
+      }
       case 'tool':
         rows = [];
         break;
     }
   }
 
-  const spacedRows = entry.role === 'user' && !isToolEntry(entry)
-    ? [[], ...rows, []]
-    : rows;
+  const spacedRows = entry.role === 'user' && !isToolEntry(entry) ? [[], ...rows, []] : rows;
   return spacedRows.map(row => normalizeOutputRow(row, width));
 }
 
@@ -126,35 +110,37 @@ export function writeStyledRowToFrame(frame: TuiFrame, row: number, spans: Style
 }
 
 function isToolEntry(entry: TranscriptLayoutEntry): boolean {
-  return entry.role === 'tool'
-    || entry.title?.toLowerCase() === 'tool'
-    || entry.toolActivity !== undefined;
+  return (
+    entry.role === 'tool' ||
+    entry.title?.toLowerCase() === 'tool' ||
+    entry.toolActivity !== undefined
+  );
 }
 
-function layoutUserEntry(
-  content: string,
-  width: number,
-  theme: ResolvedTuiTheme,
-): StyledRow[] {
+function layoutUserEntry(content: string, width: number, theme: ResolvedTuiTheme): StyledRow[] {
   const background = theme.userBackground;
   const markerStyle = withBackground(theme.userMarker, background);
   const textStyle = withBackground(theme.userText, background);
   const horizontalPadding = width >= 6 ? 1 : 0;
   const contentWidth = Math.max(1, width - horizontalPadding);
-  const firstPrefix: StyledRow = [{
-    text: `${' '.repeat(horizontalPadding)}› `,
-    style: markerStyle,
-  }];
-  const continuationPrefix: StyledRow = [{
-    text: ' '.repeat(horizontalPadding + 2),
-    style: markerStyle,
-  }];
+  const firstPrefix: StyledRow = [
+    {
+      text: `${' '.repeat(horizontalPadding)}› `,
+      style: markerStyle,
+    },
+  ];
+  const continuationPrefix: StyledRow = [
+    {
+      text: ' '.repeat(horizontalPadding + 2),
+      style: markerStyle,
+    },
+  ];
   const text = sanitizeTerminalText(content, 2);
   const rows = layoutPrefixedSpans(
     [{ text, style: textStyle }],
     contentWidth,
     firstPrefix,
-    continuationPrefix,
+    continuationPrefix
   );
 
   return rows.map(row => fillRowBackground(row, width, background));
@@ -165,7 +151,7 @@ function layoutLiteralRole(
   width: number,
   marker: string,
   markerStyle: TuiStyle,
-  textStyle: TuiStyle,
+  textStyle: TuiStyle
 ): StyledRow[] {
   const safeMarker = truncateText(marker, Math.max(1, width));
   const markerWidth = stringWidth(safeMarker);
@@ -175,7 +161,7 @@ function layoutLiteralRole(
     [{ text: sanitizeTerminalText(content, 2), style: textStyle }],
     width,
     firstPrefix,
-    continuationPrefix,
+    continuationPrefix
   );
 }
 
@@ -183,7 +169,7 @@ function layoutToolEntry(
   entry: TranscriptLayoutEntry,
   width: number,
   theme: ResolvedTuiTheme,
-  viewMode: 'adaptive' | 'collapsed' | 'full',
+  viewMode: 'adaptive' | 'collapsed' | 'full'
 ): StyledRow[] {
   const activity = entry.toolActivity;
   if (!activity && entry.role === 'tool') {
@@ -201,13 +187,9 @@ function layoutToolEntry(
 
   const rows = wrapStyledSpans(header, width);
   if (activity?.command) {
-    rows.push(...layoutLiteralRole(
-      activity.command,
-      width,
-      '$ ',
-      theme.commandMarker,
-      theme.commandText,
-    ));
+    rows.push(
+      ...layoutLiteralRole(activity.command, width, '$ ', theme.commandMarker, theme.commandText)
+    );
   }
   const outputView = activity?.outputView;
   if (viewMode !== 'full' && outputView?.aggregate) {
@@ -216,21 +198,30 @@ function layoutToolEntry(
       const marker = step.state === 'success' ? '✓' : step.state === 'error' ? '✗' : '-';
       const target = step.target ? ` ${sanitizeInlineText(step.target)}` : '';
       const summary = step.summary ? `  ${sanitizeInlineText(step.summary)}` : '';
-      rows.push(...wrapStyledSpans([{
-        text: `  ${marker} ${step.index}. ${sanitizeInlineText(step.toolName)}${target}${summary}`,
-        style: step.state === 'error' ? theme.toolError : theme.toolMeta,
-      }], width));
+      rows.push(
+        ...wrapStyledSpans(
+          [
+            {
+              text: `  ${marker} ${step.index}. ${sanitizeInlineText(step.toolName)}${target}${summary}`,
+              style: step.state === 'error' ? theme.toolError : theme.toolMeta,
+            },
+          ],
+          width
+        )
+      );
     }
   }
   const bodyText = outputView
     ? viewMode === 'full'
-      ? activity?.body ?? entry.content
+      ? (activity?.body ?? entry.content)
       : viewMode === 'collapsed'
         ? ''
         : outputView.mode === 'inline' || outputView.mode === 'preview'
           ? outputView.preview
           : ''
-    : activity?.body !== undefined ? activity.body : entry.content;
+    : activity?.body !== undefined
+      ? activity.body
+      : entry.content;
   if (bodyText) {
     const safeAnsi = retainSafeToolSgr(bodyText);
     const body = parseAnsiToStyledSpans(safeAnsi).map(span => ({
@@ -241,20 +232,29 @@ function layoutToolEntry(
   }
 
   if (
-    outputView
-    && viewMode !== 'full'
-    && (viewMode === 'collapsed' || outputView.mode !== 'inline')
+    outputView &&
+    viewMode !== 'full' &&
+    (viewMode === 'collapsed' || outputView.mode !== 'inline')
   ) {
-    const omitted = outputView.omittedBytes > 0
-      ? `${formatByteCount(outputView.omittedBytes)} omitted`
-      : 'details available';
-    const more = outputView.aggregate && outputView.aggregate.steps.length > 3
-      ? ` · +${outputView.aggregate.steps.length - 3} more`
-      : '';
-    rows.push(...wrapStyledSpans([{
-      text: `  ↳ collapsed${more} · ${omitted} · Ctrl+O details`,
-      style: theme.toolMeta,
-    }], width));
+    const omitted =
+      outputView.omittedBytes > 0
+        ? `${formatByteCount(outputView.omittedBytes)} omitted`
+        : 'details available';
+    const more =
+      outputView.aggregate && outputView.aggregate.steps.length > 3
+        ? ` · +${outputView.aggregate.steps.length - 3} more`
+        : '';
+    rows.push(
+      ...wrapStyledSpans(
+        [
+          {
+            text: `  ↳ collapsed${more} · ${omitted} · Ctrl+O details`,
+            style: theme.toolMeta,
+          },
+        ],
+        width
+      )
+    );
   }
 
   if (activity?.error && !entry.content.includes(activity.error)) {
@@ -266,7 +266,8 @@ function layoutToolEntry(
 
 function prioritizeAggregateSteps(steps: ToolOutputStepSummary[]): ToolOutputStepSummary[] {
   return [...steps].sort((a, b) => {
-    const priority = (state: string): number => state === 'error' ? 0 : state === 'skipped' ? 1 : 2;
+    const priority = (state: string): number =>
+      state === 'error' ? 0 : state === 'skipped' ? 1 : 2;
     return priority(a.state) - priority(b.state) || a.index - b.index;
   });
 }
@@ -291,10 +292,7 @@ function toolStateMarker(state: StructuredToolActivity['state']): string {
   }
 }
 
-function toolStateStyle(
-  state: StructuredToolActivity['state'],
-  theme: ResolvedTuiTheme,
-): TuiStyle {
+function toolStateStyle(state: StructuredToolActivity['state'], theme: ResolvedTuiTheme): TuiStyle {
   switch (state) {
     case 'success':
       return theme.toolSuccess;
@@ -311,11 +309,13 @@ function toolStateStyle(
 
 function toolMetadata(activity?: StructuredToolActivity): string {
   if (!activity) return '';
-  const output = typeof activity.outputBytes === 'number'
-    ? `output ${formatByteCount(activity.outputBytes)}`
-    : '';
+  const output =
+    typeof activity.outputBytes === 'number'
+      ? `output ${formatByteCount(activity.outputBytes)}`
+      : '';
   const artifact = activity.artifactHint ? `artifact ${activity.artifactHint}` : '';
-  return [activity.detail, activity.summary, activity.duration, output, artifact]
+  const authorization = activity.authorization ? `auth ${activity.authorization.source}` : '';
+  return [activity.detail, activity.summary, activity.duration, output, artifact, authorization]
     .filter((value): value is string => Boolean(value))
     .map(sanitizeInlineText)
     .join('  ');
@@ -336,7 +336,7 @@ function layoutPrefixedSpans(
   spans: StyledSpan[],
   width: number,
   firstPrefix: StyledRow,
-  continuationPrefix: StyledRow,
+  continuationPrefix: StyledRow
 ): StyledRow[] {
   const prefixWidth = Math.max(rowWidth(firstPrefix), rowWidth(continuationPrefix));
   if (prefixWidth >= width) {
@@ -430,10 +430,15 @@ function fillRowBackground(row: StyledRow, width: number, background: TuiStyle):
 }
 
 function normalizeOutputRow(row: StyledRow, width: number): StyledRow {
-  return mergeAdjacentSpans(clampRow(row.map(span => ({
-    text: sanitizeTerminalText(span.text, 2).replace(/\n/gu, ''),
-    style: span.style,
-  })), width));
+  return mergeAdjacentSpans(
+    clampRow(
+      row.map(span => ({
+        text: sanitizeTerminalText(span.text, 2).replace(/\n/gu, ''),
+        style: span.style,
+      })),
+      width
+    )
+  );
 }
 
 function clampRow(row: StyledRow, width: number): StyledRow {

@@ -17,8 +17,8 @@ type ReleaseReport = {
 };
 
 const projectRoot = resolve(__dirname, '..');
-const releaseScript = join(projectRoot, 'scripts', 'release-check.js');
-const depHealthScript = join(projectRoot, 'scripts', 'dep-health-check.sh');
+const releaseScript = join(projectRoot, 'scripts', 'release', 'release-check.js');
+const depHealthScript = join(projectRoot, 'scripts', 'release', 'dep-health-check.sh');
 const fixtures: string[] = [];
 
 function git(cwd: string, args: string[]): string {
@@ -35,7 +35,7 @@ function writeVersionFiles(cwd: string, version: string, changelog: string): voi
     JSON.stringify({ name: 'release-check-fixture', version }, null, 2) + '\n'
   );
   writeFileSync(
-    join(cwd, 'package-lock.json'),
+    join(cwd, 'npm-shrinkwrap.json'),
     JSON.stringify(
       {
         name: 'release-check-fixture',
@@ -66,8 +66,8 @@ function commitAll(cwd: string, message: string): void {
 function createFixture(version: string, changelog: string): string {
   const cwd = mkdtempSync(join(tmpdir(), 'orion-release-check-'));
   fixtures.push(cwd);
-  mkdirSync(join(cwd, 'scripts'), { recursive: true });
-  cpSync(releaseScript, join(cwd, 'scripts', 'release-check.js'));
+  mkdirSync(join(cwd, 'scripts', 'release'), { recursive: true });
+  cpSync(releaseScript, join(cwd, 'scripts', 'release', 'release-check.js'));
   writeVersionFiles(cwd, version, changelog);
   git(cwd, ['init', '-q']);
   git(cwd, ['config', 'user.email', 'release-check@example.test']);
@@ -79,7 +79,7 @@ function createFixture(version: string, changelog: string): string {
 function runReleaseCheck(cwd: string): { status: number | null; report: ReleaseReport } {
   const result = spawnSync(
     process.execPath,
-    [join(cwd, 'scripts', 'release-check.js'), '--skip-tests', '--skip-pack', '--json'],
+    [join(cwd, 'scripts', 'release', 'release-check.js'), '--skip-tests', '--skip-pack', '--json'],
     { cwd, encoding: 'utf8' }
   );
   if (!result.stdout.trim()) {
@@ -104,6 +104,7 @@ describe('release-check script contract', () => {
   it('builds the publish artifact before release:check validates the pack contents', () => {
     const pkg = JSON.parse(readFileSync(join(projectRoot, 'package.json'), 'utf8')) as {
       scripts?: Record<string, string>;
+      files?: string[];
     };
     const prepublishOnly = pkg.scripts?.prepublishOnly ?? '';
     const buildIndex = prepublishOnly.indexOf('npm run build');
@@ -115,6 +116,19 @@ describe('release-check script contract', () => {
     expect(buildIndex).toBeGreaterThan(dependencyPolicyIndex);
     expect(releaseCheckIndex).toBeGreaterThan(buildIndex);
     expect(prepublishOnly).toContain('npm run test:coverage -- --runInBand');
+    expect(pkg.files).toContain('npm-shrinkwrap.json');
+    expect(pkg.files).toContain('assets/orion-tui-icon.png');
+    expect(pkg.files).not.toContain('assets/');
+  });
+
+  it('enforces exact package contents and hard package-size budgets', () => {
+    const script = readFileSync(releaseScript, 'utf8');
+
+    expect(script).toContain('MAX_PACKED_PACKAGE_BYTES = 2 * 1024 * 1024');
+    expect(script).toContain('MAX_UNPACKED_PACKAGE_BYTES = 10 * 1024 * 1024');
+    expect(script).toContain('MAX_PACKAGE_ENTRIES = 1500');
+    expect(script).toContain("'assets/orion-tui-icon.png'");
+    expect(script).toContain('unexpected tarball entries');
   });
 
   it('pins third-party GitHub Actions to immutable commit SHAs', () => {
@@ -131,6 +145,43 @@ describe('release-check script contract', () => {
     expect(workflow).toMatch(
       /release-gate:[\s\S]*?Dependency policy[\s\S]*?npm run deps:check -- --policy-only[\s\S]*?release:check/u
     );
+  });
+
+  it('keeps offline dependency health blocking and enforces manifest overrides', () => {
+    const workflow = readFileSync(join(projectRoot, '.github', 'workflows', 'ci.yml'), 'utf8');
+    const script = readFileSync(depHealthScript, 'utf8');
+
+    const depHealthJob = workflow.slice(workflow.indexOf('  dep-health:'));
+    expect(depHealthJob).not.toContain('continue-on-error: true');
+    expect(script).toContain("overrides['shell-quote'] === '^1.10.0'");
+    expect(script).toContain("lock.packages?.['node_modules/shell-quote']?.version");
+    expect(script).toContain("join(root, 'npm-shrinkwrap.json')");
+  });
+
+  it('treats malformed npm pack metadata as a release failure', () => {
+    const cwd = createFixture(
+      '1.2.3',
+      '## [1.2.3] — UNRELEASED\n\n> **Status: candidate.** Not yet tagged or published.'
+    );
+    const fakeBin = join(cwd, 'fake-bin');
+    mkdirSync(fakeBin);
+    const npm = join(fakeBin, 'npm');
+    writeFileSync(npm, '#!/bin/sh\necho malformed-pack-json\nexit 0\n');
+    chmodSync(npm, 0o755);
+
+    const result = spawnSync(
+      process.execPath,
+      [join(cwd, 'scripts', 'release', 'release-check.js'), '--skip-tests', '--json'],
+      {
+        cwd,
+        encoding: 'utf8',
+        env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH ?? ''}` },
+      }
+    );
+    const report = JSON.parse(result.stdout) as ReleaseReport;
+
+    expect(result.status).toBe(1);
+    expect(resultById(report, 'pack')).toMatchObject({ status: 'fail' });
   });
 
   it('runs the release workflow for version tag pushes', () => {

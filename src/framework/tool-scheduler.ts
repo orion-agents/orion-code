@@ -35,6 +35,8 @@ export interface PreparedToolCall {
   args: Record<string, unknown>;
   tool: OrionCodeTool | undefined;
   attemptId: string;
+  /** Provider arguments rejected before policy, drift, tracking, or execution. */
+  argumentError?: string;
   drift: DriftCheckResult | undefined;
   permission: PermissionResult | undefined;
   /**
@@ -136,13 +138,17 @@ export interface ToolSchedulerOptions {
 // Preparation
 // ============================================================================
 
-function parseToolArgs(tc: ToolCallRecord): Record<string, unknown> {
+function parseToolArgs(tc: ToolCallRecord): { args: Record<string, unknown> } | { error: string } {
   const rawArgs = tc.function.arguments || '';
-  if (!rawArgs) return {};
+  if (!rawArgs) return { args: {} };
   try {
-    return JSON.parse(rawArgs) as Record<string, unknown>;
+    const parsed = JSON.parse(rawArgs) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { error: `Tool ${tc.function.name} arguments must be a JSON object.` };
+    }
+    return { args: parsed as Record<string, unknown> };
   } catch {
-    return {};
+    return { error: `Tool ${tc.function.name} arguments are not valid JSON.` };
   }
 }
 
@@ -183,7 +189,8 @@ function assessToolRisk(
   if (isDestructive) return { risk: 'destructive', known: true, isFileEdit };
   // A read-only tool that asks is normally an external/caution operation
   // (web/MCP are the important examples), not a safe local read. A local
-  // read-only exec_command remains a safe read even though it asks.
+  // read-only exec_command (e.g. `gh auth status`, `git status`) stays a safe
+  // read even though its policy asks when it is not explicitly allowlisted.
   if (isReadOnly && permission?.behavior === 'ask' && tool?.name !== 'exec_command') {
     return { risk: 'external', known: true, isFileEdit };
   }
@@ -378,13 +385,44 @@ export function prepareToolCalls(options: ToolSchedulerOptions): PreparedToolCal
 
   for (let i = 0; i < toolCalls.length; i++) {
     const tc = toolCalls[i];
-    const args = parseToolArgs(tc);
+    const parsedArgs = parseToolArgs(tc);
+    if ('error' in parsedArgs) {
+      preparedCalls.push({
+        index: i,
+        tc,
+        args: {},
+        tool: tools.find(tool => tool.name === tc.function.name),
+        attemptId: `invalid-tool-${i}`,
+        argumentError: parsedArgs.error,
+        drift: undefined,
+        permission: undefined,
+        canRunConcurrently: false,
+      });
+      continue;
+    }
+    const { args } = parsedArgs;
     // Re-serialize to ensure valid JSON for next API call
     tc.function.arguments = JSON.stringify(args);
 
+    const tool = tools.find(t => t.name === tc.function.name);
+    const inputError = tool?.validateInput?.(args);
+    if (inputError) {
+      preparedCalls.push({
+        index: i,
+        tc,
+        args,
+        tool,
+        attemptId: `invalid-tool-${i}`,
+        argumentError: inputError,
+        drift: undefined,
+        permission: undefined,
+        canRunConcurrently: false,
+      });
+      continue;
+    }
+
     const attemptId = options.startApproach?.(tc.function.name) ?? `tool-${i}`;
     options.addToolToTracker?.(attemptId, tc.function.name);
-    const tool = tools.find(t => t.name === tc.function.name);
     const drift = options.harnessDriftCheck?.({ name: tc.function.name, args });
     const permission = checkToolPermission(tool, args, options.toolContext);
     const allowlist = options.toolAllowlist?.(tc.function.name, args);
@@ -516,6 +554,9 @@ function executePreparedTool(
   };
 
   const run = async (): Promise<string> => {
+    if (prepared.argumentError) {
+      return JSON.stringify({ success: false, error: prepared.argumentError });
+    }
     if (drift?.status === 'block') {
       permissionDecision = {
         behavior: 'deny',

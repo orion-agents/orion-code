@@ -143,6 +143,11 @@ function formatLoopStatsLines(stats: LoopStats, detail = false): string[] {
   if (stats.continuationActions && stats.continuationActions.length > 0) {
     lines.push(`Next       ${stats.continuationActions.join(', ')}`);
   }
+  if (stats.lastToolName) {
+    lines.push(
+      `Stopped at ${stats.lastToolName}${stats.lastToolSummary ? ` — ${stats.lastToolSummary}` : ''}`
+    );
+  }
   if ((stats.providerRetryCount ?? 0) > 0) {
     const retryParts = [
       `${stats.providerRetryCount} retries`,
@@ -874,10 +879,6 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
       if (sessionId) {
         updateSessionSkills(sessionId, appliedSkillNames);
         updateSessionHarnessState(sessionId, harnessState);
-        const recordedMessages = readSessionMessages(sessionId);
-        if (recordedMessages.length > 0) {
-          updateSessionSummary(sessionId, recordedMessages);
-        }
       }
     }
 

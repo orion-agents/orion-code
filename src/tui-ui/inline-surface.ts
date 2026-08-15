@@ -244,7 +244,10 @@ export class InlineTerminalSurface {
    *  3. Allocate a fresh live block from the resulting cursor and repaint the
    *     latest live frame below the committed output.
    */
-  async commit(batch: TranscriptCommitBatch, getLatestLiveFrame: LiveFrameProvider): Promise<TuiTerminalRenderResult> {
+  async commit(
+    batch: TranscriptCommitBatch,
+    getLatestLiveFrame: LiveFrameProvider
+  ): Promise<TuiTerminalRenderResult> {
     let output = '';
     for (;;) {
       let retryAfterResize = false;
@@ -257,7 +260,7 @@ export class InlineTerminalSurface {
         // Committed output behaves like ordinary shell output. Keeping
         // autowrap enabled preserves an already-queued old-width batch if the
         // terminal changes size immediately before this operation executes.
-        const chunks: string[] = [this.clearOwnedLiveRegion(), ENABLE_AUTOWRAP];
+        const chunks: string[] = [HIDE_CURSOR, this.clearOwnedLiveRegion(), ENABLE_AUTOWRAP];
         this.releaseLiveRegion();
 
         for (const entry of batch.entries) {
@@ -279,6 +282,8 @@ export class InlineTerminalSurface {
         const liveFrame = getLatestLiveFrame();
         if (liveFrame) {
           chunks.push(this.renderLiveInternal(liveFrame));
+        } else {
+          chunks.push(SHOW_CURSOR);
         }
         output = chunks.join('');
         await this.writeRaw(output);
@@ -320,7 +325,11 @@ export class InlineTerminalSurface {
   }
 
   private renderLiveInternal(frame: TuiFrame): string {
-    const chunks: string[] = [];
+    // The hardware cursor is also the anchor used by macOS IMEs. Hide it
+    // before *any* cursor movement or paint output so an in-progress CJK
+    // composition never exposes a caret at the frame tail/right-hand border
+    // while this batch is being redrawn.
+    const chunks: string[] = [HIDE_CURSOR];
     const requiredRows = Math.min(frame.height, Math.max(1, this.liveBandRows));
 
     // Allocate or resize the cursor-owned live block from the current cursor.
@@ -399,8 +408,11 @@ export class InlineTerminalSurface {
     this.cursorRow = row;
     this.cursorColumn = targetCol;
 
-    chunks.push(frame.cursor.visible ? SHOW_CURSOR : HIDE_CURSOR);
     chunks.push(ENABLE_AUTOWRAP);
+    // Re-expose the cursor only after it has been parked at the prompt and all
+    // terminal modes are restored. This keeps the IME anchor stable across
+    // incremental prompt and status repaints.
+    chunks.push(frame.cursor.visible ? SHOW_CURSOR : HIDE_CURSOR);
 
     this.previousFrame = frame;
     return chunks.join('');
@@ -429,9 +441,7 @@ export class InlineTerminalSurface {
     return this.renderRowChunks(row).join('');
   }
 
-  private trimDefaultTrailingCells(
-    row: TuiFrame['rows'][number],
-  ): TuiFrame['rows'][number] {
+  private trimDefaultTrailingCells(row: TuiFrame['rows'][number]): TuiFrame['rows'][number] {
     let end = row.length;
     while (end > 0) {
       const cell = row[end - 1];
@@ -442,8 +452,7 @@ export class InlineTerminalSurface {
   }
 
   private renderedRowWidth(row: TuiFrame['rows'][number]): number {
-    return this.trimDefaultTrailingCells(row)
-      .reduce((total, cell) => total + cell.width, 0);
+    return this.trimDefaultTrailingCells(row).reduce((total, cell) => total + cell.width, 0);
   }
 
   /**
@@ -496,19 +505,15 @@ export class InlineTerminalSurface {
 
     const physicalWidth = Math.max(1, Math.floor(nextWidth));
     const frame = this.previousFrame;
-    const rowPhysicalHeights = Array.from(
-      { length: this.liveRegionCapacity },
-      (_, row) => {
-        const cells = frame.rows[row] ?? [];
-        const writtenWidth = this.renderedRowWidth(cells);
-        return Math.max(1, Math.ceil(Math.max(1, writtenWidth) / physicalWidth));
-      },
-    );
+    const rowPhysicalHeights = Array.from({ length: this.liveRegionCapacity }, (_, row) => {
+      const cells = frame.rows[row] ?? [];
+      const writtenWidth = this.renderedRowWidth(cells);
+      return Math.max(1, Math.ceil(Math.max(1, writtenWidth) / physicalWidth));
+    });
     const logicalCursorRow = Math.min(this.cursorRow, rowPhysicalHeights.length - 1);
-    const cursorPhysicalRow = rowPhysicalHeights
-      .slice(0, logicalCursorRow)
-      .reduce((total, rows) => total + rows, 0)
-      + Math.floor(Math.max(0, this.cursorColumn) / physicalWidth);
+    const cursorPhysicalRow =
+      rowPhysicalHeights.slice(0, logicalCursorRow).reduce((total, rows) => total + rows, 0) +
+      Math.floor(Math.max(0, this.cursorColumn) / physicalWidth);
     const physicalRows = rowPhysicalHeights.reduce((total, rows) => total + rows, 0);
 
     const chunks: string[] = [cursorUp(cursorPhysicalRow)];
@@ -552,11 +557,11 @@ export class InlineTerminalSurface {
     width: number,
     height: number,
     getLatestLiveFrame: LiveFrameProvider,
-    generation = this.resizePending ? this.resizeGeneration : this.beginResize(width),
+    generation = this.resizePending ? this.resizeGeneration : this.beginResize(width)
   ): Promise<void> {
     await this.enqueue(async () => {
       if (generation !== this.resizeGeneration) return;
-      const chunks: string[] = [this.clearReflowedLiveRegion(width)];
+      const chunks: string[] = [HIDE_CURSOR, this.clearReflowedLiveRegion(width)];
       this.releaseLiveRegion();
       this.width = Math.max(1, Math.floor(width));
       this.height = Math.max(1, Math.floor(height));
@@ -564,6 +569,8 @@ export class InlineTerminalSurface {
       const liveFrame = getLatestLiveFrame();
       if (liveFrame) {
         chunks.push(this.renderLiveInternal(liveFrame));
+      } else {
+        chunks.push(SHOW_CURSOR);
       }
       await this.writeRaw(chunks.join(''));
       if (generation === this.resizeGeneration) this.completeResize();
@@ -575,7 +582,7 @@ export class InlineTerminalSurface {
     await this.enqueue(async () => {
       if (this.phase !== 'mounted') return;
       await this.writeRaw(
-        `${this.clearOwnedLiveRegion()}${SGR_RESET}${SHOW_CURSOR}${DISABLE_BRACKETED_PASTE}${ENABLE_AUTOWRAP}`,
+        `${HIDE_CURSOR}${this.clearOwnedLiveRegion()}${SGR_RESET}${DISABLE_BRACKETED_PASTE}${ENABLE_AUTOWRAP}${SHOW_CURSOR}`
       );
       this.phase = 'suspended';
       this.releaseLiveRegion();
@@ -587,7 +594,7 @@ export class InlineTerminalSurface {
   async restore(
     getLatestLiveFrame: LiveFrameProvider,
     width = this.width,
-    height = this.height,
+    height = this.height
   ): Promise<void> {
     await this.enqueue(async () => {
       if (this.phase !== 'suspended') return;
@@ -609,7 +616,7 @@ export class InlineTerminalSurface {
     await this.enqueue(async () => {
       if (this.phase === 'unmounted') return;
       await this.writeRaw(
-        `${this.clearOwnedLiveRegion()}${SGR_RESET}${SHOW_CURSOR}${DISABLE_BRACKETED_PASTE}${ENABLE_AUTOWRAP}\n`,
+        `${HIDE_CURSOR}${this.clearOwnedLiveRegion()}${SGR_RESET}${DISABLE_BRACKETED_PASTE}${ENABLE_AUTOWRAP}${SHOW_CURSOR}\n`
       );
       this.phase = 'unmounted';
       this.releaseLiveRegion();
@@ -617,11 +624,9 @@ export class InlineTerminalSurface {
     });
   }
 
-  /** Flush: wait for queue to drain. Yields to I/O between checks. */
+  /** Flush all operations enqueued before this call without timer polling. */
   async flush(): Promise<void> {
-    while (this.processing || this.queue.length > 0) {
-      await new Promise<void>(resolve => setTimeout(resolve, 0));
-    }
+    await this.whenIdle();
   }
 
   private async writeRaw(chunk: string): Promise<void> {
@@ -662,7 +667,9 @@ export class InlineTerminalSurface {
         settle();
       };
       const onError = (error?: unknown): void => {
-        settle(error instanceof Error ? error : new Error(String(error ?? 'terminal output error')));
+        settle(
+          error instanceof Error ? error : new Error(String(error ?? 'terminal output error'))
+        );
       };
       const onClose = (): void => settle(new Error('terminal output closed before drain'));
       this.output.on('drain', onDrain);

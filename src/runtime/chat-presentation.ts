@@ -18,6 +18,7 @@ import { formatBytes } from '../services/format';
 import type {
   OrionCodeUiRuntime,
   StructuredToolActivity,
+  ToolAuthorizationView,
   TranscriptEntry,
   UiEventSink,
 } from './ui-events';
@@ -33,15 +34,23 @@ import { byteLength, compactToolArgs, stripAnsi } from './chat-trace';
 const LOCAL_FAST_PATH_INLINE_OUTPUT_BYTES = 2048;
 const TOOL_TRANSCRIPT_ARG_BUDGET = 512;
 
-function toolStartContent(event: ToolCallEvent): string {
+function toolStartContent(
+  event: Pick<ToolCallEvent, 'callId' | 'name' | 'args' | 'batchCount' | 'batchIndex'>
+): string {
   return formatToolActivityTranscript(
     toolActivityFromStarted(event, compactToolArgs(event.args, TOOL_TRANSCRIPT_ARG_BUDGET))
   );
 }
 
-export function toolFinishContent(event: ToolResultEvent): string {
+export function toolFinishContent(
+  event: ToolResultEvent,
+  authorization?: ToolAuthorizationView
+): string {
   return formatToolActivityTranscript(
-    toolActivityFromFinished(event, compactToolArgs(event.args, TOOL_TRANSCRIPT_ARG_BUDGET))
+    toolActivityFromFinished(
+      { ...event, authorization },
+      compactToolArgs(event.args, TOOL_TRANSCRIPT_ARG_BUDGET)
+    )
   );
 }
 
@@ -69,7 +78,8 @@ export interface ToolEventPresenterOptions {
 export function structuredToolFinishActivity(
   event: ToolResultEvent,
   seq: number,
-  options: ToolEventPresenterOptions = {}
+  options: ToolEventPresenterOptions = {},
+  authorization?: ToolAuthorizationView
 ): StructuredToolActivity {
   const modelVisible = parseToolResultEnvelope(event.modelVisibleResult);
   const durable = parseToolResultEnvelope(event.result);
@@ -126,6 +136,7 @@ export function structuredToolFinishActivity(
     artifactHint: artifactRef ? `/artifacts show ${artifactRef.id} --full` : undefined,
     callId: event.callId,
     turnId: options.turnId,
+    authorization,
     outputView,
   };
 }
@@ -517,6 +528,7 @@ export function formatLocalFastPathAssistantContent(
 
 export interface ToolEventPresenter {
   start(event: ToolCallEvent): void;
+  permission(event: Extract<QueryEvent, { type: 'permission_decision' }>): void;
   finish(event: ToolResultEvent): void;
   finalizePendingAsSkipped(reason?: string): void;
 }
@@ -534,6 +546,8 @@ export function createToolEventPresenter(
       sequence: number;
       batchCount?: number;
       batchIndex?: number;
+      activity: StructuredToolActivity;
+      authorization?: ToolAuthorizationView;
     }
   >();
   let toolSequenceCounter = 0;
@@ -541,11 +555,12 @@ export function createToolEventPresenter(
   return {
     start(event: ToolCallEvent): void {
       const seq = ++toolSequenceCounter;
+      const activity = structuredToolStartActivity(event, seq);
       const entryId = events.append({
         role: 'tool',
         title: 'tool',
         content: toolStartContent(event),
-        toolActivity: structuredToolStartActivity(event, seq),
+        toolActivity: activity,
       });
       runningToolEntries.set(event.callId, {
         entryId,
@@ -554,6 +569,7 @@ export function createToolEventPresenter(
         sequence: seq,
         batchCount: event.batchCount,
         batchIndex: event.batchIndex,
+        activity,
       });
       events.toolStarted?.({
         callId: event.callId,
@@ -565,11 +581,29 @@ export function createToolEventPresenter(
       });
     },
 
+    permission(event): void {
+      const stored = runningToolEntries.get(event.callId);
+      if (!stored) return;
+      const authorization: ToolAuthorizationView = {
+        approved: event.decision.approved,
+        source: event.decision.source,
+        behavior: event.decision.behavior,
+        reason: event.decision.reason ? redactTraceText(event.decision.reason) : undefined,
+      };
+      stored.authorization = authorization;
+      stored.activity = { ...stored.activity, authorization };
+      events.update(stored.entryId, {
+        content: `${toolStartContent(event)}\n  Authorization: ${authorization.source}`,
+        toolActivity: stored.activity,
+      });
+    },
+
     finish(event: ToolResultEvent): void {
-      const content = toolFinishContent(event);
       const stored = runningToolEntries.get(event.callId);
       const seq = stored?.sequence ?? ++toolSequenceCounter;
-      const toolActivity = structuredToolFinishActivity(event, seq, options);
+      const authorization = stored?.authorization;
+      const content = toolFinishContent(event, authorization);
+      const toolActivity = structuredToolFinishActivity(event, seq, options, authorization);
 
       if (stored) {
         events.finalize(stored.entryId, {
@@ -605,6 +639,7 @@ export function createToolEventPresenter(
             }
           : event.artifactRef,
         externalAssertion: event.externalAssertion,
+        authorization,
         sequence: seq,
         batchCount: event.batchCount,
         batchIndex: event.batchIndex,
@@ -624,6 +659,7 @@ export function createToolEventPresenter(
             body: '',
             error: reason,
             seq: entry.sequence,
+            authorization: entry.authorization,
           },
         });
         events.toolFinished?.({
@@ -634,6 +670,7 @@ export function createToolEventPresenter(
           skipped: true,
           duration: 0,
           error: reason,
+          authorization: entry.authorization,
           sequence: entry.sequence,
           batchCount: entry.batchCount,
           batchIndex: entry.batchIndex,

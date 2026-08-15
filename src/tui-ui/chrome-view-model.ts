@@ -133,7 +133,7 @@ export function createTuiChromeViewModel(
   if (context) all.set('context', { id: 'context', label: context.toUpperCase(), priority: 50 });
   all.set('permission', {
     id: 'permission',
-    label: `PERM ${state.permissionMode}`,
+    label: `PERM ${state.permissionMode} · NET ${state.agentMode.baseMode === 'auto' ? 'auto' : state.permissionMode}`,
     priority: waiting ? 110 : 90,
     critical: waiting,
     tone: waiting ? 'warning' : 'muted',

@@ -170,13 +170,78 @@ describe('prepareToolCalls', () => {
     expect(JSON.parse(calls[0].function.arguments)).toEqual({ path: 'a.ts', extra: true });
   });
 
-  test('handles invalid JSON arguments gracefully', () => {
-    const calls = toolCalls(['read_file']);
-    calls[0].function.arguments = 'not json at all';
+  test.each(['not json at all', 'null', '[]', '"path"'])(
+    'rejects invalid or non-object tool arguments before policy and tracking: %s',
+    async rawArguments => {
+      const calls = toolCalls(['read_file']);
+      calls[0].function.arguments = rawArguments;
+      const toolExecutor = jest.fn(async () => JSON.stringify({ success: true, output: 'unsafe' }));
+      const startApproach = jest.fn(() => 'attempt');
+      const addToolToTracker = jest.fn();
+      const harnessDriftCheck = jest.fn(() => ({ status: 'warn' as const }));
 
-    const prepared = prepareToolCalls({ toolCalls: calls, tools, toolExecutor: async () => '' });
+      const prepared = prepareToolCalls({
+        toolCalls: calls,
+        tools,
+        toolExecutor,
+        toolContext,
+        startApproach,
+        addToolToTracker,
+        harnessDriftCheck,
+      });
 
-    expect(prepared[0].args).toEqual({});
+      expect(prepared[0]).toMatchObject({
+        args: {},
+        canRunConcurrently: false,
+      });
+      expect(prepared[0].argumentError).toMatch(
+        /arguments (are not valid JSON|must be a JSON object)/
+      );
+      expect(startApproach).not.toHaveBeenCalled();
+      expect(addToolToTracker).not.toHaveBeenCalled();
+      expect(harnessDriftCheck).not.toHaveBeenCalled();
+
+      const results = [];
+      for await (const result of executeToolCalls(prepared, { toolExecutor })) {
+        results.push(result);
+      }
+      expect(toolExecutor).not.toHaveBeenCalled();
+      expect(results[0]).toMatchObject({ success: false, strategyResult: 'failed' });
+    }
+  );
+
+  test('rejects bounded numeric arguments before policy, tracking, or execution', async () => {
+    const calls = toolCalls(['exec_command']);
+    calls[0].function.arguments = JSON.stringify({ command: 'echo unsafe', timeout: Infinity });
+    const toolExecutor = jest.fn(async () => JSON.stringify({ success: true, output: 'unsafe' }));
+    const startApproach = jest.fn(() => 'attempt');
+    const addToolToTracker = jest.fn();
+    const harnessDriftCheck = jest.fn(() => ({ status: 'warn' as const }));
+
+    const prepared = prepareToolCalls({
+      toolCalls: calls,
+      tools: TOOLS,
+      toolExecutor,
+      toolContext,
+      startApproach,
+      addToolToTracker,
+      harnessDriftCheck,
+    });
+
+    expect(prepared[0]).toMatchObject({
+      canRunConcurrently: false,
+      argumentError: expect.stringContaining('timeout must be a safe integer'),
+    });
+    expect(startApproach).not.toHaveBeenCalled();
+    expect(addToolToTracker).not.toHaveBeenCalled();
+    expect(harnessDriftCheck).not.toHaveBeenCalled();
+
+    const results = [];
+    for await (const result of executeToolCalls(prepared, { toolExecutor })) {
+      results.push(result);
+    }
+    expect(toolExecutor).not.toHaveBeenCalled();
+    expect(results[0]).toMatchObject({ success: false, strategyResult: 'failed' });
   });
 
   test('serializes drift blocks while warn results preserve safe concurrency', () => {
@@ -997,7 +1062,7 @@ describe('fail-closed permission matrix', () => {
     }
   });
 
-  test('broad durable exec grant covers benign substitution and recursive rm', () => {
+  test('broad durable exec grant covers benign and destructive command substitution', () => {
     const execTool = TOOLS.find(tool => tool.name === 'exec_command');
     if (!execTool) throw new Error('exec_command tool is missing');
     const allowlist = { effect: 'allow' as const, rule: 'allow:exec_command(*)' };
@@ -1020,10 +1085,49 @@ describe('fail-closed permission matrix', () => {
         permission: { behavior: 'ask', reason: 'Command requires confirmation' },
         allowlist,
       })
+    ).toMatchObject({ outcome: 'allow', source: 'allowlist_allow', risk: 'destructive' });
+  });
+
+  test('auto mode fully authorizes destructive and unknown-risk tools without prompting', () => {
+    const unknownTool: OrionCodeTool = buildTool({
+      name: 'unknown_risk',
+      description: 'No risk metadata',
+      parameters: { type: 'object', properties: {}, required: [] },
+      execute: async () => ({ success: true, output: 'ran' }),
+    });
+
+    expect(
+      resolveEffectivePermission({
+        toolName: dangerousTool.name,
+        tool: dangerousTool,
+        args: {},
+        permission: { behavior: 'ask', reason: 'Dangerous operation' },
+        permissionMode: 'auto',
+      })
+    ).toMatchObject({ outcome: 'allow', source: 'mode_auto', risk: 'destructive' });
+    expect(
+      resolveEffectivePermission({
+        toolName: unknownTool.name,
+        tool: unknownTool,
+        args: {},
+        permissionMode: 'auto',
+      })
+    ).toMatchObject({ outcome: 'allow', source: 'mode_auto', risk: 'unknown' });
+  });
+
+  test('auto mode still respects a hard tool-policy denial', () => {
+    expect(
+      resolveEffectivePermission({
+        toolName: 'blocked_tool',
+        tool: dangerousTool,
+        args: {},
+        permission: { behavior: 'deny', reason: 'Catastrophic target is blocked' },
+        permissionMode: 'auto',
+      })
     ).toMatchObject({
-      outcome: 'allow',
-      source: 'allowlist_allow',
-      risk: 'destructive',
+      outcome: 'deny',
+      source: 'tool_policy',
+      reason: 'Catastrophic target is blocked',
     });
   });
 });

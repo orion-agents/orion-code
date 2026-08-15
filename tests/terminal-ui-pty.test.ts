@@ -13,7 +13,7 @@ function findPython(): string | null {
 
 describe('Explicit terminal agent flow PTY smoke', () => {
   const python = findPython();
-  const smokeScript = join(__dirname, '..', 'scripts', 'terminal-ui-pty-smoke.py');
+  const smokeScript = join(__dirname, '..', 'scripts', 'smoke', 'terminal-ui-pty-smoke.py');
   // The smoke script performs a delete that the WorkBuddy safe-delete guard
   // intercepts and refuses in sandboxed environments, so the spawned run exits
   // non-zero there. Skip (reported as not_run) instead of failing — the same
@@ -30,19 +30,23 @@ describe('Explicit terminal agent flow PTY smoke', () => {
       ? it
       : it.skip;
 
-  maybeIt('keeps input stable and verifies context, tool confirmation, and resume', () => {
-    const result = spawnSync(python as string, [smokeScript], {
-      cwd: join(__dirname, '..'),
-      encoding: 'utf8',
-      timeout: 60000,
-      maxBuffer: 1024 * 1024,
-    });
+  maybeIt(
+    'keeps input stable and verifies context, tool confirmation, and resume',
+    () => {
+      const result = spawnSync(python as string, [smokeScript], {
+        cwd: join(__dirname, '..'),
+        encoding: 'utf8',
+        timeout: 60000,
+        maxBuffer: 1024 * 1024,
+      });
 
-    expect({
-      status: result.status,
-      signal: result.signal,
-      stdout: result.stdout,
-      stderr: result.stderr,
-    }).toEqual(expect.objectContaining({ status: 0, signal: null }));
-  }, 65000);
+      expect({
+        status: result.status,
+        signal: result.signal,
+        stdout: result.stdout,
+        stderr: result.stderr,
+      }).toEqual(expect.objectContaining({ status: 0, signal: null }));
+    },
+    65000
+  );
 });

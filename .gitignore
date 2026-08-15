@@ -53,3 +53,9 @@ __pycache__/
 .claude/
 .workbuddy/
 skills-lock.json
+
+# img
+assets/
+
+# Local runtime artifacts
+events.append

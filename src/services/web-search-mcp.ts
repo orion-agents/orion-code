@@ -9,6 +9,13 @@ import type { WebSearchMcpConfig } from './config';
 import { BAILIAN_WEBSEARCH_MCP_ENDPOINT } from './web-search-provider';
 import { MCP_CLIENT_NAME } from '../product/identity';
 import { PACKAGE_VERSION } from '../product/version';
+import {
+  MAX_WEB_SEARCH_RESPONSE_BYTES,
+  ResponseBodyTooLargeError,
+  boundedErrorSnippet,
+  readBoundedResponseText,
+  validateWebSearchLimit,
+} from './bounded-response';
 
 export const DEFAULT_WEBSEARCH_MCP_ENDPOINT = BAILIAN_WEBSEARCH_MCP_ENDPOINT;
 
@@ -228,12 +235,13 @@ export class WebSearchMcpClient {
   }
 
   async search(query: string, limit?: number): Promise<WebSearchMcpSearchResult> {
+    const boundedLimit = validateWebSearchLimit(limit);
     await this.ensureInitialized();
 
     const tool = selectSearchTool(this.tools, this.config.toolName);
     const result = await this.request('tools/call', {
       name: tool.name,
-      arguments: buildSearchArgs(tool, query, limit),
+      arguments: buildSearchArgs(tool, query, boundedLimit),
     });
 
     if (isRecord(result) && result.isError) {
@@ -379,11 +387,25 @@ export class WebSearchMcpClient {
       return [];
     }
 
-    const text = await response.text();
+    let text: string;
+    try {
+      text = await readBoundedResponseText(
+        response,
+        MAX_WEB_SEARCH_RESPONSE_BYTES,
+        'WebSearch MCP'
+      );
+    } catch (error) {
+      if (!(error instanceof ResponseBodyTooLargeError)) throw error;
+      throw new WebSearchMcpError(
+        'WEBSEARCH_MCP_RESPONSE_TOO_LARGE',
+        error instanceof Error ? error.message : String(error),
+        this.config.endpoint
+      );
+    }
     if (!response.ok) {
       throw new WebSearchMcpError(
         'WEBSEARCH_MCP_HTTP_ERROR',
-        `HTTP ${response.status}: ${text || response.statusText}`,
+        `HTTP ${response.status}: ${boundedErrorSnippet(text || response.statusText)}`,
         this.config.endpoint
       );
     }

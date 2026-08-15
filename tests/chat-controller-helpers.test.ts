@@ -36,6 +36,7 @@ describe('chat controller helper contracts (#69)', () => {
   });
 
   it('derives unique in-project checkpoint targets and rejects previews/escapes', () => {
+    const workspace = process.cwd();
     const calls: NonNullable<Message['tool_calls']> = [
       toolCall('write_file', { path: 'src/a.ts' }, '1'),
       toolCall('edit_file', { path: 'src/a.ts', old_string: 'a', new_string: 'b' }, '2'),
@@ -44,7 +45,7 @@ describe('chat controller helper contracts (#69)', () => {
       toolCall('read_file', { path: 'src/read-only.ts' }, '5'),
     ];
 
-    expect(checkpointTargetsFromToolCalls('/repo', calls)).toEqual(['/repo/src/a.ts']);
+    expect(checkpointTargetsFromToolCalls(workspace, calls)).toEqual([join(workspace, 'src/a.ts')]);
   });
 
   it('restores console sinks when a captured command throws', async () => {

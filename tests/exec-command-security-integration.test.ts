@@ -27,7 +27,7 @@ function call(command: string): NonNullable<Message['tool_calls']> {
   ];
 }
 
-async function run(command: string) {
+async function run(command: string, permissionMode = 'default') {
   const executor = jest.fn(async (_name: string, args: Record<string, unknown>) =>
     JSON.stringify(await execTool.execute(args, toolContext))
   );
@@ -36,13 +36,13 @@ async function run(command: string) {
     tools: [execTool],
     toolExecutor: executor,
     toolContext,
-    permissionMode: 'default',
+    permissionMode,
     toolConfirmation: 'deny',
   });
   const results = [];
   for await (const result of executeToolCalls(prepared, {
     toolExecutor: executor,
-    permissionMode: 'default',
+    permissionMode,
     toolConfirmation: 'deny',
   })) {
     results.push(result);
@@ -90,5 +90,50 @@ describe('exec_command end-to-end security gate', () => {
     });
     expect(executor).not.toHaveBeenCalled();
     expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps catastrophic command-policy denials in auto mode', async () => {
+    const { executor, result } = await run('rm -rf / --no-preserve-root', 'auto');
+
+    expect(JSON.parse(result.result)).toMatchObject({
+      success: false,
+      error: expect.stringContaining('root directory'),
+    });
+    expect(result.permissionDecision).toMatchObject({
+      approved: false,
+      source: 'tool_policy',
+    });
+    expect(executor).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('lets auto mode execute a non-catastrophic destructive command without prompting', async () => {
+    const executor = jest.fn(async () => JSON.stringify({ success: true, output: 'ran' }));
+    const confirmToolUse = jest.fn(async () => false);
+    const prepared = prepareToolCalls({
+      toolCalls: call('rm -rf /tmp/orion-auto-permission-fixture/'),
+      tools: [execTool],
+      toolExecutor: executor,
+      toolContext,
+      permissionMode: 'auto',
+      toolConfirmation: 'ask',
+      confirmToolUse,
+    });
+    const results = [];
+    for await (const result of executeToolCalls(prepared, {
+      toolExecutor: executor,
+      permissionMode: 'auto',
+      toolConfirmation: 'ask',
+      confirmToolUse,
+    })) {
+      results.push(result);
+    }
+
+    expect(confirmToolUse).not.toHaveBeenCalled();
+    expect(executor).toHaveBeenCalledTimes(1);
+    expect(results[0].permissionDecision).toMatchObject({
+      approved: true,
+      source: 'mode_auto',
+    });
   });
 });

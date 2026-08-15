@@ -1,7 +1,7 @@
 # Goal Evidence and Recovery
 
-Since v0.1.2, Orion Code supports one persistent Goal per session. The npm `next=0.1.6` line preserves this contract;
-v0.1.6 tightens authorization and exit behavior without changing the additive Goal storage schema. New command or
+Since v0.1.2, Orion Code supports one persistent Goal per session. The v0.1.7 line preserves this contract and
+tightens authorization and exit behavior without changing the additive Goal storage schema. New command or
 ACP clients must reuse the same Goal, evidence, permission, and recovery rules.
 
 ## Lifecycle
@@ -17,10 +17,25 @@ ACP clients must reuse the same Goal, evidence, permission, and recovery rules.
 Use `/goal` to inspect the current state, `/goal pause` to stop automatic continuation, and
 `/goal resume` to continue a recoverable Goal. A passed completion audit automatically clears the
 session's active Goal binding and exits Goal mode while retaining the completed sidecar as a durable
-receipt. `/goal replace <objective>` creates a new goalId;
+receipt. If the user appends a lifecycle clause such as `then exit goal mode` or `然后退出目标模式`,
+the coordinator stores it as `completionAction=exit_goal` and removes it from the auditable objective
+and primary criterion. Existing non-complete sidecars are normalized the same way on restore. The
+runtime, not the model, executes that action only after the completion audit passes.
+`/goal replace <objective>` creates a new goalId;
 `/goal confirm <criterion-id>` records trusted human acceptance only for a criterion that explicitly requires
 `user` evidence; `/goal exit` immediately stops Goal-owned execution and removes the Goal sidecar.
+Explicit exit first conditionally clears the matching session binding and then deletes the sidecar;
+if deletion fails, the binding is restored before the error is reported. A missing session or newer
+binding therefore fails closed without deleting the Goal. If the process dies between those writes,
+restore treats the unfinished sidecar as authoritative, pauses it, and recreates the matching session
+binding with a conditional update. Automatic completion likewise treats a
+missing binding as a recoverable crash window and retains the completion receipt for restore-time reconciliation.
 The old `/goal clear --yes` and `/target clear --yes` forms are intentionally rejected in v0.1.6.
+
+Automatic continuations are bounded independently from fresh user turns. Their budget is resolved
+from configuration only, not promoted by model-authored objective text. Two consecutive blocked,
+no-progress autonomous turns pause for user review; other no-progress turns keep the general
+three-turn threshold.
 
 ## Completion evidence
 

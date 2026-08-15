@@ -168,7 +168,7 @@ describe('read_file tool', () => {
     expect(result.output).toContain('orion-code');
   });
 
-  test('reads markdown link paths outside the project', async () => {
+  test('rejects markdown link paths outside the project', async () => {
     const dir = fs.mkdtempSync(path.join(tmpdir(), 'orion-code-tool-path-'));
     const file = path.join(dir, 'SKILL.md');
     fs.writeFileSync(file, 'skill body', 'utf-8');
@@ -176,8 +176,8 @@ describe('read_file tool', () => {
     try {
       const result = await tool.execute({ path: `[$imagegen](${file})` }, ctx);
 
-      expect(result.success).toBe(true);
-      expect(result.output).toBe('skill body');
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('outside the workspace');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -189,12 +189,42 @@ describe('read_file tool', () => {
     fs.writeFileSync(file, 'url body', 'utf-8');
 
     try {
-      const result = await tool.execute({ path: `file://${encodeURI(file)}` }, ctx);
+      const result = await tool.execute(
+        { path: `file://${encodeURI(file)}` },
+        { ...ctx, cwd: dir }
+      );
 
       expect(result.success).toBe(true);
       expect(result.output).toBe('url body');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('refuses a workspace symlink that resolves to an outside file', async () => {
+    const workspace = fs.mkdtempSync(path.join(tmpdir(), 'orion-read-workspace-'));
+    const outside = fs.mkdtempSync(path.join(tmpdir(), 'orion-read-outside-'));
+    const outsideFile = path.join(outside, 'secret.txt');
+    const link = path.join(workspace, 'secret-link.txt');
+    fs.writeFileSync(outsideFile, 'must-not-read', 'utf-8');
+    fs.symlinkSync(outsideFile, link);
+
+    try {
+      const result = await tool.execute({ path: link }, { ...ctx, cwd: workspace });
+      const traversal = await tool.execute(
+        { path: path.relative(workspace, outsideFile) },
+        { ...ctx, cwd: workspace }
+      );
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('outside the workspace');
+      expect(result.output).not.toContain('must-not-read');
+      expect(traversal).toMatchObject({
+        success: false,
+        error: expect.stringContaining('outside the workspace'),
+      });
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
     }
   });
 
@@ -305,6 +335,18 @@ describe('write_file / edit_file path containment (issue #65)', () => {
     expect(fs.readFileSync(target, 'utf-8')).toBe('x');
   });
 
+  test('write_file creates missing nested directories inside the workspace', async () => {
+    const target = path.join(wsRoot, '.tool-test', 'nested', 'ok.txt');
+
+    const result = await writeTool.execute(
+      { path: '.tool-test/nested/ok.txt', content: 'created' },
+      wsCtx
+    );
+
+    expect(result.success).toBe(true);
+    expect(fs.readFileSync(target, 'utf-8')).toBe('created');
+  });
+
   test('edit_file refuses editing outside the workspace', async () => {
     const inside = path.join(wsRoot, 'editable.txt');
     fs.writeFileSync(inside, 'old', 'utf-8');
@@ -387,17 +429,45 @@ describe('list_files tool', () => {
     expect(result.output).toContain('cli.ts');
   });
 
-  test('lists markdown link paths outside the project', async () => {
+  test('rejects markdown link directories outside the project', async () => {
     const dir = fs.mkdtempSync(path.join(tmpdir(), 'orion-code-tool-list-'));
     fs.writeFileSync(path.join(dir, 'item.txt'), 'listed', 'utf-8');
 
     try {
       const result = await tool.execute({ path: `[fixture](${dir})`, maxDepth: 1 }, ctx);
 
-      expect(result.success).toBe(true);
-      expect(result.output).toContain('item.txt');
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('outside the workspace');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('refuses an in-workspace directory symlink that resolves outside', async () => {
+    const workspace = fs.mkdtempSync(path.join(tmpdir(), 'orion-list-workspace-'));
+    const outside = fs.mkdtempSync(path.join(tmpdir(), 'orion-list-outside-'));
+    fs.writeFileSync(path.join(outside, 'secret.txt'), 'must-not-list', 'utf-8');
+    fs.symlinkSync(outside, path.join(workspace, 'escape'));
+
+    try {
+      const result = await tool.execute(
+        { path: path.join(workspace, 'escape') },
+        { ...ctx, cwd: workspace }
+      );
+      const traversal = await tool.execute(
+        { path: path.relative(workspace, outside) },
+        { ...ctx, cwd: workspace }
+      );
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('outside the workspace');
+      expect(result.output).not.toContain('secret.txt');
+      expect(traversal).toMatchObject({
+        success: false,
+        error: expect.stringContaining('outside the workspace'),
+      });
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
     }
   });
 
@@ -747,11 +817,14 @@ describe('batch_read tool', () => {
     fs.writeFileSync(path.join(dir, 'note.txt'), 'needle in batch', 'utf-8');
 
     try {
-      const { outer, inner } = await runBatchRead([
-        { tool: 'list_files', args: { path: dir, maxDepth: 1 } },
-        { tool: 'read_file', args: { path: path.join(dir, 'note.txt') } },
-        { tool: 'grep', args: { pattern: 'needle', path: dir } },
-      ]);
+      const { outer, inner } = await runBatchRead(
+        [
+          { tool: 'list_files', args: { path: dir, maxDepth: 1 } },
+          { tool: 'read_file', args: { path: path.join(dir, 'note.txt') } },
+          { tool: 'grep', args: { pattern: 'needle', path: dir } },
+        ],
+        { ...ctx, cwd: dir }
+      );
 
       expect(outer.success).toBe(true);
       expect(inner.success).toBe(true);
@@ -798,6 +871,7 @@ describe('batch_read tool', () => {
       const confirmToolUse = jest.fn(async () => approved);
       const context = {
         ...ctx,
+        cwd: dir,
         toolConfirmation: 'ask',
         toolAllowlist: () => ({ effect: 'ask' as const, rule: 'ask:read_file(*.env)' }),
         confirmToolUse,
@@ -859,7 +933,10 @@ describe('batch_read tool', () => {
     fs.writeFileSync(file, 'a'.repeat(5000), 'utf-8');
 
     try {
-      const { inner } = await runBatchRead([{ tool: 'read_file', args: { path: file } }]);
+      const { inner } = await runBatchRead([{ tool: 'read_file', args: { path: file } }], {
+        ...ctx,
+        cwd: dir,
+      });
 
       expect(inner.success).toBe(true);
       expect(inner.steps[0].output.length).toBeLessThan(2500);
@@ -1127,6 +1204,38 @@ describe('glob tool', () => {
     }
   });
 
+  test('rejects absolute and symlinked search roots outside ToolContext.cwd', async () => {
+    const workspace = fs.mkdtempSync(path.join(tmpdir(), 'orion-glob-workspace-'));
+    const outside = fs.mkdtempSync(path.join(tmpdir(), 'orion-glob-outside-'));
+    fs.writeFileSync(path.join(outside, 'secret.ts'), 'export const secret = true;', 'utf-8');
+    fs.symlinkSync(outside, path.join(workspace, 'escape'));
+    const context = { ...ctx, cwd: workspace };
+
+    try {
+      const absolute = await tool.execute({ pattern: '**/*.ts', path: outside }, context);
+      const symlink = await tool.execute({ pattern: '**/*.ts', path: 'escape' }, context);
+      const traversal = await tool.execute(
+        { pattern: '**/*.ts', path: path.relative(workspace, outside) },
+        context
+      );
+      expect(absolute).toMatchObject({
+        success: false,
+        error: expect.stringContaining('outside the workspace'),
+      });
+      expect(symlink).toMatchObject({
+        success: false,
+        error: expect.stringContaining('outside the workspace'),
+      });
+      expect(traversal).toMatchObject({
+        success: false,
+        error: expect.stringContaining('outside the workspace'),
+      });
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
   test('returns message when no matches', async () => {
     const result = await tool.execute({ pattern: '*.xyz', path: 'src' }, ctx);
     expect(result.success).toBe(true);
@@ -1180,6 +1289,38 @@ describe('grep tool', () => {
     }
   });
 
+  test('rejects absolute and symlinked search roots outside ToolContext.cwd', async () => {
+    const workspace = fs.mkdtempSync(path.join(tmpdir(), 'orion-grep-workspace-'));
+    const outside = fs.mkdtempSync(path.join(tmpdir(), 'orion-grep-outside-'));
+    fs.writeFileSync(path.join(outside, 'secret.txt'), 'needle must not leak', 'utf-8');
+    fs.symlinkSync(outside, path.join(workspace, 'escape'));
+    const context = { ...ctx, cwd: workspace };
+
+    try {
+      const absolute = await tool.execute({ pattern: 'needle', path: outside }, context);
+      const symlink = await tool.execute({ pattern: 'needle', path: 'escape' }, context);
+      const traversal = await tool.execute(
+        { pattern: 'needle', path: path.relative(workspace, outside) },
+        context
+      );
+      expect(absolute).toMatchObject({
+        success: false,
+        error: expect.stringContaining('outside the workspace'),
+      });
+      expect(symlink).toMatchObject({
+        success: false,
+        error: expect.stringContaining('outside the workspace'),
+      });
+      expect(traversal).toMatchObject({
+        success: false,
+        error: expect.stringContaining('outside the workspace'),
+      });
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
   test('returns message when no matches', async () => {
     const result = await tool.execute({ pattern: 'notfoundpattern', path: 'src' }, ctx);
     expect(result.success).toBe(true);
@@ -1192,7 +1333,7 @@ describe('grep tool', () => {
     fs.writeFileSync(path.join(grepDir, 'a.txt'), 'needle\nneedle\n', 'utf-8');
     fs.writeFileSync(path.join(grepDir, 'b.md'), 'needle\n', 'utf-8');
 
-    const result = await tool.execute({ pattern: 'needle', path: grepDir, glob: '*.txt' }, ctx);
+    const result = await tool.execute({ pattern: 'needle', path: grepDir, glob: '*.txt' }, fileCtx);
 
     expect(result.success).toBe(true);
     expect(result.output.match(/a\.txt:/g)).toHaveLength(2);

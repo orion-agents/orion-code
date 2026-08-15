@@ -2,8 +2,13 @@ import { findCommand } from '../src/commands';
 import type { CommandContext } from '../src/commands/types';
 import { buildSystemPrompt } from '../src/framework/prompt';
 import { Store } from '../src/framework/store';
+import type { ToolContext } from '../src/framework/tool';
 import { getToolState, resetToolState } from '../src/framework/tool-state';
-import { resolveEffectivePermission } from '../src/framework/tool-scheduler';
+import {
+  executeToolCalls,
+  prepareToolCalls,
+  resolveEffectivePermission,
+} from '../src/framework/tool-scheduler';
 import { loadConfig } from '../src/services/config';
 import { TOOLS } from '../src/tools';
 
@@ -91,6 +96,72 @@ describe('/plan lifecycle', () => {
       currentPlan: 'Upgrade plan',
     });
     expect(getToolState().planMode).toBe(false);
+  });
+
+  it('executes exit_plan_mode through the plan scheduler without a permission prompt', async () => {
+    const ctx = context();
+    await findCommand('plan')!.execute(ctx, 'plan a safe change');
+    const exitPlan = TOOLS.find(tool => tool.name === 'exit_plan_mode')!;
+    const confirmToolUse = jest.fn(async () => false);
+    const toolContext: ToolContext = {
+      cwd: ctx.cwd,
+      config: { name: 'test', mode: 'test' },
+      onPlanModeChange: (transition: {
+        active: boolean;
+        currentPlan: string | null;
+        returnMode: 'interactive' | 'auto';
+      }) => {
+        ctx.store.setState({
+          agentMode: transition.active ? 'plan' : transition.returnMode,
+          planMode: transition.active,
+          currentPlan: transition.currentPlan,
+        });
+        return transition.returnMode;
+      },
+    };
+    const toolExecutor = async (name: string, args: Record<string, unknown>) =>
+      JSON.stringify(await exitPlan.execute(args, toolContext));
+    const calls = [
+      {
+        id: 'exit-plan-1',
+        type: 'function' as const,
+        function: {
+          name: exitPlan.name,
+          arguments: JSON.stringify({ plan: 'Safe implementation plan' }),
+        },
+      },
+    ];
+    const prepared = prepareToolCalls({
+      toolCalls: calls,
+      tools: [exitPlan],
+      toolExecutor,
+      toolContext,
+      permissionMode: 'plan',
+      toolConfirmation: 'deny',
+      confirmToolUse,
+    });
+    const results = [];
+
+    for await (const result of executeToolCalls(prepared, {
+      toolExecutor,
+      permissionMode: 'plan',
+      toolConfirmation: 'deny',
+      confirmToolUse,
+    })) {
+      results.push(result);
+    }
+
+    expect(confirmToolUse).not.toHaveBeenCalled();
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ success: true });
+    expect(JSON.parse(results[0].result)).toMatchObject({
+      output: expect.stringContaining('execution will start in BUILD'),
+    });
+    expect(ctx.store.getSnapshot()).toMatchObject({
+      agentMode: 'interactive',
+      planMode: false,
+      currentPlan: 'Safe implementation plan',
+    });
   });
 
   it('injects the automatic, non-executing completion contract only in plan mode', () => {

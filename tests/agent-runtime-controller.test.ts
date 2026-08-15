@@ -22,6 +22,7 @@ import {
 import {
   appendSessionMessage,
   appendSessionMessages,
+  clearSessionGoalBinding,
   createSession,
   loadSessionCompactCheckpoint,
   loadSessionHistory,
@@ -1627,8 +1628,8 @@ describe('AgentRuntimeController', () => {
         entry => entry.role === 'status' && entry.title === 'budget'
       );
       expect(budgetNotice).toBeDefined();
-      expect(budgetNotice?.content).toContain('Loop budget reached');
-      expect(budgetNotice?.content).toContain('Progress:');
+      expect(budgetNotice?.content).toContain('Turn paused:');
+      expect(budgetNotice?.content).toContain('Stopped after: read_file');
       expect(budgetNotice?.content).toContain('Next:');
     });
   });
@@ -5321,6 +5322,9 @@ describe('AgentRuntimeController', () => {
       const traceSerialized = JSON.stringify(persistedTrace);
       expect(traceSerialized).not.toContain('sk-secret123');
       expect(traceSerialized).not.toContain('sk-ant-secret456');
+      expect(persistedTrace.find(event => event.type === 'complete')?.lastToolSummary).toContain(
+        '[REDACTED_SECRET]'
+      );
 
       // Verify artifact indexes do not store the raw secret
       const artifacts = listArtifacts(projectDir);
@@ -5904,6 +5908,7 @@ describe('AgentRuntimeController', () => {
       const coordinator = new GoalCoordinator(projectDir, session.id);
       expect(coordinator.create('Goal that the user can exit')).toEqual({ ok: true });
       const goalId = coordinator.goal!.goalId;
+      updateSessionGoalBinding(session.id, coordinator.goal);
       controller.setGoalCoordinator(coordinator);
 
       expect(controller.submit('continue goal work')).toEqual({ type: 'started' });
@@ -5912,6 +5917,8 @@ describe('AgentRuntimeController', () => {
 
       expect(runner.calls[0].signal?.aborted).toBe(true);
       expect(coordinator.goal).toBeNull();
+      expect(loadSessionMeta(session.id)?.activeGoalId).toBeUndefined();
+      expect(goalStorage.loadGoal(projectDir, session.id)).toMatchObject({ error: 'not_found' });
       expect(appended).toEqual(
         expect.arrayContaining([expect.objectContaining({ role: 'user', content: '退出goal模式' })])
       );
@@ -5921,6 +5928,49 @@ describe('AgentRuntimeController', () => {
 
       runner.calls[0].resolve();
       await controller.waitForIdle();
+    });
+  });
+
+  it('fails closed without deleting the sidecar when explicit exit cannot clear the session binding', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      mkdirSync(projectDir, { recursive: true });
+      const session = createSession(projectDir, 'test-model');
+      const runtime = createRuntime({
+        cwd: projectDir,
+        ensureSession: jest.fn(() => session),
+        getSession: jest.fn(() => session),
+      });
+      const runner = createDeferredRunner();
+      const { events, goalEvents } = createEvents();
+      const controller = new AgentRuntimeController({ runtime, events, runner });
+      const coordinator = new GoalCoordinator(projectDir, session.id);
+      expect(coordinator.create('Keep Goal durable on binding failure')).toEqual({ ok: true });
+      updateSessionGoalBinding(session.id, coordinator.goal);
+      const goalId = coordinator.goal!.goalId;
+      controller.setGoalCoordinator(coordinator);
+      const clearSpy = jest
+        .spyOn(require('../src/services/session-storage'), 'clearSessionGoalBinding')
+        .mockReturnValue(null);
+
+      try {
+        expect(controller.submit('/goal exit')).toEqual({ type: 'command_handled' });
+      } finally {
+        clearSpy.mockRestore();
+      }
+
+      expect(coordinator.goal).toMatchObject({
+        goalId,
+        status: 'paused',
+        stopReason: { kind: 'runtime_error', message: expect.stringContaining('was not found') },
+      });
+      expect(goalStorage.loadGoal(projectDir, session.id)).toMatchObject({
+        ok: true,
+        value: expect.objectContaining({ goalId }),
+      });
+      expect(loadSessionMeta(session.id)?.activeGoalId).toBe(goalId);
+      expect(goalEvents).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ type: 'goal_cleared', goalId })])
+      );
     });
   });
 
@@ -5979,6 +6029,57 @@ describe('AgentRuntimeController', () => {
         },
       });
       expect(goalEvents).toHaveLength(3);
+    });
+  });
+
+  it('restores an unfinished Goal binding after a crash between explicit-exit persistence steps', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      mkdirSync(projectDir, { recursive: true });
+      const session = createSession(projectDir, 'test-model');
+      const coordinator = new GoalCoordinator(projectDir, session.id);
+      expect(coordinator.create('Recover interrupted explicit Goal exit')).toEqual({ ok: true });
+      updateSessionGoalBinding(session.id, coordinator.goal);
+      const goalId = coordinator.goal!.goalId;
+
+      // Simulate a process dying after clearSessionGoalBinding() committed but
+      // before the matching sidecar delete. The durable sidecar must win.
+      expect(clearSessionGoalBinding(session.id, goalId)?.activeGoalId).toBeUndefined();
+      expect(goalStorage.loadGoal(projectDir, session.id)).toMatchObject({
+        ok: true,
+        value: expect.objectContaining({ goalId, status: 'active' }),
+      });
+
+      const runtime = createRuntime({
+        cwd: projectDir,
+        ensureSession: jest.fn(() => session),
+        getSession: jest.fn(() => session),
+      });
+      const { events, goalEvents } = createEvents();
+      const controller = new AgentRuntimeController({
+        runtime,
+        events,
+        runner: createDeferredRunner(),
+      });
+      const controllerSink = (controller as unknown as { eventSink: AgentRuntimeEventSink })
+        .eventSink;
+
+      controllerSink.emit({
+        type: 'session_restored',
+        event: {
+          sessionId: session.id,
+          projectPath: projectDir,
+          model: 'test-model',
+          restoredMessages: 0,
+        },
+      });
+
+      expect(loadSessionMeta(session.id)?.activeGoalId).toBe(goalId);
+      expect(goalEvents).toEqual([
+        expect.objectContaining({
+          type: 'goal_restored',
+          goal: expect.objectContaining({ goalId, status: 'paused' }),
+        }),
+      ]);
     });
   });
 

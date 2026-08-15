@@ -126,20 +126,19 @@ jobs:
       - name: Dependency policy
         run: npm run deps:check -- --policy-only
 
-      - name: Build (npm pack --dry-run needs dist/)
+      - name: Build (exact npm package artifact needs dist/)
         run: npm run build
 
       - name: release:check
         run: npm run release:check -- --skip-tests
 
   dep-health:
-    # Offline reporting dimension for native ABI and dependency-tree health.
+    # Blocking offline verification for native ABI and dependency-tree health.
     # Registry-backed audit is the blocking security-audit job above; optional
     # outdated reporting requires an explicit local --full-network run (#155).
     name: Dependency health report (offline)
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    continue-on-error: true
     steps:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -154,4 +153,4 @@ jobs:
         run: npm ci
 
       - name: dep-health-check
-        run: bash scripts/dep-health-check.sh
+        run: bash scripts/release/dep-health-check.sh

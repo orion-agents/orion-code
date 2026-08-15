@@ -69,13 +69,18 @@ import {
 import type { OrionCodeUiRuntime, UiEventSink, UiRendererCapabilities } from './ui-events';
 import { resolveUiRendererCapabilities } from './ui-events';
 import {
+  budgetStopLocaleForInput,
+  createLoopBudgetStopView,
+  formatLoopBudgetStopView,
+} from './ui-view-model';
+import {
   agentStepStatus,
   batchingSuggestion,
   runningToolsStatus,
   verifyingStatus,
   verificationGateStatus,
 } from './agent-status';
-import { capAutonomousGoalLoopBudget, resolveRuntimeLoopBudget } from './loop-budget';
+import { resolveAutonomousGoalLoopBudget, resolveRuntimeLoopBudget } from './loop-budget';
 import { setDiagnosticTraceContext } from '../utils/observability';
 import {
   appendAssistantNotice,
@@ -121,6 +126,7 @@ import {
 } from './chat-presentation';
 import { applySessionEffort } from './chat-effort';
 import { createPlanModeChangeHandler } from '../framework/agent-mode';
+import { rejectUnsupportedRenderer } from './chat-command-scope';
 
 export {
   createAssistantStreamPresenter,
@@ -222,22 +228,6 @@ export class AgentChatController {
       return;
     }
 
-    if (parsed.name === 'clear') {
-      if (this.events.clearView) {
-        this.events.clearView();
-      } else {
-        this.events.clearTranscript();
-      }
-      this.events.setStatus('View cleared. Conversation context is preserved.');
-      return;
-    }
-
-    if (parsed.name === 'exit' || parsed.name === 'quit' || parsed.name === 'q') {
-      this.events.shutdownRequested?.('user request');
-      await this.runtime.shutdown();
-      return;
-    }
-
     const command = findCommand(parsed.name);
     if (!command) {
       if (hasMatchingSkill(text, this.runtime.cwd)) {
@@ -255,6 +245,26 @@ export class AgentChatController {
             : `Unknown command: /${parsed.name}`,
         errorLayer: 'runtime',
       });
+      return;
+    }
+
+    const activeRenderer =
+      this.controllerOptions.uiRenderer ?? this.runtime.config.ui?.renderer ?? 'terminal';
+    if (rejectUnsupportedRenderer(this.events, command, activeRenderer)) return;
+
+    if (parsed.name === 'clear') {
+      if (this.events.clearView) {
+        this.events.clearView();
+      } else {
+        this.events.clearTranscript();
+      }
+      this.events.setStatus('View cleared. Conversation context is preserved.');
+      return;
+    }
+
+    if (parsed.name === 'exit' || parsed.name === 'quit' || parsed.name === 'q') {
+      this.events.shutdownRequested?.('user request');
+      await this.runtime.shutdown();
       return;
     }
 
@@ -647,10 +657,6 @@ export class AgentChatController {
           content: assistantContent,
           timestamp: Date.now(),
         });
-        const recordedMessages = readSessionMessages(sessionId);
-        if (recordedMessages.length > 0) {
-          updateSessionSummary(sessionId, recordedMessages);
-        }
       }
 
       this.events.setStatus(
@@ -1172,15 +1178,10 @@ export class AgentChatController {
       });
     };
 
-    const resolvedLoopBudget = resolveRuntimeLoopBudget(
-      input,
-      this.runtime.config,
-      harness.toJSON()
-    );
     const loopBudget =
       options.inputKind === 'goal_continuation'
-        ? capAutonomousGoalLoopBudget(resolvedLoopBudget)
-        : resolvedLoopBudget;
+        ? resolveAutonomousGoalLoopBudget(this.runtime.config)
+        : resolveRuntimeLoopBudget(input, this.runtime.config, harness.toJSON());
     let observedTurnsStarted = 0;
     let observedLlmRequests = 0;
     let observedToolCalls = 0;
@@ -1375,6 +1376,7 @@ export class AgentChatController {
             }
             break;
           case 'permission_decision':
+            toolEvents.permission(event);
             if (sessionId) {
               recordTraceEvent(this.events, sessionId, {
                 turnId,
@@ -1514,6 +1516,9 @@ export class AgentChatController {
                 budgetExceededReason: event.stats.budgetExceededReason,
                 continuationActions: event.stats.continuationActions,
                 continuationHint: event.stats.continuationHint,
+                lastToolName: event.stats.lastToolName,
+                lastToolSummary: event.stats.lastToolSummary,
+                lastToolSuccess: event.stats.lastToolSuccess,
                 localFastPathUsed: event.stats.localFastPathUsed,
               };
             } else {
@@ -1641,36 +1646,20 @@ export class AgentChatController {
 
       if (pendingCompleteStats?.finishReason === 'budget_exceeded') {
         const stats = pendingCompleteStats;
-        const lines: string[] = ['Loop budget reached — stopping this turn.'];
-        if (stats.budgetExceededReason) {
-          lines.push(`Reason: ${stats.budgetExceededReason}`);
-        }
-        const progressParts: string[] = [];
-        if (typeof stats.loopBudgetMaxLlmRequests === 'number') {
-          progressParts.push(
-            `${stats.llmRequests ?? 0}/${stats.loopBudgetMaxLlmRequests} LLM requests`
-          );
-        }
-        if (typeof stats.loopBudgetMaxToolCalls === 'number') {
-          progressParts.push(`${stats.toolCalls ?? 0}/${stats.loopBudgetMaxToolCalls} tool calls`);
-        }
-        if (progressParts.length) {
-          lines.push(`Progress: ${progressParts.join(', ')}`);
-        }
-        if (stats.continuationActions?.length) {
-          lines.push(`Next: ${stats.continuationActions.join('; ')}`);
-        } else if (stats.continuationHint) {
-          lines.push(`Next: ${stats.continuationHint}`);
-        }
-        const notice = lines.join('\n');
+        const budgetStop = createLoopBudgetStopView(stats);
+        const notice = formatLoopBudgetStopView(budgetStop, budgetStopLocaleForInput(input));
         this.events.append({
           role: 'status',
           title: 'budget',
           statusTone: 'warning',
           content: notice,
+          budgetStop,
         });
         finalContent = finalContent ? `${finalContent}\n\n${notice}` : notice;
         appendAssistantNotice(sessionMessagesToRecord, notice);
+        if (pendingCompleteTrace) {
+          pendingCompleteTrace.contentBytes = byteLength(finalContent);
+        }
       }
 
       if (pendingCompleteStats) {
@@ -1772,10 +1761,6 @@ export class AgentChatController {
         }
         updateSessionSkills(sessionId, appliedSkillNames);
         updateSessionHarnessState(sessionId, harnessState);
-        const recordedMessages = readSessionMessages(sessionId);
-        if (recordedMessages.length > 0) {
-          updateSessionSummary(sessionId, recordedMessages);
-        }
       }
       this.events.setStatus(finalModel ? `Completed with ${finalModel}` : 'Completed');
     } catch (error: unknown) {

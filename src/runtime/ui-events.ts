@@ -1,6 +1,6 @@
 import type { OrionCodeRuntime } from '../init';
 import type { Store } from '../framework/store';
-import type { LoopStats } from '../framework';
+import type { LoopContinuationAction, LoopStats } from '../framework';
 import type { LLMService } from '../services/llm';
 import type { CompactCoordinator } from '../services/compact';
 import type { OrionCodeCLIConfig } from '../services/config';
@@ -75,8 +75,17 @@ export interface StructuredToolActivity {
   artifactHint?: string;
   callId?: string;
   turnId?: string;
+  /** Auditable authorization decision applied before this invocation ran. */
+  authorization?: ToolAuthorizationView;
   /** v0.2.23: Renderer-neutral tool output view for adaptive collapse. */
   outputView?: import('./tool-output-presentation').ToolOutputView;
+}
+
+export interface ToolAuthorizationView {
+  approved: boolean;
+  source: import('../framework/tool-scheduler').PermissionDecisionSource;
+  behavior?: import('../framework/tool').PermissionResult['behavior'];
+  reason?: string;
 }
 
 export interface TranscriptEntry {
@@ -86,6 +95,8 @@ export interface TranscriptEntry {
   title?: string;
   errorLayer?: ErrorLayer;
   statusTone?: 'neutral' | 'warning';
+  /** Actionable, renderer-neutral projection for an agent-loop budget stop. */
+  budgetStop?: LoopBudgetStopView;
   /** Structured tool activity — set by tool event presenter so renderers
    *  consume typed data instead of parsing transcript text. */
   toolActivity?: StructuredToolActivity;
@@ -96,6 +107,23 @@ export interface TranscriptEntry {
     source: import('../commands/types').CommandSource;
     success: boolean;
   };
+}
+
+export interface LoopBudgetStopView {
+  schemaVersion: 1;
+  kind: 'llm_request_limit' | 'tool_call_limit' | 'provider_preflight_limit' | 'other';
+  reason: string;
+  recoverable: true;
+  statePreserved: true;
+  source?: LoopStats['loopBudgetSource'];
+  llmRequests: { current: number; maximum?: number };
+  toolCalls: { current: number; maximum?: number };
+  stopPoint?: {
+    tool: string;
+    summary?: string;
+    success?: boolean;
+  };
+  actions: LoopContinuationAction[];
 }
 
 export interface TranscriptAppendEntry extends Omit<TranscriptEntry, 'id'> {
@@ -235,6 +263,8 @@ export interface RuntimeToolFinishedEvent {
   artifactRef?: { id: string; outputBytes: number };
   /** Runtime-produced external assertion; never inferred from display text. */
   externalAssertion?: ToolExternalAssertion;
+  /** Authorization provenance carried to every renderer and protocol consumer. */
+  authorization?: ToolAuthorizationView;
   /** Monotonic tool invocation sequence across the session (1-based). */
   sequence: number;
   batchCount?: number;

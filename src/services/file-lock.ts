@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import {
   closeSync,
   existsSync,
+  linkSync,
   openSync,
   readFileSync,
   renameSync,
@@ -20,6 +21,16 @@ interface LockOwner {
   token: string;
   pid: number;
   createdAt: number;
+}
+
+interface StaleRecoveryOptions {
+  /**
+   * Legacy recovery sentinels could be published before their owner metadata
+   * was written. New locks are atomically published, so an old unreadable
+   * sentinel may be quarantined after the normal stale grace. Main locks must
+   * keep failing closed because their ownership cannot be inferred safely.
+   */
+  quarantineUnreadable?: boolean;
 }
 
 function sleepSync(ms: number): void {
@@ -53,7 +64,11 @@ function processIsAlive(pid: number): boolean {
   }
 }
 
-function recoverStaleLock(lockPath: string, staleMs: number): boolean {
+function recoverStaleLock(
+  lockPath: string,
+  staleMs: number,
+  options: StaleRecoveryOptions = {}
+): boolean {
   let firstStat;
   try {
     firstStat = statSync(lockPath);
@@ -61,9 +76,20 @@ function recoverStaleLock(lockPath: string, staleMs: number): boolean {
     return true;
   }
   const firstOwner = readOwner(lockPath);
-  const lastActivity = Math.max(firstStat.mtimeMs, firstOwner?.createdAt ?? 0);
-  if (Date.now() - lastActivity <= staleMs || (firstOwner && processIsAlive(firstOwner.pid))) {
-    return false;
+  if (firstOwner) {
+    const lastActivity = Math.max(firstStat.mtimeMs, firstOwner.createdAt);
+    if (Date.now() - lastActivity <= staleMs || processIsAlive(firstOwner.pid)) {
+      return false;
+    }
+  } else {
+    // An unreadable main lock is never safe to reclaim automatically. The
+    // recovery sentinel is different: createLock() now publishes complete
+    // metadata atomically, so only legacy/crashed writers can leave this
+    // state. Preserve a fresh sentinel in case an older Orion is still in its
+    // open-then-write window, and quarantine it only after the stale grace.
+    if (!options.quarantineUnreadable || Date.now() - firstStat.mtimeMs <= staleMs) {
+      return false;
+    }
   }
 
   let currentStat;
@@ -74,47 +100,69 @@ function recoverStaleLock(lockPath: string, staleMs: number): boolean {
   }
   const currentOwner = readOwner(lockPath);
   if (
+    currentStat.dev !== firstStat.dev ||
     currentStat.ino !== firstStat.ino ||
     currentStat.mtimeMs !== firstStat.mtimeMs ||
-    currentOwner?.token !== firstOwner?.token
+    currentStat.ctimeMs !== firstStat.ctimeMs ||
+    currentStat.size !== firstStat.size ||
+    (firstOwner ? !currentOwner || currentOwner.token !== firstOwner.token : currentOwner !== null)
   ) {
     return false;
   }
 
-  const stalePath = `${lockPath}.stale-${randomUUID().slice(0, 8)}`;
+  const stalePath = firstOwner
+    ? `${lockPath}.stale-${randomUUID().slice(0, 8)}`
+    : `${lockPath}.quarantine-${Date.now()}-${randomUUID().slice(0, 8)}`;
   try {
     renameSync(lockPath, stalePath);
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === 'ENOENT';
   }
-  try {
-    unlinkSync(stalePath);
-  } catch (error) {
-    debugError('file-lock.cleanupStale', error, stalePath);
+  // Keep malformed legacy bytes for audit/recovery. A normal stale lock has a
+  // validated dead owner and can be removed after the atomic rename.
+  if (firstOwner) {
+    try {
+      unlinkSync(stalePath);
+    } catch (error) {
+      debugError('file-lock.cleanupStale', error, stalePath);
+    }
   }
   return true;
 }
 
 function createLock(lockPath: string): LockOwner | null {
   const owner: LockOwner = { token: randomUUID(), pid: process.pid, createdAt: Date.now() };
+  const candidatePath = `${lockPath}.candidate-${owner.token}`;
+  let candidateCreated = false;
   try {
-    const fd = openSync(lockPath, 'wx', 0o600);
+    // Publish the lock only after its owner record is complete. linkSync is an
+    // atomic no-replace operation: contenders see either no lock or a fully
+    // initialized lock, never the zero-byte open('wx') crash window.
+    const fd = openSync(candidatePath, 'wx', 0o600);
+    candidateCreated = true;
     try {
       writeFileSync(fd, JSON.stringify(owner));
-    } catch (error) {
-      try {
-        unlinkSync(lockPath);
-      } catch (cleanupError) {
-        debugError('file-lock.initializeCleanup', cleanupError, lockPath);
-      }
-      throw error;
     } finally {
       closeSync(fd);
     }
+
+    try {
+      linkSync(candidatePath, lockPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') return null;
+      throw error;
+    }
     return owner;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return null;
-    throw error;
+  } finally {
+    if (candidateCreated) {
+      try {
+        unlinkSync(candidatePath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          debugError('file-lock.candidateCleanup', error, candidatePath);
+        }
+      }
+    }
   }
 }
 
@@ -143,7 +191,7 @@ function acquirePrimitiveLock(
     const owner = createLock(lockPath);
     if (owner) return owner;
 
-    if (recoverStaleLock(lockPath, options.staleMs)) continue;
+    if (recoverStaleLock(lockPath, options.staleMs, { quarantineUnreadable: true })) continue;
     if (Date.now() >= deadline) throw new Error(`Timed out waiting for file lock ${lockPath}`);
     sleepSync(options.retryMs);
   }

@@ -141,14 +141,15 @@ function recoverStaleLock(lockPath: string): boolean {
   }
 
   const firstOwner = readLockOwner(lockPath);
-  const lastActivity = Math.max(stat.mtimeMs, firstOwner?.createdAt ?? 0);
+  if (!firstOwner) return false;
+  const lastActivity = Math.max(stat.mtimeMs, firstOwner.createdAt);
   if (Date.now() - lastActivity <= GOAL_LOCK_STALE_MS) return false;
-  if (firstOwner && processIsAlive(firstOwner.pid)) return false;
+  if (processIsAlive(firstOwner.pid)) return false;
 
   // Re-read the token immediately before rename. If ownership changed while we
   // inspected it, leave the replacement lock alone and retry normally.
   const currentOwner = readLockOwner(lockPath);
-  if (firstOwner?.token !== currentOwner?.token) return false;
+  if (!currentOwner || firstOwner.token !== currentOwner.token) return false;
 
   const stalePath = `${lockPath}.stale-${randomUUID().slice(0, 8)}`;
   try {
@@ -434,6 +435,7 @@ function isGoalContract(value: unknown): boolean {
   if (
     !isNonEmptyString(value.originalObjective) ||
     !isNonNegativeInteger(value.objectiveRevision) ||
+    (value.completionAction !== undefined && value.completionAction !== 'exit_goal') ||
     !Array.isArray(value.constraints) ||
     !value.constraints.every(
       constraint =>
@@ -1294,7 +1296,8 @@ export function saveGoal(
 export function deleteGoal(
   projectPath: string,
   sessionId: string,
-  expectedRevision?: number
+  expectedRevision?: number,
+  expectedGoalId?: string
 ): GoalStorageResult {
   const path = goalSidecarPath(projectPath, sessionId);
   try {
@@ -1316,6 +1319,13 @@ export function deleteGoal(
           ok: false,
           error: 'revision_stale',
           message: `Expected revision ${expectedRevision}, got ${existing.value.revision}`,
+        };
+      }
+      if (expectedGoalId !== undefined && existing.value.goalId !== expectedGoalId) {
+        return {
+          ok: false,
+          error: 'revision_stale',
+          message: `Expected Goal ${expectedGoalId}, got ${existing.value.goalId} at revision ${expectedRevision}`,
         };
       }
     } else if (!existsSync(path)) {

@@ -6,6 +6,7 @@
 
 import chalk from 'chalk';
 import { findCommand, getCommandNames } from '../commands/index';
+import { sanitizeTerminalLine } from './shared/text';
 
 // ============================================================================
 // 颜色常量
@@ -54,16 +55,18 @@ export function updateSuggestions(input: string): void {
       if (partial === '') {
         process.stdout.write(DIM('  Commands:\n'));
       } else {
-        process.stdout.write(DIM(`  Matching "${partial}":\n`));
+        process.stdout.write(DIM(`  Matching "${sanitizeTerminalLine(partial)}":\n`));
       }
 
       // 渲染每个匹配的命令
       matches.forEach(m => {
         const cmd = findCommand(m);
         if (cmd) {
-          const hint = cmd.argumentHint ? ` ${cmd.argumentHint}` : '';
-          const desc = cmd.description;
-          process.stdout.write(`  ${ACCENT(`/${m}`)}${DIM(hint)} - ${INFO(desc)}\n`);
+          const hint = cmd.argumentHint ? ` ${sanitizeTerminalLine(cmd.argumentHint)}` : '';
+          const desc = sanitizeTerminalLine(cmd.description);
+          process.stdout.write(
+            `  ${ACCENT(`/${sanitizeTerminalLine(m)}`)}${DIM(hint)} - ${INFO(desc)}\n`
+          );
         }
       });
 
@@ -85,7 +88,7 @@ export function clearSuggestions(): void {
 
     // 向下移动并清除每一行
     for (let i = 0; i < suggestionAreaHeight; i++) {
-      process.stdout.write('\x1b[B');  // 下移一行
+      process.stdout.write('\x1b[B'); // 下移一行
       process.stdout.write('\x1b[2K'); // 清除整行
     }
 
@@ -105,8 +108,8 @@ export function redrawInput(input: string, modeIndicator: string = ''): void {
   process.stdout.write('\r\x1b[2K');
 
   // 绘制 prompt 和输入
-  const prompt = ACCENT('❯ ') + DIM(modeIndicator);
-  process.stdout.write(prompt + input);
+  const prompt = ACCENT('❯ ') + DIM(sanitizeTerminalLine(modeIndicator));
+  process.stdout.write(prompt + sanitizeTerminalLine(input));
 }
 
 /**

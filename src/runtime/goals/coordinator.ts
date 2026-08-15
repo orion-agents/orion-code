@@ -42,6 +42,7 @@ import {
 } from './completion-audit';
 import { redactTraceText } from '../../services/redaction';
 import { getProjectSessionsDir } from '../../services/config-dir';
+import { normalizeGoalObjective, type GoalCompletionAction } from './objective';
 
 const MAX_EVIDENCE_LEDGER_RECORDS = 500;
 const MAX_EVIDENCE_TRUNCATION_COUNT = 1_000_000_000;
@@ -168,10 +169,16 @@ function formatNoProgressTurns(turns: GoalNoProgressTurn[]): string {
  * normalizations of the same goal produce the same id (no churn on reload).
  * User-supplied criteria (`source=user`) are added via a separate path.
  */
-function minimalContract(objective: string, now: number): GoalContract {
+function minimalContract(
+  objective: string,
+  now: number,
+  originalObjective: string = objective,
+  completionAction?: GoalCompletionAction
+): GoalContract {
   return {
-    originalObjective: objective,
+    originalObjective,
     objectiveRevision: 0,
+    ...(completionAction ? { completionAction } : {}),
     constraints: [],
     successCriteria: [
       {
@@ -253,7 +260,9 @@ function pauseForBoundaryConfirmation(goal: SessionGoalV1, now: number): Session
 function creationContract(
   objective: string,
   now: number,
-  input: GoalCreationContractInput
+  input: GoalCreationContractInput,
+  originalObjective: string = objective,
+  completionAction?: GoalCompletionAction
 ): GoalContract | null {
   const constraints = input.constraints ?? [];
   const successCriteria = input.successCriteria ?? [];
@@ -270,7 +279,7 @@ function creationContract(
     return null;
   }
 
-  const contract = minimalContract(objective, now);
+  const contract = minimalContract(objective, now, originalObjective, completionAction);
   contract.constraints = constraints.map((statement, index) => ({
     id: `constraint:user:${index + 1}`,
     statement: statement.trim(),
@@ -459,10 +468,54 @@ function newDerivedCriteria(contract: GoalContract, update: GoalPlanUpdate, plan
 
 /** Ensure a loaded goal carries a contract; normalize v0.1.1 sidecars. */
 function ensureContract(goal: SessionGoalV1): SessionGoalV1 {
+  const normalized = normalizeGoalObjective(goal.objective);
+  const shouldMigrateExitAction =
+    normalized.completionAction === 'exit_goal' &&
+    Boolean(normalized.objective) &&
+    goal.status !== 'complete';
+
+  if (goal.contract && shouldMigrateExitAction) {
+    const failedAudit = goal.completionAudit?.passed === false;
+    const normalizedContract: GoalContract = {
+      ...goal.contract,
+      completionAction: 'exit_goal',
+      successCriteria: goal.contract.successCriteria.map(criterion =>
+        criterion.id === 'criterion:primary'
+          ? {
+              ...criterion,
+              statement: normalized.objective,
+              ...(failedAudit ? { status: 'pending' as const } : {}),
+            }
+          : criterion
+      ),
+      ...(failedAudit && goal.contract.planSnapshot
+        ? {
+            planSnapshot: {
+              ...goal.contract.planSnapshot,
+              phase: 'execution',
+              nextAction: `Verify and complete: ${normalized.objective}`,
+            },
+          }
+        : {}),
+    };
+    return {
+      ...goal,
+      objective: normalized.objective,
+      contract: normalizedContract,
+      completionAudit: failedAudit ? undefined : goal.completionAudit,
+    };
+  }
   if (goal.contract) return goal;
-  const contract = minimalContract(goal.objective, goal.updatedAt || goal.createdAt);
+  const objective = shouldMigrateExitAction ? normalized.objective : goal.objective;
+  const contract = minimalContract(
+    objective,
+    goal.updatedAt || goal.createdAt,
+    shouldMigrateExitAction ? normalized.originalObjective : objective,
+    shouldMigrateExitAction ? normalized.completionAction : undefined
+  );
   const normalizedLegacy = {
     ...goal,
+    objective,
     contract,
     completedAt: undefined,
     completionAudit: undefined,
@@ -694,10 +747,17 @@ export class GoalCoordinator {
         error: 'An active goal already exists. Use /target replace to change it.',
       };
     }
-    if (!objective.trim()) {
+    const normalized = normalizeGoalObjective(objective);
+    if (!normalized.originalObjective) {
       return { ok: false, error: 'Objective cannot be empty.' };
     }
-    if (objective.length > GOAL_INVARIANTS.maxObjectiveChars) {
+    if (!normalized.objective && normalized.completionAction === 'exit_goal') {
+      return {
+        ok: false,
+        error: 'Goal exit is a lifecycle command, not an objective. Use /goal exit.',
+      };
+    }
+    if (normalized.originalObjective.length > GOAL_INVARIANTS.maxObjectiveChars) {
       return {
         ok: false,
         error: `Objective too long (max ${GOAL_INVARIANTS.maxObjectiveChars} chars).`,
@@ -705,15 +765,24 @@ export class GoalCoordinator {
     }
 
     const now = Date.now();
-    const contract = creationContract(objective.trim(), now, contractInput);
+    const contract = creationContract(
+      normalized.objective,
+      now,
+      contractInput,
+      normalized.originalObjective,
+      normalized.completionAction
+    );
     if (!contract) {
       return { ok: false, error: 'Goal constraints or success criteria are invalid.' };
     }
-    const requiresBoundaryConfirmation = goalRequiresBoundaryConfirmation(objective, contractInput);
+    const requiresBoundaryConfirmation = goalRequiresBoundaryConfirmation(
+      normalized.objective,
+      contractInput
+    );
     const result = persistGoal(
       this.projectPath,
       this.sessionId,
-      objective,
+      normalized.objective,
       contract,
       this.state.goal?.revision,
       requiresBoundaryConfirmation
@@ -790,15 +859,21 @@ export class GoalCoordinator {
 
   edit(objective: string, reason: string = 'User invoked /target edit.'): boolean {
     if (!this.state.goal || GOAL_TERMINAL_STATES.has(this.state.goal.status)) return false;
-    if (!objective.trim()) return false;
+    const normalized = normalizeGoalObjective(objective);
+    if (!normalized.objective) return false;
     const g = this.state.goal;
-    const nextObjective = objective.trim();
-    if (nextObjective === g.objective) return true;
+    const nextObjective = normalized.objective;
+    const currentContract = g.contract ?? minimalContract(g.objective, g.updatedAt);
+    if (
+      nextObjective === g.objective &&
+      normalized.completionAction === currentContract.completionAction
+    ) {
+      return true;
+    }
     const changedAt = Date.now();
     // v0.1.2: preserve originalObjective; record an objective revision on the
     // contract so steering can never silently rewrite the root goal. The
     // top-level `objective` reflects the current wording.
-    const currentContract = g.contract ?? minimalContract(g.objective, g.updatedAt);
     const objectiveRevision = this.addGoalInteger(
       currentContract.objectiveRevision,
       1,
@@ -808,6 +883,7 @@ export class GoalCoordinator {
       ...currentContract,
       originalObjective: currentContract.originalObjective,
       objectiveRevision,
+      completionAction: normalized.completionAction,
       objectiveHistory: [
         ...(currentContract.objectiveHistory ?? []),
         {
@@ -941,16 +1017,22 @@ export class GoalCoordinator {
 
   replace(objective: string): boolean {
     if (this.loadRecoveryRequired) return false;
-    if (!objective.trim()) return false;
+    const normalized = normalizeGoalObjective(objective);
+    if (!normalized.objective) return false;
     // Create new goal with fresh goalId and fresh contract; old generation
     // invalidated. Does not reuse the old goal's completion state.
     const now = Date.now();
-    const contract = minimalContract(objective.trim(), now);
-    const requiresBoundaryConfirmation = goalRequiresBoundaryConfirmation(objective);
+    const contract = minimalContract(
+      normalized.objective,
+      now,
+      normalized.originalObjective,
+      normalized.completionAction
+    );
+    const requiresBoundaryConfirmation = goalRequiresBoundaryConfirmation(normalized.objective);
     const result = persistGoal(
       this.projectPath,
       this.sessionId,
-      objective,
+      normalized.objective,
       contract,
       this.state.goal?.revision,
       requiresBoundaryConfirmation
@@ -983,10 +1065,36 @@ export class GoalCoordinator {
 
   clear(): boolean {
     if (!this.state.goal) return false;
-    const result = deleteGoal(this.projectPath, this.sessionId, this.state.goal.revision);
+    const result = deleteGoal(
+      this.projectPath,
+      this.sessionId,
+      this.state.goal.revision,
+      this.state.goal.goalId
+    );
     if (!result.ok) {
       this.restoreDiskAuthorityAfterMutationFailure();
       throw new Error(`${result.error}: ${result.message}`);
+    }
+    this.state.goal = null;
+    this.persistedGoalSnapshot = null;
+    this.state.generation += 1;
+    this.state.continuationDeferred = false;
+    return true;
+  }
+
+  /**
+   * Detach a completed Goal from the live runtime after its session binding is
+   * cleared. The persisted sidecar remains the immutable completion receipt.
+   */
+  detachCompletedReceipt(expectedGoalId: string): boolean {
+    const goal = this.state.goal;
+    if (
+      !goal ||
+      goal.goalId !== expectedGoalId ||
+      goal.status !== 'complete' ||
+      goal.completionAudit?.passed !== true
+    ) {
+      return false;
     }
     this.state.goal = null;
     this.persistedGoalSnapshot = null;
@@ -1428,6 +1536,27 @@ export class GoalCoordinator {
       updated.stopReason = {
         kind: providerStop.kind,
         message: providerStop.message,
+        at: Date.now(),
+      };
+      this.state.continuationDeferred = true;
+    }
+
+    const recentBlockedContinuations = (updated.recentNoProgressTurns ?? []).slice(
+      -GOAL_INVARIANTS.maxConsecutiveBlockedContinuationTurns
+    );
+    if (
+      outcome.inputKind === 'goal_continuation' &&
+      (updated.automaticContinuationStreak ?? 0) >=
+        GOAL_INVARIANTS.maxConsecutiveBlockedContinuationTurns &&
+      recentBlockedContinuations.length ===
+        GOAL_INVARIANTS.maxConsecutiveBlockedContinuationTurns &&
+      recentBlockedContinuations.every(turn => turn.finishReason === 'blocked') &&
+      updated.status === 'active'
+    ) {
+      updated.status = 'paused';
+      updated.stopReason = {
+        kind: 'user',
+        message: `Auto-paused after ${GOAL_INVARIANTS.maxConsecutiveBlockedContinuationTurns} blocked autonomous continuations. Inspect the unmet completion gate or external blocker, then use /goal resume to continue or /goal exit to abandon.`,
         at: Date.now(),
       };
       this.state.continuationDeferred = true;

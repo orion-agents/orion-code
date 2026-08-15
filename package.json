@@ -1,6 +1,6 @@
 {
   "name": "@orion-agents/orion-code",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Orion Code - goal-driven coding agent for the terminal.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -10,24 +10,25 @@
   "files": [
     "dist/",
     "bin/",
-    "assets/",
+    "assets/orion-tui-icon.png",
     "LICENSE",
     "README.md",
-    "README.zh-CN.md"
+    "README.zh-CN.md",
+    "npm-shrinkwrap.json"
   ],
   "scripts": {
     "start": "ts-node src/cli.ts",
     "dev": "nodemon src/cli.ts",
     "cli": "ts-node src/cli.ts",
-    "clean": "node scripts/clean-dist.js",
+    "clean": "node scripts/maintenance/clean-dist.js",
     "build": "npm run clean && tsc",
     "test": "jest",
     "test:coverage": "jest --coverage",
     "test:ink-compat": "ORION_RUN_DEPRECATED_INK_PTY=1 jest tests/ink-ui-pty.test.ts --runInBand",
-    "deps:check": "bash scripts/dep-health-check.sh",
+    "deps:check": "bash scripts/release/dep-health-check.sh",
     "lint": "eslint src/",
     "format": "prettier --write src/",
-    "release:check": "node scripts/release-check.js",
+    "release:check": "node scripts/release/release-check.js",
     "prepack": "npm run build",
     "prepublishOnly": "npm run deps:check -- --policy-only && npm run lint && npm run build && npm run release:check -- --skip-tests && npm run test:coverage -- --runInBand"
   },
@@ -103,5 +104,10 @@
   },
   "engines": {
     "node": "^20.0.0 || ^22.0.0 || ^24.0.0"
-  }
+  },
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "type": "commonjs"
 }

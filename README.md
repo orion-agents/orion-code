@@ -2,7 +2,7 @@
 
 > **Goal-driven coding agent for the terminal.**
 >
-> v0.1.7 — Orion Pixel TUI, typed status chrome, and queued follow-ups
+> v0.1.8 candidate — repository hygiene, audited issue fixes, and actionable runtime recovery
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20.0-green.svg)](https://nodejs.org)
@@ -35,8 +35,8 @@ Orion Code is a terminal-based coding agent. It wraps LLM APIs in a harness of s
 ### Install & Run
 
 ```bash
-# Install the exact audited version:
-npm install -g @orion-agents/orion-code@0.1.7
+# Install this exact version after the candidate is published:
+npm install -g @orion-agents/orion-code@0.1.8
 # Install the current prerelease channel:
 npm install -g @orion-agents/orion-code@next
 
@@ -75,9 +75,9 @@ orion -p "review the current git diff"
 echo "summarize this project" | orion --print
 ```
 
-> **Release status.** `0.1.7` is published through the npm `next` dist-tag and is identified by the
-> `v0.1.7` tag and GitHub prerelease. Stable `latest` remains `0.1.4`; promotion is a separate
-> decision.
+> **Release status.** The source tree is an unpublished `0.1.8` candidate: it has no release tag,
+> GitHub Release, or npm artifact yet. `0.1.7` remains the published `next` version and stable
+> `latest` remains `0.1.4`; promotion is a separate release decision.
 
 ### TUI startup banner
 
@@ -174,11 +174,12 @@ the waiting tool continues. A write failure denies the call.
 
 Machine-wide rules live at root `allowedTools`; project rules live under
 `projects["<absolute path>"].allowedTools`. Both sets are evaluated, and the most restrictive
-matching effect wins (`deny` > `ask` > `allow`). A durable `allow` can skip repeated prompts for
-a tool after explicit user consent, including external tools, file edits, and shell operations that
-are not hard-blocked by command safety policy. AUTO skips interactive prompts after hard tool-policy
-and explicit `deny` checks. PLAN exposes the same registry as BUILD and inherits the independently
-selected permission policy, including durable project or machine grants.
+matching effect wins (`deny` > `ask` > `allow`). Choosing project or machine scope is explicit
+durable consent for that tool, so a durable `allow` skips repeated prompts for external tools, file
+edits, and shell operations that are not hard-blocked by command safety policy. AUTO skips all
+interactive prompts and authorizes every invocation after hard tool-policy and explicit `deny`
+checks. PLAN exposes the same registry as BUILD and inherits the independently selected permission
+policy, including durable project or machine grants.
 
 ```json
 {
@@ -302,6 +303,8 @@ points. Auto runs without permission or clarification prompts, while hard safety
 explicit user boundaries remain enforced.
 
 See [the Plan-mode lifecycle contract](docs/plan/plan-mode-contract.md).
+Authorization precedence, AUTO network behavior, and audit provenance are defined in the
+[Agent Mode and Tool Permission Contract](docs/architecture/agent-mode-permission-contract.md).
 
 ### Persistent Goal safety contract
 
@@ -320,12 +323,17 @@ promise multi-Goal scheduling or unattended background execution.
 
 After a completion audit passes, Orion automatically clears the session's active Goal binding,
 returns the TUI to its current BUILD/PLAN/AUTO base mode, and retains the terminal Goal sidecar as
-the durable completion receipt. Use `/goal exit` to abandon before completion: it aborts the active
+the durable completion receipt. A trailing lifecycle clause such as `测试一轮，然后退出目标模式`
+is separated from the auditable work: Orion verifies `测试一轮`, then performs the same runtime-owned
+automatic exit after the audit passes. It is not treated as an impossible success criterion. Use
+`/goal exit` to abandon before completion: it aborts the active
 turn, rejects pending permission requests, and removes the persisted Goal. Explicit natural-language
 requests such as `exit goal mode` or `退出 goal 模式` route through the same deterministic runtime
-boundary. Rejected completion requests
+boundary. Session binding and Goal-sidecar cleanup fail closed as one lifecycle operation; Orion
+never reports a successful exit after only one persisted object changed. Rejected completion requests
 cannot be retried in the same turn until new runtime evidence exists, and autonomous continuation
-turns have stricter model/tool budgets than fresh user turns. The old `/goal clear --yes` and
+turns have stricter model/tool budgets than fresh user turns. Two consecutive blocked autonomous
+continuations pause for review instead of spending the full continuation window. The old `/goal clear --yes` and
 `/target clear --yes` syntax is intentionally unsupported in v0.1.6.
 
 ## Migration from OpenHorse
@@ -340,7 +348,7 @@ orion migrate openhorse --yes [--include-env]
 
 See the [v0.1.2 release notes](https://github.com/orion-agents/orion-code/blob/main/docs/mvp/v0.1.2.md),
 [Goal evidence and recovery guide](https://github.com/orion-agents/orion-code/blob/main/docs/goals/goal-evidence-and-recovery.md),
-and [execution plan](https://github.com/orion-agents/orion-code/blob/main/docs/plan/v0.1.2-execution-plan.md).
+and [execution plan](https://github.com/orion-agents/orion-code/blob/main/docs/archive/releases/v0.1.x/v0.1.2-execution-plan.md).
 
 ## Research-to-Evidence (v0.1.4, experimental)
 

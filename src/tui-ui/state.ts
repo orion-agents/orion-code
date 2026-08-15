@@ -42,6 +42,91 @@ export interface TuiTranscriptRecord extends TranscriptEntry {
   revision: number;
 }
 
+interface TranscriptOverlay {
+  base: TuiTranscriptRecord[];
+  patches: ReadonlyMap<number, TuiTranscriptRecord>;
+}
+
+/**
+ * Streaming updates normally touch the last live transcript record. A regular
+ * `Array#map` clones every retained, already-finalized entry for each token.
+ * Keep an immutable, array-compatible overlay instead: unchanged records stay
+ * in the shared base and only the handful of live indexes are copied.
+ *
+ * The proxy target is still an Array, so existing read-only consumers (`slice`,
+ * `map`, iteration, Jest assertions) keep the public contract. Append/evict
+ * operations materialize a flat array at their existing lifecycle boundaries.
+ */
+const transcriptOverlays = new WeakMap<TuiTranscriptRecord[], TranscriptOverlay>();
+
+function arrayIndex(property: string | symbol): number | null {
+  if (typeof property !== 'string' || !/^(?:0|[1-9]\d*)$/u.test(property)) return null;
+  const index = Number(property);
+  return Number.isSafeInteger(index) ? index : null;
+}
+
+function overlayTranscriptRecord(
+  transcript: TuiTranscriptRecord[],
+  index: number,
+  record: TuiTranscriptRecord
+): TuiTranscriptRecord[] {
+  const existing = transcriptOverlays.get(transcript);
+  const base = existing?.base ?? transcript;
+  const patches = new Map(existing?.patches ?? []);
+  patches.set(index, record);
+
+  const target = new Array<TuiTranscriptRecord>(base.length);
+  const proxy = new Proxy(target, {
+    get(array, property, receiver) {
+      const candidateIndex = arrayIndex(property);
+      if (candidateIndex !== null && candidateIndex < base.length) {
+        return patches.get(candidateIndex) ?? base[candidateIndex];
+      }
+      return Reflect.get(array, property, receiver);
+    },
+    has(array, property) {
+      const candidateIndex = arrayIndex(property);
+      return candidateIndex !== null && candidateIndex < base.length
+        ? true
+        : Reflect.has(array, property);
+    },
+    ownKeys() {
+      return [...base.keys()].map(String).concat('length');
+    },
+    getOwnPropertyDescriptor(array, property) {
+      const candidateIndex = arrayIndex(property);
+      if (candidateIndex !== null && candidateIndex < base.length) {
+        return {
+          configurable: true,
+          enumerable: true,
+          writable: false,
+          value: patches.get(candidateIndex) ?? base[candidateIndex],
+        };
+      }
+      return Reflect.getOwnPropertyDescriptor(array, property);
+    },
+  });
+  transcriptOverlays.set(proxy, { base, patches });
+  return proxy;
+}
+
+function findTranscriptRecordIndex(state: TuiUiState, id: string): number {
+  // Live records are always at/after the committable boundary. Search that
+  // small tail first so a delayed surface acknowledgement cannot make token
+  // updates scan thousands of finalized prefix records.
+  for (
+    let index = state.transcript.length - 1;
+    index >= state.committableTranscriptCount;
+    index--
+  ) {
+    if (state.transcript[index]?.id === id) return index;
+  }
+  for (let index = state.committableTranscriptCount - 1; index >= 0; index--) {
+    if (state.transcript[index]?.id === id) return index;
+  }
+  return -1;
+}
+
 /** Structured status state (replaces renderer-local string concatenation). */
 export interface TuiStatusState {
   phase: 'ready' | 'running' | 'error' | 'interrupted';
@@ -223,30 +308,34 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
       });
     }
 
-    case 'updateTranscript':
+    case 'updateTranscript': {
+      const index = findTranscriptRecordIndex(state, action.id);
+      if (index < 0) return state;
+      const entry = state.transcript[index];
       return {
         ...state,
-        transcript: state.transcript.map(entry =>
-          entry.id === action.id
-            ? { ...entry, ...action.patch, revision: entry.revision + 1 }
-            : entry
-        ),
+        transcript: overlayTranscriptRecord(state.transcript, index, {
+          ...entry,
+          ...action.patch,
+          revision: entry.revision + 1,
+        }),
       };
+    }
 
-    case 'finalizeTranscript':
+    case 'finalizeTranscript': {
+      const index = findTranscriptRecordIndex(state, action.id);
+      if (index < 0) return state;
+      const entry = state.transcript[index];
       return commitStaticTranscriptPrefix({
         ...state,
-        transcript: state.transcript.map(entry =>
-          entry.id === action.id
-            ? {
-                ...entry,
-                ...action.patch,
-                finalized: true,
-                revision: entry.revision + (action.patch ? 1 : 0),
-              }
-            : entry
-        ),
+        transcript: overlayTranscriptRecord(state.transcript, index, {
+          ...entry,
+          ...action.patch,
+          finalized: true,
+          revision: entry.revision + (action.patch ? 1 : 0),
+        }),
       });
+    }
 
     case 'removeTranscript':
       return recomputeStaticTranscriptPrefix({

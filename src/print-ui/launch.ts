@@ -22,6 +22,7 @@ import {
   projectResearchLifecycleEvent,
   type ResearchStatusProjection,
 } from '../runtime/ui-view-model';
+import { sanitizeTerminalText } from '../tui-core/style';
 
 export type PrintOutputFormat = 'text' | 'json';
 
@@ -37,6 +38,7 @@ export interface PrintModeResult {
   errors: string[];
   goalEvents: GoalRuntimeEvent[];
   researchEvents: ResearchLifecycleEvent[];
+  budgetStops: import('../runtime/ui-events').LoopBudgetStopView[];
   effortEvents: import('../runtime/ui-events').RuntimeEffortEvent[];
   research: ResearchStatusProjection | null;
   sessionId: string | null;
@@ -52,8 +54,9 @@ function stripTrailingNewlines(text: string): string {
 }
 
 function stderrLine(text: string): void {
-  if (!text.trim()) return;
-  process.stderr.write(`${stripTrailingNewlines(text)}\n`);
+  const safeText = sanitizeTerminalText(text);
+  if (!safeText.trim()) return;
+  process.stderr.write(`${stripTrailingNewlines(safeText)}\n`);
 }
 
 function flushStdout(text: string = ''): Promise<void> {
@@ -240,6 +243,7 @@ export class PrintEventSink implements UiEventSink {
       errors: [...this.errors],
       goalEvents: [...this.goalEvents],
       researchEvents: [...this.researchEvents],
+      budgetStops: entries.flatMap(entry => (entry.budgetStop ? [entry.budgetStop] : [])),
       effortEvents: [...this.effortEvents],
       research: this.researchProjection
         ? {
