@@ -52,6 +52,8 @@ which is **not** a pass.
 
 ### Fixed
 
+- Publish file-lock owner metadata atomically and quarantine stale legacy zero-byte recovery
+  sentinels so an interrupted writer cannot permanently block `/resume`.
 - Verify the existing security, persistence, TUI/performance, release/dependency, and Goal lifecycle
   candidate fixes for issues #170–#200 with focused regression batches and real renderer smokes.
 - Keep Goal completion evidence durable across failure, compact, restart, and resume, then

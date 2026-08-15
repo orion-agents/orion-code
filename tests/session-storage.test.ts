@@ -46,8 +46,10 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from 'fs';
 import { join } from 'path';
@@ -1446,6 +1448,27 @@ describe('session-storage', () => {
       const resumed = resumeSession(session.id);
       expect(resumed?.endTime).toBeUndefined();
       expect(resumed?.updatedAt).toBeGreaterThanOrEqual(session.startTime);
+    });
+
+    test('resumeSession recovers a stale zero-byte recovery sentinel from an interrupted writer', () => {
+      const session = createSession('/tmp/project-resume-stale-recovery', 'gpt-4o');
+      endSession(session.id);
+      const metaPath = getProjectSessionMetaPath(session.projectPath, session.id);
+      const recoveryPath = `${metaPath}.lock.recovery`;
+      writeFileSync(recoveryPath, '', { mode: 0o600 });
+      const staleTime = new Date(Date.now() - 60_000);
+      utimesSync(recoveryPath, staleTime, staleTime);
+
+      const resumed = resumeSession(session.id);
+
+      expect(resumed?.id).toBe(session.id);
+      expect(resumed?.endTime).toBeUndefined();
+      expect(existsSync(recoveryPath)).toBe(false);
+      expect(
+        readdirSync(getProjectSessionsDir(session.projectPath)).some(entry =>
+          entry.startsWith(`${session.id}.json.lock.recovery.quarantine-`)
+        )
+      ).toBe(true);
     });
 
     test('stores full harness state in project sidecar and loads sidecar on resume', () => {

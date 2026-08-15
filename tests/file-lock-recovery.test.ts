@@ -62,6 +62,32 @@ try {
 }
 `;
 
+const ATOMIC_PUBLICATION_WORKER = String.raw`
+const fs = require('fs');
+const targetPath = process.env.ORION_TEST_TARGET;
+const readyPath = process.env.ORION_TEST_READY;
+const releasePath = process.env.ORION_TEST_RELEASE;
+const originalLinkSync = fs.linkSync.bind(fs);
+const originalWriteFileSync = fs.writeFileSync.bind(fs);
+const sleep = ms => {
+  const signal = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(signal, 0, 0, ms);
+};
+
+let paused = false;
+fs.linkSync = (source, destination) => {
+  if (!paused && String(destination).endsWith('.lock.recovery')) {
+    paused = true;
+    originalWriteFileSync(readyPath, 'ready');
+    while (!fs.existsSync(releasePath)) sleep(10);
+  }
+  return originalLinkSync(source, destination);
+};
+
+const { withFileLockSync } = require('./src/services/file-lock');
+withFileLockSync(targetPath, () => undefined, { waitMs: 3_000, retryMs: 5, staleMs: 50 });
+`;
+
 async function waitForFile(file: string, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!fs.existsSync(file)) {
@@ -92,6 +118,113 @@ describe('file-lock stale recovery serialization', () => {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  it('quarantines a stale unreadable recovery sentinel but not an unreadable main lock', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orion-file-lock-empty-recovery-'));
+    const targetPath = path.join(tempDir, 'session.json');
+    const lockPath = `${targetPath}.lock`;
+    const recoveryPath = `${lockPath}.recovery`;
+    try {
+      fs.writeFileSync(recoveryPath, '', { mode: 0o600 });
+      const staleTime = new Date(Date.now() - 10_000);
+      fs.utimesSync(recoveryPath, staleTime, staleTime);
+
+      expect(
+        withFileLockSync(targetPath, () => 'resumed', {
+          waitMs: 200,
+          retryMs: 5,
+          staleMs: 1,
+        })
+      ).toBe('resumed');
+      expect(fs.existsSync(lockPath)).toBe(false);
+      expect(fs.existsSync(recoveryPath)).toBe(false);
+
+      const quarantine = fs
+        .readdirSync(tempDir)
+        .filter(entry => entry.startsWith('session.json.lock.recovery.quarantine-'));
+      expect(quarantine).toHaveLength(1);
+      expect(fs.readFileSync(path.join(tempDir, quarantine[0]), 'utf8')).toBe('');
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a fresh unreadable recovery sentinel fail-closed during the legacy write grace', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orion-file-lock-fresh-recovery-'));
+    const targetPath = path.join(tempDir, 'session.json');
+    const recoveryPath = `${targetPath}.lock.recovery`;
+    try {
+      fs.writeFileSync(recoveryPath, '', { mode: 0o600 });
+
+      expect(() =>
+        withFileLockSync(targetPath, () => undefined, {
+          waitMs: 30,
+          retryMs: 5,
+          staleMs: 10_000,
+        })
+      ).toThrow(/Timed out waiting for file lock/);
+      expect(fs.existsSync(recoveryPath)).toBe(true);
+      expect(fs.readdirSync(tempDir).some(entry => entry.includes('.quarantine-'))).toBe(false);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not publish a partial lock when a process dies before the atomic link', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orion-file-lock-publication-'));
+    const targetPath = path.join(tempDir, 'session.json');
+    const lockPath = `${targetPath}.lock`;
+    const recoveryPath = `${lockPath}.recovery`;
+    const readyPath = path.join(tempDir, 'ready');
+    const releasePath = path.join(tempDir, 'release');
+    const child = spawn(
+      process.execPath,
+      ['-r', require.resolve('ts-node/register/transpile-only'), '-e', ATOMIC_PUBLICATION_WORKER],
+      {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          ORION_TEST_TARGET: targetPath,
+          ORION_TEST_READY: readyPath,
+          ORION_TEST_RELEASE: releasePath,
+        },
+      }
+    );
+    let stderr = '';
+    child.stderr.on('data', chunk => (stderr += String(chunk)));
+    const childExit = new Promise<void>((resolve, reject) => {
+      child.once('error', reject);
+      child.once('exit', () => resolve());
+    });
+
+    try {
+      await waitForFile(readyPath);
+      expect(fs.existsSync(recoveryPath)).toBe(false);
+      expect(
+        fs
+          .readdirSync(tempDir)
+          .some(entry => entry.startsWith('session.json.lock.recovery.candidate-'))
+      ).toBe(true);
+
+      child.kill('SIGKILL');
+      await childExit;
+
+      expect(fs.existsSync(recoveryPath)).toBe(false);
+      expect(
+        withFileLockSync(targetPath, () => 'next-owner', {
+          waitMs: 200,
+          retryMs: 5,
+          staleMs: 1,
+        })
+      ).toBe('next-owner');
+    } catch (error) {
+      throw new Error(`${error instanceof Error ? error.message : String(error)}\n${stderr}`);
+    } finally {
+      fs.writeFileSync(releasePath, 'release');
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  }, 20_000);
 
   it('does not let a stale recovery move a replacement owner lock', async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orion-file-lock-recovery-'));
