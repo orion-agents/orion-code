@@ -97,7 +97,7 @@
     "prettier": "^3.1.0",
     "ts-jest": "^29.4.9",
     "ts-node": "^10.9.0",
-    "typescript": "^5.3.0"
+    "typescript": "^7.0.2"
   },
   "overrides": {
     "shell-quote": "^1.10.0"
