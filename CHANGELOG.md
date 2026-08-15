@@ -22,11 +22,11 @@ which is **not** a pass.
 
 ## [Unreleased]
 
-## [0.1.8] — 2026-08-14
+## [0.1.8] — 2026-08-15
 
-> **Status: candidate.** The source and package metadata identify `0.1.8`, but no `v0.1.8` tag,
-> GitHub Release, or npm artifact exists yet. The published channels remain unchanged until a
-> separately authorized release operation.
+> **Status: published.** Tag `v0.1.8` identifies the source;
+> `@orion-agents/orion-code@0.1.8` is published through the npm `next` dist-tag.
+> Stable `latest` remains `0.1.4`; promotion is a separate decision.
 
 ### Added
 

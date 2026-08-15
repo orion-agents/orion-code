@@ -2,7 +2,7 @@
 
 > **Goal-driven coding agent for the terminal.**
 >
-> v0.1.8 candidate — repository hygiene, audited issue fixes, and actionable runtime recovery
+> v0.1.8 — repository hygiene, audited issue fixes, and actionable runtime recovery
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20.0-green.svg)](https://nodejs.org)
@@ -35,7 +35,7 @@ Orion Code is a terminal-based coding agent. It wraps LLM APIs in a harness of s
 ### Install & Run
 
 ```bash
-# Install this exact version after the candidate is published:
+# Install this exact published version:
 npm install -g @orion-agents/orion-code@0.1.8
 # Install the current prerelease channel:
 npm install -g @orion-agents/orion-code@next
@@ -75,9 +75,8 @@ orion -p "review the current git diff"
 echo "summarize this project" | orion --print
 ```
 
-> **Release status.** The source tree is an unpublished `0.1.8` candidate: it has no release tag,
-> GitHub Release, or npm artifact yet. `0.1.7` remains the published `next` version and stable
-> `latest` remains `0.1.4`; promotion is a separate release decision.
+> **Release status.** `0.1.8` is published through the npm `next` dist-tag and is identified by the
+> `v0.1.8` tag. Stable `latest` remains `0.1.4`; promotion is a separate decision.
 
 ### TUI startup banner
 
