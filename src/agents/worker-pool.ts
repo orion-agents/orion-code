@@ -69,7 +69,7 @@ export class WorkerPool {
 
     // 无空闲 Worker：入队，待某个 Worker 完成任务后由 drainQueue 取出执行。
     // 每个入队任务携带自己的 resolver，确保只被执行一次，避免重复执行。
-    return new Promise<ForkResult>((resolve) => {
+    return new Promise<ForkResult>(resolve => {
       const finish = (result: ForkResult) => {
         clearTimeout(timer);
         resolve(result);
@@ -95,12 +95,15 @@ export class WorkerPool {
   /**
    * 批量提交任务
    */
-  async submitBatch(tasks: Task[], forkOptions?: Partial<ForkOptions>): Promise<Map<string, ForkResult>> {
+  async submitBatch(
+    tasks: Task[],
+    forkOptions?: Partial<ForkOptions>
+  ): Promise<Map<string, ForkResult>> {
     const promises: Promise<void>[] = [];
 
     for (const task of tasks) {
       promises.push(
-        this.submit(task, forkOptions).then((result) => {
+        this.submit(task, forkOptions).then(result => {
           this.results.set(task.id, result);
         })
       );
@@ -185,7 +188,9 @@ export class WorkerPool {
   // ============================================================================
 
   private getIdleWorkers(): WorkerInfo[] {
-    return Array.from(this.workers.values()).filter(w => w.status === 'idle' || w.status === 'completed');
+    return Array.from(this.workers.values()).filter(
+      w => w.status === 'idle' || w.status === 'completed'
+    );
   }
 
   private allocateWorker(task: Task): string {
@@ -223,7 +228,13 @@ export class WorkerPool {
       ...this.defaultForkOptions,
       ...forkOptions,
       taskDescription: task.description,
-      maxTurns: forkOptions?.maxTurns ?? this.defaultForkOptions.maxTurns ?? 3,
+      maxModelRequests:
+        forkOptions?.maxModelRequests ??
+        forkOptions?.maxTurns ??
+        this.defaultForkOptions.maxModelRequests ??
+        this.defaultForkOptions.maxTurns ??
+        3,
+      maxToolCalls: forkOptions?.maxToolCalls ?? this.defaultForkOptions.maxToolCalls ?? 12,
     };
 
     try {

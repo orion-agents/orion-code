@@ -14,13 +14,16 @@ import {
   loadSessionCompactCheckpoint,
   loadSessionTranscriptMessages,
   commitSessionCompactCheckpoint,
+  prepareSessionCompactSourceReceipt,
   loadSessionHarnessState,
   resumeSession,
   renameSession,
   resolveProjectPath,
   readSessionMessages,
   redactTraceText,
+  appendSessionTraceEvent,
   type SessionMeta,
+  type SessionTraceEvent,
 } from '../services/session-storage';
 import { loadSessionIndex, searchSessions } from '../services/session-index';
 import { CompactCoordinator } from '../services/compact/coordinator';
@@ -98,6 +101,22 @@ async function handleCompact(ctx: CommandContext, args: string): Promise<Command
     output: lines.join('\n'),
   });
   const history = ctx.store.getSnapshot().conversationHistory;
+  const traceSessionId = ctx.getSession?.()?.id ?? ctx.sessionId;
+  const traceTurnId = String(ctx.turnId ?? 'command:compact');
+  let traceDetails:
+    | Pick<
+        SessionTraceEvent,
+        | 'model'
+        | 'compactMode'
+        | 'compactStrategy'
+        | 'compactCandidateFingerprint'
+        | 'compactBeforeTokens'
+        | 'compactAfterTokens'
+        | 'compactTargetTokens'
+        | 'compactTargetRatio'
+        | 'compactDiagnosticsCount'
+      >
+    | undefined;
 
   if (history.length === 0) {
     console.log(DIM('Conversation history is empty, nothing to compact'));
@@ -105,15 +124,20 @@ async function handleCompact(ctx: CommandContext, args: string): Promise<Command
     return finish(true);
   }
 
-  // 解析参数
-  const thresholdArg = parseInt(args.trim(), 10);
-  const threshold = thresholdArg > 0 ? thresholdArg : 50;
+  // `/compact [N] [focus]`: a leading positive integer keeps the legacy
+  // message threshold; all remaining text is secondary summary guidance.
+  const trimmedArgs = args.trim();
+  const match = trimmedArgs.match(/^(?:(\d+)(?:\s+|$))?([\s\S]*)$/u);
+  const thresholdArg = match?.[1] ? Number.parseInt(match[1], 10) : NaN;
+  const threshold = Number.isSafeInteger(thresholdArg) && thresholdArg > 0 ? thresholdArg : 20;
+  const focus = (match?.[2] ?? trimmedArgs).trim() || undefined;
 
   console.log();
   console.log(HEADER('Compacting Conversation'));
   console.log(DIM('─'.repeat(40)));
   console.log(`  Current messages: ${history.length}`);
   console.log(`  Threshold: ${threshold}`);
+  if (focus) console.log(`  Focus: ${focus}`);
   console.log();
 
   if (history.length <= threshold) {
@@ -127,6 +151,9 @@ async function handleCompact(ctx: CommandContext, args: string): Promise<Command
 
   console.log(DIM(compactStatus()));
   try {
+    const prepareSource = traceSessionId
+      ? prepareSessionCompactSourceReceipt(traceSessionId)
+      : undefined;
     const modelId = ctx.llm?.getModel() ?? ctx.store.getSnapshot().currentModel;
     const coordinator =
       ctx.compactCoordinator ??
@@ -155,7 +182,26 @@ async function handleCompact(ctx: CommandContext, args: string): Promise<Command
       autoCompactThreshold: automaticStats.threshold,
       autoCompactEnabled: automaticStats.enabled,
     });
-    const result = await coordinator.compactManual(history, threshold);
+    const result = await coordinator.compactManual(history, threshold, focus);
+    traceDetails = {
+      model: modelId,
+      compactMode: 'manual',
+      compactStrategy:
+        result.summarySource === 'llm' ? 'semantic-llm-v2' : 'deterministic-fallback-v2',
+      compactCandidateFingerprint: result.fingerprint,
+      compactBeforeTokens: result.beforeTokens,
+      compactAfterTokens: result.afterTokens,
+      compactTargetTokens: result.plan.targetTokens,
+      compactTargetRatio: result.plan.targetRatio,
+      compactDiagnosticsCount: result.diagnostics.length,
+    };
+    if (traceSessionId) {
+      appendSessionTraceEvent(traceSessionId, {
+        turnId: traceTurnId,
+        type: 'compact_prepare',
+        ...traceDetails,
+      });
+    }
     const compacted = result.messages;
     const compactedTokens = estimateMessagesTokens(compacted);
     const afterUsage = createContextUsageSnapshot({
@@ -172,7 +218,9 @@ async function handleCompact(ctx: CommandContext, args: string): Promise<Command
     const percent = Math.round((reduction / history.length) * 100);
     const sessionId = ctx.getSession?.()?.id ?? ctx.sessionId;
     if (sessionId) {
-      const sourceMessageCount = readSessionMessages(sessionId).length;
+      const sourceMessageCount =
+        prepareSource?.sourceMessageCount ?? readSessionMessages(sessionId).length;
+      const goal = ctx.getActiveGoal?.();
       const checkpoint = commitSessionCompactCheckpoint({
         sessionId,
         mode: 'manual',
@@ -187,8 +235,53 @@ async function handleCompact(ctx: CommandContext, args: string): Promise<Command
         },
         beforeUsage,
         afterUsage,
+        harnessState: ctx.store.getSnapshot().harnessState,
+        goalBinding: goal
+          ? { goalId: goal.goalId, revision: goal.revision, state: goal }
+          : undefined,
+        prepareSource,
+        candidate: {
+          fingerprint: result.fingerprint,
+          beforeTokens: result.beforeTokens,
+          afterTokens: result.afterTokens,
+          plan: result.plan,
+          semanticSummary: result.semanticSummary,
+          diagnostics: result.diagnostics,
+        },
+      });
+      appendSessionTraceEvent(sessionId, {
+        turnId: traceTurnId,
+        type: 'compact_validate',
+        checkpointId: checkpoint.checkpointId,
+        success: true,
+        compactSourceMessageCount: sourceMessageCount,
+        ...traceDetails,
+      });
+      appendSessionTraceEvent(sessionId, {
+        turnId: traceTurnId,
+        type: 'compact_commit',
+        checkpointId: checkpoint.checkpointId,
+        success: true,
+        compactSourceMessageCount: sourceMessageCount,
+        ...traceDetails,
       });
       ctx.store.setState({ conversationHistory: checkpoint.modelHistory });
+      appendSessionTraceEvent(sessionId, {
+        turnId: traceTurnId,
+        type: 'compact_boundary',
+        checkpointId: checkpoint.checkpointId,
+        success: true,
+        compactSourceMessageCount: sourceMessageCount,
+        ...traceDetails,
+      });
+      appendSessionTraceEvent(sessionId, {
+        turnId: traceTurnId,
+        type: 'compact_completed',
+        checkpointId: checkpoint.checkpointId,
+        success: true,
+        compactSourceMessageCount: sourceMessageCount,
+        ...traceDetails,
+      });
     } else {
       ctx.store.setState({ conversationHistory: compacted });
     }
@@ -200,6 +293,22 @@ async function handleCompact(ctx: CommandContext, args: string): Promise<Command
     return finish(true);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
+    if (traceSessionId) {
+      appendSessionTraceEvent(traceSessionId, {
+        turnId: traceTurnId,
+        type: 'compact_rollback',
+        success: false,
+        error: message,
+        ...traceDetails,
+      });
+      appendSessionTraceEvent(traceSessionId, {
+        turnId: traceTurnId,
+        type: 'compact_failed',
+        success: false,
+        error: message,
+        ...traceDetails,
+      });
+    }
     console.log(ERROR(`✗ Compact failed: ${message}`));
     console.log();
     return finish(false);

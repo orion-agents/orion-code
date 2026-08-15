@@ -1303,6 +1303,14 @@ export class LLMService {
     this.config.model = model;
   }
 
+  /** Replace the active provider transport after a validated profile switch. */
+  setProviderClient(client: OpenAI): void {
+    this.client = client;
+    this.consecutive529Errors = 0;
+    this.usingFallback = false;
+    this.lastRequestDiagnostics = this.createRequestDiagnostics();
+  }
+
   setEffortContext(input: {
     preference: EffortPreference;
     protocol: ProviderProtocol;

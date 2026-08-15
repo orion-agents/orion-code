@@ -2,7 +2,7 @@
 
 > **Goal-driven coding agent for the terminal.**
 >
-> v0.1.8 — repository hygiene, audited issue fixes, and actionable runtime recovery
+> v0.1.9 — semantic compact, evidence-driven completion, and autonomous progress control
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20.0-green.svg)](https://nodejs.org)
@@ -35,8 +35,8 @@ Orion Code is a terminal-based coding agent. It wraps LLM APIs in a harness of s
 ### Install & Run
 
 ```bash
-# Install this exact published version:
-npm install -g @orion-agents/orion-code@0.1.8
+# After the registry receipt exists, install this exact prerelease version:
+npm install -g @orion-agents/orion-code@0.1.9
 # Install the current prerelease channel:
 npm install -g @orion-agents/orion-code@next
 
@@ -75,8 +75,12 @@ orion -p "review the current git diff"
 echo "summarize this project" | orion --print
 ```
 
-> **Release status.** `0.1.8` is published through the npm `next` dist-tag and is identified by the
-> `v0.1.8` tag. Stable `latest` remains `0.1.4`; promotion is a separate decision.
+Before upgrading, read the [v0.1.8 → v0.1.9 migration guide](docs/migration/v0.1.8-to-v0.1.9.md).
+Release verification is tracked in the [v0.1.9 checklist](docs/plan/v0.1.9-release-checklist.md).
+
+> **Release status.** `0.1.9` is the current release candidate for the npm `next` channel. Stable
+> `latest` remains `0.1.4`; tag, GitHub Release, npm publish, and `latest` promotion are verified as
+> separate delivery actions.
 
 ### TUI startup banner
 
@@ -263,7 +267,7 @@ backend is probed at runtime and a configured-but-unusable sandbox **fails close
 | `/permissions`         | View or change tool confirmation and edit policy                            |
 | `/config`              | Show configuration                                                          |
 | `/usage`               | Token usage and cost                                                        |
-| `/compact`             | Trigger context compact                                                     |
+| `/compact [N] [focus]` | Trigger context compact with optional retained-message threshold and focus  |
 | `/session`             | List, inspect, or rename sessions                                           |
 | `/resume`              | Resume last session                                                         |
 | `/memory`              | Memory status, reference validation, and semantic reindexing                |
@@ -275,6 +279,11 @@ backend is probed at runtime and a configured-but-unusable sandbox **fails close
 | `/clear`               | Clear screen                                                                |
 | `/context clear --yes` | Clear in-memory model context; preserve the saved session                   |
 | `/exit`                | Exit                                                                        |
+
+Project-level compact guidance can be set in
+`projects["<absolute path>"].compactInstructions` in `~/.orion-code/orion.json`. It applies to
+manual and automatic compact, is bounded and redacted before model use, and cannot override tool
+protocol, safety constraints, acceptance criteria, evidence, failures, or pending work.
 
 Agent modes are TUI actions: use `Shift+Tab` to cycle `BUILD → PLAN → AUTO`; `/mode` and `/perm`
 are not registered commands. The remaining deprecated spellings keep their v0.3.0 compatibility

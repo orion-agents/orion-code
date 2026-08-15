@@ -495,7 +495,7 @@ describe('executeToolCalls', () => {
     expect(results[0].error).toContain('Network error');
   });
 
-  test('treats non-json tool result as success output', async () => {
+  test('preserves non-json output without treating it as trusted strategy success', async () => {
     const prepared = prepareToolCalls({
       toolCalls: toolCalls(['read_file']),
       tools,
@@ -514,6 +514,9 @@ describe('executeToolCalls', () => {
     expect(results[0].success).toBe(true);
     expect(results[0].summary).toBe('plain text result');
     expect(results[0].outputBytes).toBeGreaterThan(0);
+    expect(results[0].resultTrust).toBe('opaque');
+    expect(results[0].strategyResult).toBe('failed');
+    expect(results[0].strategyError).toContain('structured');
   });
 
   test('passes artifactRef through from tool result payload', async () => {

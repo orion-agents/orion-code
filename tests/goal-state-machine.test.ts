@@ -122,10 +122,6 @@ describe('Goal invariants', () => {
     expect(GOAL_INVARIANTS.maxConsecutiveBlockedContinuationTurns).toBe(2);
   });
 
-  it('max automatic continuation turns is 5', () => {
-    expect(GOAL_INVARIANTS.maxAutomaticContinuationTurns).toBe(5);
-  });
-
   it('token budget min is 1', () => {
     expect(GOAL_INVARIANTS.tokenBudgetMin).toBe(1);
   });

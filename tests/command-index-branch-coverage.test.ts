@@ -300,6 +300,29 @@ describe('command index branch coverage', () => {
           estimatedTokens: 1000,
           budgetTokens: 4000,
           sections: ['contract', 'evidence'],
+          capabilityProfileVersion: 2,
+          capabilityProfileFingerprint: 'capability-fingerprint',
+          sectionManifest: [
+            {
+              name: 'core',
+              authority: 'system',
+              source: 'harness',
+              selected: true,
+              tokenEstimate: 400,
+              budgetTokens: 800,
+              contentHash: 'core-hash',
+            },
+            {
+              name: 'recent_turns',
+              authority: 'session',
+              source: 'turns',
+              selected: false,
+              tokenEstimate: 900,
+              budgetTokens: 300,
+              contentHash: 'turn-hash',
+              reason: 'no recent turn fit the section budget',
+            },
+          ],
           includedEvidence: [{ id: 'e1', kind: 'test', score: 10, tokens: 20, reason: 'recent' }],
           omittedEvidence: [{ id: 'e2', kind: 'log', score: 1, tokens: 50, reason: 'budget' }],
         },
@@ -314,6 +337,11 @@ describe('command index branch coverage', () => {
     expect(output).toContain('restored session');
     expect(output).toContain('Included Evidence');
     expect(output).toContain('Omitted Evidence');
+    expect(output).toContain('Section Budget');
+    expect(output).toContain('recent_turns');
+    expect(output).toContain('Capability');
+    expect(output).toContain('Reserve');
+    expect(output).toContain('Latest Compact Receipt');
     expect(output).toContain('Armed');
   });
 
@@ -414,14 +442,62 @@ describe('command index branch coverage', () => {
       getAutomatic: () => ({ getStats: () => autoCompactStats }),
       compactManual: jest.fn(async () => ({
         messages: [{ role: 'assistant', content: 'summary' }],
+        originalCount: 3,
+        compactedCount: 1,
+        ratio: 1 / 3,
         summary: 'summary',
         summaryGeneratedAt: Date.now(),
-        summarySource: 'manual',
+        summarySource: 'heuristic',
+        semanticSummary: {
+          version: 1,
+          taskEpoch: 1,
+          constraints: [],
+          decisions: [],
+          completed: [],
+          pending: [],
+          blockers: [],
+          files: [],
+          verification: [],
+          toolOutcomes: [],
+          evidenceRefs: [],
+          items: [],
+          sourceBoundary: { groupCount: 0, messageCount: 0 },
+          coverage: { groupIds: [], groupCount: 0, messageCount: 0 },
+        },
+        diagnostics: [],
+        fingerprint: 'compact-fingerprint',
+        beforeTokens: 3,
+        afterTokens: 1,
+        plan: {
+          groups: [],
+          evictedGroups: [],
+          recentGroups: [],
+          recentStartIndex: 0,
+          targetRatio: 0.65,
+          fixedTokens: 0,
+          summaryReserveTokens: 0,
+        },
       })),
     };
     ctx.compactCoordinator = coordinator as never;
     expect((await execute(ctx, 'compact', '1')).success).toBe(true);
     expect(ctx.store.getSnapshot().conversationHistory).toHaveLength(1);
+
+    ctx.store.setState({
+      conversationHistory: [
+        { role: 'user', content: 'one' },
+        { role: 'assistant', content: 'two' },
+        { role: 'user', content: 'three' },
+      ] as never,
+    });
+    const focused = await execute(ctx, 'compact', '1 retain failed commands');
+    expect(focused.success).toBe(true);
+    expect(stripAnsi(focused.output ?? '')).toContain('Focus: retain failed commands');
+    expect(coordinator.compactManual).toHaveBeenLastCalledWith(
+      expect.any(Array),
+      1,
+      'retain failed commands'
+    );
 
     ctx.store.setState({
       conversationHistory: [

@@ -71,6 +71,30 @@ function createId(): string {
   return `ui-${nextTranscriptId++}`;
 }
 
+/** Stop the active agent state machine before releasing runtime resources. */
+export async function stopAndShutdownInkRuntime(
+  controller: Pick<AgentRuntimeController, 'stopActiveTurn'>,
+  runtime: Pick<OrionCodeUiRuntime, 'shutdown'>
+): Promise<void> {
+  let stopError: unknown;
+  try {
+    await controller.stopActiveTurn();
+  } catch (error) {
+    stopError = error;
+  }
+  try {
+    await runtime.shutdown();
+  } catch (shutdownError) {
+    if (stopError) {
+      throw new Error(
+        `Failed to stop active turn and shut down runtime: ${String(stopError)}; ${String(shutdownError)}`
+      );
+    }
+    throw shutdownError;
+  }
+  if (stopError) throw stopError;
+}
+
 type StaticTranscriptItem = { id: string; type: 'banner' } | (TranscriptEntry & { type: 'entry' });
 
 export function visibleCommandItems(input: string): SelectListItem[] {
@@ -356,15 +380,17 @@ export function ReplScreen({
     setProcessing(false);
     setExiting(true);
 
-    setTimeout(() => {
-      app.exit();
-    }, 50);
-
-    void runtime.shutdown().catch(error => {
-      const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`Orion Code shutdown warning: ${message}\n`);
-    });
-  }, [app, cursorController, runtime]);
+    void stopAndShutdownInkRuntime(agentController, runtime)
+      .catch(error => {
+        const message = error instanceof Error ? error.message : String(error);
+        process.stderr.write(`Orion Code shutdown warning: ${message}\n`);
+      })
+      .finally(() => {
+        setTimeout(() => {
+          app.exit();
+        }, 50);
+      });
+  }, [agentController, app, cursorController, runtime]);
 
   const submit = useCallback(
     (value: string) => {

@@ -3,7 +3,7 @@
 > **Orion Code — 通用 Agent 驾驭框架**
 > 一个 CLI 驱动的编码 Agent，具备安全边界、工具编排、记忆系统和上下文管理。
 >
-> v0.1.8 — 仓库治理、经审计的 issue 修复与可操作的运行时恢复
+> v0.1.9 — 语义压缩、证据驱动完成与自主进展控制
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20.0-green.svg)](https://nodejs.org)
@@ -104,10 +104,10 @@ npm start -- --print "review the current git diff"
 
 ### 全局安装
 
-固定安装该精确发布版本：
+registry 凭据存在后，固定安装该预发布版本：
 
 ```bash
-npm install -g @orion-agents/orion-code@0.1.8
+npm install -g @orion-agents/orion-code@0.1.9
 # 安装当前预发布渠道：
 npm install -g @orion-agents/orion-code@next
 # 任意目录运行
@@ -116,8 +116,11 @@ orion
 
 也可以在源码工作树中使用 `npm ci && npm run build && npm start`。
 
-> **发布状态**：`0.1.8` 已通过 npm `next` dist-tag 发布，并由 `v0.1.8` tag 标识。
-> 稳定版 `latest` 仍为 `0.1.4`；稳定版提升是独立决策。
+升级前请阅读 [v0.1.8 → v0.1.9 迁移指南](docs/migration/v0.1.8-to-v0.1.9.md)；发布验证状态见
+[v0.1.9 准出清单](docs/plan/v0.1.9-release-checklist.md)。
+
+> **发布状态**：`0.1.9` 是 npm `next` 渠道的当前发布候选。稳定版 `latest` 仍为
+> `0.1.4`；tag、GitHub Release、npm 发布与 `latest` 晋级分别验证、独立执行。
 
 公众体验、交互优化和新增工作流优先落在 TUI。`terminal-ui` 不作为与
 TUI 并行发展的公众产品；Ink 只保留迁移期兼容，不再增加产品能力。
@@ -423,7 +426,7 @@ ctxPercent = (promptTokens / 模型上下文窗口) × 100
 | `/model`               | 查看或切换模型                                      |
 | `/config`              | 显示当前生效配置                                    |
 | `/usage`               | 显示详细 Token 用量和成本                           |
-| `/compact`             | 手动触发上下文压缩                                  |
+| `/compact [N] [focus]` | 手动压缩上下文，可指定保留消息数与摘要关注点        |
 | `/session list`        | 列出或搜索最近会话                                  |
 | `/resume`              | 恢复已有会话                                        |
 | `/memory`              | 记忆状态、引用漂移校验与语义索引重建                |
@@ -436,6 +439,11 @@ ctxPercent = (promptTokens / 模型上下文窗口) × 100
 | `/context clear --yes` | 清除当前内存中的模型上下文，保留已保存 session      |
 | `/clear`               | 只清理当前视图，不删除 session 数据                 |
 | `/exit`                | 安全关闭并退出                                      |
+
+可在 `~/.orion-code/orion.json` 的
+`projects["<项目绝对路径>"].compactInstructions` 设置项目级压缩指引。该配置同时作用于手动和自动
+compact，进入模型前会做长度约束与敏感信息脱敏，且不能覆盖工具协议、安全约束、验收标准、证据、失败记录
+或待完成工作。
 
 Agent mode 是 TUI 交互状态：使用 `Shift+Tab` 循环 `BUILD → PLAN → AUTO`；`/mode` 与 `/perm`
 不再注册。其余旧拼写保留到 v0.3.0 兼容窗口结束：`/target` → `/goal`、`/commit` →
@@ -493,7 +501,18 @@ orion-code/
 
 ## 版本历史
 
-### v0.1.8（当前版本，已发布至 next）
+### v0.1.9（当前版本，发布候选）
+
+- 将 Compact 升级为可校验、可回滚、可恢复的语义快照与 Checkpoint V2，并支持
+  `/compact [N] [focus]`；
+- 使用 TaskContract V3、criterion/evidence graph、Capability Profile、ProgressController 与
+  typed StopDecision 统一完成、暂停和继续语义；
+- 移除 Goal 固定 5 次自动续跑上限，同时保留单请求/子 Agent 资源预算、no-progress、provider、权限与
+  Abort 安全边界；
+- 修复项目上下文路径信任和 usage ledger 多进程一致性；npm `next` 发布完成前不声明已发布，也不移动
+  稳定版 `latest`。
+
+### v0.1.8（已发布至 next）
 
 - 收敛 npm 发布白名单与包体积门禁，归档历史计划并删除已证明无引用的旧资产、脚本和 UI 实验目录；
 - 完成 33 个 open issues 的逐项账本，补齐数值型工具参数边界、budget-stop 恢复提示、renderer scope 与 AUTO 网络授权可见性；

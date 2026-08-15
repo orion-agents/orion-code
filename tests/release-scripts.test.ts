@@ -88,6 +88,27 @@ function runReleaseCheck(cwd: string): { status: number | null; report: ReleaseR
   return { status: result.status, report: JSON.parse(result.stdout) as ReleaseReport };
 }
 
+function runReleaseCheckWithArgs(
+  cwd: string,
+  args: string[]
+): { status: number | null; report: ReleaseReport } {
+  const result = spawnSync(
+    process.execPath,
+    [
+      join(cwd, 'scripts', 'release', 'release-check.js'),
+      '--skip-tests',
+      '--skip-pack',
+      '--json',
+      ...args,
+    ],
+    { cwd, encoding: 'utf8' }
+  );
+  if (!result.stdout.trim()) {
+    throw new Error(`release-check emitted no JSON: ${result.stderr}`);
+  }
+  return { status: result.status, report: JSON.parse(result.stdout) as ReleaseReport };
+}
+
 function resultById(report: ReleaseReport, id: string): ReleaseResult {
   const result = report.results.find(item => item.id === id);
   if (!result) throw new Error(`missing release-check result: ${id}`);
@@ -118,7 +139,33 @@ describe('release-check script contract', () => {
     expect(prepublishOnly).toContain('npm run test:coverage -- --runInBand');
     expect(pkg.files).toContain('npm-shrinkwrap.json');
     expect(pkg.files).toContain('assets/orion-tui-icon.png');
+    expect(pkg.files).toContain('CHANGELOG.md');
+    expect(pkg.files).toContain('docs/migration/v0.1.8-to-v0.1.9.md');
+    expect(pkg.files).toContain('docs/plan/v0.1.9-release-checklist.md');
     expect(pkg.files).not.toContain('assets/');
+  });
+
+  it('fails when the checkout version does not match the intended release', () => {
+    const cwd = createFixture('1.2.3', '## [1.2.3] - 2026-08-15\n\nStatus: candidate');
+
+    const { status, report } = runReleaseCheckWithArgs(cwd, ['--expected-version', '1.2.4']);
+
+    expect(status).not.toBe(0);
+    expect(resultById(report, 'version').detail).toContain(
+      'package.json version: expected release 1.2.4, found 1.2.3'
+    );
+  });
+
+  it('binds a vX.Y.Z release branch to the matching package version', () => {
+    const cwd = createFixture('1.2.3', '## [1.2.3] - 2026-08-15\n\nStatus: candidate');
+    git(cwd, ['checkout', '-qb', 'v1.2.4']);
+
+    const { status, report } = runReleaseCheck(cwd);
+
+    expect(status).not.toBe(0);
+    expect(resultById(report, 'version').detail).toContain(
+      'release branch v1.2.4: package.json version expected 1.2.4, found 1.2.3'
+    );
   });
 
   it('enforces exact package contents and hard package-size budgets', () => {
@@ -128,6 +175,8 @@ describe('release-check script contract', () => {
     expect(script).toContain('MAX_UNPACKED_PACKAGE_BYTES = 10 * 1024 * 1024');
     expect(script).toContain('MAX_PACKAGE_ENTRIES = 1500');
     expect(script).toContain("'assets/orion-tui-icon.png'");
+    expect(script).toContain("'docs/migration/v0.1.8-to-v0.1.9.md'");
+    expect(script).toContain("'docs/plan/v0.1.9-release-checklist.md'");
     expect(script).toContain('unexpected tarball entries');
   });
 

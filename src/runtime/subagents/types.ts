@@ -9,6 +9,8 @@
  * lives here so terminal/Ink/TUI consume one definition.
  */
 
+import type { StopDecision } from '../../framework/stop-decision';
+
 /** Built-in child roles. v0.2.20 ships only read-only investigation roles. */
 export type SubagentRole = 'research' | 'review' | 'test-investigate';
 
@@ -37,7 +39,7 @@ export interface SubagentConfig {
   maxParallel: number;
   /** Maximum packets accepted in a single `subtask` call. */
   maxTasksPerTurn: number;
-  /** Maximum root-turns a single child may consume. */
+  /** @deprecated Compatibility input; child execution is enforced by request/tool reservations. */
   maxTurnsPerTask: number;
   /** Maximum model requests a single child may spend. */
   maxModelRequestsPerTask: number;
@@ -183,6 +185,8 @@ export interface SubtaskResult {
   verification: string[];
   risks: string[];
   usage: SubtaskUsage;
+  /** Machine-readable reason this child scope ended; never implies its parent task completed. */
+  stopDecision?: StopDecision;
 }
 
 export interface SubtaskBatchResult {

@@ -134,20 +134,6 @@ async function waitForSignal(
   }
 }
 
-async function waitForCondition(
-  condition: () => boolean,
-  label: string,
-  diagnostics?: () => string
-): Promise<void> {
-  const deadline = Date.now() + 15_000;
-  while (!condition()) {
-    if (Date.now() >= deadline) {
-      throw new Error(`Timed out waiting for ${label}${diagnostics ? ` (${diagnostics()})` : ''}`);
-    }
-    await new Promise<void>(resolve => setTimeout(resolve, 10));
-  }
-}
-
 describe('Goal combined long-session regression', () => {
   it('survives 20+ turns, compact, restart/resume, steering, denial, repair, and reverify', async () => {
     const previousConfigDir = process.env.ORION_CODE_CONFIG_DIR;
@@ -274,35 +260,15 @@ describe('Goal combined long-session regression', () => {
         (initialController as unknown as { goalCoordinator: GoalCoordinator }).goalCoordinator;
       const goalDiagnostics = () =>
         `requests=${typedRequests.length}, goal=${JSON.stringify(activeCoordinator().goal)}`;
-      await waitForCondition(
-        () =>
-          activeCoordinator().goal?.status === 'paused' &&
-          activeCoordinator().goal?.continuationCount === 5,
-        'first autonomy checkpoint',
-        goalDiagnostics
-      );
-      expect(activeCoordinator().goal?.stopReason?.message).toContain('/goal resume');
-      expect(initialController.submit('/target resume')).toEqual({ type: 'started' });
-
       await waitForSignal(steeringStarted.promise, 'live steering turn', goalDiagnostics);
+      expect(activeCoordinator().goal).toMatchObject({
+        status: 'active',
+        continuationCount: 7,
+      });
       expect(initialController.submit('Preserve the repaired artifact across restart')).toEqual({
         type: 'revision_requested',
       });
       steeringRelease.resolve();
-
-      let lastReviewCount = 5;
-      for (let review = 0; review < 2; review += 1) {
-        await waitForCondition(
-          () =>
-            activeCoordinator().goal?.status === 'paused' &&
-            (activeCoordinator().goal?.continuationCount ?? 0) > lastReviewCount,
-          `autonomy checkpoint after steering ${review + 1}`,
-          goalDiagnostics
-        );
-        lastReviewCount = activeCoordinator().goal!.continuationCount;
-        expect(activeCoordinator().goal?.stopReason?.message).toContain('/goal resume');
-        expect(initialController.submit('/target resume')).toEqual({ type: 'started' });
-      }
 
       await waitForSignal(turn21Started.promise, 'Goal turn 21');
       expect(permissionResult).toBe(false);

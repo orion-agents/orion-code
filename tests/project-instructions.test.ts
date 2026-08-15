@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -48,6 +48,26 @@ describe('project instructions loader', () => {
       'Cursor style rule',
       'CLI-specific rules',
     ]);
+  });
+
+  it('does not load repository guidance through a symlink outside the project', () => {
+    const outside = `${root}-outside`;
+    const external = join(outside, 'AGENTS.md');
+    mkdirSync(outside, { recursive: true });
+    mkdirSync(join(root, 'packages', 'unsafe'), { recursive: true });
+    writeFileSync(external, 'EXTERNAL INSTRUCTION MUST NOT LOAD\n');
+    symlinkSync(external, join(root, 'packages', 'unsafe', 'AGENTS.md'));
+
+    try {
+      const cwd = join(root, 'packages', 'unsafe');
+      const rendered = loadProjectInstructions(cwd);
+      expect(rendered).not.toContain('EXTERNAL INSTRUCTION MUST NOT LOAD');
+      expect(loadProjectInstructionFiles(cwd).map(file => file.path)).not.toContain(
+        'packages/unsafe/AGENTS.md'
+      );
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   it('renders override ordering and source paths', () => {

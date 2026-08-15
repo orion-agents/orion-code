@@ -1,12 +1,16 @@
-import { appendFileSync, existsSync, mkdtempSync, rmSync } from 'fs';
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { CostTracker } from '../src/core/cost-tracker';
 import {
   appendUsageRecord,
+  loadUsageLedger,
   loadUsageState,
   summarizeUsageLedger,
+  UsageLedgerPersistenceError,
 } from '../src/services/usage-state';
+
+const fsModule = jest.requireActual<typeof import('fs')>('fs');
 
 describe('durable usage ledger', () => {
   let configDir: string;
@@ -19,6 +23,7 @@ describe('durable usage ledger', () => {
   });
 
   afterEach(() => {
+    jest.restoreAllMocks();
     if (existsSync(configDir)) rmSync(configDir, { recursive: true, force: true });
     if (originalConfigDir === undefined) delete process.env.ORION_CODE_CONFIG_DIR;
     else process.env.ORION_CODE_CONFIG_DIR = originalConfigDir;
@@ -124,5 +129,122 @@ describe('durable usage ledger', () => {
     expect(summary.reasoningTokens).toBe(12);
     expect(summary.completionTokens).toBe(30);
     expect(summary.totalTokens).toBe(80);
+  });
+
+  test.each([
+    ['negative prompt tokens', { promptTokens: -1 }],
+    ['NaN completion tokens', { completionTokens: Number.NaN }],
+    ['infinite total tokens', { totalTokens: Number.POSITIVE_INFINITY }],
+    ['fractional cached tokens', { cachedPromptTokens: 0.5 }],
+    ['cached tokens above prompt tokens', { cachedPromptTokens: 3 }],
+    ['mismatched total tokens', { totalTokens: 4 }],
+    ['negative reasoning tokens', { reasoningTokens: -1 }],
+    ['reasoning tokens above completion tokens', { reasoningTokens: 2 }],
+    ['infinite cost', { costUsd: Number.POSITIVE_INFINITY }],
+  ])('fails closed before writing an invalid record: %s', (_label, change) => {
+    const record = {
+      timestamp: new Date(),
+      model: 'validation-model',
+      promptTokens: 2,
+      completionTokens: 1,
+      cachedPromptTokens: 0,
+      totalTokens: 3,
+      costUsd: 0,
+      costSource: 'fallback' as const,
+      estimatedCost: 0,
+      requestId: 'invalid-record',
+      ...change,
+    };
+
+    expect(() => appendUsageRecord(record)).toThrow(
+      expect.objectContaining<Partial<UsageLedgerPersistenceError>>({
+        name: 'UsageLedgerPersistenceError',
+        code: 'invalid_record',
+      })
+    );
+    expect(loadUsageLedger()).toEqual([]);
+  });
+
+  test('rejects invalid persisted numeric fields instead of normalizing them to zero', () => {
+    const ledgerPath = join(configDir, 'cost', 'usage-ledger.jsonl');
+    appendUsageRecord({
+      timestamp: new Date(),
+      model: 'valid-model',
+      promptTokens: 2,
+      completionTokens: 1,
+      cachedPromptTokens: 0,
+      totalTokens: 3,
+      costUsd: 0,
+      costSource: 'fallback',
+      estimatedCost: 0,
+      requestId: 'valid-record',
+    });
+    appendFileSync(
+      ledgerPath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        id: 'invalid-negative',
+        timestamp: new Date().toISOString(),
+        model: 'invalid-model',
+        promptTokens: -1,
+        completionTokens: 1,
+        cachedPromptTokens: 0,
+        totalTokens: 0,
+        costUsd: 0,
+        costSource: 'fallback',
+      })}\n`
+    );
+
+    expect(loadUsageLedger()).toHaveLength(1);
+    expect(summarizeUsageLedger()).toMatchObject({ recordCount: 1, droppedCorruptLines: 1 });
+  });
+
+  test('fsyncs one newline-terminated JSON object before reporting append success', () => {
+    const fsync = jest.spyOn(fsModule, 'fsyncSync');
+
+    appendUsageRecord({
+      timestamp: new Date(),
+      model: 'durable-model',
+      promptTokens: 2,
+      completionTokens: 1,
+      cachedPromptTokens: 0,
+      totalTokens: 3,
+      costUsd: 0,
+      costSource: 'fallback',
+      estimatedCost: 0,
+      requestId: 'durable-record',
+    });
+
+    const raw = readFileSync(join(configDir, 'cost', 'usage-ledger.jsonl'), 'utf8');
+    expect(raw.endsWith('\n')).toBe(true);
+    expect(raw.trimEnd().split('\n')).toHaveLength(1);
+    expect(JSON.parse(raw)).toMatchObject({ requestId: 'durable-record', totalTokens: 3 });
+    expect(fsync).toHaveBeenCalledTimes(1);
+  });
+
+  test('fails closed with uncertain durability when fsync fails after append', () => {
+    jest.spyOn(fsModule, 'fsyncSync').mockImplementationOnce(() => {
+      throw Object.assign(new Error('simulated fsync failure'), { code: 'EIO' });
+    });
+
+    expect(() =>
+      appendUsageRecord({
+        timestamp: new Date(),
+        model: 'durability-failure-model',
+        promptTokens: 2,
+        completionTokens: 1,
+        cachedPromptTokens: 0,
+        totalTokens: 3,
+        costUsd: 0,
+        costSource: 'fallback',
+        estimatedCost: 0,
+        requestId: 'uncertain-durability-record',
+      })
+    ).toThrow(
+      expect.objectContaining<Partial<UsageLedgerPersistenceError>>({
+        code: 'durability_failed',
+        action: expect.stringContaining('same request ID'),
+      })
+    );
   });
 });

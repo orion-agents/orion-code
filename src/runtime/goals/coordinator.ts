@@ -26,6 +26,8 @@ import {
   GOAL_TERMINAL_STATES,
   GOAL_USER_RECOVERABLE_STATES,
 } from './types';
+import { goalStopDecision } from './stop-policy';
+import type { StopDecision } from '../../framework/stop-decision';
 import {
   loadGoal,
   saveGoal,
@@ -596,10 +598,12 @@ export class GoalCoordinator {
     return (
       this.isActive &&
       !this.state.continuationDeferred &&
-      (this.state.goal!.automaticContinuationStreak ?? 0) <
-        GOAL_INVARIANTS.maxAutomaticContinuationTurns &&
       !isBudgetExceeded(this.state.goal!.tokensUsed, this.state.goal!.tokenBudget)
     );
+  }
+  /** Typed explanation for the current Goal boundary; active Goals have no stop decision. */
+  get stopDecision(): StopDecision | null {
+    return goalStopDecision(this.state.goal);
   }
   get lastLoadIssue(): {
     code: 'corrupt' | 'metadata_mismatch' | 'incompatible_schema' | 'io_error';
@@ -1572,22 +1576,6 @@ export class GoalCoordinator {
       updated.stopReason = {
         kind: 'user',
         message: `Auto-paused: no progress for ${GOAL_INVARIANTS.maxConsecutiveNoProgressTurns} consecutive turns. Recent turns: ${formatNoProgressTurns(recent)}.`,
-        at: Date.now(),
-      };
-      this.state.continuationDeferred = true;
-    }
-
-    // A Goal may make genuine progress indefinitely, but it must not run
-    // indefinitely without another human decision point. Pause instead of
-    // deleting state so the user can inspect, resume, or explicitly abandon it.
-    if (
-      (updated.automaticContinuationStreak ?? 0) >= GOAL_INVARIANTS.maxAutomaticContinuationTurns &&
-      updated.status === 'active'
-    ) {
-      updated.status = 'paused';
-      updated.stopReason = {
-        kind: 'user',
-        message: `Auto-paused after ${GOAL_INVARIANTS.maxAutomaticContinuationTurns} consecutive autonomous continuations. Review progress, then use /goal resume to continue or /goal exit to abandon.`,
         at: Date.now(),
       };
       this.state.continuationDeferred = true;

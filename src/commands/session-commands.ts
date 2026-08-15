@@ -68,8 +68,8 @@ export const SESSION_COMMANDS: SlashCommand[] = [
   },
   {
     name: 'compact',
-    description: 'Compact conversation history to reduce context size',
-    argumentHint: '[threshold]',
+    description: 'Compact conversation history with optional summary focus',
+    argumentHint: '[threshold] [focus]',
     category: 'session',
     priority: 40,
     type: 'builtin',

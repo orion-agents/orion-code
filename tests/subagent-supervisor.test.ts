@@ -271,6 +271,42 @@ describe('subagent supervisor', () => {
     expect(deps.budget.snapshot().reservedModelRequests).toBe(0);
   });
 
+  it('passes each fair-share reservation into the child execution boundary', async () => {
+    const observed: Array<{ maxModelRequests: number; maxToolCalls: number }> = [];
+    const executeQuery: ExecuteChildQuery = async (_messages, _tools, _signal, budget) => {
+      expect(budget).toBeDefined();
+      observed.push(budget!);
+      return {
+        content: JSON.stringify({ summary: 'bounded' }),
+        usage: {
+          modelRequests: 1,
+          toolCalls: 0,
+          promptTokens: 0,
+          completionTokens: 0,
+          durationMs: 1,
+        },
+      };
+    };
+    const deps = makeDeps({
+      executeQuery,
+      config: {
+        maxModelRequestsPerTurn: 5,
+        maxModelRequestsPerTask: 4,
+        maxToolCallsPerTask: 7,
+      },
+    });
+
+    await runSubtaskBatch(request([packet('investigate alpha'), packet('investigate beta')]), deps);
+
+    expect(observed).toHaveLength(2);
+    expect(observed).toEqual(
+      expect.arrayContaining([
+        { maxModelRequests: 2, maxToolCalls: 7 },
+        { maxModelRequests: 2, maxToolCalls: 7 },
+      ])
+    );
+  });
+
   it('bounds concurrency to maxParallel via the provider gate', async () => {
     let active = 0;
     let maxActive = 0;

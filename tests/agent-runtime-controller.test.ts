@@ -833,9 +833,28 @@ describe('AgentRuntimeController', () => {
 
       const checkpoint = loadSessionCompactCheckpoint(session.id);
       expect(checkpoint).not.toBeNull();
+      expect(checkpoint?.version).toBe(2);
+      const checkpointV2 = checkpoint?.version === 2 ? checkpoint : undefined;
       expect(checkpoint?.mode).toBe('predictive');
       expect(readSessionMessages(session.id)).toHaveLength(32);
       expect(firstStore.getSnapshot().conversationHistory).toEqual(checkpoint?.modelHistory);
+      const compactTrace = readSessionTraceEvents(session.id).filter(event =>
+        event.type.startsWith('compact_')
+      );
+      expect(compactTrace.map(event => event.type)).toEqual([
+        'compact_prepare',
+        'compact_validate',
+        'compact_commit',
+        'compact_boundary',
+        'compact_completed',
+      ]);
+      expect(compactTrace[2]).toMatchObject({
+        checkpointId: checkpoint?.checkpointId,
+        compactCandidateFingerprint: checkpointV2?.candidateReceipt.candidateFingerprint,
+        compactBeforeTokens: checkpointV2?.candidateReceipt.beforeTokens,
+        compactAfterTokens: checkpointV2?.candidateReceipt.afterTokens,
+        success: true,
+      });
       expect(
         loadSessionHistory(session.id)
           .map(message => message.content)
@@ -3963,6 +3982,8 @@ describe('AgentRuntimeController', () => {
         promptSections: expect.arrayContaining(['core']),
         promptIncludedEvidenceCount: expect.any(Number),
         promptOmittedEvidenceCount: expect.any(Number),
+        promptCapabilityProfileVersion: 1,
+        promptCapabilityProfileFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/u),
       });
       expect(traceEvents[deltaIndex]).toMatchObject({
         type: 'workspace_delta',
@@ -4806,6 +4827,12 @@ describe('AgentRuntimeController', () => {
       expect(store.getSnapshot().lastLoopStats).toMatchObject({
         finishReason: 'completion_gate',
         verificationClaimAllowed: false,
+        stopDecision: {
+          scope: 'request',
+          status: 'stopped',
+          disposition: 'resume_allowed',
+          reason: { code: 'completion_gate' },
+        },
       });
 
       expect(session).not.toBeNull();
@@ -4828,6 +4855,12 @@ describe('AgentRuntimeController', () => {
       expect(completeEvent).toMatchObject({
         turnId: 'turn-gate-no-verify',
         finishReason: 'completion_gate',
+        stopDecision: {
+          scope: 'request',
+          status: 'stopped',
+          disposition: 'resume_allowed',
+          reason: { code: 'completion_gate' },
+        },
       });
 
       expect(traceEvents).toEqual(

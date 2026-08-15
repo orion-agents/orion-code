@@ -20,8 +20,9 @@ import {
 } from '../../services/llm';
 import type { ProviderResilienceCoordinator } from '../../services/provider-resilience';
 import type { LoopStats } from '../../framework';
+import type { StopDecision } from '../../framework/stop-decision';
 import { query, type QueryEvent, type QueryParams } from '../../framework/query';
-import type { ExecuteChildQuery } from './runner';
+import type { ChildExecutionBudget, ExecuteChildQuery } from './runner';
 import type { SubtaskUsage } from './types';
 import { EMPTY_SUBTASK_USAGE, SubtaskExecutionError } from './types';
 import type { SubagentProviderGate } from './provider-gate';
@@ -37,8 +38,12 @@ export interface SubagentLlmFactoryDeps {
   runQuery?: (params: QueryParams) => AsyncIterable<QueryEvent>;
   /** Shared gate; a child that observes a 429 enters cooldown for siblings. */
   providerGate: SubagentProviderGate;
-  /** Per-child turn cap. */
-  maxTurnsPerTask: number;
+  /** @deprecated Compatibility fallback when no supervisor reservation is supplied. */
+  maxTurnsPerTask?: number;
+  /** Per-child resource fallback for direct API callers. */
+  maxModelRequestsPerTask?: number;
+  /** Per-child tool-call fallback for direct API callers. */
+  maxToolCallsPerTask?: number;
   /** Shared Goal token-budget preflight applied to every child provider attempt. */
   beforeProviderRequest?: ProviderRequestPreflight;
 }
@@ -77,8 +82,13 @@ export function createProductionExecuteQuery(deps: SubagentLlmFactoryDeps): Exec
   return async (
     messages,
     toolSet,
-    abortSignal
-  ): Promise<{ content: string; usage: SubtaskUsage }> => {
+    abortSignal,
+    reservedBudget
+  ): Promise<{ content: string; usage: SubtaskUsage; stopDecision?: StopDecision }> => {
+    const executionBudget: ChildExecutionBudget = reservedBudget ?? {
+      maxModelRequests: deps.maxModelRequestsPerTask ?? deps.maxTurnsPerTask ?? 6,
+      maxToolCalls: deps.maxToolCallsPerTask ?? 24,
+    };
     const llm = createLlm(createChildLlmConfig(deps.rootConfig));
     // v0.2.26: inject the shared resilience coordinator so child requests
     // also go through the retry/circuit-breaker/stream-recovery layer.
@@ -87,8 +97,17 @@ export function createProductionExecuteQuery(deps: SubagentLlmFactoryDeps): Exec
     }
     let providerAttempts = 0;
     const providerPreflight: ProviderRequestPreflight = async context => {
-      providerAttempts += 1;
-      return deps.beforeProviderRequest ? deps.beforeProviderRequest(context) : { available: true };
+      if (providerAttempts >= executionBudget.maxModelRequests) {
+        return {
+          available: false,
+          reason: `Subagent provider request budget ${executionBudget.maxModelRequests} reached`,
+        };
+      }
+      const sharedDecision = deps.beforeProviderRequest
+        ? await deps.beforeProviderRequest(context)
+        : { available: true };
+      if (sharedDecision.available) providerAttempts += 1;
+      return sharedDecision;
     };
     const restoreProviderPreflight =
       typeof llm.setProviderRequestPreflight === 'function'
@@ -102,6 +121,7 @@ export function createProductionExecuteQuery(deps: SubagentLlmFactoryDeps): Exec
     let providerCostComplete = true;
     let providerCostUsd = 0;
     let completionUsageComplete = false;
+    let stopDecision: StopDecision | undefined;
     const unsubscribeUsage =
       typeof llm.subscribeUsage === 'function'
         ? llm.subscribeUsage(event => {
@@ -113,7 +133,12 @@ export function createProductionExecuteQuery(deps: SubagentLlmFactoryDeps): Exec
           })
         : undefined;
     const finalizeUsage = (usageComplete: boolean): void => {
-      usage.modelRequests = Math.max(usage.modelRequests, modelRequests, observedModelRequests);
+      usage.modelRequests = Math.max(
+        usage.modelRequests,
+        modelRequests,
+        observedModelRequests,
+        providerAttempts
+      );
       usage.durationMs = Math.max(0, Date.now() - startedAt);
       usage.usageComplete = usageComplete;
       if (observedModelRequests > 0 && providerCostComplete) usage.costUsd = providerCostUsd;
@@ -125,8 +150,11 @@ export function createProductionExecuteQuery(deps: SubagentLlmFactoryDeps): Exec
         tools: toolSet.tools as QueryParams['tools'],
         toolExecutor: toolSet.toolExecutor,
         llm,
-        maxTurns: deps.maxTurnsPerTask,
         abortSignal,
+        loopBudget: {
+          maxLlmRequestsPerUserTurn: executionBudget.maxModelRequests,
+          maxToolCallsPerUserTurn: executionBudget.maxToolCalls,
+        },
         // Children stream nothing to stdout; the root only sees the structured result.
         streamCallbacks: { onChunk: () => undefined },
       };
@@ -136,6 +164,7 @@ export function createProductionExecuteQuery(deps: SubagentLlmFactoryDeps): Exec
           finalContent = event.content;
         } else if (event.type === 'complete') {
           finalContent = event.content;
+          stopDecision = event.stats?.stopDecision;
           const loopUsage = loopStatsToUsage(
             event.stats,
             modelRequests,
@@ -187,7 +216,7 @@ export function createProductionExecuteQuery(deps: SubagentLlmFactoryDeps): Exec
     }
 
     finalizeUsage(completionUsageComplete);
-    return { content: finalContent, usage };
+    return { content: finalContent, usage, stopDecision };
   };
 }
 

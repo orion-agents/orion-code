@@ -589,7 +589,6 @@ export const GOAL_INVARIANTS = {
   maxConsecutiveNoProgressTurns: 3,
   /** Two blocked autonomous loops are enough to stop and ask for review. */
   maxConsecutiveBlockedContinuationTurns: 2,
-  maxAutomaticContinuationTurns: 5,
   maxAutonomousLlmRequestsPerTurn: 8,
   maxAutonomousToolCallsPerTurn: 32,
   maxAutonomousModelVisibleBytesPerTurn: 32 * 1024,

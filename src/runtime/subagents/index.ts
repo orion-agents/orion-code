@@ -40,6 +40,7 @@ export {
   type SubagentRunnerDeps,
   type ChildToolSet,
   type ExecuteChildQuery,
+  type ChildExecutionBudget,
   type RunSubtaskOutcome,
 } from './runner';
 export { SubagentProviderGate, type ProviderGateOptions } from './provider-gate';

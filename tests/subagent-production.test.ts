@@ -3,7 +3,7 @@ import {
   createChildLlmConfig,
 } from '../src/runtime/subagents/production';
 import { SubagentProviderGate } from '../src/runtime/subagents/provider-gate';
-import type { LLMService, LLMConfig } from '../src/services/llm';
+import type { LLMService, LLMConfig, ProviderRequestPreflight } from '../src/services/llm';
 import type { QueryEvent, QueryParams } from '../src/framework/query';
 import type { ChildToolSet } from '../src/runtime/subagents/runner';
 import { SubtaskExecutionError } from '../src/runtime/subagents/types';
@@ -238,13 +238,13 @@ describe('subagent production executeQuery binding', () => {
     expect(receivedSignal).toBe(ac.signal);
   });
 
-  it('honors maxTurnsPerTask in the query params', async () => {
-    let receivedMaxTurns: number | undefined;
+  it('uses the supervisor reservation as the child query resource budget', async () => {
+    let receivedParams: QueryParams | undefined;
     const executeQuery = createProductionExecuteQuery({
       rootConfig: { apiKey: 'k', model: 'm' },
       createLlm: () => makeMockLlm(),
       runQuery: async function* (params: QueryParams): AsyncIterable<QueryEvent> {
-        receivedMaxTurns = params.maxTurns;
+        receivedParams = params;
         yield {
           type: 'complete',
           content: '{}',
@@ -256,7 +256,64 @@ describe('subagent production executeQuery binding', () => {
       providerGate: new SubagentProviderGate({ maxConcurrent: 3 }),
       maxTurnsPerTask: 4,
     });
-    await executeQuery([{ role: 'user', content: 'go' }], TOOL_SET, new AbortController().signal);
-    expect(receivedMaxTurns).toBe(4);
+    await executeQuery([{ role: 'user', content: 'go' }], TOOL_SET, new AbortController().signal, {
+      maxModelRequests: 3,
+      maxToolCalls: 9,
+    });
+    expect(receivedParams?.maxTurns).toBeUndefined();
+    expect(receivedParams?.loopBudget).toMatchObject({
+      maxLlmRequestsPerUserTurn: 3,
+      maxToolCallsPerUserTurn: 9,
+    });
+  });
+
+  it('enforces and accounts the reservation at the provider-attempt boundary', async () => {
+    let activePreflight: ProviderRequestPreflight | undefined;
+    const decisions: boolean[] = [];
+    const sharedPreflight = jest.fn(async () => ({ available: true }));
+    const executeQuery = createProductionExecuteQuery({
+      rootConfig: { apiKey: 'k', model: 'm' },
+      createLlm: () =>
+        ({
+          getModel: () => 'test-model',
+          setProviderRequestPreflight: (preflight?: ProviderRequestPreflight) => {
+            activePreflight = preflight;
+            return () => {
+              activePreflight = undefined;
+            };
+          },
+        }) as unknown as LLMService,
+      runQuery: async function* (): AsyncIterable<QueryEvent> {
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          const decision = await activePreflight!({
+            operation: 'chat_stream',
+            attempt,
+            model: 'test-model',
+            estimatedPromptTokens: 10,
+          });
+          decisions.push(decision.available);
+        }
+        yield {
+          type: 'complete',
+          content: '{}',
+          usage: { promptTokens: 10, completionTokens: 5 },
+          model: 'm',
+          stats: { llmRequests: 1, toolCalls: 0 } as never,
+        };
+      },
+      providerGate: new SubagentProviderGate({ maxConcurrent: 3 }),
+      beforeProviderRequest: sharedPreflight,
+    });
+
+    const { usage } = await executeQuery(
+      [{ role: 'user', content: 'go' }],
+      TOOL_SET,
+      new AbortController().signal,
+      { maxModelRequests: 2, maxToolCalls: 5 }
+    );
+
+    expect(decisions).toEqual([true, true, false]);
+    expect(sharedPreflight).toHaveBeenCalledTimes(2);
+    expect(usage.modelRequests).toBe(2);
   });
 });

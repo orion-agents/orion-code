@@ -50,4 +50,41 @@ describe('Context Harness evidence accounting', () => {
     expect(result.stats.includedEvidence.every(item => item.tokens < 10_000)).toBe(true);
     expect(result.text).toContain('record-9');
   });
+
+  it('projects oversized contract items with a durable reference and never slices the final prompt', () => {
+    const objective = `Objective ${'semantic contract '.repeat(300)}`;
+    const state: HarnessState = {
+      ledger: [],
+      rootObjective: objective,
+      activeInstruction: objective,
+      activeConstraints: Array.from(
+        { length: 8 },
+        (_, index) => `constraint-${index} ${'must remain atomic '.repeat(80)}`
+      ),
+      nonGoals: Array.from(
+        { length: 8 },
+        (_, index) => `non-goal-${index} ${'must not happen '.repeat(80)}`
+      ),
+      updatedAt: 1,
+    };
+
+    const result = buildHarnessContext(state, 'gpt-4o', { evidenceBudgetRatio: 0.01 });
+
+    expect(result.text).toContain('[full-ref:');
+    expect(result.text).not.toContain('[truncated by Context Harness]');
+    expect(result.stats.overBudget).toBe(true);
+    expect(result.stats.sectionManifest).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'core',
+          authority: 'system',
+          source: 'harness_contract',
+          selected: true,
+          reason: expect.stringContaining('exceeds'),
+        }),
+        expect.objectContaining({ name: 'instruction', selected: true }),
+      ])
+    );
+    expect(state.rootObjective).toBe(objective);
+  });
 });

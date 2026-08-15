@@ -178,6 +178,31 @@ describe('Context Harness', () => {
     });
   });
 
+  test('does not admit opaque tool output as passing verification evidence', () => {
+    const harness = createContextHarness({
+      cwd: '/repo',
+      modelId: 'gpt-4o',
+      state: {
+        contract: createTaskContract('Please run npm test and ensure the tests pass', '/repo'),
+        ledger: [],
+        updatedAt: 1,
+      },
+      config: { completionGate: 'block' },
+    });
+
+    harness.recordToolResult({
+      name: 'exec_command',
+      args: { command: 'npm test' },
+      result: 'all tests passed',
+      duration: 5,
+      success: true,
+    });
+
+    expect(harness.beforeComplete()).toMatchObject({ canComplete: false });
+    expect(harness.getCapsule()?.verification.passed).toEqual([]);
+    expect(harness.toJSON().ledger[0].metadata?.success).toBeUndefined();
+  });
+
   test('auto compact preserves context capsule', async () => {
     const harness = createContextHarness({ cwd: '/repo', modelId: 'gpt-4o' });
     harness.updateContractFromUserInput('完成 Context Harness，必须保留 open todos');

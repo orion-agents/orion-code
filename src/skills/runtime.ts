@@ -5,13 +5,13 @@
  * active skill prompts and the tool list that should be visible for one turn.
  */
 
-import { closeSync, fstatSync, openSync, readSync } from 'fs';
 import { homedir } from 'os';
 import { basename, dirname, resolve, relative, isAbsolute } from 'path';
 import type { OrionCodeTool } from '../framework/tool';
 import { normalizeSkillSourcePath, parseSkillFile } from './loader';
 import { getSkillsRegistry } from './registry';
 import { getConfigHome } from '../services/config-dir';
+import { readSafeProjectFilePrefix } from '../services/safe-project-reader';
 import type { SkillDefinition } from './types';
 import { MAX_AUTO_SKILLS, SKILLS_DIR_NAMES } from './types';
 
@@ -56,16 +56,22 @@ interface MarkdownSkillReference {
 
 export const MAX_EXPLICIT_SKILL_BYTES = 64 * 1024;
 
+function explicitSkillAllowedRoots(cwd: string): string[] {
+  return [resolve(cwd), resolve(getConfigHome(), SKILLS_DIR_NAMES.USER)];
+}
+
 export function resolveSkillsForTurn(context: SkillRuntimeContext): SkillResolution {
   const registry = getSkillsRegistry();
   const parsedInput = parseSkillCommandInput(context.input);
   const linkedSkill = loadExplicitSkillReference(context.input, context.cwd);
   const matched = parsedInput.skillPath
-    ? (linkedSkill ? [linkedSkill] : [])
+    ? linkedSkill
+      ? [linkedSkill]
+      : []
     : mergeSkillsByName([
-      ...findExplicitSkillReferences(context.input, registry.getAllSkills()),
-      ...registry.findMatchingSkills(context.input),
-    ]).slice(0, MAX_AUTO_SKILLS);
+        ...findExplicitSkillReferences(context.input, registry.getAllSkills()),
+        ...registry.findMatchingSkills(context.input),
+      ]).slice(0, MAX_AUTO_SKILLS);
   const skills = matched.map(toAppliedSkill);
   const scopedToolNames = buildScopedToolNames(skills);
   const toolScopeActive = scopedToolNames.length > 0;
@@ -75,7 +81,10 @@ export function resolveSkillsForTurn(context: SkillRuntimeContext): SkillResolut
 
   return {
     skills,
-    promptInjection: renderActiveSkillsPrompt(skills, toolScopeActive ? tools.map(tool => tool.name) : []),
+    promptInjection: renderActiveSkillsPrompt(
+      skills,
+      toolScopeActive ? tools.map(tool => tool.name) : []
+    ),
     tools,
     scopedToolNames,
     toolScopeActive,
@@ -87,11 +96,16 @@ export function hasMatchingSkill(input: string, cwd: string = process.cwd()): bo
   const parsedInput = parseSkillCommandInput(input);
   const linkedSkill = loadExplicitSkillReference(input, cwd);
   if (parsedInput.skillPath) return !!linkedSkill;
-  return registry.findMatchingSkills(input).length > 0
-    || findExplicitSkillReferences(input, registry.getAllSkills()).length > 0;
+  return (
+    registry.findMatchingSkills(input).length > 0 ||
+    findExplicitSkillReferences(input, registry.getAllSkills()).length > 0
+  );
 }
 
-export function resolveSkillResourcePath(skill: AppliedSkill | SkillDefinition, relativePath: string): string {
+export function resolveSkillResourcePath(
+  skill: AppliedSkill | SkillDefinition,
+  relativePath: string
+): string {
   const root = skill.resourceRoot || skill.source;
   if (!root) {
     throw new Error(`Skill ${skill.name} does not have a resource root`);
@@ -150,7 +164,7 @@ export function parseSkillCommandInput(input: string): ParsedSkillCommandInput {
 
 export function loadExplicitSkillReference(
   input: string,
-  cwd: string = process.cwd(),
+  cwd: string = process.cwd()
 ): SkillDefinition | undefined {
   const parsed = parseSkillCommandInput(input);
   if (!parsed.skillName || !parsed.skillPath) return undefined;
@@ -165,28 +179,25 @@ export function loadExplicitSkillReference(
   if (basename(sourcePath).toLowerCase() !== 'skill.md') return undefined;
 
   try {
-    const descriptor = openSync(sourcePath, 'r');
-    let content: string;
-    try {
-      if (!fstatSync(descriptor).isFile()) return undefined;
-      const buffer = Buffer.alloc(MAX_EXPLICIT_SKILL_BYTES + 1);
-      let bytesRead = 0;
-      while (bytesRead < buffer.length) {
-        const count = readSync(descriptor, buffer, bytesRead, buffer.length - bytesRead, null);
-        if (count === 0) break;
-        bytesRead += count;
+    let read: ReturnType<typeof readSafeProjectFilePrefix> | undefined;
+    for (const root of explicitSkillAllowedRoots(cwd)) {
+      const candidate = readSafeProjectFilePrefix(sourcePath, root, MAX_EXPLICIT_SKILL_BYTES + 1);
+      if (candidate.ok) {
+        read = candidate;
+        break;
       }
-      if (bytesRead > MAX_EXPLICIT_SKILL_BYTES) return undefined;
-      content = buffer.subarray(0, bytesRead).toString('utf-8');
-    } finally {
-      closeSync(descriptor);
+    }
+    if (!read?.ok || read.sizeBytes > MAX_EXPLICIT_SKILL_BYTES || read.bytes.includes(0)) {
+      return undefined;
     }
 
+    const content = read.bytes.toString('utf-8');
     const skill = parseSkillFile(content, sourcePath);
     if (!skill) return undefined;
 
-    const nameMatches = skillActivationNames(skill)
-      .some(name => normalizeRequestedSkillName(name) === parsed.skillName);
+    const nameMatches = skillActivationNames(skill).some(
+      name => normalizeRequestedSkillName(name) === parsed.skillName
+    );
     if (!nameMatches) return undefined;
 
     const resourceRoot = dirname(sourcePath);
@@ -202,7 +213,7 @@ export function loadExplicitSkillReference(
 
 function parseMarkdownSkillReference(
   input: string,
-  requireDollar: boolean,
+  requireDollar: boolean
 ): MarkdownSkillReference | undefined {
   const trimmed = input.trim();
   if (!trimmed.startsWith('[')) return undefined;
@@ -249,7 +260,7 @@ function parseMarkdownSkillReference(
 
   const rawTarget = trimmed.slice(
     targetStart,
-    trimmed[targetStart] === '<' ? targetEnd + 1 : targetEnd,
+    trimmed[targetStart] === '<' ? targetEnd + 1 : targetEnd
   );
   const skillPath = normalizeSkillSourcePath(rawTarget);
   if (!skillPath) return undefined;
@@ -270,20 +281,18 @@ function isWithinRoot(path: string, root: string): boolean {
 
 function resolveExplicitSkillPath(input: string, cwd: string): string {
   const normalized = normalizeSkillSourcePath(input);
-  const expanded = normalized === '~'
-    ? homedir()
-    : normalized.startsWith('~/')
-      ? resolve(homedir(), normalized.slice(2))
-      : normalized;
+  const expanded =
+    normalized === '~'
+      ? homedir()
+      : normalized.startsWith('~/')
+        ? resolve(homedir(), normalized.slice(2))
+        : normalized;
   const resolved = resolve(cwd, expanded);
 
   // Bug #33 B: an explicit skill reference from chat input must not read an
   // arbitrary SKILL.md anywhere on disk. Restrict to the project (cwd) and the
   // user's skills directory. Anything else escapes the allowed roots.
-  const allowedRoots = [
-    resolve(cwd),
-    resolve(getConfigHome(), SKILLS_DIR_NAMES.USER),
-  ];
+  const allowedRoots = explicitSkillAllowedRoots(cwd);
   if (!allowedRoots.some(root => isWithinRoot(resolved, root))) {
     throw new Error(`Explicit skill path escapes allowed roots: ${resolved}`);
   }
@@ -293,15 +302,19 @@ function resolveExplicitSkillPath(input: string, cwd: string): string {
 function findExplicitSkillReferences(input: string, skills: SkillDefinition[]): SkillDefinition[] {
   const command = parseSkillCommandInput(input);
   if (command.skillName) {
-    const exact = skills.filter(skill => skillActivationNames(skill)
-      .some(name => normalizeRequestedSkillName(name) === command.skillName));
+    const exact = skills.filter(skill =>
+      skillActivationNames(skill).some(
+        name => normalizeRequestedSkillName(name) === command.skillName
+      )
+    );
     // Bug #33 C: an exact-name lookup that finds nothing must fall through to
     // natural-language matching instead of silently dropping all skill activation.
     if (exact.length > 0) return exact;
   }
 
-  return skills.filter(skill => skillActivationNames(skill)
-    .some(name => isSkillExplicitlyRequested(input, name)));
+  return skills.filter(skill =>
+    skillActivationNames(skill).some(name => isSkillExplicitlyRequested(input, name))
+  );
 }
 
 function toAppliedSkill(skill: SkillDefinition): AppliedSkill {
@@ -317,7 +330,9 @@ function toAppliedSkill(skill: SkillDefinition): AppliedSkill {
   };
 }
 
-export function skillActivationNames(skill: Pick<SkillDefinition, 'name' | 'aliases' | 'tags'>): string[] {
+export function skillActivationNames(
+  skill: Pick<SkillDefinition, 'name' | 'aliases' | 'tags'>
+): string[] {
   const names = new Set<string>();
   names.add(skill.name);
   for (const alias of skill.aliases || []) {
@@ -326,11 +341,20 @@ export function skillActivationNames(skill: Pick<SkillDefinition, 'name' | 'alia
 
   const tags = new Set((skill.tags || []).map(tag => tag.toLowerCase()));
   const name = skill.name.toLowerCase();
-  const isTeamWorkflow = name.includes('squad')
-    || name.includes('team')
-    || (tags.has('agent-workflow') && (tags.has('coding') || name.includes('coding')));
+  const isTeamWorkflow =
+    name.includes('squad') ||
+    name.includes('team') ||
+    (tags.has('agent-workflow') && (tags.has('coding') || name.includes('coding')));
   if (isTeamWorkflow) {
-    for (const alias of ['团队开发', '编程小队', '开发小队', '团队协作', '协同开发', '工作团队', '团队工作']) {
+    for (const alias of [
+      '团队开发',
+      '编程小队',
+      '开发小队',
+      '团队协作',
+      '协同开发',
+      '工作团队',
+      '团队工作',
+    ]) {
       names.add(alias);
     }
   }
@@ -358,8 +382,14 @@ function isSkillExplicitlyRequested(input: string, skillName: string): boolean {
 
   const patterns = [
     new RegExp(`^/${escapedName}${rightBoundary}`, 'iu'),
-    new RegExp(`${leftBoundary}${englishActivator}\\s+(?:the\\s+)?(?:${englishSkillNoun}\\s+)?${escapedName}${rightBoundary}`, 'iu'),
-    new RegExp(`${leftBoundary}${englishActivator}\\s+${escapedName}\\s+(?:${englishSkillNoun})${rightBoundary}`, 'iu'),
+    new RegExp(
+      `${leftBoundary}${englishActivator}\\s+(?:the\\s+)?(?:${englishSkillNoun}\\s+)?${escapedName}${rightBoundary}`,
+      'iu'
+    ),
+    new RegExp(
+      `${leftBoundary}${englishActivator}\\s+${escapedName}\\s+(?:${englishSkillNoun})${rightBoundary}`,
+      'iu'
+    ),
     new RegExp(`${leftBoundary}(?:skill|skills?)\\s*[:：]\\s*${escapedName}${rightBoundary}`, 'iu'),
     new RegExp(`${leftBoundary}${escapedName}\\s+(?:skill|workflow|agent)${rightBoundary}`, 'iu'),
     new RegExp(`(?:使用|用|调用|加载|启用|按|基于|采用)\\s*${escapedName}${rightBoundary}`, 'iu'),
@@ -405,7 +435,9 @@ function renderActiveSkillsPrompt(skills: AppliedSkill[], activeToolNames: strin
     if (skill.sourceType) lines.push(`Source type: ${skill.sourceType}`);
     if (skill.resourceRoot) {
       lines.push(`Resource root: ${skill.resourceRoot}`);
-      lines.push('Resolve any relative paths mentioned by this skill from the resource root above.');
+      lines.push(
+        'Resolve any relative paths mentioned by this skill from the resource root above.'
+      );
     }
     if (skill.tools?.length) lines.push(`Declared tools: ${skill.tools.join(', ')}`);
     lines.push('');

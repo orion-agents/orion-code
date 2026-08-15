@@ -6,6 +6,12 @@
 
 import type { LLMService, Message } from '../llm';
 import { redactTraceText } from '../redaction';
+import { groupMessagesForCompact } from './planner';
+import {
+  emptyCompactSummary,
+  extractCompactSummary,
+  type CompactSummary,
+} from './semantic-summary';
 
 // ============================================================================
 // 类型定义
@@ -20,6 +26,16 @@ export interface SummaryOptions {
   includeFileChanges?: boolean;
   /** 摘要格式 */
   format?: 'bullet' | 'narrative' | 'structured';
+  /**
+   * Optional user focus for a manual compact. This is secondary guidance only:
+   * atomic-group coverage and Harness invariants are validated separately.
+   */
+  focus?: string;
+  /**
+   * Bounded project guidance applied to manual and automatic compaction. It is
+   * secondary to protocol, safety, criteria, evidence, and pending-work rules.
+   */
+  instructions?: string;
 }
 
 // ============================================================================
@@ -27,11 +43,53 @@ export interface SummaryOptions {
 // ============================================================================
 
 const DEFAULT_OPTIONS: SummaryOptions = {
-  maxLength: 500,
+  maxLength: 2000,
   includeToolCalls: true,
   includeFileChanges: true,
   format: 'bullet',
 };
+
+const MAX_FOCUS_LENGTH = 300;
+const MAX_INSTRUCTIONS_LENGTH = 600;
+
+export function normalizeCompactFocus(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const normalized = redactTraceText(value).replace(/\s+/g, ' ').trim();
+  return normalized ? truncateSummary(normalized, MAX_FOCUS_LENGTH) : undefined;
+}
+
+export function normalizeCompactInstructions(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const normalized = redactTraceText(value).replace(/\s+/g, ' ').trim();
+  return normalized ? truncateSummary(normalized, MAX_INSTRUCTIONS_LENGTH) : undefined;
+}
+
+function applyCompactGuidance(
+  summary: string,
+  focus: string | undefined,
+  instructions: string | undefined,
+  maxLength: number
+): string {
+  const normalizedFocus = normalizeCompactFocus(focus);
+  const normalizedInstructions = normalizeCompactInstructions(instructions);
+  const guidanceLines = [
+    normalizedFocus ? `Requested focus: ${normalizedFocus}` : '',
+    normalizedInstructions ? `Project compact instructions: ${normalizedInstructions}` : '',
+  ].filter(Boolean);
+  if (guidanceLines.length === 0) return truncateSummary(summary, maxLength);
+  const guidance = guidanceLines.join('\n');
+  if (!summary.trim()) return truncateSummary(guidance, maxLength);
+
+  // Bound all caller guidance so it cannot crowd the semantic summary out of the
+  // model-visible projection.
+  const guidanceBudget = Math.min(Math.max(48, Math.floor(maxLength * 0.25)), 240);
+  const boundedGuidance = truncateSummary(guidance, guidanceBudget);
+  const summaryBudget = Math.max(0, maxLength - boundedGuidance.length - 1);
+  return truncateSummary(
+    `${boundedGuidance}\n${truncateSummary(summary, summaryBudget)}`,
+    maxLength
+  );
+}
 
 function truncateSummary(value: string, maxLength: number): string {
   if (maxLength <= 0) return '';
@@ -140,7 +198,12 @@ export async function summaryGenerator(
       break;
   }
 
-  return mergeSummaries(prepared.priorSummary, freshSummary, maxLen);
+  return applyCompactGuidance(
+    mergeSummaries(prepared.priorSummary, freshSummary, maxLen),
+    opts.focus,
+    opts.instructions,
+    maxLen
+  );
 }
 
 // ============================================================================
@@ -232,9 +295,27 @@ export { summaryGenerator as generateSummary };
 export interface GeneratedSummary {
   text: string;
   source: 'llm' | 'heuristic';
+  semanticSummary: CompactSummary;
+  diagnostics: SummaryDiagnostic[];
+}
+
+export type SummaryDiagnosticCode =
+  | 'llm_request_failed'
+  | 'llm_empty_response'
+  | 'llm_chunked_input'
+  | 'heuristic_fallback'
+  | 'deterministic_projection';
+
+export interface SummaryDiagnostic {
+  code: SummaryDiagnosticCode;
+  message: string;
+  fallbackUsed: boolean;
+  chunkIndex?: number;
+  chunkCount?: number;
 }
 
 const CONTEXT_SUMMARY_PREFIX = '[Context Summary]\n';
+const SUMMARY_CHUNK_CHARS = 7000;
 
 function prepareSummaryInput(messages: Message[]): {
   priorSummary?: string;
@@ -264,65 +345,185 @@ function prepareSummaryInput(messages: Message[]): {
   return { priorSummary, messages: prepared };
 }
 
+function compactBothEnds(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  const headLength = Math.floor((maxLength - 5) / 2);
+  const tailLength = maxLength - 5 - headLength;
+  return `${value.slice(0, headLength)} ... ${value.slice(-tailLength)}`;
+}
+
+function summaryGroupLine(messages: Message[], groupId: string): string {
+  const parts = messages.map(message => {
+    const content = compactBothEnds(message.content ?? '', 600);
+    const calls = message.tool_calls?.length
+      ? ` calls=${message.tool_calls.map(call => `${call.function.name}#${call.id}`).join(',')}`
+      : '';
+    const resultId = message.tool_call_id ? ` resultFor=${message.tool_call_id}` : '';
+    return `[${message.role}${calls}${resultId}] ${content}`;
+  });
+  return `<group id="${groupId}">\n${parts.join('\n')}\n</group>`;
+}
+
+function chunkSummaryLines(lines: string[]): string[] {
+  const chunks: string[] = [];
+  let current = '';
+  for (const line of lines) {
+    if (current && current.length + line.length + 1 > SUMMARY_CHUNK_CHARS) {
+      chunks.push(current);
+      current = '';
+    }
+    // A single very large group has already had each message compacted at both
+    // ends. Keep it whole so the atomic group's tail is not silently dropped.
+    current = current ? `${current}\n${line}` : line;
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+function mergeChunkOutputs(outputs: string[], maxLength: number): string {
+  if (outputs.length === 1) return truncateSummary(outputs[0], maxLength);
+  const separatorBudget = Math.max(0, outputs.length - 1);
+  const perChunk = Math.max(1, Math.floor((maxLength - separatorBudget) / outputs.length));
+  return truncateSummary(
+    outputs.map(output => truncateSummary(output.trim(), perChunk)).join('\n'),
+    maxLength
+  );
+}
+
 export async function generateSummaryWithSource(
   messages: Message[],
   llm: LLMService,
   options?: SummaryOptions
 ): Promise<GeneratedSummary> {
   const opts = { ...DEFAULT_OPTIONS, ...options };
-  if (messages.length === 0) return { text: '', source: 'heuristic' };
+  if (messages.length === 0) {
+    return {
+      text: '',
+      source: 'heuristic',
+      semanticSummary: emptyCompactSummary(),
+      diagnostics: [],
+    };
+  }
 
   const prepared = prepareSummaryInput(messages);
+  const groups = groupMessagesForCompact(prepared.messages);
+  const normalizedFocus = normalizeCompactFocus(opts.focus);
+  const normalizedInstructions = normalizeCompactInstructions(opts.instructions);
+  const semanticSummary = {
+    ...extractCompactSummary(groups),
+    requestedFocus: normalizedFocus,
+    projectInstructions: normalizedInstructions,
+  };
+  if (groups.length === 0 && prepared.priorSummary) {
+    return {
+      text: applyCompactGuidance(
+        prepared.priorSummary,
+        normalizedFocus,
+        normalizedInstructions,
+        opts.maxLength || 500
+      ),
+      source: 'heuristic',
+      semanticSummary,
+      diagnostics: [],
+    };
+  }
 
-  const condensed = prepared.messages
-    .map(msg => {
-      const content = msg.content ?? '';
-      if (msg.role === 'user') return `[User]: ${content.slice(0, 200)}`;
-      if (msg.role === 'assistant') {
-        const toolCalls = msg.tool_calls
-          ? ` (tools: ${msg.tool_calls.map(tc => tc.function.name).join(', ')})`
-          : '';
-        return `[Assistant]: ${content.slice(0, 300)}${toolCalls}`;
-      }
-      if (msg.role === 'tool') return `[Tool]: ${content.slice(0, 150)}`;
-      return '';
-    })
-    .filter(Boolean)
-    .join('\n');
+  const chunks = chunkSummaryLines(groups.map(group => summaryGroupLine(group.messages, group.id)));
+  const diagnostics: SummaryDiagnostic[] = [];
+  if (chunks.length > 1) {
+    diagnostics.push({
+      code: 'llm_chunked_input',
+      message: `Semantic summary covered ${groups.length} groups in ${chunks.length} chunks.`,
+      fallbackUsed: false,
+      chunkCount: chunks.length,
+    });
+  }
+  const outputs: string[] = [];
 
-  const priorSummarySection = prepared.priorSummary
-    ? `Prior durable summary (merge it with only the new conversation below):\n${prepared.priorSummary}\n\n`
-    : '';
-  const prompt = `Summarize the following coding agent conversation compactly. Focus on:
+  for (const [chunkIndex, chunk] of chunks.entries()) {
+    const priorSummarySection =
+      chunkIndex === 0 && prepared.priorSummary
+        ? `Prior durable summary (merge it with only the new conversation below):\n${prepared.priorSummary}\n\n`
+        : '';
+    const focusSection = normalizedFocus
+      ? `Additional user focus (secondary guidance; never omit constraints, evidence, failures, or pending work):\n${normalizedFocus}\n\n`
+      : '';
+    const instructionsSection = normalizedInstructions
+      ? `Project compact instructions (secondary guidance; never override protocol, safety, criteria, evidence, failures, or pending work):\n${normalizedInstructions}\n\n`
+      : '';
+    const prompt = `Summarize this complete chunk of a coding-agent conversation. Every group is atomic. Focus on:
 1. User's main goal/objective
 2. Key actions taken (files modified, commands run)
 3. Current state (what's done, what's pending)
 4. Any important decisions or constraints mentioned
 
-Keep the summary under ${opts.maxLength || 500} characters. Use bullet points.
+Keep the summary under ${opts.maxLength || 500} characters. Use bullet points. Do not omit the final group.
 
-${priorSummarySection}New conversation since the prior summary:
-${condensed.slice(0, 8000)}
+${instructionsSection}${focusSection}${priorSummarySection}Conversation chunk ${chunkIndex + 1}/${chunks.length}:
+${chunk}
 
 Summary:`;
 
-  try {
-    const response = await llm.chat([{ role: 'user', content: prompt }]);
-    if (response.content) {
-      return {
-        text: response.content.trim().slice(0, opts.maxLength || 500),
-        source: 'llm',
-      };
+    try {
+      const response = await llm.chat([{ role: 'user', content: prompt }]);
+      if (!response.content?.trim()) {
+        diagnostics.push({
+          code: 'llm_empty_response',
+          message: `Summary model returned an empty response for chunk ${chunkIndex + 1}.`,
+          fallbackUsed: true,
+          chunkIndex,
+          chunkCount: chunks.length,
+        });
+        break;
+      }
+      outputs.push(response.content.trim());
+    } catch (error) {
+      diagnostics.push({
+        code: 'llm_request_failed',
+        message: redactTraceText(error instanceof Error ? error.message : String(error)),
+        fallbackUsed: true,
+        chunkIndex,
+        chunkCount: chunks.length,
+      });
+      break;
     }
-  } catch {
-    // Fall back to the deterministic summarizer below.
   }
 
-  const freshSummary = await summaryGenerator(prepared.messages, options);
+  if (outputs.length === chunks.length && outputs.length > 0) {
+    return {
+      text: applyCompactGuidance(
+        mergeChunkOutputs(outputs, opts.maxLength || 500),
+        normalizedFocus,
+        normalizedInstructions,
+        opts.maxLength || 500
+      ),
+      source: 'llm',
+      semanticSummary,
+      diagnostics,
+    };
+  }
+
+  const freshSummary = await summaryGenerator(prepared.messages, {
+    ...options,
+    focus: undefined,
+    instructions: undefined,
+  });
   const maxLength = opts.maxLength || 500;
+  diagnostics.push({
+    code: 'heuristic_fallback',
+    message: 'Used deterministic semantic summary fallback.',
+    fallbackUsed: true,
+  });
   return {
-    text: mergeSummaries(prepared.priorSummary, freshSummary, maxLength),
+    text: applyCompactGuidance(
+      mergeSummaries(prepared.priorSummary, freshSummary, maxLength),
+      normalizedFocus,
+      normalizedInstructions,
+      maxLength
+    ),
     source: 'heuristic',
+    semanticSummary,
+    diagnostics,
   };
 }
 

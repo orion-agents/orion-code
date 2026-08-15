@@ -1,4 +1,9 @@
-import { DEFAULT_LOOP_BUDGET, QueryLoopError, query } from '../src/framework/query';
+import {
+  DEFAULT_LOOP_BUDGET,
+  QueryLoopError,
+  query,
+  withLoopFinishReason,
+} from '../src/framework/query';
 import type { QueryEvent } from '../src/framework/query';
 import { buildTool } from '../src/framework/tool';
 import type { OrionCodeTool, ToolContext } from '../src/framework/tool';
@@ -6,7 +11,10 @@ import { LLMService, type LLMResponse, type Message, type Tool } from '../src/se
 import { ProviderResilienceCoordinator } from '../src/services/provider-resilience';
 import { resetAutoCompact } from '../src/services/compact/auto-compact';
 import { CompactCoordinator } from '../src/services/compact/coordinator';
+import { canonicalMessagesFingerprint } from '../src/services/compact/fingerprint';
 import { CostTracker } from '../src/core/cost-tracker';
+import { estimateMessagesTokens } from '../src/utils/token-estimate';
+import { createContextHarness } from '../src/harness';
 
 const mockTool: OrionCodeTool = buildTool({
   name: 'read_file',
@@ -70,6 +78,51 @@ function collectEvents(params: Parameters<typeof query>[0]) {
 }
 
 describe('query generator', () => {
+  test('refreshes the typed decision when a consumer changes the finish reason', () => {
+    const stats = withLoopFinishReason(
+      {
+        turnsStarted: 1,
+        llmRequests: 1,
+        toolCalls: 0,
+        readOnlyToolCalls: 0,
+        unsafeToolCalls: 0,
+        toolResultBytes: 0,
+        modelVisibleToolBytes: 0,
+        summarizedBytes: 0,
+        finishReason: 'completed',
+        providerRetryCount: 0,
+        providerRetryDelayMs: 0,
+        providerRetryErrorTypes: [],
+        providerFallbackCount: 0,
+        providerUsingFallback: false,
+        singleReadOnlyStreak: 0,
+        batchReadSuggestionCount: 0,
+        localFastPathUsed: false,
+        stopDecision: {
+          schemaVersion: 1,
+          scope: 'request',
+          status: 'completed',
+          disposition: 'finish_scope',
+          reason: { code: 'completed', message: 'old decision' },
+          evidence: [],
+          nextActions: [],
+          resources: {},
+        },
+      },
+      'completion_gate'
+    );
+
+    expect(stats).toMatchObject({
+      finishReason: 'completion_gate',
+      stopDecision: {
+        scope: 'request',
+        status: 'stopped',
+        disposition: 'resume_allowed',
+        reason: { code: 'completion_gate' },
+      },
+    });
+  });
+
   beforeEach(() => {
     resetAutoCompact();
   });
@@ -246,6 +299,57 @@ describe('query generator', () => {
       includedEvidenceCount: 1,
       omittedEvidenceCount: 1,
     });
+  });
+
+  test('pauses before provider when mandatory Harness sections exceed their atomic budget', async () => {
+    const llm = makeMockLLM([{ content: 'must not be called', model: 'test-model' }]);
+    const harness = createContextHarness({
+      cwd: '/repo',
+      modelId: 'gpt-4o',
+      config: { evidenceBudgetRatio: 0.01 },
+      state: {
+        ledger: [],
+        rootObjective: `objective ${'keep all semantics '.repeat(300)}`,
+        activeInstruction: `instruction ${'keep all semantics '.repeat(300)}`,
+        activeConstraints: Array.from(
+          { length: 8 },
+          (_, index) => `constraint-${index} ${'must remain atomic '.repeat(80)}`
+        ),
+        nonGoals: Array.from(
+          { length: 8 },
+          (_, index) => `non-goal-${index} ${'must remain atomic '.repeat(80)}`
+        ),
+        updatedAt: 1,
+      },
+    });
+    const events: QueryEvent[] = [];
+
+    for await (const event of query({
+      messages: [{ role: 'user', content: 'continue' }],
+      tools: [],
+      toolExecutor: async () => '',
+      llm,
+      harness,
+    })) {
+      events.push(event);
+    }
+
+    expect(llm.chatStream).not.toHaveBeenCalled();
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'prompt_assembly', overBudget: true }),
+        expect.objectContaining({
+          type: 'complete',
+          stats: expect.objectContaining({
+            finishReason: 'compact_paused',
+            stopDecision: expect.objectContaining({
+              disposition: 'pause_scope',
+              reason: expect.objectContaining({ code: 'mandatory_context_over_budget' }),
+            }),
+          }),
+        }),
+      ])
+    );
   });
 
   test('yields tool_call and tool_result when tool is called', async () => {
@@ -705,7 +809,9 @@ describe('query generator', () => {
       tools: [mockTool],
       toolExecutor: async () => JSON.stringify({ success: true, output: 'file content' }),
       llm,
-      loopBudget: { maxLlmRequestsPerUserTurn: 1 },
+      // Deprecated callers remain safe: maxTurns is treated as a request resource cap,
+      // never as evidence that the parent task completed.
+      maxTurns: 1,
     })) {
       events.push(event);
     }
@@ -716,6 +822,15 @@ describe('query generator', () => {
       type: 'complete',
       stats: {
         finishReason: 'budget_exceeded',
+        stopDecision: {
+          scope: 'request',
+          status: 'stopped',
+          disposition: 'resume_allowed',
+          reason: { code: 'llm_request_budget' },
+          resources: {
+            llmRequests: { used: 1, limit: 1 },
+          },
+        },
         budgetExceededReason: 'LLM request budget 1 reached',
         llmRequests: 1,
         loopBudgetSource: 'config',
@@ -1482,7 +1597,7 @@ describe('query generator', () => {
     expect(messages).toHaveLength(2);
   });
 
-  test('reaches max turns and returns truncation message', async () => {
+  test('uses a resumable resource decision instead of a fixed turn completion', async () => {
     const llm = makeMockLLM([
       {
         content: '',
@@ -1519,7 +1634,7 @@ describe('query generator', () => {
       tools: [mockTool],
       toolExecutor: async () => 'result',
       llm,
-      maxTurns: 1,
+      loopBudget: { maxLlmRequestsPerUserTurn: 1 },
     })) {
       events.push(event);
     }
@@ -1527,12 +1642,17 @@ describe('query generator', () => {
     const complete = events.find(e => e.type === 'complete');
     expect(complete).toBeDefined();
 
-    expect((complete as any).content).toContain('Reached maximum turns');
+    expect((complete as any).content).toContain('Agent loop budget reached');
     expect(events.filter(e => e.type === 'request_start')).toHaveLength(1);
     expect((complete as Extract<QueryEvent, { type: 'complete' }>).stats).toMatchObject({
-      finishReason: 'max_turns',
+      finishReason: 'budget_exceeded',
       turnsStarted: 1,
       llmRequests: 1,
+      stopDecision: {
+        scope: 'request',
+        status: 'stopped',
+        disposition: 'resume_allowed',
+      },
     });
   });
 
@@ -1615,9 +1735,22 @@ describe('query generator', () => {
     );
     expect(complete?.compact).toMatchObject({
       mode: expect.stringMatching(/^(predictive|threshold)$/),
-      summary: { text: 'compact summary', source: 'llm' },
+      summary: { text: expect.stringContaining('compact summary'), source: 'llm' },
       before: { percent: 100 },
+      fingerprint: expect.any(String),
+      beforeTokens: expect.any(Number),
+      afterTokens: expect.any(Number),
+      diagnostics: expect.any(Array),
     });
+    expect(Array.isArray(complete?.compact?.plan.evictedGroups)).toBe(true);
+    expect(complete?.compact?.semanticSummary.version).toBe(1);
+    expect(complete?.compact?.fingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(complete?.compact?.fingerprint).not.toBe(
+      canonicalMessagesFingerprint(complete?.compact?.modelHistory ?? [])
+    );
+    expect(complete?.compact?.afterTokens).toBe(
+      estimateMessagesTokens(complete?.compact?.modelHistory ?? [])
+    );
     expect(complete?.compact?.modelHistory.at(-1)).toMatchObject({
       role: 'assistant',
       content: 'Answer',

@@ -178,18 +178,6 @@ describe('Goal continuity integration', () => {
       expect(
         initialController.submit('/target Preserve the verified Goal across compact and restart')
       ).toEqual({ type: 'started' });
-      const activeCoordinator = () =>
-        (initialController as unknown as { goalCoordinator: GoalCoordinator }).goalCoordinator;
-      for (const checkpoint of [5, 10, 15, 20]) {
-        await waitForCondition(
-          () =>
-            activeCoordinator().goal?.status === 'paused' &&
-            activeCoordinator().goal?.continuationCount === checkpoint,
-          `autonomy checkpoint ${checkpoint}`
-        );
-        expect(activeCoordinator().goal?.stopReason?.message).toContain('/goal resume');
-        expect(initialController.submit('/target resume')).toEqual({ type: 'started' });
-      }
       await turn21Started;
       expect(typedRequests).toHaveLength(21);
       const goalId = typedRequests[0].goal!.goalId;
@@ -200,7 +188,7 @@ describe('Goal continuity integration', () => {
         Array.from({ length: 21 }, (_, index) => index + 1)
       );
       expect(typedRequests.map(request => request.goal!.revision)).toEqual(
-        Array.from({ length: 21 }, (_, index) => index + Math.floor(index / 5))
+        Array.from({ length: 21 }, (_, index) => index)
       );
 
       releaseTurn21();

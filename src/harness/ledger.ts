@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import type { ContextLedgerEntry, LedgerEntryType, LedgerSource } from './types';
+import { classifyVerificationCommand } from './verification';
 
 export interface AddLedgerEntryInput {
   type: LedgerEntryType;
@@ -15,20 +16,36 @@ function truncate(text: string, max = 900): string {
   return normalized.length > max ? normalized.slice(0, max - 3) + '...' : normalized;
 }
 
-function parseToolPayload(result: string): { success?: boolean; output?: string; error?: string } {
+function parseToolPayload(result: string): {
+  structured: boolean;
+  success?: boolean;
+  output?: string;
+  error?: string;
+  exitCode?: number;
+  sourceSha?: string;
+  artifactHash?: string;
+} {
   try {
-    const parsed = JSON.parse(result);
-    if (parsed && typeof parsed === 'object') {
+    const parsed = JSON.parse(result) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const record = parsed as Record<string, unknown>;
       return {
-        success: typeof parsed.success === 'boolean' ? parsed.success : undefined,
-        output: typeof parsed.output === 'string' ? parsed.output : undefined,
-        error: typeof parsed.error === 'string' ? parsed.error : undefined,
+        structured: typeof record.success === 'boolean',
+        success: typeof record.success === 'boolean' ? record.success : undefined,
+        output: typeof record.output === 'string' ? record.output : undefined,
+        error: typeof record.error === 'string' ? record.error : undefined,
+        exitCode:
+          typeof record.exitCode === 'number' && Number.isInteger(record.exitCode)
+            ? record.exitCode
+            : undefined,
+        sourceSha: typeof record.sourceSha === 'string' ? record.sourceSha : undefined,
+        artifactHash: typeof record.artifactHash === 'string' ? record.artifactHash : undefined,
       };
     }
   } catch {
-    // Plain text tool output is still useful evidence.
+    // Plain text tool output remains useful context, but not proof of success.
   }
-  return { output: result };
+  return { structured: false, output: result };
 }
 
 function commandFromArgs(args: Record<string, unknown>): string | undefined {
@@ -43,8 +60,12 @@ function pathFromArgs(args: Record<string, unknown>): string | undefined {
   return undefined;
 }
 
-function isVerificationCommand(command: string | undefined): boolean {
-  return !!command && /\b(test|jest|vitest|tsc|lint|typecheck|build)\b/i.test(command);
+function cwdFromArgs(args: Record<string, unknown>): string | undefined {
+  for (const key of ['cwd', 'workdir']) {
+    const value = args[key];
+    if (typeof value === 'string' && value) return value;
+  }
+  return undefined;
 }
 
 export class ContextLedger {
@@ -69,7 +90,9 @@ export class ContextLedger {
     this.entries.push(entry);
     // Bound entries: evict low-importance old items when over capacity.
     if (this.entries.length > ContextLedger.MAX_ENTRIES) {
-      const sorted = [...this.entries].sort((a, b) => a.importance - b.importance || a.createdAt - b.createdAt);
+      const sorted = [...this.entries].sort(
+        (a, b) => a.importance - b.importance || a.createdAt - b.createdAt
+      );
       const toRemove = sorted.slice(0, this.entries.length - ContextLedger.MAX_ENTRIES);
       // Key removal on entry id (unique). Keying on source.ref is wrong: many
       // entries share a ref (e.g. every read_file call has ref 'read_file'),
@@ -114,30 +137,47 @@ export class ContextLedger {
     const parsed = parseToolPayload(params.result);
     const command = commandFromArgs(params.args);
     const path = pathFromArgs(params.args);
+    const cwd = cwdFromArgs(params.args);
     // Use summary when available to reduce evidence size
     const output = params.summary || parsed.error || params.error || parsed.output || params.result;
-    const isVerification = isVerificationCommand(command);
+    const verificationKind = classifyVerificationCommand(command);
+    const isVerification = verificationKind !== 'generic';
+    const evidenceSuccess = parsed.structured
+      ? parsed.success === true && params.success === true
+      : undefined;
     const type: LedgerEntryType = isVerification ? 'verification' : 'tool_result';
     const content = [
-      `${params.name}${params.success ? ' succeeded' : ' failed'} in ${params.duration}ms.`,
+      parsed.structured
+        ? `${params.name}${evidenceSuccess ? ' succeeded' : ' failed'} in ${params.duration}ms.`
+        : `${params.name} returned opaque output in ${params.duration}ms.`,
       command ? `Command: ${command}` : '',
       path ? `Path: ${path}` : '',
       output ? `Result: ${output}` : '',
-    ].filter(Boolean).join(' ');
+    ]
+      .filter(Boolean)
+      .join(' ');
 
     return this.add({
       type,
       content,
       source: { kind: isVerification ? 'test' : 'tool', ref: params.name },
-      importance: params.success ? (isVerification ? 5 : 3) : 4,
+      importance: evidenceSuccess ? (isVerification ? 5 : 3) : evidenceSuccess === false ? 4 : 3,
       ttl: isVerification ? 'task' : 'turn',
       metadata: {
         toolName: params.name,
         command,
+        cwd,
         path,
-        success: params.success,
+        exitCode: parsed.exitCode ?? (isVerification && evidenceSuccess === true ? 0 : undefined),
+        sourceSha: parsed.sourceSha,
+        artifactHash: parsed.artifactHash,
+        recordedAt: Date.now(),
+        freshness: 'current_run',
+        verificationKind,
+        success: evidenceSuccess,
+        resultTrust: parsed.structured ? 'structured' : 'opaque',
         error: params.error || parsed.error,
-        changedFile: params.success && /write|edit|patch/i.test(params.name) ? path : undefined,
+        changedFile: evidenceSuccess && /write|edit|patch/i.test(params.name) ? path : undefined,
       },
     });
   }
@@ -160,4 +200,3 @@ export class ContextLedger {
     return this.getEntries();
   }
 }
-

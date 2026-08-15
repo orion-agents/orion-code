@@ -16,6 +16,8 @@ import {
   loadSessionCompactCheckpoint,
   loadSessionTranscriptMessages,
   commitSessionCompactCheckpoint,
+  prepareSessionCompactSourceReceipt,
+  advanceSessionCompactSourceReceipt,
   deleteSession,
   updateSessionSummary,
   truncateSessionToLastComplete,
@@ -37,6 +39,7 @@ import {
   type SessionMeta,
   type HistoryEntry,
   type SessionMessage,
+  type CommitCompactCheckpointInput,
 } from '../src/services/session-storage';
 import { spawnSync } from 'child_process';
 import { loadSessionIndex, saveSessionIndex, searchSessions } from '../src/services/session-index';
@@ -65,6 +68,9 @@ import {
 import { createGoal, loadGoal, saveGoal } from '../src/services/goal-storage';
 import { createContextUsageSnapshot } from '../src/services/model-context';
 import * as atomicWrite from '../src/services/atomic-write';
+import { canonicalMessagesFingerprint } from '../src/services/compact/fingerprint';
+import { estimateMessagesTokens } from '../src/utils/token-estimate';
+import type { HarnessState } from '../src/harness';
 
 describe('session-storage', () => {
   const testDir = mkdtempSync(join(tmpdir(), 'orion-session-storage-'));
@@ -198,6 +204,54 @@ describe('session-storage', () => {
       expect(readSessionTraceEvents(session.id)[0].goalId).toBeUndefined();
     });
 
+    test('round-trips typed stop decisions and redacts their nested text', () => {
+      const session = createSession('/tmp/project-stop-decision-trace', 'gpt-4o');
+      const secret = 'sk-stopdecision1234567890';
+      appendSessionTraceEvent(session.id, {
+        turnId: 'stop-turn',
+        type: 'complete',
+        finishReason: 'budget_exceeded',
+        stopDecision: {
+          schemaVersion: 1,
+          scope: 'request',
+          status: 'stopped',
+          disposition: 'resume_allowed',
+          reason: { code: 'resource_budget', message: `budget ${secret}` },
+          evidence: [{ kind: 'resource_limit', source: 'query', detail: `limit ${secret}` }],
+          nextActions: [
+            { kind: 'resume', label: `resume ${secret}`, command: `/resume ${secret}` },
+          ],
+          resources: { llmRequests: { used: 24, limit: 24 } },
+          criterionStates: [{ id: `criterion:${secret}`, status: 'pending' }],
+          evidenceRefs: [`ledger:${secret}`],
+          progressDelta: {
+            schemaVersion: 1,
+            changed: true,
+            criterionChanges: [{ id: `criterion:${secret}`, to: 'pending' }],
+            newEvidenceRefs: [`ledger:${secret}`],
+            newChangedFiles: [`src/${secret}.ts`],
+            newDecisions: [`decision ${secret}`],
+            newBlockers: [`blocker ${secret}`],
+            newDiagnostics: [`diagnostic ${secret}`],
+            workspaceStateHash: 'hash',
+            repeatedSignatureCount: 0,
+            recordedAt: 1,
+          },
+        },
+      });
+
+      const [trace] = readSessionTraceEvents(session.id);
+      expect(trace.stopDecision).toMatchObject({
+        schemaVersion: 1,
+        scope: 'request',
+        status: 'stopped',
+        disposition: 'resume_allowed',
+        resources: { llmRequests: { used: 24, limit: 24 } },
+      });
+      expect(JSON.stringify(trace)).not.toContain(secret);
+      expect(JSON.stringify(trace.stopDecision)).toContain('[REDACTED');
+    });
+
     test('serializes trace deletion and prevents a stale append from recreating it', () => {
       const session = createSession('/tmp/project-delete-trace', 'gpt-4o');
       const tracePath = getProjectSessionTracePath(session.projectPath, session.id);
@@ -246,6 +300,308 @@ describe('session-storage', () => {
         outputReserveTokens: 4096,
       });
 
+    const semanticFixture = (taskEpoch: number = 7) => {
+      const evictedMessages = [{ role: 'user' as const, content: 'old source fact' }];
+      const group = {
+        id: canonicalMessagesFingerprint(evictedMessages),
+        startIndex: 0,
+        endIndex: 1,
+        messages: evictedMessages,
+        estimatedTokens: estimateMessagesTokens(evictedMessages),
+      };
+      const semanticSummary = {
+        version: 1 as const,
+        taskEpoch,
+        objective: 'ship safely',
+        latestUserInstruction: 'preserve the build criterion',
+        constraints: [],
+        decisions: [],
+        completed: [],
+        pending: [],
+        blockers: [],
+        files: [],
+        verification: [],
+        toolOutcomes: [],
+        evidenceRefs: ['e-build'],
+        items: [
+          {
+            id: `ctx-${group.id.slice(0, 20)}`,
+            groupId: group.id,
+            kind: 'turn' as const,
+            priority: 'high' as const,
+            sourceRefs: [`group:${group.id}`],
+            tokenEstimate: group.estimatedTokens,
+            taskEpoch,
+            expires: 'task' as const,
+            text: 'old source fact',
+            sourceRole: 'user' as const,
+            messageIndexes: { start: 0, end: 1 },
+          },
+        ],
+        criterionStates: [
+          {
+            id: 'criterion:build',
+            statement: 'build passes',
+            status: 'passed' as const,
+            evidenceRefs: ['e-build'],
+          },
+        ],
+        sourceBoundary: {
+          firstGroupId: group.id,
+          lastGroupId: group.id,
+          groupCount: 1,
+          messageCount: 1,
+        },
+        coverage: { groupIds: [group.id], groupCount: 1, messageCount: 1 },
+      };
+      const modelHistory = [{ role: 'user' as const, content: '[Context Summary]\ntrusted' }];
+      const candidate: NonNullable<CommitCompactCheckpointInput['candidate']> = {
+        fingerprint: canonicalMessagesFingerprint(modelHistory),
+        beforeTokens: group.estimatedTokens,
+        afterTokens: estimateMessagesTokens(modelHistory),
+        plan: {
+          groups: [group],
+          evictedGroups: [group],
+          recentGroups: [],
+          recentStartIndex: 1,
+          targetRatio: 0.65,
+          targetTokens: 1000,
+          tailTokenBudget: 800,
+          fixedTokens: 0,
+          summaryReserveTokens: 200,
+        },
+        semanticSummary,
+        diagnostics: [],
+      };
+      const harnessState: HarnessState = {
+        version: 2,
+        ledger: [
+          {
+            id: 'e-build',
+            type: 'verification',
+            content: 'npm run build passed',
+            source: { kind: 'test', ref: 'npm run build' },
+            importance: 5,
+            ttl: 'task',
+            createdAt: 1,
+          },
+        ],
+        taskEpoch,
+        contract: {
+          version: 3,
+          id: 'contract-build',
+          objective: 'ship safely',
+          userIntent: 'preserve the build criterion',
+          requirements: [],
+          successCriteria: ['build passes'],
+          criteria: [
+            {
+              id: 'criterion:build',
+              statement: 'build passes',
+              status: 'passed',
+              evidenceRefs: ['e-build'],
+            },
+          ],
+          taskEpoch,
+          constraints: [],
+          prohibitions: [],
+          allowedScope: { cwd: '/tmp/project-semantic-receipt' },
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        updatedAt: 1,
+      };
+      return { candidate, harnessState, modelHistory };
+    };
+
+    test('rejects a prepared candidate when the transcript or active checkpoint changes', () => {
+      const session = createSession('/tmp/project-compact-source-cas', 'gpt-4o');
+      appendSessionMessage(session.id, { role: 'user', content: 'source', timestamp: 1 });
+      const staleTranscript = prepareSessionCompactSourceReceipt(session.id);
+      appendSessionMessage(session.id, { role: 'assistant', content: 'concurrent', timestamp: 2 });
+
+      expect(() =>
+        commitSessionCompactCheckpoint({
+          sessionId: session.id,
+          mode: 'manual',
+          modelId: 'gpt-4o',
+          sourceMessageCount: staleTranscript.sourceMessageCount,
+          transcriptStartMessageIndex: 0,
+          modelHistory: [{ role: 'user', content: 'must not commit' }],
+          summary: { text: 'stale', generatedAt: 3, source: 'heuristic' },
+          beforeUsage: usage(1000),
+          afterUsage: usage(500),
+          prepareSource: staleTranscript,
+        })
+      ).toThrow('source message count changed');
+
+      const current = prepareSessionCompactSourceReceipt(session.id);
+      const stable = commitSessionCompactCheckpoint({
+        sessionId: session.id,
+        mode: 'manual',
+        modelId: 'gpt-4o',
+        sourceMessageCount: current.sourceMessageCount,
+        transcriptStartMessageIndex: 0,
+        modelHistory: [{ role: 'user', content: 'stable' }],
+        summary: { text: 'stable', generatedAt: 4, source: 'heuristic' },
+        beforeUsage: usage(1000),
+        afterUsage: usage(500),
+        prepareSource: current,
+      });
+      expect(stable.validation.prepareSourceVerified).toBe(true);
+
+      expect(() =>
+        commitSessionCompactCheckpoint({
+          sessionId: session.id,
+          mode: 'manual',
+          modelId: 'gpt-4o',
+          sourceMessageCount: current.sourceMessageCount,
+          transcriptStartMessageIndex: 0,
+          modelHistory: [{ role: 'user', content: 'stale pointer' }],
+          summary: { text: 'stale pointer', generatedAt: 5, source: 'heuristic' },
+          beforeUsage: usage(1000),
+          afterUsage: usage(500),
+          prepareSource: current,
+        })
+      ).toThrow('active checkpoint changed');
+      expect(loadSessionCompactCheckpoint(session.id)?.checkpointId).toBe(stable.checkpointId);
+    });
+
+    test('advances a source receipt only across the preparing turn exact tail', () => {
+      const session = createSession('/tmp/project-compact-source-tail', 'gpt-4o');
+      appendSessionMessage(session.id, { role: 'user', content: 'source', timestamp: 1 });
+      const receipt = prepareSessionCompactSourceReceipt(session.id);
+      const ownTail: SessionMessage[] = [
+        { role: 'assistant', content: 'own result', timestamp: 2 },
+      ];
+      appendSessionMessages(session.id, ownTail);
+      const advanced = advanceSessionCompactSourceReceipt(receipt, ownTail);
+      expect(advanced.sourceMessageCount).toBe(2);
+
+      const next = prepareSessionCompactSourceReceipt(session.id);
+      appendSessionMessage(session.id, {
+        role: 'assistant',
+        content: 'other writer',
+        timestamp: 3,
+      });
+      expect(() => advanceSessionCompactSourceReceipt(next, [])).toThrow(
+        'concurrent or unexpected messages'
+      );
+    });
+
+    test('derives contract V3 and validates candidate tokens, criteria, evidence, and task epoch', () => {
+      const session = createSession('/tmp/project-semantic-receipt', 'gpt-4o');
+      appendSessionMessage(session.id, { role: 'user', content: 'source', timestamp: 1 });
+      const prepareSource = prepareSessionCompactSourceReceipt(session.id);
+      const { candidate, harnessState, modelHistory } = semanticFixture();
+      const postTurnHarnessState: HarnessState = {
+        ...harnessState,
+        contract: {
+          ...harnessState.contract!,
+          successCriteria: [...harnessState.contract!.successCriteria, 'answer recorded'],
+          criteria: [
+            ...(harnessState.contract!.criteria ?? []),
+            {
+              id: 'criterion:answer',
+              statement: 'answer recorded',
+              status: 'pending',
+              evidenceRefs: [],
+            },
+          ],
+        },
+      };
+      const checkpoint = commitSessionCompactCheckpoint({
+        sessionId: session.id,
+        mode: 'manual',
+        modelId: 'gpt-4o',
+        sourceMessageCount: prepareSource.sourceMessageCount,
+        transcriptStartMessageIndex: 0,
+        modelHistory,
+        summary: { text: 'trusted', generatedAt: 2, source: 'heuristic' },
+        beforeUsage: usage(1000),
+        afterUsage: usage(candidate.afterTokens),
+        harnessState: postTurnHarnessState,
+        semanticHarnessState: harnessState,
+        candidate,
+        prepareSource,
+      });
+
+      expect(checkpoint.contractVersion).toBe(3);
+      expect(checkpoint.validation).toMatchObject({
+        prepareSourceVerified: true,
+        candidateTokensVerified: true,
+        semanticReceiptVerified: true,
+      });
+      expect(checkpoint.candidateReceipt.semanticValidation).toMatchObject({
+        taskEpoch: 7,
+        preservedCriterionIds: ['criterion:build'],
+        validatedEvidenceRefs: ['e-build'],
+      });
+
+      const nextPrepare = prepareSessionCompactSourceReceipt(session.id);
+      expect(() =>
+        commitSessionCompactCheckpoint({
+          sessionId: session.id,
+          mode: 'manual',
+          modelId: 'gpt-4o',
+          sourceMessageCount: nextPrepare.sourceMessageCount,
+          transcriptStartMessageIndex: 0,
+          modelHistory,
+          summary: { text: 'bad tokens', generatedAt: 3, source: 'heuristic' },
+          beforeUsage: usage(1000),
+          afterUsage: usage(candidate.afterTokens),
+          harnessState,
+          candidate: { ...candidate, afterTokens: candidate.afterTokens + 1 },
+          prepareSource: nextPrepare,
+        })
+      ).toThrow('does not match actual history');
+
+      const wrongEpoch = {
+        ...candidate,
+        semanticSummary: {
+          ...candidate.semanticSummary,
+          items: candidate.semanticSummary.items.map(item => ({ ...item, taskEpoch: 8 })),
+        },
+      };
+      expect(() =>
+        commitSessionCompactCheckpoint({
+          sessionId: session.id,
+          mode: 'manual',
+          modelId: 'gpt-4o',
+          sourceMessageCount: nextPrepare.sourceMessageCount,
+          transcriptStartMessageIndex: 0,
+          modelHistory,
+          summary: { text: 'bad epoch', generatedAt: 4, source: 'heuristic' },
+          beforeUsage: usage(1000),
+          afterUsage: usage(candidate.afterTokens),
+          harnessState,
+          candidate: wrongEpoch,
+          prepareSource: nextPrepare,
+        })
+      ).toThrow('taskEpoch');
+
+      const danglingHarness: HarnessState = {
+        ...harnessState,
+        ledger: [],
+      };
+      expect(() =>
+        commitSessionCompactCheckpoint({
+          sessionId: session.id,
+          mode: 'manual',
+          modelId: 'gpt-4o',
+          sourceMessageCount: nextPrepare.sourceMessageCount,
+          transcriptStartMessageIndex: 0,
+          modelHistory,
+          summary: { text: 'dangling evidence', generatedAt: 5, source: 'heuristic' },
+          beforeUsage: usage(1000),
+          afterUsage: usage(candidate.afterTokens),
+          harnessState: danglingHarness,
+          candidate,
+          prepareSource: nextPrepare,
+        })
+      ).toThrow('Dangling compact criterion evidence reference');
+    });
+
     test('keeps the raw transcript immutable and restores checkpoint history plus new tail', () => {
       const session = createSession('/tmp/project-compact-checkpoint', 'gpt-4o');
       const rawMessages = Array.from({ length: 8 }, (_, index) => ({
@@ -276,6 +632,29 @@ describe('session-storage', () => {
       });
 
       expect(readSessionMessages(session.id)).toEqual(rawMessages);
+      expect(checkpoint).toMatchObject({
+        version: 2,
+        sourceBoundary: {
+          startMessageIndex: 0,
+          endMessageIndexExclusive: rawMessages.length,
+        },
+        validation: {
+          schemaValid: true,
+          toolCallGroupsValid: true,
+          sourcePrefixVerified: true,
+          targetHeadroomRatio: 0.65,
+          targetMet: true,
+        },
+      });
+      expect(checkpoint.sourcePrefixHash).toMatch(/^[a-f0-9]{64}$/);
+      expect(checkpoint.modelHistoryHash).toMatch(/^[a-f0-9]{64}$/);
+      expect(checkpoint.candidateReceipt).toMatchObject({
+        source: 'compatibility_adapter',
+        beforeTokens: 110000,
+        afterTokens: 1200,
+        targetRatio: 0.65,
+      });
+      expect(checkpoint.validation.bindingHash).toMatch(/^[a-f0-9]{64}$/);
       expect(checkpoint.modelHistory).not.toContainEqual(
         expect.objectContaining({ role: 'system' })
       );
@@ -336,6 +715,148 @@ describe('session-storage', () => {
       expect(readSessionMessages(session.id)).toHaveLength(3);
     });
 
+    test('rejects a V2 checkpoint when its covered transcript prefix changes', () => {
+      const session = createSession('/tmp/project-compact-prefix-integrity', 'gpt-4o');
+      appendSessionMessages(session.id, [
+        { role: 'user', content: 'immutable-one', timestamp: 1 },
+        { role: 'assistant', content: 'immutable-two', timestamp: 2 },
+      ]);
+      commitSessionCompactCheckpoint({
+        sessionId: session.id,
+        mode: 'threshold',
+        modelId: 'gpt-4o',
+        sourceMessageCount: 2,
+        transcriptStartMessageIndex: 0,
+        modelHistory: [{ role: 'user', content: 'verified checkpoint' }],
+        summary: { text: 'verified', generatedAt: 3, source: 'heuristic' },
+        beforeUsage: usage(110000),
+        afterUsage: usage(1000),
+      });
+
+      const messagesPath = getProjectSessionMessagesPath(session.projectPath, session.id);
+      writeFileSync(
+        messagesPath,
+        `${JSON.stringify({ role: 'user', content: 'tampered', timestamp: 1 })}\n${JSON.stringify({
+          role: 'assistant',
+          content: 'immutable-two',
+          timestamp: 2,
+        })}\n`,
+        'utf-8'
+      );
+
+      expect(loadSessionCompactCheckpoint(session.id)).toBeNull();
+      expect(loadSessionHistory(session.id)).toEqual([
+        { role: 'user', content: 'tampered' },
+        { role: 'assistant', content: 'immutable-two' },
+      ]);
+    });
+
+    test('rejects a V2 checkpoint when its replacement history hash changes', () => {
+      const session = createSession('/tmp/project-compact-replacement-integrity', 'gpt-4o');
+      appendSessionMessage(session.id, { role: 'user', content: 'raw source', timestamp: 1 });
+      const checkpoint = commitSessionCompactCheckpoint({
+        sessionId: session.id,
+        mode: 'manual',
+        modelId: 'gpt-4o',
+        sourceMessageCount: 1,
+        transcriptStartMessageIndex: 0,
+        modelHistory: [{ role: 'user', content: 'trusted replacement' }],
+        summary: { text: 'trusted', generatedAt: 2, source: 'heuristic' },
+        beforeUsage: usage(1000),
+        afterUsage: usage(500),
+      });
+      const compactPath = getProjectSessionCompactPath(session.projectPath, session.id);
+      writeFileSync(
+        compactPath,
+        JSON.stringify({
+          ...checkpoint,
+          modelHistory: [{ role: 'user', content: 'tampered replacement' }],
+        }),
+        'utf-8'
+      );
+
+      expect(loadSessionCompactCheckpoint(session.id)).toBeNull();
+      expect(loadSessionHistory(session.id)).toEqual([{ role: 'user', content: 'raw source' }]);
+    });
+
+    test('rejects malformed V2 tool groups without moving the active checkpoint pointer', () => {
+      const session = createSession('/tmp/project-compact-tool-groups', 'gpt-4o');
+      appendSessionMessage(session.id, { role: 'user', content: 'raw source', timestamp: 1 });
+      const common = {
+        sessionId: session.id,
+        mode: 'manual' as const,
+        modelId: 'gpt-4o',
+        sourceMessageCount: 1,
+        transcriptStartMessageIndex: 0,
+        summary: { text: 'summary', generatedAt: 2, source: 'heuristic' as const },
+        beforeUsage: usage(1000),
+        afterUsage: usage(500),
+      };
+      const stable = commitSessionCompactCheckpoint({
+        ...common,
+        modelHistory: [{ role: 'user', content: 'stable replacement' }],
+      });
+
+      expect(() =>
+        commitSessionCompactCheckpoint({
+          ...common,
+          modelHistory: [
+            {
+              role: 'assistant',
+              content: '',
+              tool_calls: [
+                {
+                  id: 'missing-result',
+                  type: 'function',
+                  function: { name: 'read_file', arguments: '{}' },
+                },
+              ],
+            },
+          ],
+        })
+      ).toThrow(/Incomplete tool-call group/);
+      expect(loadSessionCompactCheckpoint(session.id)?.checkpointId).toBe(stable.checkpointId);
+    });
+
+    test('continues to read legacy V1 compact checkpoints', () => {
+      const session = createSession('/tmp/project-compact-v1-compatibility', 'gpt-4o');
+      appendSessionMessage(session.id, { role: 'user', content: 'legacy raw', timestamp: 1 });
+      const checkpointId = 'legacy-checkpoint';
+      const legacyCheckpoint = {
+        version: 1,
+        checkpointId,
+        sessionId: session.id,
+        createdAt: 2,
+        mode: 'manual',
+        modelId: 'gpt-4o',
+        sourceMessageCount: 1,
+        transcriptStartMessageIndex: 0,
+        modelHistory: [{ role: 'user', content: 'legacy replacement' }],
+        summary: {
+          text: 'legacy summary',
+          generatedAt: 2,
+          source: 'heuristic',
+          sourceMessageCount: 1,
+        },
+        beforeUsage: usage(1000),
+        afterUsage: usage(500),
+      };
+      writeFileSync(
+        getProjectSessionCompactPath(session.projectPath, session.id),
+        JSON.stringify(legacyCheckpoint),
+        'utf-8'
+      );
+      saveSessionMeta({ ...session, activeCompactCheckpointId: checkpointId });
+
+      expect(loadSessionCompactCheckpoint(session.id)).toMatchObject({
+        version: 1,
+        checkpointId,
+      });
+      expect(loadSessionHistory(session.id)).toEqual([
+        { role: 'user', content: 'legacy replacement' },
+      ]);
+    });
+
     test('falls back to raw history for a corrupt or mismatched sidecar', () => {
       const session = createSession('/tmp/project-corrupt-compact', 'gpt-4o');
       appendSessionMessage(session.id, { role: 'user', content: 'auditable raw', timestamp: 1 });
@@ -387,7 +908,7 @@ describe('session-storage', () => {
       const sidecarFailure = jest
         .spyOn(atomicWrite, 'atomicWriteFileSync')
         .mockImplementation((path, content, options) => {
-          if (path === compactPath) throw new Error('sidecar unavailable');
+          if (path === `${compactPath}.candidate`) throw new Error('sidecar unavailable');
           realAtomicWrite(path, content, options);
         });
       expect(() =>
@@ -418,6 +939,34 @@ describe('session-storage', () => {
       ]);
     });
 
+    test('recovers the durable checkpoint when a crash installs a sidecar before its pointer', () => {
+      const session = createSession('/tmp/project-interrupted-compact-commit', 'gpt-4o');
+      appendSessionMessage(session.id, { role: 'user', content: 'raw source', timestamp: 1 });
+      const stable = commitSessionCompactCheckpoint({
+        sessionId: session.id,
+        mode: 'manual',
+        modelId: 'gpt-4o',
+        sourceMessageCount: 1,
+        transcriptStartMessageIndex: 0,
+        modelHistory: [{ role: 'user', content: 'stable checkpoint' }],
+        summary: { text: 'stable', generatedAt: 2, source: 'heuristic' },
+        beforeUsage: usage(1000),
+        afterUsage: usage(500),
+      });
+      const compactPath = getProjectSessionCompactPath(session.projectPath, session.id);
+      writeFileSync(`${compactPath}.previous`, JSON.stringify(stable), 'utf-8');
+      writeFileSync(
+        compactPath,
+        JSON.stringify({ ...stable, checkpointId: 'interrupted-candidate' }),
+        'utf-8'
+      );
+
+      expect(loadSessionCompactCheckpoint(session.id)?.checkpointId).toBe(stable.checkpointId);
+      expect(loadSessionHistory(session.id)).toEqual([
+        { role: 'user', content: 'stable checkpoint' },
+      ]);
+    });
+
     test('deleting a session removes its compact sidecar', () => {
       const session = createSession('/tmp/project-delete-compact', 'gpt-4o');
       appendSessionMessage(session.id, { role: 'user', content: 'delete me', timestamp: 1 });
@@ -433,10 +982,14 @@ describe('session-storage', () => {
         afterUsage: usage(500),
       });
       const compactPath = getProjectSessionCompactPath(session.projectPath, session.id);
+      writeFileSync(`${compactPath}.candidate`, '{}', 'utf-8');
+      writeFileSync(`${compactPath}.previous`, '{}', 'utf-8');
       expect(existsSync(compactPath)).toBe(true);
 
       expect(deleteSession(session.id)).toBe(true);
       expect(existsSync(compactPath)).toBe(false);
+      expect(existsSync(`${compactPath}.candidate`)).toBe(false);
+      expect(existsSync(`${compactPath}.previous`)).toBe(false);
     });
 
     test('deleting a session fences its Goal against a stale writer', () => {

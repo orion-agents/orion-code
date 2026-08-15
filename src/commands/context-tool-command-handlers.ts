@@ -6,7 +6,7 @@ import { errorMessage } from '../utils/errors';
 import { getToolState } from '../framework';
 import { executeTool, getRuntimeTools } from '../tools';
 import { mcpManager } from '../tools/mcp';
-import { loadSessionMeta } from '../services/session-storage';
+import { loadSessionCompactCheckpoint, loadSessionMeta } from '../services/session-storage';
 import { getAutoCompact } from '../services/compact/auto-compact';
 import {
   getSkillsRegistry,
@@ -15,7 +15,7 @@ import {
   parseSkillCommandInput,
   skillActivationNames,
 } from '../skills';
-import { resolveModelContext } from '../services/model-context';
+import { resolveContextBudget, resolveModelContext } from '../services/model-context';
 import { validateAllMemories } from '../memory/validation';
 
 const ACCENT = chalk.hex('#00D4AA');
@@ -338,6 +338,22 @@ function showHarness(ctx: CommandContext, args: string = ''): CommandResult {
       console.log(`    Ledger      ${DIM(`${state.ledger?.length ?? 0} entries`)}`);
       console.log(`    Evidence    ${DIM(`${state.evidenceIndex?.length ?? 0} records`)}`);
       console.log(`    Turns       ${DIM(`${state.turnSummaries?.length ?? 0} summaries`)}`);
+      if (stats.capabilityProfileVersion) {
+        console.log(
+          `    Capability  ${DIM(`v${stats.capabilityProfileVersion} ${stats.capabilityProfileFingerprint?.slice(0, 12) ?? 'unknown'}`)}`
+        );
+      }
+      if (stats.sectionManifest?.length) {
+        console.log();
+        console.log(HEADER('    Section Budget'));
+        for (const section of stats.sectionManifest) {
+          const disposition = section.selected ? SUCCESS('selected') : WARN('omitted');
+          console.log(
+            `      ${ACCENT(section.name.padEnd(18))} ${DIM(`[${section.authority}] ${section.tokenEstimate}/${section.budgetTokens}`)} ${disposition}`
+          );
+          if (section.reason) console.log(`        ${DIM(section.reason)}`);
+        }
+      }
       console.log();
       console.log(HEADER('    Included Evidence'));
       for (const item of stats.includedEvidence.slice(0, 10)) {
@@ -381,6 +397,45 @@ function showHarness(ctx: CommandContext, args: string = ''): CommandResult {
     );
     console.log(`    Armed       ${compactStats.preCompactArmed ? SUCCESS('yes') : DIM('no')}`);
     console.log(`    Last mode   ${DIM(compactStats.lastCompactMode ?? 'none')}`);
+    const budget = resolveContextBudget(compactStats.modelId, ctx.llm?.getMaxTokens?.());
+    console.log(
+      `    Reserve     ${DIM(`${budget.reservedOutputTokens} output + ${budget.safetyMarginTokens} safety tokens`)}`
+    );
+    if (session?.id) {
+      try {
+        const checkpoint = loadSessionCompactCheckpoint(session.id);
+        console.log();
+        console.log(HEADER('  Latest Compact Receipt'));
+        if (!checkpoint) {
+          console.log(DIM('    No committed compact checkpoint.'));
+        } else {
+          console.log(`    Checkpoint  ${ACCENT(checkpoint.checkpointId)}`);
+          console.log(`    Schema      ${DIM(`v${checkpoint.version}`)}`);
+          console.log(`    Mode        ${DIM(checkpoint.mode)}`);
+          console.log(
+            `    Tokens      ${DIM(`${checkpoint.beforeUsage.usedTokens} → ${checkpoint.afterUsage.usedTokens}`)}`
+          );
+          if (checkpoint.version === 2) {
+            console.log(`    Strategy    ${DIM(checkpoint.summary.strategy)}`);
+            console.log(
+              `    Target      ${DIM(`${Math.round(checkpoint.validation.targetHeadroomRatio * 100)}% (${checkpoint.validation.targetMet ? 'met' : 'missed'})`)}`
+            );
+            console.log(
+              `    Coverage    ${DIM(`${checkpoint.candidateReceipt.semanticSummary?.coverage.groupCount ?? 0} groups / ${checkpoint.candidateReceipt.semanticSummary?.coverage.messageCount ?? 0} messages`)}`
+            );
+            console.log(
+              `    Diagnostics ${DIM(String(checkpoint.candidateReceipt.diagnostics.length))}`
+            );
+          }
+        }
+      } catch (error) {
+        console.log();
+        console.log(HEADER('  Latest Compact Receipt'));
+        console.log(
+          WARN(`    Unavailable: ${error instanceof Error ? error.message : String(error)}`)
+        );
+      }
+    }
     console.log();
     return result();
   }

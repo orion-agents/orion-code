@@ -39,6 +39,11 @@
   "defaultEffort": "auto",
   "toolConfirmation": "allow",
   "allowedTools": [],
+  "projects": {
+    "/absolute/path/to/project": {
+      "compactInstructions": "Retain architecture decisions, failed verification, and release receipts."
+    }
+  },
   "ui": {
     "confirmations": "config",
     "theme": "orion-pixel",
