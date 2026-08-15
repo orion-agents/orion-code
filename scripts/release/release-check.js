@@ -36,6 +36,7 @@ const REQUIRED_PACKAGE_ENTRIES = [
   'assets/orion-tui-icon.png',
   'bin/orion',
   'CHANGELOG.md',
+  'docs/readme.md',
   'docs/migration/v0.1.8-to-v0.1.9.md',
   'docs/plan/v0.1.9-release-checklist.md',
   'LICENSE',

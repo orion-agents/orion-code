@@ -175,6 +175,7 @@ describe('release-check script contract', () => {
     expect(script).toContain('MAX_UNPACKED_PACKAGE_BYTES = 10 * 1024 * 1024');
     expect(script).toContain('MAX_PACKAGE_ENTRIES = 1500');
     expect(script).toContain("'assets/orion-tui-icon.png'");
+    expect(script).toContain("'docs/readme.md'");
     expect(script).toContain("'docs/migration/v0.1.8-to-v0.1.9.md'");
     expect(script).toContain("'docs/plan/v0.1.9-release-checklist.md'");
     expect(script).toContain('unexpected tarball entries');
