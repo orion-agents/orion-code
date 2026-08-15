@@ -90,8 +90,10 @@ PATH=/Users/hope/.nvm/versions/node/v24.14.1/bin:$PATH npx jest \
   --runInBand --no-coverage
 ```
 
-Current local receipt at HEAD `7cc1960b27c364f2e6ecea50d36c78eec608ef03` plus the shared v0.1.9
-worktree diff, Node `v24.14.1`, macOS, 2026-08-15: `3` suites, `21` tests, `21` passed.
+The immutable Orion receipt is
+[`receipts/v0.1.9-compact-node24.json`](receipts/v0.1.9-compact-node24.json): implementation
+commit `e350719c3dc66756557f29ec2b89bf53cf1cb682`, Node `v24.14.1`, macOS arm64,
+2026-08-15, `3` suites, `24` tests, `24` passed.
 The corpus contract tests validate all eight case definitions and their hash. The semantic suite
 executes Orion's atomic tool grouping, typed coverage, canonical fingerprint, 65% headroom,
 oversized-item fail-closed behavior, provider fallback diagnostics, and model-switch receipt gates.
