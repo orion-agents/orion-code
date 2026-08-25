@@ -2,7 +2,7 @@
  * Phase 3 (P0-C) — Goal parity tests across renderers.
  *
  * Validates that:
- *  - /target command parsing produces identical results regardless of renderer
+ *  - /goal command parsing produces identical results regardless of renderer
  *  - Goal coordinator state machine is renderer-agnostic
  *  - Completion audit works for both TUI and terminal renderers
  *  - Renderer switching does not change goal state
@@ -25,22 +25,16 @@ import { findCommand } from '../src/commands';
 // ---------------------------------------------------------------------------
 
 describe('Goal command parser parity', () => {
-  const renderers = ['tui', 'terminal', 'ink', 'print'] as const;
+  const renderers = ['tui', 'terminal', 'print'] as const;
 
   it('parseTargetCommand produces same result regardless of renderer context', () => {
     const cases = [
-      '/target',
-      '/target status',
       '/goal',
       '/goal status',
-      '/target pause',
-      '/target resume',
-      '/target edit fix all bugs',
-      '/target replace rewrite the API',
+      '/goal clear',
       '/goal exit',
-      '/target budget 50000',
-      '/target budget off',
-      '/target build a feature with many words in the objective',
+      '/goal budget 50000',
+      '/goal build a feature with many words in the objective',
       '/goal pause',
       '/goal resume',
     ];
@@ -54,11 +48,9 @@ describe('Goal command parser parity', () => {
     }
   });
 
-  it('/target and /goal commands share renderer scope (all renderers)', () => {
-    const target = findCommand('target');
+  it('/goal is renderer-neutral and /target is removed', () => {
     const goal = findCommand('goal');
-    expect(goal).toBe(target);
-    expect(target?.rendererScope).toBeUndefined();
+    expect(findCommand('target')).toBeUndefined();
     expect(goal?.rendererScope).toBeUndefined();
   });
 });

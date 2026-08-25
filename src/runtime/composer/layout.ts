@@ -1,9 +1,7 @@
 /**
  * Shared prompt layout utilities.
  *
- * Migrated from `src/ink-ui/runtime/prompt-layout.ts` to provide a
- * renderer-independent visual-line wrapping and viewport calculation.
- * Ink re-exports from here; TUI imports directly.
+ * Renderer-independent visual-line wrapping and viewport calculation.
  *
  * All width calculations use `string-width` for CJK/emoji correctness.
  * Cursor positioning respects grapheme boundaries.

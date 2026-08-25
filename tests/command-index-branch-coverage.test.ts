@@ -37,50 +37,11 @@ function makeContext(root: string, overrides: Partial<CommandContext> = {}): Com
     ui: { renderer: 'tui' },
   });
   const store = new Store({ config, tools: [], currentModel: 'gpt-4o' });
-  const runtime = {
-    brain: {
-      getStatus: () => ({ agents: [], pendingTasks: 0, strategy: 'sequential' }),
-      submitTask: jest.fn(),
-    },
-    memory: {
-      getStatus: () => ({ working: 2, 'short-term': 3, 'long-term': 4 }),
-    },
-    store: {
-      getStats: () => ({ working: 5, 'short-term': 6, 'long-term': 7 }),
-    },
-    config: {
-      memory: { workingCapacity: 10, shortTermCapacity: 20 },
-    },
-    safety: {
-      getPolicy: () => ({
-        enabled: true,
-        sandboxMode: true,
-        blocked: ['rm -rf', 'shutdown'],
-        dangerousPatterns: ['sudo', 'chmod'],
-      }),
-      getAuditSummary: () => ({ total: 5, passed: 4, blocked: 1 }),
-    },
-    harness: {
-      getConfig: () => ({
-        maxSteps: 12,
-        boundaryCheck: true,
-        goalConstraint: false,
-        resultValidation: true,
-        sandbox: false,
-        timeout: 30_000,
-        blockedActions: ['delete'],
-      }),
-    },
-    agents: [],
-    shutdown: jest.fn(async () => undefined),
-  };
-
   return {
     cwd: root,
     config,
     store,
     llm: null,
-    runtime: runtime as never,
     compactCoordinator: {
       configure: jest.fn(),
       getAutomatic: () => ({ getStats: () => autoCompactStats }),
@@ -168,12 +129,12 @@ describe('command index branch coverage', () => {
     expect(getCommandCategoryLabel(undefined)).toBe('System');
     expect(getCommandCategoryLabel('workflow')).toBe('Workflow');
     expect(findCommand('goal')?.name).toBe('goal');
-    expect(findCommand('TARGET')?.id).toBe('builtin.workflow.goal');
+    expect(findCommand('TARGET')).toBeUndefined();
     expect(findCommand('audit')?.name).toBe('security');
     expect(findCommand('missing')).toBeUndefined();
     expect(getCommandNames()).toContain('help');
     expect(getCommandNames()).not.toContain('chat');
-    expect(getCommands().some(command => command.name === 'chat')).toBe(true);
+    expect(getCommands().some(command => command.name === 'chat')).toBe(false);
     expect(getVisibleCommands('tui').some(command => command.name === 'clear')).toBe(true);
     expect(getVisibleCommands('terminal').some(command => command.name === 'tool-output')).toBe(
       false
@@ -182,7 +143,7 @@ describe('command index branch coverage', () => {
   });
 
   it('renders help across renderer scopes and all command metadata branches', async () => {
-    for (const renderer of [undefined, 'tui', 'terminal', 'ink', 'print'] as const) {
+    for (const renderer of [undefined, 'tui', 'terminal', 'print'] as const) {
       const ctx = makeContext(root, { uiRenderer: renderer });
       expect((await execute(ctx, 'help')).success).toBe(true);
     }
@@ -192,17 +153,14 @@ describe('command index branch coverage', () => {
     expect(output).toContain('Workflow');
     expect(output).not.toContain('/context-clear');
     expect(output).toContain('/storage');
-    expect(output).toContain('deprecated since');
+    expect(output).not.toContain('deprecated since');
     expect(output).toContain('destructive');
   });
 
   it('routes workflow commands and their aliases without mutating state', async () => {
     const ctx = makeContext(root);
 
-    await expect(execute(ctx, 'target', 'ship')).resolves.toEqual({
-      success: false,
-      error: '/goal must be routed through the shared AgentRuntimeController.',
-    });
+    expect(findCommand('target')).toBeUndefined();
     await expect(execute(ctx, 'review', '')).resolves.toMatchObject({
       success: true,
       continueAsChat: true,
@@ -213,9 +171,6 @@ describe('command index branch coverage', () => {
     });
     await expect(execute(ctx, 'tests', ' unit')).resolves.toMatchObject({
       chatInput: '/test-gen unit',
-    });
-    await expect(execute(ctx, 'chat', 'hello')).resolves.toMatchObject({
-      chatInput: 'hello',
     });
   });
 
@@ -230,25 +185,19 @@ describe('command index branch coverage', () => {
     expect(invalid.error).toContain('Unknown tool policy');
   });
 
-  it('prints agents, memory, safety, and configuration with rich runtime data', async () => {
+  it('prints memory, safety, and configuration from explicit runtime state', async () => {
     const llm = {
       getModel: jest.fn(() => 'gpt-4o'),
       getConfigSummary: jest.fn(() => ({ provider: 'test', retries: 2 })),
     };
     const ctx = makeContext(root, { llm: llm as never });
-    ctx.runtime.agents = [
-      { getStatus: () => ({ status: 'idle', name: 'one', id: 'a', capabilities: ['code'] }) },
-      { getStatus: () => ({ status: 'busy', name: 'two', id: 'b', capabilities: [] }) },
-    ] as never;
-
-    for (const command of ['agents', 'memory', 'safety', 'config']) {
+    for (const command of ['memory', 'safety', 'config']) {
       expect((await execute(ctx, command)).success).toBe(true);
     }
 
     const output = stripAnsi([...logs, ...commandOutputs].join('\n'));
-    expect(output).toContain('Registered Agents');
-    expect(output).toContain('Short-term 3 / 20');
-    expect(output).toContain('Blocked patterns');
+    expect(output).toContain('Prompt Memory');
+    expect(output).toContain('ToolGateway');
     expect(output).toContain('provider');
   });
 
@@ -413,100 +362,40 @@ describe('command index branch coverage', () => {
 
   it('guards and confirms context clearing', async () => {
     const ctx = makeContext(root);
-    expect((await execute(ctx, 'context-clear')).success).toBe(true);
+    expect((await execute(ctx, 'context', 'clear')).success).toBe(true);
     ctx.store.setState({ conversationHistory: [{ role: 'user', content: 'keep me' }] as never });
 
-    const preview = await execute(ctx, 'context-clear', '--force');
+    const preview = await execute(ctx, 'context', 'clear --force');
     expect(preview.success).toBe(false);
     expect(ctx.store.getSnapshot().conversationHistory).toHaveLength(1);
-    expect((await execute(ctx, 'clear-history', ' --yes ')).success).toBe(true);
+    expect((await execute(ctx, 'context', 'clear --yes')).success).toBe(true);
     expect(ctx.store.getSnapshot().conversationHistory).toEqual([]);
   });
 
-  it('covers compact empty, threshold, success, and error paths', async () => {
-    const ctx = makeContext(root);
-    expect((await execute(ctx, 'compact')).success).toBe(true);
+  it('routes compact through the runtime maintenance owner and reports every terminal path', async () => {
+    const unavailable = makeContext(root);
+    expect((await execute(unavailable, 'compact')).success).toBe(false);
 
-    ctx.store.setState({
-      conversationHistory: [
-        { role: 'user', content: 'one' },
-        { role: 'assistant', content: 'two' },
-        { role: 'user', content: 'three' },
-      ] as never,
-    });
-    expect((await execute(ctx, 'compact', 'invalid')).success).toBe(true);
-    expect((await execute(ctx, 'compact', '10')).success).toBe(true);
-
-    const coordinator = {
-      configure: jest.fn(),
-      getAutomatic: () => ({ getStats: () => autoCompactStats }),
-      compactManual: jest.fn(async () => ({
-        messages: [{ role: 'assistant', content: 'summary' }],
-        originalCount: 3,
-        compactedCount: 1,
-        ratio: 1 / 3,
-        summary: 'summary',
-        summaryGeneratedAt: Date.now(),
-        summarySource: 'heuristic',
-        semanticSummary: {
-          version: 1,
-          taskEpoch: 1,
-          constraints: [],
-          decisions: [],
-          completed: [],
-          pending: [],
-          blockers: [],
-          files: [],
-          verification: [],
-          toolOutcomes: [],
-          evidenceRefs: [],
-          items: [],
-          sourceBoundary: { groupCount: 0, messageCount: 0 },
-          coverage: { groupIds: [], groupCount: 0, messageCount: 0 },
-        },
-        diagnostics: [],
-        fingerprint: 'compact-fingerprint',
-        beforeTokens: 3,
-        afterTokens: 1,
-        plan: {
-          groups: [],
-          evictedGroups: [],
-          recentGroups: [],
-          recentStartIndex: 0,
-          targetRatio: 0.65,
-          fixedTokens: 0,
-          summaryReserveTokens: 0,
-        },
-      })),
-    };
-    ctx.compactCoordinator = coordinator as never;
-    expect((await execute(ctx, 'compact', '1')).success).toBe(true);
-    expect(ctx.store.getSnapshot().conversationHistory).toHaveLength(1);
-
-    ctx.store.setState({
-      conversationHistory: [
-        { role: 'user', content: 'one' },
-        { role: 'assistant', content: 'two' },
-        { role: 'user', content: 'three' },
-      ] as never,
-    });
+    const compact = jest.fn(async () => ({
+      status: 'completed' as const,
+      turnId: 'compact-turn-1',
+    }));
+    const ctx = makeContext(root, { compact });
     const focused = await execute(ctx, 'compact', '1 retain failed commands');
-    expect(focused.success).toBe(true);
-    expect(stripAnsi(focused.output ?? '')).toContain('Focus: retain failed commands');
-    expect(coordinator.compactManual).toHaveBeenLastCalledWith(
-      expect.any(Array),
-      1,
-      'retain failed commands'
-    );
-
-    ctx.store.setState({
-      conversationHistory: [
-        { role: 'user', content: 'one' },
-        { role: 'assistant', content: 'two' },
-      ] as never,
+    expect(focused).toEqual({
+      success: true,
+      output: 'Compaction committed in maintenance turn compact-turn-1.',
     });
-    coordinator.compactManual.mockRejectedValueOnce('boom' as never);
-    expect((await execute(ctx, 'compact', '1')).success).toBe(false);
+    expect(compact).toHaveBeenCalledWith({ maxMessages: 1, focus: 'retain failed commands' });
+
+    compact.mockResolvedValueOnce({ status: 'rejected', reason: 'non_steerable' } as never);
+    expect((await execute(ctx, 'compact', '10')).error).toContain('requires an idle Thread');
+
+    compact.mockResolvedValueOnce({ status: 'failed', turnId: 'compact-turn-2' } as never);
+    expect((await execute(ctx, 'compact', 'invalid')).error).toContain('ended as failed');
+
+    compact.mockRejectedValueOnce(new Error('transaction unavailable'));
+    expect((await execute(ctx, 'compact')).error).toContain('transaction unavailable');
   });
 
   it('validates storage grammar and previews non-destructive maintenance plans', async () => {
@@ -536,39 +425,28 @@ describe('command index branch coverage', () => {
   it('covers session argument parsing and empty or missing session paths', async () => {
     const ctx = makeContext(root);
     for (const args of ['', '--all', '-a', '--project ./nested', '-p ./other']) {
-      expect((await execute(ctx, 'sessions', args)).success).toBe(true);
+      expect((await execute(ctx, 'session', `list ${args}`)).success).toBe(true);
     }
-    expect((await execute(ctx, 'sessions', 'not-found-query')).success).toBe(true);
+    expect((await execute(ctx, 'session', 'list not-found-query')).success).toBe(true);
     expect((await execute(ctx, 'resume')).success).toBe(false);
     expect((await execute(ctx, 'resume', '#0')).success).toBe(false);
     expect((await execute(ctx, 'resume', 'missing --all')).success).toBe(false);
-    expect((await execute(ctx, 'session-rename')).success).toBe(false);
-    expect((await execute(ctx, 'rename-session', 'missing new-name --all')).success).toBe(false);
+    expect((await execute(ctx, 'session', 'rename')).success).toBe(false);
+    expect((await execute(ctx, 'session', 'rename missing new-name --all')).success).toBe(false);
   });
 
-  it('covers task, run, diff, commit, clear, and exit error or fallback paths', async () => {
+  it('covers diff, commit, clear, and exit error or fallback paths', async () => {
     const ctx = makeContext(root, {
       clearView: jest.fn(),
       requestShutdown: jest.fn(),
     });
 
-    expect((await execute(ctx, 'task', '')).success).toBe(true);
-    expect((await execute(ctx, 'task', 'list')).success).toBe(true);
-    expect((await execute(ctx, 'task', 'ls')).success).toBe(true);
-    expect((await execute(ctx, 'run')).success).toBe(false);
-
-    const noConfig = makeContext(root);
-    noConfig.config.apiKey = '';
-    expect((await execute(noConfig, 'run', 'do work')).success).toBe(false);
-    expect((await execute(ctx, 'run', 'do work')).success).toBe(false);
-
     expect((await execute(ctx, 'diff')).success).toBe(false);
     expect((await execute(ctx, 'diff', '--max-files=3')).success).toBe(false);
-    expect((await execute(ctx, 'commit')).success).toBe(false);
-    expect((await execute(ctx, 'commit', '--max-files 2')).success).toBe(false);
+    expect((await execute(ctx, 'commit-plan')).success).toBe(false);
+    expect((await execute(ctx, 'commit-plan', '--max-files 2')).success).toBe(false);
     expect((await execute(ctx, 'clear')).success).toBe(true);
     expect((await execute(ctx, 'exit')).success).toBe(true);
     expect(ctx.requestShutdown).toHaveBeenCalledWith('user request');
-    expect(ctx.runtime.shutdown).toHaveBeenCalled();
   });
 });

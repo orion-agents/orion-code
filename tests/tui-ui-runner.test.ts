@@ -303,16 +303,16 @@ describe('tui-ui runner', () => {
       },
     });
 
-    runner.feedInput(Buffer.from('/target status'));
+    runner.feedInput(Buffer.from('/goal status'));
     expect(runner.getState().overlay).toMatchObject({ type: 'commands' });
     expect(runner.getState().overlay).toEqual(
       expect.objectContaining({
-        items: expect.not.arrayContaining([expect.objectContaining({ value: 'target' })]),
+        items: expect.arrayContaining([expect.objectContaining({ value: 'goal' })]),
       })
     );
     runner.feedInput(Buffer.from('\r'));
 
-    expect(submitted).toEqual(['/target status']);
+    expect(submitted).toEqual(['/goal status']);
     expect(runner.getState().prompt).toEqual({ value: '', cursor: 0 });
     expect(runner.getState().overlay).toBeNull();
   });

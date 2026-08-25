@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Real-process parity smoke for the research lifecycle renderers.
+"""Real-process parity smoke for modern subtask lifecycle renderers.
 
 Terminal and TUI are driven through a pseudo-terminal. Print mode is a real
 non-interactive child process whose JSON payload exposes the same ordered,
@@ -302,20 +302,23 @@ def stop_process(process: subprocess.Popen[bytes], master: int) -> None:
         pass
 
 
-def assert_lifecycle_text(output: str, label: str) -> None:
-    packet_ids = re.findall(r"research (pkt-[^\s]+) started mode=local", output)
-    if len(set(packet_ids)) != 2:
-        raise AssertionError(
-            f"{label} expected two research packets, found {packet_ids!r}. Tail:\n{output[-6000:]}"
-        )
-    for packet_id in set(packet_ids):
-        started = output.find(f"research {packet_id} started mode=local")
-        source = output.find(f"research {packet_id} source ", started + 1)
-        completed = output.find(f"research {packet_id} completed audit=met", source + 1)
-        if not (started >= 0 and source > started and completed > source):
+def assert_subtask_text(output: str, label: str) -> None:
+    markers = [
+        "Running subtask",
+        "Completed subtask",
+        "subtask batch batch-1: 2 result(s)",
+        "src/runtime/ui-view-model.ts",
+        "src/services/session-storage.ts",
+        ROOT_COMPLETE,
+    ]
+    cursor = 0
+    for marker in markers:
+        position = output.find(marker, cursor)
+        if position < 0:
             raise AssertionError(
-                f"{label} lifecycle order failed for {packet_id}. Tail:\n{output[-6000:]}"
+                f"{label} modern subtask lifecycle omitted {marker!r}. Tail:\n{output[-6000:]}"
             )
+        cursor = position + len(marker)
 
 
 def run_pty_renderer(
@@ -358,51 +361,45 @@ def run_pty_renderer(
             os.write(master, (ROOT_PROMPT + "\r").encode("utf-8"))
             plain = output.wait(ROOT_COMPLETE, timeout=45)
             if renderer == "terminal":
-                assert_lifecycle_text(plain, renderer)
+                assert_subtask_text(plain, renderer)
             else:
-                output.wait("research:completed", timeout=10)
+                # v0.2 exposes child work as one digest-bound subtask invocation;
+                # completed details are inspected through the renderer-owned tool
+                # inspector instead of the removed legacy research packet sink.
+                os.write(master, b"\x0f")
+                output.wait("Orion Code Tool Inspector", timeout=10)
+                output.wait("subtask", timeout=10)
+                output.wait("2 result(s)", timeout=10)
                 plain = output.plain()
-                if "src:1/1" not in plain or "fail:0" not in plain or "cite:1" not in plain:
-                    raise AssertionError(f"TUI research projection was incomplete. Tail:\n{plain[-6000:]}")
+                os.write(master, b"q")
             return plain
         finally:
             stop_process(process, master)
 
 
 def assert_print_lifecycle(payload: dict[str, Any]) -> None:
-    events = payload.get("researchEvents")
-    if not isinstance(events, list):
-        raise AssertionError(f"Print JSON omitted researchEvents: {json.dumps(payload)[:2000]}")
-    packet_ids = {
-        event.get("packetId")
-        for event in events
-        if isinstance(event, dict) and event.get("type") == "research_started"
-    }
-    if None in packet_ids:
-        packet_ids.remove(None)
-    if len(packet_ids) != 2:
-        raise AssertionError(f"Print JSON expected two packet streams: {json.dumps(events)}")
-    for packet_id in packet_ids:
-        types = [
-            event.get("type")
-            for event in events
-            if isinstance(event, dict) and event.get("packetId") == packet_id
-        ]
-        if types != ["research_started", "research_source", "research_completed"]:
-            raise AssertionError(f"Print JSON lifecycle order failed for {packet_id}: {types}")
-        completed = next(
-            event
-            for event in events
-            if event.get("packetId") == packet_id and event.get("type") == "research_completed"
-        )
-        summary = completed.get("summary") or {}
-        if completed.get("stage") != "completed" or completed.get("auditStatus") != "met":
-            raise AssertionError(f"Print JSON terminal event is incomplete: {completed}")
-        if summary.get("retrievedCount") != 1 or summary.get("citationCount") != 1:
-            raise AssertionError(f"Print JSON summary counts are wrong: {completed}")
-    projection = payload.get("research") or {}
-    if projection.get("stage") != "completed" or len(projection.get("sources") or []) != 1:
-        raise AssertionError(f"Print JSON projection is missing: {json.dumps(projection)}")
+    events = payload.get("toolEvents")
+    if not isinstance(events, list) or len(events) != 2:
+        raise AssertionError(f"Print JSON expected one started/terminal subtask pair: {events!r}")
+    started, finished = events
+    if (
+        started.get("type") != "started"
+        or finished.get("type") != "finished"
+        or started.get("name") != "subtask"
+        or finished.get("name") != "subtask"
+        or started.get("callId") != finished.get("callId")
+        or finished.get("success") is not True
+    ):
+        raise AssertionError(f"Print JSON subtask lifecycle is invalid: {json.dumps(events)}")
+    summary = str(finished.get("summary") or "")
+    for marker in (
+        "2 result(s)",
+        "src/runtime/ui-view-model.ts",
+        "src/services/session-storage.ts",
+        "modelRequests=2",
+    ):
+        if marker not in summary:
+            raise AssertionError(f"Print JSON subtask receipt omitted {marker!r}: {summary}")
 
 
 def run_print_renderer(
@@ -447,9 +444,9 @@ def main() -> int:
         printed = run_print_renderer(repo, base_command, base_url)
         print(
             "RESEARCH_RENDERER_PTY_SMOKE_OK "
-            f"terminal_events={terminal.count(' started mode=local')} "
-            f"tui_projection={'research:completed' in tui} "
-            f"print_events={len(printed.get('researchEvents') or [])}"
+            f"terminal_subtasks={terminal.count('Running subtask')} "
+            f"tui_inspector={'Orion Code Tool Inspector' in tui} "
+            f"print_tool_events={len(printed.get('toolEvents') or [])}"
         )
         return 0
     except Exception as error:

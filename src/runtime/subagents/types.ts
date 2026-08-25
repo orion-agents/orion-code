@@ -6,7 +6,7 @@
  * child agents under a unified budget, permission boundary and trace.
  *
  * These types are renderer- and protocol-agnostic. The runtime event shape
- * lives here so terminal/Ink/TUI consume one definition.
+ * lives here so terminal/TUI consume one definition.
  */
 
 import type { StopDecision } from '../../framework/stop-decision';

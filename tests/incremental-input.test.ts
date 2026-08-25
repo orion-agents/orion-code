@@ -8,7 +8,6 @@ function createRuntime(overrides: Partial<OrionCodeUiRuntime> = {}): OrionCodeUi
     config: { model: 'test-model' } as OrionCodeUiRuntime['config'],
     store: { setProcessing: jest.fn() } as unknown as OrionCodeUiRuntime['store'],
     llm: null,
-    runtime: {} as OrionCodeUiRuntime['runtime'],
     isConfigured: true,
     ensureSession: jest.fn(),
     setSession: jest.fn(),

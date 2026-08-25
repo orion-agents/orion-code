@@ -12,8 +12,8 @@ import { handleContextClear } from './session-command-handlers';
 export const CONTEXT_COMMANDS: SlashCommand[] = [
   {
     name: 'context',
-    description: 'Show context diagnostics or clear model context with confirmation',
-    argumentHint: '[show|harness|explain|clear --yes]',
+    description: 'Show diagnostics or clear only in-memory model context with confirmation',
+    argumentHint: '[show|harness|explain [--json]|clear --yes]',
     category: 'context',
     priority: 5,
     type: 'builtin',
@@ -22,18 +22,25 @@ export const CONTEXT_COMMANDS: SlashCommand[] = [
     execute: (ctx, args) => {
       const trimmed = args.trim();
       if (!trimmed || trimmed === 'show' || trimmed === 'harness') return showHarness(ctx, '');
-      if (trimmed === 'explain' || trimmed === 'harness explain')
-        return showHarness(ctx, 'explain');
+      if (trimmed === 'explain' || trimmed.startsWith('explain ')) {
+        return showHarness(ctx, trimmed);
+      }
+      if (trimmed === 'harness explain' || trimmed.startsWith('harness explain ')) {
+        return showHarness(ctx, trimmed.slice('harness '.length));
+      }
       if (trimmed.startsWith('clear')) {
         return handleContextClear(ctx, trimmed.slice('clear'.length).trim());
       }
-      return { success: false, error: 'Usage: /context [show|harness|explain|clear --yes]' };
+      return {
+        success: false,
+        error: 'Usage: /context [show|harness|explain [--json]|clear --yes]',
+      };
     },
   },
   {
     name: 'harness',
-    description: 'Show Context Harness state, or `/harness explain` for prompt assembly details',
-    argumentHint: '[explain]',
+    description: 'Explain the live v0.2 runtime, capability, Skill, MCP, and compact state',
+    argumentHint: '[explain [--json]]',
     category: 'context',
     priority: 10,
     type: 'builtin',

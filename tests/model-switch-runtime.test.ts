@@ -98,7 +98,6 @@ describe('runtime model-switch compact transaction', () => {
       llm,
       compactCoordinator,
       modelCoordinator: coordinator,
-      runtime: {} as CommandContext['runtime'],
       getSession: () => session,
       ensureSession: () => session,
       getActiveGoal: () => null,

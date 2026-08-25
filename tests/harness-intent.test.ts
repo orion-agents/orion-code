@@ -1,5 +1,5 @@
 import { buildHarnessContext, classifyIntent, createContextHarness, createTurnSummary, rankEvidence } from '../src/harness';
-import type { EvidenceRecord } from '../src';
+import type { EvidenceRecord } from '../src/harness/types';
 
 describe('Context Harness v2 intent and assembly', () => {
   test('classifies new tasks, refinements, verification, and short feedback', () => {

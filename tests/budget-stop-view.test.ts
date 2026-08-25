@@ -76,7 +76,7 @@ describe('actionable loop-budget stop view', () => {
     expect(english).toContain('8/8 model requests');
     expect(english).toContain('Stopped after: read_file');
     expect(english).toContain('Reply `继续`');
-    expect(english).toContain('/loop-stats');
+    expect(english).toContain('/usage');
     expect(english).toContain('agentLoop.budget');
     expect(chinese).toContain('这不是任务失败');
     expect(chinese).toContain('停止位置：read_file');
@@ -108,7 +108,7 @@ describe('actionable loop-budget stop view', () => {
     const tui = transcriptText(entry);
     expect(tui).toContain('⏸');
     expect(tui).toContain('Reply `继续`');
-    expect(tui).toContain('/loop-stats');
+    expect(tui).toContain('/usage');
 
     const writes: string[] = [];
     const writer: TerminalWriter = { write: text => writes.push(text) };

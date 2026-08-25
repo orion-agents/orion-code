@@ -8,7 +8,7 @@
  */
 
 import { buildTool, type OrionCodeTool } from '../framework/tool';
-import { getToolState, setToolState, type TodoItem } from '../framework/tool-state';
+import type { TodoItem, ToolStateStore } from '../framework/tool-state';
 
 // ============================================================================
 // TodoWrite Tool
@@ -52,101 +52,108 @@ Each todo must have:
 - Remove tasks that are no longer relevant
 - Only mark completed when FULLY accomplished`;
 
-export const todoWriteTool: OrionCodeTool = buildTool({
-  name: 'todo_write',
-  description: `Update the todo list for the current session.
+export function createTodoTools(state: ToolStateStore): OrionCodeTool[] {
+  const todoWriteTool: OrionCodeTool = buildTool({
+    name: 'todo_write',
+    description: `Update the todo list for the current session.
 
 ${TODO_PROMPT}`,
-  parameters: {
-    type: 'object',
-    properties: {
-      todos: {
-        type: 'string',
-        description: 'JSON array or array of todos: [{"content":"Task","status":"pending|in_progress|completed","activeForm":"Doing task"}]',
+    parameters: {
+      type: 'object',
+      properties: {
+        todos: {
+          type: 'string',
+          description:
+            'JSON array or array of todos: [{"content":"Task","status":"pending|in_progress|completed","activeForm":"Doing task"}]',
+        },
       },
+      required: ['todos'],
     },
-    required: ['todos'],
-  },
-  execute: async (args) => {
-    let todos: TodoItem[];
-    const rawTodos = args.todos;
-    if (Array.isArray(rawTodos)) {
-      todos = rawTodos as TodoItem[];
-    } else {
-      try {
-        todos = JSON.parse(rawTodos as string);
-      } catch {
-        return { success: false, output: '', error: 'todos must be a valid JSON array' };
+    execute: async args => {
+      let todos: TodoItem[];
+      const rawTodos = args.todos;
+      if (Array.isArray(rawTodos)) {
+        todos = rawTodos as TodoItem[];
+      } else {
+        try {
+          todos = JSON.parse(rawTodos as string);
+        } catch {
+          return { success: false, output: '', error: 'todos must be a valid JSON array' };
+        }
       }
-    }
 
-    if (!Array.isArray(todos)) {
-      return { success: false, output: '', error: 'todos must be an array' };
-    }
+      if (!Array.isArray(todos)) {
+        return { success: false, output: '', error: 'todos must be an array' };
+      }
 
-    for (const todo of todos) {
-      if (!todo.content || typeof todo.content !== 'string') {
-        return { success: false, output: '', error: 'Each todo must have a content string' };
+      for (const todo of todos) {
+        if (!todo.content || typeof todo.content !== 'string') {
+          return { success: false, output: '', error: 'Each todo must have a content string' };
+        }
+        if (!todo.activeForm || typeof todo.activeForm !== 'string') {
+          return { success: false, output: '', error: 'Each todo must have an activeForm string' };
+        }
+        if (!['pending', 'in_progress', 'completed'].includes(todo.status)) {
+          return { success: false, output: '', error: `Invalid status: ${todo.status}` };
+        }
       }
-      if (!todo.activeForm || typeof todo.activeForm !== 'string') {
-        return { success: false, output: '', error: 'Each todo must have an activeForm string' };
-      }
-      if (!['pending', 'in_progress', 'completed'].includes(todo.status)) {
-        return { success: false, output: '', error: `Invalid status: ${todo.status}` };
-      }
-    }
 
-    const inProgressCount = todos.filter(t => t.status === 'in_progress').length;
-    if (inProgressCount > 1) {
+      const inProgressCount = todos.filter(t => t.status === 'in_progress').length;
+      if (inProgressCount > 1) {
+        return {
+          success: false,
+          output: '',
+          error: 'Only one task can be in_progress at a time',
+        };
+      }
+
+      state.set({ todos });
+
+      const lines: string[] = [];
+      lines.push('Todo list updated:');
+      lines.push('');
+
+      for (let i = 0; i < todos.length; i++) {
+        const todo = todos[i];
+        const icon =
+          todo.status === 'completed' ? '✅' : todo.status === 'in_progress' ? '⏳' : '⬚';
+        lines.push(`${i + 1}. [${icon}] ${todo.content}`);
+        if (todo.status === 'in_progress') {
+          lines.push(`   → ${todo.activeForm}`);
+        }
+      }
+
+      lines.push('');
+      lines.push(
+        `Summary: ${todos.length} tasks, ${todos.filter(t => t.status === 'completed').length} completed, ${inProgressCount} in progress`
+      );
+
       return {
-        success: false,
-        output: '',
-        error: 'Only one task can be in_progress at a time',
+        success: true,
+        output: lines.join('\n'),
       };
-    }
-
-    setToolState({ todos });
-
-    const lines: string[] = [];
-    lines.push('Todo list updated:');
-    lines.push('');
-
-    for (let i = 0; i < todos.length; i++) {
-      const todo = todos[i];
-      const icon = todo.status === 'completed' ? '✅' : todo.status === 'in_progress' ? '⏳' : '⬚';
-      lines.push(`${i + 1}. [${icon}] ${todo.content}`);
-      if (todo.status === 'in_progress') {
-        lines.push(`   → ${todo.activeForm}`);
+    },
+    isReadOnly: () => false,
+    checkPermissions: () => {
+      return { behavior: 'allow', reason: 'Todo operations are safe' };
+    },
+    userFacingName: args => {
+      try {
+        const todos = Array.isArray(args.todos)
+          ? (args.todos as TodoItem[])
+          : (JSON.parse(args.todos as string) as TodoItem[]);
+        return `Update ${todos.length} todos`;
+      } catch {
+        return 'Update todos';
       }
-    }
-
-    lines.push('');
-    lines.push(`Summary: ${todos.length} tasks, ${todos.filter(t => t.status === 'completed').length} completed, ${inProgressCount} in progress`);
-
-    return {
-      success: true,
-      output: lines.join('\n'),
-    };
-  },
-  isReadOnly: () => false,
-  checkPermissions: () => {
-    return { behavior: 'allow', reason: 'Todo operations are safe' };
-  },
-  userFacingName: (args) => {
-    try {
-      const todos = Array.isArray(args.todos)
-        ? args.todos as TodoItem[]
-        : JSON.parse(args.todos as string) as TodoItem[];
-      return `Update ${todos.length} todos`;
-    } catch {
-      return 'Update todos';
-    }
-  },
-});
+    },
+  });
+  return [todoWriteTool];
+}
 
 /** Get current todos (for UI display) */
-export function getCurrentTodos(): TodoItem[] {
-  return getToolState().todos;
+export function getCurrentTodos(state: ToolStateStore): TodoItem[] {
+  return state.getSnapshot().todos;
 }
 
 /** Format todos for display */
@@ -160,11 +167,12 @@ export function formatTodosForDisplay(todos: TodoItem[]): string {
   for (let i = 0; i < todos.length; i++) {
     const todo = todos[i];
     const icon = todo.status === 'completed' ? '✅' : todo.status === 'in_progress' ? '⏳' : '⬚';
-    lines.push(`${i + 1}. [${icon}] ${todo.status === 'in_progress' ? todo.activeForm : todo.content}`);
+    lines.push(
+      `${i + 1}. [${icon}] ${todo.status === 'in_progress' ? todo.activeForm : todo.content}`
+    );
   }
 
   return lines.join('\n');
 }
 
 export type { TodoItem };
-export const TODO_TOOLS: OrionCodeTool[] = [todoWriteTool];

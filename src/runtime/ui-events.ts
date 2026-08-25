@@ -1,6 +1,5 @@
-import type { OrionCodeRuntime } from '../init';
 import type { Store } from '../framework/store';
-import type { LoopContinuationAction, LoopStats } from '../framework';
+import type { LoopContinuationAction, LoopStats } from '../framework/query';
 import type { LLMService } from '../services/llm';
 import type { CompactCoordinator } from '../services/compact';
 import type { ModelCoordinator } from './model-coordinator';
@@ -11,6 +10,9 @@ import type { ResearchLifecycleEvent } from './subagents/research-renderer';
 import type { GoalRuntimeEvent } from './goals/types';
 import type { ToolExternalAssertion } from '../framework/external-assertion';
 import type { EffortLevel, EffortPreference, EffortScope } from '../services/effort';
+import type { AgentRuntimeRunnerV1 } from './agent-runtime-runner';
+import type { FirstPartyApprovalHandlerV1 } from './first-party-tool-services';
+import type { OrionRuntimeDiagnosticsV1 } from './orion-runtime-v1';
 
 /** Re-export so the runtime event protocol can reference subtask events. */
 export type { RuntimeSubtaskEvent } from './subagents/types';
@@ -84,10 +86,27 @@ export interface StructuredToolActivity {
 
 export interface ToolAuthorizationView {
   approved: boolean;
-  source: import('../framework/tool-scheduler').PermissionDecisionSource;
+  source: ToolAuthorizationSource;
   behavior?: import('../framework/tool').PermissionResult['behavior'];
   reason?: string;
 }
+
+/** Stable presentation vocabulary; execution-policy internals remain behind ToolGateway. */
+export type ToolAuthorizationSource =
+  | 'tool_policy'
+  | 'config_allow'
+  | 'config_deny'
+  | 'user'
+  | 'missing_confirmation'
+  | 'drift_guard'
+  | 'mode_auto'
+  | 'mode_accept_edits'
+  | 'allowlist_allow'
+  | 'allowlist_deny'
+  | 'allowlist_ask'
+  | 'missing_risk_metadata'
+  | 'risk_guard'
+  | 'config_allow_blocked';
 
 export interface TranscriptEntry {
   id: string;
@@ -227,7 +246,6 @@ function isInteractiveRendererName(renderer: unknown): boolean {
   return (
     renderer === 'terminal' ||
     renderer === 'tui' ||
-    renderer === 'ink' ||
     renderer === 'legacy' ||
     renderer === 'v2'
   );
@@ -333,9 +351,14 @@ export interface OrionCodeUiRuntime extends RuntimeSessionAccessors {
   llm: LLMService | null;
   compactCoordinator?: CompactCoordinator;
   modelCoordinator?: ModelCoordinator;
-  runtime: OrionCodeRuntime;
+  /** Creates the sole product runner after a renderer-neutral event sink exists. */
+  createAgentRunner?: (
+    events: UiEventSink,
+    options: { readonly approvalHandler: FirstPartyApprovalHandlerV1 }
+  ) => AgentRuntimeRunnerV1;
+  /** Read-only v0.2 runtime diagnostics for `/harness explain`; never activates lazy providers. */
+  getHarnessDiagnostics?: () => Promise<OrionRuntimeDiagnosticsV1 | undefined>;
   isConfigured: boolean;
-  mcpReady?: Promise<void>;
   shutdown: () => Promise<void>;
 }
 

@@ -21,7 +21,7 @@ import {
 import { getProjectSessionTracePath } from '../src/services/config-dir';
 import { storeArtifact } from '../src/core/tool-artifacts';
 import { createCheckpoint } from '../src/core/checkpoint';
-import { TOOLS } from '../src/tools';
+import { TOOLS } from './support/legacy-tools';
 import type { CommandContext } from '../src/commands/types';
 
 const stripAnsi = (text: string): string =>
@@ -78,7 +78,6 @@ describe('/status context diagnostics', () => {
       config,
       store,
       llm: null,
-      runtime: makeRuntime() as any,
     };
 
     const result = await findCommand('status')!.execute(ctx, '');
@@ -91,11 +90,10 @@ describe('/status context diagnostics', () => {
       'pickers, inline-progress, clean-meta, assistant-spacing, quiet-abort'
     );
     expect(rendered).toContain('Project rules 2 files');
-    expect(rendered).toContain('AGENTS.md');
-    expect(rendered).toContain('packages/cli/AGENTS.md');
-    expect(rendered).toContain('Prompt rules');
-    expect(rendered).toContain('Project memory 6 chars');
-    expect(rendered).toContain('Skills index   6 chars');
+    expect(rendered).not.toContain('Root rules');
+    expect(rendered).not.toContain('Package rules');
+    expect(rendered).toContain('Memory       6 chars');
+    expect(rendered).toContain('Skill bodies legacy resident');
     expect(store.getSnapshot().projectInstructionsContent).toContain('Root rules');
     expect(store.getSnapshot().projectInstructionsContent).toContain('Package rules');
   });
@@ -104,7 +102,7 @@ describe('/status context diagnostics', () => {
     const cwd = join(root, 'packages', 'cli');
     const config = loadConfig({
       apiKey: 'test-key',
-      ui: { renderer: 'ink' },
+      ui: { renderer: 'terminal' },
     });
     const store = new Store({
       config,
@@ -116,7 +114,6 @@ describe('/status context diagnostics', () => {
       config,
       store,
       llm: null,
-      runtime: makeRuntime() as any,
       uiCapabilities: {
         structuredPickers: false,
         inlineProgress: false,
@@ -130,7 +127,7 @@ describe('/status context diagnostics', () => {
     const rendered = stripAnsi(result.output ?? logs.join('\n'));
 
     expect(result.success).toBe(true);
-    expect(rendered).toContain('Renderer   ink deprecated');
+    expect(rendered).toContain('Renderer   terminal technical');
     expect(rendered).toContain(
       'text-pickers, legacy-progress, legacy-meta, compact-spacing, abort-notice'
     );
@@ -152,7 +149,6 @@ describe('/status context diagnostics', () => {
       config,
       store,
       llm: null,
-      runtime: makeRuntime() as any,
       uiRenderer: 'print',
       uiCapabilities: {
         structuredPickers: false,
@@ -171,7 +167,7 @@ describe('/status context diagnostics', () => {
     expect(rendered).not.toContain('Renderer   terminal technical text-pickers');
   });
 
-  it('renders /models from shared model picker state (non-interactive)', async () => {
+  it('renders /model from shared model picker state (non-interactive)', async () => {
     const cwd = join(root, 'packages', 'cli');
     const config = loadConfig({ apiKey: 'test-key', model: 'glm-5' });
     const store = new Store({
@@ -187,10 +183,9 @@ describe('/status context diagnostics', () => {
       llm: {
         getModel: jest.fn(() => 'glm-5'),
       } as any,
-      runtime: makeRuntime() as any,
     };
 
-    const result = await findCommand('models')!.execute(ctx, '');
+    const result = await findCommand('model')!.execute(ctx, '');
     const rendered = stripAnsi(result.output ?? logs.join('\n'));
 
     expect(result.success).toBe(true);
@@ -205,7 +200,7 @@ describe('/status context diagnostics', () => {
     expect(rendered).not.toContain('claude-opus-4-7');
   });
 
-  it('returns structured modelPicker from /models (interactive)', async () => {
+  it('returns structured modelPicker from /model (interactive)', async () => {
     const cwd = join(root, 'packages', 'cli');
     const config = loadConfig({ apiKey: 'test-key', model: 'glm-5' });
     const store = new Store({
@@ -220,10 +215,9 @@ describe('/status context diagnostics', () => {
       llm: {
         getModel: jest.fn(() => 'glm-5'),
       } as any,
-      runtime: makeRuntime() as any,
     };
 
-    const result = await findCommand('models')!.execute(ctx, '');
+    const result = await findCommand('model')!.execute(ctx, '');
 
     expect(result.success).toBe(true);
     expect(result.modelPicker).toBeDefined();
@@ -248,7 +242,6 @@ describe('/status context diagnostics', () => {
       llm: {
         getModel: jest.fn(() => 'glm-5'),
       } as any,
-      runtime: makeRuntime() as any,
     };
 
     const result = await findCommand('model')!.execute(ctx, 'info');
@@ -278,7 +271,6 @@ describe('/status context diagnostics', () => {
         getModel: jest.fn(() => 'glm-5.2'),
         setModel,
       } as any,
-      runtime: makeRuntime() as any,
     };
 
     const result = await findCommand('model')!.execute(ctx, 'glm-5.2');
@@ -291,7 +283,7 @@ describe('/status context diagnostics', () => {
     expect(rendered).toContain('Context window 1.0M tokens (builtin)');
   });
 
-  it('renders /models from configured model profiles (non-interactive)', async () => {
+  it('renders /model from configured model profiles (non-interactive)', async () => {
     const cwd = join(root, 'packages', 'cli');
     const registry = buildRegistry({
       providers: [
@@ -341,10 +333,9 @@ describe('/status context diagnostics', () => {
       llm: {
         getModel: jest.fn(() => 'ark-code-latest'),
       } as any,
-      runtime: makeRuntime() as any,
     };
 
-    const result = await findCommand('models')!.execute(ctx, '');
+    const result = await findCommand('model')!.execute(ctx, '');
     const rendered = stripAnsi(result.output ?? logs.join('\n'));
 
     expect(result.success).toBe(true);
@@ -397,7 +388,6 @@ describe('/status context diagnostics', () => {
       llm: {
         getModel: jest.fn(() => 'ark-code-latest'),
       } as any,
-      runtime: makeRuntime() as any,
     };
 
     const result = await findCommand('model')!.execute(ctx, 'info');
@@ -453,7 +443,6 @@ describe('/status context diagnostics', () => {
         getModel: jest.fn(() => 'glm-5'),
         setModel,
       } as any,
-      runtime: makeRuntime() as any,
     };
 
     const result = await findCommand('model')!.execute(ctx, 'ark');
@@ -483,7 +472,6 @@ describe('/status context diagnostics', () => {
         getModel: jest.fn(() => 'glm-5'),
         setModel,
       } as any,
-      runtime: makeRuntime() as any,
     };
 
     const result = await findCommand('model')!.execute(ctx, 'opus');
@@ -509,7 +497,6 @@ describe('/status context diagnostics', () => {
       config,
       store,
       llm: null,
-      runtime: makeRuntime() as any,
     };
 
     const result = await findCommand('model')!.execute(ctx, 'help');
@@ -533,7 +520,6 @@ describe('/status context diagnostics', () => {
       config,
       store,
       llm: null,
-      runtime: makeRuntime() as any,
     };
 
     const result = await findCommand('model')!.execute(ctx, 'list');
@@ -596,7 +582,6 @@ describe('/status context diagnostics', () => {
       config,
       store,
       llm: null,
-      runtime: makeRuntime() as any,
     };
 
     const result = await findCommand('status')!.execute(ctx, '');
@@ -611,13 +596,11 @@ describe('/status context diagnostics', () => {
     expect(rendered).toContain('Compact    pre_turn');
     expect(rendered).toContain('Budget cap 2/48 LLM, 3/180 tools');
     expect(rendered).toContain('(complex)');
-    expect(rendered).toContain('Provider   2 retries, delay 1.5s, last rate_limit/429');
-    expect(rendered).toContain('Fallback   primary-model -> fallback-model');
-    expect(rendered).toContain('Verify     node required=yes passed=1 failed=0 missing=2 claim=no');
-    expect(rendered).toContain('Read-only  streak 3, batch_read hints 1');
+    expect(rendered).toContain('Provider   2 retries, delay 1.5s');
+    expect(rendered).not.toContain('primary-model -> fallback-model');
   });
 
-  it('shows detailed loop stats from /loop-stats', async () => {
+  it('shows detailed loop stats from the unified /usage command', async () => {
     const cwd = join(root, 'packages', 'cli');
     const config = loadConfig({ apiKey: 'test-key' });
     const store = new Store({
@@ -643,7 +626,7 @@ describe('/status context diagnostics', () => {
         'raise_budget',
       ],
       continuationHint:
-        'Reply `继续` to continue the same objective, give a narrower next step, inspect /loop-stats, or raise agentLoop.budget for intentional long work.',
+        'Reply `继续` to continue the same objective, give a narrower next step, inspect /usage, or raise agentLoop.budget for intentional long work.',
       loopBudgetSource: 'config',
       loopBudgetBaseProfile: 'release',
       loopBudgetMaxLlmRequests: 96,
@@ -675,10 +658,9 @@ describe('/status context diagnostics', () => {
       config,
       store,
       llm: null,
-      runtime: makeRuntime() as any,
     };
 
-    const result = await findCommand('loop-stats')!.execute(ctx, '');
+    const result = await findCommand('usage')!.execute(ctx, '');
     const rendered = stripAnsi(logs.join('\n'));
 
     expect(result.success).toBe(true);
@@ -879,7 +861,6 @@ describe('/status context diagnostics', () => {
         config,
         store,
         llm: null,
-        runtime: makeRuntime() as any,
         sessionId: session.id,
         getSession: () => session,
       };
@@ -1012,7 +993,6 @@ describe('/status context diagnostics', () => {
         config,
         store,
         llm: null,
-        runtime: makeRuntime() as any,
         sessionId: session.id,
         getSession: () => session,
       };
@@ -1084,7 +1064,6 @@ describe('/status context diagnostics', () => {
         config,
         store,
         llm: null,
-        runtime: makeRuntime() as any,
         sessionId: session.id,
         getSession: () => session,
       };
@@ -1147,7 +1126,6 @@ describe('/status context diagnostics', () => {
         config,
         store,
         llm: null,
-        runtime: makeRuntime() as any,
         sessionId: session.id,
         getSession: () => session,
       };
@@ -1190,7 +1168,6 @@ describe('/status context diagnostics', () => {
         config,
         store,
         llm: null,
-        runtime: makeRuntime() as any,
         sessionId: session.id,
         getSession: () => session,
       };
@@ -1241,7 +1218,6 @@ describe('/status context diagnostics', () => {
         config,
         store,
         llm: null,
-        runtime: makeRuntime() as any,
         sessionId: session.id,
         getSession: () => session,
       };
@@ -1320,7 +1296,6 @@ describe('/status context diagnostics', () => {
         config,
         store,
         llm: null,
-        runtime: makeRuntime() as any,
         sessionId: session.id,
         getSession: () => session,
       };
@@ -1367,7 +1342,6 @@ describe('/status context diagnostics', () => {
         config,
         store,
         llm: null,
-        runtime: makeRuntime() as any,
       };
 
       const listResult = await findCommand('artifacts')!.execute(ctx, '');
@@ -1416,7 +1390,6 @@ describe('/status context diagnostics', () => {
         config,
         store,
         llm: null,
-        runtime: makeRuntime() as any,
       };
 
       const listResult = await findCommand('artifacts')!.execute(ctx, '');
@@ -1464,10 +1437,9 @@ describe('/status context diagnostics', () => {
         config,
         store,
         llm: null,
-        runtime: makeRuntime() as any,
       };
 
-      const listResult = await findCommand('checkpoint')!.execute(ctx, '');
+      const listResult = await findCommand('rewind')!.execute(ctx, '');
       let rendered = stripAnsi(logs.join('\n'));
       expect(listResult.success).toBe(true);
       expect(rendered).toContain('Checkpoints');
@@ -1475,14 +1447,14 @@ describe('/status context diagnostics', () => {
       expect(rendered).toContain('restore-me.txt');
 
       logs = [];
-      const previewResult = await findCommand('checkpoint')!.execute(ctx, 'restore turn-rest');
+      const previewResult = await findCommand('rewind')!.execute(ctx, 'restore turn-rest');
       rendered = stripAnsi(logs.join('\n'));
       expect(previewResult.success).toBe(true);
       expect(rendered).toContain('This will overwrite current files');
       expect(readFileSync(target, 'utf-8')).toBe('after\n');
 
       logs = [];
-      const restoreResult = await findCommand('checkpoint')!.execute(
+      const restoreResult = await findCommand('rewind')!.execute(
         ctx,
         'restore turn-rest --yes'
       );

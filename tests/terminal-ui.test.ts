@@ -37,7 +37,6 @@ import {
   visibleLength,
 } from '../src/terminal-ui/launch';
 import { RawTerminalEditor } from '../src/terminal-ui/raw-editor';
-import { createToolEventPresenter } from '../src/runtime/chat-controller';
 import type { OrionCodeUiRuntime } from '../src/runtime/ui-events';
 import type { AppState } from '../src/framework/store';
 
@@ -112,7 +111,6 @@ function makeRuntime(
       getSnapshot: jest.fn(() => state),
     } as unknown as OrionCodeUiRuntime['store'],
     llm: null,
-    runtime: {} as OrionCodeUiRuntime['runtime'],
     isConfigured: true,
     ensureSession: jest.fn(),
     setSession: jest.fn(),
@@ -807,150 +805,13 @@ describe('terminal UI renderer adapter', () => {
     expect(output).not.toContain('untrusted-title');
   });
 
-  it('keeps the full exec command visible after tool completion', () => {
+  it('prints a short assistant stream chunk before the entry is finalized', () => {
     const { sink, writes } = makeTerminalSink();
-    const presenter = createToolEventPresenter(sink);
-    const command =
-      'cd /Users/hope/ai-project/a2a-python && export PATH="$HOME/.local/bin:$PATH" && uv run pytest tests/test_url_validator.py --cov=a2a --cov-report=term-missing';
+    const assistantId = sink.append({ role: 'assistant', content: '', live: true });
 
-    presenter.start({
-      type: 'tool_call',
-      callId: 'call-exec',
-      name: 'exec_command',
-      args: { command },
-    });
-    presenter.finish({
-      type: 'tool_result',
-      callId: 'call-exec',
-      name: 'exec_command',
-      args: { command },
-      result: JSON.stringify({ success: true, output: 'ok', summary: '🔧 exec (2B output)' }),
-      modelVisibleResult: JSON.stringify({
-        success: true,
-        output: 'ok',
-        summary: '🔧 exec (2B output)',
-      }),
-      success: true,
-      duration: 12,
-      summary: '🔧 exec (2B output)',
-    });
+    sink.update(assistantId, { content: 'READY_FOR_LONG_PROVIDER' });
 
-    const output = writes.join('');
-    expect(output).toContain(`$ ${command}`);
-    expect(output).toContain('🔧 exec (2B output)');
-  });
-
-  it('keeps automatic authorization provenance visible after tool completion', () => {
-    const { sink, writes } = makeTerminalSink();
-    const presenter = createToolEventPresenter(sink);
-
-    presenter.start({
-      type: 'tool_call',
-      callId: 'call-web',
-      name: 'web_search',
-      args: { query: 'orion' },
-    });
-    presenter.permission({
-      type: 'permission_decision',
-      callId: 'call-web',
-      name: 'web_search',
-      args: { query: 'orion' },
-      decision: {
-        approved: true,
-        behavior: 'ask',
-        source: 'mode_auto',
-        reason: 'Auto mode fully authorized this invocation after hard policy checks.',
-      },
-    });
-    presenter.finish({
-      type: 'tool_result',
-      callId: 'call-web',
-      name: 'web_search',
-      args: { query: 'orion' },
-      result: JSON.stringify({ success: true, output: 'result' }),
-      modelVisibleResult: JSON.stringify({ success: true, output: 'result' }),
-      success: true,
-      duration: 4,
-    });
-
-    expect(stripAnsi(writes.join(''))).toContain('Authorization: mode_auto');
-  });
-
-  it('renders tool artifact references for summarized long output', () => {
-    const { sink, writes } = makeTerminalSink();
-    const presenter = createToolEventPresenter(sink);
-
-    presenter.start({
-      type: 'tool_call',
-      callId: 'call-read',
-      name: 'read_file',
-      args: { path: 'logs/huge-output.txt' },
-    });
-    presenter.finish({
-      type: 'tool_result',
-      callId: 'call-read',
-      name: 'read_file',
-      args: { path: 'logs/huge-output.txt' },
-      result: JSON.stringify({ success: true, output: 'truncated' }),
-      modelVisibleResult: JSON.stringify({ success: true, output: 'truncated' }),
-      success: true,
-      duration: 9,
-      summary: '📄 read logs/huge-output.txt (truncated)',
-      outputBytes: 150000,
-      artifactRef: { id: 'read_file-abc123', outputBytes: 150000 },
-    });
-
-    const output = writes.join('');
-    expect(output).toContain('Full output: /artifacts show read_file-abc123 --full (146 KB)');
-  });
-
-  it('marks batched tool calls in the terminal transcript', () => {
-    const { sink, writes } = makeTerminalSink();
-    const presenter = createToolEventPresenter(sink);
-
-    presenter.start({
-      type: 'tool_call',
-      callId: 'call-a',
-      name: 'read_file',
-      args: { path: 'src/a.ts' },
-      batchCount: 2,
-      batchIndex: 0,
-    });
-    presenter.finish({
-      type: 'tool_result',
-      callId: 'call-a',
-      name: 'read_file',
-      args: { path: 'src/a.ts' },
-      result: JSON.stringify({ success: true, output: 'alpha' }),
-      modelVisibleResult: JSON.stringify({ success: true, output: 'alpha' }),
-      success: true,
-      duration: 7,
-      outputBytes: 5,
-      batchCount: 2,
-      batchIndex: 0,
-    });
-
-    const output = stripAnsi(writes.join(''));
-    expect(output).toContain('Batch 1/2 · Running read_file src/a.ts');
-    expect(output).toContain('Batch 1/2 · ✓ read_file src/a.ts (7ms)');
-  });
-
-  it('ignores invalid batch metadata in the terminal transcript', () => {
-    const { sink, writes } = makeTerminalSink();
-    const presenter = createToolEventPresenter(sink);
-
-    presenter.start({
-      type: 'tool_call',
-      callId: 'call-invalid-batch',
-      name: 'read_file',
-      args: { path: 'src/a.ts' },
-      batchCount: 2,
-      batchIndex: 9,
-    });
-
-    const output = stripAnsi(writes.join(''));
-    expect(output).toContain('Running read_file src/a.ts');
-    expect(output).not.toContain('Batch 10/2');
+    expect(stripAnsi(writes.join(''))).toContain('READY_FOR_LONG_PROVIDER');
   });
 
   it('clears renderer view state without clearing terminal scrollback', () => {

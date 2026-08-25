@@ -22,6 +22,56 @@ which is **not** a pass.
 
 ## [Unreleased]
 
+## [0.2.0] — CANDIDATE
+
+> **Status: candidate.** Implementation evidence does not imply a Git tag, GitHub Release, npm
+> publication, or dist-tag promotion. Those receipts remain pending until performed and read back.
+
+### Added
+
+- Add the versioned `Thread → Turn → Step → Item` runtime protocol, append-only Thread event store,
+  deterministic projection/replay, bounded renderer buffering, and typed admission for start, steer,
+  follow-up, interrupt, overload, and maintenance.
+- Add immutable Step Snapshots and Capability Receipts binding model, prompt, Authority, Policy,
+  selected Skills/MCP, visible schemas, exact executors, and durable per-request lineage.
+- Add a single ToolGateway execution boundary for core, long-tail, nested batch, MCP, Skill, and
+  subagent invocations through Capability → Policy → Approval → Sandbox → Execute.
+- Add descriptor-first lazy Skill and MCP runtimes with scope layering, bounded caches, digest
+  invalidation, single-flight loading, exact server leases, idle teardown, and crash isolation.
+- Add Prompt Registry budgets, stable prefix receipts, first-party contributor slots, redaction,
+  and deterministic omission reasons.
+- Add transactional Compact maintenance, atomic TurnCommit, Goal Runtime V2, durable PlanReceipt,
+  modern child Thread runtime, and a side-by-side legacy Session materializer with atomic index
+  cutover.
+- Add machine-readable Harness benchmark/eval, architecture confluence, exact tarball, Node 20/22/24
+  runtime matrix, gate evidence, and aggregate ReleaseReceipt contracts.
+
+### Changed
+
+- Replace the legacy Brain/Agent/Harness/query runtime graph with one statically composed product
+  Runtime and one Agent Loop implementation for root and child turns.
+- Reduce the ordinary coding schema from the frozen v0.1.9 baseline of 33 tools / 20,596 bytes to
+  7 exact core schemas / 3,947 bytes; long-tail capabilities are selected or deferred by task.
+- Make `/plan <task>` commit a PlanReceipt and exit automatically; implementation starts in a new
+  logical turn after BUILD/AUTO is restored.
+- Let productive Goals continue without a fixed turn-count cap; evidence audit, resource budget,
+  no-progress, blocker, provider, persistence, interrupt, and completion decisions remain explicit.
+- Keep BUILD/PLAN/AUTO as workflow modes independent from Authority and tool permission policy.
+
+### Removed
+
+- Remove the Ink renderer, legacy Agent/Brain/Harness/SDK public surface, global `TOOLS` and eager MCP
+  singleton, compatibility command roots, and direct model→tool execution bypasses from the package.
+- Remove `/target`, `/mode`, model-facing `enter_plan_mode`/`exit_plan_mode`, and legacy Goal mutations
+  `/goal exit|edit|replace|confirm|budget` plus `clear --yes`.
+
+### Security
+
+- Freeze exact schema/executor/Authority/Policy bindings per model request and fail closed on digest
+  or catalog drift.
+- Preserve project-boundary, symlink, sandbox, destructive-command, cancellation, durable receipt,
+  and indeterminate-side-effect enforcement across all modes and nested execution.
+
 ## [0.1.9] — CANDIDATE
 
 > **Status: candidate.** Source, CI, exact tarball, npm `next`, tag, GitHub Release, and stable

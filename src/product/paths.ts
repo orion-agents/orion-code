@@ -65,6 +65,11 @@ export function getHistoryPath(): string {
   return join(getConfigHome(), 'history.jsonl');
 }
 
+/** ~/.orion-code/mcp.json */
+export function getMcpConfigPath(): string {
+  return join(getConfigHome(), 'mcp.json');
+}
+
 /** ~/.orion-code/projects */
 export function getProjectsDir(): string {
   return join(getConfigHome(), 'projects');
@@ -145,6 +150,20 @@ export function getProjectSessionTracePath(projectPath: string, sessionId: strin
 
 export function getProjectSessionGoalPath(projectPath: string, sessionId: string): string {
   return join(getProjectSessionsDir(projectPath), `${sessionId}.goal.json`);
+}
+
+/** Side-by-side v2 Thread facts. Legacy Session files remain under sessions/. */
+export function getProjectThreadsV2Dir(projectPath: string): string {
+  return join(getProjectDir(projectPath), 'threads-v2');
+}
+
+/** Atomic legacy Session → v2 Thread cutover index. */
+export function getProjectThreadsV2IndexPath(projectPath: string): string {
+  return join(getProjectThreadsV2Dir(projectPath), 'index.v1.json');
+}
+
+export function getProjectThreadV2ImportReceiptPath(projectPath: string, threadId: string): string {
+  return join(getProjectThreadsV2Dir(projectPath), `${threadId}.legacy-import.v1.json`);
 }
 
 export function getProjectMemoryDir(projectPath: string): string {

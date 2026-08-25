@@ -13,7 +13,7 @@ if [[ "$mode" != "offline" && "$mode" != "--policy-only" && "$mode" != "--full-n
 fi
 
 node <<'NODE'
-const { existsSync, readFileSync } = require('fs');
+const { readFileSync } = require('fs');
 const { join } = require('path');
 
 const root = process.cwd();
@@ -22,7 +22,6 @@ const lock = JSON.parse(readFileSync(join(root, 'npm-shrinkwrap.json'), 'utf8'))
 const production = manifest.dependencies ?? {};
 const development = manifest.devDependencies ?? {};
 const lockRoot = lock.packages?.[''] ?? {};
-const overrides = manifest.overrides ?? {};
 const errors = [];
 
 const failUnless = (condition, message) => {
@@ -61,23 +60,13 @@ failUnless(
   'npm-shrinkwrap root metadata must preserve @types/better-sqlite3 as development-only',
 );
 failUnless(
-  overrides['shell-quote'] === '^1.10.0',
-  'package overrides must pin shell-quote to the reviewed ^1.10.0 range',
-);
-const lockedShellQuote = lock.packages?.['node_modules/shell-quote']?.version;
-failUnless(
-  typeof lockedShellQuote === 'string' && major(lockedShellQuote) === 1,
-  `npm-shrinkwrap must resolve the shell-quote override, found ${lockedShellQuote ?? '<missing>'}`,
+  !('shell-quote' in production) && !lock.packages?.['node_modules/shell-quote'],
+  'unused shell-quote dependency must not return with the retired renderer',
 );
 
-// Ink is a deprecated compatibility renderer. Upgrading it in-place would
-// force ESM + React 19 and, for Ink 7, Node >=22. Remove the renderer according
-// to the checked-in migration plan instead of silently breaking Node 20/CJS.
-failUnless(major(production.ink) === 3, 'Ink compatibility exemption is pinned to major 3');
-failUnless(major(production.react) === 17, 'Ink compatibility exemption requires React 17');
 failUnless(
-  existsSync(join(root, 'src/tui-ui/INK-REMOVAL-MIGRATION.md')),
-  'Ink/React exemption requires the executable removal roadmap',
+  !('ink' in production) && !('react' in production) && !('@types/react' in development),
+  'retired Ink/React renderer dependencies must not return',
 );
 
 let OpenAI;
@@ -145,7 +134,7 @@ if (errors.length > 0) {
 console.log(
   `DEPENDENCY_POLICY_OK node=20|22|24 openai=6 cjs=ok chat-completions=ok sqlite-vec=${semanticProbe}`,
 );
-console.log('DEPENDENCY_EXEMPTION ink=3 react=17 removal=src/tui-ui/INK-REMOVAL-MIGRATION.md');
+console.log('DEPENDENCY_REMOVAL ink=absent react=absent @types/react=absent');
 NODE
 
 if [[ "$mode" == "--policy-only" ]]; then

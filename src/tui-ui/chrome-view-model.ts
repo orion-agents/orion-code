@@ -102,7 +102,7 @@ export function createTuiChromeViewModel(
         ? ` next:${state.goal.nextAction}`
         : '';
     const actions = state.goal.stopReason
-      ? ` ${(state.goal.stopReason.match(/\/(?:goal|target)\s+(?:resume|exit)\b/giu) ?? []).join(' ')}`
+      ? ` ${(state.goal.stopReason.match(/\/goal\s+(?:resume|clear)\b/giu) ?? []).join(' ')}`
       : '';
     all.set('goal', {
       id: 'goal',

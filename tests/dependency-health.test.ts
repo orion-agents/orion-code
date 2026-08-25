@@ -61,7 +61,9 @@ describe('dependency governance contract', () => {
     expect(result.stdout).toContain(
       'DEPENDENCY_POLICY_OK node=20|22|24 openai=6 cjs=ok chat-completions=ok sqlite-vec='
     );
-    expect(result.stdout).toContain('DEPENDENCY_EXEMPTION ink=3 react=17');
+    expect(result.stdout).toContain(
+      'DEPENDENCY_REMOVAL ink=absent react=absent @types/react=absent'
+    );
   });
 
   it('rejects the active runtime when it is outside the supported matrix', () => {
@@ -104,6 +106,8 @@ describe('dependency governance contract', () => {
     expect(manifest.dependencies.openai).toMatch(/^\^6\./);
     expect(manifest.dependencies).not.toHaveProperty('lodash-es');
     expect(manifest.dependencies).not.toHaveProperty('type-fest');
+    expect(manifest.dependencies).not.toHaveProperty('ink');
+    expect(manifest.dependencies).not.toHaveProperty('react');
     expect(manifest.dependencies).not.toHaveProperty('@types/better-sqlite3');
     expect(manifest.devDependencies).toHaveProperty('@types/better-sqlite3');
     const major = (value: string): number => Number(value.match(/\d+/)?.[0]);
@@ -126,8 +130,6 @@ describe('dependency governance contract', () => {
       'npm',
       'github-actions',
     ]);
-    expect(config.updates[0].ignore?.map(entry => entry['dependency-name'])).toEqual(
-      expect.arrayContaining(['openai', 'ink', 'react', '@types/react'])
-    );
+    expect(config.updates[0].ignore?.map(entry => entry['dependency-name'])).toEqual(['openai']);
   });
 });

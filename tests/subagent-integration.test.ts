@@ -1,10 +1,14 @@
 import {
+  createSubagentBundleForTurn,
   createSubagentToolForTurn,
   deriveRootLlmConfig,
 } from '../src/runtime/subagents/runtime-integration';
 import { DEFAULT_SUBAGENT_CONFIG } from '../src/runtime/subagents/types';
 import type { OrionCodeCLIConfig } from '../src/services/config';
 import { buildRegistry } from '../src/services/model-registry';
+import { createAuthoritySnapshotV1 } from '../src/runtime/step-snapshot';
+import type { ProductionSubagentExecutionPortV1 } from '../src/runtime/subagents/runtime-contract';
+import type { ParentThreadForkRequestV1 } from '../src/runtime/subagent-thread-runtime';
 
 function cliConfig(overrides: Partial<OrionCodeCLIConfig> = {}): OrionCodeCLIConfig {
   return {
@@ -110,27 +114,87 @@ describe('subagent runtime integration', () => {
       expect(tool).toBeNull();
     });
 
-    it('returns a subtask tool named subtask when enabled', () => {
+    it('fails closed while the product has not injected the modern child runtime', () => {
       const tool = createSubagentToolForTurn({
         config: { ...DEFAULT_SUBAGENT_CONFIG, mode: 'auto' },
         cwd: '/tmp/project',
         rootLlmConfig: { apiKey: 'k', model: 'm' },
         modelLabel: 'gpt-4o',
       });
-      expect(tool).not.toBeNull();
-      expect(tool!.name).toBe('subtask');
-      expect(tool!.isReadOnly?.({})).toBe(true);
+      expect(tool).toBeNull();
     });
 
     it('returns a tool whose execute rejects invalid requests without calling the LLM', async () => {
+      const modern = modernInputs();
       const tool = createSubagentToolForTurn({
         config: { ...DEFAULT_SUBAGENT_CONFIG, mode: 'auto' },
         cwd: '/tmp/project',
         rootLlmConfig: { apiKey: 'k', model: 'm' },
+        ...modern,
       });
       const result = await tool!.execute({ tasks: 'nope' }, { cwd: '/tmp', config: {} as never });
       expect(result.success).toBe(false);
       expect(result.error).toMatch(/Invalid subtask request/);
+      expect(modern.productionRuntime.execute).not.toHaveBeenCalled();
+    });
+
+    it('closes the per-turn production runtime exactly once when the turn settles', async () => {
+      const modern = modernInputs();
+      const closeSource = jest.fn();
+      const bundle = createSubagentBundleForTurn({
+        config: { ...DEFAULT_SUBAGENT_CONFIG, mode: 'auto' },
+        cwd: '/tmp/project',
+        rootLlmConfig: { apiKey: 'k', model: 'm' },
+        ...modern,
+        parentFork: undefined,
+        parentForkSource: {
+          serviceId: 'turn-parent-step-source',
+          current: () => modern.parentFork,
+          close: closeSource,
+        },
+      });
+
+      await bundle!.close('turn_settled');
+      await bundle!.close('duplicate_settle');
+
+      expect(modern.productionRuntime.close).toHaveBeenCalledTimes(1);
+      expect(modern.productionRuntime.close).toHaveBeenCalledWith('turn_settled');
+      expect(closeSource).toHaveBeenCalledTimes(1);
+      expect(closeSource).toHaveBeenCalledWith('turn_settled');
     });
   });
 });
+
+function modernInputs(): {
+  productionRuntime: ProductionSubagentExecutionPortV1 & {
+    execute: jest.Mock;
+    close: jest.Mock;
+  };
+  parentFork: ParentThreadForkRequestV1;
+  parentAuthority: ReturnType<typeof createAuthoritySnapshotV1>;
+} {
+  return {
+    productionRuntime: {
+      serviceId: 'test-production-subagents',
+      execute: jest.fn(),
+      close: jest.fn(),
+    },
+    parentFork: {
+      store: {} as ParentThreadForkRequestV1['store'],
+      threadId: '00000000-0000-4000-8000-000000000000',
+      turnId: '00000000-0000-4000-8000-000000000001',
+      stepId: '00000000-0000-4000-8000-000000000002',
+      requestId: '00000000-0000-4000-8000-000000000003',
+      stepSnapshotDigest: 'step-snapshot-digest',
+      capabilityReceiptDigest: 'capability-receipt-digest',
+      flush: () => undefined,
+    },
+    parentAuthority: createAuthoritySnapshotV1({
+      authorityId: 'test-parent',
+      projectRoot: '/tmp/project',
+      confirmation: 'allow',
+      filesystem: 'workspace',
+      network: 'deny',
+    }),
+  };
+}

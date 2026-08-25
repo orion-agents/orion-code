@@ -29,6 +29,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from pty_runner_identity import resolve_orion_command
 from pty_test_config import write_mock_orion_config
 
 
@@ -207,6 +208,27 @@ def wait_for(fd: int, output: list[bytes], needle: str, timeout: float = 8.0) ->
     raise AssertionError(f"Timed out waiting for {needle!r}. Tail:\n{plain[-2000:]}")
 
 
+def wait_for_after(
+    fd: int,
+    output: list[bytes],
+    needle: str,
+    after: int,
+    timeout: float = 8.0,
+) -> int:
+    """Wait for a marker emitted after a previously observed output position."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        output.append(read_available(fd))
+        plain = strip_ansi(b"".join(output).decode("utf-8", errors="replace"))
+        index = plain.find(needle, after)
+        if index >= 0:
+            return index + len(needle)
+        time.sleep(0.05)
+    raise AssertionError(
+        f"Timed out waiting for new {needle!r} after position {after}. Tail:\n{plain[-2000:]}"
+    )
+
+
 def assert_output_order(output: str, markers: list[str]) -> None:
   """Assert all markers appear in strict order inside `output`."""
   cursor = 0
@@ -239,9 +261,16 @@ class MockOpenAIHandler(BaseHTTPRequestHandler):
             request = {}
 
         messages = request.get("messages", [])
-        last_user = next((message.get("content", "") for message in reversed(messages) if message.get("role") == "user"), "")
+        last_user_index = next(
+            (index for index in range(len(messages) - 1, -1, -1) if messages[index].get("role") == "user"),
+            -1,
+        )
+        last_user = messages[last_user_index].get("content", "") if last_user_index >= 0 else ""
         all_text = json.dumps(messages, ensure_ascii=False)
-        has_tool_result = any(message.get("role") == "tool" for message in messages)
+        current_tool_results = [
+            message for message in messages[last_user_index + 1 :] if message.get("role") == "tool"
+        ]
+        has_tool_result = bool(current_tool_results)
 
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -262,9 +291,9 @@ class MockOpenAIHandler(BaseHTTPRequestHandler):
                 self.write_text_stream([result], delay=0.05)
             elif "multi tool batch" in last_user and has_tool_result:
                 self.write_text_stream(["multi-tool-batch-complete "], delay=0.05)
-            elif CONFIRM_DENY_TARGET in all_text and has_tool_result:
+            elif "confirm deny" in last_user and has_tool_result:
                 self.write_text_stream(["confirmation-denied-final "], delay=0.05)
-            elif CONFIRM_APPROVE_TARGET in all_text and has_tool_result:
+            elif "confirm allow" in last_user and has_tool_result:
                 self.write_text_stream(["confirmation-allowed-final "], delay=0.05)
             elif "confirm allow" in last_user:
                 self.write_tool_call_stream(CONFIRM_APPROVE_TARGET, "approved")
@@ -439,8 +468,13 @@ def spawn_orion(repo: Path, config_dir: str, rows: int = 24, cols: int = 100) ->
             "ORION_CODE_UI_RENDERER": "ink",
         }
     )
+    source_command = [
+        str(repo / "node_modules" / ".bin" / "ts-node"),
+        str(repo / "src" / "cli.ts"),
+    ]
+    command = [*resolve_orion_command(repo, source_command), "--ui", "terminal"]
     process = subprocess.Popen(
-        ["npm", "run", "start", "--", "--ui", "terminal"],
+        command,
         cwd=repo,
         stdin=slave,
         stdout=slave,
@@ -672,9 +706,12 @@ def main() -> int:
             )
         wait_for(master, output, "long-output-chunk-20", timeout=8)
 
+        approve_cursor = len(strip_ansi(b"".join(output).decode("utf-8", errors="replace")))
         os.write(master, b"confirm allow\r")
-        wait_for(master, output, "Allow tool write_file?", timeout=8)
-        wait_for(master, output, CONFIRM_APPROVE_TARGET, timeout=8)
+        approve_cursor = wait_for_after(
+            master, output, CONFIRM_APPROVE_TARGET, approve_cursor, timeout=8
+        )
+        wait_for_after(master, output, "Allow tool write_file?", approve_cursor, timeout=8)
         os.write(master, b"y\r")
         wait_for(master, output, "confirmation-allowed-final", timeout=10)
         # --- Tool timeline order assertion (approve path) ---
@@ -690,11 +727,12 @@ def main() -> int:
         if not approve_path.exists() or approve_path.read_text(encoding="utf-8") != "approved":
             raise AssertionError("Approved write_file confirmation did not execute the tool")
 
+        deny_cursor = len(strip_ansi(b"".join(output).decode("utf-8", errors="replace")))
         os.write(master, b"confirm deny\r")
-        wait_for(master, output, "Allow tool write_file?", timeout=8)
-        wait_for(master, output, CONFIRM_DENY_TARGET, timeout=8)
+        deny_cursor = wait_for_after(master, output, CONFIRM_DENY_TARGET, deny_cursor, timeout=8)
+        wait_for_after(master, output, "Allow tool write_file?", deny_cursor, timeout=8)
         os.write(master, b"n\r")
-        wait_for(master, output, "permission was denied (user)", timeout=10)
+        wait_for(master, output, "User denied the operation.", timeout=10)
         # --- Tool timeline order assertion (deny path) ---
         # Verify that tool events appear in strict timeline order:
         #   requesting write to <target> -> Allow tool write_file? -> permission was denied (user)
@@ -702,7 +740,7 @@ def main() -> int:
         assert_output_order(plain_after_deny_full, [
             f"requesting write to {CONFIRM_DENY_TARGET}",
             "Allow tool write_file?",
-            "permission was denied (user)",
+            "User denied the operation.",
         ])
         if deny_path.exists():
             raise AssertionError("Denied write_file confirmation still created the target file")
@@ -722,10 +760,10 @@ def main() -> int:
         wait_for(master, output, "B", timeout=8)
         os.write(master, b"n\r")
         wait_for(master, output, "page 2/2", timeout=8)
-        wait_for(master, output, "Showing 11-13 of 13", timeout=8)
+        wait_for(master, output, "Showing 11-12 of 12", timeout=8)
         wait_for(master, output, "resume fixture 12", timeout=8)
         os.write(master, b"resume fixture 12\r")
-        wait_for(master, output, "Restored conversation", timeout=8)
+        wait_for(master, output, "Resumed session", timeout=8)
         wait_for(master, output, "resume fixture 12 content", timeout=8)
         wait_for(master, output, "Restored 1 model-context messages / 1 transcript messages", timeout=8)
 

@@ -2,7 +2,7 @@
  * Issue #32 #4.3: AbortSignal tests
  */
 
-import { executeTool } from '../src/tools/index';
+import { executeTool } from './support/legacy-tools';
 
 describe('AbortSignal Support', () => {
   describe('executeTool abortSignal parameter', () => {

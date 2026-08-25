@@ -25,7 +25,6 @@ function mockRuntime(): OrionCodeUiRuntime {
     config: { model: 'test-model' } as any,
     store: { getSnapshot: () => ({}) } as any,
     llm: null,
-    runtime: {} as any,
     isConfigured: true,
     shutdown: async () => {},
     ensureSession: () => ({} as any),

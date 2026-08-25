@@ -3,7 +3,7 @@
 import chalk from 'chalk';
 import { type CommandContext, type CommandResult } from './types';
 import { formatBytes } from '../services/format';
-import { type LoopStats } from '../framework';
+import type { LoopStats } from '../framework/query';
 import {
   loadSessionMeta,
   readSessionTraceEvents,
@@ -948,23 +948,6 @@ function handleCheckpoint(ctx: CommandContext, args: string = ''): CommandResult
   return { success: true, output: result.restored.join('\n') };
 }
 
-function showAgents(ctx: CommandContext): CommandResult {
-  console.log();
-  console.log(HEADER('Registered Agents'));
-  console.log(DIM('─'.repeat(40)));
-
-  for (const agent of ctx.runtime.agents) {
-    const status = agent.getStatus();
-    const statusColor = status.status === 'idle' ? SUCCESS : WARN;
-    console.log();
-    console.log(`  ${ACCENT(status.name)} ${DIM(`(${status.id})`)}`);
-    console.log(`    Status:    ${statusColor(status.status)}`);
-    console.log(`    Capabilities: ${status.capabilities.join(', ')}`);
-  }
-  console.log();
-  return { success: true };
-}
-
 function handleCost(ctx: CommandContext): CommandResult {
   console.log();
   console.log(HEADER('Lifetime Cost'));
@@ -976,7 +959,7 @@ function handleCost(ctx: CommandContext): CommandResult {
 
   if (state.totalTokens === 0 && state.totalCost === 0) {
     console.log(DIM('  No usage recorded yet.'));
-    console.log(DIM('  Use /run or /chat to interact with LLM.'));
+    console.log(DIM('  Submit a task to the agent to record model usage.'));
     console.log();
     return { success: true };
   }
@@ -1227,6 +1210,8 @@ function handleUsage(ctx: CommandContext): CommandResult {
   }
 
   console.log();
+  handleLoopStats(ctx);
+  handleCost(ctx);
   return { success: true };
 }
 
@@ -1240,5 +1225,4 @@ export {
   handleArtifacts,
   handleCheckpoint,
   handleCost,
-  showAgents,
 };

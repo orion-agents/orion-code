@@ -40,6 +40,8 @@ import type {
   OrionCodeUiRuntime,
   RuntimeSessionRestoredEvent,
   RuntimeSubtaskEvent,
+  RuntimeToolFinishedEvent,
+  RuntimeToolStartedEvent,
   SessionPickerRequest,
   TranscriptAppendEntry,
   TranscriptEntry,
@@ -722,6 +724,18 @@ export class TerminalEventSink implements UiEventSink {
     this.setStatus(formatGoalRuntimeEvent(event));
   }
 
+  toolStarted(event: RuntimeToolStartedEvent): void {
+    this.writer.write(`${TOOL('Running')} ${ACCENT(event.name)}\n`);
+  }
+
+  toolFinished(event: RuntimeToolFinishedEvent): void {
+    const state = event.success ? 'Completed' : 'Failed';
+    const detail = event.error ?? event.summary;
+    this.writer.write(
+      `${event.success ? TOOL(state) : ERROR(state)} ${ACCENT(event.name)}${detail ? ` — ${sanitizeTerminalText(detail)}` : ''}\n`
+    );
+  }
+
   setProcessing(_processing: boolean): void {
     // The technical terminal UI is append-only, so there is no live spinner state.
   }
@@ -926,17 +940,25 @@ export class TerminalEventSink implements UiEventSink {
     const next = entry.content;
     if (next === previous && !finalized) return;
 
-    const delta = next.startsWith(previous) ? next.slice(previous.length) : `\n${next}`;
+    // Sanitize the complete accumulated values before deriving the visible
+    // delta. This keeps split ANSI/OSC sequences from crossing chunk
+    // boundaries while allowing even a short, long-lived stream chunk to be
+    // visible immediately.
+    const safePrevious = sanitizeTerminalText(previous);
+    const safeNext = sanitizeTerminalText(next);
+    const delta = safeNext.startsWith(safePrevious)
+      ? safeNext.slice(safePrevious.length)
+      : `\n${safeNext}`;
     const pending = `${this.pendingAssistantOutput.get(entry.id) ?? ''}${delta}`;
     this.printedContent.set(entry.id, next);
     // v0.2.23: bound printed content.
     this.evictIfNeeded(this.printedContent, TerminalEventSink.MAX_PRINTED_CONTENT);
 
-    const shouldFlush = finalized || pending.includes('\n') || visibleLength(pending) >= 80;
+    const shouldFlush = finalized || pending.length > 0;
     if (shouldFlush) {
       this.pendingAssistantOutput.delete(entry.id);
       if (pending) {
-        return this.writeWithAcknowledgement(sanitizeTerminalText(pending));
+        return this.writeWithAcknowledgement(pending);
       } else if (finalized && next && !next.endsWith('\n')) {
         return this.writeWithAcknowledgement('\n');
       }

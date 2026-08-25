@@ -40,7 +40,6 @@ describe('primary command output isolation', () => {
       config,
       store,
       llm: null,
-      runtime: runtime as never,
       uiRenderer: 'print',
       uiCapabilities: { structuredPickers: false },
       getSession: () => null,

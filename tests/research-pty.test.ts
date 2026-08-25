@@ -37,9 +37,9 @@ describe('Research renderer real-process parity', () => {
       }).toEqual(expect.objectContaining({ status: 0, signal: null }));
       expect(result.stdout).toContain('ORION_PTY_RUNNER_KIND=source');
       expect(result.stdout).toContain('RESEARCH_RENDERER_PTY_SMOKE_OK');
-      expect(result.stdout).toContain('terminal_events=2');
-      expect(result.stdout).toContain('tui_projection=True');
-      expect(result.stdout).toContain('print_events=6');
+      expect(result.stdout).toContain('terminal_subtasks=1');
+      expect(result.stdout).toContain('tui_inspector=True');
+      expect(result.stdout).toContain('print_tool_events=2');
     },
     125000
   );

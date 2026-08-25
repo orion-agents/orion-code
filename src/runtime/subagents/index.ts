@@ -52,10 +52,26 @@ export {
 } from './supervisor';
 export { createSubtaskTool, coerceSubtaskRequest, summarizeBatchForModel } from './tool';
 export {
-  createProductionExecuteQuery,
+  ProductionSubagentRuntimeV1,
+  ProductionSubagentRuntimeError,
+  createProductionSubagentRuntimeV1,
   createChildLlmConfig,
-  type SubagentLlmFactoryDeps,
+  type ProductionSubagentCapabilityContextV1,
+  type ProductionSubagentCapabilityResolverV1,
+  type ProductionSubagentRuntimeOptionsV1,
 } from './production';
+export { SubagentReceiptJournalV1, SubagentReceiptJournalError } from './receipt-journal';
+export {
+  ParentThreadStepForkSourceV1,
+  ParentThreadStepForkSourceError,
+  type ParentThreadStepForkSourceOptionsV1,
+  type ParentThreadStepForkSourcePortV1,
+} from './parent-step-fork';
+export type {
+  ProductionSubagentExecutionRequestV1,
+  ProductionSubagentExecutionOutcomeV1,
+  ProductionSubagentExecutionPortV1,
+} from './runtime-contract';
 export {
   createSubagentToolForTurn,
   createSubagentBundleForTurn,

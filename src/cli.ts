@@ -3,7 +3,6 @@
  */
 
 import chalk from 'chalk';
-import { init, type OrionCodeRuntime } from './init';
 import { LLMService } from './services/llm';
 import { ProviderResilienceCoordinator } from './services/provider-resilience';
 import { ModelCoordinator } from './runtime/model-coordinator';
@@ -31,12 +30,8 @@ import {
 } from './services/session-storage';
 import { buildMemoryPromptContext } from './memory/prompt-context';
 import { loadProjectInstructions } from './services/project-instructions';
-import { getSkillsRegistry } from './skills';
-import { Store, subscribeToolState, resetToolState } from './framework';
-import { getRuntimeTools } from './tools';
-import { mcpManager } from './tools/mcp';
+import { Store } from './framework/store';
 import { discoverModelContexts } from './services/model-context';
-import { launchInkUI } from './ink-ui/launch';
 import { launchTuiUI } from './tui-ui/launch';
 import { launchTerminalUI } from './terminal-ui/launch';
 import {
@@ -48,6 +43,11 @@ import { collectDoctorReport, formatDoctorReport, hasDoctorFailures } from './se
 import { collectWorkspaceDiff, formatWorkspaceDiff } from './services/workspace-diff';
 import { createCommitPlan, formatCommitPlan } from './services/commit-plan';
 import type { OrionCodeUiRuntime } from './runtime/ui-events';
+import { createProductionFirstPartyToolUniverseV1 } from './runtime/first-party-tool-universe';
+import { createProductOrionRuntimeV1 } from './runtime/product-orion-runtime';
+import { createFirstPartyMcpAdapterV1, loadFirstPartyMcpConfigurationV1 } from './runtime/mcp';
+import { createProductionFilesystemSkillProviderV1 } from './runtime/skills';
+import { OrionSessionRunnerV1 } from './runtime/orion-session-runner';
 import { CompactCoordinator } from './services/compact';
 import { handleMigrateCommand } from './migration/command';
 import type { CommandContext } from './commands/types';
@@ -77,7 +77,6 @@ function showCliHelp(): void {
   console.log('  orion --version   Show version');
   console.log('  orion --ui tui    Start the default TUI renderer explicitly');
   console.log('  orion --ui terminal  Start the technical terminal UI for diagnostics');
-  console.log('  orion --ui ink    Start the deprecated Ink/React UI (removed in v0.2.0)');
   console.log();
   console.log(ACCENT('Options:'));
   console.log('  -h, --help     Show help');
@@ -87,9 +86,7 @@ function showCliHelp(): void {
   console.log('  --output-format <text|json>  Print-mode output format');
   console.log();
   console.log(
-    DIM(
-      'tui is the default product UI. terminal is the technical fallback; ink is deprecated (removed in v0.2.0); print is experimental.'
-    )
+    DIM('tui is the default product UI. terminal is the technical fallback; print is experimental.')
   );
   console.log();
 }
@@ -182,43 +179,33 @@ async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OrionCodeUiRunt
   const config = loadConfig({ ui: { renderer: uiRenderer } });
   const memoryContent = buildMemoryPromptContext('', cwd).content;
   const projectInstructionsContent = loadProjectInstructions(cwd);
-
-  let skillsContent = '';
-  try {
-    const registry = getSkillsRegistry();
-    skillsContent = registry.generateSystemPromptInjection();
-  } catch {
-    skillsContent = '';
-  }
+  const firstPartyTools = createProductionFirstPartyToolUniverseV1({
+    context: { cwd, config: { name: config.name, mode: config.mode } },
+  });
+  const toolCatalog = firstPartyTools.catalog;
+  const skillProvider = createProductionFilesystemSkillProviderV1({
+    cwd,
+    configuredPaths: config.skills?.paths,
+  });
+  const mcpAdapter = createFirstPartyMcpAdapterV1({
+    config: loadFirstPartyMcpConfigurationV1(),
+    baseDirectory: cwd,
+  });
 
   const store = new Store({
     config,
-    tools: getRuntimeTools(),
+    tools: toolCatalog.entries.map(entry => entry.tool),
     currentModel: config.model,
     memoryContent,
-    skillsContent,
+    // Skill descriptors/definitions are selected by the lazy v0.2.0 runtime.
+    // The presentation Store must never eagerly retain Skill bodies.
+    skillsContent: '',
     projectInstructionsContent,
-  });
-
-  resetToolState();
-  subscribeToolState(state => {
-    const snapshot = store.getSnapshot();
-    const agentMode = state.planMode
-      ? 'plan'
-      : snapshot.agentMode === 'plan'
-        ? (state.planReturnMode ?? 'interactive')
-        : snapshot.agentMode;
-    store.setState({
-      todos: state.todos,
-      planMode: state.planMode,
-      currentPlan: state.currentPlan,
-      agentMode,
-    });
   });
 
   let llm: LLMService | null = null;
   let modelCoordinator: ModelCoordinator | undefined;
-  // v0.2.26: resolve API key from modelRegistry (new format) or legacy config
+    // Resolve credentials from the configured model registry or legacy config.
   const configured = config.modelRegistry
     ? config.modelRegistry.defaultProfile !== null
     : isConfigured(config);
@@ -240,11 +227,10 @@ async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OrionCodeUiRunt
       fallbackReasoningCapability: config.modelRegistry?.fallbackProfile?.reasoningCapability,
       effortPreference: config.defaultEffort,
     });
-    // v0.2.26: inject the ProviderResilienceCoordinator so chat() and
-    // chatStream() go through the resilience layer.
+    // Keep chat() and chatStream() on the shared provider-resilience layer.
     llm.resilience = new ProviderResilienceCoordinator();
 
-    // v0.2.26: initialize ModelCoordinator for /model switching.
+    // Initialize ModelCoordinator for /model switching.
     modelCoordinator = new ModelCoordinator();
     if (config.modelRegistry && config.modelClientPool) {
       modelCoordinator.bind(config.modelRegistry, config.modelClientPool);
@@ -256,13 +242,6 @@ async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OrionCodeUiRunt
     }
   }
 
-  const runtime: OrionCodeRuntime = await init({
-    name: config.name,
-    mode: config.mode,
-    logLevel: config.logLevel,
-  });
-  await runtime.start();
-
   const compactCoordinator = new CompactCoordinator({
     modelId: llm?.getModel() ?? config.model,
     llm,
@@ -272,24 +251,8 @@ async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OrionCodeUiRunt
     getHarnessState: () => store.getSnapshot().harnessState,
   });
 
-  const mcpReady = (async () => {
-    const originalLog = console.log;
-    const originalError = console.error;
-    try {
-      console.log = () => undefined;
-      console.error = () => undefined;
-      await mcpManager.connectAll();
-      store.setState({ tools: getRuntimeTools() });
-    } catch {
-      // MCP failures are surfaced through /mcp and tool errors.
-    } finally {
-      console.log = originalLog;
-      console.error = originalError;
-    }
-  })();
-  void mcpReady;
-
   let currentSession: SessionMeta | null = null;
+  let sessionRunner: OrionSessionRunnerV1 | undefined;
   let shuttingDown = false;
 
   const ensureSession = (): SessionMeta => {
@@ -327,6 +290,8 @@ async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OrionCodeUiRunt
     if (shuttingDown) return;
     shuttingDown = true;
 
+    await sessionRunner?.close('Orion CLI shutdown');
+
     if (currentSession) {
       const messages = readSessionMessages(currentSession.id);
       if (messages.length > 0) {
@@ -336,10 +301,38 @@ async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OrionCodeUiRunt
     }
 
     unsubscribeLlmUsage?.();
-
-    await mcpManager.disconnectAll();
-    await runtime.shutdown();
   };
+
+  const createAgentRunner: OrionCodeUiRuntime['createAgentRunner'] = llm
+    ? (events, runnerOptions) => {
+        if (sessionRunner) return sessionRunner;
+        sessionRunner = new OrionSessionRunnerV1({
+          eventSink: events,
+          getSessionId: () => ensureSession().id,
+          createRuntime: sessionId =>
+            createProductOrionRuntimeV1(
+              {
+                cwd,
+                config,
+                store,
+                llm: llm as LLMService,
+                compactCoordinator,
+                toolCatalog,
+                skillProviders: [skillProvider],
+                mcpDescriptors: mcpAdapter.descriptors,
+                mcpConnector: mcpAdapter.connector,
+                approvalHandler: runnerOptions.approvalHandler,
+              },
+              sessionId
+            ),
+          mode: () => {
+            const mode = store.getSnapshot().agentMode;
+            return mode === 'plan' ? 'plan' : mode === 'auto' ? 'auto' : 'build';
+          },
+        });
+        return sessionRunner;
+      }
+    : undefined;
 
   return {
     cwd,
@@ -349,9 +342,9 @@ async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OrionCodeUiRunt
     llm,
     compactCoordinator,
     modelCoordinator,
-    runtime,
+    createAgentRunner,
+    getHarnessDiagnostics: async () => sessionRunner?.diagnostics(),
     isConfigured: isConfigured(config),
-    mcpReady,
     ensureSession,
     setSession,
     getSession,
@@ -380,14 +373,12 @@ async function main(): Promise<void> {
   const options = parseCliOptions(args);
   const runtime = await bootstrapRuntime(options.uiRenderer);
   if (!options.printMode && options.promptArgs[0] === 'doctor') {
-    await runtime.mcpReady?.catch(() => undefined);
     const report = collectDoctorReport({
       cwd: runtime.cwd,
       config: runtime.config,
       store: runtime.store,
       llm: runtime.llm,
       compactCoordinator: runtime.compactCoordinator,
-      runtime: runtime.runtime,
       getSession: runtime.getSession,
     });
     if (options.outputFormat === 'json') {
@@ -469,8 +460,6 @@ async function main(): Promise<void> {
   const uiRenderer = options.uiRenderer;
   if (uiRenderer === 'tui') {
     await launchTuiUI(runtime);
-  } else if (uiRenderer === 'ink') {
-    await launchInkUI(runtime);
   } else {
     await launchTerminalUI(runtime);
   }
@@ -478,10 +467,5 @@ async function main(): Promise<void> {
 
 main().catch(async error => {
   console.error(ERROR('[Orion Code] Fatal error:'), error);
-  try {
-    await mcpManager.disconnectAll();
-  } catch {
-    // ignore shutdown errors
-  }
   process.exit(1);
 });

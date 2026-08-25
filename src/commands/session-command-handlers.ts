@@ -4,7 +4,6 @@ import chalk from 'chalk';
 import { type CommandContext, type CommandResult } from './types';
 import { createStatusSnapshot } from '../runtime/ui-view-model';
 import { formatBytes } from '../services/format';
-import { resetToolState } from '../framework';
 import type { Message } from '../services/llm';
 import {
   listSessions,
@@ -13,23 +12,15 @@ import {
   loadSessionHistory,
   loadSessionCompactCheckpoint,
   loadSessionTranscriptMessages,
-  commitSessionCompactCheckpoint,
-  prepareSessionCompactSourceReceipt,
   loadSessionHarnessState,
   resumeSession,
   renameSession,
   resolveProjectPath,
   readSessionMessages,
   redactTraceText,
-  appendSessionTraceEvent,
   type SessionMeta,
-  type SessionTraceEvent,
 } from '../services/session-storage';
 import { loadSessionIndex, searchSessions } from '../services/session-index';
-import { CompactCoordinator } from '../services/compact/coordinator';
-import { createContextUsageSnapshot } from '../services/model-context';
-import { estimateMessagesTokens } from '../utils/token-estimate';
-import { compactStatus } from '../runtime/agent-status';
 
 // ============================================================================
 // 颜色常量
@@ -79,7 +70,6 @@ function handleContextClear(ctx: CommandContext, args: string): CommandResult {
   }
 
   ctx.store.resetConversation();
-  resetToolState();
   return {
     success: true,
     output: [
@@ -90,228 +80,37 @@ function handleContextClear(ctx: CommandContext, args: string): CommandResult {
 }
 
 async function handleCompact(ctx: CommandContext, args: string): Promise<CommandResult> {
-  const lines: string[] = [];
-  const console = {
-    log: (...values: unknown[]): void => {
-      lines.push(values.map(value => String(value)).join(' '));
-    },
-  };
-  const finish = (success: boolean): CommandResult => ({
-    success,
-    output: lines.join('\n'),
-  });
-  const history = ctx.store.getSnapshot().conversationHistory;
-  const traceSessionId = ctx.getSession?.()?.id ?? ctx.sessionId;
-  const traceTurnId = String(ctx.turnId ?? 'command:compact');
-  let traceDetails:
-    | Pick<
-        SessionTraceEvent,
-        | 'model'
-        | 'compactMode'
-        | 'compactStrategy'
-        | 'compactCandidateFingerprint'
-        | 'compactBeforeTokens'
-        | 'compactAfterTokens'
-        | 'compactTargetTokens'
-        | 'compactTargetRatio'
-        | 'compactDiagnosticsCount'
-      >
-    | undefined;
-
-  if (history.length === 0) {
-    console.log(DIM('Conversation history is empty, nothing to compact'));
-    console.log();
-    return finish(true);
-  }
-
-  // `/compact [N] [focus]`: a leading positive integer keeps the legacy
-  // message threshold; all remaining text is secondary summary guidance.
   const trimmedArgs = args.trim();
   const match = trimmedArgs.match(/^(?:(\d+)(?:\s+|$))?([\s\S]*)$/u);
   const thresholdArg = match?.[1] ? Number.parseInt(match[1], 10) : NaN;
   const threshold = Number.isSafeInteger(thresholdArg) && thresholdArg > 0 ? thresholdArg : 20;
   const focus = (match?.[2] ?? trimmedArgs).trim() || undefined;
-
-  console.log();
-  console.log(HEADER('Compacting Conversation'));
-  console.log(DIM('─'.repeat(40)));
-  console.log(`  Current messages: ${history.length}`);
-  console.log(`  Threshold: ${threshold}`);
-  if (focus) console.log(`  Focus: ${focus}`);
-  console.log();
-
-  if (history.length <= threshold) {
-    console.log(
-      DIM(`Conversation has ${history.length} messages, below compact threshold ${threshold}.`)
-    );
-    console.log(DIM('Nothing compacted.'));
-    console.log();
-    return finish(true);
-  }
-
-  console.log(DIM(compactStatus()));
-  try {
-    const prepareSource = traceSessionId
-      ? prepareSessionCompactSourceReceipt(traceSessionId)
-      : undefined;
-    const modelId = ctx.llm?.getModel() ?? ctx.store.getSnapshot().currentModel;
-    const coordinator =
-      ctx.compactCoordinator ??
-      new CompactCoordinator({
-        modelId,
-        llm: ctx.llm,
-        outputReserveTokens: ctx.llm?.getMaxTokens?.(),
-        getContextCapsule: () => ctx.store.getSnapshot().harnessState?.capsule,
-        getHarnessState: () => ctx.store.getSnapshot().harnessState,
-      });
-    coordinator.configure({
-      modelId,
-      llm: ctx.llm,
-      outputReserveTokens: ctx.llm?.getMaxTokens?.(),
-      getContextCapsule: () => ctx.store.getSnapshot().harnessState?.capsule,
-      getHarnessState: () => ctx.store.getSnapshot().harnessState,
-    });
-    const beforeTokens = estimateMessagesTokens(history);
-    const automaticStats = coordinator.getAutomatic().getStats();
-    const beforeUsage = createContextUsageSnapshot({
-      modelId,
-      usedTokens: beforeTokens,
-      source: 'estimated',
-      outputReserveTokens: ctx.llm?.getMaxTokens?.(),
-      warningThreshold: automaticStats.preCompactThreshold,
-      autoCompactThreshold: automaticStats.threshold,
-      autoCompactEnabled: automaticStats.enabled,
-    });
-    const result = await coordinator.compactManual(history, threshold, focus);
-    traceDetails = {
-      model: modelId,
-      compactMode: 'manual',
-      compactStrategy:
-        result.summarySource === 'llm' ? 'semantic-llm-v2' : 'deterministic-fallback-v2',
-      compactCandidateFingerprint: result.fingerprint,
-      compactBeforeTokens: result.beforeTokens,
-      compactAfterTokens: result.afterTokens,
-      compactTargetTokens: result.plan.targetTokens,
-      compactTargetRatio: result.plan.targetRatio,
-      compactDiagnosticsCount: result.diagnostics.length,
+  if (!ctx.compact) {
+    return {
+      success: false,
+      error: 'Compact is unavailable because no OrionRuntimeV1 maintenance owner is active.',
     };
-    if (traceSessionId) {
-      appendSessionTraceEvent(traceSessionId, {
-        turnId: traceTurnId,
-        type: 'compact_prepare',
-        ...traceDetails,
-      });
+  }
+  try {
+    const result = await ctx.compact({ maxMessages: threshold, ...(focus ? { focus } : {}) });
+    if (result.status === 'completed') {
+      return {
+        success: true,
+        output: `Compaction committed in maintenance turn ${result.turnId}.`,
+      };
     }
-    const compacted = result.messages;
-    const compactedTokens = estimateMessagesTokens(compacted);
-    const afterUsage = createContextUsageSnapshot({
-      modelId,
-      usedTokens: compactedTokens,
-      source: 'estimated',
-      outputReserveTokens: ctx.llm?.getMaxTokens?.(),
-      warningThreshold: automaticStats.preCompactThreshold,
-      autoCompactThreshold: automaticStats.threshold,
-      autoCompactEnabled: automaticStats.enabled,
-    });
-
-    const reduction = history.length - compacted.length;
-    const percent = Math.round((reduction / history.length) * 100);
-    const sessionId = ctx.getSession?.()?.id ?? ctx.sessionId;
-    if (sessionId) {
-      const sourceMessageCount =
-        prepareSource?.sourceMessageCount ?? readSessionMessages(sessionId).length;
-      const goal = ctx.getActiveGoal?.();
-      const checkpoint = commitSessionCompactCheckpoint({
-        sessionId,
-        mode: 'manual',
-        modelId,
-        sourceMessageCount,
-        transcriptStartMessageIndex: Math.max(0, sourceMessageCount - threshold),
-        modelHistory: compacted,
-        summary: {
-          text: result.summary,
-          generatedAt: result.summaryGeneratedAt,
-          source: result.summarySource,
-        },
-        beforeUsage,
-        afterUsage,
-        harnessState: ctx.store.getSnapshot().harnessState,
-        goalBinding: goal
-          ? { goalId: goal.goalId, revision: goal.revision, state: goal }
-          : undefined,
-        prepareSource,
-        candidate: {
-          fingerprint: result.fingerprint,
-          beforeTokens: result.beforeTokens,
-          afterTokens: result.afterTokens,
-          plan: result.plan,
-          semanticSummary: result.semanticSummary,
-          diagnostics: result.diagnostics,
-        },
-      });
-      appendSessionTraceEvent(sessionId, {
-        turnId: traceTurnId,
-        type: 'compact_validate',
-        checkpointId: checkpoint.checkpointId,
-        success: true,
-        compactSourceMessageCount: sourceMessageCount,
-        ...traceDetails,
-      });
-      appendSessionTraceEvent(sessionId, {
-        turnId: traceTurnId,
-        type: 'compact_commit',
-        checkpointId: checkpoint.checkpointId,
-        success: true,
-        compactSourceMessageCount: sourceMessageCount,
-        ...traceDetails,
-      });
-      ctx.store.setState({ conversationHistory: checkpoint.modelHistory });
-      appendSessionTraceEvent(sessionId, {
-        turnId: traceTurnId,
-        type: 'compact_boundary',
-        checkpointId: checkpoint.checkpointId,
-        success: true,
-        compactSourceMessageCount: sourceMessageCount,
-        ...traceDetails,
-      });
-      appendSessionTraceEvent(sessionId, {
-        turnId: traceTurnId,
-        type: 'compact_completed',
-        checkpointId: checkpoint.checkpointId,
-        success: true,
-        compactSourceMessageCount: sourceMessageCount,
-        ...traceDetails,
-      });
-    } else {
-      ctx.store.setState({ conversationHistory: compacted });
-    }
-    ctx.store.setContextUsage(afterUsage);
-
-    console.log(SUCCESS(`✔ Compacted ${history.length} → ${compacted.length} messages`));
-    console.log(DIM(`  Reduced by ${reduction} messages (${percent}%)`));
-    console.log();
-    return finish(true);
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    if (traceSessionId) {
-      appendSessionTraceEvent(traceSessionId, {
-        turnId: traceTurnId,
-        type: 'compact_rollback',
-        success: false,
-        error: message,
-        ...traceDetails,
-      });
-      appendSessionTraceEvent(traceSessionId, {
-        turnId: traceTurnId,
-        type: 'compact_failed',
-        success: false,
-        error: message,
-        ...traceDetails,
-      });
-    }
-    console.log(ERROR(`✗ Compact failed: ${message}`));
-    console.log();
-    return finish(false);
+    const detail =
+      result.status === 'rejected'
+        ? result.reason === 'non_steerable'
+          ? 'Compact requires an idle Thread; finish or interrupt the active turn first.'
+          : `Compact admission rejected: ${result.reason}.`
+        : `Compact maintenance turn ${result.turnId} ended as ${result.status}.`;
+    return { success: false, error: detail };
+  } catch (error) {
+    return {
+      success: false,
+      error: `Compact failed: ${error instanceof Error ? error.message : String(error)}`,
+    };
   }
 }
 
@@ -522,9 +321,9 @@ function handleSessions(ctx: CommandContext, args: string = ''): CommandResult {
   printSessionRows(sessions, { indexed: true, showProject: scope.allProjects });
 
   console.log(DIM('Use /resume <number|session-id|name> to restore a session'));
-  console.log(DIM('Use /session-rename <number|session-id|name> <new name> to rename'));
-  console.log(DIM('Use /sessions --all to list sessions from every project'));
-  console.log(DIM('Use /sessions <query> to search by file, tool, or keyword'));
+  console.log(DIM('Use /session rename <number|session-id|name> <new name> to rename'));
+  console.log(DIM('Use /session list --all to list sessions from every project'));
+  console.log(DIM('Use /session list <query> to search by file, tool, or keyword'));
   console.log();
   return { success: true };
 }
@@ -678,7 +477,6 @@ function restoreSession(ctx: CommandContext, session: SessionMeta, isLast: boole
     ctx.store.setState({
       harnessState: loadSessionHarnessState(resumed.id) ?? resumed.harnessState,
     });
-    resetToolState();
     ctx.sessionRestored?.({
       sessionId: resumed.id,
       projectPath: resumed.projectPath,
@@ -732,7 +530,7 @@ function restoreSession(ctx: CommandContext, session: SessionMeta, isLast: boole
     bannerLines.push('  No messages in session');
   }
 
-  if (ctx.uiRenderer === 'tui' || ctx.uiRenderer === 'ink') {
+  if (ctx.uiRenderer === 'tui') {
     if (!ctx.sessionRestored) {
       for (const line of bannerLines) ctx.writeLine?.(line);
     }
@@ -757,8 +555,8 @@ function handleSessionRename(ctx: CommandContext, args: string): CommandResult {
   const newName = parts.join(' ').trim();
 
   if (!ref || !newName) {
-    console.log(ERROR('Usage: /session-rename <number|session-id|name> <new name>'));
-    console.log(DIM('Run /sessions first to see picker numbers for this project.'));
+    console.log(ERROR('Usage: /session rename <number|session-id|name> <new name>'));
+    console.log(DIM('Run /session list first to see picker numbers for this project.'));
     console.log();
     return { success: false };
   }
@@ -780,8 +578,8 @@ function handleSessionRename(ctx: CommandContext, args: string): CommandResult {
       console.log(
         DIM(
           scope.allProjects
-            ? 'Use /sessions --all to list sessions'
-            : 'Use /sessions to list project sessions'
+            ? 'Use /session list --all to list sessions'
+            : 'Use /session list to list project sessions'
         )
       );
       console.log();

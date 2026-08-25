@@ -73,8 +73,8 @@ export interface SandboxConfig {
   image?: string;
 }
 
-/** Runtime-only UI renderer selection. TUI is the product default; Terminal is the technical fallback; Ink is deprecated (removed in v0.2.0). */
-export type UIRenderer = 'terminal' | 'tui' | 'ink';
+/** Runtime-only UI renderer selection. TUI is the product default; Terminal is the technical fallback. */
+export type UIRenderer = 'terminal' | 'tui';
 
 /** How UI permission prompts should be handled. */
 export type UIConfirmationMode = 'config' | 'interactive';

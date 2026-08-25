@@ -7,11 +7,7 @@
 
 import { loadConfig } from '../src/services/config';
 import { isProductUIRenderer } from '../src/services/config';
-import {
-  PRODUCT_UI_RENDERER,
-  TECHNICAL_UI_RENDERERS,
-  DEPRECATED_UI_RENDERERS,
-} from '../src/services/config';
+import { PRODUCT_UI_RENDERER, TECHNICAL_UI_RENDERERS } from '../src/services/config';
 
 // ---------------------------------------------------------------------------
 // Banner contract
@@ -30,10 +26,6 @@ describe('TUI banner contract', () => {
 
   it('TECHNICAL_UI_RENDERERS only contains terminal', () => {
     expect(TECHNICAL_UI_RENDERERS).toEqual(['terminal']);
-  });
-
-  it('DEPRECATED_UI_RENDERERS only contains ink', () => {
-    expect(DEPRECATED_UI_RENDERERS).toEqual(['ink']);
   });
 
   it('default UI renderer is the product renderer', () => {

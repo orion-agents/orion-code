@@ -228,7 +228,10 @@ export class PrintEventSink implements UiEventSink {
     const entries = Array.from(this.entries.values());
     const content = entries
       .filter(
-        entry => entry.role === 'assistant' || entry.role === 'system' || entry.role === 'command'
+        entry =>
+          (entry.role === 'assistant' && entry.title !== 'reasoning') ||
+          entry.role === 'system' ||
+          entry.role === 'command'
       )
       .map(entry => entry.content)
       .filter(Boolean)
@@ -266,6 +269,12 @@ export class PrintEventSink implements UiEventSink {
 
   private printEntry(entry: TranscriptEntry, finalized: boolean): void {
     if (this.outputFormat === 'json' || !entry.content) return;
+
+    // Reasoning lifecycle Items stay available in structured JSON entries but
+    // are not user-facing answer content. Keeping them off stdout preserves the
+    // print-mode contract for shell pipelines and avoids mixing lifecycle text
+    // with the final assistant response.
+    if (entry.role === 'assistant' && entry.title === 'reasoning') return;
 
     if (entry.role === 'assistant') {
       this.printAssistantDelta(entry, finalized);
@@ -328,7 +337,6 @@ export async function launchPrintMode(
   options: PrintModeOptions = {}
 ): Promise<number> {
   const outputFormat = options.outputFormat ?? 'text';
-  await runtime.mcpReady?.catch(() => undefined);
 
   const events = new PrintEventSink(runtime, outputFormat);
   const eventSink: AgentRuntimeEventSink = {

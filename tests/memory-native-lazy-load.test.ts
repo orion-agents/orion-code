@@ -17,8 +17,12 @@ describe('optional semantic-memory native dependencies', () => {
       };
       delete process.env.ORION_CODE_EMBEDDING_PROVIDER;
       require('ts-node/register');
-      const tools = require('./src/tools/index.ts');
-      if (!Array.isArray(tools.TOOLS) || tools.TOOLS.length === 0) process.exit(2);
+      const { createFirstPartyCoreToolProviderV1 } = require('./src/runtime/first-party-core-provider.ts');
+      const provider = createFirstPartyCoreToolProviderV1({
+        context: { cwd: process.cwd(), config: { name: 'native-lazy-test', mode: 'test' } },
+      });
+      if (!Array.isArray(provider.catalog.entries) || provider.catalog.entries.length !== 7) process.exit(2);
+      if (provider.stats().loadedShardNames.length !== 0) process.exit(3);
       process.stdout.write('TOOLS_IMPORT_OK');
     `;
 

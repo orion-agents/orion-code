@@ -64,13 +64,15 @@ export type {
   StopResourceSnapshot,
 } from './stop-decision';
 
-export { prepareToolCalls, executeToolCalls, inspectSchedule } from './tool-scheduler';
+export { prepareToolCalls, executeToolCalls } from './tool-call-orchestrator';
 export type {
   PreparedToolCall,
   ExecutedToolCall,
-  ToolSchedule,
-  ToolSchedulerOptions,
-} from './tool-scheduler';
+  AuthoritativeToolExecutor,
+  ToolExecutorOutcome,
+  ToolExecutionMetadata,
+  ToolPermissionDecision,
+} from './tool-call-orchestrator';
 
 export { buildSystemPrompt, getSystemPrompt } from './prompt';
 export type { PromptContext, PromptSection } from './prompt';
@@ -123,5 +125,5 @@ export type {
   VerificationKind,
 } from '../harness';
 
-export { getToolState, setToolState, subscribeToolState, resetToolState } from './tool-state';
+export { ToolStateStore, createToolStateStore } from './tool-state';
 export type { ToolState, TodoItem } from './tool-state';

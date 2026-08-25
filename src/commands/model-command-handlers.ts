@@ -404,7 +404,7 @@ async function handleModel(ctx: CommandContext, args: string): Promise<CommandRe
     return result(true);
   }
 
-  // /model list|ls|help 已移除，统一由 /models 承接（交互式选择切换）
+  // /model list|ls|help 已移除；无参数 /model 统一打开交互式选择器。
   if (trimmedArgs === 'list' || trimmedArgs === 'ls' || trimmedArgs === 'help') {
     write();
     write(WARN(`/model ${trimmedArgs} was removed.`));
@@ -471,7 +471,7 @@ async function handleModel(ctx: CommandContext, args: string): Promise<CommandRe
 }
 
 /**
- * /models — 交互式选择切换模型。
+ * No-argument `/model` — 交互式选择切换模型。
  * 交互式渲染器返回结构化 modelPicker 请求（渲染器弹出选择层，选中即 /model <id>）；
  * 非交互式渲染器直接打印候选列表并提示 /model <name|alias>。
  */

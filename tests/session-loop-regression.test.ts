@@ -7,7 +7,7 @@ import {
   createTaskContract,
   upgradeHarnessState,
 } from '../src/harness';
-import { TOOLS } from '../src/tools';
+import { TOOLS } from './support/legacy-tools';
 
 const readFileTool = TOOLS.find(tool => tool.name === 'read_file');
 const toolContext = {

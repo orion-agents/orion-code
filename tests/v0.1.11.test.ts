@@ -8,8 +8,6 @@
  *  - 工具失败透明反馈
  *  - 记忆相关性查找
  *  - Team Memory 路径安全
- *  - SDK Entry Points
- *  - Bootstrap State 管理
  */
 
 import {
@@ -36,13 +34,6 @@ import {
   isPathSafe,
   PathTraversalError,
 } from '../src/memory/team-paths';
-import {
-  init,
-  isInitialized,
-  getConfig,
-  reset,
-} from '../src/sdk/init';
-
 // core/state.ts was deleted in v0.2.22 (dead code — zero imports across src/).
 // The test cases that exercised its functions are removed.
 
@@ -60,7 +51,8 @@ describe('v0.1.11: Token Security Warning', () => {
   });
 
   test('detects OpenAI API Key (sk-)', () => {
-    const content = 'API key: sk-1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678';
+    const content =
+      'API key: sk-1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678';
     const detected = detectSecretsInMessage(content);
     expect(detected.length).toBeGreaterThan(0);
     expect(detected.some(t => t.name.includes('OpenAI'))).toBe(true);
@@ -122,7 +114,9 @@ describe('v0.1.11: MEMORY.md Entrypoint Management', () => {
     const lines: string[] = ['# Memory Index', ''];
     for (let i = 0; i < 100; i++) {
       // Long entries to exceed byte limit
-      lines.push(`- [memory-${i}](memory-${i}.md) — This is a very long description line that adds many bytes to the total content size ${i}`);
+      lines.push(
+        `- [memory-${i}](memory-${i}.md) — This is a very long description line that adds many bytes to the total content size ${i}`
+      );
     }
     const content = lines.join('\n');
 
@@ -227,43 +221,5 @@ describe('v0.1.11: Team Memory Path Security', () => {
     expect(isPathSafe('../unsafe')).toBe(false);
   });
 });
-
-// ============================================================================
-// SDK Tests
-// ============================================================================
-
-describe('v0.1.11: SDK Entry Points', () => {
-  beforeEach(() => {
-    reset();
-  });
-
-  test('init initializes SDK', () => {
-    init({ projectRoot: '/test/project' });
-    expect(isInitialized()).toBe(true);
-  });
-
-  test('getConfig returns config after init', () => {
-    init({ projectRoot: '/test/project', debug: true });
-    const config = getConfig();
-    expect(config).not.toBeNull();
-    expect(config?.projectRoot).toBe('/test/project');
-    expect(config?.debug).toBe(true);
-  });
-
-  test('isInitialized returns false before init', () => {
-    expect(isInitialized()).toBe(false);
-  });
-
-  test('reset clears config', () => {
-    init({ projectRoot: '/test/project' });
-    expect(isInitialized()).toBe(true);
-    reset();
-    expect(isInitialized()).toBe(false);
-  });
-});
-
-// ============================================================================
-// State Management Tests
-// ============================================================================
 
 // core/state.ts tests were removed in v0.2.22 — the module was dead code.

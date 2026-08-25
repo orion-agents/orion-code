@@ -3,7 +3,6 @@
 import type { SlashCommand } from './types';
 import {
   handleModel,
-  handleModels,
   handlePermissions,
   handleEffort,
   showConfig,
@@ -20,17 +19,6 @@ export const MODEL_COMMANDS: SlashCommand[] = [
     execution: 'builtin',
     risk: 'state-write',
     execute: (ctx, args) => handleModel(ctx, args),
-  },
-  {
-    name: 'models',
-    description: 'Switch the current model interactively',
-    argumentHint: '',
-    category: 'model',
-    priority: 10,
-    type: 'builtin',
-    execution: 'builtin',
-    risk: 'state-write',
-    execute: (ctx, args) => handleModels(ctx, args),
   },
   {
     name: 'permissions',

@@ -5,7 +5,6 @@
  * 非 `/` 前缀的输入直接作为 chat 消息处理。
  */
 
-import type { OrionCodeRuntime } from '../init';
 import type { Store } from '../framework/store';
 import type { LLMService } from '../services/llm';
 import type { OrionCodeCLIConfig, UIRenderer } from '../services/config';
@@ -13,6 +12,7 @@ import type { SessionMeta } from '../services/session-storage';
 import type { CompactCoordinator } from '../services/compact';
 import type { ModelCoordinator } from '../runtime/model-coordinator';
 import type { SessionGoalV1 } from '../runtime/goals/types';
+import type { OrionRuntimeDiagnosticsV1 } from '../runtime/orion-runtime-v1';
 import type {
   EditPreviewRequest,
   ModelPickerRequest,
@@ -36,7 +36,6 @@ export interface CommandContext {
   compactCoordinator?: CompactCoordinator;
   /** Transactional model/profile switch owner. */
   modelCoordinator?: ModelCoordinator;
-  runtime: OrionCodeRuntime;
   /** 当前会话 ID（用于记录消息） */
   sessionId?: string;
   /** Lazily create or return the active session. */
@@ -67,6 +66,12 @@ export interface CommandContext {
   uiCapabilities?: UiRendererCapabilities;
   /** Shared BUILD / PLAN / AUTO lifecycle owned by the runtime controller. */
   agentModeLifecycle?: import('../framework/agent-mode').AgentModeLifecycleController;
+  /** Read-only v0.2 runtime diagnostics; does not activate lazy Skill or MCP providers. */
+  getHarnessDiagnostics?: () => Promise<OrionRuntimeDiagnosticsV1 | undefined>;
+  /** Execute explicit compaction through the v0.2 maintenance transaction. */
+  compact?: (
+    input: import('../runtime/agent-runtime-runner').AgentRuntimeCompactInputV1
+  ) => Promise<import('../runtime/agent-runtime-runner').AgentRuntimeCompactResultV1>;
 }
 
 /** 命令执行结果 */
@@ -98,7 +103,7 @@ export interface CommandParam {
 /** 命令类型 */
 export type CommandType = 'builtin' | 'tool' | 'chat';
 
-/** Command category used by Ink palettes and grouped help output. */
+/** Command category used by palettes and grouped help output. */
 export type CommandCategory =
   | 'workflow'
   | 'session'
@@ -140,13 +145,13 @@ export function getModeDisplayText(mode: AgentMode): string {
 export type CommandExecution = 'builtin' | 'agent-workflow' | 'renderer-local';
 
 /** Product audience used to keep compatibility and internal commands out of default surfaces. */
-export type CommandAudience = 'primary' | 'advanced' | 'compatibility' | 'internal';
+export type CommandAudience = 'primary' | 'advanced' | 'internal';
 
 /** Behaviour when a command is submitted while an agent turn is active. */
 export type CommandBusyPolicy = 'immediate' | 'queue-next' | 'reject-busy';
 
 /** Registration source. Built-ins are reserved and cannot be shadowed by extensions. */
-export type CommandSourceKind = 'builtin' | 'skill' | 'mcp-prompt' | 'plugin';
+export type CommandSourceKind = 'builtin' | 'skill' | 'mcp-prompt';
 export type CommandTrust = 'core' | 'user' | 'project' | 'remote';
 
 export interface CommandSource {
@@ -173,11 +178,6 @@ export interface CommandLifecycle {
   since?: string;
   removeIn?: string;
   replacement?: string;
-}
-
-export interface CommandCompatibilityAlias {
-  name: string;
-  lifecycle: CommandLifecycle & { status: 'deprecated'; replacement: string };
 }
 
 /**
@@ -210,8 +210,6 @@ export interface CommandDeprecation {
 export interface SlashCommand {
   name: string;
   aliases?: string[];
-  /** Exact legacy spellings that execute but never appear in discovery surfaces. */
-  compatibilityAliases?: CommandCompatibilityAlias[];
   /** 描述（可以是 getter 函数支持动态） */
   description: string;
   /** Product-facing grouping for command palettes and help output. */
@@ -260,7 +258,7 @@ export interface RegisteredSlashCommand extends SlashCommand {
 }
 
 /** List of renderers that a command scope can apply to. */
-export const ALL_RENDERER_SCOPES: CommandUiRenderer[] = ['tui', 'terminal', 'ink', 'print'];
+export const ALL_RENDERER_SCOPES: CommandUiRenderer[] = ['tui', 'terminal', 'print'];
 
 /** Default risk when no explicit metadata is present on a command. */
 export const DEFAULT_COMMAND_RISK: CommandRisk = 'state-write';

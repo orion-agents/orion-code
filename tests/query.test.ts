@@ -152,6 +152,90 @@ describe('query generator', () => {
     expect(llm.chat).not.toHaveBeenCalled();
   });
 
+  test('resolves an exact tool set at every model request boundary', async () => {
+    const llm = makeMockLLM([
+      {
+        content: '',
+        model: 'test-model',
+        toolCalls: [
+          {
+            id: 'call-step-1',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{"path":"a.ts"}' },
+          },
+        ],
+      },
+      { content: 'done', model: 'test-model' },
+    ]);
+    const resolveStep = jest
+      .fn()
+      .mockResolvedValueOnce({ tools: [mockTool], toolExecutor: async () => 'file content' })
+      .mockResolvedValueOnce({ tools: [askTool], toolExecutor: async () => 'search results' });
+
+    for await (const _event of query({
+      messages: [
+        { role: 'system', content: 'system' },
+        { role: 'user', content: 'inspect' },
+      ],
+      tools: [],
+      toolExecutor: async () => 'legacy executor must not run',
+      llm,
+      resolveStep,
+    })) {
+      // drain
+    }
+
+    expect(resolveStep).toHaveBeenCalledTimes(2);
+    expect(resolveStep.mock.calls.map(call => call[0].requestIndex)).toEqual([0, 1]);
+    expect(
+      (llm.chatStream as jest.Mock).mock.calls.map(call =>
+        (call[2] as Tool[]).map(tool => tool.function.name)
+      )
+    ).toEqual([['read_file'], ['web_search']]);
+  });
+
+  test('delegates permission and stable call identity to ToolGateway boundary', async () => {
+    const llm = makeMockLLM([
+      {
+        content: '',
+        model: 'test-model',
+        toolCalls: [
+          {
+            id: 'gateway-call',
+            type: 'function',
+            function: { name: 'web_search', arguments: '{"query":"orion"}' },
+          },
+        ],
+      },
+      { content: 'done', model: 'test-model' },
+    ]);
+    const toolExecutor = jest.fn(async () =>
+      JSON.stringify({ success: true, output: 'gateway result' })
+    );
+    const confirmToolUse = jest.fn(async () => false);
+
+    for await (const _event of query({
+      messages: [
+        { role: 'system', content: 'system' },
+        { role: 'user', content: 'search' },
+      ],
+      tools: [askTool],
+      toolExecutor,
+      llm,
+      toolContext,
+      confirmToolUse,
+      executionBoundary: 'tool_gateway',
+    })) {
+      // drain
+    }
+
+    expect(confirmToolUse).not.toHaveBeenCalled();
+    expect(toolExecutor).toHaveBeenCalledWith('web_search', { query: 'orion' }, undefined, {
+      callId: 'gateway-call',
+      index: 0,
+    });
+  });
+
   test('accounts for tool-calling model turns as well as the final response', async () => {
     const llm = makeMockLLM([
       {
@@ -1755,6 +1839,18 @@ describe('query generator', () => {
       role: 'assistant',
       content: 'Answer',
     });
+    expect(complete?.compact?.uncompactedHistory).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'user',
+          content: expect.stringContaining('large historical message 0'),
+        }),
+        expect.objectContaining({ role: 'assistant', content: 'Answer' }),
+      ])
+    );
+    expect(complete?.compact?.uncompactedHistory.length).toBeGreaterThan(
+      complete?.compact?.modelHistory.length ?? Number.POSITIVE_INFINITY
+    );
   });
 
   test('increments turn counter correctly', async () => {
@@ -1793,7 +1889,7 @@ describe('query generator', () => {
     expect((requestStarts[1] as any).turn).toBe(2);
   });
 
-  test('does not let toolConfirmation=allow bypass external ask tools', async () => {
+  test('does not reinterpret an authoritative external-tool denial', async () => {
     const llm = makeMockLLM([
       {
         content: '',
@@ -1813,7 +1909,15 @@ describe('query generator', () => {
       { role: 'system', content: 'You are a bot.' },
       { role: 'user', content: 'Search' },
     ];
-    const toolExecutor = jest.fn(async () => JSON.stringify({ success: true, output: 'ok' }));
+    const toolExecutor = jest.fn(async () => ({
+      result: JSON.stringify({ success: false, error: 'Explicit approval is required.' }),
+      permissionDecision: {
+        behavior: 'ask' as const,
+        approved: false,
+        source: 'config_allow_blocked' as const,
+        reason: 'Explicit approval is required.',
+      },
+    }));
     const events: QueryEvent[] = [];
 
     for await (const event of query({
@@ -1821,14 +1925,14 @@ describe('query generator', () => {
       tools: [askTool],
       toolExecutor,
       llm,
-      permissionMode: 'default',
-      toolConfirmation: 'allow',
-      toolContext,
     })) {
       events.push(event);
     }
 
-    expect(toolExecutor).not.toHaveBeenCalled();
+    expect(toolExecutor).toHaveBeenCalledWith('web_search', { query: 'openhorse' }, undefined, {
+      callId: 'call-1',
+      index: 0,
+    });
     expect(events).toContainEqual(
       expect.objectContaining({
         type: 'tool_result',
@@ -1838,7 +1942,7 @@ describe('query generator', () => {
     );
   });
 
-  test('denies ask-permission tools when toolConfirmation is deny', async () => {
+  test('stops after the authoritative boundary denies a tool', async () => {
     const llm = makeMockLLM([
       {
         content: '',
@@ -1858,7 +1962,15 @@ describe('query generator', () => {
       { role: 'system', content: 'You are a bot.' },
       { role: 'user', content: 'Search' },
     ];
-    const toolExecutor = jest.fn(async () => JSON.stringify({ success: true, output: 'ok' }));
+    const toolExecutor = jest.fn(async () => ({
+      result: JSON.stringify({ success: false, error: 'Denied by frozen project authority.' }),
+      permissionDecision: {
+        behavior: 'deny' as const,
+        approved: false,
+        source: 'config_deny' as const,
+        reason: 'Denied by frozen project authority.',
+      },
+    }));
     const events: QueryEvent[] = [];
 
     for await (const event of query({
@@ -1866,9 +1978,6 @@ describe('query generator', () => {
       tools: [askTool],
       toolExecutor,
       llm,
-      permissionMode: 'default',
-      toolConfirmation: 'deny',
-      toolContext,
     })) {
       events.push(event);
     }
@@ -1881,9 +1990,9 @@ describe('query generator', () => {
       QueryEvent,
       { type: 'complete' }
     >;
-    expect(toolExecutor).not.toHaveBeenCalled();
+    expect(toolExecutor).toHaveBeenCalledTimes(1);
     expect(toolResult.success).toBe(false);
-    expect(toolResult.error).toContain('toolConfirmation=deny');
+    expect(toolResult.error).toContain('Denied by frozen project authority');
     expect(llm.chatStream).toHaveBeenCalledTimes(1);
     expect(complete.content).toContain('permission was denied');
     expect(complete.stats).toMatchObject({
@@ -1954,7 +2063,7 @@ describe('query generator', () => {
     expect(llm.chatStream).toHaveBeenCalledTimes(1);
   });
 
-  test('permission denial seals every remaining result in a tool-call batch', async () => {
+  test('an authoritative denial seals every remaining result in a serial tool-call batch', async () => {
     const llm = makeMockLLM([
       {
         content: '',
@@ -1982,7 +2091,14 @@ describe('query generator', () => {
       { role: 'system', content: 'You are a bot.' },
       { role: 'user', content: 'Search' },
     ];
-    const toolExecutor = jest.fn(async () => JSON.stringify({ success: true, output: 'ok' }));
+    const toolExecutor = jest.fn(async () => ({
+      result: JSON.stringify({ success: false, error: 'Denied by frozen project authority.' }),
+      permissionDecision: {
+        behavior: 'deny' as const,
+        approved: false,
+        source: 'config_deny' as const,
+      },
+    }));
     const events: QueryEvent[] = [];
 
     for await (const event of query({
@@ -1990,14 +2106,11 @@ describe('query generator', () => {
       tools: [askTool],
       toolExecutor,
       llm,
-      permissionMode: 'default',
-      toolConfirmation: 'deny',
-      toolContext,
     })) {
       events.push(event);
     }
 
-    expect(toolExecutor).not.toHaveBeenCalled();
+    expect(toolExecutor).toHaveBeenCalledTimes(1);
     expect(events.filter(event => event.type === 'tool_result').map(event => event.callId)).toEqual(
       ['call-1', 'call-2', 'call-3']
     );
@@ -2070,7 +2183,7 @@ describe('query generator', () => {
     );
   });
 
-  test('uses interactive confirmation hook for ask-permission tools', async () => {
+  test('emits an approval receipt returned by the authoritative boundary', async () => {
     const llm = makeMockLLM([
       {
         content: '',
@@ -2090,8 +2203,15 @@ describe('query generator', () => {
       { role: 'system', content: 'You are a bot.' },
       { role: 'user', content: 'Search' },
     ];
-    const toolExecutor = jest.fn(async () => JSON.stringify({ success: true, output: 'ok' }));
-    const confirmToolUse = jest.fn(async () => true);
+    const toolExecutor = jest.fn(async () => ({
+      result: JSON.stringify({ success: true, output: 'ok' }),
+      permissionDecision: {
+        behavior: 'ask' as const,
+        approved: true,
+        source: 'user' as const,
+        reason: 'External query',
+      },
+    }));
     const events: QueryEvent[] = [];
 
     for await (const event of query({
@@ -2099,22 +2219,14 @@ describe('query generator', () => {
       tools: [askTool],
       toolExecutor,
       llm,
-      permissionMode: 'default',
-      toolConfirmation: 'ask',
-      confirmToolUse,
-      toolContext,
     })) {
       events.push(event);
     }
 
-    expect(confirmToolUse).toHaveBeenCalledWith(
-      expect.objectContaining({
-        name: 'web_search',
-        args: { query: 'openhorse' },
-        reason: 'External query',
-      })
-    );
-    expect(toolExecutor).toHaveBeenCalledWith('web_search', { query: 'openhorse' }, undefined);
+    expect(toolExecutor).toHaveBeenCalledWith('web_search', { query: 'openhorse' }, undefined, {
+      callId: 'call-1',
+      index: 0,
+    });
     const eventTypes = events.map(event => event.type);
     expect(eventTypes.indexOf('permission_decision')).toBeGreaterThan(
       eventTypes.indexOf('tool_call')
@@ -2135,7 +2247,7 @@ describe('query generator', () => {
     });
   });
 
-  test('interactive confirmation hook can deny ask-permission tools', async () => {
+  test('observes a user denial made inside the authoritative boundary', async () => {
     const llm = makeMockLLM([
       {
         content: '',
@@ -2155,7 +2267,15 @@ describe('query generator', () => {
       { role: 'system', content: 'You are a bot.' },
       { role: 'user', content: 'Search' },
     ];
-    const toolExecutor = jest.fn(async () => JSON.stringify({ success: true, output: 'ok' }));
+    const toolExecutor = jest.fn(async () => ({
+      result: JSON.stringify({ success: false, error: 'Tool approval was denied by user.' }),
+      permissionDecision: {
+        behavior: 'ask' as const,
+        approved: false,
+        source: 'user' as const,
+        reason: 'External query',
+      },
+    }));
     const events: QueryEvent[] = [];
 
     for await (const event of query({
@@ -2163,10 +2283,6 @@ describe('query generator', () => {
       tools: [askTool],
       toolExecutor,
       llm,
-      permissionMode: 'default',
-      toolConfirmation: 'ask',
-      confirmToolUse: async () => false,
-      toolContext,
     })) {
       events.push(event);
     }
@@ -2183,7 +2299,7 @@ describe('query generator', () => {
       QueryEvent,
       { type: 'complete' }
     >;
-    expect(toolExecutor).not.toHaveBeenCalled();
+    expect(toolExecutor).toHaveBeenCalledTimes(1);
     expect(decision.decision).toMatchObject({
       behavior: 'ask',
       approved: false,

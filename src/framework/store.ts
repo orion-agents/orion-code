@@ -45,7 +45,9 @@ export interface AppState {
   todos: TodoItem[];
   /** Whether the agent is in plan mode (mirrored from tool-state) */
   planMode: boolean;
-  /** Latest plan from exit_plan_mode (mirrored from tool-state) */
+  /** Mode restored only after a durable PlanReceipt commits. */
+  planReturnMode: Exclude<AgentMode, 'plan'>;
+  /** Latest plan projected from the durable PlanReceipt. */
   currentPlan: string | null;
   /** Context Harness serializable state */
   harnessState?: HarnessState;
@@ -80,6 +82,7 @@ export class Store {
       | 'projectInstructionsContent'
       | 'todos'
       | 'planMode'
+      | 'planReturnMode'
       | 'currentPlan'
     > &
       Partial<AppState>
@@ -102,6 +105,7 @@ export class Store {
       projectInstructionsContent: '',
       todos: [],
       planMode: false,
+      planReturnMode: 'interactive',
       currentPlan: null,
       ...initial,
     } as AppState;

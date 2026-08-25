@@ -22,7 +22,6 @@ function runtime(): OrionCodeUiRuntime {
       setProcessing: jest.fn(),
     } as unknown as OrionCodeUiRuntime['store'],
     llm: null,
-    runtime: {} as OrionCodeUiRuntime['runtime'],
     isConfigured: true,
     ensureSession: jest.fn(),
     setSession: jest.fn(),

@@ -79,7 +79,6 @@ function makeRuntime(): OrionCodeUiRuntime {
     config,
     store,
     llm: null,
-    runtime: {} as any,
     isConfigured: true,
     ensureSession: jest.fn(() => ({
       id: 'session-test',

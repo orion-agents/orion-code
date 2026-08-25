@@ -1,4 +1,8 @@
-import { DEFAULT_LOOP_BUDGET, type LoopBudget, type LoopBudgetBaseProfile } from '../framework';
+import {
+  DEFAULT_LOOP_BUDGET,
+  type LoopBudget,
+  type LoopBudgetBaseProfile,
+} from '../framework/loop-budget-contract';
 import type { OrionCodeCLIConfig } from '../services/config';
 import type { HarnessState } from '../harness/types';
 import { GOAL_INVARIANTS } from './goals/types';

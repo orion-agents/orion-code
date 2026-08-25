@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "id": "orion-harness-eval-corpus-v1",
+  "provider": "deterministic-capability-contract",
+  "tasks": [
+    {
+      "id": "inspect-and-edit",
+      "objective": "Inspect a TypeScript module, apply a focused edit, and run its test.",
+      "criteria": ["Source was read", "Edit was applied", "Focused test passed"],
+      "requiredTools": ["read_file", "edit_file", "exec_command"],
+      "expectedEvidence": "read receipt; edit receipt; passing test receipt",
+      "modelRequests": 2
+    },
+    {
+      "id": "search-workspace",
+      "objective": "Locate all matching definitions in the workspace and report exact files.",
+      "criteria": ["Matches are complete", "Files are cited"],
+      "requiredTools": ["glob", "grep", "read_file"],
+      "expectedEvidence": "glob, grep, and read receipts",
+      "modelRequests": 2
+    },
+    {
+      "id": "git-status",
+      "objective": "Inspect the repository status without mutating it.",
+      "criteria": ["Working tree state is reported"],
+      "requiredTools": ["git_status"],
+      "expectedEvidence": "git status receipt",
+      "modelRequests": 2
+    },
+    {
+      "id": "lsp-diagnostics",
+      "objective": "Collect language-server diagnostics for the changed module.",
+      "criteria": ["Diagnostics are captured"],
+      "requiredTools": ["lsp_get_diagnostics"],
+      "expectedEvidence": "LSP diagnostic receipt",
+      "modelRequests": 2
+    },
+    {
+      "id": "web-source",
+      "objective": "Find one authoritative web source for the referenced API.",
+      "criteria": ["Source URL and title are captured"],
+      "requiredTools": ["web_search"],
+      "expectedEvidence": "web search source receipt",
+      "modelRequests": 2
+    },
+    {
+      "id": "review-diff",
+      "objective": "Review the current Git diff and identify the changed behavior.",
+      "criteria": ["Diff is inspected", "Behavioral change is summarized"],
+      "requiredTools": ["git_diff"],
+      "expectedEvidence": "git diff receipt",
+      "modelRequests": 2
+    }
+  ]
+}

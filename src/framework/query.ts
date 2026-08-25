@@ -41,9 +41,10 @@ import type { PromptAssemblyStats } from '../harness/types';
 import {
   prepareToolCalls,
   executeToolCalls,
+  type AuthoritativeToolExecutor,
   type ExecutedToolCall,
   type ToolPermissionDecision,
-} from './tool-scheduler';
+} from './tool-call-orchestrator';
 import { estimateMessagesTokens } from '../utils/token-estimate';
 import { parseToolResultEnvelope, serializeToolResult } from './tool-serializer';
 import {
@@ -51,11 +52,22 @@ import {
   getModelContextWindow,
   type ContextUsageSnapshot,
 } from '../services/model-context';
-import { BATCH_READ_ALLOWED_TOOLS } from '../tools';
 import type { ToolExternalAssertion } from './external-assertion';
 import { createStopDecision, type StopDecision, type StopDecisionStatus } from './stop-decision';
+import {
+  DEFAULT_LOOP_BUDGET,
+  type LoopBudget,
+  type LoopBudgetBaseProfile,
+  type LoopBudgetSource,
+} from './loop-budget-contract';
+
+export { DEFAULT_LOOP_BUDGET } from './loop-budget-contract';
+export type { LoopBudget, LoopBudgetBaseProfile, LoopBudgetSource } from './loop-budget-contract';
 
 export const DEFAULT_MAX_MODEL_VISIBLE_TOOL_RESULT_BYTES = 4096;
+
+/** Read-only tools eligible for the fragmentation hint; kept loop-local so Query has no tool registry. */
+const BATCH_READ_ALLOWED_TOOLS = new Set(['git_status', 'list_files', 'glob', 'grep', 'read_file']);
 
 function isAborted(signal?: AbortSignal): boolean {
   return signal?.aborted === true;
@@ -131,40 +143,11 @@ export type LoopFinishReason =
   | 'compact_paused'
   | 'running';
 
-export type LoopBudgetBaseProfile = 'default' | 'complex' | 'release';
-export type LoopBudgetSource = LoopBudgetBaseProfile | 'config';
 export type LoopContinuationAction =
   | 'reply_continue'
   | 'narrow_instruction'
   | 'inspect_loop_stats'
   | 'raise_budget';
-
-export interface LoopBudget {
-  /** Maximum LLM requests allowed for one user turn before stopping. */
-  maxLlmRequestsPerUserTurn: number;
-  /** Maximum tool calls allowed for one user turn before stopping. */
-  maxToolCallsPerUserTurn: number;
-  /** Consecutive single read-only tool turns before injecting a batch_read hint. */
-  maxReadOnlyFragmentation: number;
-  /** Maximum aggregate tool-result bytes exposed to the model in one user turn. */
-  maxModelVisibleToolBytes: number;
-  /** Budget source after config overrides are applied. */
-  profile?: LoopBudgetSource;
-  /** Adaptive profile selected before config overrides, when applicable. */
-  baseProfile?: LoopBudgetBaseProfile;
-  /** Whether user/global/env config changed one or more numeric budget fields. */
-  configOverride?: boolean;
-}
-
-export const DEFAULT_LOOP_BUDGET: LoopBudget = {
-  maxLlmRequestsPerUserTurn: 24,
-  maxToolCallsPerUserTurn: 120,
-  maxReadOnlyFragmentation: 3,
-  maxModelVisibleToolBytes: 64 * 1024,
-  profile: 'default',
-  baseProfile: 'default',
-  configOverride: false,
-};
 
 const COMPLEX_LOOP_BUDGET: Pick<
   LoopBudget,
@@ -350,7 +333,7 @@ function stopDecisionForLoop(stats: LoopStats, finishReason: LoopFinishReason): 
       nextActions.push({
         kind: 'inspect',
         label: 'Inspect loop statistics',
-        command: '/loop-stats',
+        command: '/usage',
       });
     } else {
       nextActions.push({ kind: 'change_input', label: 'Provide a narrower instruction' });
@@ -565,14 +548,14 @@ function budgetExceededEvent(
     'raise_budget',
   ];
   const continuationHint =
-    'Reply `继续` to continue the same objective, give a narrower next step, inspect /loop-stats, or raise agentLoop.budget for intentional long work.';
+    'Reply `继续` to continue the same objective, give a narrower next step, inspect /usage, or raise agentLoop.budget for intentional long work.';
   return {
     type: 'complete',
     content: [
       `Agent loop budget reached: ${reason}.`,
       'I stopped this turn to avoid unnecessary model requests and preserved the current session state.',
       'To continue the same objective, reply `继续` or provide the next concrete step.',
-      'Use /loop-stats to inspect request/tool counts. For intentional long work, raise agentLoop.budget in orion.json.',
+      'Use /usage to inspect request/tool counts. For intentional long work, raise agentLoop.budget in orion.json.',
     ].join('\n'),
     model: llm.getModel(),
     stats: cloneLoopStats(
@@ -846,6 +829,11 @@ export interface QueryCompactCommit extends Pick<
   'fingerprint' | 'beforeTokens' | 'afterTokens' | 'plan' | 'semanticSummary' | 'diagnostics'
 > {
   mode: 'predictive' | 'threshold';
+  /**
+   * Append-only history for the enclosing regular TurnCommit. The compacted
+   * modelHistory is only authoritative after CompactTransaction advances its pointer.
+   */
+  uncompactedHistory: Message[];
   modelHistory: Message[];
   summary: {
     text: string;
@@ -864,11 +852,13 @@ function queryCompactCommit(
   result: CompactResult,
   before: ContextUsageSnapshot,
   after: ContextUsageSnapshot,
+  uncompactedHistory: readonly Message[],
   prepareSource?: CompactPrepareSourceReceipt,
   semanticHarnessState?: HarnessState
 ): QueryCompactCommit {
   return {
     mode,
+    uncompactedHistory: uncompactedHistory.map(message => ({ ...message })),
     modelHistory: result.messages.map(message => ({ ...message })),
     summary: {
       text: result.summary,
@@ -910,6 +900,7 @@ function bindCompactCommitToHistory(
   const modelHistory = messages.map(message => ({ ...message }));
   return {
     ...compact,
+    uncompactedHistory: compact.uncompactedHistory.map(message => ({ ...message })),
     modelHistory,
     afterTokens: estimateMessagesTokens(modelHistory),
   };
@@ -926,11 +917,14 @@ export interface QueryParams {
   tools: OrionCodeTool[];
   /** Tool executor: (name, args, abortSignal?) => result string
    *  Issue #32 #3.2: 支持 abortSignal 透传 */
-  toolExecutor: (
-    name: string,
-    args: Record<string, unknown>,
-    abortSignal?: AbortSignal
-  ) => Promise<string>;
+  toolExecutor: AuthoritativeToolExecutor;
+  /**
+   * Resolve the exact tools and executor binding for each model request.
+   * Existing callers may omit this and retain the turn-scoped registry.
+   */
+  resolveStep?: (input: QueryStepResolveInput) => QueryStepRuntime | Promise<QueryStepRuntime>;
+  /** @deprecated Query always delegates authority to the injected executor. */
+  executionBoundary?: 'legacy' | 'tool_gateway';
   /** LLM service instance */
   llm: LLMService;
   /** @deprecated Use loopBudget.maxLlmRequestsPerUserTurn. This alias is resource-only. */
@@ -959,7 +953,7 @@ export interface QueryParams {
   /** Strategy tracker for alternative approaches */
   strategyTracker?: StrategyTracker;
   /** Optional Context Harness for turn-level context, ledger, and completion gates */
-  harness?: ContextHarness;
+  harness?: QueryTaskContext;
   /** Current user input, used by Context Harness for evidence ranking */
   input?: string;
   /** Maximum number of concurrency-safe tools to execute at once (default 6). */
@@ -977,6 +971,52 @@ export interface QueryParams {
   /** Capture the durable transcript identity immediately before candidate preparation. */
   onCompactPrepare?: () => CompactPrepareSourceReceipt | undefined;
 }
+
+export interface QueryStepResolveInput {
+  readonly requestIndex: number;
+  readonly messages: readonly Message[];
+  readonly input?: string;
+  readonly abortSignal?: AbortSignal;
+}
+
+export interface QueryStepRuntime {
+  readonly tools: readonly OrionCodeTool[];
+  readonly toolExecutor: QueryParams['toolExecutor'];
+  readonly receiptDigest?: string;
+  /**
+   * Freeze the final prompt/router binding after compaction and prompt assembly,
+   * immediately before the provider request is issued.
+   */
+  readonly bindModelRequest?: (
+    input: QueryModelRequestBindingInput
+  ) => QueryModelRequestBinding | Promise<QueryModelRequestBinding>;
+}
+
+export interface QueryModelRequestBindingInput {
+  readonly requestIndex: number;
+  readonly messages: readonly Message[];
+  readonly tools: readonly OrionCodeTool[];
+  readonly abortSignal?: AbortSignal;
+}
+
+export interface QueryModelRequestBinding {
+  readonly toolExecutor: QueryParams['toolExecutor'];
+  readonly receiptDigest?: string;
+}
+
+export type QueryTaskContext = Pick<
+  ContextHarness,
+  | 'updateCapabilityProfile'
+  | 'assembleMessages'
+  | 'getCapsule'
+  | 'toJSON'
+  | 'recordAssistantResponse'
+  | 'beforeToolUse'
+  | 'asToolBlockedResult'
+  | 'recordToolResult'
+  | 'beforeComplete'
+  | 'asCompletionBlockedMessage'
+>;
 
 export interface AutoCompactNotice {
   mode: 'predictive' | 'threshold';
@@ -1024,7 +1064,7 @@ function validateFinalCompactRequest(
   result: CompactResult,
   autoCompact: AutoCompact,
   modelId: string,
-  harness: ContextHarness | undefined,
+  harness: QueryTaskContext | undefined,
   messagesForHarness: Pick<OrionCodeTool, 'name' | 'description'>[],
   input?: string
 ): CompactPostValidation {
@@ -1115,8 +1155,8 @@ function compactPausedEvent(
 export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
   const {
     messages,
-    tools,
-    toolExecutor,
+    tools: initialTools,
+    toolExecutor: initialToolExecutor,
     llm,
     abortSignal,
     streamCallbacks,
@@ -1127,11 +1167,18 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
     maxParallelToolCalls = 6,
   } = params;
 
-  const openaiTools = toOpenAITools(tools) as unknown as Tool[];
   let turn = 0;
   let consecutiveCompletionGateBlocks = 0;
   const stats = createLoopStats();
   let pendingCompact: QueryCompactCommit | undefined;
+  const uncompactedMessages = messages.map(message => ({ ...message }));
+  const appendMessage = (message: Message): void => {
+    messages.push(message);
+    uncompactedMessages.push({ ...message });
+    if (pendingCompact) {
+      pendingCompact.uncompactedHistory = uncompactedMessages.map(entry => ({ ...entry }));
+    }
+  };
   let compactPrepareSource: CompactPrepareSourceReceipt | undefined;
   const captureCompactPrepareSource = (): CompactPrepareSourceReceipt | undefined => {
     if (compactPrepareSource) return compactPrepareSource;
@@ -1163,14 +1210,6 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
     params.maxModelVisibleToolResultBytes ?? DEFAULT_MAX_MODEL_VISIBLE_TOOL_RESULT_BYTES
   );
   const fragmentedReadOnlyTools = new Set(BATCH_READ_ALLOWED_TOOLS);
-  harness?.updateCapabilityProfile?.({
-    modelId: llm.getModel(),
-    contextWindow: getModelContextWindow(llm.getModel()),
-    permissionMode: params.permissionMode ?? 'default',
-    toolConfirmation: params.toolConfirmation ?? 'allow',
-    tools: tools.map(tool => tool.name),
-  });
-
   // 无限循环，依赖安全机制停止
   while (true) {
     turn++;
@@ -1204,6 +1243,25 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
       );
       return;
     }
+
+    const resolvedStep = params.resolveStep
+      ? await params.resolveStep({
+          requestIndex: turn - 1,
+          messages: messages.map(message => ({ ...message })),
+          input,
+          abortSignal,
+        })
+      : { tools: initialTools, toolExecutor: initialToolExecutor };
+    const tools = [...resolvedStep.tools];
+    let toolExecutor = resolvedStep.toolExecutor;
+    const openaiTools = toOpenAITools(tools) as unknown as Tool[];
+    harness?.updateCapabilityProfile?.({
+      modelId: llm.getModel(),
+      contextWindow: getModelContextWindow(llm.getModel()),
+      permissionMode: params.permissionMode ?? 'default',
+      toolConfirmation: params.toolConfirmation ?? 'allow',
+      tools: tools.map(tool => tool.name),
+    });
 
     // Request start
     yield { type: 'request_start', model: llm.getModel(), turn };
@@ -1333,6 +1391,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
         preCompactAttempt.result,
         contextBeforePredictiveCompact,
         contextAfterPredictiveCompact,
+        uncompactedMessages,
         compactPrepareSource,
         harness?.toJSON()
       );
@@ -1397,6 +1456,16 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
         aggregateUsage
       );
       return;
+    }
+
+    if (resolvedStep.bindModelRequest) {
+      const bound = await resolvedStep.bindModelRequest({
+        requestIndex: turn - 1,
+        messages: requestMessages.map(message => ({ ...message })),
+        tools,
+        abortSignal,
+      });
+      toolExecutor = bound.toolExecutor;
     }
 
     let response: Awaited<ReturnType<LLMService['chatStream']>>;
@@ -1477,7 +1546,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
         content: response.content,
         tool_calls: toolCalls,
       };
-      messages.push(assistantMsg);
+      appendMessage(assistantMsg);
       harness?.recordAssistantResponse(response);
 
       yield {
@@ -1489,20 +1558,12 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
       const preparedCalls = prepareToolCalls({
         toolCalls,
         tools,
-        toolExecutor,
-        permissionMode: params.permissionMode,
-        toolConfirmation: params.toolConfirmation,
-        toolAllowlist: params.toolAllowlist,
-        confirmToolUse: params.confirmToolUse,
-        toolContext: params.toolContext,
-        abortSignal,
         startApproach: (toolName: string) => strategyTracker.startApproach(toolName),
         addToolToTracker: (attemptId: string, toolName: string) =>
           strategyTracker.addTool(attemptId, toolName),
         harnessDriftCheck: harness
           ? ({ name, args }) => harness.beforeToolUse({ name, args })
           : undefined,
-        harnessBlockedResult: harness ? drift => harness.asToolBlockedResult(drift) : undefined,
       });
       stats.toolCalls += preparedCalls.length;
       for (const prepared of preparedCalls) {
@@ -1538,10 +1599,6 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
       for await (const executed of executeToolCalls(preparedCalls, {
         toolExecutor,
         abortSignal,
-        confirmToolUse: params.confirmToolUse,
-        permissionMode: params.permissionMode,
-        toolConfirmation: params.toolConfirmation,
-        toolAllowlist: params.toolAllowlist,
         harnessBlockedResult: harness ? drift => harness.asToolBlockedResult(drift) : undefined,
         maxParallelToolCalls,
       })) {
@@ -1640,7 +1697,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
           batchIndex: prepared.index,
         };
 
-        messages.push({
+        appendMessage({
           role: 'tool',
           content: modelVisible.result,
           tool_call_id: tc.id,
@@ -1684,7 +1741,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
               batchCount: toolCalls.length,
               batchIndex: skippedPrepared.index,
             };
-            messages.push({
+            appendMessage({
               role: 'tool',
               content: skippedResult,
               tool_call_id: skipped.id,
@@ -1713,7 +1770,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
 
       if (pendingStrategySuggestion) {
         yield { type: 'strategy_exhausted', suggestion: pendingStrategySuggestion };
-        messages.push({
+        appendMessage({
           role: 'user',
           content: pendingStrategySuggestion,
         });
@@ -1721,7 +1778,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
       }
 
       if (stats.singleReadOnlyStreak >= loopBudget.maxReadOnlyFragmentation) {
-        messages.push({
+        appendMessage({
           role: 'system',
           content: [
             '[Orion Code loop hint]',
@@ -1741,7 +1798,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
       role: 'assistant',
       content: response.content,
     };
-    messages.push(assistantMsg);
+    appendMessage(assistantMsg);
     harness?.recordAssistantResponse(response);
 
     // No tool calls — done, unless the harness requires one more pass.
@@ -1769,7 +1826,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
         );
         return;
       }
-      messages.push(harness!.asCompletionBlockedMessage(completionGate));
+      appendMessage(harness!.asCompletionBlockedMessage(completionGate));
       stats.finishReason = 'completion_gate';
       continue;
     }
@@ -1875,6 +1932,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
         postCompactAttempt.result,
         contextBeforeThresholdCompact,
         contextAfterThresholdCompact,
+        uncompactedMessages,
         pendingCompact?.prepareSource ?? compactPrepareSource,
         pendingCompact?.semanticHarnessState ?? harness?.toJSON()
       );

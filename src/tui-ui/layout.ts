@@ -636,7 +636,7 @@ function renderOverlay(frame: TuiFrame, state: TuiUiState, maxRows: number): voi
       'Enter send/steer   Tab complete/queue   Shift+Tab cycle mode',
       'Esc cancel/stop    Ctrl+O tools          Ctrl+R history',
       'Ctrl+R history   Ctrl+E editor   Ctrl+L redraw   Ctrl+D exit',
-      'Ctrl+C interrupt / twice exits   /goal exit leaves Goal mode',
+      'Ctrl+C interrupt / twice exits   /goal clear leaves Goal mode',
     ].map(row => truncateCells(row, frame.width));
 
     rows.slice(0, maxRows).forEach((line, index) => {

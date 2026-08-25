@@ -68,7 +68,6 @@ describe('/effort command', () => {
       config,
       store,
       llm: null,
-      runtime: {} as never,
       getSession: () => session,
       ensureSession: () => session,
     };

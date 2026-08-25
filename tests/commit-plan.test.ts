@@ -7,7 +7,7 @@ import type { CommandContext } from '../src/commands/types';
 import { Store } from '../src/framework/store';
 import { loadConfig } from '../src/services/config';
 import { createCommitPlan, formatCommitPlan } from '../src/services/commit-plan';
-import { TOOLS } from '../src/tools';
+import { TOOLS } from './support/legacy-tools';
 
 const hasGit = spawnSync('git', ['--version'], { encoding: 'utf8' }).status === 0;
 
@@ -91,7 +91,6 @@ describe('commit plan service', () => {
         config,
         store,
         llm: null,
-        runtime: makeRuntime() as any,
       };
       const result = await findCommand('commit-plan')!.execute(ctx, '');
       expect(result.success).toBe(true);

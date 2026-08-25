@@ -16,7 +16,8 @@ import type {
   TranscriptEntry,
   UiEventSink,
 } from './ui-events';
-import type { GoalControlAction, GoalControlInput, GoalRuntimeEvent } from './goals/types';
+import type { GoalRuntimeEvent } from './goals/types';
+import type { GoalRuntimeControlV2 } from './goal-runtime-coordinator';
 import type { ToolConfirmationPolicy } from '../services/global-config';
 import type { ToolPermissionScope } from '../services/tool-allowlist';
 import type { AgentModeSnapshot } from '../framework/agent-mode';
@@ -64,13 +65,10 @@ export type AgentRuntimeInput =
       type: 'clear_exit_intent';
       metadata?: Record<string, unknown>;
     }
-  // v0.2.24: goal control input from /target commands.
-  | {
+  | ({
       type: 'goal_control';
-      action: GoalControlAction;
-      payload?: GoalControlInput['payload'];
       source?: 'command' | 'programmatic';
-    }
+    } & GoalRuntimeControlV2)
   | {
       type: 'permission_mode_change';
       value: ToolConfirmationPolicy;

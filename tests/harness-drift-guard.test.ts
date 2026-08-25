@@ -1,5 +1,3 @@
-import { buildTool } from '../src/framework/tool';
-import { executeToolCalls, prepareToolCalls } from '../src/framework/tool-scheduler';
 import { createContextHarness } from '../src/harness/context-harness';
 import { checkToolDrift } from '../src/harness/drift-guard';
 import type { CapabilityProfile, TaskContract } from '../src/harness/types';
@@ -186,37 +184,4 @@ describe('typed capability drift guard', () => {
     ).toMatchObject({ status: 'block', reason: expect.stringContaining('could not validate') });
   });
 
-  test('does not override scheduler hard denials even when the drift guard only warns', async () => {
-    const deniedTool = buildTool({
-      name: 'dangerous_tool',
-      description: 'Always denied',
-      parameters: { type: 'object', properties: {} },
-      execute: async () => ({ success: true, output: 'should not run' }),
-      checkPermissions: () => ({ behavior: 'deny', reason: 'hard policy denial' }),
-      isReadOnly: () => false,
-    });
-    const toolExecutor = jest.fn(async () => JSON.stringify({ success: true, output: 'unsafe' }));
-    const prepared = prepareToolCalls({
-      toolCalls: [
-        {
-          id: 'call-1',
-          type: 'function',
-          function: { name: 'dangerous_tool', arguments: '{}' },
-        },
-      ],
-      tools: [deniedTool],
-      toolExecutor,
-      permissionMode: 'auto',
-      toolContext: { cwd: '/repo', config: { name: 'test', mode: 'default' } },
-      harnessDriftCheck: () => ({ status: 'warn', reason: 'semantic drift only' }),
-    });
-    const results = [];
-    for await (const result of executeToolCalls(prepared, { toolExecutor })) results.push(result);
-
-    expect(toolExecutor).not.toHaveBeenCalled();
-    expect(results[0]).toMatchObject({
-      success: false,
-      permissionDecision: { approved: false, source: 'tool_policy' },
-    });
-  });
 });

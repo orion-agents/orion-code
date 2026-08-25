@@ -168,7 +168,7 @@ describe('createCompleter', () => {
       '/session info',
       '/session rename',
     ]);
-    expect(buildCommandLineSuggestions('/target st')).toEqual(['/goal status']);
+    expect(buildCommandLineSuggestions('/target st')).toEqual([]);
   });
 
   test('does not guess free-form or multi-token arguments', () => {

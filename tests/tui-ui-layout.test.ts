@@ -562,7 +562,7 @@ describe('tui-ui layout', () => {
             automaticContinuationStreak: 5,
             updatedAt: 100,
             stopReason:
-              'Auto-paused after 5 consecutive autonomous continuations. Review progress, then use /goal resume to continue or /goal exit to abandon.',
+              'Goal paused. Review progress, then use /goal resume to continue or /goal clear to leave Goal mode.',
           },
         },
       },
@@ -571,7 +571,7 @@ describe('tui-ui layout', () => {
     const status = renderFrameRows(renderTuiUiFrame(state, { width, height: 8 }))[4];
     expect(status).toContain('goal:paused');
     expect(status).toContain('/goal resume');
-    expect(status).toContain('/goal exit');
+    expect(status).toContain('/goal clear');
   });
 
   it('keeps a long multi-line prompt inside a bounded, closed viewport', () => {

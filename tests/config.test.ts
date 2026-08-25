@@ -3,9 +3,6 @@ import {
   isConfigured,
   getConfigErrors,
   getConfigSummary,
-  isBetaUIRenderer,
-  isRecommendedBetaUIRenderer,
-  isDeprecatedUIRenderer,
   isInteractiveUIRenderer,
   isSupportedUIRenderer,
   resolveUIRenderer,
@@ -81,7 +78,7 @@ describe('loadConfig', () => {
       mode: 'production',
       logLevel: 'debug',
       toolConfirmation: 'deny',
-      ui: { renderer: 'ink', confirmations: 'interactive' },
+      ui: { renderer: 'terminal', confirmations: 'interactive' },
     });
     expect(config.apiKey).toBe('test-key');
     expect(config.model).toBe('custom-model');
@@ -92,7 +89,7 @@ describe('loadConfig', () => {
     expect(config.toolConfirmation).toBe('deny');
     expect(config.ui).toEqual(
       expect.objectContaining({
-        renderer: 'ink',
+        renderer: 'terminal',
         confirmations: 'interactive',
         theme: 'orion-pixel',
       })
@@ -182,7 +179,7 @@ describe('loadConfig', () => {
         toolName: 'web_search',
       },
       ui: {
-        renderer: 'ink',
+        renderer: 'terminal',
         confirmations: 'interactive',
       },
       skills: {
@@ -239,18 +236,22 @@ describe('loadConfig', () => {
     });
   });
 
-  test('cli renderer override can switch to experimental ink beta', () => {
+  test('cli renderer override can switch to the technical terminal renderer', () => {
     jest.spyOn(require('../src/services/global-config'), 'loadGlobalConfig').mockReturnValue({
       defaultModel: 'gpt-4o',
       ui: {
-        renderer: 'ink',
+        renderer: 'terminal',
         confirmations: 'config',
       },
     });
 
-    const config = loadConfig({ ui: { renderer: 'ink' } });
+    const config = loadConfig({ ui: { renderer: 'terminal' } });
     expect(config.ui).toEqual(
-      expect.objectContaining({ renderer: 'ink', confirmations: 'config', theme: 'orion-pixel' })
+      expect.objectContaining({
+        renderer: 'terminal',
+        confirmations: 'config',
+        theme: 'orion-pixel',
+      })
     );
   });
 
@@ -298,27 +299,22 @@ describe('loadConfig', () => {
 });
 
 describe('UI renderer helpers', () => {
-  test('defines tui as product, terminal as technical, ink as deprecated', () => {
+  test('defines only tui and terminal as supported interactive renderers', () => {
     expect(DEFAULT_UI_RENDERER).toBe('tui');
-    expect(SUPPORTED_UI_RENDERERS).toEqual(['tui', 'terminal', 'ink']);
+    expect(SUPPORTED_UI_RENDERERS).toEqual(['tui', 'terminal']);
     expect(resolveUIRenderer('stable')).toBe('terminal');
     expect(resolveUIRenderer('terminal')).toBe('terminal');
     expect(resolveUIRenderer('tui')).toBe('tui');
-    expect(resolveUIRenderer('ink')).toBe('ink');
+    expect(resolveUIRenderer('ink')).toBeUndefined();
     expect(resolveUIRenderer('legacy')).toBeUndefined();
     expect(resolveUIRenderer('v2')).toBeUndefined();
   });
 
   test('keeps renderer capability checks centralized', () => {
     expect(isSupportedUIRenderer('terminal')).toBe(true);
-    expect(isInteractiveUIRenderer('ink')).toBe(true);
-    expect(isBetaUIRenderer('ink')).toBe(true);
-    expect(isBetaUIRenderer('tui')).toBe(true);
-    expect(isBetaUIRenderer('terminal')).toBe(false);
-    expect(isRecommendedBetaUIRenderer('tui')).toBe(true);
-    expect(isRecommendedBetaUIRenderer('ink')).toBe(false);
-    expect(isDeprecatedUIRenderer('ink')).toBe(true);
-    expect(isDeprecatedUIRenderer('tui')).toBe(false);
+    expect(isInteractiveUIRenderer('tui')).toBe(true);
+    expect(isInteractiveUIRenderer('terminal')).toBe(true);
+    expect(isInteractiveUIRenderer('ink')).toBe(false);
     expect(isSupportedUIRenderer('print')).toBe(false);
   });
 });

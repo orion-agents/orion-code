@@ -128,6 +128,7 @@ describe('release-check script contract', () => {
       files?: string[];
     };
     const prepublishOnly = pkg.scripts?.prepublishOnly ?? '';
+    const build = pkg.scripts?.build ?? '';
     const buildIndex = prepublishOnly.indexOf('npm run build');
     const dependencyPolicyIndex = prepublishOnly.indexOf('npm run deps:check -- --policy-only');
     const releaseCheckIndex = prepublishOnly.indexOf('npm run release:check');
@@ -137,11 +138,14 @@ describe('release-check script contract', () => {
     expect(buildIndex).toBeGreaterThan(dependencyPolicyIndex);
     expect(releaseCheckIndex).toBeGreaterThan(buildIndex);
     expect(prepublishOnly).toContain('npm run test:coverage -- --runInBand');
+    expect(build).toContain('node scripts/maintenance/copy-runtime-assets.js');
     expect(pkg.files).toContain('npm-shrinkwrap.json');
     expect(pkg.files).toContain('assets/orion-tui-icon.png');
     expect(pkg.files).toContain('CHANGELOG.md');
-    expect(pkg.files).toContain('docs/migration/v0.1.8-to-v0.1.9.md');
-    expect(pkg.files).toContain('docs/plan/v0.1.9-release-checklist.md');
+    expect(pkg.files).toContain('docs/orion.example.json');
+    expect(pkg.files).toContain('docs/migration/v0.1.9-to-v0.2.0.md');
+    expect(pkg.files).toContain('docs/plan/v0.2.0-dsh-harness-redesign-plan.md');
+    expect(pkg.files).toContain('docs/plan/v0.2.0-release-checklist.md');
     expect(pkg.files).not.toContain('assets/');
   });
 
@@ -175,9 +179,11 @@ describe('release-check script contract', () => {
     expect(script).toContain('MAX_UNPACKED_PACKAGE_BYTES = 10 * 1024 * 1024');
     expect(script).toContain('MAX_PACKAGE_ENTRIES = 1500');
     expect(script).toContain("'assets/orion-tui-icon.png'");
+    expect(script).toContain("'docs/orion.example.json'");
     expect(script).toContain("'docs/readme.md'");
-    expect(script).toContain("'docs/migration/v0.1.8-to-v0.1.9.md'");
-    expect(script).toContain("'docs/plan/v0.1.9-release-checklist.md'");
+    expect(script).toContain("'docs/migration/v0.1.9-to-v0.2.0.md'");
+    expect(script).toContain("'docs/plan/v0.2.0-dsh-harness-redesign-plan.md'");
+    expect(script).toContain("'docs/plan/v0.2.0-release-checklist.md'");
     expect(script).toContain('unexpected tarball entries');
   });
 
@@ -197,14 +203,14 @@ describe('release-check script contract', () => {
     );
   });
 
-  it('keeps offline dependency health blocking and enforces manifest overrides', () => {
+  it('keeps offline dependency health blocking and rejects retired dependencies', () => {
     const workflow = readFileSync(join(projectRoot, '.github', 'workflows', 'ci.yml'), 'utf8');
     const script = readFileSync(depHealthScript, 'utf8');
 
     const depHealthJob = workflow.slice(workflow.indexOf('  dep-health:'));
     expect(depHealthJob).not.toContain('continue-on-error: true');
-    expect(script).toContain("overrides['shell-quote'] === '^1.10.0'");
-    expect(script).toContain("lock.packages?.['node_modules/shell-quote']?.version");
+    expect(script).toContain("!('shell-quote' in production)");
+    expect(script).toContain("!('ink' in production)");
     expect(script).toContain("join(root, 'npm-shrinkwrap.json')");
   });
 
