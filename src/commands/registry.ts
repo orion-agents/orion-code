@@ -27,12 +27,6 @@ const raw = (subcommands?: string[]): CommandArgumentSchema => ({
 const none = (): CommandArgumentSchema => ({ kind: 'none', opaqueTail: false });
 const stable = (since: string = 'v0.1.5'): CommandLifecycle => ({ status: 'stable', since });
 const internal = (): CommandLifecycle => ({ status: 'internal', since: 'v0.1.5' });
-const compatibility = (replacement: string): CommandLifecycle => ({
-  status: 'deprecated',
-  since: 'v0.1.5',
-  removeIn: 'v0.3.0',
-  replacement,
-});
 
 /**
  * Explicit migration manifest for every built-in root. Adding a command without
@@ -47,16 +41,7 @@ const BUILTIN_METADATA: Record<string, BuiltinCommandMetadata> = {
     busyPolicy: 'queue-next',
     defaultAction: 'show-status',
     lifecycle: stable(),
-    argumentSchema: raw([
-      'status',
-      'edit',
-      'replace',
-      'confirm',
-      'pause',
-      'resume',
-      'clear',
-      'budget',
-    ]),
+    argumentSchema: raw(['status', 'pause', 'resume', 'clear']),
   },
   plan: {
     id: 'builtin.workflow.plan',
@@ -148,24 +133,6 @@ const BUILTIN_METADATA: Record<string, BuiltinCommandMetadata> = {
     lifecycle: stable(),
     argumentSchema: raw(['list', 'info', 'rename']),
   },
-  sessions: {
-    id: 'builtin.session.session-list-compat',
-    audience: 'compatibility',
-    sideEffects: ['none'],
-    busyPolicy: 'immediate',
-    defaultAction: 'execute',
-    lifecycle: compatibility('/session list'),
-    argumentSchema: raw(),
-  },
-  'session-rename': {
-    id: 'builtin.session.session-rename-compat',
-    audience: 'compatibility',
-    sideEffects: ['session-state'],
-    busyPolicy: 'reject-busy',
-    defaultAction: 'execute',
-    lifecycle: compatibility('/session rename'),
-    argumentSchema: raw(),
-  },
   compact: {
     id: 'builtin.context.compact',
     audience: 'primary',
@@ -192,15 +159,6 @@ const BUILTIN_METADATA: Record<string, BuiltinCommandMetadata> = {
     defaultAction: 'show-status',
     lifecycle: stable(),
     argumentSchema: raw(['list', 'restore']),
-  },
-  'context-clear': {
-    id: 'builtin.context.clear-compat',
-    audience: 'compatibility',
-    sideEffects: ['session-state'],
-    busyPolicy: 'reject-busy',
-    defaultAction: 'execute',
-    lifecycle: compatibility('/context clear'),
-    argumentSchema: raw(),
   },
   harness: {
     id: 'builtin.context.harness',
@@ -244,15 +202,6 @@ const BUILTIN_METADATA: Record<string, BuiltinCommandMetadata> = {
     sideEffects: ['none'],
     busyPolicy: 'immediate',
     defaultAction: 'show-status',
-    lifecycle: stable(),
-    argumentSchema: raw(),
-  },
-  'edit-preview': {
-    id: 'builtin.tool.edit-preview',
-    audience: 'advanced',
-    sideEffects: ['renderer-view'],
-    busyPolicy: 'immediate',
-    defaultAction: 'open-picker',
     lifecycle: stable(),
     argumentSchema: raw(),
   },
@@ -301,15 +250,6 @@ const BUILTIN_METADATA: Record<string, BuiltinCommandMetadata> = {
       'xhigh',
       'max',
     ]),
-  },
-  models: {
-    id: 'builtin.model.models-compat',
-    audience: 'compatibility',
-    sideEffects: ['session-state'],
-    busyPolicy: 'queue-next',
-    defaultAction: 'open-picker',
-    lifecycle: compatibility('/model'),
-    argumentSchema: none(),
   },
   config: {
     id: 'builtin.model.config',
@@ -446,15 +386,6 @@ const BUILTIN_METADATA: Record<string, BuiltinCommandMetadata> = {
     lifecycle: stable(),
     argumentSchema: raw(['session', 'lifetime', 'loop']),
   },
-  'loop-stats': {
-    id: 'builtin.diagnostics.loop-stats',
-    audience: 'advanced',
-    sideEffects: ['none'],
-    busyPolicy: 'immediate',
-    defaultAction: 'show-status',
-    lifecycle: compatibility('/usage loop'),
-    argumentSchema: raw(),
-  },
   trace: {
     id: 'builtin.diagnostics.trace',
     audience: 'advanced',
@@ -482,33 +413,6 @@ const BUILTIN_METADATA: Record<string, BuiltinCommandMetadata> = {
     lifecycle: stable(),
     argumentSchema: raw(),
   },
-  checkpoint: {
-    id: 'builtin.session.checkpoint',
-    audience: 'compatibility',
-    sideEffects: ['session-state'],
-    busyPolicy: 'reject-busy',
-    defaultAction: 'show-status',
-    lifecycle: compatibility('/rewind'),
-    argumentSchema: raw(),
-  },
-  cost: {
-    id: 'builtin.diagnostics.cost-compat',
-    audience: 'compatibility',
-    sideEffects: ['none'],
-    busyPolicy: 'immediate',
-    defaultAction: 'show-status',
-    lifecycle: compatibility('/usage'),
-    argumentSchema: none(),
-  },
-  agents: {
-    id: 'builtin.diagnostics.agents-compat',
-    audience: 'compatibility',
-    sideEffects: ['none'],
-    busyPolicy: 'immediate',
-    defaultAction: 'show-status',
-    lifecycle: compatibility('/subagents'),
-    argumentSchema: none(),
-  },
   subagents: {
     id: 'builtin.diagnostics.subagents',
     audience: 'advanced',
@@ -525,42 +429,6 @@ const BUILTIN_METADATA: Record<string, BuiltinCommandMetadata> = {
     busyPolicy: 'reject-busy',
     defaultAction: 'execute',
     lifecycle: stable(),
-    argumentSchema: raw(),
-  },
-  'clear-history': {
-    id: 'builtin.context.clear-history-compat',
-    audience: 'compatibility',
-    sideEffects: ['session-state'],
-    busyPolicy: 'reject-busy',
-    defaultAction: 'execute',
-    lifecycle: compatibility('/context clear'),
-    argumentSchema: raw(),
-  },
-  chat: {
-    id: 'builtin.legacy.chat',
-    audience: 'compatibility',
-    sideEffects: ['agent-request'],
-    busyPolicy: 'queue-next',
-    defaultAction: 'execute',
-    lifecycle: compatibility('plain text'),
-    argumentSchema: raw(),
-  },
-  run: {
-    id: 'builtin.legacy.run',
-    audience: 'compatibility',
-    sideEffects: ['agent-request'],
-    busyPolicy: 'queue-next',
-    defaultAction: 'execute',
-    lifecycle: compatibility('plain text'),
-    argumentSchema: raw(),
-  },
-  task: {
-    id: 'builtin.legacy.task',
-    audience: 'compatibility',
-    sideEffects: ['agent-request'],
-    busyPolicy: 'queue-next',
-    defaultAction: 'execute',
-    lifecycle: compatibility('/goal'),
     argumentSchema: raw(),
   },
 };
@@ -584,11 +452,6 @@ export function registerBuiltinCommands(definitions: SlashCommand[]): Registered
     for (const alias of command.aliases ?? []) {
       if (!COMMAND_NAME.test(alias)) throw new Error(`Invalid command alias: ${alias}`);
     }
-    for (const alias of command.compatibilityAliases ?? []) {
-      if (!COMMAND_NAME.test(alias.name)) {
-        throw new Error(`Invalid compatibility command alias: ${alias.name}`);
-      }
-    }
     if (!Object.prototype.hasOwnProperty.call(command, 'risk')) {
       throw new Error(`Built-in command ${command.name} must declare explicit risk metadata`);
     }
@@ -609,7 +472,6 @@ export function registerBuiltinCommands(definitions: SlashCommand[]): Registered
     for (const value of [
       command.name,
       ...(command.aliases ?? []),
-      ...(command.compatibilityAliases ?? []).map(alias => alias.name),
     ]) {
       const normalized = value.toLowerCase();
       const owner = names.get(normalized);

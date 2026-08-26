@@ -13,7 +13,6 @@ import type {
   RuntimeToolFinishedEvent,
   RuntimeSessionRestoredEvent,
   RuntimeToolStartedEvent,
-  ToolPermissionRequest,
   TranscriptAppendEntry,
   UiEventSink,
 } from '../src/runtime/ui-events';
@@ -30,7 +29,6 @@ function createRuntime(): OrionCodeUiRuntime {
       setProcessing: jest.fn(),
     } as unknown as OrionCodeUiRuntime['store'],
     llm: null,
-    runtime: {} as OrionCodeUiRuntime['runtime'],
     isConfigured: true,
     ensureSession: jest.fn(() => {
       session ??= { id: 'session-parity' } as NonNullable<typeof session>;
@@ -51,6 +49,7 @@ function createDeferredRunner(): AgentRuntimeRunner & {
     signal?: AbortSignal;
     resolve: () => void;
   }>;
+  controlCalls: unknown[];
 } {
   const calls: Array<{
     input: string;
@@ -58,8 +57,19 @@ function createDeferredRunner(): AgentRuntimeRunner & {
     signal?: AbortSignal;
     resolve: () => void;
   }> = [];
+  const controlCalls: unknown[] = [];
   return {
     calls,
+    controlCalls,
+    controlGoal: jest.fn(async control => {
+      controlCalls.push(control);
+      return {
+        accepted: true,
+        action: control.action,
+        message: `Goal ${control.action} processed.`,
+        scheduleContinuation: false,
+      };
+    }),
     runInput: jest.fn(
       (input, options) =>
         new Promise<void>(resolve => {
@@ -296,7 +306,7 @@ describe('runtime/UI renderer parity contract', () => {
         allProjects: true,
         source: 'picker',
       })
-    ).toEqual({ type: 'started' });
+    ).toEqual({ type: 'command_handled' });
     expect(
       runtime.controller.handle({
         type: 'select_session',
@@ -304,17 +314,15 @@ describe('runtime/UI renderer parity contract', () => {
         allProjects: true,
         source: 'picker',
       })
-    ).toEqual({ type: 'started' });
+    ).toEqual({ type: 'command_handled' });
 
-    ui.runner.calls[0].resolve();
-    runtime.runner.calls[0].resolve();
     await ui.controller.waitForIdle();
     await runtime.controller.waitForIdle();
 
     expect(ui.runner.calls.map(call => call.input)).toEqual(
       runtime.runner.calls.map(call => call.input)
     );
-    expect(ui.runner.calls.map(call => call.input)).toEqual(['/resume session-abc --all']);
+    expect(ui.runner.calls).toHaveLength(0);
     expect(ui.events).toEqual(runtime.events);
   });
 
@@ -371,76 +379,53 @@ describe('runtime/UI renderer parity contract', () => {
     ]);
   });
 
-  it('routes /target through the shared controller for every renderer adapter', async () => {
+  it('routes /goal through the typed runner control port for every renderer adapter', async () => {
     const ui = createRecordingController('ui-events');
     const runtime = createRecordingController('runtime-events');
 
     expect(
       ui.controller.handle({
         type: 'submit',
-        text: '/target verify renderer parity',
+        text: '/goal verify renderer parity',
         source: 'composer',
       })
     ).toEqual({ type: 'started' });
     expect(
       runtime.controller.handle({
         type: 'submit',
-        text: '/target verify renderer parity',
+        text: '/goal verify renderer parity',
         source: 'composer',
       })
     ).toEqual({ type: 'started' });
+    await ui.controller.waitForIdle();
+    await runtime.controller.waitForIdle();
 
-    expect(ui.runner.calls.map(call => call.request?.inputKind)).toEqual(['goal_continuation']);
-    expect(runtime.runner.calls.map(call => call.request?.inputKind)).toEqual([
-      'goal_continuation',
+    expect(ui.runner.controlCalls).toEqual([
+      { action: 'create', objective: 'verify renderer parity' },
     ]);
-    expect(ui.runner.calls[0].request).toMatchObject({
-      persistAsUserMessage: false,
-      echoToTranscript: false,
-      goal: { continuationIndex: 1 },
-    });
-    expect(ui.runner.calls[0].input).not.toContain('[goal continuation');
+    expect(runtime.runner.controlCalls).toEqual(ui.runner.controlCalls);
+    expect(ui.runner.calls).toHaveLength(0);
     expect(ui.events).toEqual(runtime.events);
-    const targetStatus = ui.events.find(event => event.startsWith('append:system:Target:'));
-    expect(targetStatus).toContain('Target: [active] verify renderer parity | 0 turns | 0 tokens');
-    expect(targetStatus).toContain('\nPlan: r0 initial');
-    expect(targetStatus).toContain('\nCriteria: 1 pending | 0/1 passed | 0 failed | 0 stale');
-
-    ui.runner.calls[0].resolve();
-    runtime.runner.calls[0].resolve();
-    await ui.controller.stopActiveTurn();
-    await runtime.controller.stopActiveTurn();
+    expect(ui.events).toEqual([
+      'agent_mode:interactive:',
+      'append:system:Goal create processed.',
+      'status:Goal create processed.',
+    ]);
   });
 
-  it('reports pending, passed, failed, and stale criteria explicitly', async () => {
-    const recording = createRecordingController('runtime-events');
-    expect(recording.controller.submit('/target verify mixed criterion states')).toEqual({
-      type: 'started',
-    });
+  it('rejects removed Goal mutations consistently without invoking the runner', async () => {
+    const ui = createRecordingController('ui-events');
+    const runtime = createRecordingController('runtime-events');
 
-    const coordinator = (
-      recording.controller as unknown as {
-        goalCoordinator: import('../src/runtime/goals/coordinator').GoalCoordinator;
-      }
-    ).goalCoordinator;
-    const primary = coordinator.goal!.contract!.successCriteria[0];
-    primary.status = 'passed';
-    coordinator.goal!.contract!.successCriteria.push(
-      { ...primary, id: 'criterion:pending', status: 'pending' },
-      { ...primary, id: 'criterion:failed', status: 'failed' },
-      { ...primary, id: 'criterion:stale', status: 'stale' }
-    );
+    expect(ui.controller.submit('/goal budget 5000')).toEqual({ type: 'command_handled' });
+    expect(runtime.controller.submit('/goal budget 5000')).toEqual({ type: 'command_handled' });
+    await ui.controller.waitForIdle();
+    await runtime.controller.waitForIdle();
 
-    const status = recording.controller.handleTargetInput('/target status').statusText;
-    expect(status).toContain('Criteria: 1 pending | 1/4 passed | 1 failed | 1 stale');
-    expect(recording.events).toEqual(
-      expect.arrayContaining([
-        'append:system:/target is deprecated; use /goal. It will be removed in v0.3.0.',
-      ])
-    );
-
-    recording.runner.calls[0].resolve();
-    await recording.controller.stopActiveTurn();
+    expect(ui.runner.controlCalls).toHaveLength(0);
+    expect(runtime.runner.controlCalls).toHaveLength(0);
+    expect(ui.events).toEqual(runtime.events);
+    expect(ui.events.join('\n')).toContain('Unsupported Goal command');
   });
 
   it('adapts tool started and finished events identically across runtime and UI sinks', () => {

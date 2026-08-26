@@ -7,14 +7,25 @@
 export {
   compactMessages,
   needsCompact,
-  quickCompact,
+  prepareCompactCandidate,
+  validateCompactCandidate,
+  commitCompactCandidate,
+  CompactCandidateValidationError,
   type CompactOptions,
   type CompactResult,
+  type CompactCandidate,
+  type CompactCandidateValidation,
+  type CompactValidationError,
+  type CompactValidationErrorCode,
 } from './compact';
 
 export {
   summaryGenerator,
+  normalizeCompactFocus,
+  normalizeCompactInstructions,
   type SummaryOptions,
+  type SummaryDiagnostic,
+  type SummaryDiagnosticCode,
 } from './summary-generator';
 
 export {
@@ -22,15 +33,37 @@ export {
   getAutoCompact,
   resetAutoCompact,
   type AutoCompactConfig,
+  type AutoCompactAttempt,
+  type CompactPauseCode,
+  type CompactPauseFailure,
+  type CompactPostValidation,
+  type CompactPostValidator,
 } from './auto-compact';
 
-export {
-  CompactCoordinator,
-  type CompactCoordinatorConfig,
-} from './coordinator';
+export { CompactCoordinator, type CompactCoordinatorConfig } from './coordinator';
 
 export {
-  microCompact,
-  ultraCompact,
-  roleCompact,
-} from './micro-compact';
+  canonicalMessagesFingerprint,
+  canonicalCompactCandidateFingerprint,
+  COMPACT_CANDIDATE_STRATEGY_VERSION,
+  type CompactCandidateFingerprintInput,
+} from './fingerprint';
+
+export {
+  DEFAULT_COMPACT_TARGET_RATIO,
+  groupMessagesForCompact,
+  planCompactMessages,
+  flattenCompactGroups,
+  type CompactMessageGroup,
+  type CompactPlan,
+  type CompactPlanOptions,
+} from './planner';
+
+export {
+  extractCompactSummary,
+  emptyCompactSummary,
+  type CompactSummary,
+  type ContextItem,
+  type ContextItemKind,
+  type ContextItemPriority,
+} from './semantic-summary';

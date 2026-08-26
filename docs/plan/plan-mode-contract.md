@@ -10,8 +10,11 @@ Plan mode is a task-scoped collaboration phase, not a durable permission setting
    policy unchanged.
 3. The agent uses any required tools to inspect evidence, validate assumptions, and produce a
    decision-complete implementation plan.
-4. The agent calls `exit_plan_mode` exactly once with the final plan.
-5. Orion saves the plan, automatically restores the selected Build or Auto mode, and exits Plan.
+4. The runtime recognizes a decision-complete planning outcome and creates `PlanReceiptV1` in the
+   same durable `TurnCommitV1` as history, TaskContext, StopDecision, prompt, capability, and tool
+   receipt digests.
+5. Orion projects the committed plan, automatically restores the selected Build or Auto mode, and
+   exits Plan.
 6. The planning turn never begins implementation. Orion starts a separate execution request after
    the plan is saved; no additional user message is required.
 
@@ -30,11 +33,12 @@ One entry and one completion transition prevent Store/tool-state drift.
 - Tool-owned hard denials, explicit allowlist denials, workspace containment, sandbox restrictions,
   and hard command safety policy remain enforced in every mode. AUTO removes interactive prompts;
   it does not bypass those boundaries.
-- `exit_plan_mode` changes only bounded in-process plan metadata and is always allowed without an
-  extra prompt.
-- An invalid or empty plan leaves Plan mode active.
-- A successful exit stores the trimmed plan, emits a typed lifecycle receipt, restores the selected
-  execution mode, and schedules implementation as the next logical request.
+- There is no model-facing `enter_plan_mode` or `exit_plan_mode` tool. A plan becomes ready only
+  through the normal Agent Loop and its durable terminal decision.
+- An invalid, empty, or uncommitted plan leaves no executable PlanReceipt and does not schedule
+  implementation.
+- A successful TurnCommit binds the trimmed plan and all relevant receipt digests, restores the
+  selected execution mode, and schedules implementation as the next logical request.
 - Cycling away from Plan with `Shift+Tab` is an explicit cancellation and discards an unfinished
   plan.
 

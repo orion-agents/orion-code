@@ -1,12 +1,10 @@
 /**
  * Shared grapheme segmentation utilities.
  *
- * Migrated from `src/ink-ui/runtime/grapheme.ts` to provide a
- * renderer-independent grapheme boundary API. Ink re-exports from
- * here; TUI imports directly.
+ * Renderer-independent grapheme boundary API shared by terminal surfaces.
  *
  * Grapheme boundaries are the atomic unit of cursor movement, deletion
- * and visual width in both Ink and TUI prompt input.
+ * and visual width in TUI prompt input.
  */
 
 export interface GraphemeSegment {

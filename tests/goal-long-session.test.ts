@@ -5,6 +5,7 @@ function completedTurn(coord: GoalCoordinator, index: number): AgentTurnOutcome 
   const goal = coord.goal!;
   return {
     turnId: `turn-${index}`,
+    inputKind: 'goal_continuation',
     sessionId: goal.sessionId,
     goalId: goal.goalId,
     goalRevision: goal.revision,

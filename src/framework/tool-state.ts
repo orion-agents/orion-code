@@ -1,9 +1,8 @@
 /**
  * orion code - Tool State
  *
- * Shared state for tools that need persistence across calls within a session
- * (todos, plan mode, current plan). Tools update this state; the CLI mirrors
- * it into the main Store so the UI and `/resume` can observe it.
+ * Explicit task-scoped state for the remaining legacy todo/goal/edit adapters.
+ * PLAN is owned by the durable runtime and is deliberately absent here.
  */
 
 export interface TodoItem {
@@ -14,10 +13,6 @@ export interface TodoItem {
 
 export interface ToolState {
   todos: TodoItem[];
-  planMode: boolean;
-  currentPlan: string | null;
-  /** Agent mode restored after exit_plan_mode completes. */
-  planReturnMode?: 'interactive' | 'auto';
   /** v0.2.24 — Goal target mode (set by create_goal / update_goal) */
   goalActive: boolean;
   goalId: string | null;
@@ -37,37 +32,47 @@ export interface ToolState {
   } | null;
 }
 
-const initialState: ToolState = {
+const initialState: Readonly<ToolState> = {
   todos: [],
-  planMode: false,
-  currentPlan: null,
-  planReturnMode: 'interactive',
   goalActive: false,
   goalId: null,
   goalStatus: null,
   lastEditFileArgs: null,
 };
 
-let state: ToolState = { ...initialState };
-let listeners: Array<(s: ToolState) => void> = [];
+/** Explicit task-scoped state for legacy plan/todo tool adapters. */
+export class ToolStateStore {
+  private value: ToolState = cloneInitialState();
+  private listeners: Array<(state: ToolState) => void> = [];
 
-export function getToolState(): ToolState {
-  return state;
+  getSnapshot(): ToolState {
+    return structuredClone(this.value);
+  }
+
+  set(partial: Partial<ToolState>): void {
+    this.value = { ...this.value, ...structuredClone(partial) };
+    const snapshot = this.getSnapshot();
+    for (const listener of this.listeners) listener(snapshot);
+  }
+
+  subscribe(listener: (state: ToolState) => void): () => void {
+    this.listeners.push(listener);
+    return () => {
+      this.listeners = this.listeners.filter(candidate => candidate !== listener);
+    };
+  }
+
+  reset(): void {
+    this.value = cloneInitialState();
+    const snapshot = this.getSnapshot();
+    for (const listener of this.listeners) listener(snapshot);
+  }
 }
 
-export function setToolState(partial: Partial<ToolState>): void {
-  state = { ...state, ...partial };
-  for (const l of listeners) l(state);
+export function createToolStateStore(): ToolStateStore {
+  return new ToolStateStore();
 }
 
-export function subscribeToolState(fn: (s: ToolState) => void): () => void {
-  listeners.push(fn);
-  return () => {
-    listeners = listeners.filter(f => f !== fn);
-  };
-}
-
-export function resetToolState(): void {
-  state = { ...initialState };
-  for (const l of listeners) l(state);
+function cloneInitialState(): ToolState {
+  return structuredClone(initialState);
 }

@@ -48,11 +48,7 @@ describe('Command registry contract', () => {
     it('aliases must not collide with other command names', () => {
       const nameSet = new Set(all.map(c => c.name));
       for (const cmd of all) {
-        const aliases = [
-          ...(cmd.aliases ?? []),
-          ...(cmd.compatibilityAliases ?? []).map(alias => alias.name),
-        ];
-        for (const alias of aliases) {
+        for (const alias of cmd.aliases ?? []) {
           expect(nameSet.has(alias)).toBe(false);
         }
       }
@@ -141,10 +137,10 @@ describe('Command registry contract', () => {
     it('destructive commands are explicitly marked', () => {
       const destructive = all.filter(c => c.risk === 'destructive');
       const names = new Set(destructive.map(c => c.name));
-      // context-clear, storage (repair/cleanup), checkpoint restore, migrate
-      expect(names.has('context-clear')).toBe(true);
+      // context clear, storage (repair/cleanup), rewind restore, migrate
+      expect(names.has('context')).toBe(true);
       expect(names.has('storage')).toBe(true);
-      expect(names.has('checkpoint')).toBe(true);
+      expect(names.has('rewind')).toBe(true);
       expect(names.has('migrate')).toBe(true);
     });
   });
@@ -174,41 +170,40 @@ describe('Command registry contract', () => {
       }
     });
 
-    it('/target is a non-duplicated compatibility alias for /goal', () => {
+    it('/target is removed instead of retained as a compatibility alias', () => {
       const goal = findCommand('goal');
-      expect(goal).toBe(findCommand('target'));
+      expect(findCommand('target')).toBeUndefined();
       expect(goal?.name).toBe('goal');
-      expect(goal?.compatibilityAliases).toContainEqual(
-        expect.objectContaining({
-          name: 'target',
-          lifecycle: expect.objectContaining({ replacement: '/goal' }),
-        })
-      );
     });
 
-    it('/target advertises replace and explicit user confirmation arguments', () => {
-      const target = findCommand('target');
-      expect(target?.argumentHint).toContain('replace <text>');
-      expect(target?.argumentHint).toContain('confirm <criterion-id>');
+    it('/goal advertises only the v0.2 lifecycle controls', () => {
+      const goal = findCommand('goal');
+      expect(goal?.argumentHint).toBe('[objective | status | pause | resume | clear]');
+      expect(goal?.argumentSchema).toMatchObject({
+        kind: 'subcommands',
+        subcommands: ['status', 'pause', 'resume', 'clear'],
+      });
     });
 
-    it('/cost is deprecated in favor of /usage', () => {
-      const cost = findCommand('cost');
-      expect(cost?.deprecated?.replacement).toBe('/usage');
-      expect(cost?.deprecated?.since).toBeTruthy();
+    it('removes compatibility-only command roots from v0.2', () => {
+      for (const name of [
+        'sessions',
+        'session-rename',
+        'context-clear',
+        'clear-history',
+        'models',
+        'loop-stats',
+        'checkpoint',
+        'cost',
+        'commit',
+      ]) {
+        expect(findCommand(name)).toBeUndefined();
+      }
     });
 
-    it('/clear-history is deprecated in favor of /context-clear', () => {
-      const ch = findCommand('clear-history');
-      expect(ch?.deprecated?.replacement).toBe('/context-clear');
-      expect(ch?.deprecated?.since).toBeTruthy();
-    });
-
-    it('/task, /run, /chat are hidden and deprecated', () => {
+    it('/task, /run, /chat are removed from the v0.2 command surface', () => {
       for (const name of ['task', 'run', 'chat']) {
-        const cmd = findCommand(name);
-        expect(cmd?.isHidden).toBe(true);
-        expect(cmd?.deprecated).toBeDefined();
+        expect(findCommand(name)).toBeUndefined();
       }
     });
   });
@@ -226,17 +221,13 @@ describe('Command registry contract', () => {
       }
     });
 
-    it('legacy category commands are all hidden', () => {
+    it('does not retain legacy category commands in v0.2', () => {
       const legacy = all.filter(c => c.category === 'legacy');
-      expect(legacy.length).toBeGreaterThan(0);
-      for (const cmd of legacy) {
-        expect(cmd.isHidden).toBe(true);
-      }
+      expect(legacy).toEqual([]);
     });
 
-    it('/agents is hidden (advanced diagnostic)', () => {
-      const agents = findCommand('agents');
-      expect(agents?.isHidden).toBe(true);
+    it('/agents legacy diagnostic root is removed', () => {
+      expect(findCommand('agents')).toBeUndefined();
     });
   });
 
@@ -299,7 +290,7 @@ describe('Command registry contract', () => {
 
   describe('renderer scope', () => {
     it('commands with rendererScope only use valid values', () => {
-      const valid = ['tui', 'terminal', 'ink', 'print'];
+      const valid = ['tui', 'terminal', 'print'];
       for (const cmd of all) {
         if (cmd.rendererScope) {
           for (const r of cmd.rendererScope) {
@@ -331,24 +322,19 @@ describe('Command registry contract', () => {
     it('renderer-aware visible commands exclude commands outside the active renderer', () => {
       expect(getVisibleCommands('tui').some(command => command.name === 'clear')).toBe(true);
       expect(getVisibleCommands('terminal').some(command => command.name === 'clear')).toBe(true);
-      expect(getVisibleCommands('ink').some(command => command.name === 'clear')).toBe(false);
       expect(getVisibleCommands('print').some(command => command.name === 'clear')).toBe(false);
     });
   });
 
   // -----------------------------------------------------------------------
-  // Compatibility aliases preserve business semantics
+  // Stable command semantics
   // -----------------------------------------------------------------------
 
-  describe('compatibility aliases', () => {
-    it('/target is a compatibility alias with same business semantics as /goal', () => {
-      const target = findCommand('target');
+  describe('stable commands', () => {
+    it('/goal has no legacy target alias', () => {
       const goal = findCommand('goal');
       expect(goal).toBeDefined();
-      expect(target).toBeDefined();
-      expect(goal).toBe(target);
-      expect(target?.name).toBe('goal');
-      expect(target?.compatibilityAliases?.map(alias => alias.name)).toContain('target');
+      expect(findCommand('target')).toBeUndefined();
       expect(getVisibleCommands().filter(command => command.name === 'goal')).toHaveLength(1);
     });
 

@@ -26,8 +26,56 @@ export interface ModelSwitchContext {
 export interface ModelSwitchResult {
   success: boolean;
   error?: string;
-  /** True if a preflight compact was executed. */
+  /** True only when a compact candidate was actually committed. */
   compacted?: boolean;
+  /** Smaller-window switch requires runtime history inspection/compaction. */
+  compactRequired?: boolean;
+  compactPreflight?: 'not_required' | 'unavailable' | 'not_needed' | 'committed';
+}
+
+export interface ModelSwitchCompactPreflightRequest {
+  from: ResolvedModelProfile;
+  to: ResolvedModelProfile;
+  safeInputBudget: number;
+  targetTokens: number;
+}
+
+export type ModelSwitchCompactPreflightReceipt =
+  | { status: 'not_needed'; currentTokens: number }
+  | { status: 'committed'; afterTokens: number; candidateFingerprint: string }
+  | { status: 'rejected'; error: string };
+
+export type ModelSwitchCompactPreflight = (
+  request: ModelSwitchCompactPreflightRequest
+) => ModelSwitchCompactPreflightReceipt;
+
+export type AsyncModelSwitchCompactPreflight = (
+  request: ModelSwitchCompactPreflightRequest
+) => Promise<ModelSwitchCompactPreflightReceipt> | ModelSwitchCompactPreflightReceipt;
+
+export function validateModelSwitchCompactReceipt(
+  receipt: ModelSwitchCompactPreflightReceipt,
+  targetTokens: number,
+  safeInputBudget: number = targetTokens
+): { valid: true } | { valid: false; error: string } {
+  if (receipt.status === 'rejected') return { valid: false, error: receipt.error };
+  if (receipt.status === 'not_needed') {
+    return receipt.currentTokens <= safeInputBudget
+      ? { valid: true }
+      : {
+          valid: false,
+          error: `Current context uses ${receipt.currentTokens} tokens; safe input budget is ${safeInputBudget}.`,
+        };
+  }
+  if (!receipt.candidateFingerprint) {
+    return { valid: false, error: 'Compact receipt is missing its candidate fingerprint.' };
+  }
+  return receipt.afterTokens <= targetTokens
+    ? { valid: true }
+    : {
+        valid: false,
+        error: `Compact candidate uses ${receipt.afterTokens} tokens; target is ${targetTokens}.`,
+      };
 }
 
 export interface ModelChangedEvent {
@@ -43,10 +91,20 @@ export class ModelCoordinator extends EventEmitter {
   private registry: ModelRegistry | null = null;
   private pool: ModelClientPool | null = null;
   private switching = false;
+  private compactPreflight: ModelSwitchCompactPreflight | null = null;
 
   bind(registry: ModelRegistry, pool: ModelClientPool): void {
     this.registry = registry;
     this.pool = pool;
+  }
+
+  /**
+   * Bind the runtime-owned synchronous bridge that inspects current history and
+   * commits a validated compact candidate before a smaller-window model switch.
+   * ModelCoordinator never mutates conversation/session state itself.
+   */
+  setCompactPreflight(preflight: ModelSwitchCompactPreflight | null): void {
+    this.compactPreflight = preflight;
   }
 
   /** Current profile, or null if not yet set. */
@@ -74,12 +132,82 @@ export class ModelCoordinator extends EventEmitter {
     // Resolve the target profile
     const target = this.resolve(selector);
     if (!target) {
-      return { success: false, error: `Unknown model: "${selector}". Use /model list to see available models.` };
+      return {
+        success: false,
+        error: `Unknown model: "${selector}". Use /model list to see available models.`,
+      };
     }
 
     this.switching = true;
     try {
       return this.commitSwitch(target);
+    } finally {
+      this.switching = false;
+    }
+  }
+
+  /**
+   * Async switch path for a real semantic compact transaction. The runtime may
+   * await summary generation and durable checkpoint commit before returning a
+   * receipt; this coordinator commits the model only after validating it.
+   */
+  async switchToWithCompactPreflight(
+    selector: string,
+    preflight: AsyncModelSwitchCompactPreflight
+  ): Promise<ModelSwitchResult> {
+    if (!this.registry || !this.pool) {
+      return { success: false, error: 'ModelCoordinator not bound to a registry/pool.' };
+    }
+    if (this.switching) {
+      return { success: false, error: 'A model switch is already in progress.' };
+    }
+    const target = this.resolve(selector);
+    if (!target) {
+      return {
+        success: false,
+        error: `Unknown model: "${selector}". Use /model list to see available models.`,
+      };
+    }
+
+    this.switching = true;
+    try {
+      const clientError = this.validateTargetClient(target);
+      if (clientError) return { success: false, error: clientError };
+
+      const prev = this.current;
+      if (!prev || target.resolvedContextWindow >= prev.resolvedContextWindow) {
+        this.commitResolvedTarget(target, prev);
+        return {
+          success: true,
+          compacted: false,
+          compactRequired: false,
+          compactPreflight: 'not_required',
+        };
+      }
+
+      const safeInputBudget = resolveProfileSafeInputBudget(target);
+      const targetTokens = Math.max(1, Math.floor(safeInputBudget * 0.65));
+      let receipt: ModelSwitchCompactPreflightReceipt;
+      try {
+        receipt = await preflight({ from: prev, to: target, safeInputBudget, targetTokens });
+      } catch (error) {
+        return { success: false, error: `Model switch compact preflight failed: ${String(error)}` };
+      }
+      const validation = validateModelSwitchCompactReceipt(receipt, targetTokens, safeInputBudget);
+      if (!validation.valid) {
+        return {
+          success: false,
+          error: `Model switch compact preflight rejected: ${validation.error}`,
+        };
+      }
+
+      this.commitResolvedTarget(target, prev);
+      return {
+        success: true,
+        compacted: receipt.status === 'committed',
+        compactRequired: true,
+        compactPreflight: receipt.status === 'committed' ? 'committed' : 'not_needed',
+      };
     } finally {
       this.switching = false;
     }
@@ -119,37 +247,88 @@ export class ModelCoordinator extends EventEmitter {
 
   private commitSwitch(target: ResolvedModelProfile): ModelSwitchResult {
     // Preflight: ensure the client can be created
-    try {
-      const provider = this.registry!.providers.get(target.provider);
-      if (!provider) {
-        return { success: false, error: `Provider "${target.provider}" not found.` };
-      }
-      // Validate client creation (this throws if key is missing/env var unset)
-      this.pool!.getClient(provider);
-    } catch (err) {
-      return { success: false, error: `Cannot create client for ${target.id}: ${String(err)}` };
-    }
+    const clientError = this.validateTargetClient(target);
+    if (clientError) return { success: false, error: clientError };
 
     // Preflight compact: if switching to smaller context, check if compact needed
     const prev = this.current;
     let compacted = false;
+    let compactRequired = false;
+    let compactPreflight: ModelSwitchResult['compactPreflight'] = 'not_required';
     if (prev && target.resolvedContextWindow < prev.resolvedContextWindow) {
-      // Signal that compact may be needed (caller handles actual compact)
-      // This is informational — the actual compact is triggered by the agent loop.
-      compacted = true;
+      compactRequired = true;
+      const safeInputBudget = resolveProfileSafeInputBudget(target);
+      const targetTokens = Math.max(1, Math.floor(safeInputBudget * 0.65));
+      if (this.compactPreflight) {
+        let receipt: ModelSwitchCompactPreflightReceipt;
+        try {
+          receipt = this.compactPreflight({
+            from: prev,
+            to: target,
+            safeInputBudget,
+            targetTokens,
+          });
+        } catch (error) {
+          return {
+            success: false,
+            error: `Model switch compact preflight failed: ${String(error)}`,
+          };
+        }
+        const validation = validateModelSwitchCompactReceipt(
+          receipt,
+          targetTokens,
+          safeInputBudget
+        );
+        if (!validation.valid) {
+          return {
+            success: false,
+            error: `Model switch compact preflight rejected: ${validation.error}`,
+          };
+        }
+        compacted = receipt.status === 'committed';
+        compactPreflight = receipt.status === 'committed' ? 'committed' : 'not_needed';
+      } else {
+        // Compatibility path until the runtime wires the bridge. Crucially this
+        // no longer claims that a compact already happened.
+        compactPreflight = 'unavailable';
+      }
     }
 
-    // Commit
-    this.current = target;
+    this.commitResolvedTarget(target, prev);
 
+    return { success: true, compacted, compactRequired, compactPreflight };
+  }
+
+  private validateTargetClient(target: ResolvedModelProfile): string | undefined {
+    try {
+      const provider = this.registry!.providers.get(target.provider);
+      if (!provider) return `Provider "${target.provider}" not found.`;
+      this.pool!.getClient(provider);
+      return undefined;
+    } catch (error) {
+      return `Cannot create client for ${target.id}: ${String(error)}`;
+    }
+  }
+
+  private commitResolvedTarget(
+    target: ResolvedModelProfile,
+    previous: ResolvedModelProfile | null
+  ): void {
+    this.current = target;
     this.emit('model_changed', {
-      fromId: prev?.id ?? null,
+      fromId: previous?.id ?? null,
       toId: target.id,
-      fromContext: prev?.resolvedContextWindow ?? null,
+      fromContext: previous?.resolvedContextWindow ?? null,
       toContext: target.resolvedContextWindow,
       fingerprint: target.fingerprint,
     } satisfies ModelChangedEvent);
-
-    return { success: true, compacted };
   }
+}
+
+function resolveProfileSafeInputBudget(profile: ResolvedModelProfile): number {
+  const reserveCeiling = Math.max(1, Math.floor(profile.resolvedContextWindow * 0.5));
+  const reservedOutput = Math.min(profile.resolvedMaxOutputTokens, reserveCeiling);
+  const safetyMargin = Math.max(1024, Math.ceil(profile.resolvedContextWindow * 0.02));
+  const budget = profile.resolvedContextWindow - reservedOutput - safetyMargin;
+  return budget > 0 ? budget : Math.max(1, Math.floor(profile.resolvedContextWindow * 0.6));
 }

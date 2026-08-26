@@ -1,4 +1,10 @@
-export { ContextHarness, createContextHarness } from './context-harness';
+export {
+  ContextHarness,
+  HarnessKernel,
+  createContextHarness,
+  createHarnessKernel,
+} from './context-harness';
+export { createCapabilityProfile } from './capability-profile';
 export type { ContextHarnessOptions } from './context-harness';
 export {
   createTaskContract,
@@ -19,10 +25,28 @@ export type { HarnessContextBuildResult, PromptAssemblyOptions } from './assembl
 export { buildEvidenceIndex, bumpIncludedEvidence, estimateTokens, rankEvidence } from './evidence';
 export { classifyIntent, shouldReplaceActiveInstruction } from './intent';
 export { summarizeHarnessStateForMeta, upgradeHarnessState } from './state';
+export { ProgressController } from './progress-controller';
+export { StopController, type StopControllerOptions } from './stop-controller';
 export { createTurnSummary } from './turn-summary';
+export {
+  COMPACT_BENCHMARK_CORPUS_V1,
+  canonicalCompactBenchmarkCorpus,
+  compactBenchmarkCorpusHash,
+  type CompactBenchmarkCase,
+} from './compact-benchmark-corpus';
 export type { CreateTurnSummaryInput, SessionMessageLike } from './turn-summary';
 export { checkToolDrift, evaluateCompletionGate } from './drift-guard';
+export {
+  classifyVerificationCommand,
+  criterionHasAuthorizedWaiver,
+  isTrustedEvidence,
+  requiredVerificationKinds,
+  verificationKindForEntry,
+} from './verification';
 export type {
+  CapabilityProfile,
+  CapabilityProfileInput,
+  CompletionCriterionResult,
   CompletionGateResult,
   ContextCapsule,
   ContextLedgerEntry,
@@ -30,6 +54,7 @@ export type {
   EvidenceKind,
   EvidenceRecord,
   HarnessConfig,
+  HarnessProgressState,
   HarnessSidecar,
   HarnessState,
   IntentKind,
@@ -38,7 +63,16 @@ export type {
   LedgerSource,
   PlanStep,
   PromptAssemblyStats,
+  PromptSectionManifestEntry,
+  ProgressDelta,
+  ProgressSnapshot,
   RankedEvidenceRecord,
   TaskContract,
+  TaskCriterion,
+  TaskCriterionScope,
+  TaskCriterionSource,
+  TaskCriterionStatus,
+  TaskCriterionWaiver,
   TurnSummary,
+  VerificationKind,
 } from './types';

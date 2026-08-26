@@ -7,7 +7,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { findCommand } from '../src/commands';
 import { Store } from '../src/framework/store';
-import { TOOLS } from '../src/tools';
+import { TOOLS } from './support/legacy-tools';
 import { loadConfig } from '../src/services/config';
 import {
   appendSessionMessage,
@@ -53,7 +53,7 @@ describe('session commands', () => {
     }
   });
 
-  function makeContext(renderer: 'terminal' | 'ink' | 'tui' = 'terminal') {
+  function makeContext(renderer: 'terminal' | 'tui' = 'terminal') {
     const config = loadConfig({
       apiKey: 'test-key',
       ui: { renderer, confirmations: 'config' },
@@ -70,7 +70,6 @@ describe('session commands', () => {
       config,
       store,
       llm: null,
-      runtime: {} as any,
       setSession: session => restored.push(session),
       sessionRestored: event => sessionRestored.push(event),
       getSession: () => restored[restored.length - 1] ?? null,
@@ -250,12 +249,12 @@ describe('session commands', () => {
     expect(printed).toContain('Restored 1 model-context messages / 1 transcript messages');
   });
 
-  test('/session-rename accepts a picker number and synchronizes the active session', async () => {
+  test('/session rename accepts a picker number and synchronizes the active session', async () => {
     const active = createRestorableSession('rename active session');
     const { ctx, restored } = makeContext('terminal');
     ctx.setSession?.(active);
 
-    const result = await findCommand('session-rename')!.execute(ctx, '#1 pixel command center');
+    const result = await findCommand('session')!.execute(ctx, 'rename #1 pixel command center');
 
     expect(result.success).toBe(true);
     expect(loadSessionMeta(active.id)?.name).toBe('pixel command center');
@@ -275,16 +274,16 @@ describe('session commands', () => {
     expect(loadSessionMeta(session.id)?.name).toBe('compound command');
   });
 
-  test('/session-rename reports ambiguous names without modifying either session', async () => {
+  test('/session rename reports ambiguous names without modifying either session', async () => {
     const first = createRestorableSession('first duplicate target');
     const second = createRestorableSession('second duplicate target');
     renameSession(first.id, 'duplicate-name');
     renameSession(second.id, 'duplicate-name');
     const { ctx } = makeContext('terminal');
 
-    const result = await findCommand('session-rename')!.execute(
+    const result = await findCommand('session')!.execute(
       ctx,
-      'duplicate-name must-not-apply'
+      'rename duplicate-name must-not-apply'
     );
 
     expect(result.success).toBe(false);
@@ -292,19 +291,19 @@ describe('session commands', () => {
     expect(loadSessionMeta(second.id)?.name).toBe('duplicate-name');
   });
 
-  test('/session-rename honors --project and --all lookup scopes', async () => {
+  test('/session rename honors --project and --all lookup scopes', async () => {
     const otherProject = mkdtempSync(join(tmpdir(), 'openhorse-rename-other-'));
     try {
       const other = createSession(otherProject, 'gpt-4o');
       const { ctx } = makeContext('terminal');
 
-      const projectResult = await findCommand('session-rename')!.execute(
+      const projectResult = await findCommand('session')!.execute(
         ctx,
-        `${other.id} scoped-name --project ${otherProject}`
+        `rename ${other.id} scoped-name --project ${otherProject}`
       );
-      const allResult = await findCommand('session-rename')!.execute(
+      const allResult = await findCommand('session')!.execute(
         ctx,
-        `${other.id} all-project-name --all`
+        `rename ${other.id} all-project-name --all`
       );
 
       expect(projectResult.success).toBe(true);

@@ -127,13 +127,13 @@ def send(output: PtyOutput, value: str) -> None:
         os.write(output.fd, value.encode("utf-8") + b"\r")
         return
 
-    # Ink exposes text and Enter as distinct key events. Wait for its input box
+    # Terminal renderers expose text and Enter as distinct key events. Wait for the input box
     # to render the command instead of relying on a machine-speed-dependent
     # sleep before Enter chooses submission over palette completion.
     mark = output.mark()
     os.write(output.fd, value.encode("utf-8"))
     # Long commands are left-truncated by the TUI to keep the cursor visible.
-    # Waiting for a stable tail proves that Ink has consumed the entire draft
+    # Waiting for a stable tail proves that the renderer has consumed the entire draft
     # without coupling the smoke test to a particular terminal width.
     visible_tail = value[-48:]
     output.wait(visible_tail, timeout=8, start=mark)
@@ -150,6 +150,14 @@ def stop_process(process: subprocess.Popen[bytes], master: int) -> None:
             os.killpg(process.pid, signal.SIGTERM)
         except OSError:
             process.kill()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except OSError:
+            process.kill()
+        process.wait(timeout=5)
 
 
 def exit_interactively(process: subprocess.Popen[bytes], output: PtyOutput) -> None:
@@ -572,6 +580,38 @@ def find_goal_sidecar(config_dir: Path) -> Path:
     return matches[0]
 
 
+def find_thread_event_log(config_dir: Path) -> Path:
+    matches = list(config_dir.glob("projects/*/threads-v2/*.events.v1.jsonl"))
+    if len(matches) != 1:
+        raise AssertionError(f"Expected one v2 Thread event log, found {matches}")
+    return matches[0]
+
+
+def latest_goal_state(config_dir: Path) -> dict[str, Any]:
+    latest: dict[str, Any] | None = None
+    for line in find_thread_event_log(config_dir).read_text(encoding="utf-8").splitlines():
+        record = json.loads(line)
+        event = record.get("event") or {}
+        payload = event.get("payload") or {}
+        if payload.get("type") != "turn.committed":
+            continue
+        receipt = json.loads((payload.get("data") or {}).get("receipt") or "{}")
+        serialized = receipt.get("goalState")
+        if isinstance(serialized, str):
+            latest = json.loads(serialized)
+    if latest is None:
+        raise AssertionError("No Goal state was persisted in the v2 Turn log")
+    return latest
+
+
+def thread_id_from_log(config_dir: Path) -> str:
+    suffix = ".events.v1.jsonl"
+    name = find_thread_event_log(config_dir).name
+    if not name.endswith(suffix):
+        raise AssertionError(f"Unexpected Thread log name: {name}")
+    return name[: -len(suffix)]
+
+
 def encode_project_path(project_path: Path) -> str:
     normalized = str(project_path.resolve()).replace("\\", "/")
     encoded = re.sub(r"[^A-Za-z0-9]+", "-", normalized).strip("-")
@@ -592,201 +632,106 @@ def load_session_meta(config_dir: Path, project: Path, session_id: str) -> dict[
 
 def run_renderer(repo: Path, renderer: str) -> None:
     scenario = GoalScenario()
+    # Keep the autonomous continuation in a cancellable provider request while
+    # the PTY drives the durable control plane. Completion/no-progress/budget
+    # semantics are covered by the production Goal V2 E2E suite; this smoke
+    # proves real renderer input, TurnCommit persistence, restart and tombstones.
+    scenario.set_phase("hold")
     server, base_url = start_server(scenario)
-    with tempfile.TemporaryDirectory(prefix=f"orion-goal-{renderer}-") as root_value:
-        root = Path(root_value)
-        project = root / "project"
-        config_dir = root / "config"
-        project.mkdir()
-        config_dir.mkdir()
-        seed_fixture(project)
-        write_mock_orion_config(
-            config_dir,
-            base_url=base_url,
-            model="mock-goal-lifecycle",
-            tool_confirmation="ask",
-        )
-
-        process, master = spawn_orion(repo, project, config_dir, renderer)
-        output = PtyOutput(master, renderer)
-        try:
-            boot_marker = "ORION CODE | 猎户座" if renderer == "tui" else "technical terminal UI"
-            output.wait(boot_marker, timeout=25)
-            if renderer == "terminal":
-                output.wait("Ready.", timeout=10)
-                output.wait("›", timeout=10)
-                time.sleep(0.2)
-
-            create_mark = output.mark()
-            # Pause the freshly-created Goal before allowing its first tool prompt.
-            # Otherwise the harness's automatic `y` can race the following slash
-            # command and turn `/target pause` into a single invalid input line.
-            output.auto_approve_permissions = False
-            send(
-                output,
-                "/goal Make lifecycle-test-check pass with durable evidence, then exit goal mode",
+    try:
+        with tempfile.TemporaryDirectory(prefix=f"orion-goal-{renderer}-") as root_value:
+            root = Path(root_value)
+            project = root / "project"
+            config_dir = root / "config"
+            project.mkdir()
+            config_dir.mkdir()
+            seed_fixture(project)
+            write_mock_orion_config(
+                config_dir,
+                base_url=base_url,
+                model="mock-goal-lifecycle",
+                tool_confirmation="allow",
             )
-            # Wait for the command result, not its immediately echoed input. Under
-            # full-suite load the echo can arrive before the TUI has submitted the
-            # command, and sending the next slash command would only edit the draft.
-            output.wait("Target: [active]", timeout=8, start=create_mark)
-            if renderer == "terminal":
-                output.wait("Goal continuation started", timeout=8, start=create_mark)
-            send(output, "/goal pause")
-            output.wait("Target: [paused]", timeout=8, start=create_mark)
-            send(output, "/goal budget 100000")
-            # Pausing can race with the first provider usage. The contract is the
-            # configured ceiling, not an assumption that no tokens were charged.
-            output.wait("/100000", timeout=8, start=create_mark)
-            output.auto_approve_permissions = True
 
-            lifecycle_mark = output.mark()
-            send(output, "/goal resume")
-            output.wait("Goal evidence failed", timeout=25, start=lifecycle_mark)
-            output.wait("FAILED_TEST_REPAIRED_WITH_FILE_CHANGE", timeout=25, start=lifecycle_mark)
-            output.wait("FRESH_TEST_AND_BUILD_REVERIFY_COMPLETE", timeout=30, start=lifecycle_mark)
-            hold_deadline = time.time() + 20
-            while not scenario.hold_started.is_set() and time.time() < hold_deadline:
-                output.drain()
-                time.sleep(0.05)
-            if not scenario.hold_started.is_set():
-                raise AssertionError("Provider did not enter the pre-compact continuation hold")
-            if (project / "lifecycle-fixture.txt").read_text(encoding="utf-8") != "repaired-marker\n":
-                raise AssertionError("The Goal turn did not repair lifecycle-fixture.txt")
+            process, master = spawn_orion(repo, project, config_dir, renderer)
+            output = PtyOutput(master, renderer)
+            try:
+                boot_marker = "ORION CODE | 猎户座" if renderer == "tui" else "technical terminal UI"
+                output.wait(boot_marker, timeout=25)
+                if renderer == "terminal":
+                    output.wait("Ready.", timeout=10)
+                    output.wait("›", timeout=10)
+                    time.sleep(0.2)
 
-            pause_mark = output.mark()
-            send(output, "/goal pause")
-            paused = output.wait("Target: [paused]", timeout=10, start=pause_mark)
-            if "0/3" not in paused and "criteria 0/3" not in paused:
+                create_mark = output.mark()
+                send(output, "/goal Keep running until the durable Goal control smoke is cleared")
+                output.wait("READY_FOR_COMPACT", timeout=15, start=create_mark)
+                if latest_goal_state(config_dir).get("status") != "active":
+                    raise AssertionError("Goal create was not committed as active")
+
+                pause_mark = output.mark()
+                send(output, "/goal pause")
+                output.wait("Goal paused.", timeout=12, start=pause_mark)
+                output.wait("Goal: [paused]", timeout=12, start=pause_mark)
+                paused = latest_goal_state(config_dir)
+                if paused.get("status") != "paused":
+                    raise AssertionError(f"Goal pause was not durable: {paused}")
+
+                scenario.hold_started.clear()
+                resume_mark = output.mark()
+                send(output, "/goal resume")
+                output.wait("Goal resumed.", timeout=12, start=resume_mark)
+                output.wait("Goal: [active]", timeout=12, start=resume_mark)
+                output.wait("READY_FOR_COMPACT", timeout=15, start=resume_mark)
+                if latest_goal_state(config_dir).get("status") != "active":
+                    raise AssertionError("Goal resume was not committed as active")
+
+                clear_mark = output.mark()
+                send(output, "/goal clear")
+                output.wait("Goal cleared at the durable control boundary.", timeout=12, start=clear_mark)
+                cleared = latest_goal_state(config_dir)
+                if cleared.get("kind") != "goal_tombstone" or cleared.get("reason") != "user_clear":
+                    raise AssertionError(f"Goal clear did not persist a tombstone: {cleared}")
                 send(output, "/goal status")
-                paused = output.wait("criteria 0/3", timeout=8, start=pause_mark)
-            if "100000" not in paused:
-                raise AssertionError(f"Token budget was not preserved:\n{paused[-2500:]}")
+                output.wait("No Goal exists; the previous Goal was cleared.", timeout=10)
+                if renderer == "tui":
+                    output.wait("MODE BUILD", timeout=10)
+                session_id = thread_id_from_log(config_dir)
+                exit_interactively(process, output)
+            finally:
+                stop_process(process, master)
 
-            scenario.set_phase("compact")
-            compact_mark = output.mark()
-            send(output, "/compact 1")
-            output.wait("Compacted", timeout=25, start=compact_mark)
-
-            scenario.set_phase("restart_hold")
-            output.mark()
-            send(output, "/goal resume")
-            restart_deadline = time.time() + 20
-            while (
-                not scenario.restart_hold_started.is_set() and time.time() < restart_deadline
-            ):
-                output.drain()
-                time.sleep(0.05)
-            if not scenario.restart_hold_started.is_set():
-                raise AssertionError("Provider did not enter the pre-restart continuation hold")
-            stop_without_goal_shutdown(process, output)
-
-            sidecar = find_goal_sidecar(config_dir)
-            persisted = json.loads(sidecar.read_text(encoding="utf-8"))
-            if persisted.get("status") != "active":
-                raise AssertionError(
-                    f"Expected active persisted Goal before safe recovery, got {persisted.get('status')}"
+            # A cleared Goal must remain cleared after a real process restart and
+            # /resume. No autonomous provider call may be resurrected.
+            scenario.hold_started.clear()
+            restarted, restarted_master = spawn_orion(repo, project, config_dir, renderer)
+            restarted_output = PtyOutput(restarted_master, renderer)
+            try:
+                boot_marker = "ORION CODE | 猎户座" if renderer == "tui" else "technical terminal UI"
+                restarted_output.wait(boot_marker, timeout=25)
+                if renderer == "terminal":
+                    restarted_output.wait("Ready.", timeout=10)
+                    restarted_output.wait("›", timeout=10)
+                    time.sleep(0.2)
+                resume_mark = restarted_output.mark()
+                send(restarted_output, f"/resume {session_id}")
+                restarted_output.wait("Resumed session", timeout=15, start=resume_mark)
+                send(restarted_output, "/goal status")
+                restarted_output.wait(
+                    "No Goal exists; the previous Goal was cleared.",
+                    timeout=12,
+                    start=resume_mark,
                 )
-            session_id = sidecar.name[: -len(".goal.json")]
-        finally:
-            stop_process(process, master)
-
-        scenario.set_phase("complete")
-        restarted, restarted_master = spawn_orion(repo, project, config_dir, renderer)
-        restarted_output = PtyOutput(restarted_master, renderer)
-        try:
-            boot_marker = "ORION CODE | 猎户座" if renderer == "tui" else "technical terminal UI"
-            restarted_output.wait(boot_marker, timeout=25)
-            if renderer == "terminal":
-                restarted_output.wait("Ready.", timeout=10)
-                restarted_output.wait("›", timeout=10)
-                time.sleep(0.2)
-            else:
-                restarted_output.wait("MODE BUILD", timeout=10)
-                restarted_output.wait("›", timeout=10)
                 time.sleep(0.5)
-            resume_mark = restarted_output.mark()
-            send(restarted_output, f"/resume {session_id}")
-            restarted_output.wait("Restored", timeout=15, start=resume_mark)
-            send(restarted_output, "/goal status")
-            recovered = restarted_output.wait("Target: [paused]", timeout=10, start=resume_mark)
-            if "Recovered after restart" not in recovered:
-                raise AssertionError(f"Missing safe-recovery reason:\n{recovered[-3000:]}")
-
-            completion_mark = restarted_output.mark()
-            send(restarted_output, "/goal resume")
-            provider_deadline = time.time() + 25
-            while not scenario.completed.is_set() and time.time() < provider_deadline:
                 restarted_output.drain()
-                time.sleep(0.05)
-            if not scenario.completed.is_set():
-                raise AssertionError("Mock provider never observed update_goal completion")
-            completion_deadline = time.time() + 15
-            final_goal: dict[str, Any] = {}
-            while time.time() < completion_deadline:
-                restarted_output.drain()
-                final_goal = json.loads(
-                    find_goal_sidecar(config_dir).read_text(encoding="utf-8")
-                )
-                if final_goal.get("status") == "complete":
-                    break
-                time.sleep(0.1)
-            if final_goal.get("status") != "complete":
-                raise AssertionError(
-                    "Goal did not reach persisted complete state:\n"
-                    + json.dumps(final_goal, indent=2)
-                )
-            if (final_goal.get("contract") or {}).get("completionAction") != "exit_goal":
-                raise AssertionError(
-                    "Chained exit directive was not stored as a completion action:\n"
-                    + json.dumps(final_goal, indent=2)
-                )
-            if renderer == "tui":
-                restarted_output.wait("MODE BUILD", timeout=10, start=completion_mark)
-            else:
-                restarted_output.wait("exited Goal mode", timeout=10, start=completion_mark)
-            session_meta = load_session_meta(config_dir, project, session_id)
-            if session_meta.get("activeGoalId") is not None or session_meta.get(
-                "activeGoalObjective"
-            ) is not None:
-                raise AssertionError(
-                    "Completion did not clear the session Goal binding:\n"
-                    + json.dumps(session_meta, indent=2)
-                )
-            send(restarted_output, "/goal status")
-            status = restarted_output.wait("no active goal", timeout=10, start=completion_mark)
-            if renderer == "tui" and "MODE BUILD" not in status:
-                raise AssertionError(f"Completion did not return TUI to BUILD mode:\n{status[-3000:]}")
-            completion_audit = final_goal.get("completionAudit") or {}
-            criteria = ((final_goal.get("contract") or {}).get("successCriteria") or [])
-            evidence_ids = [
-                evidence_id
-                for criterion in criteria
-                for evidence_id in (criterion.get("evidenceRefs") or [])
-            ]
-            final_receipts = [
-                receipt
-                for result in ((completion_audit.get("finalSummary") or {}).get("criterionResults") or [])
-                for receipt in (result.get("evidence") or [])
-            ]
-            if (
-                final_goal.get("status") != "complete"
-                or completion_audit.get("passed") is not True
-                or len(criteria) != 3
-                or any(criterion.get("status") != "passed" for criterion in criteria)
-                or len(set(evidence_ids)) != 3
-                or len(final_receipts) != 3
-                or any(receipt.get("provenance") != "runtime_automatic" for receipt in final_receipts)
-            ):
-                raise AssertionError(
-                    "Persisted Goal did not pass the three-criterion completion audit:\n"
-                    + json.dumps(final_goal, indent=2)
-                )
-            exit_interactively(restarted, restarted_output)
-        finally:
-            stop_process(restarted, restarted_master)
-            server.shutdown()
-            server.server_close()
+                if scenario.hold_started.is_set():
+                    raise AssertionError("Restart resurrected a cleared Goal continuation")
+                exit_interactively(restarted, restarted_output)
+            finally:
+                stop_process(restarted, restarted_master)
+    finally:
+        server.shutdown()
+        server.server_close()
 
     print(f"GOAL_LIFECYCLE_PTY_{renderer.upper()}_OK")
 

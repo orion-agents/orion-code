@@ -6,7 +6,7 @@ import { createCommandPickerState } from '../src/runtime/ui-view-model';
 describe('v0.1.5 command descriptor contract', () => {
   it('reserves canonical names and aliases from extension shadowing', () => {
     expect(isBuiltinCommandName('goal')).toBe(true);
-    expect(isBuiltinCommandName('target')).toBe(true);
+    expect(isBuiltinCommandName('target')).toBe(false);
     expect(isBuiltinCommandName('reasoning')).toBe(true);
     expect(isBuiltinCommandName('not-a-builtin')).toBe(false);
   });
@@ -46,26 +46,18 @@ describe('v0.1.5 command descriptor contract', () => {
     }
   });
 
-  it('uses /goal as the stable root and resolves /target to the same id', () => {
+  it('uses /goal as the stable root and removes /target', () => {
     expect(findCommand('goal')).toMatchObject({
       id: 'builtin.workflow.goal',
       name: 'goal',
-      compatibilityAliases: [
-        expect.objectContaining({
-          name: 'target',
-          lifecycle: expect.objectContaining({ replacement: '/goal' }),
-        }),
-      ],
     });
-    expect(findCommand('target')).toBe(findCommand('goal'));
+    expect(findCommand('target')).toBeUndefined();
     expect(getVisibleCommands().some(command => command.name === 'target')).toBe(false);
   });
 
-  it('keeps compatibility and internal roots out of help/completion surfaces', () => {
+  it('keeps internal roots out of help/completion surfaces', () => {
     const visible = getVisibleCommands();
-    expect(
-      visible.every(command => !['compatibility', 'internal'].includes(command.audience))
-    ).toBe(true);
+    expect(visible.every(command => command.audience !== 'internal')).toBe(true);
     expect(visible.some(command => command.name === 'sessions')).toBe(false);
     expect(visible.some(command => command.name === 'redraw')).toBe(false);
   });
@@ -78,20 +70,18 @@ describe('v0.1.5 command descriptor contract', () => {
 
     const searched = createCommandPickerState({ input: '/secur', commands });
     expect(searched.visibleItems.some(item => item.value === 'security')).toBe(true);
-    expect(searched.visibleItems.some(item => item.command.audience === 'compatibility')).toBe(
-      false
-    );
+    expect(searched.visibleItems.some(item => item.command.audience === 'internal')).toBe(false);
   });
 
   it('filters 200 local descriptors within the deterministic 50ms budget', () => {
     const prototype = findCommand('status')!;
     const commands = Array.from({ length: 200 }, (_, index) => ({
       ...prototype,
-      id: `plugin.test.command-${index}`,
+      id: `skill.test.command-${index}`,
       name: `command-${index}`,
       description: `Local command number ${index}`,
       aliases: [`c-${index}`],
-      source: { kind: 'plugin' as const, id: 'test', trust: 'project' as const },
+      source: { kind: 'skill' as const, id: 'test', trust: 'project' as const },
       audience: 'advanced' as const,
     }));
     const startedAt = performance.now();

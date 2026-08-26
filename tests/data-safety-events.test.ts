@@ -96,8 +96,8 @@ describe('Destructive command safety', () => {
     expect(cmd!.risk).toBe('destructive');
   });
 
-  it('/checkpoint restore is classified as destructive', () => {
-    const cmd = findCommand('checkpoint');
+  it('/rewind restore is classified as destructive', () => {
+    const cmd = findCommand('rewind');
     expect(cmd).toBeDefined();
     expect(cmd!.risk).toBe('destructive');
   });
@@ -141,10 +141,10 @@ describe('Context clear vs session delete separation', () => {
     expect(cmd?.risk).toBe('read-only');
   });
 
-  it('/context-clear is destructive and explicitly scoped to in-memory context', () => {
-    const cmd = findCommand('context-clear');
+  it('/context clear is destructive and explicitly scoped to in-memory context', () => {
+    const cmd = findCommand('context');
     expect(cmd?.risk).toBe('destructive');
-    expect(cmd?.argumentHint).toContain('--yes');
+    expect(cmd?.argumentHint).toContain('clear --yes');
     expect(cmd?.description).toContain('in-memory');
   });
 
@@ -155,7 +155,7 @@ describe('Context clear vs session delete separation', () => {
     expect(cmd?.risk).toBe('read-only');
   });
 
-  it('/context-clear previews without --yes and only then clears in-memory context', async () => {
+  it('/context clear previews without --yes and only then clears in-memory context', async () => {
     const resetConversation = jest.fn();
     const ctx = {
       store: {
@@ -165,14 +165,14 @@ describe('Context clear vs session delete separation', () => {
         resetConversation,
       },
     } as any;
-    const command = findCommand('context-clear')!;
+    const command = findCommand('context')!;
 
-    const preview = await command.execute(ctx, '');
+    const preview = await command.execute(ctx, 'clear');
     expect(preview.success).toBe(false);
     expect(preview.error).toContain('Saved session history will not be deleted');
     expect(resetConversation).not.toHaveBeenCalled();
 
-    const confirmed = await command.execute(ctx, '--yes');
+    const confirmed = await command.execute(ctx, 'clear --yes');
     expect(confirmed.success).toBe(true);
     expect(resetConversation).toHaveBeenCalledTimes(1);
   });
@@ -280,8 +280,8 @@ describe('Storage maintenance protocol', () => {
     expect(cmd?.argumentHint).toContain('--dry-run');
   });
 
-  it('/checkpoint restore requires --yes confirmation', () => {
-    const cmd = findCommand('checkpoint');
+  it('/rewind restore requires --yes confirmation', () => {
+    const cmd = findCommand('rewind');
     expect(cmd?.argumentHint).toContain('--yes');
   });
 
@@ -564,8 +564,8 @@ describe('Dirty worktree awareness', () => {
     expect(cmd?.category).toBe('workflow');
   });
 
-  it('/commit command is read-only (plan, not execution)', () => {
-    const cmd = findCommand('commit');
+  it('/commit-plan command is read-only (plan, not execution)', () => {
+    const cmd = findCommand('commit-plan');
     expect(cmd?.risk).toBe('read-only');
     expect(cmd?.description).toContain('read-only');
   });

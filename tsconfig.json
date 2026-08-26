@@ -13,11 +13,19 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
-    "jsx": "react",
-    "reactNamespace": "React",
     "moduleResolution": "node",
     "allowSyntheticDefaultImports": true
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "tests"]
+  "exclude": [
+    "node_modules",
+    "dist",
+    "tests",
+    "src/runtime/goals/accounting.ts",
+    "src/runtime/goals/coordinator.ts",
+    "src/runtime/goals/lifecycle.ts",
+    "src/runtime/goals/prompt.ts",
+    "src/runtime/goals/stop-policy.ts",
+    "src/runtime/goals/tools.ts"
+  ]
 }

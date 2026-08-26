@@ -12,6 +12,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from pty_runner_identity import resolve_orion_command
 from pty_test_config import write_mock_orion_config
 
 
@@ -118,6 +119,7 @@ def start_mock_server() -> tuple[ThreadingHTTPServer, str]:
 
 def run_cli(
     repo: Path,
+    base_command: list[str],
     env: dict[str, str],
     args: list[str],
     stdin: str | None = None,
@@ -127,7 +129,7 @@ def run_cli(
     if extra_env:
         child_env.update(extra_env)
     return subprocess.run(
-        ["node", "-r", "ts-node/register", "src/cli.ts", *args],
+        [*base_command, *args],
         cwd=repo,
         env=child_env,
         input=stdin,
@@ -147,6 +149,10 @@ def assert_success(result: subprocess.CompletedProcess[str], label: str) -> None
 
 def main() -> int:
     repo = Path(__file__).resolve().parents[2]
+    base_command = resolve_orion_command(
+        repo,
+        ["node", "-r", "ts-node/register", "src/cli.ts"],
+    )
     server, base_url = start_mock_server()
     config_dir = tempfile.mkdtemp(prefix="orion-code-print-")
     write_mock_orion_config(
@@ -166,14 +172,16 @@ def main() -> int:
     )
 
     try:
-        text = run_cli(repo, env, ["-p", "hello print"])
+        text = run_cli(repo, base_command, env, ["-p", "hello print"])
         assert_success(text, "text print")
         if "print-mode ok: hello print" not in text.stdout:
             raise AssertionError(f"text print stdout missing answer:\n{text.stdout}\nSTDERR:\n{text.stderr}")
         if "ORION_CODE" in text.stdout or "stable terminal UI" in text.stdout:
             raise AssertionError(f"text print leaked interactive banner:\n{text.stdout}")
 
-        json_result = run_cli(repo, env, ["--print", "--output-format", "json", "json task"])
+        json_result = run_cli(
+            repo, base_command, env, ["--print", "--output-format", "json", "json task"]
+        )
         assert_success(json_result, "json print")
         parsed = json.loads(json_result.stdout)
         if parsed.get("content") != "print-mode ok: json task":
@@ -181,7 +189,7 @@ def main() -> int:
         if not parsed.get("sessionId"):
             raise AssertionError(f"json print did not report session id:\n{json_result.stdout}")
 
-        piped = run_cli(repo, env, ["--print"], stdin="pipe task\n")
+        piped = run_cli(repo, base_command, env, ["--print"], stdin="pipe task\n")
         assert_success(piped, "stdin print")
         if "print-mode ok: pipe task" not in piped.stdout:
             raise AssertionError(f"stdin print stdout missing answer:\n{piped.stdout}\nSTDERR:\n{piped.stderr}")
@@ -192,6 +200,7 @@ def main() -> int:
         config_path.write_text(json.dumps(config), encoding="utf-8")
         permission = run_cli(
             repo,
+            base_command,
             env,
             ["--print", "--output-format", "json", "permission probe"],
         )
@@ -201,11 +210,24 @@ def main() -> int:
             )
         permission_payload = json.loads(permission.stdout)
         permission_errors = "\n".join(permission_payload.get("errors") or [])
-        permission_entries = json.dumps(permission_payload.get("entries") or [])
         if "Tool write_file requires confirmation" not in permission_errors:
             raise AssertionError(f"permission print did not report non-interactive denial:\n{permission.stdout}")
-        if "denied by user" not in permission_entries:
-            raise AssertionError(f"permission print did not feed a denied tool result:\n{permission.stdout}")
+        permission_tools = permission_payload.get("toolEvents") or []
+        denied = next(
+            (
+                event
+                for event in permission_tools
+                if event.get("type") == "finished"
+                and event.get("name") == "write_file"
+                and event.get("success") is False
+            ),
+            None,
+        )
+        if denied is None or "denied" not in str(denied.get("error", "")).lower():
+            raise AssertionError(f"permission print did not persist a denied terminal tool receipt:\n{permission.stdout}")
+        permission_statuses = permission_payload.get("statuses") or []
+        if not any('"status":"blocked"' in status for status in permission_statuses):
+            raise AssertionError(f"permission print did not expose a blocked StopDecision:\n{permission.stdout}")
 
         print("PRINT_MODE_SMOKE_OK")
         return 0

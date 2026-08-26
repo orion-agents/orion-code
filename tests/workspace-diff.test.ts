@@ -7,7 +7,7 @@ import type { CommandContext } from '../src/commands/types';
 import { Store } from '../src/framework/store';
 import { loadConfig } from '../src/services/config';
 import { collectWorkspaceDiff, formatWorkspaceDiff } from '../src/services/workspace-diff';
-import { TOOLS } from '../src/tools';
+import { TOOLS } from './support/legacy-tools';
 
 const hasGit = spawnSync('git', ['--version'], { encoding: 'utf8' }).status === 0;
 
@@ -87,7 +87,6 @@ describe('workspace diff service', () => {
         config,
         store,
         llm: null,
-        runtime: makeRuntime() as any,
       };
       const result = await findCommand('diff')!.execute(ctx, '');
       expect(result.success).toBe(true);

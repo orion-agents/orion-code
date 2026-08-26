@@ -23,6 +23,12 @@ export interface ProjectConfig {
   /** 允许的工具列表 */
   allowedTools?: string[];
   /**
+   * Bounded project guidance for semantic compaction. This can influence
+   * emphasis, but it cannot override tool protocol, safety, or acceptance
+   * evidence invariants.
+   */
+  compactInstructions?: string;
+  /**
    * Project-level sandbox override, shallow-merged on top of `GlobalConfig.sandbox`.
    * Absent keys inherit the global value; the effective default is `profile: 'none'`.
    */
@@ -67,8 +73,8 @@ export interface SandboxConfig {
   image?: string;
 }
 
-/** Runtime-only UI renderer selection. TUI is the product default; Terminal is the technical fallback; Ink is deprecated (removed in v0.2.0). */
-export type UIRenderer = 'terminal' | 'tui' | 'ink';
+/** Runtime-only UI renderer selection. TUI is the product default; Terminal is the technical fallback. */
+export type UIRenderer = 'terminal' | 'tui';
 
 /** How UI permission prompts should be handled. */
 export type UIConfirmationMode = 'config' | 'interactive';
@@ -377,6 +383,13 @@ function sanitizeProjectConfig(value: unknown): ProjectConfig {
 
   if (Array.isArray(raw.allowedTools) && raw.allowedTools.every(item => typeof item === 'string')) {
     sanitized.allowedTools = [...(raw.allowedTools as string[])];
+  }
+  if (typeof raw.compactInstructions === 'string') {
+    const compactInstructions = raw.compactInstructions
+      .replace(/\r\n?/gu, '\n')
+      .trim()
+      .slice(0, 1200);
+    if (compactInstructions) sanitized.compactInstructions = compactInstructions;
   }
   const sandbox = sanitizeSandboxConfig(raw.sandbox);
   if (sandbox) sanitized.sandbox = sandbox;

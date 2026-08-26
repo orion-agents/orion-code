@@ -197,12 +197,23 @@ describe('GoalCoordinator', () => {
         });
       }
       expect(coordinator.goal!.status).toBe('paused');
+      expect(coordinator.stopDecision).toMatchObject({
+        schemaVersion: 1,
+        scope: 'goal',
+        status: 'stopped',
+        disposition: 'pause_scope',
+        reason: { code: 'no_progress' },
+        resources: {
+          turns: { used: 3 },
+          tokens: { used: 60 },
+        },
+      });
     });
 
-    it('auto-pauses after the bounded autonomous continuation window and resumes explicitly', () => {
-      coordinator.create('bounded autonomous work');
+    it('continues progressive autonomous work beyond the former fixed window', () => {
+      coordinator.create('long progressive autonomous work');
 
-      for (let i = 0; i < GOAL_INVARIANTS.maxAutomaticContinuationTurns; i++) {
+      for (let i = 0; i < 21; i++) {
         coordinator.finalizeTurn({
           turnId: `automatic-${i}`,
           inputKind: 'goal_continuation',
@@ -211,7 +222,7 @@ describe('GoalCoordinator', () => {
           goalRevision: coordinator.goal!.revision,
           startedAt: i * 1000,
           endedAt: i * 1000 + 1000,
-          finishReason: 'max_turns',
+          finishReason: 'completed',
           usage: {
             promptTokens: 10,
             completionTokens: 10,
@@ -223,22 +234,15 @@ describe('GoalCoordinator', () => {
       }
 
       expect(coordinator.goal).toMatchObject({
-        status: 'paused',
-        automaticContinuationStreak: GOAL_INVARIANTS.maxAutomaticContinuationTurns,
-        stopReason: {
-          kind: 'user',
-          message: expect.stringContaining('/goal exit'),
-        },
-      });
-      expect(coordinator.canContinue).toBe(false);
-      expect(coordinator.buildContinuationRequest()).toBeNull();
-
-      expect(coordinator.resume()).toBe(true);
-      expect(coordinator.goal).toMatchObject({
         status: 'active',
-        automaticContinuationStreak: 0,
+        automaticContinuationStreak: 21,
       });
       expect(coordinator.canContinue).toBe(true);
+      expect(coordinator.stopDecision).toBeNull();
+      expect(coordinator.buildContinuationRequest()).toMatchObject({
+        inputKind: 'goal_continuation',
+        goal: { continuationIndex: 22 },
+      });
     });
   });
 

@@ -5,13 +5,10 @@ import {
   handleDoctor,
   handleStorage,
   handleUsage,
-  handleLoopStats,
   handleTrace,
   handleLastTool,
   handleArtifacts,
   handleCheckpoint,
-  handleCost,
-  showAgents,
 } from './diagnostic-command-handlers';
 import { handleMigrateCommand } from '../migration/command';
 import { readSessionTraceEvents } from '../services/session-storage';
@@ -78,17 +75,6 @@ export const DIAGNOSTIC_COMMANDS: SlashCommand[] = [
     execute: ctx => handleUsage(ctx),
   },
   {
-    name: 'loop-stats',
-    aliases: ['loop'],
-    description: 'Show detailed agent-loop budget and efficiency diagnostics',
-    category: 'diagnostics',
-    priority: 12,
-    type: 'builtin',
-    execution: 'builtin',
-    risk: 'read-only',
-    execute: ctx => handleLoopStats(ctx),
-  },
-  {
     name: 'trace',
     description: 'Show structured event timeline for the latest or selected turn',
     argumentHint: '[latest|turn-id]',
@@ -123,18 +109,6 @@ export const DIAGNOSTIC_COMMANDS: SlashCommand[] = [
     execute: (ctx, args) => handleArtifacts(ctx, args),
   },
   {
-    name: 'checkpoint',
-    aliases: ['checkpoints'],
-    description: 'List or restore file checkpoints created before agent edits',
-    argumentHint: '[list|restore <turn-id|prefix> --yes]',
-    category: 'diagnostics',
-    priority: 18,
-    type: 'builtin',
-    execution: 'builtin',
-    risk: 'destructive',
-    execute: (ctx, args) => handleCheckpoint(ctx, args),
-  },
-  {
     name: 'rewind',
     description: 'List or restore a checkpoint with explicit preview and confirmation',
     argumentHint: '[list|restore <turn-id> --yes]',
@@ -149,28 +123,6 @@ export const DIAGNOSTIC_COMMANDS: SlashCommand[] = [
       if (trimmed.startsWith('restore ')) return handleCheckpoint(ctx, trimmed);
       return { success: false, error: 'Usage: /rewind [list|restore <turn-id> --yes]' };
     },
-  },
-  {
-    name: 'cost',
-    description: 'Show session token usage',
-    category: 'diagnostics',
-    priority: 20,
-    type: 'builtin',
-    execution: 'builtin',
-    risk: 'read-only',
-    deprecated: { since: 'v0.1.1', replacement: '/usage', removeIn: 'v0.3.0' },
-    execute: ctx => handleCost(ctx),
-  },
-  {
-    name: 'agents',
-    description: 'List registered agents and their status',
-    category: 'diagnostics',
-    priority: 30,
-    type: 'builtin',
-    execution: 'builtin',
-    risk: 'read-only',
-    isHidden: true,
-    execute: ctx => showAgents(ctx),
   },
   {
     name: 'migrate',

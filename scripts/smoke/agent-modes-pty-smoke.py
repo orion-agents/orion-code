@@ -70,27 +70,10 @@ SCENARIOS: dict[str, tuple[str, str, dict[str, object]]] = {
             "cwd": "../outside",
         },
     ),
-    "plan read fixture": (
+    "plan complete fixture": (
         "call-plan-read",
         "read_file",
         {"path": "seed.txt"},
-    ),
-    "plan write reuse fixture": (
-        "call-plan-write-reuse",
-        "write_file",
-        {"path": "plan-created.txt", "content": "PLAN_WRITE_REUSED\n"},
-    ),
-    "plan exec reuse delete fixture": (
-        "call-plan-exec-reuse",
-        "exec_command",
-        {"command": "rm -rf plan-delete"},
-    ),
-    "plan complete fixture": (
-        "call-plan-exit",
-        "exit_plan_mode",
-        {
-            "plan": "Read the repository evidence, then implement only in a separate BUILD request and verify the result."
-        },
     ),
     "auto read fixture": (
         "call-auto-read",
@@ -126,15 +109,22 @@ SCENARIOS: dict[str, tuple[str, str, dict[str, object]]] = {
     ),
 }
 
+PLAN_WORKFLOW_STEPS: tuple[tuple[str, str, dict[str, object]], ...] = (
+    ("call-plan-read", "read_file", {"path": "seed.txt"}),
+    (
+        "call-plan-write",
+        "write_file",
+        {"path": "plan-created.txt", "content": "PLAN_WRITE_REUSED\n"},
+    ),
+    ("call-plan-exec", "exec_command", {"command": "rm -rf plan-delete"}),
+)
+
 FINAL_MARKERS = {
     "build read fixture": "BUILD_READ_DONE",
     "build write grant fixture": "BUILD_WRITE_GRANT_DONE",
     "build write reuse fixture": "BUILD_WRITE_REUSE_DONE",
     "build exec grant fixture": "BUILD_EXEC_GRANT_DONE",
     "build exec reuse delete fixture": "BUILD_EXEC_REUSE_DONE",
-    "plan read fixture": "PLAN_READ_DONE",
-    "plan write reuse fixture": "PLAN_WRITE_REUSE_DONE",
-    "plan exec reuse delete fixture": "PLAN_EXEC_REUSE_DONE",
     "auto read fixture": "AUTO_READ_DONE",
     "auto write fixture": "AUTO_WRITE_DONE",
     "auto edit fixture": "AUTO_EDIT_DONE",
@@ -229,10 +219,7 @@ class AgentModesMockHandler(BaseHTTPRequestHandler):
                 last_user = message_text(candidate).strip()
 
         scenario = next((name for name in SCENARIOS if name in last_user), "")
-        if (
-            last_user.startswith("Execute the saved plan now.")
-            and "Read the repository evidence" in last_user
-        ):
+        if last_user.startswith("Execute durable PlanReceipt "):
             scenario = "plan complete fixture"
         later_messages = messages[last_user_index + 1 :] if last_user_index >= 0 else []
         tool_messages = [
@@ -270,7 +257,39 @@ class AgentModesMockHandler(BaseHTTPRequestHandler):
             if not scenario:
                 self.write_text("AGENT_MODE_UNKNOWN_SCENARIO")
             elif scenario == "plan complete fixture" and "[Build Mode]" in system_text:
-                self.write_text("PLAN_EXECUTION_DONE")
+                if not tool_messages:
+                    self.write_tool_call(
+                        "call-plan-verify",
+                        "exec_command",
+                        {"command": "test -f plan-created.txt"},
+                    )
+                else:
+                    getattr(self.server, "observed_tool_results").append(
+                        {
+                            "scenario": "plan-execution",
+                            "content": message_text(tool_messages[-1]),
+                        }
+                    )
+                    self.write_text(
+                        "PLAN_EXECUTION_DONE\nImplementation completed and verified with a passing command."
+                    )
+            elif scenario == "plan complete fixture" and "[Plan Mode]" in system_text:
+                observed = getattr(self.server, "observed_tool_results")
+                if tool_messages:
+                    observed.append(
+                        {
+                            "scenario": f"plan-step-{len(tool_messages)}",
+                            "content": message_text(tool_messages[-1]),
+                        }
+                    )
+                if len(tool_messages) < len(PLAN_WORKFLOW_STEPS):
+                    self.write_tool_call(*PLAN_WORKFLOW_STEPS[len(tool_messages)])
+                else:
+                    self.write_text(
+                        "PLAN_TURN_DONE\n"
+                        "Read the repository evidence, preserve the prepared artifacts, "
+                        "then implement only in a separate BUILD request and verify the result."
+                    )
             elif tool_messages:
                 observed = getattr(self.server, "observed_tool_results")
                 observed.append(
@@ -428,12 +447,99 @@ def stop_process(
 
 def read_trace_events(config_dir: Path) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
-    for trace_path in config_dir.glob("projects/*/sessions/*.trace.jsonl"):
+    for trace_path in config_dir.glob("projects/*/threads-v2/*.events.v1.jsonl"):
         for line in trace_path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
-            events.append(json.loads(line))
+            record = json.loads(line)
+            event = record.get("event", record)
+            if isinstance(event, dict):
+                events.append(event)
     return events
+
+
+def call_expectation(call_id: str) -> tuple[str, str]:
+    for scenario, (candidate, tool_name, _args) in SCENARIOS.items():
+        if candidate == call_id:
+            return scenario, tool_name
+    for candidate, tool_name, _args in PLAN_WORKFLOW_STEPS:
+        if candidate == call_id:
+            return "plan complete fixture", tool_name
+    raise AssertionError(f"Unknown tool call fixture: {call_id}")
+
+
+def find_tool_receipt(config_dir: Path, call_id: str) -> dict[str, Any] | None:
+    scenario, tool_name = call_expectation(call_id)
+    events = read_trace_events(config_dir)
+    turn_ids = [
+        str(event.get("turnId"))
+        for event in events
+        if event.get("payload", {}).get("type") == "turn.started"
+        and scenario in str(event.get("payload", {}).get("data", {}).get("input", ""))
+    ]
+    for turn_id in reversed(turn_ids):
+        item_ids = [
+            str(event.get("itemId"))
+            for event in events
+            if event.get("turnId") == turn_id
+            and event.get("payload", {}).get("type") == "item.started"
+            and event.get("payload", {}).get("data", {}).get("kind") == "command"
+            and event.get("payload", {}).get("data", {}).get("name") == tool_name
+        ]
+        for item_id in reversed(item_ids):
+            for event in reversed(events):
+                if event.get("turnId") != turn_id or event.get("itemId") != item_id:
+                    continue
+                payload = event.get("payload", {})
+                if payload.get("type") not in {
+                    "item.completed",
+                    "item.failed",
+                    "item.interrupted",
+                    "item.indeterminate",
+                }:
+                    continue
+                serialized = payload.get("data", {}).get("receipt")
+                if isinstance(serialized, str):
+                    receipt = json.loads(serialized)
+                    return {**receipt, "callId": call_id, "turnId": turn_id}
+    return None
+
+
+def normalize_permission_source(receipt: dict[str, Any]) -> str:
+    approval = receipt.get("approval") or {}
+    policy = receipt.get("policy") or {}
+    if approval.get("source") == "user":
+        return "user"
+    if approval.get("source") == "authority":
+        return "config_allow" if approval.get("approved") else "config_deny"
+    source = str(policy.get("source") or "")
+    behavior = policy.get("behavior")
+    if source.startswith("allowlist:"):
+        return f"allowlist_{behavior}"
+    return "tool_policy"
+
+
+def normalized_runtime_event(receipt: dict[str, Any], event_type: str) -> dict[str, Any]:
+    if event_type == "tool_result":
+        return {
+            **receipt,
+            "type": "tool_result",
+            "success": receipt.get("success") is True,
+        }
+    if event_type == "permission_decision":
+        policy = receipt.get("policy") or {}
+        approval = receipt.get("approval") or {}
+        behavior = policy.get("behavior")
+        approved = behavior == "allow" or (
+            behavior == "ask" and approval.get("approved") is True
+        )
+        return {
+            **receipt,
+            "type": "permission_decision",
+            "permissionApproved": approved,
+            "permissionSource": normalize_permission_source(receipt),
+        }
+    raise AssertionError(f"Unsupported v2 runtime event projection: {event_type}")
 
 
 def wait_for_trace_event(
@@ -449,9 +555,9 @@ def wait_for_trace_event(
     while time.time() < deadline:
         if fd is not None and output is not None:
             output.append(read_available(fd))
-        for event in read_trace_events(config_dir):
-            if event.get("callId") == call_id and event.get("type") == event_type:
-                return event
+        receipt = find_tool_receipt(config_dir, call_id)
+        if receipt is not None:
+            return normalized_runtime_event(receipt, event_type)
         time.sleep(0.05)
     raise AssertionError(
         f"Timed out waiting for trace {event_type}:{call_id}; "
@@ -481,12 +587,69 @@ def wait_for_call_turn_complete(
         if fd is not None and output is not None:
             output.append(read_available(fd))
         if any(
-            event.get("type") == "complete" and event.get("turnId") == turn_id
+            event.get("payload", {}).get("type")
+            in {"turn.completed", "turn.failed", "turn.interrupted"}
+            and event.get("turnId") == turn_id
             for event in read_trace_events(config_dir)
         ):
             return
         time.sleep(0.05)
     raise AssertionError(f"Timed out waiting for completed turn {turn_id} for {call_id}")
+
+
+def wait_for_plan_receipt(
+    config_dir: Path,
+    *,
+    timeout: float = 15.0,
+    fd: int | None = None,
+    output: list[bytes] | None = None,
+) -> dict[str, Any]:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if fd is not None and output is not None:
+            output.append(read_available(fd))
+        events = read_trace_events(config_dir)
+        turn_ids = [
+            str(event.get("turnId"))
+            for event in events
+            if event.get("payload", {}).get("type") == "turn.started"
+            and "plan complete fixture"
+            in str(event.get("payload", {}).get("data", {}).get("input", ""))
+        ]
+        for turn_id in reversed(turn_ids):
+            committed = next(
+                (
+                    event
+                    for event in reversed(events)
+                    if event.get("turnId") == turn_id
+                    and event.get("payload", {}).get("type") == "turn.committed"
+                ),
+                None,
+            )
+            serialized = (
+                committed.get("payload", {}).get("data", {}).get("receipt")
+                if committed
+                else None
+            )
+            if not isinstance(serialized, str):
+                continue
+            commit = json.loads(serialized)
+            plan_serialized = commit.get("planReceipt")
+            if not isinstance(plan_serialized, str):
+                continue
+            plan = json.loads(plan_serialized)
+            if plan.get("turnId") != turn_id or plan.get("digest") != commit.get(
+                "planReceiptDigest"
+            ):
+                raise AssertionError("PlanReceipt is not bound to its durable TurnCommit")
+            if len(plan.get("toolReceiptDigests") or []) != len(PLAN_WORKFLOW_STEPS):
+                raise AssertionError(f"PlanReceipt omitted tool receipts: {plan}")
+            stop = json.loads(commit.get("stopDecision") or "{}")
+            if stop.get("reason", {}).get("code") != "plan_ready":
+                raise AssertionError(f"PLAN did not commit plan_ready: {stop}")
+            return plan
+        time.sleep(0.05)
+    raise AssertionError("Timed out waiting for a durable PlanReceiptV1")
 
 
 def parsed_tool_results(server: ThreadingHTTPServer) -> dict[str, dict[str, Any]]:
@@ -555,17 +718,7 @@ def require_decision(
     approved: bool,
     source: str,
 ) -> dict[str, Any]:
-    decision = next(
-        (
-            event
-            for event in read_trace_events(config_dir)
-            if event.get("type") == "permission_decision"
-            and event.get("callId") == call_id
-        ),
-        None,
-    )
-    if not decision:
-        raise AssertionError(f"Missing permission decision for {call_id}")
+    decision = wait_for_trace_event(config_dir, call_id, "permission_decision")
     if decision.get("permissionApproved") is not approved:
         raise AssertionError(f"Unexpected approval for {call_id}: {decision}")
     if decision.get("permissionSource") != source:
@@ -781,63 +934,10 @@ def main() -> int:
             if (workspace / "build-delete").exists():
                 raise AssertionError("BUILD reused exec grant did not remove its fixture")
 
-            # PLAN exposes the complete tool set and reuses the independent
-            # project grants established in BUILD.
+            # PLAN exposes the complete tool set, reuses independent project
+            # grants, commits one PlanReceipt and automatically restores BUILD.
             os.write(master, b"\x1b[Z")
             wait_for(master, output, "MODE PLAN", timeout=6)
-
-            plan_read_start = submit_scenario(master, output, "plan read fixture")
-            plan_read_segment = wait_for_successful_scenario(
-                master,
-                output,
-                config_dir,
-                "plan read fixture",
-                start=plan_read_start,
-            )
-            assert_no_permission_prompt(plan_read_segment, "PLAN read")
-
-            plan_write_start = submit_scenario(master, output, "plan write reuse fixture")
-            plan_write_segment = wait_for_successful_scenario(
-                master,
-                output,
-                config_dir,
-                "plan write reuse fixture",
-                start=plan_write_start,
-            )
-            assert_no_permission_prompt(plan_write_segment, "PLAN reused write grant")
-            require_decision(
-                config_dir,
-                "call-plan-write-reuse",
-                approved=True,
-                source="allowlist_allow",
-            )
-            if (workspace / "plan-created.txt").read_text(
-                encoding="utf-8"
-            ) != "PLAN_WRITE_REUSED\n":
-                raise AssertionError("PLAN did not execute the project-granted write")
-
-            plan_exec_start = submit_scenario(
-                master, output, "plan exec reuse delete fixture"
-            )
-            plan_exec_segment = wait_for_successful_scenario(
-                master,
-                output,
-                config_dir,
-                "plan exec reuse delete fixture",
-                start=plan_exec_start,
-            )
-            assert_no_permission_prompt(plan_exec_segment, "PLAN reused exec grant")
-            require_decision(
-                config_dir,
-                "call-plan-exec-reuse",
-                approved=True,
-                source="allowlist_allow",
-            )
-            if (workspace / "plan-delete").exists():
-                raise AssertionError("PLAN did not execute the project-granted command")
-
-            # Completing a plan must save it, exit automatically, and launch a
-            # distinct execution request in BUILD without a permission prompt.
             plan_complete_start = submit_scenario(master, output, "plan complete fixture")
             wait_for(
                 master,
@@ -860,14 +960,33 @@ def main() -> int:
                 timeout=10,
                 start_offset=plan_complete_start,
             )
-            wait_for_call_turn_complete(
-                config_dir,
-                "call-plan-exit",
-                timeout=10,
-                fd=master,
-                output=output,
+            plan_receipt = wait_for_plan_receipt(
+                config_dir, timeout=15, fd=master, output=output
             )
+            if "Read the repository evidence" not in str(plan_receipt.get("plan", "")):
+                raise AssertionError(f"PLAN persisted the wrong plan: {plan_receipt}")
             assert_no_permission_prompt(plan_complete_segment, "PLAN completion")
+
+            for call_id in ("call-plan-read", "call-plan-write", "call-plan-exec"):
+                wait_for_call_turn_complete(
+                    config_dir,
+                    call_id,
+                    timeout=10,
+                    fd=master,
+                    output=output,
+                )
+            require_decision(
+                config_dir, "call-plan-write", approved=True, source="allowlist_allow"
+            )
+            require_decision(
+                config_dir, "call-plan-exec", approved=True, source="allowlist_allow"
+            )
+            if (workspace / "plan-created.txt").read_text(
+                encoding="utf-8"
+            ) != "PLAN_WRITE_REUSED\n":
+                raise AssertionError("PLAN did not execute the project-granted write")
+            if (workspace / "plan-delete").exists():
+                raise AssertionError("PLAN did not execute the project-granted command")
 
             mode_requests = [
                 request
@@ -955,13 +1074,13 @@ def main() -> int:
             if (workspace / "delete-me").exists():
                 raise AssertionError("AUTO destructive exec did not remove the isolated fixture directory")
 
-            for call_id in (
-                "call-auto-read",
-                "call-auto-write",
-                "call-auto-edit",
-                "call-auto-delete",
+            for call_id, source in (
+                ("call-auto-read", "tool_policy"),
+                ("call-auto-write", "allowlist_allow"),
+                ("call-auto-edit", "config_allow"),
+                ("call-auto-delete", "allowlist_allow"),
             ):
-                require_decision(config_dir, call_id, approved=True, source="mode_auto")
+                require_decision(config_dir, call_id, approved=True, source=source)
 
             results = parsed_tool_results(mock_server)
             for scenario in (
@@ -970,10 +1089,6 @@ def main() -> int:
                 "build write reuse fixture",
                 "build exec grant fixture",
                 "build exec reuse delete fixture",
-                "plan read fixture",
-                "plan write reuse fixture",
-                "plan exec reuse delete fixture",
-                "plan complete fixture",
                 "auto read fixture",
                 "auto write fixture",
                 "auto edit fixture",
@@ -984,7 +1099,11 @@ def main() -> int:
                     raise AssertionError(f"Tool result was not successful for {scenario}: {result}")
             if "alpha" not in str(results["build read fixture"].get("output", "")):
                 raise AssertionError("BUILD read result did not contain the fixture content")
-            if "alpha" not in str(results["plan read fixture"].get("output", "")):
+            for index in range(1, len(PLAN_WORKFLOW_STEPS) + 1):
+                result = results.get(f"plan-step-{index}")
+                if not result or result.get("success") is not True:
+                    raise AssertionError(f"PLAN tool step {index} did not succeed: {result}")
+            if "alpha" not in str(results["plan-step-1"].get("output", "")):
                 raise AssertionError("PLAN read result did not contain the fixture content")
             if "alpha" not in str(results["auto read fixture"].get("output", "")):
                 raise AssertionError("AUTO read result did not contain the fixture content")

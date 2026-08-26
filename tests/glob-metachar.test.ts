@@ -18,7 +18,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { tmpdir } from 'os';
 
-const TOOLS = require('../src/tools').TOOLS;
+const TOOLS = require('./support/legacy-tools').TOOLS;
 const globTool = TOOLS.find((t: any) => t.name === 'glob');
 
 const ctx = { cwd: process.cwd(), config: { name: 'orion-code', mode: 'development' } };

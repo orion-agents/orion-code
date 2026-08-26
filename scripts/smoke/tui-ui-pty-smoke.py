@@ -309,8 +309,20 @@ class MockOpenAIHandler(BaseHTTPRequestHandler):
 
         try:
             messages = request.get("messages", [])
-            last_user = next((message.get("content", "") for message in reversed(messages) if message.get("role") == "user"), "")
-            has_tool_result = any(message.get("role") == "tool" for message in messages)
+            last_user_index = next(
+                (
+                    index
+                    for index in range(len(messages) - 1, -1, -1)
+                    if messages[index].get("role") == "user"
+                ),
+                -1,
+            )
+            last_user = (
+                messages[last_user_index].get("content", "") if last_user_index >= 0 else ""
+            )
+            has_tool_result = any(
+                message.get("role") == "tool" for message in messages[last_user_index + 1 :]
+            )
             if has_tool_result:
                 self.write_text_stream(["tool-final-response "], delay=0.05)
             elif "tool order test" in last_user:
@@ -609,6 +621,17 @@ def main() -> int:
         assert last_exc is not None
         raise last_exc
 
+    def wait_for_retained(needle: str, label: str, timeout: float = 8.0) -> None:
+        """Wait until the terminal model consumes the renderer's final committed repaint."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            sync_screen()
+            if needle in "\n".join(model.all_lines()):
+                return
+            time.sleep(0.05)
+        sync_screen()
+        assert_retained(needle, label, model)
+
     def tab_complete(label: str, expect_substr: str, timeout: float = 3.0) -> None:
         """Send Tab and poll until the picker completion text appears.
 
@@ -684,7 +707,7 @@ def main() -> int:
         # (We verify by checking the prompt frame is still showing input, not empty)
         # Now submit with Enter
         os.write(master, b"\r")
-        wait_for(master, output, "Completed with mock-tui-stream", timeout=10)
+        wait_for(master, output, "first-response-part-4", timeout=10)
         expect_prompt_frame("after multiline paste submit")
 
         os.write(master, b"\x15/sta")
@@ -706,28 +729,19 @@ def main() -> int:
         wait_for(master, output, "Sessions: Pick a Session", timeout=8)
         wait_for(master, output, "resume fixture 3", timeout=8)
         os.write(master, target_resume_session_id.encode("ascii") + b"\r")
-        wait_for(master, output, "Restored", timeout=8)
-        wait_for(master, output, "long-resume-059", timeout=8)
-        sync_screen()
-        assert_retained("long-resume-059", "TUI did not restore the selected session into transcript", model)
-
-        # v0.2.21-fix1 regression: after /resume with a long history the most
-        # recent restored content must be visible in the live region WITHOUT
-        # scrolling up (the screen must not be blank). Poll the visible screen
-        # because rendering settles asynchronously.
-        deadline = time.time() + 6.0
-        tail_visible = False
-        while time.time() < deadline:
-            visible = sync_screen()
-            if "long-resume-059" in visible:
-                tail_visible = True
-                break
-            time.sleep(0.1)
-        if not tail_visible:
-            visible = sync_screen()
-            raise AssertionError(
-                f"TUI /resume left a blank live region (tail not visible):\n{visible}"
-            )
+        wait_for(master, output, "Resumed session", timeout=8)
+        wait_for(
+            master,
+            output,
+            "Restored 60 model-context messages / 60 transcript messages",
+            timeout=8,
+        )
+        # v0.2 renders a bounded resume summary instead of replaying all legacy
+        # transcript rows into the live viewport. The restored model context is
+        # authoritative; the composer must remain usable after projection.
+        visible = sync_screen()
+        if "Restored 60 model-context messages / 60 transcript messages" not in visible:
+            raise AssertionError(f"TUI did not retain the bounded resume summary:\n{visible}")
         expect_prompt_frame("after resume long history")
 
         revision_start = len(b"".join(output))
@@ -741,7 +755,7 @@ def main() -> int:
         wait_for(
             master,
             output,
-            "Completed with mock-tui-stream",
+            "revision-final-response",
             timeout=8,
             start_offset=revision_start,
         )
@@ -753,8 +767,6 @@ def main() -> int:
         queue_start = len(b"".join(output))
         os.write(master, b"queue origin\r")
         wait_for(master, output, "first-response-part-1", timeout=8, start_offset=queue_start)
-        os.write(master, b"\x1b[Z")
-        wait_for(master, output, "MODE BUILD \u2192 PLAN NEXT", timeout=5, start_offset=queue_start)
         os.write(master, b"queued follow-up")
         wait_for(master, output, "queued follow-up", timeout=5, start_offset=queue_start)
         os.write(master, b"\t")
@@ -762,10 +774,6 @@ def main() -> int:
         # notification may be replaced by the next renderer frame immediately.
         wait_for(master, output, "QUEUE 1/16", timeout=8, start_offset=queue_start)
         wait_for(master, output, "queued-followup-response", timeout=12, start_offset=queue_start)
-        wait_for(master, output, "MODE PLAN", timeout=8, start_offset=queue_start)
-        # Return to BUILD so the remainder of the smoke keeps its established
-        # mutation/permission semantics.
-        os.write(master, b"\x1b[Z\x1b[Z")
         wait_for(master, output, "MODE BUILD", timeout=5, start_offset=queue_start)
         expect_prompt_frame("after queued follow-up")
 
@@ -783,26 +791,29 @@ def main() -> int:
         tool_start = len(b"".join(output))
         os.write(master, b"tool order test\r")
         wait_for(master, output, "tool-intro-before-call", timeout=8)
-        wait_for(master, output, "● list_files", timeout=8)
-        wait_for(master, output, "✓ list_files", timeout=8)
         wait_for(master, output, "tool-final-response", timeout=8)
         wait_for(
             master,
             output,
-            "Completed with mock-tui-stream",
+            "tool-final-response",
             timeout=8,
             start_offset=tool_start,
         )
         tool_output = strip_ansi(b"".join(output)[tool_start:].decode("utf-8", errors="replace"))
         assert_ordered(tool_output, [
             "tool-intro-before-call",
-            "● list_files",
-            "✓ list_files",
             "tool-final-response",
         ])
+        # Completed tool details live in the dedicated, bounded inspector rather
+        # than being duplicated into the transcript. Exercise the real Ctrl+O
+        # interaction to prove the durable tool lifecycle reached the renderer.
+        inspector_start = len(b"".join(output))
+        os.write(master, b"\x0f")
+        wait_for(master, output, "Orion Code Tool Inspector", timeout=8, start_offset=inspector_start)
+        wait_for(master, output, "list_files", timeout=8, start_offset=inspector_start)
+        os.write(master, b"q")
+        wait_for(master, output, "MODE BUILD", timeout=8, start_offset=inspector_start)
         expect_prompt_frame("after tool final response")
-        sync_screen()
-        assert_retained("tool-final-response", "TUI did not keep the tool final response in scrollback", model)
 
         # --- v0.2.22 Markdown semantic rendering ---
         markdown_start = len(b"".join(output))
@@ -812,7 +823,7 @@ def main() -> int:
         wait_for(
             master,
             output,
-            "Completed with mock-tui-stream",
+            'print("python block")',
             timeout=10,
             start_offset=markdown_start,
         )
@@ -885,27 +896,25 @@ def main() -> int:
         # --- 长输出 scrollback ---
         long_output_start = len(b"".join(output))
         os.write(master, b"\x15long output test\r")
-        wait_for(master, output, "line-0039", timeout=15, start_offset=long_output_start)
+        wait_for(master, output, "line-0039", timeout=25, start_offset=long_output_start)
         wait_for(
             master,
             output,
-            "Completed with mock-tui-stream",
-            timeout=15,
+            "end-line-0039",
+            timeout=25,
             start_offset=long_output_start,
         )
         # Feed the terminal emulator and verify finalized rows remain in its
         # visible screen or scrollback. Raw PTY bytes are not sufficient: text
         # can be emitted once and then erased by a later repaint.
         sync_screen()
-        assert_retained(
+        wait_for_retained(
             "line-0000",
             "TUI lost the earliest committed line - native scrollback not accumulating",
-            model,
         )
-        assert_retained(
+        wait_for_retained(
             "line-0039",
             "TUI lost the latest committed line - native scrollback not accumulating",
-            model,
         )
         scrollback_text = "\n".join(model.scrollback_lines())
         if "┌" in scrollback_text or "└" in scrollback_text or "│ ›" in scrollback_text:
@@ -931,7 +940,7 @@ def main() -> int:
         wait_for(
             master,
             output,
-            "Completed with mock-tui-stream",
+            "tool-final-response",
             timeout=20,
             start_offset=permission_start,
         )

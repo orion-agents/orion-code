@@ -1,5 +1,6 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
+import { existsSync, lstatSync, readdirSync } from 'fs';
 import { dirname, join, relative, resolve } from 'path';
+import { inspectSafeProjectPath, readSafeProjectFilePrefix } from './safe-project-reader';
 
 export interface ProjectInstructionFile {
   path: string;
@@ -59,19 +60,12 @@ function directoriesFromRoot(root: string, cwd: string): string[] {
 
 function readTextPrefix(
   path: string,
+  root: string,
   maxBytes: number
 ): { content: string; truncated: boolean } | null {
-  try {
-    const stat = statSync(path);
-    if (!stat.isFile()) return null;
-    const content = readFileSync(path).subarray(0, maxBytes).toString('utf8');
-    return {
-      content,
-      truncated: stat.size > maxBytes,
-    };
-  } catch {
-    return null;
-  }
+  const read = readSafeProjectFilePrefix(path, root, maxBytes);
+  if (!read.ok || read.bytes.includes(0)) return null;
+  return { content: read.bytes.toString('utf8'), truncated: read.truncated };
 }
 
 interface ProjectInstructionDiscovery {
@@ -95,9 +89,10 @@ function discoverProjectInstructionFiles(
     DIRECT_FILES.forEach(file => addCandidate(join(dir, file)));
     const cursorRulesDir = join(dir, '.cursor', 'rules');
     watchPaths.add(cursorRulesDir);
-    if (!existsSync(cursorRulesDir)) continue;
+    const inspectedRulesDir = inspectSafeProjectPath(cursorRulesDir, root);
+    if (!inspectedRulesDir.ok || !inspectedRulesDir.stats.isDirectory()) continue;
     try {
-      for (const file of readdirSync(cursorRulesDir)
+      for (const file of readdirSync(inspectedRulesDir.canonicalPath)
         .filter(file => file.endsWith('.md') || file.endsWith('.mdc'))
         .sort((a, b) => a.localeCompare(b))) {
         addCandidate(join(cursorRulesDir, file));
@@ -124,7 +119,7 @@ function loadDiscoveredFiles(
     if (seen.has(absolutePath) || remainingReadBytes <= 0) continue;
     seen.add(absolutePath);
     const readLimit = Math.min(maxFileBytes, remainingReadBytes);
-    const read = readTextPrefix(absolutePath, readLimit);
+    const read = readTextPrefix(absolutePath, root, readLimit);
     if (!read) continue;
     remainingReadBytes -= Buffer.byteLength(read.content, 'utf8');
     if (!read.content.trim()) continue;
@@ -229,7 +224,7 @@ function watchFingerprint(paths: string[]): string {
   return paths
     .map(path => {
       try {
-        const stat = statSync(path);
+        const stat = lstatSync(path);
         return `${path}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
       } catch {
         return `${path}:missing`;

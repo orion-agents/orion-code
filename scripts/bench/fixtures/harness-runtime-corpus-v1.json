@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "orion-harness-runtime-baseline-v1",
+  "provider": {
+    "kind": "deterministic-none",
+    "correctnessDependency": false
+  },
+  "workspace": {
+    "skills": "builtin-only",
+    "mcpServers": 5,
+    "mcpSelected": false
+  },
+  "probes": [
+    "full-tool-schema",
+    "skill-definition-loads",
+    "mcp-eager-lifecycle",
+    "cold-process-runtime",
+    "warm-step-runtime"
+  ]
+}

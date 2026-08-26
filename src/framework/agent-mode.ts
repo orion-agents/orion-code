@@ -1,7 +1,5 @@
 import type { AgentMode } from '../commands/types';
 import type { Store } from './store';
-import type { ToolContext } from './tool';
-import { getToolState, setToolState } from './tool-state';
 
 /** Stable cycle used by the product TUI. `interactive` is displayed as BUILD. */
 export const AGENT_MODE_CYCLE: readonly AgentMode[] = ['interactive', 'plan', 'auto'];
@@ -13,25 +11,6 @@ export interface AgentModeSnapshot {
 
 export type AgentModeListener = (snapshot: AgentModeSnapshot) => void;
 
-export function createPlanModeChangeHandler(
-  store: Store,
-  lifecycle?: AgentModeLifecycleController
-): NonNullable<ToolContext['onPlanModeChange']> {
-  return transition => {
-    if (!transition.active && transition.currentPlan && lifecycle) {
-      return lifecycle.completePlan(transition.currentPlan, transition.returnMode).baseMode as
-        | 'interactive'
-        | 'auto';
-    }
-    store.setState({
-      agentMode: transition.active ? 'plan' : transition.returnMode,
-      planMode: transition.active,
-      currentPlan: transition.currentPlan,
-    });
-    return transition.returnMode;
-  };
-}
-
 export function nextAgentMode(mode: AgentMode): AgentMode {
   const index = AGENT_MODE_CYCLE.indexOf(mode);
   return AGENT_MODE_CYCLE[(index + 1) % AGENT_MODE_CYCLE.length];
@@ -41,7 +20,8 @@ export function nextAgentMode(mode: AgentMode): AgentMode {
  * Single owner for BUILD / PLAN / AUTO lifecycle state.
  *
  * Commands, keyboard shortcuts and the plan completion tool all transition
- * through this controller so Store and tool-state cannot drift apart.
+ * through this runtime-owned controller. Store is a projection; no process
+ * global mode registry participates in the transition.
  */
 export class AgentModeLifecycleController {
   private pendingBaseMode: AgentMode | null = null;
@@ -91,14 +71,10 @@ export class AgentModeLifecycleController {
     this.pendingBaseMode = null;
     this.completedPlanRevision += 1;
     this.lastCompletedPlan = savedPlan;
-    setToolState({
-      planMode: false,
-      currentPlan: savedPlan,
-      planReturnMode: executionMode === 'auto' ? 'auto' : 'interactive',
-    });
     this.store.setState({
       agentMode: executionMode,
       planMode: false,
+      planReturnMode: executionMode,
       currentPlan: savedPlan,
     });
     return this.notify();
@@ -127,32 +103,26 @@ export class AgentModeLifecycleController {
       return;
     }
     const snapshot = this.store.getSnapshot();
-    const toolState = getToolState();
-
     if (mode === 'plan') {
       const returnMode =
         snapshot.agentMode === 'auto'
           ? 'auto'
           : snapshot.agentMode === 'interactive'
             ? 'interactive'
-            : (toolState.planReturnMode ?? 'interactive');
-      setToolState({
+            : snapshot.planReturnMode;
+      this.store.setState({
+        agentMode: 'plan',
         planMode: true,
-        currentPlan: null,
         planReturnMode: returnMode,
+        currentPlan: null,
       });
-      this.store.setState({ agentMode: 'plan', planMode: true, currentPlan: null });
       return;
     }
 
-    setToolState({
-      planMode: false,
-      currentPlan: snapshot.agentMode === 'plan' ? null : snapshot.currentPlan,
-      planReturnMode: mode,
-    });
     this.store.setState({
       agentMode: mode,
       planMode: false,
+      planReturnMode: mode,
       currentPlan: snapshot.agentMode === 'plan' ? null : snapshot.currentPlan,
     });
   }

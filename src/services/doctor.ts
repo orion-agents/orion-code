@@ -8,22 +8,20 @@ import {
   getProjectCheckpointsDir,
   getProjectMemoryDir,
   getProjectSessionsDir,
+  getMcpConfigPath,
 } from './config-dir';
 import {
-  isDeprecatedUIRenderer,
   isProductUIRenderer,
   isConfigured,
   type OrionCodeCLIConfig,
 } from './config';
-import { getMcpConfigPath, mcpManager } from '../tools/mcp';
-import { getRuntimeTools } from '../tools';
+import { createFirstPartyMcpAdapterV1, loadFirstPartyMcpConfigurationV1 } from '../runtime/mcp';
 import { loadProjectInstructionFiles } from './project-instructions';
 import { refreshProjectInstructions } from './prompt-context';
 import { listProjectSessions, resolveProjectPath, type SessionMeta } from './session-storage';
-import { getSkillsRegistry } from '../skills';
+import { createFilesystemSkillRootsV1 } from '../runtime/skills';
 import type { Store } from '../framework/store';
 import type { LLMService } from './llm';
-import type { OrionCodeRuntime } from '../init';
 import { getWarningState } from '../core/warn-dedup';
 import { getAutoCompact } from './compact/auto-compact';
 import type { CompactCoordinator } from './compact/coordinator';
@@ -54,7 +52,6 @@ export interface DoctorContext {
   config: OrionCodeCLIConfig;
   store: Store;
   llm: LLMService | null;
-  runtime: OrionCodeRuntime;
   compactCoordinator?: CompactCoordinator;
   getSession?: () => SessionMeta | null;
 }
@@ -72,9 +69,7 @@ function countStatuses(checks: DoctorCheck[]): Record<DoctorStatus, number> {
 function summarizeMcpStatus(): DoctorCheck {
   const configPath = getMcpConfigPath();
   const hasConfig = existsSync(configPath);
-  const status = mcpManager.getStatus();
-
-  if (!hasConfig && status.length === 0) {
+  if (!hasConfig) {
     return {
       id: 'mcp',
       status: 'ok',
@@ -84,34 +79,28 @@ function summarizeMcpStatus(): DoctorCheck {
     };
   }
 
-  if (hasConfig && status.length === 0) {
+  try {
+    const adapter = createFirstPartyMcpAdapterV1({
+      config: loadFirstPartyMcpConfigurationV1(configPath),
+    });
     return {
       id: 'mcp',
-      status: 'warn',
+      status: 'ok',
       label: 'MCP',
-      summary: 'MCP config exists but no servers are active',
-      detail: configPath,
+      summary: `${adapter.descriptors.length} configured, lazy activation enabled`,
+      detail:
+        adapter.descriptors.map(server => `${server.name}: dormant`).join('\n') ||
+        'No enabled MCP servers configured',
+    };
+  } catch (error) {
+    return {
+      id: 'mcp',
+      status: 'fail',
+      label: 'MCP',
+      summary: 'Invalid MCP configuration',
+      detail: error instanceof Error ? error.message : String(error),
     };
   }
-
-  const connected = status.filter(server => server.connected).length;
-  const dead = status.filter(server => server.dead).length;
-  const disconnected = status.filter(server => !server.connected && !server.dead).length;
-  const tools = status.reduce((sum, server) => sum + server.toolCount, 0);
-  const detail = status
-    .map(
-      server =>
-        `${server.name}: ${server.dead ? 'dead' : server.connected ? 'connected' : 'disconnected'} (${server.toolCount} tools)`
-    )
-    .join('\n');
-
-  return {
-    id: 'mcp',
-    status: dead > 0 || disconnected > 0 ? 'fail' : 'ok',
-    label: 'MCP',
-    summary: `${connected}/${status.length} connected, ${tools} tools`,
-    detail,
-  };
 }
 
 function formatTokenCount(tokens: number): string {
@@ -153,42 +142,21 @@ function summarizeAutoCompact(ctx: DoctorContext): DoctorCheck {
   };
 }
 
-function summarizeSkills(): DoctorCheck {
-  try {
-    const registry = getSkillsRegistry();
-    const summary = registry.getSummary();
-    const duplicateLines = summary.duplicates.slice(0, 10).map(duplicate => {
-      const previous = duplicate.existingSource?.type ?? 'unknown';
-      const incoming = duplicate.incomingSource.type;
-      const selected = duplicate.selectedSourceType ?? 'unknown';
-      return `duplicate ${duplicate.name}: ${previous} vs ${incoming}, selected ${selected} (${duplicate.reason})`;
-    });
-    const detail = [
-      summary.names.slice(0, 20).join(', ') || 'No skills loaded',
-      ...duplicateLines,
-      summary.duplicates.length > duplicateLines.length
-        ? `... ${summary.duplicates.length - duplicateLines.length} more duplicate skill diagnostics`
-        : '',
-    ]
-      .filter(Boolean)
-      .join('\n');
-    return {
-      id: 'skills',
-      status: summary.count > 0 ? (summary.duplicateCount > 0 ? 'warn' : 'ok') : 'warn',
-      label: 'Skills',
-      summary: `${summary.count} loaded, ${summary.autoCount} auto-trigger${summary.duplicateCount > 0 ? `, ${summary.duplicateCount} duplicate` : ''}`,
-      detail,
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return {
-      id: 'skills',
-      status: 'fail',
-      label: 'Skills',
-      summary: 'Failed to load skills',
-      detail: message,
-    };
-  }
+function summarizeSkills(ctx: DoctorContext): DoctorCheck {
+  const roots = createFilesystemSkillRootsV1({
+    cwd: ctx.cwd,
+    configuredPaths: ctx.config.skills?.paths,
+  });
+  const available = roots.filter(root => existsSync(root.path));
+  return {
+    id: 'skills',
+    status: 'ok',
+    label: 'Skills',
+    summary: `${available.length}/${roots.length} roots available, lazy definition loading enabled`,
+    detail: roots
+      .map(root => `${root.sourceScope}: ${existsSync(root.path) ? 'available' : 'absent'}`)
+      .join('\n'),
+  };
 }
 
 function summarizeProjectInstructions(ctx: DoctorContext): DoctorCheck {
@@ -554,7 +522,7 @@ function summarizeProviderConfig(ctx: DoctorContext): DoctorCheck {
 export function collectDoctorReport(ctx: DoctorContext): DoctorReport {
   const projectPath = resolveProjectPath(ctx.cwd);
   const snapshot = ctx.store.getSnapshot();
-  const tools = snapshot.tools.length > 0 ? snapshot.tools : getRuntimeTools();
+  const tools = snapshot.tools;
   const staticTools = tools.filter(tool => !tool.name.startsWith('mcp__')).length;
   const mcpTools = tools.length - staticTools;
 
@@ -583,7 +551,7 @@ export function collectDoctorReport(ctx: DoctorContext): DoctorReport {
       summary: `toolConfirmation=${ctx.config.toolConfirmation}, ui=${ctx.config.ui?.renderer}/${ctx.config.ui?.confirmations}`,
       detail:
         ctx.config.toolConfirmation === 'ask'
-          ? `Interactive tool confirmation is routed through the shared runtime permission protocol.${isDeprecatedUIRenderer(ctx.config.ui?.renderer) ? ' This renderer is deprecated; consider switching to --ui tui.' : isProductUIRenderer(ctx.config.ui?.renderer) ? ' TUI is the product default.' : ''}`
+          ? `Interactive tool confirmation is routed through the shared runtime permission protocol.${isProductUIRenderer(ctx.config.ui?.renderer) ? ' TUI is the product default.' : ''}`
           : undefined,
     },
     {
@@ -593,7 +561,7 @@ export function collectDoctorReport(ctx: DoctorContext): DoctorReport {
       summary: `${tools.length} available (${staticTools} built-in, ${mcpTools} MCP)`,
     },
     summarizeMcpStatus(),
-    summarizeSkills(),
+    summarizeSkills(ctx),
     summarizeProjectInstructions(ctx),
     summarizeSessions(ctx, projectPath),
     summarizeGoalSidecars(projectPath),

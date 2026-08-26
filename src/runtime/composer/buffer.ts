@@ -1,13 +1,12 @@
 /**
  * Shared input buffer reducer.
  *
- * Migrated from `src/ink-ui/runtime/input-buffer.ts` to provide a
- * renderer-independent single-line input buffer with grapheme-safe
- * cursor movement. Ink re-exports from here; TUI imports directly.
+ * Renderer-independent single-line input buffer with grapheme-safe
+ * cursor movement.
  *
  * v0.2.21 extensions (multiline, history, Alt+Enter/Ctrl+J) will be
  * added in `composer.ts` on top of this core; this file keeps the
- * original Ink-compatible API intact.
+ * stable input API intact.
  */
 
 import { nextGraphemeBoundary, previousGraphemeBoundary } from './grapheme';

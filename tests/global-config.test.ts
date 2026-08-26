@@ -106,7 +106,7 @@ describe('global-config', () => {
       saveGlobalConfig({
         ...config,
         ui: {
-          renderer: 'ink',
+          renderer: 'terminal',
           confirmations: 'interactive',
         },
       });
@@ -174,6 +174,7 @@ describe('global-config', () => {
         projects: {
           '/repo': {
             allowedTools: ['read_file', 'write_file'],
+            compactInstructions: '  preserve release evidence and failed attempts  ',
             sandbox: { profile: 'workspace-write' },
             unknown: 'drop-me',
           } as any,
@@ -191,6 +192,7 @@ describe('global-config', () => {
       });
       expect(loaded.projects?.['/repo']).toEqual({
         allowedTools: ['read_file', 'write_file'],
+        compactInstructions: 'preserve release evidence and failed attempts',
         sandbox: { profile: 'workspace-write' },
       });
     });
@@ -302,6 +304,7 @@ describe('global-config', () => {
     test('saveProjectConfig saves project config', () => {
       const projectConfig: ProjectConfig = {
         allowedTools: ['read_file', 'write_file'],
+        compactInstructions: 'retain decisions and verification receipts',
         lastSessionId: 'session-123',
         hasTrustDialogAccepted: true,
       };
@@ -310,6 +313,7 @@ describe('global-config', () => {
 
       const loaded = getProjectConfig(projectPath);
       expect(loaded.allowedTools).toEqual(['read_file', 'write_file']);
+      expect(loaded.compactInstructions).toBe('retain decisions and verification receipts');
       expect(loaded.lastSessionId).toBe('session-123');
       expect(loaded.hasTrustDialogAccepted).toBe(true);
     });

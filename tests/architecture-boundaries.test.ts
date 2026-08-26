@@ -36,9 +36,11 @@ function resolveSourceImport(importer: string, specifier: string): string | null
 function isRuntimeImport(statement: ts.ImportDeclaration | ts.ExportDeclaration): boolean {
   if (ts.isExportDeclaration(statement)) {
     if (statement.isTypeOnly) return false;
-    return !statement.exportClause ||
+    return (
+      !statement.exportClause ||
       !ts.isNamedExports(statement.exportClause) ||
-      statement.exportClause.elements.some(element => !element.isTypeOnly);
+      statement.exportClause.elements.some(element => !element.isTypeOnly)
+    );
   }
 
   const clause = statement.importClause;
@@ -60,7 +62,7 @@ function valueDependencyGraph(files: readonly string[]): Map<string, string[]> {
       readFileSync(file, 'utf8'),
       ts.ScriptTarget.Latest,
       true,
-      file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+      file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS
     );
     const addDependency = (specifier: string): void => {
       const dependency = resolveSourceImport(file, specifier);
@@ -99,7 +101,7 @@ function findPath(
   graph: ReadonlyMap<string, readonly string[]>,
   start: string,
   target: string,
-  seen = new Set<string>(),
+  seen = new Set<string>()
 ): string[] | null {
   if (start === target) return [start];
   if (seen.has(start)) return null;
@@ -115,8 +117,9 @@ describe('architecture boundaries (#70)', () => {
   it('does not redeclare or export deprecated OpenHorse public type names', () => {
     const offenders = sourceFiles().flatMap(file => {
       const source = readFileSync(file, 'utf8');
-      return DEPRECATED_PUBLIC_TYPES.filter(name => new RegExp(`\\b${name}\\b`, 'u').test(source))
-        .map(name => `${relative(SRC_ROOT, file)}:${name}`);
+      return DEPRECATED_PUBLIC_TYPES.filter(name =>
+        new RegExp(`\\b${name}\\b`, 'u').test(source)
+      ).map(name => `${relative(SRC_ROOT, file)}:${name}`);
     });
     expect(offenders).toEqual([]);
   });
@@ -135,7 +138,7 @@ describe('architecture boundaries (#70)', () => {
         const returnPath = findPath(graph, dependency, source);
         if (returnPath) {
           crossBoundaryCycles.push(
-            [source, ...returnPath].map(file => relative(SRC_ROOT, file)).join(' -> '),
+            [source, ...returnPath].map(file => relative(SRC_ROOT, file)).join(' -> ')
           );
         }
       }
@@ -144,15 +147,27 @@ describe('architecture boundaries (#70)', () => {
     expect(crossBoundaryCycles).toEqual([]);
   });
 
-  it('keeps AgentRunner independent from runtime implementation modules', () => {
-    const dependencies = valueDependencyGraph(sourceFiles()).get(
-      normalize(join(SRC_ROOT, 'services/agent-runner.ts')),
-    );
-    expect(dependencies?.map(file => relative(SRC_ROOT, file))).not.toContain(
-      'runtime/subagents/result-parser.ts',
-    );
-    expect(readFileSync(join(SRC_ROOT, 'services/agent-runner.ts'), 'utf8')).toContain(
-      "from '../utils/json'",
-    );
+  it('physically removes legacy agent, harness, runner, and mock SDK owners', () => {
+    const removed = [
+      'init.ts',
+      'agents/coder.ts',
+      'agents/coordinator.ts',
+      'agents/fork.ts',
+      'agents/leader.ts',
+      'agents/router.ts',
+      'agents/worker-pool.ts',
+      'core/agent.ts',
+      'core/brain.ts',
+      'harness/harness.ts',
+      'harness/safety.ts',
+      'services/agent-runner.ts',
+      'services/task-manager.ts',
+      'sdk/index.ts',
+      'sdk/init.ts',
+      'sdk/query.ts',
+      'sdk/sessions.ts',
+      'sdk/types.ts',
+    ];
+    expect(removed.filter(path => existsSync(join(SRC_ROOT, path)))).toEqual([]);
   });
 });

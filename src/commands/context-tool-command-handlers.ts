@@ -3,20 +3,13 @@
 import chalk from 'chalk';
 import { type CommandContext, type CommandResult } from './types';
 import { errorMessage } from '../utils/errors';
-import { getToolState } from '../framework';
-import { executeTool, getRuntimeTools } from '../tools';
-import { mcpManager } from '../tools/mcp';
-import { loadSessionMeta } from '../services/session-storage';
+import { loadSessionCompactCheckpoint, loadSessionMeta } from '../services/session-storage';
 import { getAutoCompact } from '../services/compact/auto-compact';
-import {
-  getSkillsRegistry,
-  loadExplicitSkillReference,
-  normalizeRequestedSkillName,
-  parseSkillCommandInput,
-  skillActivationNames,
-} from '../skills';
-import { resolveModelContext } from '../services/model-context';
+import { createFirstPartyMcpAdapterV1, loadFirstPartyMcpConfigurationV1 } from '../runtime/mcp';
+import { createProductionFilesystemSkillProviderV1 } from '../runtime/skills';
+import { resolveContextBudget, resolveModelContext } from '../services/model-context';
 import { validateAllMemories } from '../memory/validation';
+import type { OrionRuntimeDiagnosticsV1 } from '../runtime/orion-runtime-v1';
 
 const ACCENT = chalk.hex('#00D4AA');
 
@@ -61,22 +54,12 @@ function showMemory(ctx: CommandContext): CommandResult {
   console.log(HEADER('Memory Status'));
   console.log(DIM('─'.repeat(40)));
 
-  const memStatus = ctx.runtime.memory.getStatus();
-  const storeStats = ctx.runtime.store.getStats();
+  const snapshot = ctx.store.getSnapshot();
 
   console.log();
-  console.log(HEADER('  Inline MemorySystem:'));
-  console.log(`    Working    ${memStatus.working} / ${ctx.runtime.config.memory.workingCapacity}`);
-  console.log(
-    `    Short-term ${memStatus['short-term']} / ${ctx.runtime.config.memory.shortTermCapacity}`
-  );
-  console.log(`    Long-term  ${memStatus['long-term']} entries`);
-
-  console.log();
-  console.log(HEADER('  Modular MemoryStore:'));
-  console.log(`    Working    ${storeStats.working}`);
-  console.log(`    Short-term ${storeStats['short-term']}`);
-  console.log(`    Long-term  ${storeStats['long-term']} entries`);
+  console.log(HEADER('  Prompt Memory:'));
+  console.log(`    Selected   ${snapshot.memoryContent ? snapshot.memoryContent.length : 0} chars`);
+  console.log(`    Policy     bounded per-turn relevance context`);
   console.log();
   return { success: true };
 }
@@ -164,31 +147,126 @@ function showSafety(ctx: CommandContext): CommandResult {
   console.log(HEADER('Safety Checker'));
   console.log(DIM('─'.repeat(40)));
 
-  const policy = ctx.runtime.safety.getPolicy();
-  const summary = ctx.runtime.safety.getAuditSummary();
-
   console.log();
-  console.log(`  Enabled    ${policy.enabled ? SUCCESS('yes') : ERROR('no')}`);
-  console.log(`  Sandbox    ${policy.sandboxMode ? WARN('on') : DIM('off')}`);
-  console.log();
-  console.log(`  Blocked patterns:`);
-  for (const pattern of policy.blocked) {
-    console.log(`    ${ERROR('✗')} ${DIM(pattern)}`);
-  }
-  console.log();
-  console.log(`  Dangerous patterns:`);
-  for (const pattern of policy.dangerousPatterns) {
-    console.log(`    ${WARN('⚠')} ${DIM(pattern)}`);
-  }
-  console.log();
-  console.log(
-    `  Audit summary: ${summary.total} checks | ${SUCCESS(`${summary.passed} passed`)} | ${ERROR(`${summary.blocked} blocked`)}`
-  );
+  console.log(`  Boundary   ${SUCCESS('ToolGateway')}`);
+  console.log(`  Policy     ${ctx.config.toolConfirmation}`);
+  console.log(`  Approval   independent from sandbox enforcement`);
+  console.log(`  Mode       BUILD / PLAN / AUTO never changes containment`);
   console.log();
   return { success: true };
 }
 
-function showHarness(ctx: CommandContext, args: string = ''): CommandResult {
+interface HarnessDiagnosticsWriter {
+  log(...values: unknown[]): void;
+}
+
+function renderRuntimeHarnessDiagnostics(
+  output: HarnessDiagnosticsWriter,
+  diagnostics: OrionRuntimeDiagnosticsV1
+): void {
+  const shortDigest = (value: string): string =>
+    value === 'unavailable' ? value : value.slice(0, 12);
+  output.log();
+  output.log(HEADER('Harness Explain · Runtime v0.2'));
+  output.log(DIM('─'.repeat(56)));
+  output.log();
+  output.log(HEADER('  Runtime Graph'));
+  output.log(`    State       ${SUCCESS(diagnostics.runtime.state)}`);
+  output.log(
+    `    Scope       ${ACCENT(diagnostics.runtime.scope.state)} epoch=${diagnostics.runtime.scope.epoch} resources=${diagnostics.runtime.scope.activeResources} leases=${diagnostics.runtime.scope.activeLeases}`
+  );
+  for (const service of diagnostics.runtime.services) {
+    output.log(`    ${DIM(service.slot.padEnd(12))} ${service.serviceId}`);
+  }
+  const contributors = diagnostics.runtime.contributors.filter(entry => entry.ids.length > 0);
+  output.log(
+    `    Contributors ${contributors.length > 0 ? contributors.map(entry => `${entry.lane}=[${entry.ids.join(',')}]`).join(' ') : DIM('none')}`
+  );
+
+  output.log();
+  output.log(HEADER('  Thread / TaskContext'));
+  output.log(
+    `    Thread      ${ACCENT(diagnostics.thread.status)} cursor=${diagnostics.thread.cursor} lag=${diagnostics.thread.projectionLag} queue=${diagnostics.thread.queuedTurns}/${diagnostics.thread.queuedBytes}B`
+  );
+  if (diagnostics.thread.activeTurnId) {
+    output.log(
+      `    Active      ${diagnostics.thread.activeTurnId} items=[${diagnostics.thread.activeItemIds.join(',') || 'none'}] interrupt=${diagnostics.thread.interruptRequested ? 'requested' : 'no'}`
+    );
+  }
+  output.log(
+    `    Task        revision=${diagnostics.taskContext.revision} epoch=${diagnostics.taskContext.taskEpoch} criteria=${diagnostics.taskContext.criteria}`
+  );
+  output.log(`    Task digest ${shortDigest(diagnostics.taskContext.stateDigest)}`);
+  output.log(
+    `    Evidence    ${diagnostics.taskContext.evidenceRefs.length > 0 ? diagnostics.taskContext.evidenceRefs.join(', ') : DIM('none')}`
+  );
+
+  output.log();
+  output.log(HEADER('  Capability Snapshot'));
+  const capability = diagnostics.capability;
+  if (!capability) {
+    output.log(DIM('    No durable capability receipt yet. Run a model step first.'));
+  } else {
+    output.log(`    Step        ${capability.stepId} request=${capability.requestId}`);
+    output.log(
+      `    Direct      ${capability.direct.length > 0 ? capability.direct.join(', ') : DIM('none')}`
+    );
+    output.log(
+      `    Deferred    ${capability.deferred.length > 0 ? capability.deferred.join(', ') : DIM('none')}`
+    );
+    const hidden = Object.entries(capability.hidden);
+    output.log(
+      `    Hidden      ${hidden.length > 0 ? hidden.map(([id, reason]) => `${id}(${reason})`).join(', ') : DIM('none')}`
+    );
+    output.log(
+      `    Omitted     ${capability.omitted.length > 0 ? capability.omitted.map(item => `${item.id}(${item.reason})`).join(', ') : DIM('none')}`
+    );
+    output.log(
+      `    Schemas     ${ACCENT(`${capability.schemaBytes}B`)} / ${capability.fullSchemaBytes}B (${SUCCESS(`${capability.schemaReductionPercent}% leaner`)})`
+    );
+    output.log(
+      `    Digests     step=${shortDigest(capability.stepSnapshotDigest)} router=${shortDigest(capability.toolRouterDigest)} authority=${shortDigest(capability.authorityDigest)} policy=${shortDigest(capability.executionPolicyDigest)}`
+    );
+    output.log(
+      `    Skills      catalog=${shortDigest(capability.skillCatalogDigest)} selected=[${capability.selectedSkillIds.join(',') || 'none'}]`
+    );
+    output.log(
+      `    MCP         catalog=${shortDigest(capability.mcpCatalogDigest)} selected=[${capability.selectedMcpBindings.join(',') || 'none'}]`
+    );
+    output.log(
+      `    Prompt      ${capability.promptSections.map(section => `${section.id}:${section.selected ? 'selected' : `omitted(${section.reason ?? 'policy'})`}`).join(', ') || 'none'}`
+    );
+  }
+
+  output.log();
+  output.log(HEADER('  Lazy Providers'));
+  output.log(
+    `    Skill defs  ${diagnostics.skills.definitionCache.entries}/${diagnostics.skills.definitionCache.maxEntries} entries · ${diagnostics.skills.definitionCache.bytes}/${diagnostics.skills.definitionCache.maxBytes}B · in-flight=${diagnostics.skills.definitionLoadsInFlight}`
+  );
+  output.log(
+    `    Skill files ${diagnostics.skills.resourceCache.entries}/${diagnostics.skills.resourceCache.maxEntries} entries · ${diagnostics.skills.resourceCache.bytes}/${diagnostics.skills.resourceCache.maxBytes}B · in-flight=${diagnostics.skills.resourceLoadsInFlight}`
+  );
+  output.log(
+    `    MCP catalog ${diagnostics.mcp.catalog.descriptors.length} descriptors · ${shortDigest(diagnostics.mcp.catalog.digest)}`
+  );
+  for (const server of diagnostics.mcp.servers) {
+    output.log(
+      `      ${server.serverId} ${server.state} leases=${server.activeLeaseCount} calls=${server.activeCallCount} pending=${server.pendingAcquireCount} tools=${server.toolCount}${server.failure ? ` failure=${server.failure}` : ''}`
+    );
+  }
+
+  output.log();
+  output.log(HEADER('  Latest Durable Outcome'));
+  output.log(`    Event cursor ${diagnostics.latest.eventCursor}`);
+  output.log(`    Compact      ${diagnostics.latest.compactEvent ?? 'none'}`);
+  output.log(`    Recovery     ${shortDigest(diagnostics.latest.compactRecoveryDigest)}`);
+  output.log(
+    `    Stop         ${diagnostics.latest.stopDecision ? JSON.stringify(diagnostics.latest.stopDecision) : 'none'}`
+  );
+  output.log();
+}
+
+async function showHarness(ctx: CommandContext, args: string = ''): Promise<CommandResult> {
   const lines: string[] = [];
   const console = {
     log: (...values: unknown[]): void => {
@@ -196,21 +274,44 @@ function showHarness(ctx: CommandContext, args: string = ''): CommandResult {
     },
   };
   const result = (): CommandResult => ({ success: true, output: lines.join('\n') });
-  const explain = args.trim().toLowerCase() === 'explain';
+  const tokens = args
+    .trim()
+    .toLowerCase()
+    .split(/\s+/u)
+    .filter(Boolean);
+  const explain = tokens[0] === 'explain';
+  const json = tokens.includes('--json');
+  if (tokens.some(token => token !== 'explain' && token !== '--json')) {
+    return { success: false, error: 'Usage: /harness [explain [--json]]' };
+  }
+
+  if (explain && ctx.getHarnessDiagnostics) {
+    try {
+      const diagnostics = await ctx.getHarnessDiagnostics();
+      if (diagnostics) {
+        if (json) {
+          return { success: true, output: JSON.stringify(diagnostics, null, 2) };
+        }
+        renderRuntimeHarnessDiagnostics(console, diagnostics);
+        return result();
+      }
+    } catch (error) {
+      return {
+        success: false,
+        error: `Harness diagnostics unavailable: ${errorMessage(error)}`,
+      };
+    }
+  }
+
   console.log();
   console.log(HEADER(explain ? 'Harness Explain' : 'Harness'));
   console.log(DIM('─'.repeat(40)));
 
-  const cfg = ctx.runtime.harness.getConfig();
   console.log();
   if (!explain) {
-    console.log(`  Max steps       ${cfg.maxSteps}`);
-    console.log(`  Boundary check  ${cfg.boundaryCheck ? SUCCESS('on') : ERROR('off')}`);
-    console.log(`  Goal constraint ${cfg.goalConstraint ? SUCCESS('on') : ERROR('off')}`);
-    console.log(`  Result validate ${cfg.resultValidation ? SUCCESS('on') : ERROR('off')}`);
-    console.log(`  Sandbox         ${cfg.sandbox ? WARN('on') : DIM('off')}`);
-    console.log(`  Timeout         ${cfg.timeout}ms`);
-    console.log(`  Blocked actions ${DIM(cfg.blockedActions.join(', ') || 'none')}`);
+    console.log(`  Completion owner ${SUCCESS('TaskContext')}`);
+    console.log(`  Execution owner  ${SUCCESS('ToolGateway')}`);
+    console.log(`  Durable owner    ${SUCCESS('ThreadEventStore')}`);
   }
 
   const state = ctx.store.getSnapshot().harnessState;
@@ -338,6 +439,22 @@ function showHarness(ctx: CommandContext, args: string = ''): CommandResult {
       console.log(`    Ledger      ${DIM(`${state.ledger?.length ?? 0} entries`)}`);
       console.log(`    Evidence    ${DIM(`${state.evidenceIndex?.length ?? 0} records`)}`);
       console.log(`    Turns       ${DIM(`${state.turnSummaries?.length ?? 0} summaries`)}`);
+      if (stats.capabilityProfileVersion) {
+        console.log(
+          `    Capability  ${DIM(`v${stats.capabilityProfileVersion} ${stats.capabilityProfileFingerprint?.slice(0, 12) ?? 'unknown'}`)}`
+        );
+      }
+      if (stats.sectionManifest?.length) {
+        console.log();
+        console.log(HEADER('    Section Budget'));
+        for (const section of stats.sectionManifest) {
+          const disposition = section.selected ? SUCCESS('selected') : WARN('omitted');
+          console.log(
+            `      ${ACCENT(section.name.padEnd(18))} ${DIM(`[${section.authority}] ${section.tokenEstimate}/${section.budgetTokens}`)} ${disposition}`
+          );
+          if (section.reason) console.log(`        ${DIM(section.reason)}`);
+        }
+      }
       console.log();
       console.log(HEADER('    Included Evidence'));
       for (const item of stats.includedEvidence.slice(0, 10)) {
@@ -381,6 +498,45 @@ function showHarness(ctx: CommandContext, args: string = ''): CommandResult {
     );
     console.log(`    Armed       ${compactStats.preCompactArmed ? SUCCESS('yes') : DIM('no')}`);
     console.log(`    Last mode   ${DIM(compactStats.lastCompactMode ?? 'none')}`);
+    const budget = resolveContextBudget(compactStats.modelId, ctx.llm?.getMaxTokens?.());
+    console.log(
+      `    Reserve     ${DIM(`${budget.reservedOutputTokens} output + ${budget.safetyMarginTokens} safety tokens`)}`
+    );
+    if (session?.id) {
+      try {
+        const checkpoint = loadSessionCompactCheckpoint(session.id);
+        console.log();
+        console.log(HEADER('  Latest Compact Receipt'));
+        if (!checkpoint) {
+          console.log(DIM('    No committed compact checkpoint.'));
+        } else {
+          console.log(`    Checkpoint  ${ACCENT(checkpoint.checkpointId)}`);
+          console.log(`    Schema      ${DIM(`v${checkpoint.version}`)}`);
+          console.log(`    Mode        ${DIM(checkpoint.mode)}`);
+          console.log(
+            `    Tokens      ${DIM(`${checkpoint.beforeUsage.usedTokens} → ${checkpoint.afterUsage.usedTokens}`)}`
+          );
+          if (checkpoint.version === 2) {
+            console.log(`    Strategy    ${DIM(checkpoint.summary.strategy)}`);
+            console.log(
+              `    Target      ${DIM(`${Math.round(checkpoint.validation.targetHeadroomRatio * 100)}% (${checkpoint.validation.targetMet ? 'met' : 'missed'})`)}`
+            );
+            console.log(
+              `    Coverage    ${DIM(`${checkpoint.candidateReceipt.semanticSummary?.coverage.groupCount ?? 0} groups / ${checkpoint.candidateReceipt.semanticSummary?.coverage.messageCount ?? 0} messages`)}`
+            );
+            console.log(
+              `    Diagnostics ${DIM(String(checkpoint.candidateReceipt.diagnostics.length))}`
+            );
+          }
+        }
+      } catch (error) {
+        console.log();
+        console.log(HEADER('  Latest Compact Receipt'));
+        console.log(
+          WARN(`    Unavailable: ${error instanceof Error ? error.message : String(error)}`)
+        );
+      }
+    }
     console.log();
     return result();
   }
@@ -416,18 +572,24 @@ function showHarness(ctx: CommandContext, args: string = ''): CommandResult {
   return result();
 }
 
-function handleSkills(_ctx: CommandContext): CommandResult {
+async function handleSkills(ctx: CommandContext): Promise<CommandResult> {
   console.log();
-  console.log(HEADER('Loaded Skills'));
+  console.log(HEADER('Skill Catalog'));
   console.log(DIM('─'.repeat(40)));
 
   try {
-    const registry = getSkillsRegistry();
-    const summary = registry.getSummary();
-
-    if (summary.count === 0) {
+    const provider = createProductionFilesystemSkillProviderV1({
+      cwd: ctx.cwd,
+      configuredPaths: ctx.config.skills?.paths,
+      watch: false,
+    });
+    const catalog = await provider.list(
+      { id: `command:${ctx.cwd}` },
+      ctx.abortSignal ?? new AbortController().signal
+    );
+    if (catalog.descriptors.length === 0) {
       console.log();
-      console.log(DIM('  No skills loaded.'));
+      console.log(DIM('  No Skill descriptors found.'));
       console.log(
         DIM('  Place SKILL.md files in ~/.orion-code/skills/<name>/ or .orion-code/skills/<name>/')
       );
@@ -437,20 +599,12 @@ function handleSkills(_ctx: CommandContext): CommandResult {
 
     console.log();
     console.log(
-      `  Total ${SUCCESS(summary.count)} skills (${WARN(summary.autoCount)} auto-trigger)`
+      `  Total ${SUCCESS(catalog.descriptors.length)} descriptors (definitions remain lazy)`
     );
     console.log();
-    for (const skill of registry.getAllSkills()) {
-      const source = registry.getSource(skill.name);
-      const sourceType = source?.type || 'unknown';
-      const resourceRoot = skill.resourceRoot || skill.source || source?.path;
-      const skillFile = resourceRoot
-        ? `${resourceRoot.replace(/\/SKILL\.md$/i, '')}/SKILL.md`
-        : source?.skillFile;
-      console.log(`  ${ACCENT(skill.name)} ${DIM(`(${sourceType})`)}`);
+    for (const skill of catalog.descriptors) {
+      console.log(`  ${ACCENT(skill.name)} ${DIM(`(${skill.sourceScope})`)}`);
       console.log(`    ${DIM(skill.description || '(no description)')}`);
-      if (skillFile) console.log(`    ${DIM(`SKILL.md ${skillFile}`)}`);
-      if (resourceRoot) console.log(`    ${DIM(`Root     ${resourceRoot}`)}`);
     }
     console.log();
   } catch (err) {
@@ -461,97 +615,19 @@ function handleSkills(_ctx: CommandContext): CommandResult {
   return { success: true };
 }
 
-function handleSkill(ctx: CommandContext, args: string): CommandResult {
+function handleSkill(_ctx: CommandContext, args: string): CommandResult {
   const trimmed = args.trim();
-  const registry = getSkillsRegistry();
-  registry.initialize();
-
   if (!trimmed) {
-    const names = registry
-      .getAllSkills()
-      .map(skill => skill.name)
-      .sort();
     return {
       success: false,
-      error: ['Usage: /skill <name> <task>', `Loaded skills: ${names.join(', ') || 'none'}`].join(
-        '\n'
-      ),
+      error: 'Usage: /skill <name> <task>',
     };
   }
-
-  const parsed = parseSkillCommandInput(`/skill ${trimmed}`);
-  const rawName = trimmed.split(/\s+/, 1)[0] || '';
-  const requestedName = parsed.skillName || normalizeRequestedSkillName(rawName);
-  const referencedSkill = loadExplicitSkillReference(`/skill ${trimmed}`, ctx.cwd);
-  if (parsed.skillPath && !referencedSkill) {
-    return {
-      success: false,
-      error: `Invalid skill reference: ${parsed.skillPath}`,
-    };
-  }
-
-  const skill =
-    referencedSkill ||
-    registry
-      .getAllSkills()
-      .find(candidate =>
-        skillActivationNames(candidate).some(
-          name => normalizeRequestedSkillName(name) === requestedName
-        )
-      );
-
-  if (!skill) {
-    const suggestions = registry
-      .getAllSkills()
-      .map(candidate => candidate.name)
-      .filter(name => name.includes(requestedName) || requestedName.includes(name))
-      .slice(0, 5);
-    return {
-      success: false,
-      error:
-        suggestions.length > 0
-          ? `Unknown skill: ${rawName}\nDid you mean: ${suggestions.join(', ')}?`
-          : `Unknown skill: ${rawName}`,
-    };
-  }
-
-  const task = parsed.task;
-  const source = registry.getSource(skill.name);
-  const resourceRoot = skill.resourceRoot || skill.source || source?.path;
-  const skillFile = resourceRoot
-    ? `${resourceRoot.replace(/\/SKILL\.md$/i, '')}/SKILL.md`
-    : source?.skillFile;
-
-  if (!task) {
-    const usageSelector = parsed.skillPath
-      ? `[$${skill.name}](${formatSkillReferencePath(parsed.skillPath)})`
-      : skill.name;
-    return {
-      success: true,
-      output: [
-        parsed.skillPath
-          ? `Skill reference ${skill.name} is valid for one turn.`
-          : `Skill ${skill.name} is loaded.`,
-        skillFile ? `SKILL.md ${skillFile}` : '',
-        resourceRoot ? `Root     ${resourceRoot}` : '',
-        `Use: /skill ${usageSelector} <task>`,
-      ]
-        .filter(Boolean)
-        .join('\n'),
-    };
-  }
-
   return {
     success: true,
     continueAsChat: true,
-    chatInput: parsed.skillPath
-      ? `/skill [$${skill.name}](${formatSkillReferencePath(parsed.skillPath)}) ${task}`
-      : `/skill ${skill.name} ${task}`,
+    chatInput: `/skill ${trimmed}`,
   };
-}
-
-function formatSkillReferencePath(path: string): string {
-  return /[\s()]/u.test(path) ? `<${path}>` : path;
 }
 
 function handleMcp(_ctx: CommandContext): CommandResult {
@@ -559,8 +635,18 @@ function handleMcp(_ctx: CommandContext): CommandResult {
   console.log(HEADER('MCP Servers'));
   console.log(DIM('─'.repeat(40)));
 
-  const status = mcpManager.getStatus();
-  if (status.length === 0) {
+  let descriptors;
+  try {
+    descriptors = createFirstPartyMcpAdapterV1({
+      config: loadFirstPartyMcpConfigurationV1(),
+    }).descriptors;
+  } catch (error) {
+    console.log();
+    console.log(ERROR(`  Invalid MCP configuration: ${errorMessage(error)}`));
+    console.log();
+    return { success: false };
+  }
+  if (descriptors.length === 0) {
     console.log();
     console.log(DIM('  No servers configured. Add to ~/.orion-code/mcp.json'));
     console.log();
@@ -568,21 +654,15 @@ function handleMcp(_ctx: CommandContext): CommandResult {
   }
 
   console.log();
-  for (const s of status) {
-    const stateLabel = s.dead
-      ? ERROR('dead')
-      : s.connected
-        ? SUCCESS('connected')
-        : WARN('disconnected');
-    console.log(`  ${ACCENT(s.name.padEnd(20))} ${stateLabel}  ${DIM(`${s.toolCount} tools`)}`);
+  for (const server of descriptors) {
+    console.log(`  ${ACCENT(server.name.padEnd(20))} ${DIM('dormant · activates on selection')}`);
   }
   console.log();
   return { success: true };
 }
 
 function handleTools(ctx: CommandContext): CommandResult {
-  const tools =
-    ctx.store.getSnapshot().tools.length > 0 ? ctx.store.getSnapshot().tools : getRuntimeTools();
+  const tools = ctx.store.getSnapshot().tools;
   const staticTools = tools.filter(tool => !tool.name.startsWith('mcp__'));
   const mcpTools = tools.filter(tool => tool.name.startsWith('mcp__'));
 
@@ -636,117 +716,6 @@ function handleTodos(ctx: CommandContext): CommandResult {
   return { success: true };
 }
 
-async function handleEditPreview(ctx: CommandContext): Promise<CommandResult> {
-  const lastEdit = getToolState().lastEditFileArgs;
-
-  if (!lastEdit) {
-    console.log(ERROR('No previous edit_file call found for preview'));
-    console.log(
-      DIM(
-        'Run an edit_file tool call first, then use /edit-preview to inspect the match candidates.'
-      )
-    );
-    console.log();
-    return { success: false };
-  }
-
-  const hasMetadata = Boolean(lastEdit.sessionId || lastEdit.turnId);
-  if (!hasMetadata) {
-    console.log(
-      WARN(
-        'Using legacy edit-preview state without session/turn tags. Running preview as best-effort.'
-      )
-    );
-  }
-
-  const staleBySession = Boolean(
-    lastEdit.sessionId && ctx.sessionId && lastEdit.sessionId !== ctx.sessionId
-  );
-  const staleByTurn = Boolean(
-    lastEdit.turnId != null && ctx.turnId != null && String(lastEdit.turnId) !== String(ctx.turnId)
-  );
-  if (staleBySession || staleByTurn) {
-    const mismatch = [];
-    if (staleBySession) mismatch.push(`session ${lastEdit.sessionId} vs ${ctx.sessionId}`);
-    if (staleByTurn) mismatch.push(`turn ${String(lastEdit.turnId)} vs ${String(ctx.turnId)}`);
-    console.log(ERROR('Edit preview target does not match current context.'));
-    console.log(DIM(`Stale edit target: ${mismatch.join(', ')}.`));
-    console.log();
-    return { success: false };
-  }
-
-  if (hasMetadata && !(ctx.sessionId || ctx.turnId)) {
-    console.log(
-      WARN(
-        'Edit preview context is available, but current command context is missing session/turn metadata.'
-      )
-    );
-    console.log(DIM('Preview is allowed, but stale checks cannot be fully validated.'));
-  }
-
-  const rawResult = await executeTool(
-    'edit_file',
-    {
-      ...lastEdit,
-      preview: true,
-    },
-    ctx.abortSignal,
-    {
-      cwd: ctx.cwd,
-      config: {
-        name: ctx.config.name,
-        mode: ctx.config.mode,
-      },
-      sessionId: ctx.sessionId,
-      turnId: ctx.turnId,
-    }
-  );
-
-  let parsed: {
-    success?: boolean;
-    output?: string;
-    error?: string;
-    metadata?: { candidates?: unknown[] };
-  };
-  try {
-    parsed = JSON.parse(rawResult);
-  } catch {
-    parsed = { success: false, error: rawResult };
-  }
-
-  console.log();
-  console.log(HEADER('Edit Preview'));
-  console.log(DIM('─'.repeat(40)));
-  if (parsed.success) {
-    console.log(parsed.output || DIM('No preview output'));
-  } else {
-    console.log(ERROR(parsed.error || 'Preview failed'));
-  }
-  console.log();
-
-  // Return structured data for terminal/TUI/Ink picker rendering.
-  if (parsed.success && parsed.metadata?.candidates && Array.isArray(parsed.metadata.candidates)) {
-    return {
-      success: true,
-      editPreview: {
-        path: lastEdit.path as string,
-        newString: lastEdit.new_string as string,
-        kind: (lastEdit.fuzzy_match ? 'fuzzy' : 'exact') as 'exact' | 'fuzzy',
-        candidates: parsed.metadata.candidates as Array<{
-          index: number;
-          line: number;
-          match: string;
-          contextBefore: string;
-          contextAfter: string;
-          isReplaceAll: boolean;
-        }>,
-      },
-    };
-  }
-
-  return { success: parsed.success === true };
-}
-
 export {
   handleTodos,
   showHarness,
@@ -754,7 +723,6 @@ export {
   handleSkill,
   handleMemory,
   handleTools,
-  handleEditPreview,
   handleMcp,
   showSafety,
 };

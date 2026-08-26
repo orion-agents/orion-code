@@ -9,9 +9,10 @@
  * #85: the atomic-write temp name must be unpredictable (random suffix) so a local
  *      attacker cannot pre-plant a symlink and divert the final rename (TOCTOU).
  */
-import { buildMcpChildEnv } from '../src/tools/mcp';
+import { buildFirstPartyMcpChildEnvironmentV1 } from '../src/runtime/mcp';
 import { atomicWriteFileSync } from '../src/services/atomic-write';
-import { getRuntimeTools, validateRegexPattern } from '../src/tools/index';
+import { validateRegexPattern } from '../src/tools/core/grep';
+import { getRuntimeTools } from './support/legacy-tools';
 import type { ToolContext } from '../src/framework/tool';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -47,7 +48,7 @@ describe('MCP child env sanitization (Issue #78)', () => {
   });
 
   it('never leaks the parent process secret environment to the child', () => {
-    const env = buildMcpChildEnv();
+    const env = buildFirstPartyMcpChildEnvironmentV1();
     expect(env[SECRET]).toBeUndefined();
   });
 
@@ -55,7 +56,7 @@ describe('MCP child env sanitization (Issue #78)', () => {
     process.env.AWS_SECRET_ACCESS_KEY = 'aws-secret';
     process.env.GCP_API_KEY = 'gcp-secret';
     process.env.AZURE_CLIENT_SECRET = 'azure-secret';
-    const env = buildMcpChildEnv();
+    const env = buildFirstPartyMcpChildEnvironmentV1();
     expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
     expect(env.GCP_API_KEY).toBeUndefined();
     expect(env.AZURE_CLIENT_SECRET).toBeUndefined();
@@ -65,20 +66,23 @@ describe('MCP child env sanitization (Issue #78)', () => {
   });
 
   it('passes through safe infrastructure variables that exist', () => {
-    const env = buildMcpChildEnv();
+    const env = buildFirstPartyMcpChildEnvironmentV1();
     if (process.env.PATH !== undefined) expect(env.PATH).toBe(process.env.PATH);
     if (process.env.HOME !== undefined) expect(env.HOME).toBe(process.env.HOME);
   });
 
   it('passes through LC_* locale variables', () => {
     process.env.LC_MESSAGES = 'en_US.UTF-8';
-    const env = buildMcpChildEnv();
+    const env = buildFirstPartyMcpChildEnvironmentV1();
     expect(env.LC_MESSAGES).toBe('en_US.UTF-8');
     delete process.env.LC_MESSAGES;
   });
 
   it('honors explicitly-configured config.env (and lets it override)', () => {
-    const env = buildMcpChildEnv({ CUSTOM_TOKEN: 'from-config', PATH: '/custom/bin' });
+    const env = buildFirstPartyMcpChildEnvironmentV1({
+      CUSTOM_TOKEN: 'from-config',
+      PATH: '/custom/bin',
+    });
     expect(env.CUSTOM_TOKEN).toBe('from-config');
     expect(env.PATH).toBe('/custom/bin');
   });

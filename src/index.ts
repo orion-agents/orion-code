@@ -1,108 +1,199 @@
 /**
- * Orion Code - goal-driven coding agent for the terminal.
+ * Orion Code v0.2 public API.
  *
- * Public API export entry point.
+ * The package root intentionally exposes one product runtime factory, the
+ * versioned wire protocol, and the supported Model/Skill/MCP configuration
+ * boundaries. Runtime services, contributors, resource scopes, Step snapshots,
+ * and the legacy query/agent harnesses remain package-private.
  */
 
-// Core
-export { Brain } from './core/brain';
-export type { BrainConfig } from './core/brain';
+import {
+  createProductOrionRuntimeV1,
+  type ProductOrionRuntimeOptionsV1,
+} from './runtime/product-orion-runtime';
+import type { AgentRuntimeCommandV1, RuntimeEventEnvelopeV1 } from './runtime/protocol';
 
-export { BaseAgent } from './core/agent';
-export type { AgentConfig, Task, TaskResult, AgentStatus } from './core/agent';
+export type OrionRuntimeStateV1 = 'created' | 'starting' | 'started' | 'closing' | 'closed';
 
-// Agent implementations
-export { LeaderAgent } from './agents/leader';
-export { CoderAgent } from './agents/coder';
+export type OrionRuntimeTurnCommandV1 = Extract<
+  AgentRuntimeCommandV1,
+  { type: 'turn.start' | 'turn.steer' | 'turn.follow_up' | 'turn.interrupt' }
+>;
 
-// Init & runtime
-export { init, Harness, MemorySystem } from './init';
+export type OrionRuntimeAdmissionV1 =
+  | { readonly status: 'started'; readonly turnId: string }
+  | {
+      readonly status: 'steered';
+      readonly activeTurnId: string;
+      readonly itemId: string;
+    }
+  | {
+      readonly status: 'queued';
+      readonly queueId: string;
+      readonly position: number;
+      readonly deadline: number;
+    }
+  | {
+      readonly status: 'interrupt_requested';
+      readonly activeTurnId: string;
+      readonly intentId: string;
+      readonly alreadyRequested: boolean;
+    }
+  | {
+      readonly status: 'rejected';
+      readonly reason:
+        | 'overloaded'
+        | 'non_steerable'
+        | 'shutdown'
+        | 'no_active_turn'
+        | 'deadline_expired'
+        | 'invalid_input'
+        | 'turn_mismatch';
+    };
+
+export interface OrionRuntimeReplayV1 {
+  readonly events: readonly RuntimeEventEnvelopeV1[];
+  readonly fromCursor: number;
+  readonly nextCursor: number;
+  readonly hasMore: boolean;
+}
+
+/** Public facade; implementation-plane service and resource owners stay hidden. */
+export interface OrionRuntime {
+  readonly state: OrionRuntimeStateV1;
+  start(): Promise<void>;
+  dispatch(command: OrionRuntimeTurnCommandV1): OrionRuntimeAdmissionV1;
+  interrupt(reason?: string): OrionRuntimeAdmissionV1;
+  compact(input?: {
+    readonly maxMessages?: number;
+    readonly focus?: string;
+  }): OrionRuntimeAdmissionV1;
+  replay(cursor?: number, limit?: number): OrionRuntimeReplayV1;
+  waitForIdle(): Promise<void>;
+  close(reason?: string): Promise<void>;
+}
+
+export interface CreateOrionRuntimeInputV1 {
+  readonly sessionId: string;
+  readonly runtime: ProductOrionRuntimeOptionsV1;
+}
+
+export type OrionRuntimeOptions = ProductOrionRuntimeOptionsV1;
+
+/** The sole supported package-root composition entry point. */
+export function createOrionRuntime(input: CreateOrionRuntimeInputV1): OrionRuntime {
+  if (!input?.sessionId?.trim()) throw new Error('Orion runtime sessionId must not be empty.');
+  const runtime = createProductOrionRuntimeV1(input.runtime, input.sessionId);
+  return Object.freeze({
+    get state(): OrionRuntimeStateV1 {
+      return runtime.state;
+    },
+    start: async (): Promise<void> => {
+      await runtime.start();
+    },
+    dispatch: (command: OrionRuntimeTurnCommandV1): OrionRuntimeAdmissionV1 =>
+      runtime.thread.dispatch(command),
+    interrupt: (reason = 'runtime interrupted'): OrionRuntimeAdmissionV1 =>
+      runtime.thread.dispatch({ type: 'turn.interrupt', data: { reason } }),
+    compact: (
+      compactInput: { readonly maxMessages?: number; readonly focus?: string } = {}
+    ): OrionRuntimeAdmissionV1 => runtime.compact(compactInput),
+    replay: (cursor = 0, limit?: number): OrionRuntimeReplayV1 =>
+      runtime.thread.replay(cursor, limit),
+    waitForIdle: (): Promise<void> => runtime.thread.waitForIdle(),
+    close: async (reason = 'orion_runtime_closed'): Promise<void> => {
+      await runtime.close(reason);
+    },
+  });
+}
+
+// Versioned runtime protocol.
+export {
+  AGENT_RUNTIME_COMMAND_DEFINITIONS_V1,
+  RUNTIME_EVENT_DEFINITIONS_V1,
+  RuntimeProtocolValidationError,
+  assertAgentRuntimeCommandV1,
+  assertRuntimeEventEnvelopeV1,
+  createRuntimeId,
+  getAgentRuntimeProtocolSchemaV1,
+  isRuntimeId,
+} from './runtime/protocol';
 export type {
-  OrionCodeConfig,
-  OrionCodeRuntime,
-  HarnessConfig,
-  MemoryConfig,
-  SafetyConfig,
-  HarnessVerdict,
-  AgentRegistryEntry,
-  MemoryEntry as InitMemoryEntry,
-  MemoryTier as InitMemoryTier,
-} from './init';
+  AgentRuntimeCommandV1,
+  AgentRuntimeProtocolSchemaV1,
+  RuntimeDurabilityV1,
+  RuntimeEventEnvelopeV1,
+  RuntimeEventTypeV1,
+  RuntimeEventV1,
+} from './runtime/protocol';
 
-// Harness safety module
-export { SafetyChecker } from './harness/safety';
-export type { SafetyPolicy, SafetyCheck, SecurityLevel, AuditLogEntry } from './harness/safety';
-
-// Memory store module
-export { MemoryStore } from './memory/store';
+// Existing product and model configuration.
+export { getConfigErrors, getConfigSummary, isConfigured, loadConfig } from './services/config';
+export type { OrionCodeCLIConfig } from './services/config';
+export {
+  buildRegistry,
+  getLegacyMigrationHint,
+  isLegacyConfig,
+  lookupProfile,
+  resolveModelProfile,
+} from './services/model-registry';
 export type {
-  MemoryStoreConfig,
-  MemoryEntry as StoreMemoryEntry,
-  MemoryTier as StoreMemoryTier,
-  MemoryQuery,
-} from './memory/store';
-
-// LLM service module
-export { LLMService } from './services/llm';
+  ModelProfile,
+  ModelRegistry,
+  ModelRegistryConfig,
+  ProviderConfig,
+  ProviderProtocol,
+  RegistryValidationError,
+  RegistryValidationResult,
+  ResolvedModelProfile,
+} from './services/model-registry';
+export { LLMService, LLMProviderError } from './services/llm';
 export type {
   LLMConfig,
-  Message,
+  LLMRequestDiagnostics,
   LLMResponse,
+  Message,
   StreamCallback,
+  StreamCallbacks,
 } from './services/llm';
 
-// Agent Runner module
-export { AgentRunner } from './services/agent-runner';
-export type {
-  AgentRunnerConfig,
-  AgentRunnerResult,
-} from './services/agent-runner';
-
-// Harness Engine module (public API compatibility)
-export { HarnessEngine } from './harness/harness';
-export type {
-  HarnessConfig as HarnessEngineConfig,
-  HarnessVerdict as HarnessEngineVerdict,
-  HarnessContext,
-  HarnessExecutionResult,
-} from './harness/harness';
-
-// Task Manager module
-export { TaskManager } from './services/task-manager';
-export type {
-  TaskRecord,
-  CreateTaskOptions,
-  UpdateTaskOptions,
-  TaskFilter,
-  TaskStats,
-  TaskStatus,
-  Priority,
-} from './services/task-manager';
-
-// Config module
-export { loadConfig, isConfigured, getConfigErrors, getConfigSummary } from './services/config';
-export type { OrionCodeCLIConfig } from './services/config';
-
-// Framework module
+// Skills remain a user extension boundary; the runtime implementation is not
+// exported from the package root.
 export {
-  buildTool, toOpenAITool, toOpenAITools,
-  query,
-  buildSystemPrompt, getSystemPrompt,
-  Store,
-  ContextHarness, createContextHarness, ContextLedger,
-  createContextCapsule, renderContextCapsule, renderHarnessStateForCompact,
-  assembleHarnessMessages, buildHarnessContext, classifyIntent, rankEvidence, upgradeHarnessState,
-} from './framework';
+  createFilesystemSkillProviderV1,
+  createFilesystemSkillRootsV1,
+  createProductionFilesystemSkillProviderV1,
+} from './runtime/skills';
 export type {
-  OrionCodeTool, ToolResult, ToolContext, ToolConfig, PermissionResult, ToolInputJSONSchema, OpenAITool,
-  AutoCompactNotice, QueryEvent, QueryParams,
-  PromptContext, PromptSection,
-  AppState,
-  ContextCapsule, ContextLedgerEntry, EvidenceRecord, HarnessConfig as ContextHarnessConfig,
-  HarnessState, IntentKind, IntentUpdate, PromptAssemblyStats, TaskContract, TurnSummary,
-} from './framework';
+  FilesystemSkillProviderOptionsV1,
+  FilesystemSkillRootOptionsV1,
+  FilesystemSkillRootV1,
+  ProductionFilesystemSkillProviderOptionsV1,
+  SkillDefinitionV1,
+  SkillDescriptorV1,
+  SkillProviderV1,
+  SkillResourceDescriptorV1,
+  SkillResourceV1,
+  SkillScopeV1,
+  SkillSourceScopeV1,
+} from './runtime/skills';
 
+// MCP configuration compiles to dormant descriptors. Connections remain lazy
+// and owner-scoped inside OrionRuntime.
+export {
+  FirstPartyMcpAdapterError,
+  createFirstPartyMcpAdapterV1,
+  createNodeStdioMcpFactoryV1,
+} from './runtime/mcp';
 export type {
-  ContextUsageSnapshot,
-  ContextUsageSource,
-} from './services/model-context';
+  CreateFirstPartyMcpAdapterOptionsV1,
+  FirstPartyMcpAdapterV1,
+  FirstPartyMcpConfigurationV1,
+  FirstPartyMcpServerConfigV1,
+  FirstPartyMcpStdioFactoryV1,
+  McpConnectionV1,
+  McpConnectorV1,
+  McpServerDescriptorInputV1,
+  McpTransportKindV1,
+  NodeStdioMcpFactoryOptionsV1,
+} from './runtime/mcp';

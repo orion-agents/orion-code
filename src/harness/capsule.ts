@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import type {
   ContextCapsule,
   ContextLedgerEntry,
@@ -22,7 +23,10 @@ function unique(items: string[]): string[] {
 
 function compactLine(text: string, max = 160): string {
   const normalized = text.replace(/\s+/g, ' ').trim();
-  return normalized.length > max ? normalized.slice(0, max - 3) + '...' : normalized;
+  if (normalized.length <= max) return normalized;
+  const ref = createHash('sha256').update(normalized, 'utf8').digest('hex').slice(0, 16);
+  const suffix = ` [full-ref:${ref}]`;
+  return `${normalized.slice(0, Math.max(0, max - suffix.length))}${suffix}`;
 }
 
 function fallbackNextAction(contract: TaskContract | undefined): string {
@@ -111,7 +115,7 @@ export function normalizeContextCapsule(
     currentPlan,
     openTodos,
     nextAction: openTodos[0] || fallbackNextAction(contract),
-    updatedAt: Date.now(),
+    updatedAt: capsule.updatedAt,
   };
 }
 
@@ -197,6 +201,26 @@ export function renderHarnessStateForCompact(
     lines.push(...state.openQuestions.slice(0, 6).map(item => `- ${compactLine(item)}`));
   }
 
+  const criteria = state.contract?.criteria ?? [];
+  if (criteria.length > 0) {
+    lines.push('criteria:');
+    for (const criterion of criteria) {
+      const refs = criterion.evidenceRefs.length
+        ? ` evidence=${criterion.evidenceRefs.join(',')}`
+        : '';
+      lines.push(
+        `- ${criterion.id} [${criterion.status ?? 'pending'}]${refs}: ${compactLine(criterion.statement, 240)}`
+      );
+    }
+  }
+
+  if (state.capabilityProfile) {
+    lines.push(
+      `capability: v${state.capabilityProfile.revision} ${state.capabilityProfile.fingerprint} ` +
+        `model=${state.capabilityProfile.model.id} permission=${state.capabilityProfile.permission.mode}`
+    );
+  }
+
   if (state.capsule) {
     if (state.capsule.openTodos.length > 0) {
       lines.push('openTodos:');
@@ -224,7 +248,7 @@ export function renderHarnessStateForCompact(
   const turns = state.turnSummaries ?? [];
   if (turns.length > 0) {
     lines.push('recentTurns:');
-    for (const turn of turns.slice(-5)) {
+    for (const turn of turns) {
       lines.push(
         `- turn ${turn.turn} [${turn.intentKind}]: ${compactLine(turn.userIntent, 100)} -> ${compactLine(turn.assistantOutcome, 140)}`
       );

@@ -17,7 +17,7 @@ describe('npm package lifecycle', () => {
 
     expect(manifest.scripts).toMatchObject({
       clean: 'node scripts/maintenance/clean-dist.js',
-      build: 'npm run clean && tsc',
+      build: 'npm run clean && tsc && node scripts/maintenance/copy-runtime-assets.js',
       prepack: 'npm run build',
     });
   });

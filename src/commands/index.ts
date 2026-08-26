@@ -16,7 +16,6 @@ import { TOOL_COMMANDS } from './tool-commands';
 import { MODEL_COMMANDS } from './model-commands';
 import { createSystemCommands } from './system-commands';
 import { DIAGNOSTIC_COMMANDS } from './diagnostic-commands';
-import { LEGACY_COMMANDS } from './legacy-commands';
 
 export function getVisibleCommands(
   renderer?: CommandContext['uiRenderer']
@@ -25,7 +24,6 @@ export function getVisibleCommands(
     COMMANDS.filter(
       command =>
         !command.isHidden &&
-        command.audience !== 'compatibility' &&
         command.audience !== 'internal' &&
         (!renderer || !command.rendererScope || command.rendererScope.includes(renderer))
     )
@@ -42,7 +40,6 @@ const COMMAND_DEFINITIONS: SlashCommand[] = [
   ...MODEL_COMMANDS,
   ...SYSTEM_COMMANDS,
   ...DIAGNOSTIC_COMMANDS,
-  ...LEGACY_COMMANDS,
 ];
 
 const COMMANDS = registerBuiltinCommands(COMMAND_DEFINITIONS);
@@ -56,8 +53,7 @@ export function findCommand(name: string): RegisteredSlashCommand | undefined {
   return COMMANDS.find(
     command =>
       command.name.toLowerCase() === normalized ||
-      command.aliases?.some(alias => alias.toLowerCase() === normalized) ||
-      command.compatibilityAliases?.some(alias => alias.name.toLowerCase() === normalized)
+      command.aliases?.some(alias => alias.toLowerCase() === normalized)
   );
 }
 
@@ -65,8 +61,4 @@ export function getCommandNames(): string[] {
   return getVisibleCommands().map(command => command.name);
 }
 
-export {
-  handleChat as executeChat,
-  getCommandCategoryLabel,
-  sortCommands,
-} from './core-command-handlers';
+export { getCommandCategoryLabel, sortCommands } from './core-command-handlers';

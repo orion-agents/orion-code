@@ -3,15 +3,13 @@
 import { type CommandContext, type CommandResult } from './types';
 import { collectWorkspaceDiff, formatWorkspaceDiff } from '../services/workspace-diff';
 import { createCommitPlan, formatCommitPlan } from '../services/commit-plan';
-import { getToolState } from '../framework/tool-state';
 import { setAgentMode } from '../framework/agent-mode';
 
 function handlePlan(ctx: CommandContext, args: string): CommandResult {
   const task = args.trim();
-  const state = getToolState();
   const snapshot = ctx.store.getSnapshot();
 
-  if (!state.planMode || snapshot.agentMode !== 'plan') {
+  if (!snapshot.planMode || snapshot.agentMode !== 'plan') {
     if (ctx.agentModeLifecycle) ctx.agentModeLifecycle.setMode('plan');
     else setAgentMode(ctx.store, 'plan');
   }

@@ -1,12 +1,7 @@
 /** Command definitions extracted from the stable slash-command registry. */
 
 import type { SlashCommand } from './types';
-import {
-  handleTools,
-  handleEditPreview,
-  handleMcp,
-  showSafety,
-} from './context-tool-command-handlers';
+import { handleTools, handleMcp, showSafety } from './context-tool-command-handlers';
 
 export const TOOL_COMMANDS: SlashCommand[] = [
   {
@@ -19,16 +14,6 @@ export const TOOL_COMMANDS: SlashCommand[] = [
     execution: 'builtin',
     risk: 'read-only',
     execute: ctx => handleTools(ctx),
-  },
-  {
-    name: 'edit-preview',
-    description: 'Preview the last edit_file match candidates without writing',
-    category: 'tools',
-    priority: 15,
-    type: 'builtin',
-    execution: 'builtin',
-    risk: 'read-only',
-    execute: ctx => handleEditPreview(ctx),
   },
   {
     name: 'mcp',

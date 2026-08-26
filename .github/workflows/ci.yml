@@ -31,6 +31,10 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # The full Jest suite replays the digest-bound Phase 0 source commit.
+          # A depth-1 checkout makes that immutable baseline unavailable.
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -48,10 +52,24 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Test
+      - name: Test with machine-readable release evidence
+        if: ${{ matrix.node-version == '20' }}
         # --coverage turns on the coverageThreshold gate from jest.config.js so
         # the documented 70% guideline is actually enforced in CI. #42
+        run: npm run release:gate-evidence -- --id full-tests --out .release/full-tests.json -- npm test -- --coverage --runInBand
+
+      - name: Test supported runtime
+        if: ${{ matrix.node-version != '20' }}
         run: npm test -- --coverage --runInBand
+
+      - name: Upload full-test receipt
+        if: ${{ always() && matrix.node-version == '20' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: full-test-receipt
+          path: .release/full-tests.json
+          if-no-files-found: error
+          retention-days: 14
 
   typecheck:
     # Independent type-check dimension. The `verify` job's `tsc` build also
@@ -75,6 +93,56 @@ jobs:
 
       - name: tsc --noEmit
         run: npx tsc --noEmit
+
+  harness-gates:
+    name: Lean Harness benchmark and confluence
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # The same-environment Phase 0 behavior replay is digest-bound to the
+          # v0.1.9 source commit and must not silently fall back to estimates.
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Architecture confluence receipt
+        run: |
+          mkdir -p .release/harness
+          npm run --silent test:harness-confluence -- --pretty > .release/harness/confluence.json
+
+      - name: Same-environment Phase 0 baseline receipt
+        run: npm run bench:harness:baseline -- --out .release/harness/baseline.json
+
+      - name: Candidate receipt
+        run: npm run bench:harness -- --mode candidate --cold-runs 30 --warm-runs 30 --out .release/harness/candidate.json
+
+      - name: Compare candidate against same-environment baseline
+        run: npm run --silent bench:harness:compare -- --baseline .release/harness/baseline.json --candidate .release/harness/candidate.json > .release/harness/comparison.json
+
+      - name: Same-environment task/token evaluation
+        run: npm run --silent bench:harness:eval -- --iterations 30 --out .release/harness/eval.json > /dev/null
+
+      - name: Upload Harness receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: harness-receipts
+          path: .release/harness
+          if-no-files-found: error
+          retention-days: 14
 
   security-audit:
     # Dependency vulnerability dimension (issues #71 / #62). Blocks on
@@ -131,6 +199,154 @@ jobs:
 
       - name: release:check
         run: npm run release:check -- --skip-tests
+
+  package-artifact:
+    name: Build the exact release tgz once
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Pack and attest one artifact
+        run: npm run release:artifact -- --out-dir .release/package --receipt .release/package/artifact.json
+
+      - name: Upload exact tgz and receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-package
+          path: .release/package
+          if-no-files-found: error
+          retention-days: 14
+
+  runtime-matrix:
+    name: Exact tgz on Node ${{ matrix.node-version }}
+    needs: package-artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ['20', '22', '24']
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install receipt runner dependencies
+        run: npm ci
+
+      - name: Download the exact release package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-package
+          path: .release/package
+
+      - name: Clean-install and probe the downloaded tgz
+        run: |
+          TARBALL=".release/package/$(node -p "require('./.release/package/artifact.json').tarball.filename")"
+          npm run test:runtime-matrix -- --tarball "$TARBALL" --artifact-receipt .release/package/artifact.json --out ".release/runtime-node${{ matrix.node-version }}.json"
+
+      - name: Upload runtime receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: runtime-node${{ matrix.node-version }}
+          path: .release/runtime-node${{ matrix.node-version }}.json
+          if-no-files-found: error
+          retention-days: 14
+
+  release-receipt:
+    name: Aggregate fail-closed v0.2.0 release receipt
+    needs:
+      - verify
+      - typecheck
+      - harness-gates
+      - security-audit
+      - release-gate
+      - package-artifact
+      - runtime-matrix
+      - dep-health
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install receipt verifier dependencies
+        run: npm ci
+
+      - name: Download exact package artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-package
+          path: .release/package
+
+      - name: Download Harness receipts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: harness-receipts
+          path: .release/harness
+
+      - name: Download full-test receipt
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: full-test-receipt
+          path: .release/tests
+
+      - name: Download runtime receipts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: runtime-node*
+          path: .release/runtime
+          merge-multiple: true
+
+      - name: Verify and aggregate all receipts
+        run: |
+          npm run --silent release:receipt -- \
+            --artifact .release/package/artifact.json \
+            --runtime .release/runtime/runtime-node20.json \
+            --runtime .release/runtime/runtime-node22.json \
+            --runtime .release/runtime/runtime-node24.json \
+            --benchmark-baseline .release/harness/baseline.json \
+            --benchmark-candidate .release/harness/candidate.json \
+            --benchmark-comparison .release/harness/comparison.json \
+            --evaluation .release/harness/eval.json \
+            --confluence .release/harness/confluence.json \
+            --full-tests .release/tests/full-tests.json \
+            --out .release/release-receipt.json
+
+      - name: Upload final release receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-receipt
+          path: .release/release-receipt.json
+          if-no-files-found: error
+          retention-days: 30
 
   dep-health:
     # Blocking offline verification for native ABI and dependency-tree health.

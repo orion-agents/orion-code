@@ -43,7 +43,6 @@ import {
   deleteMemory,
 } from '../src/memory/storage';
 import type { MemoryEntry } from '../src/memory/types';
-import { TOOLS, executeTool } from '../src/tools';
 
 // ============================================================================
 // 测试环境设置
@@ -375,65 +374,6 @@ Legacy only content`,
     const resultsB = searchMemories('typescript', PROJECT_B);
     expect(resultsB).toHaveLength(1);
     expect(resultsB[0].name).toBe('typescript-b');
-  });
-});
-
-// ============================================================================
-// history_search 工具测试
-// ============================================================================
-
-describe('history_search tool', () => {
-  beforeEach(setupTestEnv);
-  afterEach(teardownTestEnv);
-
-  test('history_search tool exists in TOOLS', () => {
-    const tool = TOOLS.find(t => t.name === 'history_search');
-    expect(tool).toBeDefined();
-    expect(tool?.description).toContain('Search previous tool operations');
-  });
-
-  test('history_search requires query parameter', async () => {
-    const result = await executeTool('history_search', {});
-    const parsed = JSON.parse(result);
-    expect(parsed.success).toBe(false);
-    expect(parsed.error).toContain('requires a query parameter');
-  });
-
-  test('history_search finds matching tool calls', async () => {
-    // Create session with tool history
-    const session = createSession(PROJECT_A, 'gpt-4o');
-
-    // Add assistant message with tool_call
-    appendSessionMessage(session.id, {
-      role: 'assistant',
-      content: '',
-      timestamp: Date.now(),
-      tool_calls: [
-        {
-          id: 'call_read',
-          type: 'function',
-          function: {
-            name: 'read_file',
-            arguments: '{"path":"src/main.ts"}',
-          },
-        },
-      ],
-    });
-
-    // Add tool result
-    appendSessionMessage(session.id, {
-      role: 'tool',
-      content: '{"success":true,"output":"file content"}',
-      timestamp: Date.now(),
-      toolCallId: 'call_read',
-    });
-
-    // Search for "read_file"
-    const result = await executeTool('history_search', { query: 'read_file' });
-    const parsed = JSON.parse(result);
-    expect(parsed.success).toBe(true);
-    expect(parsed.output).toContain('read_file');
-    expect(parsed.output).toContain('src/main.ts');
   });
 });
 

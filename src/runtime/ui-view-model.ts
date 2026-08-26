@@ -119,7 +119,7 @@ export function formatLoopBudgetStopView(
       '下一步：',
       '• 回复 `继续`，按同一目标接着执行。',
       '• 或给出一个更小、更具体的下一步。',
-      '• 运行 `/loop-stats` 查看请求与工具用量。',
+      '• 运行 `/usage` 查看请求与工具用量。',
       '• 对确实需要更长运行的任务，在 orion.json 中调高 `agentLoop.budget`。'
     );
     return lines.join('\n');
@@ -134,7 +134,7 @@ export function formatLoopBudgetStopView(
     'Next:',
     '• Reply `继续` to continue the same objective.',
     '• Or give a smaller, concrete next step.',
-    '• Run `/loop-stats` to inspect request and tool usage.',
+    '• Run `/usage` to inspect request and tool usage.',
     '• For intentional long work, raise `agentLoop.budget` in orion.json.'
   );
   return lines.join('\n');
@@ -191,12 +191,12 @@ export interface ToolActivity {
 }
 
 // ============================================================================
-// R8: Subagent timeline view-model (shared across terminal/Ink/TUI)
+// R8: Subagent timeline view-model (shared across terminal/TUI)
 // ============================================================================
 
 /**
  * Stable timeline entry for a subagent lifecycle, derived from the
- * renderer-independent {@link RuntimeSubtaskEvent}. terminal/Ink/TUI all
+ * renderer-independent {@link RuntimeSubtaskEvent}. terminal/TUI both
  * consume this single shape instead of each implementing its own state
  * machine. The chat-controller's transcript summary remains as a degraded
  * output, but the typed timeline is the authoritative view.
@@ -693,7 +693,6 @@ const COMMAND_CATEGORY_LABELS: Record<CommandCategory, string> = {
 export function rendererStatus(renderer: unknown): UiRendererStatus {
   if (renderer === 'tui') return 'product';
   if (renderer === 'terminal') return 'technical';
-  if (renderer === 'ink') return 'deprecated';
   if (renderer === 'print') return 'non-interactive';
   return 'custom';
 }
@@ -929,7 +928,7 @@ export function createCommandPickerState(input: {
   const ranked = input.commands
     .filter(command =>
       query
-        ? command.audience !== 'compatibility' && command.audience !== 'internal'
+        ? command.audience !== 'internal'
         : (command.audience ?? 'primary') === 'primary'
     )
     .map((command, index) => ({

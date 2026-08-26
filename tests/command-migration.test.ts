@@ -22,15 +22,26 @@ describe('v0.1.5 command migration roots', () => {
     expect(findCommand('research')?.id).toBe('builtin.workflow.research');
   });
 
-  it('keeps old roots executable but removes them from discovery surfaces', () => {
-    for (const name of ['sessions', 'session-rename', 'context-clear', 'checkpoint', 'agents']) {
-      expect(findCommand(name)).toBeDefined();
+  it('removes old command roots from execution and discovery surfaces', () => {
+    for (const name of [
+      'sessions',
+      'session-rename',
+      'context-clear',
+      'clear-history',
+      'models',
+      'loop-stats',
+      'checkpoint',
+      'cost',
+      'agents',
+    ]) {
+      expect(findCommand(name)).toBeUndefined();
     }
     const visible = new Set(getVisibleCommands().map(command => command.name));
     expect(visible.has('sessions')).toBe(false);
     expect(visible.has('session-rename')).toBe(false);
     expect(visible.has('context-clear')).toBe(false);
     expect(visible.has('agents')).toBe(false);
+    expect(visible.has('checkpoint')).toBe(false);
   });
 
   it('adds the v0.1.7 TUI discovery roots to the stable primary slash surface', () => {

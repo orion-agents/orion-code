@@ -287,6 +287,24 @@ describe('AutoCompact', () => {
     expect(automatic.filter(message => message.content?.startsWith('Message '))).toHaveLength(20);
   });
 
+  test('applies project compact instructions to manual and automatic pipelines', async () => {
+    const coordinator = new CompactCoordinator({
+      modelId: 'test-model',
+      compactInstructions: 'retain decisions, failures, and verification receipts',
+    });
+
+    const manual = await coordinator.compactManual(createMessages(60), 3);
+    expect(manual.semanticSummary.projectInstructions).toBe(
+      'retain decisions, failures, and verification receipts'
+    );
+    expect(manual.summary).toContain('Project compact instructions:');
+
+    const automatic = await coordinator.getAutomatic().forceCompact(createMessages(60));
+    expect(
+      automatic.some(message => message.content.includes('Project compact instructions:'))
+    ).toBe(true);
+  });
+
   test('compactMessages preserves structured Harness State v2 before summary text', async () => {
     const harness = createContextHarness({ cwd: '/repo', modelId: 'gpt-4o' });
     harness.updateContractFromUserInput('实现 v0.1.23 harness，必须支持 resume 后继续');

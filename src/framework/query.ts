@@ -25,24 +25,49 @@ import type { ToolConfirmationPolicy } from '../services/config';
 import type { ToolAllowlistEvaluator } from '../services/tool-allowlist';
 import { toOpenAITools } from './tool';
 import { createStrategyTracker, type StrategyTracker } from '../core/strategy-tracker';
-import { AutoCompact } from '../services/compact/auto-compact';
+import {
+  AutoCompact,
+  type AutoCompactAttempt,
+  type CompactPauseFailure,
+  type CompactPostValidation,
+} from '../services/compact/auto-compact';
+import type { CompactResult } from '../services/compact/compact';
+import { canonicalMessagesFingerprint } from '../services/compact/fingerprint';
 import { pendingToolCalls } from '../services/compact/tool-call-groups';
 import type { CompactCoordinator } from '../services/compact/coordinator';
-import type { ContextHarness } from '../harness';
+import type { CompactPrepareSourceReceipt } from '../services/session-storage';
+import type { ContextHarness, HarnessState } from '../harness';
 import type { PromptAssemblyStats } from '../harness/types';
 import {
   prepareToolCalls,
   executeToolCalls,
+  type AuthoritativeToolExecutor,
   type ExecutedToolCall,
   type ToolPermissionDecision,
-} from './tool-scheduler';
+} from './tool-call-orchestrator';
 import { estimateMessagesTokens } from '../utils/token-estimate';
 import { parseToolResultEnvelope, serializeToolResult } from './tool-serializer';
-import { createContextUsageSnapshot, type ContextUsageSnapshot } from '../services/model-context';
-import { BATCH_READ_ALLOWED_TOOLS } from '../tools';
+import {
+  createContextUsageSnapshot,
+  getModelContextWindow,
+  type ContextUsageSnapshot,
+} from '../services/model-context';
 import type { ToolExternalAssertion } from './external-assertion';
+import { createStopDecision, type StopDecision, type StopDecisionStatus } from './stop-decision';
+import {
+  DEFAULT_LOOP_BUDGET,
+  type LoopBudget,
+  type LoopBudgetBaseProfile,
+  type LoopBudgetSource,
+} from './loop-budget-contract';
+
+export { DEFAULT_LOOP_BUDGET } from './loop-budget-contract';
+export type { LoopBudget, LoopBudgetBaseProfile, LoopBudgetSource } from './loop-budget-contract';
 
 export const DEFAULT_MAX_MODEL_VISIBLE_TOOL_RESULT_BYTES = 4096;
+
+/** Read-only tools eligible for the fragmentation hint; kept loop-local so Query has no tool registry. */
+const BATCH_READ_ALLOWED_TOOLS = new Set(['git_status', 'list_files', 'glob', 'grep', 'read_file']);
 
 function isAborted(signal?: AbortSignal): boolean {
   return signal?.aborted === true;
@@ -113,45 +138,16 @@ export type LoopFinishReason =
   | 'cancelled'
   | 'failed'
   | 'blocked'
-  | 'max_turns'
   | 'completion_gate'
   | 'budget_exceeded'
+  | 'compact_paused'
   | 'running';
 
-export type LoopBudgetBaseProfile = 'default' | 'complex' | 'release';
-export type LoopBudgetSource = LoopBudgetBaseProfile | 'config';
 export type LoopContinuationAction =
   | 'reply_continue'
   | 'narrow_instruction'
   | 'inspect_loop_stats'
   | 'raise_budget';
-
-export interface LoopBudget {
-  /** Maximum LLM requests allowed for one user turn before stopping. */
-  maxLlmRequestsPerUserTurn: number;
-  /** Maximum tool calls allowed for one user turn before stopping. */
-  maxToolCallsPerUserTurn: number;
-  /** Consecutive single read-only tool turns before injecting a batch_read hint. */
-  maxReadOnlyFragmentation: number;
-  /** Maximum aggregate tool-result bytes exposed to the model in one user turn. */
-  maxModelVisibleToolBytes: number;
-  /** Budget source after config overrides are applied. */
-  profile?: LoopBudgetSource;
-  /** Adaptive profile selected before config overrides, when applicable. */
-  baseProfile?: LoopBudgetBaseProfile;
-  /** Whether user/global/env config changed one or more numeric budget fields. */
-  configOverride?: boolean;
-}
-
-export const DEFAULT_LOOP_BUDGET: LoopBudget = {
-  maxLlmRequestsPerUserTurn: 24,
-  maxToolCallsPerUserTurn: 120,
-  maxReadOnlyFragmentation: 3,
-  maxModelVisibleToolBytes: 64 * 1024,
-  profile: 'default',
-  baseProfile: 'default',
-  configOverride: false,
-};
 
 const COMPLEX_LOOP_BUDGET: Pick<
   LoopBudget,
@@ -173,6 +169,10 @@ export interface LoopStats {
   summarizedBytes: number;
   compactTrigger?: 'pre_turn' | 'post_turn';
   finishReason: LoopFinishReason;
+  /** Typed boundary result. A request stop never implies that its parent task completed. */
+  stopDecision?: StopDecision;
+  /** Structured compact failure when the request pauses to protect context integrity. */
+  compactFailure?: CompactPauseFailure;
   budgetExceededReason?: string;
   loopBudgetSource?: LoopBudgetSource;
   loopBudgetBaseProfile?: LoopBudgetBaseProfile;
@@ -254,11 +254,144 @@ function createLoopStats(): LoopStats {
   };
 }
 
-function cloneLoopStats(stats: LoopStats, finishReason?: LoopFinishReason): LoopStats {
-  return {
+function stopDecisionForLoop(stats: LoopStats, finishReason: LoopFinishReason): StopDecision {
+  if (finishReason === 'compact_paused' && stats.compactFailure) {
+    const failure = stats.compactFailure;
+    return createStopDecision({
+      scope: 'request',
+      status: 'stopped',
+      disposition: 'pause_scope',
+      reason: { code: failure.code, message: failure.message },
+      evidence: [
+        {
+          kind: 'resource_limit',
+          source: `compact:${failure.mode}`,
+          detail: `${failure.beforeTokens} tokens before compact; ${failure.afterTokens ?? 'unknown'} after; target ${failure.targetTokens}.`,
+        },
+      ],
+      nextActions: [
+        { kind: 'inspect', label: 'Inspect current context pressure', command: '/context' },
+        { kind: 'change_input', label: 'Narrow or split the current instruction' },
+        { kind: 'raise_budget', label: 'Select a larger-context model or raise the budget' },
+        { kind: 'resume', label: 'Resume after changing context or budget', command: '继续' },
+      ],
+      resources: {
+        tokens: {
+          used: Math.max(0, Math.round(failure.afterTokens ?? failure.beforeTokens)),
+          limit: Math.max(0, Math.round(failure.targetTokens)),
+        },
+      },
+    });
+  }
+  const status: StopDecisionStatus =
+    finishReason === 'completed'
+      ? 'completed'
+      : finishReason === 'cancelled'
+        ? 'cancelled'
+        : finishReason === 'failed'
+          ? 'failed'
+          : finishReason === 'blocked'
+            ? 'blocked'
+            : 'stopped';
+  const reasonCode =
+    finishReason === 'budget_exceeded'
+      ? /LLM request budget/iu.test(stats.budgetExceededReason ?? '')
+        ? 'llm_request_budget'
+        : /tool call budget/iu.test(stats.budgetExceededReason ?? '')
+          ? 'tool_call_budget'
+          : /preflight|provider/iu.test(stats.budgetExceededReason ?? '')
+            ? 'provider_preflight_budget'
+            : 'resource_budget'
+      : finishReason;
+  const resumable =
+    finishReason === 'budget_exceeded' ||
+    finishReason === 'completion_gate' ||
+    finishReason === 'blocked';
+  const evidence = [] as StopDecision['evidence'];
+  if (finishReason === 'budget_exceeded') {
+    evidence.push({
+      kind: 'resource_limit',
+      source: 'query',
+      detail: stats.budgetExceededReason ?? 'request resource budget reached',
+    });
+  }
+  if (stats.lastToolName) {
+    evidence.push({
+      kind: 'tool_boundary',
+      source: stats.lastToolName,
+      detail: stats.lastToolSummary ?? `last tool success=${String(stats.lastToolSuccess)}`,
+    });
+  }
+
+  const nextActions: StopDecision['nextActions'] = [];
+  for (const action of stats.continuationActions ?? []) {
+    if (action === 'reply_continue') {
+      nextActions.push({ kind: 'continue', label: 'Continue the same objective', command: '继续' });
+    } else if (action === 'raise_budget') {
+      nextActions.push({ kind: 'raise_budget', label: 'Raise the intentional loop budget' });
+    } else if (action === 'inspect_loop_stats') {
+      nextActions.push({
+        kind: 'inspect',
+        label: 'Inspect loop statistics',
+        command: '/usage',
+      });
+    } else {
+      nextActions.push({ kind: 'change_input', label: 'Provide a narrower instruction' });
+    }
+  }
+
+  return createStopDecision({
+    scope: 'request',
+    status,
+    disposition: resumable ? 'resume_allowed' : 'finish_scope',
+    reason: {
+      code: reasonCode,
+      message:
+        finishReason === 'budget_exceeded'
+          ? (stats.budgetExceededReason ?? 'Request resource budget reached')
+          : `Request finished with ${finishReason}`,
+    },
+    evidence,
+    nextActions,
+    resources: {
+      turns: { used: stats.turnsStarted },
+      llmRequests: {
+        used: stats.llmRequests,
+        ...(stats.loopBudgetMaxLlmRequests === undefined
+          ? {}
+          : { limit: stats.loopBudgetMaxLlmRequests }),
+      },
+      toolCalls: {
+        used: stats.toolCalls,
+        ...(stats.loopBudgetMaxToolCalls === undefined
+          ? {}
+          : { limit: stats.loopBudgetMaxToolCalls }),
+      },
+      modelVisibleToolBytes: {
+        used: stats.modelVisibleToolBytes,
+        ...(stats.loopBudgetMaxModelVisibleBytes === undefined
+          ? {}
+          : { limit: stats.loopBudgetMaxModelVisibleBytes }),
+      },
+    },
+  });
+}
+
+/** Rebuild terminal loop stats and its StopDecision as one atomic projection. */
+export function withLoopFinishReason(stats: LoopStats, finishReason: LoopFinishReason): LoopStats {
+  const resolvedReason = finishReason;
+  const cloned: LoopStats = {
     ...stats,
-    finishReason: finishReason ?? stats.finishReason,
+    finishReason: resolvedReason,
   };
+  if (resolvedReason !== 'running')
+    cloned.stopDecision = stopDecisionForLoop(cloned, resolvedReason);
+  else delete cloned.stopDecision;
+  return cloned;
+}
+
+function cloneLoopStats(stats: LoopStats, finishReason?: LoopFinishReason): LoopStats {
+  return withLoopFinishReason(stats, finishReason ?? stats.finishReason);
 }
 
 function byteLength(text: string): number {
@@ -266,13 +399,13 @@ function byteLength(text: string): number {
 }
 
 export function createLocalFastPathLoopStats(overrides: Partial<LoopStats> = {}): LoopStats {
-  return {
+  return cloneLoopStats({
     ...createLoopStats(),
     turnsStarted: 1,
     finishReason: 'completed',
     localFastPathUsed: true,
     ...overrides,
-  };
+  });
 }
 
 export function createFailedLoopStats(
@@ -291,7 +424,7 @@ export function createFailedLoopStats(
   };
   applyLoopBudgetStats(stats, resolveLoopBudget(loopBudget));
   applyLlmRequestDiagnostics(stats, diagnostics);
-  return stats;
+  return cloneLoopStats(stats);
 }
 
 function isLoopBudgetSource(value: unknown): value is LoopBudgetSource {
@@ -415,14 +548,14 @@ function budgetExceededEvent(
     'raise_budget',
   ];
   const continuationHint =
-    'Reply `继续` to continue the same objective, give a narrower next step, inspect /loop-stats, or raise agentLoop.budget for intentional long work.';
+    'Reply `继续` to continue the same objective, give a narrower next step, inspect /usage, or raise agentLoop.budget for intentional long work.';
   return {
     type: 'complete',
     content: [
       `Agent loop budget reached: ${reason}.`,
       'I stopped this turn to avoid unnecessary model requests and preserved the current session state.',
       'To continue the same objective, reply `继续` or provide the next concrete step.',
-      'Use /loop-stats to inspect request/tool counts. For intentional long work, raise agentLoop.budget in orion.json.',
+      'Use /usage to inspect request/tool counts. For intentional long work, raise agentLoop.budget in orion.json.',
     ].join('\n'),
     model: llm.getModel(),
     stats: cloneLoopStats(
@@ -637,6 +770,12 @@ export type QueryEvent =
       omittedEvidence: string[];
       includedEvidenceCount: number;
       omittedEvidenceCount: number;
+      /** Additive v0.1.9 manifest; absent on legacy externally-constructed events. */
+      sectionManifest?: NonNullable<PromptAssemblyStats['sectionManifest']>;
+      /** Additive v0.1.9 budget signal; absent means the legacy unknown state. */
+      overBudget?: boolean;
+      capabilityProfileVersion?: number;
+      capabilityProfileFingerprint?: string;
     }
   | { type: 'assistant_tool_calls'; content: string; toolCalls: NonNullable<Message['tool_calls']> }
   | {
@@ -685,8 +824,16 @@ export type QueryEvent =
       compact?: QueryCompactCommit;
     };
 
-export interface QueryCompactCommit {
+export interface QueryCompactCommit extends Pick<
+  CompactResult,
+  'fingerprint' | 'beforeTokens' | 'afterTokens' | 'plan' | 'semanticSummary' | 'diagnostics'
+> {
   mode: 'predictive' | 'threshold';
+  /**
+   * Append-only history for the enclosing regular TurnCommit. The compacted
+   * modelHistory is only authoritative after CompactTransaction advances its pointer.
+   */
+  uncompactedHistory: Message[];
   modelHistory: Message[];
   summary: {
     text: string;
@@ -695,6 +842,40 @@ export interface QueryCompactCommit {
   };
   before: ContextUsageSnapshot;
   after: ContextUsageSnapshot;
+  prepareSource?: CompactPrepareSourceReceipt;
+  /** Harness authority used when the semantic candidate was prepared. */
+  semanticHarnessState?: HarnessState;
+}
+
+function queryCompactCommit(
+  mode: QueryCompactCommit['mode'],
+  result: CompactResult,
+  before: ContextUsageSnapshot,
+  after: ContextUsageSnapshot,
+  uncompactedHistory: readonly Message[],
+  prepareSource?: CompactPrepareSourceReceipt,
+  semanticHarnessState?: HarnessState
+): QueryCompactCommit {
+  return {
+    mode,
+    uncompactedHistory: uncompactedHistory.map(message => ({ ...message })),
+    modelHistory: result.messages.map(message => ({ ...message })),
+    summary: {
+      text: result.summary,
+      generatedAt: result.summaryGeneratedAt,
+      source: result.summarySource,
+    },
+    before,
+    after,
+    prepareSource,
+    semanticHarnessState,
+    fingerprint: result.fingerprint,
+    beforeTokens: result.beforeTokens,
+    afterTokens: result.afterTokens,
+    plan: structuredClone(result.plan),
+    semanticSummary: structuredClone(result.semanticSummary),
+    diagnostics: result.diagnostics.map(diagnostic => ({ ...diagnostic })),
+  };
 }
 
 function attachCompactCommit(
@@ -707,12 +888,22 @@ function attachCompactCommit(
   return compact
     ? {
         ...eventWithUsage,
-        compact: {
-          ...compact,
-          modelHistory: messages.map(message => ({ ...message })),
-        },
+        compact: bindCompactCommitToHistory(compact, messages),
       }
     : eventWithUsage;
+}
+
+function bindCompactCommitToHistory(
+  compact: QueryCompactCommit,
+  messages: readonly Message[]
+): QueryCompactCommit {
+  const modelHistory = messages.map(message => ({ ...message }));
+  return {
+    ...compact,
+    uncompactedHistory: compact.uncompactedHistory.map(message => ({ ...message })),
+    modelHistory,
+    afterTokens: estimateMessagesTokens(modelHistory),
+  };
 }
 
 // ============================================================================
@@ -726,14 +917,17 @@ export interface QueryParams {
   tools: OrionCodeTool[];
   /** Tool executor: (name, args, abortSignal?) => result string
    *  Issue #32 #3.2: 支持 abortSignal 透传 */
-  toolExecutor: (
-    name: string,
-    args: Record<string, unknown>,
-    abortSignal?: AbortSignal
-  ) => Promise<string>;
+  toolExecutor: AuthoritativeToolExecutor;
+  /**
+   * Resolve the exact tools and executor binding for each model request.
+   * Existing callers may omit this and retain the turn-scoped registry.
+   */
+  resolveStep?: (input: QueryStepResolveInput) => QueryStepRuntime | Promise<QueryStepRuntime>;
+  /** @deprecated Query always delegates authority to the injected executor. */
+  executionBoundary?: 'legacy' | 'tool_gateway';
   /** LLM service instance */
   llm: LLMService;
-  /** Maximum turns (default: no limit, relies on safety mechanisms) */
+  /** @deprecated Use loopBudget.maxLlmRequestsPerUserTurn. This alias is resource-only. */
   maxTurns?: number;
   /** Abort signal for cancellation */
   abortSignal?: AbortSignal;
@@ -759,7 +953,7 @@ export interface QueryParams {
   /** Strategy tracker for alternative approaches */
   strategyTracker?: StrategyTracker;
   /** Optional Context Harness for turn-level context, ledger, and completion gates */
-  harness?: ContextHarness;
+  harness?: QueryTaskContext;
   /** Current user input, used by Context Harness for evidence ranking */
   input?: string;
   /** Maximum number of concurrency-safe tools to execute at once (default 6). */
@@ -774,7 +968,55 @@ export interface QueryParams {
   onAutoCompact?: (notice: AutoCompactNotice) => void;
   /** Runtime-owned compact policy and provider calibration. */
   compactCoordinator?: CompactCoordinator;
+  /** Capture the durable transcript identity immediately before candidate preparation. */
+  onCompactPrepare?: () => CompactPrepareSourceReceipt | undefined;
 }
+
+export interface QueryStepResolveInput {
+  readonly requestIndex: number;
+  readonly messages: readonly Message[];
+  readonly input?: string;
+  readonly abortSignal?: AbortSignal;
+}
+
+export interface QueryStepRuntime {
+  readonly tools: readonly OrionCodeTool[];
+  readonly toolExecutor: QueryParams['toolExecutor'];
+  readonly receiptDigest?: string;
+  /**
+   * Freeze the final prompt/router binding after compaction and prompt assembly,
+   * immediately before the provider request is issued.
+   */
+  readonly bindModelRequest?: (
+    input: QueryModelRequestBindingInput
+  ) => QueryModelRequestBinding | Promise<QueryModelRequestBinding>;
+}
+
+export interface QueryModelRequestBindingInput {
+  readonly requestIndex: number;
+  readonly messages: readonly Message[];
+  readonly tools: readonly OrionCodeTool[];
+  readonly abortSignal?: AbortSignal;
+}
+
+export interface QueryModelRequestBinding {
+  readonly toolExecutor: QueryParams['toolExecutor'];
+  readonly receiptDigest?: string;
+}
+
+export type QueryTaskContext = Pick<
+  ContextHarness,
+  | 'updateCapabilityProfile'
+  | 'assembleMessages'
+  | 'getCapsule'
+  | 'toJSON'
+  | 'recordAssistantResponse'
+  | 'beforeToolUse'
+  | 'asToolBlockedResult'
+  | 'recordToolResult'
+  | 'beforeComplete'
+  | 'asCompletionBlockedMessage'
+>;
 
 export interface AutoCompactNotice {
   mode: 'predictive' | 'threshold';
@@ -818,6 +1060,79 @@ function publishAutoCompact(
   }
 }
 
+function validateFinalCompactRequest(
+  result: CompactResult,
+  autoCompact: AutoCompact,
+  modelId: string,
+  harness: QueryTaskContext | undefined,
+  messagesForHarness: Pick<OrionCodeTool, 'name' | 'description'>[],
+  input?: string
+): CompactPostValidation {
+  const assembled = harness
+    ? harness.assembleMessages(result.messages, {
+        input,
+        tools: messagesForHarness,
+      })
+    : result.messages;
+  const estimatedTokens = estimateMessagesTokens(assembled);
+  const observedTokens = autoCompact.adjustTokenEstimate(estimatedTokens, modelId);
+  const compactStats = autoCompact.getStats();
+  const targetTokens = Math.max(
+    1,
+    Math.floor(compactStats.safeInputBudget * compactStats.targetRatio)
+  );
+  if (observedTokens <= targetTokens) return { valid: true, observedTokens, targetTokens };
+  return {
+    valid: false,
+    code: 'no_headroom',
+    message: `Final assembled request uses ${observedTokens} tokens after compact; safe target is ${targetTokens}.`,
+    observedTokens,
+    targetTokens,
+  };
+}
+
+function failureForUnchangedCompactAttempt(
+  attempt: Extract<AutoCompactAttempt, { status: 'duplicate' | 'rejected' }>,
+  autoCompact: AutoCompact
+): CompactPauseFailure {
+  const compactStats = autoCompact.getStats();
+  const beforeTokens = estimateMessagesTokens(attempt.messages);
+  return {
+    code: attempt.status === 'duplicate' ? 'context_thrash' : 'no_headroom',
+    message:
+      attempt.status === 'duplicate'
+        ? 'The same high-pressure context reached compact again without new durable progress.'
+        : 'Compact could not reduce the high-pressure context, so the request was paused.',
+    mode: attempt.mode,
+    fingerprint: attempt.fingerprint,
+    consecutiveNoProgressAttempts: attempt.consecutiveNoProgressAttempts,
+    beforeTokens,
+    afterTokens: beforeTokens,
+    safeInputBudget: compactStats.safeInputBudget,
+    targetTokens: Math.max(1, Math.floor(compactStats.safeInputBudget * compactStats.targetRatio)),
+  };
+}
+
+function compactPausedEvent(
+  llm: LLMService,
+  stats: LoopStats,
+  failure: CompactPauseFailure,
+  content?: string
+): Extract<QueryEvent, { type: 'complete' }> {
+  stats.compactFailure = {
+    ...failure,
+    validationErrors: failure.validationErrors?.map(error => ({ ...error })),
+  };
+  return {
+    type: 'complete',
+    content:
+      content ??
+      `Context compaction paused this request: ${failure.message} Change context or budget, then resume.`,
+    model: llm.getModel(),
+    stats: cloneLoopStats(stats, 'compact_paused'),
+  };
+}
+
 // ============================================================================
 // query() — async generator
 // ============================================================================
@@ -840,10 +1155,9 @@ function publishAutoCompact(
 export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
   const {
     messages,
-    tools,
-    toolExecutor,
+    tools: initialTools,
+    toolExecutor: initialToolExecutor,
     llm,
-    maxTurns, // 无默认值，可选参数
     abortSignal,
     streamCallbacks,
     costTracker,
@@ -853,20 +1167,49 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
     maxParallelToolCalls = 6,
   } = params;
 
-  const openaiTools = toOpenAITools(tools) as unknown as Tool[];
   let turn = 0;
   let consecutiveCompletionGateBlocks = 0;
   const stats = createLoopStats();
   let pendingCompact: QueryCompactCommit | undefined;
+  const uncompactedMessages = messages.map(message => ({ ...message }));
+  const appendMessage = (message: Message): void => {
+    messages.push(message);
+    uncompactedMessages.push({ ...message });
+    if (pendingCompact) {
+      pendingCompact.uncompactedHistory = uncompactedMessages.map(entry => ({ ...entry }));
+    }
+  };
+  let compactPrepareSource: CompactPrepareSourceReceipt | undefined;
+  const captureCompactPrepareSource = (): CompactPrepareSourceReceipt | undefined => {
+    if (compactPrepareSource) return compactPrepareSource;
+    try {
+      compactPrepareSource = params.onCompactPrepare?.();
+    } catch {
+      // Candidate preparation may continue in memory, but persistence will fail
+      // closed because semantic checkpoint commits require this receipt.
+      compactPrepareSource = undefined;
+    }
+    return compactPrepareSource;
+  };
   let aggregateUsage: { promptTokens: number; completionTokens: number } | undefined;
-  let loopBudget = resolveLoopBudget(params.loopBudget);
+  // Preserve the old option as a resource-budget alias. It no longer emits a
+  // task-like `max_turns` completion or claims that the objective completed.
+  const legacyRequestBudget =
+    typeof params.maxTurns === 'number' && Number.isFinite(params.maxTurns) && params.maxTurns > 0
+      ? Math.floor(params.maxTurns)
+      : undefined;
+  let loopBudget = resolveLoopBudget({
+    ...params.loopBudget,
+    ...(params.loopBudget?.maxLlmRequestsPerUserTurn === undefined && legacyRequestBudget
+      ? { maxLlmRequestsPerUserTurn: legacyRequestBudget }
+      : {}),
+  });
   applyLoopBudgetStats(stats, loopBudget);
   const maxModelVisibleToolResultBytes = Math.max(
     512,
     params.maxModelVisibleToolResultBytes ?? DEFAULT_MAX_MODEL_VISIBLE_TOOL_RESULT_BYTES
   );
   const fragmentedReadOnlyTools = new Set(BATCH_READ_ALLOWED_TOOLS);
-
   // 无限循环，依赖安全机制停止
   while (true) {
     turn++;
@@ -875,22 +1218,6 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
     if (isAborted(abortSignal)) {
       yield attachCompactCommit(
         cancelledCompleteEvent(llm, stats),
-        pendingCompact,
-        messages,
-        aggregateUsage
-      );
-      return;
-    }
-
-    // Safety valve: check maxTurns if specified (optional)
-    if (maxTurns && turn > maxTurns) {
-      yield attachCompactCommit(
-        {
-          type: 'complete',
-          content: `Reached maximum turns (${maxTurns}). Task may be incomplete.`,
-          model: llm.getModel(),
-          stats: cloneLoopStats(stats, 'max_turns'),
-        },
         pendingCompact,
         messages,
         aggregateUsage
@@ -916,6 +1243,25 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
       );
       return;
     }
+
+    const resolvedStep = params.resolveStep
+      ? await params.resolveStep({
+          requestIndex: turn - 1,
+          messages: messages.map(message => ({ ...message })),
+          input,
+          abortSignal,
+        })
+      : { tools: initialTools, toolExecutor: initialToolExecutor };
+    const tools = [...resolvedStep.tools];
+    let toolExecutor = resolvedStep.toolExecutor;
+    const openaiTools = toOpenAITools(tools) as unknown as Tool[];
+    harness?.updateCapabilityProfile?.({
+      modelId: llm.getModel(),
+      contextWindow: getModelContextWindow(llm.getModel()),
+      permissionMode: params.permissionMode ?? 'default',
+      toolConfirmation: params.toolConfirmation ?? 'allow',
+      tools: tools.map(tool => tool.name),
+    });
 
     // Request start
     yield { type: 'request_start', model: llm.getModel(), turn };
@@ -957,8 +1303,55 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
       autoCompact.hasProviderCalibration(llm.getModel()) ? 'provider_adjusted' : 'estimated'
     );
     const preCompactObjective = harness?.getCapsule()?.contract?.objective;
-    const preCompacted = await autoCompact.checkPredictiveAndCompact(messages, predictedTokens);
-    if (preCompacted !== messages) {
+    const compactToolDescriptions = tools.map(tool => ({
+      name: tool.name,
+      description: tool.description,
+    }));
+    const predictiveStats = autoCompact.getStats();
+    if (
+      predictiveStats.enabled &&
+      predictedTokens / Math.max(1, predictiveStats.safeInputBudget) >=
+        predictiveStats.predictiveCompactThreshold
+    ) {
+      captureCompactPrepareSource();
+    }
+    const preCompactAttempt = await autoCompact.checkPredictiveCompactOutcome(
+      messages,
+      predictedTokens,
+      result =>
+        validateFinalCompactRequest(
+          result,
+          autoCompact,
+          llm.getModel(),
+          harness,
+          compactToolDescriptions,
+          input
+        )
+    );
+    if (preCompactAttempt.status === 'paused') {
+      yield attachCompactCommit(
+        compactPausedEvent(llm, stats, preCompactAttempt.failure),
+        pendingCompact,
+        messages,
+        aggregateUsage
+      );
+      return;
+    }
+    if (preCompactAttempt.status === 'duplicate' || preCompactAttempt.status === 'rejected') {
+      yield attachCompactCommit(
+        compactPausedEvent(
+          llm,
+          stats,
+          failureForUnchangedCompactAttempt(preCompactAttempt, autoCompact)
+        ),
+        pendingCompact,
+        messages,
+        aggregateUsage
+      );
+      return;
+    }
+    const preCompacted = preCompactAttempt.messages;
+    if (preCompactAttempt.status === 'compacted') {
       stats.compactTrigger = 'pre_turn';
       messages.length = 0;
       messages.push(...preCompacted);
@@ -993,20 +1386,15 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
         compactedTokens,
         autoCompact.hasProviderCalibration(llm.getModel()) ? 'provider_adjusted' : 'estimated'
       );
-      const result = autoCompact.getLastCompactResult();
-      if (result) {
-        pendingCompact = {
-          mode: 'predictive',
-          modelHistory: result.messages.map(message => ({ ...message })),
-          summary: {
-            text: result.summary,
-            generatedAt: result.summaryGeneratedAt,
-            source: result.summarySource,
-          },
-          before: contextBeforePredictiveCompact,
-          after: contextAfterPredictiveCompact,
-        };
-      }
+      pendingCompact = queryCompactCommit(
+        'predictive',
+        preCompactAttempt.result,
+        contextBeforePredictiveCompact,
+        contextAfterPredictiveCompact,
+        uncompactedMessages,
+        compactPrepareSource,
+        harness?.toJSON()
+      );
       publishAutoCompact(params.onAutoCompact, {
         mode: 'predictive',
         before: contextBeforePredictiveCompact,
@@ -1029,7 +1417,35 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
         omittedEvidence: compactPromptEvidence(assemblyStats.omittedEvidence, 8),
         includedEvidenceCount: assemblyStats.includedEvidence.length,
         omittedEvidenceCount: assemblyStats.omittedEvidence.length,
+        sectionManifest: assemblyStats.sectionManifest?.map(item => ({ ...item })) ?? [],
+        overBudget: assemblyStats.overBudget === true,
+        capabilityProfileVersion: assemblyStats.capabilityProfileVersion,
+        capabilityProfileFingerprint: assemblyStats.capabilityProfileFingerprint,
       };
+      if (assemblyStats.overBudget) {
+        yield attachCompactCommit(
+          compactPausedEvent(
+            llm,
+            stats,
+            {
+              code: 'mandatory_context_over_budget',
+              message: `Mandatory Harness context uses ${assemblyStats.estimatedTokens} tokens; its atomic section budget is ${assemblyStats.budgetTokens}.`,
+              mode: 'predictive',
+              fingerprint: canonicalMessagesFingerprint(requestMessages),
+              consecutiveNoProgressAttempts: 1,
+              beforeTokens: assemblyStats.estimatedTokens,
+              afterTokens: assemblyStats.estimatedTokens,
+              safeInputBudget: assemblyStats.budgetTokens,
+              targetTokens: assemblyStats.budgetTokens,
+            },
+            'Mandatory task context does not fit its atomic prompt budget. Narrow the contract or choose a larger-context model, then resume.'
+          ),
+          pendingCompact,
+          messages,
+          aggregateUsage
+        );
+        return;
+      }
     }
 
     if (isAborted(abortSignal)) {
@@ -1040,6 +1456,16 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
         aggregateUsage
       );
       return;
+    }
+
+    if (resolvedStep.bindModelRequest) {
+      const bound = await resolvedStep.bindModelRequest({
+        requestIndex: turn - 1,
+        messages: requestMessages.map(message => ({ ...message })),
+        tools,
+        abortSignal,
+      });
+      toolExecutor = bound.toolExecutor;
     }
 
     let response: Awaited<ReturnType<LLMService['chatStream']>>;
@@ -1120,7 +1546,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
         content: response.content,
         tool_calls: toolCalls,
       };
-      messages.push(assistantMsg);
+      appendMessage(assistantMsg);
       harness?.recordAssistantResponse(response);
 
       yield {
@@ -1132,20 +1558,12 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
       const preparedCalls = prepareToolCalls({
         toolCalls,
         tools,
-        toolExecutor,
-        permissionMode: params.permissionMode,
-        toolConfirmation: params.toolConfirmation,
-        toolAllowlist: params.toolAllowlist,
-        confirmToolUse: params.confirmToolUse,
-        toolContext: params.toolContext,
-        abortSignal,
         startApproach: (toolName: string) => strategyTracker.startApproach(toolName),
         addToolToTracker: (attemptId: string, toolName: string) =>
           strategyTracker.addTool(attemptId, toolName),
         harnessDriftCheck: harness
           ? ({ name, args }) => harness.beforeToolUse({ name, args })
           : undefined,
-        harnessBlockedResult: harness ? drift => harness.asToolBlockedResult(drift) : undefined,
       });
       stats.toolCalls += preparedCalls.length;
       for (const prepared of preparedCalls) {
@@ -1181,10 +1599,6 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
       for await (const executed of executeToolCalls(preparedCalls, {
         toolExecutor,
         abortSignal,
-        confirmToolUse: params.confirmToolUse,
-        permissionMode: params.permissionMode,
-        toolConfirmation: params.toolConfirmation,
-        toolAllowlist: params.toolAllowlist,
         harnessBlockedResult: harness ? drift => harness.asToolBlockedResult(drift) : undefined,
         maxParallelToolCalls,
       })) {
@@ -1283,7 +1697,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
           batchIndex: prepared.index,
         };
 
-        messages.push({
+        appendMessage({
           role: 'tool',
           content: modelVisible.result,
           tool_call_id: tc.id,
@@ -1327,7 +1741,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
               batchCount: toolCalls.length,
               batchIndex: skippedPrepared.index,
             };
-            messages.push({
+            appendMessage({
               role: 'tool',
               content: skippedResult,
               tool_call_id: skipped.id,
@@ -1356,7 +1770,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
 
       if (pendingStrategySuggestion) {
         yield { type: 'strategy_exhausted', suggestion: pendingStrategySuggestion };
-        messages.push({
+        appendMessage({
           role: 'user',
           content: pendingStrategySuggestion,
         });
@@ -1364,7 +1778,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
       }
 
       if (stats.singleReadOnlyStreak >= loopBudget.maxReadOnlyFragmentation) {
-        messages.push({
+        appendMessage({
           role: 'system',
           content: [
             '[Orion Code loop hint]',
@@ -1384,7 +1798,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
       role: 'assistant',
       content: response.content,
     };
-    messages.push(assistantMsg);
+    appendMessage(assistantMsg);
     harness?.recordAssistantResponse(response);
 
     // No tool calls — done, unless the harness requires one more pass.
@@ -1395,12 +1809,16 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
         const missing = completionGate.missing?.length
           ? completionGate.missing.join('; ')
           : 'required verification evidence is missing';
+        const stoppedStats = cloneLoopStats(stats, 'completion_gate');
+        if (completionGate.stopDecision) {
+          stoppedStats.stopDecision = completionGate.stopDecision;
+        }
         yield attachCompactCommit(
           {
             type: 'complete',
             content: `Completion gate stopped this turn: ${missing}\nRun the required verification, then continue.`,
             model: response.model || llm.getModel(),
-            stats: cloneLoopStats(stats, 'completion_gate'),
+            stats: stoppedStats,
           },
           pendingCompact,
           messages,
@@ -1408,7 +1826,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
         );
         return;
       }
-      messages.push(harness!.asCompletionBlockedMessage(completionGate));
+      appendMessage(harness!.asCompletionBlockedMessage(completionGate));
       stats.finishReason = 'completion_gate';
       continue;
     }
@@ -1438,8 +1856,59 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
         ? 'provider_adjusted'
         : 'estimated'
     );
-    const compacted = await autoCompact.checkAndCompact(messages, currentContextTokens);
-    if (compacted !== messages) {
+    const validatePostCompact = (result: CompactResult): CompactPostValidation =>
+      validateFinalCompactRequest(
+        result,
+        autoCompact,
+        response.model || llm.getModel(),
+        harness,
+        compactToolDescriptions,
+        input
+      );
+    const thresholdStats = autoCompact.getStats();
+    if (
+      !pendingCompact &&
+      thresholdStats.enabled &&
+      currentContextTokens / Math.max(1, thresholdStats.safeInputBudget) >= thresholdStats.threshold
+    ) {
+      captureCompactPrepareSource();
+    }
+    const postCompactAttempt = pendingCompact
+      ? await autoCompact.ensureHeadroomAndCompactOutcome(
+          messages,
+          currentContextTokens,
+          validatePostCompact
+        )
+      : await autoCompact.checkAndCompactOutcome(
+          messages,
+          currentContextTokens,
+          validatePostCompact
+        );
+    if (postCompactAttempt.status === 'paused') {
+      yield attachCompactCommit(
+        compactPausedEvent(llm, stats, postCompactAttempt.failure, response.content),
+        pendingCompact,
+        messages,
+        aggregateUsage
+      );
+      return;
+    }
+    if (postCompactAttempt.status === 'duplicate' || postCompactAttempt.status === 'rejected') {
+      yield attachCompactCommit(
+        compactPausedEvent(
+          llm,
+          stats,
+          failureForUnchangedCompactAttempt(postCompactAttempt, autoCompact),
+          response.content
+        ),
+        pendingCompact,
+        messages,
+        aggregateUsage
+      );
+      return;
+    }
+    const compacted = postCompactAttempt.messages;
+    if (postCompactAttempt.status === 'compacted') {
       stats.compactTrigger = stats.compactTrigger ?? 'post_turn';
       messages.length = 0;
       messages.push(...compacted);
@@ -1458,20 +1927,15 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
           ? 'provider_adjusted'
           : 'estimated'
       );
-      const result = autoCompact.getLastCompactResult();
-      if (result) {
-        pendingCompact = {
-          mode: 'threshold',
-          modelHistory: result.messages.map(message => ({ ...message })),
-          summary: {
-            text: result.summary,
-            generatedAt: result.summaryGeneratedAt,
-            source: result.summarySource,
-          },
-          before: contextBeforeThresholdCompact,
-          after: contextAfterThresholdCompact,
-        };
-      }
+      pendingCompact = queryCompactCommit(
+        pendingCompact?.mode ?? 'threshold',
+        postCompactAttempt.result,
+        contextBeforeThresholdCompact,
+        contextAfterThresholdCompact,
+        uncompactedMessages,
+        pendingCompact?.prepareSource ?? compactPrepareSource,
+        pendingCompact?.semanticHarnessState ?? harness?.toJSON()
+      );
       publishAutoCompact(params.onAutoCompact, {
         mode: 'threshold',
         before: contextBeforeThresholdCompact,
@@ -1490,12 +1954,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
       usage: aggregateUsage,
       model: response.model,
       stats: cloneLoopStats(stats, 'completed'),
-      compact: pendingCompact
-        ? {
-            ...pendingCompact,
-            modelHistory: messages.map(message => ({ ...message })),
-          }
-        : undefined,
+      compact: pendingCompact ? bindCompactCommitToHistory(pendingCompact, messages) : undefined,
     };
     return;
   }

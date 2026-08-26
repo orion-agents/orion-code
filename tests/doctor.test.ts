@@ -5,23 +5,13 @@ import { spawnSync } from 'child_process';
 import { Store } from '../src/framework/store';
 import { loadConfig } from '../src/services/config';
 import { collectDoctorReport, formatDoctorReport, hasDoctorFailures } from '../src/services/doctor';
-import { TOOLS } from '../src/tools';
-import { mcpManager } from '../src/tools/mcp';
+import { TOOLS } from './support/legacy-tools';
 import { findCommand } from '../src/commands';
 import type { CommandContext } from '../src/commands/types';
 import { getLegacyProjectMemoryDir, getProjectSessionsDir } from '../src/services/config-dir';
 import { resolveProjectPath } from '../src/services/session-storage';
-import { resetSkillsRegistry } from '../src/skills/registry';
 
 const originalEnv = { ...process.env };
-
-function makeRuntime() {
-  return {
-    brain: { getStatus: () => ({ agents: [], pendingTasks: 0, strategy: 'sequential' }) },
-    memory: { getStatus: () => ({ working: 0, 'short-term': 0, 'long-term': 0 }) },
-    store: { getStats: () => ({ working: 0, 'short-term': 0, 'long-term': 0 }) },
-  };
-}
 
 function makeLlm(model = 'mock-doctor') {
   return {
@@ -38,13 +28,9 @@ describe('doctor report', () => {
     projectDir = mkdtempSync(join(tmpdir(), 'openhorse-doctor-project-'));
     mkdirSync(join(projectDir, '.git'));
     process.env.ORION_CODE_CONFIG_DIR = configDir;
-    mcpManager.disconnectAll();
-    resetSkillsRegistry();
   });
 
   afterEach(() => {
-    mcpManager.disconnectAll();
-    resetSkillsRegistry();
     if (existsSync(configDir)) rmSync(configDir, { recursive: true, force: true });
     if (existsSync(projectDir)) rmSync(projectDir, { recursive: true, force: true });
     process.env = { ...originalEnv };
@@ -63,7 +49,6 @@ describe('doctor report', () => {
       config,
       store,
       llm: null,
-      runtime: makeRuntime() as any,
     });
     const rendered = formatDoctorReport(report);
 
@@ -87,7 +72,6 @@ describe('doctor report', () => {
       config,
       store,
       llm: makeLlm('mock-doctor') as any,
-      runtime: makeRuntime() as any,
     });
 
     expect(report.checks.find(check => check.id === 'config')?.status).toBe('ok');
@@ -120,7 +104,6 @@ describe('doctor report', () => {
         config,
         store,
         llm: makeLlm('gpt-4o') as any,
-        runtime: makeRuntime() as any,
       });
       const provider = report.checks.find(check => check.id === 'provider-config');
 
@@ -153,7 +136,6 @@ describe('doctor report', () => {
       config,
       store,
       llm: makeLlm('gpt-4o') as any,
-      runtime: makeRuntime() as any,
     });
     const rendered = formatDoctorReport(report);
 
@@ -183,7 +165,6 @@ describe('doctor report', () => {
       config,
       store,
       llm: makeLlm('future-provider/model-x') as any,
-      runtime: makeRuntime() as any,
     });
     const provider = report.checks.find(check => check.id === 'provider-config');
 
@@ -211,18 +192,17 @@ describe('doctor report', () => {
       config,
       store,
       llm: makeLlm('mock-doctor') as any,
-      runtime: makeRuntime() as any,
     });
 
     expect(report.checks.find(check => check.id === 'permissions')?.status).toBe('ok');
   });
 
-  it('does not warn for ask tool confirmation in beta renderers because permissions are runtime-owned', () => {
+  it('does not warn for ask tool confirmation because permissions are runtime-owned', () => {
     const config = loadConfig({
       apiKey: 'sk-test',
       model: 'mock-doctor',
       toolConfirmation: 'ask',
-      ui: { renderer: 'ink', confirmations: 'config' },
+      ui: { renderer: 'terminal', confirmations: 'config' },
     });
     const store = new Store({
       config,
@@ -235,7 +215,6 @@ describe('doctor report', () => {
       config,
       store,
       llm: makeLlm('mock-doctor') as any,
-      runtime: makeRuntime() as any,
     });
 
     const permissions = report.checks.find(check => check.id === 'permissions');
@@ -269,7 +248,6 @@ Legacy content`
       config,
       store,
       llm: makeLlm('mock-doctor') as any,
-      runtime: makeRuntime() as any,
     });
 
     const storage = report.checks.find(check => check.id === 'storage-layout');
@@ -304,7 +282,6 @@ Legacy content`
       config,
       store,
       llm: makeLlm('mock-doctor') as any,
-      runtime: makeRuntime() as any,
     });
     const goals = report.checks.find(check => check.id === 'goal-sidecars');
 
@@ -372,7 +349,6 @@ Legacy content`
       config,
       store,
       llm: makeLlm('mock-doctor') as any,
-      runtime: makeRuntime() as any,
     });
     const goals = report.checks.find(check => check.id === 'goal-sidecars');
 
@@ -391,7 +367,7 @@ Legacy content`
     expect(hasDoctorFailures(report)).toBe(false);
   });
 
-  it('reports duplicate skill diagnostics without failing doctor', () => {
+  it('reports lazy Skill roots without loading definitions during doctor', () => {
     const externalRoot = join(configDir, 'configured-skills');
     const skillDir = join(externalRoot, 'code-review');
     mkdirSync(skillDir, { recursive: true });
@@ -426,13 +402,13 @@ priority: 100
       config,
       store,
       llm: makeLlm('mock-doctor') as any,
-      runtime: makeRuntime() as any,
     });
 
     const skills = report.checks.find(check => check.id === 'skills');
-    expect(skills?.status).toBe('warn');
-    expect(skills?.summary).toContain('duplicate');
-    expect(skills?.detail).toContain('duplicate code-review');
+    expect(skills?.status).toBe('ok');
+    expect(skills?.summary).toContain('lazy definition loading enabled');
+    expect(skills?.detail).toContain('configured: available');
+    expect(skills?.detail).not.toContain('Configured Code Review');
     expect(hasDoctorFailures(report)).toBe(false);
   });
 
@@ -454,7 +430,6 @@ priority: 100
         config,
         store,
         llm: makeLlm('mock-doctor') as any,
-        runtime: makeRuntime() as any,
       };
       const result = await findCommand('doctor')!.execute(ctx, '');
       expect(result.success).toBe(true);

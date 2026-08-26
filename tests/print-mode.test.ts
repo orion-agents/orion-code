@@ -2,14 +2,10 @@ import { existsSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
-import { Store } from '../src/framework/store';
 import { launchPrintMode, PrintEventSink } from '../src/print-ui/launch';
 import { AgentRuntimeController } from '../src/runtime/agent-runtime-controller';
-import { loadConfig } from '../src/services/config';
-import { loadGoal } from '../src/services/goal-storage';
 import type { OrionCodeUiRuntime } from '../src/runtime/ui-events';
 import { appendSessionMessage, createSession } from '../src/services/session-storage';
-import { TOOLS } from '../src/tools';
 import { canRunCliSmoke } from './support/env';
 import {
   makeToolStartedEvent,
@@ -67,7 +63,6 @@ describe('print mode event sink', () => {
         setProcessing: jest.fn(),
       } as unknown as OrionCodeUiRuntime['store'],
       llm: null,
-      runtime: {} as OrionCodeUiRuntime['runtime'],
       isConfigured: true,
       ensureSession: jest.fn(),
       setSession: jest.fn(),
@@ -135,6 +130,26 @@ describe('print mode event sink', () => {
             sequence: 1,
           },
         ],
+      })
+    );
+  });
+
+  it('keeps reasoning lifecycle entries structured without polluting answer content', () => {
+    const sink = new PrintEventSink(runtime(), 'json');
+
+    sink.append({ role: 'assistant', title: 'reasoning', content: 'Model reasoning started' });
+    sink.append({ role: 'assistant', content: 'final answer' });
+
+    expect(sink.result()).toEqual(
+      expect.objectContaining({
+        content: 'final answer',
+        entries: expect.arrayContaining([
+          expect.objectContaining({
+            role: 'assistant',
+            title: 'reasoning',
+            content: 'Model reasoning started',
+          }),
+        ]),
       })
     );
   });
@@ -580,126 +595,4 @@ describe('print mode event sink', () => {
     }
   });
 
-  it('pauses an active Goal, invalidates continuation, emits JSON evidence, and exits', async () => {
-    const previousConfigDir = process.env.ORION_CODE_CONFIG_DIR;
-    const root = mkdtempSync(join(tmpdir(), 'orion-code-print-goal-stop-'));
-    const projectDir = join(root, 'project');
-    process.env.ORION_CODE_CONFIG_DIR = join(root, 'config');
-
-    const session = createSession(projectDir, 'test-model');
-    const config = loadConfig({ apiKey: 'test-key', model: 'test-model' });
-    const store = new Store({ config, tools: TOOLS, currentModel: 'test-model' });
-    const chatStream = jest.fn(async () => ({
-      content: 'The first bounded print turn completed.',
-      model: 'test-model',
-      usage: { promptTokens: 7, completionTokens: 3 },
-    }));
-    const printRuntime: OrionCodeUiRuntime = {
-      cwd: projectDir,
-      version: 'test',
-      config,
-      store,
-      llm: {
-        getModel: jest.fn(() => 'test-model'),
-        chatStream,
-      } as unknown as OrionCodeUiRuntime['llm'],
-      runtime: {} as OrionCodeUiRuntime['runtime'],
-      isConfigured: true,
-      getSession: jest.fn(() => session),
-      ensureSession: jest.fn(() => session),
-      setSession: jest.fn(),
-      shutdown: jest.fn(),
-    };
-    const shutdown = jest.fn(async () => undefined);
-    printRuntime.shutdown = shutdown;
-
-    const stdout: string[] = [];
-    const stdoutSpy = jest
-      .spyOn(process.stdout, 'write')
-      .mockImplementation((chunk: any, callbackOrEncoding?: any, callback?: any) => {
-        stdout.push(String(chunk));
-        const done =
-          typeof callbackOrEncoding === 'function'
-            ? callbackOrEncoding
-            : typeof callback === 'function'
-              ? callback
-              : undefined;
-        done?.();
-        return true;
-      });
-    const stderrSpy = jest
-      .spyOn(process.stderr, 'write')
-      .mockImplementation((_chunk: any, callbackOrEncoding?: any, callback?: any) => {
-        const done =
-          typeof callbackOrEncoding === 'function'
-            ? callbackOrEncoding
-            : typeof callback === 'function'
-              ? callback
-              : undefined;
-        done?.();
-        return true;
-      });
-
-    try {
-      const exitCode = await launchPrintMode(printRuntime, '/target verify print termination', {
-        outputFormat: 'json',
-      });
-      const result = JSON.parse(stdout.join(''));
-      const stored = loadGoal(projectDir, session.id);
-      const providerCallsAtExit = chatStream.mock.calls.length;
-      await new Promise<void>(resolve => setImmediate(resolve));
-
-      expect(exitCode).toBe(0);
-      expect(result.entries.filter((entry: { role: string }) => entry.role === 'error')).toEqual(
-        []
-      );
-      expect(shutdown).toHaveBeenCalledTimes(1);
-      expect(providerCallsAtExit).toBeGreaterThan(0);
-      expect(chatStream).toHaveBeenCalledTimes(providerCallsAtExit);
-      expect(result.goalEvents).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            type: 'goal_updated',
-            goal: expect.objectContaining({ status: 'active' }),
-            reason: 'target_create',
-          }),
-          expect.objectContaining({
-            type: 'goal_continuation',
-            phase: 'deferred',
-            reason: 'runtime stopping',
-          }),
-        ])
-      );
-      expect(result.goalEvents.at(-1)).toEqual(
-        expect.objectContaining({
-          type: 'goal_continuation',
-          phase: 'deferred',
-          reason: 'runtime stopping',
-        })
-      );
-      expect(stored.ok).toBe(true);
-      if (!stored.ok) throw new Error(stored.message);
-      expect(stored.value).toEqual(
-        expect.objectContaining({
-          status: 'paused',
-          continuationCount: 1,
-          stopReason: expect.objectContaining({
-            kind: 'user',
-            message: 'Paused by interrupt.',
-          }),
-        })
-      );
-      expect(stored.value.tokensUsed).toBeGreaterThan(0);
-      expect(stored.value.tokensUsed).toBe(stored.value.lastTurn?.totalTokens);
-    } finally {
-      stdoutSpy.mockRestore();
-      stderrSpy.mockRestore();
-      if (previousConfigDir === undefined) {
-        delete process.env.ORION_CODE_CONFIG_DIR;
-      } else {
-        process.env.ORION_CODE_CONFIG_DIR = previousConfigDir;
-      }
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
 });

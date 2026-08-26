@@ -8,7 +8,6 @@ import { TOOL_COMMANDS } from '../src/commands/tool-commands';
 import { MODEL_COMMANDS } from '../src/commands/model-commands';
 import { createSystemCommands } from '../src/commands/system-commands';
 import { DIAGNOSTIC_COMMANDS } from '../src/commands/diagnostic-commands';
-import { LEGACY_COMMANDS } from '../src/commands/legacy-commands';
 import type { CommandContext } from '../src/commands/types';
 
 const EXPECTED_REGISTRATION_ORDER = [
@@ -23,22 +22,16 @@ const EXPECTED_REGISTRATION_ORDER = [
   'todos',
   'resume',
   'session',
-  'sessions',
-  'session-rename',
   'compact',
-  'context-clear',
-  'clear-history',
   'context',
   'harness',
   'skills',
   'skill',
   'memory',
   'tools',
-  'edit-preview',
   'mcp',
   'safety',
   'model',
-  'models',
   'permissions',
   'effort',
   'config',
@@ -56,18 +49,11 @@ const EXPECTED_REGISTRATION_ORDER = [
   'doctor',
   'storage',
   'usage',
-  'loop-stats',
   'trace',
   'last-tool',
   'artifacts',
-  'checkpoint',
   'rewind',
-  'cost',
-  'agents',
   'migrate',
-  'task',
-  'run',
-  'chat',
 ] as const;
 
 describe('command module boundaries (#69)', () => {
@@ -81,7 +67,6 @@ describe('command module boundaries (#69)', () => {
       ...MODEL_COMMANDS,
       ...systemCommands,
       ...DIAGNOSTIC_COMMANDS,
-      ...LEGACY_COMMANDS,
     ];
 
     expect(registered.map(command => command.name)).toEqual(EXPECTED_REGISTRATION_ORDER);
@@ -119,14 +104,9 @@ describe('command module boundaries (#69)', () => {
       },
     } as unknown as CommandContext;
     expect(findCommand('__unknown-command__')).toBeUndefined();
-    await expect(Promise.resolve(findCommand('target')?.execute(context, 'ship'))).resolves.toEqual(
-      {
-        success: false,
-        error: '/goal must be routed through the shared AgentRuntimeController.',
-      }
-    );
+    expect(findCommand('target')).toBeUndefined();
     await expect(
-      Promise.resolve(findCommand('context-clear')?.execute(context, ''))
+      Promise.resolve(findCommand('context')?.execute(context, 'clear'))
     ).resolves.toMatchObject({ success: false });
   });
 });

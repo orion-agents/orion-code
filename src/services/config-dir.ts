@@ -20,6 +20,7 @@ export {
   getUsageLedgerPath,
   getUserMemoryPath,
   getHistoryPath,
+  getMcpConfigPath,
   getProjectsDir,
   getGlobalEnvPath,
   encodeProjectPath,
@@ -62,7 +63,11 @@ export interface ProjectMetadata {
   lastSeenAt: string;
 }
 
-import { getProjectDir as _getProjectDir, getProjectsDir as _getProjectsDir, encodeProjectPath as _encodeProjectPath } from '../product/paths';
+import {
+  getProjectDir as _getProjectDir,
+  getProjectsDir as _getProjectsDir,
+  encodeProjectPath as _encodeProjectPath,
+} from '../product/paths';
 
 export function readProjectMetadata(projectPath: string): ProjectMetadata | null {
   const metadataPath = join(_getProjectDir(projectPath), 'project.json');
@@ -85,7 +90,10 @@ export function readProjectMetadata(projectPath: string): ProjectMetadata | null
   }
 }
 
-export function updateProjectMetadata(projectPath: string, now: Date = new Date()): ProjectMetadata {
+export function updateProjectMetadata(
+  projectPath: string,
+  now: Date = new Date()
+): ProjectMetadata {
   const resolvedPath = (() => {
     const absolute = resolve(projectPath);
     if (existsSync(absolute)) {

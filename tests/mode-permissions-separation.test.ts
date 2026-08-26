@@ -24,7 +24,6 @@ describe('Agent mode and /permissions state axes', () => {
       config,
       store,
       llm: null,
-      runtime: {} as never,
     };
   }
 

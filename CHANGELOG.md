@@ -22,6 +22,106 @@ which is **not** a pass.
 
 ## [Unreleased]
 
+## [0.2.0] — CANDIDATE
+
+> **Status: candidate.** Implementation evidence does not imply a Git tag, GitHub Release, npm
+> publication, or dist-tag promotion. Those receipts remain pending until performed and read back.
+
+### Added
+
+- Add the versioned `Thread → Turn → Step → Item` runtime protocol, append-only Thread event store,
+  deterministic projection/replay, bounded renderer buffering, and typed admission for start, steer,
+  follow-up, interrupt, overload, and maintenance.
+- Add immutable Step Snapshots and Capability Receipts binding model, prompt, Authority, Policy,
+  selected Skills/MCP, visible schemas, exact executors, and durable per-request lineage.
+- Add a single ToolGateway execution boundary for core, long-tail, nested batch, MCP, Skill, and
+  subagent invocations through Capability → Policy → Approval → Sandbox → Execute.
+- Add descriptor-first lazy Skill and MCP runtimes with scope layering, bounded caches, digest
+  invalidation, single-flight loading, exact server leases, idle teardown, and crash isolation.
+- Add Prompt Registry budgets, stable prefix receipts, first-party contributor slots, redaction,
+  and deterministic omission reasons.
+- Add transactional Compact maintenance, atomic TurnCommit, Goal Runtime V2, durable PlanReceipt,
+  modern child Thread runtime, and a side-by-side legacy Session materializer with atomic index
+  cutover.
+- Add machine-readable Harness benchmark/eval, architecture confluence, exact tarball, Node 20/22/24
+  runtime matrix, gate evidence, and aggregate ReleaseReceipt contracts.
+
+### Changed
+
+- Replace the legacy Brain/Agent/Harness/query runtime graph with one statically composed product
+  Runtime and one Agent Loop implementation for root and child turns.
+- Reduce the ordinary coding schema from the frozen v0.1.9 baseline of 33 tools / 20,596 bytes to
+  7 exact core schemas / 3,947 bytes; long-tail capabilities are selected or deferred by task.
+- Make `/plan <task>` commit a PlanReceipt and exit automatically; implementation starts in a new
+  logical turn after BUILD/AUTO is restored.
+- Let productive Goals continue without a fixed turn-count cap; evidence audit, resource budget,
+  no-progress, blocker, provider, persistence, interrupt, and completion decisions remain explicit.
+- Keep BUILD/PLAN/AUTO as workflow modes independent from Authority and tool permission policy.
+
+### Removed
+
+- Remove the Ink renderer, legacy Agent/Brain/Harness/SDK public surface, global `TOOLS` and eager MCP
+  singleton, compatibility command roots, and direct model→tool execution bypasses from the package.
+- Remove `/target`, `/mode`, model-facing `enter_plan_mode`/`exit_plan_mode`, and legacy Goal mutations
+  `/goal exit|edit|replace|confirm|budget` plus `clear --yes`.
+
+### Security
+
+- Freeze exact schema/executor/Authority/Policy bindings per model request and fail closed on digest
+  or catalog drift.
+- Preserve project-boundary, symlink, sandbox, destructive-command, cancellation, durable receipt,
+  and indeterminate-side-effect enforcement across all modes and nested execution.
+
+## [0.1.9] — CANDIDATE
+
+> **Status: candidate.** Source, CI, exact tarball, npm `next`, tag, GitHub Release, and stable
+> `latest` are independent receipts. This section must be updated after each delivery action; it
+> does not claim publication in advance.
+
+### Added
+
+- Add a typed semantic Compact pipeline with atomic message groups, canonical fingerprints,
+  structured ContextItems, TaskContract/evidence/capability reinjection, bounded manual focus, and
+  deterministic fallback diagnostics.
+- Add Compact Checkpoint V2 receipts with source/replacement hashes, target-headroom validation,
+  Harness/Goal bindings, transactional candidate installation, rollback, and V1 read compatibility.
+- Add HarnessKernel TaskContract V3 criteria, evidence-to-criterion receipts, deterministic state,
+  Capability Profiles, ProgressDelta, and typed StopDecision projections.
+- Add mature-agent Compact benchmark fixtures and lifecycle trace events for prepare, validate,
+  commit, rollback, and boundary transitions.
+- Add bounded project-level `compactInstructions` for manual and automatic compaction; caller
+  guidance remains subordinate to protocol, safety, criteria, evidence, failures, and pending work.
+
+### Changed
+
+- Replace Goal's fixed five-continuation stop with criterion/evidence completion, no-progress,
+  blocker, provider, explicit budget, and user-abort decisions. Resource circuit breakers remain
+  bounded and resumable.
+- Bind subagent reservations to child query/provider accounting; keep deprecated turn fields only
+  as compatibility inputs rather than task-complete semantics.
+- Load a bounded memory index at startup and retrieve relevant content per turn with an auditable,
+  body-free prompt manifest.
+- Extend `/context explain` with section budgets, capability identity, output/safety reserves, and
+  the latest committed Compact receipt.
+
+### Fixed
+
+- Serialize usage JSONL appends with an independent cross-process lock and replay-safe request IDs
+  (#206).
+- Contain project context, project instructions, and explicit skill reads at a canonical project
+  boundary; project-provided `@file` content remains untrusted data (#207).
+- Make smaller-context model switches run and commit a semantic preflight before changing the
+  active model.
+- Reject stale Compact candidates when the transcript tail or active checkpoint changes between
+  prepare and commit, while preserving append-only session history.
+- Stop treating request/tool budgets or an unsatisfied completion gate as successful task
+  completion; render resumable typed decisions consistently.
+
+### Security
+
+- Reject symlink and non-regular project context paths, revalidate opened descriptors, and redact
+  boundary errors without exposing out-of-project file contents.
+
 ## [0.1.8] — 2026-08-15
 
 > **Status: published.** Tag `v0.1.8` identifies the source;

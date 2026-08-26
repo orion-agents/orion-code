@@ -78,7 +78,7 @@ export function buildGoalContextFragment(goal: SessionGoalV1 | null): GoalPrompt
 
   lines.push(
     `Blocked gate: same eligible blocker ${goal.blocker?.consecutiveTurns ?? 0}/${GOAL_INVARIANTS.maxConsecutiveBlockerTurns}; no-progress ${goal.noProgressCount}/${GOAL_INVARIANTS.maxConsecutiveNoProgressTurns}. Both must reach the threshold.`,
-    `Autonomy gate: ${goal.automaticContinuationStreak ?? 0}/${GOAL_INVARIANTS.maxAutomaticContinuationTurns} consecutive automatic continuations; reaching the limit pauses for user review.`,
+    `Autonomy telemetry: ${goal.automaticContinuationStreak ?? 0} consecutive automatic continuations. Progress, blocker, provider, permission, and resource policies decide whether work continues.`,
     '',
     'Rules:',
     '- Preserve the complete objective across turns.',

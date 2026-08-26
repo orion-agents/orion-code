@@ -303,44 +303,42 @@ describe('#51 verification gate reopens after a fail-then-pass', () => {
 // #52 — four small correctness bugs
 // ============================================================================
 
-describe('#52.1 /target reserved subcommands never fall through to create', () => {
+describe('#52.1 removed Goal subcommands never fall through to create', () => {
   const { parseTargetCommand } = require('../src/commands/target-command');
 
-  it.each(['confirm', 'edit', 'replace', 'budget'])(
-    '/target %s (argument forgotten) is a usage error, not a new goal',
+  it.each(['exit', 'confirm', 'edit', 'replace', 'budget'])(
+    '/goal %s is rejected instead of creating a Goal',
     word => {
-      const result = parseTargetCommand(`/target ${word}`);
+      const result = parseTargetCommand(`/goal ${word}`);
       expect(result.ok).toBe(false);
-      expect(result.error).toMatch(/^Usage: \/target /);
+      expect(result.error).toContain('Unsupported Goal command');
     }
   );
 
-  it('/target clear -y is a removed-command error, not a goal named "clear -y"', () => {
-    const result = parseTargetCommand('/target clear -y');
+  it('/goal clear --yes is rejected instead of becoming an objective', () => {
+    const result = parseTargetCommand('/goal clear --yes');
     expect(result.ok).toBe(false);
-    expect(result.error).toContain('Use /goal exit');
+    expect(result.error).toContain('Unsupported Goal command');
   });
 
-  it('the /goal alias reports its own name in the usage string', () => {
-    const result = parseTargetCommand('/goal confirm');
+  it('/target is removed', () => {
+    const result = parseTargetCommand('/target status');
     expect(result.ok).toBe(false);
-    expect(result.error).toContain('/goal confirm');
+    expect(result.error).toContain('Usage: /goal');
   });
 
-  it('a natural-language objective beginning with a reserved word still creates', () => {
-    const result = parseTargetCommand('/target clear the build cache');
+  it('a normal natural-language objective still creates', () => {
+    const result = parseTargetCommand('/goal clean the build cache');
     expect(result.ok).toBe(true);
     expect(result.input.action).toBe('create');
-    expect(result.input.payload.objective).toBe('clear the build cache');
+    expect(result.input.objective).toBe('clean the build cache');
   });
 
-  it('valid subcommands are unaffected', () => {
-    expect(parseTargetCommand('/target confirm crit-1')).toEqual({
+  it('the current clear contract is exact', () => {
+    expect(parseTargetCommand('/goal clear')).toEqual({
       ok: true,
-      input: { type: 'goal_control', action: 'confirm', payload: { criterionId: 'crit-1' } },
+      input: { type: 'goal_control', action: 'clear' },
     });
-    expect(parseTargetCommand('/goal exit').ok).toBe(true);
-    expect(parseTargetCommand('/goal clear').ok).toBe(false);
     expect(parseTargetCommand('/goal clear --yes').ok).toBe(false);
   });
 });

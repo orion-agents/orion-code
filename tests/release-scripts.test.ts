@@ -3,6 +3,8 @@ import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { spawnSync } from 'child_process';
 
+import { captureReleaseArtifactSourceV1 } from '../scripts/release/build-release-artifact';
+
 type ReleaseResult = {
   id: string;
   status: 'pass' | 'fail' | 'warn' | 'skip';
@@ -88,6 +90,27 @@ function runReleaseCheck(cwd: string): { status: number | null; report: ReleaseR
   return { status: result.status, report: JSON.parse(result.stdout) as ReleaseReport };
 }
 
+function runReleaseCheckWithArgs(
+  cwd: string,
+  args: string[]
+): { status: number | null; report: ReleaseReport } {
+  const result = spawnSync(
+    process.execPath,
+    [
+      join(cwd, 'scripts', 'release', 'release-check.js'),
+      '--skip-tests',
+      '--skip-pack',
+      '--json',
+      ...args,
+    ],
+    { cwd, encoding: 'utf8' }
+  );
+  if (!result.stdout.trim()) {
+    throw new Error(`release-check emitted no JSON: ${result.stderr}`);
+  }
+  return { status: result.status, report: JSON.parse(result.stdout) as ReleaseReport };
+}
+
 function resultById(report: ReleaseReport, id: string): ReleaseResult {
   const result = report.results.find(item => item.id === id);
   if (!result) throw new Error(`missing release-check result: ${id}`);
@@ -101,12 +124,24 @@ afterEach(() => {
 });
 
 describe('release-check script contract', () => {
+  it('freezes clean source identity before creating an in-repository artifact directory', () => {
+    const cwd = createFixture('1.2.3', '## [1.2.3] - 2026-08-15\n\nStatus: candidate');
+
+    const source = captureReleaseArtifactSourceV1(cwd);
+    mkdirSync(join(cwd, '.release', 'package'), { recursive: true });
+    writeFileSync(join(cwd, '.release', 'package', 'artifact.json'), '{}\n');
+
+    expect(source).toMatchObject({ gitSha: git(cwd, ['rev-parse', 'HEAD']), dirty: false });
+    expect(captureReleaseArtifactSourceV1(cwd).dirty).toBe(true);
+  });
+
   it('builds the publish artifact before release:check validates the pack contents', () => {
     const pkg = JSON.parse(readFileSync(join(projectRoot, 'package.json'), 'utf8')) as {
       scripts?: Record<string, string>;
       files?: string[];
     };
     const prepublishOnly = pkg.scripts?.prepublishOnly ?? '';
+    const build = pkg.scripts?.build ?? '';
     const buildIndex = prepublishOnly.indexOf('npm run build');
     const dependencyPolicyIndex = prepublishOnly.indexOf('npm run deps:check -- --policy-only');
     const releaseCheckIndex = prepublishOnly.indexOf('npm run release:check');
@@ -116,9 +151,38 @@ describe('release-check script contract', () => {
     expect(buildIndex).toBeGreaterThan(dependencyPolicyIndex);
     expect(releaseCheckIndex).toBeGreaterThan(buildIndex);
     expect(prepublishOnly).toContain('npm run test:coverage -- --runInBand');
+    expect(build).toContain('node scripts/maintenance/copy-runtime-assets.js');
     expect(pkg.files).toContain('npm-shrinkwrap.json');
     expect(pkg.files).toContain('assets/orion-tui-icon.png');
+    expect(pkg.files).toContain('CHANGELOG.md');
+    expect(pkg.files).toContain('docs/orion.example.json');
+    expect(pkg.files).toContain('docs/migration/v0.1.9-to-v0.2.0.md');
+    expect(pkg.files).toContain('docs/plan/v0.2.0-dsh-harness-redesign-plan.md');
+    expect(pkg.files).toContain('docs/plan/v0.2.0-release-checklist.md');
     expect(pkg.files).not.toContain('assets/');
+  });
+
+  it('fails when the checkout version does not match the intended release', () => {
+    const cwd = createFixture('1.2.3', '## [1.2.3] - 2026-08-15\n\nStatus: candidate');
+
+    const { status, report } = runReleaseCheckWithArgs(cwd, ['--expected-version', '1.2.4']);
+
+    expect(status).not.toBe(0);
+    expect(resultById(report, 'version').detail).toContain(
+      'package.json version: expected release 1.2.4, found 1.2.3'
+    );
+  });
+
+  it('binds a vX.Y.Z release branch to the matching package version', () => {
+    const cwd = createFixture('1.2.3', '## [1.2.3] - 2026-08-15\n\nStatus: candidate');
+    git(cwd, ['checkout', '-qb', 'v1.2.4']);
+
+    const { status, report } = runReleaseCheck(cwd);
+
+    expect(status).not.toBe(0);
+    expect(resultById(report, 'version').detail).toContain(
+      'release branch v1.2.4: package.json version expected 1.2.4, found 1.2.3'
+    );
   });
 
   it('enforces exact package contents and hard package-size budgets', () => {
@@ -128,6 +192,11 @@ describe('release-check script contract', () => {
     expect(script).toContain('MAX_UNPACKED_PACKAGE_BYTES = 10 * 1024 * 1024');
     expect(script).toContain('MAX_PACKAGE_ENTRIES = 1500');
     expect(script).toContain("'assets/orion-tui-icon.png'");
+    expect(script).toContain("'docs/orion.example.json'");
+    expect(script).toContain("'docs/readme.md'");
+    expect(script).toContain("'docs/migration/v0.1.9-to-v0.2.0.md'");
+    expect(script).toContain("'docs/plan/v0.2.0-dsh-harness-redesign-plan.md'");
+    expect(script).toContain("'docs/plan/v0.2.0-release-checklist.md'");
     expect(script).toContain('unexpected tarball entries');
   });
 
@@ -147,14 +216,14 @@ describe('release-check script contract', () => {
     );
   });
 
-  it('keeps offline dependency health blocking and enforces manifest overrides', () => {
+  it('keeps offline dependency health blocking and rejects retired dependencies', () => {
     const workflow = readFileSync(join(projectRoot, '.github', 'workflows', 'ci.yml'), 'utf8');
     const script = readFileSync(depHealthScript, 'utf8');
 
     const depHealthJob = workflow.slice(workflow.indexOf('  dep-health:'));
     expect(depHealthJob).not.toContain('continue-on-error: true');
-    expect(script).toContain("overrides['shell-quote'] === '^1.10.0'");
-    expect(script).toContain("lock.packages?.['node_modules/shell-quote']?.version");
+    expect(script).toContain("!('shell-quote' in production)");
+    expect(script).toContain("!('ink' in production)");
     expect(script).toContain("join(root, 'npm-shrinkwrap.json')");
   });
 

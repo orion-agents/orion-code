@@ -12,20 +12,8 @@ import { handleTodos } from './context-tool-command-handlers';
 export const WORKFLOW_COMMANDS: SlashCommand[] = [
   {
     name: 'goal',
-    compatibilityAliases: [
-      {
-        name: 'target',
-        lifecycle: {
-          status: 'deprecated',
-          since: 'v0.1.5',
-          removeIn: 'v0.3.0',
-          replacement: '/goal',
-        },
-      },
-    ],
-    description: 'Create, view, pause, resume, or exit a persistent goal target',
-    argumentHint:
-      '[objective | pause | resume | exit | status | edit <text> | replace <text> | confirm <criterion-id> | budget <tokens>]',
+    description: 'Create, inspect, pause, resume, or clear a durable Goal',
+    argumentHint: '[objective | status | pause | resume | clear]',
     category: 'workflow',
     priority: 3,
     type: 'builtin',
@@ -61,17 +49,6 @@ export const WORKFLOW_COMMANDS: SlashCommand[] = [
   },
   {
     name: 'commit-plan',
-    compatibilityAliases: [
-      {
-        name: 'commit',
-        lifecycle: {
-          status: 'deprecated',
-          since: 'v0.1.5',
-          removeIn: 'v0.3.0',
-          replacement: '/commit-plan',
-        },
-      },
-    ],
     description: 'Create a read-only commit plan and suggested message for current changes',
     argumentHint: '[--max-files N]',
     category: 'workflow',

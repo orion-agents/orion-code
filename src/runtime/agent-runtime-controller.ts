@@ -1,5 +1,6 @@
 import { findCommand, getVisibleCommands } from '../commands';
 import { parseInput } from '../commands/parser';
+import type { CommandContext, CommandResult, RegisteredSlashCommand } from '../commands/types';
 import { isTargetCommand, parseTargetCommand } from '../commands/target-command';
 import type {
   AgentRuntimeEventSink,
@@ -13,12 +14,7 @@ import {
   createUiEventSinkFromAgentRuntimeEvents,
 } from './agent-runtime-protocol';
 import { permissionPendingStatus } from './agent-status';
-import {
-  AgentChatController,
-  type AgentChatControllerOptions,
-  type RunInputOptions,
-} from './chat-controller';
-import { resolveUiRendererCapabilities } from './ui-events';
+import type { AgentRuntimeRunnerV1, AgentRuntimeRunInputOptionsV1 } from './agent-runtime-runner';
 import type {
   OrionCodeUiRuntime,
   FollowupQueueItem,
@@ -27,26 +23,14 @@ import type {
   UiEventSink,
   UiRendererCapabilities,
 } from './ui-events';
+import { resolveUiRendererCapabilities } from './ui-events';
 import type { CommandUiRenderer } from '../commands/types';
 import { TurnController, type TurnControllerOptions } from './turn-controller';
-import type { AgentTurnRequest, GoalEvidenceRecord, GoalRuntimeEvent } from './goals/types';
-import {
-  authorizeGoalAbandonment,
-  currentGoalToolContext,
-  runWithGoalToolContext,
-  type GoalToolExecutionContext,
-} from './goals/tools';
-import { budgetPreflight } from './goals/accounting';
-import { randomUUID } from 'crypto';
-import { captureWorkspaceFingerprint } from '../services/workspace-state';
-import { redactTraceText } from '../services/redaction';
-import {
-  classifyGoalEvidenceKind,
-  classifyGoalEvidenceResult,
-  describeGoalRuntimeEvidence,
-} from './goals/evidence';
-import { appendSessionTraceEvent } from '../services/session-storage';
-import { externalAssertionMatchesInvocation } from '../framework/external-assertion';
+import type { AgentTurnRequest } from './goals/types';
+import type {
+  GoalRuntimeControlResultV2,
+  GoalRuntimeControlV2,
+} from './goal-runtime-coordinator';
 import { updateGlobalConfig } from '../services/global-config';
 import type { ToolConfirmationPolicy } from '../services/global-config';
 import {
@@ -55,7 +39,7 @@ import {
   type ToolPermissionScope,
 } from '../services/tool-allowlist';
 import { AgentModeLifecycleController } from '../framework/agent-mode';
-import { clearGoalLifecycle } from './goals/lifecycle';
+import { sanitizeTerminalText } from '../tui-core/style';
 
 export type {
   AgentRuntimeInput,
@@ -64,10 +48,8 @@ export type {
   AgentRuntimeSubmitResult,
 } from './agent-runtime-protocol';
 
-export interface AgentRuntimeRunner {
-  runInput(input: string, options?: RunInputOptions): Promise<void>;
-  runRequest?(request: AgentTurnRequest, options?: RunInputOptions): Promise<void>;
-}
+export type AgentRuntimeRunner = AgentRuntimeRunnerV1;
+export type RunInputOptions = AgentRuntimeRunInputOptionsV1;
 
 export interface AgentRuntimeToolPermissionRequest {
   name: string;
@@ -85,7 +67,6 @@ export interface AgentRuntimeControllerOptions extends TurnControllerOptions {
   uiCapabilities?: UiRendererCapabilities;
   /** Active renderer adapter identity for renderer-layer diagnostics. */
   uiRenderer?: CommandUiRenderer;
-  chatOptions?: AgentChatControllerOptions;
   echoSubmittedInput?: boolean;
   runningStatus?: string | ((input: string) => string);
   readyStatus?: string | (() => string);
@@ -105,45 +86,6 @@ export interface AgentRuntimeControllerOptions extends TurnControllerOptions {
 function isExitInput(input: string): boolean {
   const parsed = parseInput(input.trim());
   return parsed.isCommand && ['exit', 'quit', 'q'].includes(parsed.name);
-}
-
-export function goalProviderError(
-  finishReason: string | undefined,
-  errorType: string | undefined
-): import('./goals/types').AgentTurnOutcome['providerError'] {
-  if (finishReason !== 'failed' || !errorType) return undefined;
-  switch (errorType) {
-    case 'quota_or_credit_exhausted':
-      return { kind: 'usage_limit', retryable: false };
-    case 'rate_limit':
-      return { kind: 'rate_limit', retryable: true };
-    case 'provider_busy':
-      return { kind: 'provider_busy', retryable: true };
-    case 'auth_failed':
-      return { kind: 'auth', retryable: false };
-    case 'connect_timeout':
-    case 'read_timeout':
-    case 'connection_reset':
-    case 'network_error':
-      return { kind: 'network', retryable: true };
-    default:
-      return { kind: 'unknown', retryable: false };
-  }
-}
-
-export function goalTurnMadeProgress(input: {
-  evidenceRecords?: GoalEvidenceRecord[];
-  pendingPlanUpdate?: GoalToolExecutionContext['pendingPlanUpdate'];
-  workspaceFingerprintBefore?: string;
-  workspaceFingerprintAfter?: string;
-}): boolean {
-  const passedEvidence = input.evidenceRecords?.some(record => record.result === 'passed') ?? false;
-  const workspaceChanged = Boolean(
-    input.workspaceFingerprintBefore &&
-    input.workspaceFingerprintAfter &&
-    input.workspaceFingerprintBefore !== input.workspaceFingerprintAfter
-  );
-  return passedEvidence || workspaceChanged;
 }
 
 function submittedEntry(input: string): TranscriptAppendEntry {
@@ -186,29 +128,13 @@ export class AgentRuntimeController {
     { request: AgentRuntimeToolPermissionRequest; finish: (approved: boolean) => void }
   >();
   private activeRun: Promise<void> | null = null;
+  private readonly goalControlRuns = new Set<Promise<void>>();
   private stopping = false;
-  private continuationScheduleEpoch = 0;
-  /** Conservative reservations for every provider attempt in the current root turn. */
-  private goalProviderReservedTokens = 0;
   private nextPermissionRequestId = 1;
   private readonly queuedCommands: string[] = [];
   private readonly followupQueue: FollowupQueueItem[] = [];
   private readonly followupQueueLimit = 16;
   private nextFollowupId = 1;
-  /** v0.2.24: optional goal coordinator for /target mode. */
-  private goalCoordinator: import('./goals/coordinator').GoalCoordinator | null = null;
-  private goalCoordinatorSessionId: string | null = null;
-
-  /** v0.2.24: set the goal coordinator for /target mode. */
-  setGoalCoordinator(coord: import('./goals/coordinator').GoalCoordinator): void {
-    this.goalCoordinator = coord;
-    this.goalCoordinatorSessionId = coord.boundSessionId;
-    // Wire goal prompt injection into the chat controller.
-    if ('setGoalCoordinator' in this.runner) {
-      (this.runner as AgentChatController).setGoalCoordinator(coord);
-    }
-  }
-
   constructor(private readonly options: AgentRuntimeControllerOptions) {
     if (!options.events && !options.eventSink) {
       throw new Error('AgentRuntimeController requires either events or eventSink');
@@ -219,14 +145,12 @@ export class AgentRuntimeController {
       options.eventSink ?? createAgentRuntimeEventSinkFromUiEvents(options.events as UiEventSink);
     this.eventSink = {
       emit: event => {
-        this.captureGoalEvidence(event);
         const result = downstream.emit(event);
         if (event.type === 'session_restored') {
           if (this.followupQueue.length > 0) {
             this.followupQueue.splice(0);
             this.emitFollowupQueue();
           }
-          this.restoreGoalForSession(event.event.sessionId, event.event.projectPath);
         }
         return result;
       },
@@ -238,7 +162,11 @@ export class AgentRuntimeController {
     });
     const events = createUiEventSinkFromAgentRuntimeEvents(this.eventSink);
     this.runner =
-      options.runner ?? new AgentChatController(options.runtime, events, this.createChatOptions());
+      options.runner ??
+      options.runtime.createAgentRunner?.(events, {
+        approvalHandler: request => this.requestToolPermission(request),
+      }) ??
+      createUnavailableRunner();
     this.emitAgentModeSnapshot();
   }
 
@@ -250,243 +178,39 @@ export class AgentRuntimeController {
     return this.followupQueue;
   }
 
-  /** v0.1.1: shared /target command handling for all renderers. */
+  /** Thin /goal control surface; GoalRuntimeCoordinatorV2 owns every mutation. */
   handleTargetInput(rawInput: string): {
     handled: boolean;
     statusText?: string;
     runtimeResult: AgentRuntimeSubmitResult;
   } {
-    if (/^\/target(?:\s|$)/iu.test(rawInput.trim())) {
-      const command = findCommand('goal');
-      if (command) {
-        this.emitAppend({
-          role: 'system',
-          title: '/target deprecated',
-          content: '/target is deprecated; use /goal. It will be removed in v0.3.0.',
-          statusTone: 'warning',
-          command: {
-            id: command.id,
-            name: command.name,
-            source: command.source,
-            success: true,
-          },
-        });
-      }
-    }
     const parsed = parseTargetCommand(rawInput);
     if (!parsed.ok) {
       this.emitAppend({
         role: 'error',
-        title: 'target',
+        title: 'goal',
         content: parsed.error,
         errorLayer: 'runtime',
       });
+      this.emitStatus(parsed.error);
       return {
         handled: true,
         statusText: parsed.error,
         runtimeResult: { type: 'command_handled' },
       };
     }
-    const input = parsed.input;
-    const coord = this.ensureGoalCoordinator(input.action !== 'show');
-
-    if (!coord) {
-      const statusText = 'Target unavailable: no active session.';
-      this.emitAppend({
-        role: 'error',
-        title: 'target',
-        content: statusText,
-        errorLayer: 'session',
-      });
-      return { handled: true, statusText, runtimeResult: { type: 'command_handled' } };
-    }
-
-    if (this.turnController.hasActiveTurn() && !['pause', 'show', 'clear'].includes(input.action)) {
-      const statusText =
-        'Target command ignored while the agent is running. Use /target pause or interrupt first.';
-      this.emitStatus(statusText);
-      return { handled: true, statusText, runtimeResult: { type: 'command_ignored' } };
-    }
-
-    let success = true;
-    let error: string | undefined;
-    let executionRevoked = false;
-    const previousGoalId = coord.goal?.goalId;
-    try {
-      switch (input.action) {
-        case 'show':
-          break;
-        case 'create': {
-          const result = coord.create(input.payload?.objective ?? '');
-          success = result.ok;
-          if (!result.ok) error = result.error;
-          break;
-        }
-        case 'pause':
-          if (coord.isActive) {
-            this.abortGoalOwnedExecution();
-            executionRevoked = true;
-          }
-          success = coord.pause();
-          if (!success) error = 'Target is not active.';
-          break;
-        case 'resume':
-          success = coord.resume({
-            confirmBoundary: true,
-            expectedGoalId: coord.goal?.goalId,
-            expectedRevision: coord.goal?.revision,
-          });
-          if (!success) error = 'Target cannot be resumed from its current state.';
-          break;
-        case 'confirm':
-          success = coord.confirmCriterion(input.payload?.criterionId ?? '');
-          if (!success) {
-            error = 'Criterion cannot be confirmed. It must exist and require user evidence.';
-          }
-          break;
-        case 'edit':
-          success = coord.edit(input.payload?.objective ?? '');
-          if (!success) error = 'Target objective could not be updated.';
-          break;
-        case 'replace':
-          success = coord.replace(input.payload?.objective ?? '');
-          if (!success) {
-            error = 'Target could not be replaced.';
-            if (input.payload?.objective?.trim()) {
-              error = this.failClosedGoalMutation(
-                coord,
-                input.action,
-                new Error(error),
-                executionRevoked,
-                previousGoalId
-              );
-              executionRevoked = true;
-            }
-          }
-          break;
-        case 'set_budget':
-          success = coord.setBudget(input.payload?.tokenBudget ?? null);
-          if (!success) error = 'Create or resume a target before setting a budget.';
-          break;
-        case 'clear':
-          if (!input.payload?.confirmed) {
-            success = false;
-            error = 'Removing a Goal requires explicit authorization: /goal exit';
-          } else {
-            const hadGoal = coord.goal !== null;
-            if (hadGoal) {
-              this.abortGoalOwnedExecution();
-              executionRevoked = true;
-            }
-            success = clearGoalLifecycle(coord) !== null;
-            if (success && this.followupQueue.length > 0) {
-              this.followupQueue.splice(0);
-              this.emitFollowupQueue();
-            }
-            if (hadGoal && !success) {
-              error = this.failClosedGoalMutation(
-                coord,
-                input.action,
-                new Error('Target clear did not remove the active Goal.'),
-                executionRevoked,
-                previousGoalId
-              );
-            }
-            if (!success && !hadGoal) error = 'No target exists to clear.';
-          }
-          break;
-      }
-    } catch (cause) {
-      success = false;
-      error =
-        input.action === 'show'
-          ? cause instanceof Error
-            ? cause.message
-            : String(cause)
-          : this.failClosedGoalMutation(
-              coord,
-              input.action,
-              cause,
-              executionRevoked,
-              previousGoalId
-            );
-    }
-
-    if (!success && error) {
-      this.emitAppend({ role: 'error', title: 'target', content: error, errorLayer: 'runtime' });
-    }
-
-    if (
-      success &&
-      input.action === 'resume' &&
-      coord.goal?.status === 'active' &&
-      coord.goal.tokenBudget !== undefined
-    ) {
-      const resumedBudget = budgetPreflight(coord.goal.tokensUsed, coord.goal.tokenBudget, 0);
-      if (!resumedBudget.available) {
-        try {
-          coord.limitBudget(
-            resumedBudget.reason ?? 'Token budget unavailable after resuming the target.'
-          );
-        } catch (cause) {
-          success = false;
-          error = this.failClosedGoalMutation(
-            coord,
-            'resume_budget_stop',
-            cause,
-            executionRevoked,
-            previousGoalId
-          );
-          this.emitGoalMutationError(error);
-        }
-      }
-    }
-
-    if (success && input.action !== 'clear') {
-      const { updateSessionGoalBinding } =
-        require('../services/session-storage') as typeof import('../services/session-storage');
-      updateSessionGoalBinding(coord.boundSessionId, coord.goal);
-      const snapshot = coord.snapshot();
-      if (snapshot) {
-        this.emitGoalEvent({
-          type: 'goal_updated',
-          goal: snapshot,
-          reason: `target_${input.action}`,
-        });
-      }
-    }
-    if (success && input.action === 'clear' && previousGoalId) {
-      this.emitGoalEvent({ type: 'goal_cleared', goalId: previousGoalId, reason: 'user_clear' });
-    }
-
-    const statusText = this.formatTargetStatus(coord);
-    this.emitAppend({ role: 'system', title: 'target', content: statusText });
-
-    if (
-      success &&
-      (input.action === 'create' || input.action === 'resume' || input.action === 'replace') &&
-      coord.isActive
-    ) {
-      const req = coord.buildContinuationRequest();
-      if (req) {
-        const runtimeResult = this.submitGoalContinuation(req, `target_${input.action}`, true);
-        return { handled: true, statusText, runtimeResult };
-      }
-    }
-
-    return { handled: true, statusText, runtimeResult: { type: 'command_handled' } };
+    return {
+      handled: true,
+      runtimeResult: this.startGoalControl(parsed.input),
+    };
   }
 
-  /** v0.1.1: shared /target intercept check for all renderers. */
+  /** Goal controls remain available while a turn is active only when they can stop or inspect it. */
   canInterceptTargetCommand(input: string, duringActiveTurn: boolean): boolean {
     if (!isTargetCommand(input)) return false;
     const parsed = parseTargetCommand(input);
-    if (!parsed.ok) return true; // intercept to show error
-    // During active turn, only allow non-mutating actions.
-    if (duringActiveTurn) {
-      return ['pause', 'show', 'clear'].includes(parsed.input.action);
-    }
-    return true;
+    if (!parsed.ok || !duringActiveTurn) return true;
+    return ['status', 'pause', 'clear'].includes(parsed.input.action);
   }
 
   /** v0.1.1: emit clear_view event through the renderer protocol. */
@@ -496,7 +220,7 @@ export class AgentRuntimeController {
 
   /** v0.1.1: emit shutdown_requested event through the renderer protocol. */
   emitShutdownRequested(reason?: string): void {
-    this.deferGoalContinuation(reason ?? 'shutdown requested', true);
+    this.runner.interrupt?.(reason ?? 'shutdown requested');
     this.eventSink.emit({ type: 'shutdown_requested', reason });
   }
 
@@ -530,7 +254,7 @@ export class AgentRuntimeController {
         this.clearExitIntent();
         return { type: 'exit_intent_cleared' };
       case 'goal_control':
-        return this.handleGoalControl(input as unknown as import('./goals/types').GoalControlInput);
+        return this.startGoalControl(input);
       case 'permission_mode_change':
         return this.applyPermissionModeChange(input.value);
       case 'cycle_agent_mode':
@@ -592,27 +316,27 @@ export class AgentRuntimeController {
       return this.handleTargetInput(submitted).runtimeResult;
     }
 
-    const activeSession = this.options.runtime.getSession();
-    const activeGoalCoordinator = this.ensureGoalCoordinator(false);
-    if (activeSession && activeGoalCoordinator?.goal) {
-      const abandonment = authorizeGoalAbandonment({
-        inputKind: 'user',
-        text: submitted,
-        sessionId: activeSession.id,
-        persistAsUserMessage: true,
-        echoToTranscript: true,
-        generation: activeGoalCoordinator.generation,
-      });
-      if (abandonment.authorized) {
-        this.emitAppend(submittedEntry(submitted));
-        return this.handleTargetInput('/goal exit').runtimeResult;
-      }
-    }
-
     const parsedInput = parseInput(submitted);
     if (parsedInput.isCommand && parsedInput.name === 'clear') {
       this.emitClearView();
       this.emitStatus('View cleared. Conversation context is preserved.');
+      return { type: 'command_handled' };
+    }
+
+    if (parsedInput.isCommand && !findCommand(parsedInput.name)) {
+      const message = `Unknown command /${parsedInput.name}. Use /help to list supported commands.`;
+      this.emitAppend({ role: 'error', title: 'unknown command', content: message });
+      this.emitStatus(message);
+      return { type: 'command_handled' };
+    }
+
+    if (parsedInput.isCommand) {
+      const command = findCommand(parsedInput.name) as RegisteredSlashCommand;
+      this.activeRun = this.runCommand(command, parsedInput.args)
+        .catch(error => this.handleRunLoopError(error))
+        .finally(() => {
+          this.activeRun = null;
+        });
       return { type: 'command_handled' };
     }
 
@@ -642,26 +366,6 @@ export class AgentRuntimeController {
         return { type: 'command_queued', commandId: command.id };
       }
 
-      // v0.2.26: user steering input during active goal — update constraints
-      // without replacing the root objective.
-      const gc = this.goalCoordinator;
-      if (gc?.goal && !isTargetCommand(submitted)) {
-        const steeringGoalId = gc.goal.goalId;
-        try {
-          gc.addConstraint(submitted);
-        } catch (cause) {
-          const message = this.failClosedGoalMutation(gc, 'steering', cause, false, steeringGoalId);
-          this.emitAppend({
-            role: 'error',
-            title: 'target steering',
-            content: message,
-            errorLayer: 'runtime',
-          });
-          this.emitStatus(message);
-          return { type: 'command_ignored' };
-        }
-      }
-
       this.turnController.clearExitIntent();
       this.turnController.requestRevision(submitted);
       // v0.1.3 (G1): echo the incremental input to the transcript immediately,
@@ -672,22 +376,13 @@ export class AgentRuntimeController {
     }
 
     const session = this.options.runtime.getSession() ?? this.options.runtime.ensureSession();
-    const coord = this.ensureGoalCoordinator(false);
-    const goal = coord?.goal?.status === 'active' ? coord.goal : undefined;
     const request: AgentTurnRequest = {
       inputKind: 'user',
       text: submitted,
       sessionId: session?.id ?? 'pending-session',
-      goal: goal
-        ? {
-            goalId: goal.goalId,
-            revision: goal.revision,
-            continuationIndex: goal.continuationCount,
-          }
-        : undefined,
       persistAsUserMessage: true,
       echoToTranscript: true,
-      generation: coord?.generation ?? 0,
+      generation: 0,
     };
     return this.submitTurnRequest(request);
   }
@@ -726,6 +421,104 @@ export class AgentRuntimeController {
     this.emitStatus(`/${name} acknowledged; active turn continues.`);
   }
 
+  private async runCommand(command: RegisteredSlashCommand, args: string): Promise<void> {
+    const renderer = this.options.uiRenderer ?? this.options.runtime.config.ui?.renderer ?? 'terminal';
+    if (command.rendererScope && !command.rendererScope.includes(renderer)) {
+      this.emitAppend({
+        role: 'error',
+        title: `/${command.name} unavailable`,
+        content: `/${command.name} is not available in the ${renderer} renderer. Supported renderers: ${command.rendererScope.join(', ')}.`,
+        errorLayer: 'runtime',
+        command: commandIdentity(command, false),
+      });
+      return;
+    }
+
+    const context = this.createCommandContext();
+    const { result, output } = await captureCommandOutput(() => command.execute(context, args));
+    const commandMeta = commandIdentity(command, result.success);
+
+    if (output) {
+      this.emitAppend({
+        role: result.success ? 'system' : 'error',
+        title: `/${command.name}`,
+        content: output,
+        command: commandMeta,
+      });
+    }
+    if (result.output) {
+      this.emitAppend({
+        role: result.success ? 'system' : 'error',
+        title: `/${command.name}`,
+        content: result.output,
+        command: commandMeta,
+      });
+    }
+    if (result.error) {
+      this.emitAppend({
+        role: 'error',
+        title: `/${command.name}`,
+        content: result.error,
+        errorLayer: 'runtime',
+        command: commandMeta,
+      });
+    }
+    if (result.sessionPicker) {
+      this.eventSink.emit({ type: 'session_picker_requested', request: result.sessionPicker });
+    }
+    if (result.modelPicker) {
+      this.eventSink.emit({ type: 'model_picker_requested', request: result.modelPicker });
+    }
+    if (result.editPreview) {
+      this.eventSink.emit({ type: 'edit_preview_requested', request: result.editPreview });
+    }
+    if (result.effortEvent) {
+      this.eventSink.emit({ type: 'effort_event', event: result.effortEvent });
+    }
+
+    if (result.continueAsChat) {
+      const session = this.options.runtime.getSession() ?? this.options.runtime.ensureSession();
+      await this.runTurn({
+        inputKind: 'user',
+        text: result.chatInput ?? args,
+        sessionId: session?.id ?? 'pending-session',
+        persistAsUserMessage: true,
+        echoToTranscript: true,
+        generation: 0,
+      });
+    }
+  }
+
+  private createCommandContext(): CommandContext {
+    const renderer = this.options.uiRenderer ?? this.options.runtime.config.ui?.renderer ?? 'terminal';
+    return {
+      cwd: this.options.runtime.cwd,
+      config: this.options.runtime.config,
+      store: this.options.runtime.store,
+      llm: this.options.runtime.llm,
+      compactCoordinator: this.options.runtime.compactCoordinator,
+      modelCoordinator: this.options.runtime.modelCoordinator,
+      sessionId: this.options.runtime.getSession()?.id,
+      ensureSession: this.options.runtime.ensureSession,
+      setSession: session => this.options.runtime.setSession(session),
+      sessionRestored: event => this.eventSink.emit({ type: 'session_restored', event }),
+      getSession: this.options.runtime.getSession,
+      writeOutput: text => {
+        if (text.trim()) this.emitAppend({ role: 'system', content: text });
+      },
+      writeLine: text => {
+        if (text?.trim()) this.emitAppend({ role: 'system', content: text });
+      },
+      clearView: () => this.emitClearView(),
+      requestShutdown: reason => this.emitShutdownRequested(reason),
+      uiRenderer: renderer,
+      uiCapabilities: resolveUiRendererCapabilities(this.options.uiCapabilities, renderer),
+      agentModeLifecycle: this.agentModeLifecycle,
+      getHarnessDiagnostics: this.options.runtime.getHarnessDiagnostics,
+      compact: this.runner.compact ? input => this.runner.compact!(input) : undefined,
+    };
+  }
+
   private submitTurnRequest(request: AgentTurnRequest): AgentRuntimeSubmitResult {
     if (this.turnController.hasActiveTurn()) return { type: 'command_ignored' };
     if (!this.requestIsCurrent(request)) return { type: 'command_ignored' };
@@ -736,452 +529,15 @@ export class AgentRuntimeController {
       })
       .finally(() => {
         this.activeRun = null;
-        // v0.2.26: schedule goal continuation after turn completes.
-        this.scheduleGoalContinuation();
       });
     return { type: 'started' };
   }
 
-  private submitGoalContinuation(
-    request: AgentTurnRequest,
-    reason: string,
-    emitScheduled: boolean
-  ): AgentRuntimeSubmitResult {
-    const goalId = request.goal?.goalId;
-    if (emitScheduled && goalId) {
-      this.emitGoalEvent({ type: 'goal_continuation', goalId, phase: 'scheduled', reason });
-    }
-    const result = this.submitTurnRequest(request);
-    if (goalId) {
-      this.emitGoalEvent({
-        type: 'goal_continuation',
-        goalId,
-        phase: result.type === 'started' ? 'started' : 'deferred',
-        reason: result.type === 'started' ? reason : `request rejected: ${reason}`,
-      });
-    }
-    return result;
-  }
-
-  // --- v0.2.26: goal continuation scheduling ---
-
-  private scheduleGoalContinuation(): void {
-    const coord = this.goalCoordinator;
-    if (!coord || !coord.isActive || coord.goal?.status !== 'active') return;
-    if (!coord.canContinue) {
-      this.emitGoalEvent({
-        type: 'goal_continuation',
-        goalId: coord.goal.goalId,
-        phase: 'deferred',
-        reason: 'coordinator is not eligible to continue',
-      });
-      return;
-    }
-
-    const scheduleEpoch = ++this.continuationScheduleEpoch;
-    const scheduledGoalId = coord.goal.goalId;
-
-    // Defer to next tick to let the current turn's events settle.
-    setImmediate(() => {
-      if (scheduleEpoch !== this.continuationScheduleEpoch) {
-        this.emitGoalEvent({
-          type: 'goal_continuation',
-          goalId: scheduledGoalId,
-          phase: 'deferred',
-          reason: 'scheduled continuation was invalidated',
-        });
-        return;
-      }
-      if (
-        this.stopping ||
-        this.turnController.hasActiveTurn() ||
-        this.pendingPermissions.size > 0
-      ) {
-        this.emitGoalEvent({
-          type: 'goal_continuation',
-          goalId: scheduledGoalId,
-          phase: 'deferred',
-          reason: this.stopping
-            ? 'runtime is stopping'
-            : this.pendingPermissions.size > 0
-              ? 'tool permission is pending'
-              : 'another turn is active',
-        });
-        return;
-      }
-      if (!coord.isActive || coord.goal?.status !== 'active') {
-        this.emitGoalEvent({
-          type: 'goal_continuation',
-          goalId: scheduledGoalId,
-          phase: 'deferred',
-          reason: 'goal is no longer active',
-        });
-        return;
-      }
-      const req = coord.buildContinuationRequest();
-      if (req) {
-        const projected = coord.goal?.lastTurn?.totalTokens ?? 0;
-        const preflight = budgetPreflight(
-          coord.goal?.tokensUsed ?? 0,
-          coord.goal?.tokenBudget,
-          projected
-        );
-        if (!preflight.available) {
-          try {
-            coord.limitBudget(preflight.reason ?? 'Token budget unavailable for another turn.');
-          } catch (cause) {
-            const message = this.failClosedGoalMutation(
-              coord,
-              'budget_stop',
-              cause,
-              false,
-              scheduledGoalId
-            );
-            this.emitGoalMutationError(message);
-            return;
-          }
-          this.emitGoalEvent({
-            type: 'goal_continuation',
-            goalId: coord.goal!.goalId,
-            phase: 'stopped',
-            reason: preflight.reason ?? 'budget preflight failed',
-          });
-          return;
-        }
-        this.submitGoalContinuation(req, `continuation ${req.goal!.continuationIndex}`, true);
-      } else {
-        this.emitGoalEvent({
-          type: 'goal_continuation',
-          goalId: scheduledGoalId,
-          phase: 'deferred',
-          reason: 'coordinator did not produce a continuation request',
-        });
-      }
-    });
-  }
-
-  /** v0.2.26: finalize goal turn with usage data from the last loop. */
-  private finalizeGoalTurn(
-    turnId: string | number,
-    request: AgentTurnRequest,
-    toolContext: GoalToolExecutionContext | undefined,
-    startedAt: number,
-    workspaceFingerprintBefore: string | undefined,
-    turnAborted: boolean
-  ): void {
-    const coord = this.goalCoordinator;
-    const requestGoal = request.goal;
-    const currentSessionId = this.options.runtime.getSession()?.id;
-    if (
-      !coord?.goal ||
-      !requestGoal ||
-      currentSessionId !== request.sessionId ||
-      coord.boundSessionId !== request.sessionId ||
-      coord.generation !== request.generation ||
-      coord.goal.goalId !== requestGoal.goalId
-    ) {
-      if (request.inputKind === 'goal_continuation' && requestGoal) {
-        this.emitGoalEvent({
-          type: 'goal_continuation',
-          goalId: requestGoal.goalId,
-          phase: 'deferred',
-          reason:
-            'turn outcome rejected because its session, goal, revision, or generation is stale',
-        });
-      }
-      return;
-    }
-
-    const usage = this.options.runtime.store.getSnapshot().tokenUsage;
-    const loopStats = this.options.runtime.store.getSnapshot().lastLoopStats;
-    const subagentPromptTokens = loopStats?.subagentPromptTokens ?? 0;
-    const subagentCompletionTokens = loopStats?.subagentCompletionTokens ?? 0;
-    const subagentTokens = loopStats?.subagentTotalTokens ?? 0;
-    const workspaceFingerprintAfter = captureWorkspaceFingerprint(this.activeProjectPath());
-    const workspaceChanged = Boolean(
-      workspaceFingerprintBefore &&
-      workspaceFingerprintAfter &&
-      workspaceFingerprintBefore !== workspaceFingerprintAfter
-    );
-    const usageAccountingComplete =
-      (loopStats as (typeof loopStats & { usageAccountingComplete?: boolean }) | undefined)
-        ?.usageAccountingComplete !== false;
-
-    const outcome: import('./goals/types').AgentTurnOutcome = {
-      turnId: String(turnId),
-      inputKind: request.inputKind,
-      sessionId: request.sessionId,
-      goalId: requestGoal.goalId,
-      goalRevision: requestGoal.revision,
-      goalGeneration: request.generation,
-      startedAt,
-      endedAt: Date.now(),
-      finishReason: loopStats?.finishReason ?? 'unknown',
-      usage: {
-        promptTokens: Math.max(0, (usage?.promptTokens ?? 0) - subagentPromptTokens),
-        completionTokens: Math.max(0, (usage?.completionTokens ?? 0) - subagentCompletionTokens),
-        subagentTokens,
-        totalTokens:
-          usage !== null
-            ? (usage?.promptTokens ?? 0) + (usage?.completionTokens ?? 0)
-            : subagentTokens,
-      },
-      madeProgress: goalTurnMadeProgress({
-        evidenceRecords: toolContext?.evidenceRecords,
-        pendingPlanUpdate: toolContext?.pendingPlanUpdate,
-        workspaceFingerprintBefore,
-        workspaceFingerprintAfter,
-      }),
-      workspaceChanged,
-      providerError: goalProviderError(
-        loopStats?.finishReason,
-        loopStats?.providerLastRetryErrorType
-      ),
-      blocker: toolContext?.pendingBlocker,
-      pendingTerminalRequest: toolContext?.pendingTerminalRequest,
-      pendingPlanUpdate: toolContext?.pendingPlanUpdate,
-      evidenceRecords: toolContext?.evidenceRecords,
-      workspaceFingerprint: workspaceFingerprintAfter,
-      evidenceRefs: toolContext?.evidenceRecords.map(record => record.id),
-      verificationSummary: this.verificationSummary(loopStats),
-      usageComplete:
-        usageAccountingComplete &&
-        usage !== null &&
-        loopStats?.finishReason !== 'failed' &&
-        (loopStats?.providerRetryCount ?? 0) === 0 &&
-        (loopStats?.providerFallbackCount ?? 0) === 0,
-    };
-
-    const semanticOutcomeIsCurrent =
-      coord.goal.status === 'active' &&
-      !turnAborted &&
-      coord.goal.revision === requestGoal.revision;
-
-    if (!semanticOutcomeIsCurrent) {
-      const accountingOnlyEligible =
-        turnAborted || coord.goal.status === 'paused' || coord.goal.revision > requestGoal.revision;
-      if (!accountingOnlyEligible) {
-        if (request.inputKind === 'goal_continuation') {
-          this.emitGoalEvent({
-            type: 'goal_continuation',
-            goalId: requestGoal.goalId,
-            phase: 'deferred',
-            reason: 'turn outcome rejected because the Goal lifecycle no longer accepts this turn',
-          });
-        }
-        return;
-      }
-
-      // accountStaleTurn is the coordinator's accounting-only, idempotent
-      // entry point. An interrupt can leave the Goal revision unchanged, so
-      // freeze this outcome immediately before the current revision without
-      // admitting any semantic payload from the cancelled turn.
-      const accountingOutcome = {
-        ...outcome,
-        goalRevision: Math.min(
-          outcome.goalRevision ?? requestGoal.revision,
-          coord.goal.revision - 1
-        ),
-      };
-      let accounted = false;
-      try {
-        const alreadyAccounted = coord.goal.lastTurn?.turnId === String(turnId);
-        accounted = alreadyAccounted ? false : coord.accountStaleTurn(accountingOutcome);
-
-        // Missing/partial provider usage is fail-closed. Known lower-bound
-        // tokens have already been retained by accountStaleTurn.
-        if (outcome.usageComplete === false && coord.goal?.status === 'active') {
-          coord.pause();
-        }
-      } catch (error) {
-        this.failClosedGoalPersistence(coord, requestGoal.goalId, error, 'stale_accounting');
-        return;
-      }
-
-      const snapshot = coord.snapshot();
-      if (accounted && snapshot) {
-        this.emitGoalEvent({
-          type: 'goal_updated',
-          goal: snapshot,
-          reason: 'interrupted or stale turn usage accounted without semantic finalization',
-        });
-        this.recordGoalTraceState(turnId, request, snapshot);
-      }
-      if (request.inputKind === 'goal_continuation') {
-        this.emitGoalEvent({
-          type: 'goal_continuation',
-          goalId: requestGoal.goalId,
-          phase: 'deferred',
-          reason:
-            'turn semantic outcome rejected; incurred usage was accounted without continuation',
-        });
-      }
-      return;
-    }
-
-    // Live steering intentionally bumps the Goal revision before the aborted
-    // provider turn settles. The semantic payload is stale, but the provider
-    // usage and elapsed time were still incurred and must be counted once.
-    const planRevisionBefore = coord.goal.contract?.planSnapshot?.revision;
-    try {
-      coord.finalizeTurn(outcome);
-    } catch (error) {
-      this.failClosedGoalPersistence(coord, requestGoal.goalId, error, 'turn_finalize');
-      return;
-    }
-    const snapshot = coord.snapshot();
-    if (snapshot) {
-      this.recordGoalTraceState(turnId, request, snapshot);
-      if (
-        coord.goal?.contract?.planSnapshot &&
-        coord.goal.contract.planSnapshot.revision !== planRevisionBefore
-      ) {
-        const plan = coord.goal.contract.planSnapshot;
-        this.emitGoalEvent({
-          type: 'goal_plan_updated',
-          goalId: snapshot.goalId,
-          planRevision: plan.revision,
-          phase: plan.phase,
-          nextAction: plan.nextAction,
-        });
-      }
-      let terminalEvent: GoalRuntimeEvent | undefined;
-      if (snapshot.status === 'complete' && coord.goal?.completionAudit) {
-        terminalEvent = {
-          type: 'goal_completed',
-          goal: snapshot,
-          audit: coord.goal.completionAudit,
-        };
-      } else if (coord.goal?.completionAudit && !coord.goal.completionAudit.passed) {
-        terminalEvent = {
-          type: 'goal_audit_failed',
-          goalId: snapshot.goalId,
-          audit: 'completion',
-          summary: coord.goal.completionAudit.remainingRequirements.join(' '),
-        };
-      } else if (
-        toolContext?.pendingTerminalRequest?.requestedStatus === 'blocked' &&
-        snapshot.status !== 'blocked'
-      ) {
-        const blocker = coord.goal?.blocker;
-        terminalEvent = {
-          type: 'goal_audit_failed',
-          goalId: snapshot.goalId,
-          audit: 'blocked',
-          summary: blocker
-            ? `Blocker is not terminal: ${blocker.consecutiveTurns}/3 consecutive turns; no-progress ${coord.goal?.noProgressCount ?? 0}/3.`
-            : 'Blocked request did not include a valid non-retryable user, permission, or external-state blocker.',
-        };
-      }
-      // Project the fresh snapshot first, then the specific audit/completion
-      // event. This keeps renderer state current without a generic update
-      // overwriting the user-facing terminal result.
-      this.emitGoalEvent({ type: 'goal_updated', goal: snapshot, reason: 'turn_finalized' });
-      if (terminalEvent) this.emitGoalEvent(terminalEvent);
-      if (terminalEvent?.type === 'goal_completed') {
-        this.autoExitCompletedGoal(coord, snapshot.goalId, 'completion_auto_exit');
-      }
-    }
-  }
-
-  /**
-   * Leave Goal mode after a passed completion audit while retaining the
-   * terminal sidecar as the durable completion receipt. The conditional
-   * session mutation prevents a stale completion from clearing a newer Goal.
-   */
-  private autoExitCompletedGoal(
-    coord: import('./goals/coordinator').GoalCoordinator,
-    goalId: string,
-    reason: 'completion_auto_exit' | 'completion_recovery_auto_exit'
-  ): boolean {
-    if (
-      coord.goal?.goalId !== goalId ||
-      coord.goal.status !== 'complete' ||
-      coord.goal.completionAudit?.passed !== true
-    ) {
-      return false;
-    }
-
-    try {
-      const { clearSessionGoalBinding } =
-        require('../services/session-storage') as typeof import('../services/session-storage');
-      const session = clearSessionGoalBinding(coord.boundSessionId, goalId);
-      if (!session) {
-        throw new Error(`Session ${coord.boundSessionId} was not found while clearing Goal mode.`);
-      }
-      if (!coord.detachCompletedReceipt(goalId)) {
-        throw new Error(`Completed Goal ${goalId} could not be detached from the live runtime.`);
-      }
-    } catch (cause) {
-      const detail = redactTraceText(cause instanceof Error ? cause.message : String(cause)).slice(
-        0,
-        600
-      );
-      const message = `Goal completed, but automatic Goal-mode exit could not clear the session binding. The completed Goal remains terminal and will be reconciled on restore. ${detail}`;
-      this.emitAppend({
-        role: 'error',
-        title: 'goal auto-exit',
-        content: message,
-        errorLayer: 'session',
-      });
-      this.emitStatus(message);
-      return false;
-    }
-
-    this.continuationScheduleEpoch += 1;
-    this.rejectPendingPermissions();
-    if (this.followupQueue.length > 0) {
-      this.followupQueue.splice(0);
-      this.emitFollowupQueue();
-    }
-    this.emitGoalEvent({ type: 'goal_cleared', goalId, reason });
-    return true;
-  }
-
-  private failClosedGoalPersistence(
-    coord: import('./goals/coordinator').GoalCoordinator,
-    goalId: string,
-    error: unknown,
-    operation: 'stale_accounting' | 'turn_finalize'
-  ): void {
-    const message = this.failClosedGoalMutation(coord, operation, error, false, goalId);
-    this.emitAppend({
-      role: 'error',
-      title: 'goal persistence',
-      content: message,
-      errorLayer: 'session',
-    });
-    this.emitStatus(message);
-  }
-
-  private recordGoalTraceState(
-    turnId: string | number,
-    request: AgentTurnRequest,
-    snapshot: import('./goals/types').RuntimeGoalSnapshot
-  ): void {
-    if (!request.goal) return;
-    const trace = appendSessionTraceEvent(request.sessionId, {
-      turnId: String(turnId),
-      type: 'goal_state',
-      goalId: request.goal.goalId,
-      goalRevision: request.goal.revision,
-      goalInputKind: request.inputKind,
-      goalStopReason:
-        snapshot.stopReason ?? (snapshot.status === 'complete' ? 'completed' : 'continue'),
-      note: `status=${snapshot.status}; snapshotRevision=${snapshot.revision}`,
-    });
-    if (trace) this.eventSink.emit({ type: 'trace_event_recorded', event: trace });
-  }
-
   interrupt(): AgentRuntimeInterruptResult {
-    // v0.2.26: pause active goal on interrupt to prevent immediate restart.
-    this.deferGoalContinuation('user interrupt', true);
-    // Register after any synchronous persistence recovery. A lock wait can be
-    // longer than the confirmation window, but must not consume the user's
-    // first Ctrl+C before this call even returns.
     const shouldExit = this.turnController.registerExitIntent();
-    if (this.turnController.hasActiveTurn()) {
+    if (this.turnController.hasActiveTurn() || this.goalControlRuns.size > 0) {
       this.turnController.interruptActiveTurn();
+      this.runner.interrupt?.('user interrupted');
       if (shouldExit) return { type: 'exit_requested' };
       this.emitStatus(this.options.interruptedStatus ?? 'Interrupted. Press Ctrl+C again to exit.');
       return { type: 'interrupted' };
@@ -1194,131 +550,29 @@ export class AgentRuntimeController {
 
   async stopActiveTurn(): Promise<void> {
     this.stopping = true;
-    this.deferGoalContinuation('runtime stopping');
     this.turnController.interruptActiveTurn();
+    this.runner.interrupt?.('runtime stopping');
     this.rejectPendingPermissions();
-    if (this.activeRun) {
-      await this.activeRun.catch(() => undefined);
-    }
+    await this.waitForIdle().catch(() => undefined);
     // Reset stopping flag so subsequent turns can execute.
     this.stopping = false;
   }
 
-  private deferGoalContinuation(reason: string, preserveExitIntent: boolean = false): void {
-    this.continuationScheduleEpoch += 1;
-    const coord = this.goalCoordinator;
-    const goalId = coord?.goal?.status === 'active' ? coord.goal.goalId : undefined;
-    if (!coord || !goalId) return;
-
-    try {
-      coord.deferContinuation();
-    } catch (cause) {
-      const message = this.failClosedGoalMutation(
-        coord,
-        'pause',
-        cause,
-        false,
-        goalId,
-        preserveExitIntent
-      );
-      this.emitGoalMutationError(message);
-      return;
-    }
-    this.emitGoalEvent({
-      type: 'goal_continuation',
-      goalId,
-      phase: 'deferred',
-      reason,
-    });
-  }
-
-  /** Revoke all Goal-owned execution before mutating a lifecycle boundary. */
-  private abortGoalOwnedExecution(preserveExitIntent: boolean = false): void {
-    this.continuationScheduleEpoch += 1;
-    if (!preserveExitIntent) this.turnController.clearExitIntent();
-    this.turnController.interruptActiveTurn();
-    this.rejectPendingPermissions();
-  }
-
-  /**
-   * Contain a failed Goal mutation without writing the restored disk state back.
-   * The coordinator advances its generation so every in-flight request becomes
-   * stale, then preserves complete or deleted disk authority as-is.
-   */
-  private failClosedGoalMutation(
-    coord: import('./goals/coordinator').GoalCoordinator,
-    operation: string,
-    cause: unknown,
-    executionAlreadyRevoked: boolean = false,
-    goalIdBeforeMutation?: string,
-    preserveExitIntent: boolean = false
-  ): string {
-    if (!executionAlreadyRevoked) this.abortGoalOwnedExecution(preserveExitIntent);
-    const detail = redactTraceText(cause instanceof Error ? cause.message : String(cause)).slice(
-      0,
-      600
-    );
-    const operationSubject =
-      operation === 'steering'
-        ? 'Steering'
-        : operation === 'turn_finalize'
-          ? 'Goal turn finalization'
-          : operation === 'stale_accounting'
-            ? 'Stale Goal accounting'
-            : `Target ${operation}`;
-    const goalIdBeforeRecovery = coord.goal?.goalId ?? goalIdBeforeMutation;
-    const failureReason = `${operationSubject} was not saved; Goal-owned execution was revoked fail-closed. ${detail}`;
-    coord.failClosedAfterPersistenceError(failureReason);
-    const snapshot = coord.snapshot();
-    const message = !snapshot
-      ? `${operationSubject} was not saved; disk authority reports that the Goal was deleted. No continuation was started. ${detail}`
-      : coord.goal?.status === 'complete'
-        ? `${operationSubject} was not saved; the restored completed Goal remains terminal. No continuation was started. ${detail}`
-        : `${operationSubject} was not saved; execution was paused fail-closed. Resolve the storage error, then use /target resume. ${detail}`;
-    if (snapshot) {
-      this.emitGoalEvent({
-        type: 'goal_updated',
-        goal: snapshot,
-        reason:
-          coord.goal?.status === 'complete'
-            ? `target_${operation} persistence failed; completed disk authority preserved`
-            : `target_${operation} persistence failed; continuation paused fail-closed`,
-      });
-    } else if (goalIdBeforeRecovery) {
-      this.emitGoalEvent({
-        type: 'goal_cleared',
-        goalId: goalIdBeforeRecovery,
-        reason: `target_${operation} failed after the Goal was deleted`,
-      });
-    }
-    const deferredGoalId = snapshot?.goalId ?? goalIdBeforeRecovery;
-    if (deferredGoalId) {
-      this.emitGoalEvent({
-        type: 'goal_continuation',
-        goalId: deferredGoalId,
-        phase: 'deferred',
-        reason: `target_${operation} persistence failed`,
-      });
-    }
-    return message;
-  }
-
-  waitForIdle(): Promise<void> {
-    return this.activeRun ?? Promise.resolve();
+  async waitForIdle(): Promise<void> {
+    await Promise.all([
+      this.activeRun ?? Promise.resolve(),
+      ...this.goalControlRuns,
+    ]);
   }
 
   private async runTurn(firstRequest: AgentTurnRequest): Promise<void> {
     let nextRequest: AgentTurnRequest | undefined = firstRequest;
-    let preserveTerminalGoalStatus = false;
 
     while (nextRequest && !this.stopping) {
-      this.goalProviderReservedTokens = 0;
       if (!this.requestIsCurrent(nextRequest)) break;
       const request: AgentTurnRequest = nextRequest;
       const planCompletionBeforeRequest = this.agentModeLifecycle.completionRevision();
-      const nextInput =
-        request.text?.trim() ||
-        'Continue pursuing the active goal from its persisted plan and evidence.';
+      const nextInput = request.text?.trim() || 'Continue from the latest durable context.';
       if (
         (this.options.echoSubmittedInput ?? true) &&
         request.echoToTranscript &&
@@ -1329,120 +583,58 @@ export class AgentRuntimeController {
       this.options.beforeTurn?.(nextInput);
 
       const turn = this.turnController.beginTurn(nextInput);
-      const startedAt = Date.now();
-      const workspaceFingerprintBefore = captureWorkspaceFingerprint(this.activeProjectPath());
-      const coord = this.ensureGoalCoordinator(false);
-      const toolContext: GoalToolExecutionContext | undefined = coord
-        ? { coordinator: coord, request, turnId: String(turn.id), evidenceRecords: [] }
-        : undefined;
       this.options.runtime.store.setProcessing(true);
       this.emitProcessing(true);
       const runningStatus = statusText(this.options.runningStatus, nextInput);
       if (runningStatus) this.emitStatus(runningStatus);
 
       try {
-        const execute = (): Promise<void> => {
-          if (this.runner.runRequest) {
-            return this.runner.runRequest(request, {
-              abortSignal: turn.abortSignal,
-              turnId: turn.id,
-            });
-          }
-          return this.runner.runInput(nextInput, {
+        if (this.runner.runRequest) {
+          await this.runner.runRequest(request, {
+            abortSignal: turn.abortSignal,
+            turnId: turn.id,
+          });
+        } else {
+          await this.runner.runInput(nextInput, {
             abortSignal: turn.abortSignal,
             turnId: turn.id,
             persistAsUserMessage: request.persistAsUserMessage,
             inputKind: request.inputKind,
           });
-        };
-        if (toolContext) {
-          await runWithGoalToolContext(toolContext, execute);
-        } else {
-          await execute();
         }
       } catch (error) {
         if (!turn.abortSignal.aborted) {
-          if (this.options.onTurnError) {
-            this.options.onTurnError(error);
-          } else {
+          if (this.options.onTurnError) this.options.onTurnError(error);
+          else {
             const message = error instanceof Error ? error.message : String(error);
             this.emitAppend({ role: 'error', content: `Error: ${message}` });
           }
         }
       } finally {
         const revision = this.turnController.finishTurn(turn.id);
-
-        // v0.2.26: finalize goal turn with usage data.
-        this.finalizeGoalTurn(
-          turn.id,
-          request,
-          toolContext,
-          startedAt,
-          workspaceFingerprintBefore,
-          turn.abortSignal.aborted
-        );
-        const finalizedGoal = request.goal ? this.goalCoordinator?.goal : undefined;
-        preserveTerminalGoalStatus = Boolean(
-          finalizedGoal?.completionAudit ||
-          (toolContext?.pendingTerminalRequest?.requestedStatus === 'blocked' &&
-            finalizedGoal?.status !== 'blocked')
-        );
-
         const completedPlan =
           this.agentModeLifecycle.completedPlanSince(planCompletionBeforeRequest) ?? undefined;
-        // A shortcut pressed during the turn affects the next logical request,
-        // never the permissions or tools of the request that just completed.
-        // exit_plan_mode consumes a pending next mode while saving the plan;
-        // every other request applies it here at the same boundary.
         if (!completedPlan) this.agentModeLifecycle.applyPending();
 
         if (revision?.trim()) {
-          const currentCoord = this.ensureGoalCoordinator(false);
-          const currentGoal =
-            currentCoord?.goal?.status === 'active' ? currentCoord.goal : undefined;
-          if (request.goal && currentCoord?.goal && !currentGoal) {
-            this.emitStatus(
-              'Latest instruction was saved, but the Goal is paused because usage accounting is incomplete. Use /target resume after reviewing the budget.'
-            );
-            nextRequest = undefined;
-          } else {
-            this.emitStatus(this.options.restartingStatus ?? '根据补充调整方向中…');
-            nextRequest = {
-              inputKind: 'revision',
-              text: revision,
-              sessionId: this.options.runtime.getSession()?.id ?? request.sessionId,
-              goal: currentGoal
-                ? {
-                    goalId: currentGoal.goalId,
-                    revision: currentGoal.revision,
-                    continuationIndex: currentGoal.continuationCount,
-                  }
-                : undefined,
-              persistAsUserMessage: true,
-              echoToTranscript: true,
-              // v0.1.3 (G1): the revision was already echoed at submission time.
-              alreadyEchoed: true,
-              generation: currentCoord?.generation ?? 0,
-            };
-          }
+          this.emitStatus(this.options.restartingStatus ?? '根据补充调整方向中…');
+          nextRequest = {
+            inputKind: 'revision',
+            text: revision,
+            sessionId: this.options.runtime.getSession()?.id ?? request.sessionId,
+            persistAsUserMessage: true,
+            echoToTranscript: true,
+            alreadyEchoed: true,
+            generation: 0,
+          };
         } else if (completedPlan) {
-          const currentCoord = this.ensureGoalCoordinator(false);
-          const currentGoal =
-            currentCoord?.goal?.status === 'active' ? currentCoord.goal : undefined;
           nextRequest = {
             inputKind: 'plan_execution',
             text: `Execute the saved plan now. Continue autonomously from the plan and verify the result.\n\n${completedPlan}`,
             sessionId: this.options.runtime.getSession()?.id ?? request.sessionId,
-            goal: currentGoal
-              ? {
-                  goalId: currentGoal.goalId,
-                  revision: currentGoal.revision,
-                  continuationIndex: currentGoal.continuationCount,
-                }
-              : undefined,
             persistAsUserMessage: false,
             echoToTranscript: false,
-            generation: currentCoord?.generation ?? 0,
+            generation: 0,
           };
           this.emitStatus('Plan saved · starting execution in the selected mode.');
         } else {
@@ -1458,7 +650,7 @@ export class AgentRuntimeController {
                 persistAsUserMessage: true,
                 echoToTranscript: false,
                 alreadyEchoed: true,
-                generation: this.goalCoordinator?.generation ?? 0,
+                generation: 0,
               }
             : undefined;
         }
@@ -1472,10 +664,7 @@ export class AgentRuntimeController {
         typeof this.options.readyStatus === 'function'
           ? this.options.readyStatus()
           : this.options.readyStatus;
-      // A completion/blocked audit is the authoritative terminal result of the
-      // turn. Keep it visible instead of immediately replacing it with the
-      // renderer's generic ready snapshot.
-      if (readyStatus && !preserveTerminalGoalStatus) this.emitStatus(readyStatus);
+      if (readyStatus) this.emitStatus(readyStatus);
       this.options.afterTurnLoop?.();
     }
   }
@@ -1538,158 +727,9 @@ export class AgentRuntimeController {
     };
   }
 
-  private emitGoalEvent(event: GoalRuntimeEvent): void {
-    this.eventSink.emit({ type: 'goal_event', event });
-  }
-
   private requestIsCurrent(request: AgentTurnRequest): boolean {
     const activeSessionId = this.options.runtime.getSession()?.id;
-    if (activeSessionId && request.sessionId !== activeSessionId) return false;
-    if (!request.goal) return true;
-    const coord = this.goalCoordinator;
-    const goal = coord?.goal;
-    return Boolean(
-      coord &&
-      goal &&
-      coord.boundSessionId === request.sessionId &&
-      coord.generation === request.generation &&
-      goal.goalId === request.goal.goalId &&
-      goal.revision === request.goal.revision &&
-      goal.status === 'active'
-    );
-  }
-
-  private verificationSummary(
-    loopStats: ReturnType<OrionCodeUiRuntime['store']['getSnapshot']>['lastLoopStats']
-  ): string {
-    if (!loopStats) return 'No loop statistics were recorded.';
-    const passed = loopStats.verificationPassedCommands ?? [];
-    const failed = loopStats.verificationFailedCommands ?? [];
-    const missing = loopStats.verificationMissingCommands ?? [];
-    return [
-      `finish=${loopStats.finishReason}`,
-      passed.length ? `passed=${passed.join(', ')}` : '',
-      failed.length ? `failed=${failed.join(', ')}` : '',
-      missing.length ? `missing=${missing.join(', ')}` : '',
-    ]
-      .filter(Boolean)
-      .join('; ');
-  }
-
-  private captureGoalEvidence(event: import('./agent-runtime-protocol').AgentRuntimeEvent): void {
-    if (event.type !== 'tool_finished') return;
-    const context = currentGoalToolContext();
-    const goal = context?.coordinator.goal;
-    if (!context || !goal || goal.status !== 'active') return;
-    const capturedAt = Date.now();
-    const claimedAssertion = event.event.externalAssertion;
-    const assertion =
-      claimedAssertion &&
-      externalAssertionMatchesInvocation({
-        assertion: claimedAssertion,
-        name: event.event.name,
-        args: event.event.args,
-        success: event.event.success,
-        skipped: event.event.skipped,
-        now: capturedAt,
-      })
-        ? claimedAssertion
-        : undefined;
-    const kind = claimedAssertion
-      ? 'external'
-      : classifyGoalEvidenceKind(event.event.name, event.event.args);
-    if (!kind) return;
-    const classifiedResult = classifyGoalEvidenceResult({
-      kind,
-      success: event.event.success,
-      skipped: event.event.skipped,
-      summary: event.event.summary,
-      error: event.event.error,
-    });
-    // A successful transport plus display text is never sufficient proof of
-    // an external mutation/state. Only runtime-derived typed assertions may
-    // promote successful external tool output to passed evidence. Explicit
-    // tool failures remain failed so the ledger still records negative proof.
-    const result = assertion
-      ? assertion.status
-      : kind === 'external' && classifiedResult === 'passed'
-        ? 'inconclusive'
-        : classifiedResult;
-    const assertionSubject = assertion
-      ? [
-          `external ${assertion.action} ${assertion.status}`,
-          `provider=${assertion.provider}`,
-          `target=${assertion.target}`,
-          assertion.observedValue ? `observed=${assertion.observedValue}` : '',
-        ]
-          .filter(Boolean)
-          .join(' ')
-      : undefined;
-    const goalRuntimeSubject = describeGoalRuntimeEvidence({
-      name: event.event.name,
-      success: event.event.success,
-      error: event.event.error,
-    });
-    const record: GoalEvidenceRecord = {
-      id: `evidence:${randomUUID()}`,
-      goalId: goal.goalId,
-      goalRevision: goal.revision,
-      objectiveRevision: goal.contract?.objectiveRevision ?? 0,
-      turnId: context.turnId,
-      kind,
-      subject: redactTraceText(
-        assertionSubject ||
-          goalRuntimeSubject ||
-          event.event.summary ||
-          event.event.error ||
-          event.event.name
-      ).slice(0, 512),
-      result,
-      sourceRef: `tool:${event.event.callId}:${event.event.name}`,
-      capturedAt,
-      workspaceFingerprint: captureWorkspaceFingerprint(this.activeProjectPath()),
-      expiresAt: kind === 'external' ? capturedAt + 5 * 60_000 : undefined,
-      ...(assertion ? { externalAssertion: assertion } : {}),
-      redacted: true,
-    };
-    context.evidenceRecords.push(record);
-    this.emitGoalEvent({
-      type: 'goal_evidence_recorded',
-      goalId: goal.goalId,
-      evidence: {
-        id: record.id,
-        kind: record.kind,
-        result: record.result,
-        subject: record.subject,
-      },
-    });
-  }
-
-  private restoreGoalForSession(sessionId: string, projectPath: string): void {
-    // A continuation queued by the previously active session must not survive a
-    // session switch. It captured the old coordinator and would otherwise be
-    // able to start after /resume has rebound the runtime.
-    this.continuationScheduleEpoch += 1;
-    this.goalCoordinator = null;
-    this.goalCoordinatorSessionId = null;
-    const coord = this.bindGoalCoordinator(sessionId, true, projectPath, true);
-    const snapshot = coord?.snapshot();
-    if (!snapshot) return;
-    if (snapshot.status === 'complete' && coord.goal?.completionAudit?.passed === true) {
-      // A completed sidecar with no active binding is a historical receipt,
-      // not an active Goal to restore. Only replay the completion lifecycle
-      // when recovering the crash window between the terminal write and the
-      // conditional binding clear.
-      this.emitGoalEvent({ type: 'goal_restored', goal: snapshot });
-      this.emitGoalEvent({
-        type: 'goal_completed',
-        goal: snapshot,
-        audit: coord.goal.completionAudit,
-      });
-      this.autoExitCompletedGoal(coord, snapshot.goalId, 'completion_recovery_auto_exit');
-      return;
-    }
-    this.emitGoalEvent({ type: 'goal_restored', goal: snapshot });
+    return !activeSessionId || request.sessionId === activeSessionId;
   }
 
   async requestToolPermission(request: AgentRuntimeToolPermissionRequest): Promise<boolean> {
@@ -1719,231 +759,53 @@ export class AgentRuntimeController {
     });
   }
 
-  // --- v0.2.24: Goal control ---
-
-  private handleGoalControl(
-    input: import('./goals/types').GoalControlInput
-  ): AgentRuntimeInputResult {
-    const coord = this.goalCoordinator;
-    if (!coord) return { type: 'empty' };
-
-    let executionRevoked = false;
-    const goalIdBeforeMutation = coord.goal?.goalId;
-    try {
-      switch (input.action) {
-        case 'show':
-          // Just shows status — already handled by the renderer format function.
-          return { type: 'empty' };
-        case 'create': {
-          const obj = input.payload?.objective;
-          if (!obj) return { type: 'empty' };
-          const result = coord.create(obj);
-          return { type: result.ok ? 'interrupted' : 'empty' };
-        }
-        case 'pause':
-          if (coord.isActive) {
-            this.abortGoalOwnedExecution();
-            executionRevoked = true;
-          }
-          return { type: coord.pause() ? 'interrupted' : 'empty' };
-        case 'resume':
-          return { type: coord.resume() ? 'interrupted' : 'empty' };
-        case 'confirm':
-          coord.confirmCriterion(input.payload?.criterionId ?? '');
-          return { type: 'interrupted' };
-        case 'edit': {
-          const obj = input.payload?.objective;
-          if (obj) coord.edit(obj);
-          return { type: 'interrupted' };
-        }
-        case 'replace': {
-          const obj = input.payload?.objective;
-          if (obj && !coord.replace(obj)) {
-            const message = this.failClosedGoalMutation(
-              coord,
-              input.action,
-              new Error('Target could not be replaced.'),
-              executionRevoked,
-              goalIdBeforeMutation
-            );
-            this.emitGoalMutationError(message);
-          }
-          return { type: 'interrupted' };
-        }
-        case 'set_budget':
-          coord.setBudget(input.payload?.tokenBudget ?? null);
-          return { type: 'interrupted' };
-        case 'clear':
-          if (input.payload?.confirmed && coord.goal !== null) {
-            this.abortGoalOwnedExecution();
-            executionRevoked = true;
-            if (!clearGoalLifecycle(coord)) {
-              const message = this.failClosedGoalMutation(
-                coord,
-                input.action,
-                new Error('Target clear did not remove the active Goal.'),
-                executionRevoked,
-                goalIdBeforeMutation
-              );
-              this.emitGoalMutationError(message);
-            }
-          }
-          return { type: 'interrupted' };
-        default:
-          return { type: 'empty' };
-      }
-    } catch (cause) {
-      const message = this.failClosedGoalMutation(
-        coord,
-        input.action,
-        cause,
-        executionRevoked,
-        goalIdBeforeMutation
-      );
-      this.emitGoalMutationError(message);
-      return { type: 'interrupted' };
+  private startGoalControl(control: GoalRuntimeControlV2): AgentRuntimeSubmitResult {
+    const goalControl = normalizeGoalRuntimeControl(control);
+    if (!this.runner.controlGoal) {
+      const message = 'Goal runtime is unavailable for the active product session.';
+      this.emitAppend({ role: 'error', title: 'goal', content: message, errorLayer: 'runtime' });
+      this.emitStatus(message);
+      return { type: 'command_handled' };
     }
-  }
-
-  private emitGoalMutationError(message: string): void {
-    this.emitAppend({
-      role: 'error',
-      title: 'target',
-      content: message,
-      errorLayer: 'runtime',
-    });
-    this.emitStatus(message);
-  }
-
-  private ensureGoalCoordinator(
-    ensureSession: boolean
-  ): import('./goals/coordinator').GoalCoordinator | null {
-    if (ensureSession) {
-      this.options.runtime.ensureSession();
+    if (
+      (this.turnController.hasActiveTurn() || this.goalControlRuns.size > 0) &&
+      (goalControl.action === 'create' || goalControl.action === 'resume')
+    ) {
+      const message = `/goal ${goalControl.action} is unavailable while Goal work is running; use /goal pause or /goal clear first.`;
+      this.emitStatus(message);
+      return { type: 'command_ignored' };
     }
-    const session = this.options.runtime.getSession();
-    const sessionId = session?.id;
-    if (!sessionId) return this.goalCoordinator;
-    if (this.goalCoordinator && this.goalCoordinatorSessionId === sessionId) {
-      return this.goalCoordinator;
+    if (goalControl.action === 'pause' || goalControl.action === 'clear') {
+      this.turnController.clearExitIntent();
+      this.turnController.interruptActiveTurn();
+      this.runner.interrupt?.(`goal ${goalControl.action}`);
+      this.rejectPendingPermissions();
     }
 
-    return this.bindGoalCoordinator(
-      sessionId,
-      true,
-      session.projectPath || this.options.runtime.cwd
-    );
-  }
-
-  private bindGoalCoordinator(
-    sessionId: string,
-    recoverActive: boolean,
-    projectPath: string,
-    restoreMissingBinding: boolean = false
-  ): import('./goals/coordinator').GoalCoordinator {
-    const { GoalCoordinator } =
-      require('./goals/coordinator') as typeof import('./goals/coordinator');
-    const coord = new GoalCoordinator(projectPath, sessionId);
-    coord.load(recoverActive);
-    if (coord.goal) {
-      const { loadSessionMeta, restoreSessionGoalBinding } =
-        require('../services/session-storage') as typeof import('../services/session-storage');
-      const session = loadSessionMeta(sessionId);
-      if (
-        coord.goal.status === 'complete' &&
-        coord.goal.completionAudit?.passed === true &&
-        session?.activeGoalId !== coord.goal.goalId
-      ) {
-        coord.detachCompletedReceipt(coord.goal.goalId);
-      } else if (restoreMissingBinding && !session?.activeGoalId) {
-        try {
-          const restored = session
-            ? restoreSessionGoalBinding(
-                sessionId,
-                coord.goal,
-                session.updatedAt ?? session.startTime
-              )
-            : null;
-          if (!restored) {
-            throw new Error(`Session ${sessionId} was not found while restoring its Goal binding.`);
-          }
-        } catch (cause) {
-          this.emitAppend({
-            role: 'error',
-            title: 'target recovery',
-            content: `Goal sidecar ${coord.goal.goalId} remains paused, but its session binding could not be restored safely. ${redactTraceText(cause instanceof Error ? cause.message : String(cause))}`,
-            errorLayer: 'session',
-          });
-        }
-      }
-    }
-    if (coord.lastLoadIssue) {
-      this.emitAppend({
-        role: 'error',
-        title: 'target recovery',
-        content: `${coord.lastLoadIssue.code}: ${coord.lastLoadIssue.message}. Run orion doctor for recovery guidance.`,
-        errorLayer: 'runtime',
+    const run = this.runner
+      .controlGoal(goalControl)
+      .then(result => this.renderGoalControl(result))
+      .catch(error => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.emitAppend({ role: 'error', title: 'goal', content: message, errorLayer: 'runtime' });
+        this.emitStatus(message);
+      })
+      .finally(() => {
+        this.goalControlRuns.delete(run);
       });
-    }
-    this.goalCoordinator = coord;
-    this.goalCoordinatorSessionId = sessionId;
-    if ('setGoalCoordinator' in this.runner) {
-      (this.runner as AgentChatController).setGoalCoordinator(coord);
-    }
-    return coord;
+    this.goalControlRuns.add(run);
+    return { type: 'started' };
   }
 
-  private activeProjectPath(): string {
-    return this.options.runtime.getSession()?.projectPath || this.options.runtime.cwd;
-  }
-
-  private formatTargetStatus(coord: import('./goals/coordinator').GoalCoordinator): string {
-    const goal = coord.goal;
-    if (!goal) {
-      return 'Target: no active goal. Use /target <objective> to create one.';
-    }
-    const objective =
-      goal.objective.length > 60 ? `${goal.objective.slice(0, 57)}...` : goal.objective;
-    const tokens =
-      goal.tokensUsed >= 1000 ? `${(goal.tokensUsed / 1000).toFixed(1)}K` : String(goal.tokensUsed);
-    const lines = [
-      `Target: [${goal.status}] ${objective} | ${goal.continuationCount} turns | ${tokens} tokens${goal.tokenBudget ? ` | budget ${tokens}/${goal.tokenBudget}` : ''}`,
-    ];
-    const contract = goal.contract;
-    const plan = contract?.planSnapshot;
-    if (plan) {
-      lines.push(
-        `Plan: r${plan.revision} ${plan.phase}${plan.nextAction ? ` | next: ${plan.nextAction}` : ''}`
-      );
-    }
-    if (contract?.successCriteria.length) {
-      const passed = contract.successCriteria.filter(
-        criterion => criterion.status === 'passed'
-      ).length;
-      const failed = contract.successCriteria.filter(
-        criterion => criterion.status === 'failed'
-      ).length;
-      const stale = contract.successCriteria.filter(
-        criterion => criterion.status === 'stale'
-      ).length;
-      const pending = contract.successCriteria.length - passed - failed - stale;
-      lines.push(
-        `Criteria: ${pending} pending | ${passed}/${contract.successCriteria.length} passed | ${failed} failed | ${stale} stale`
-      );
-    }
-    if (goal.completionAudit?.remainingRequirements.length) {
-      lines.push(`Audit: ${goal.completionAudit.remainingRequirements.slice(0, 3).join(' | ')}`);
-    }
-    if (goal.stopReason) lines.push(`Resume: ${goal.stopReason.message}`);
-    const recentEvidence = (goal.evidenceLedger ?? []).slice(-3);
-    if (recentEvidence.length > 0) {
-      lines.push(
-        `Evidence: ${recentEvidence
-          .map(item => `${item.id} ${item.kind}/${item.result} ${item.subject}`)
-          .join(' | ')}`
-      );
-    }
-    return lines.join('\n');
+  private renderGoalControl(result: GoalRuntimeControlResultV2): void {
+    const summary = formatGoalRuntimeStatus(result);
+    this.emitAppend({
+      role: result.accepted ? 'system' : 'error',
+      title: 'goal',
+      content: summary,
+      ...(result.accepted ? {} : { errorLayer: 'runtime' as const }),
+    });
+    this.emitStatus(summary);
   }
 
   private recordPermissionDecision(
@@ -2004,110 +866,79 @@ export class AgentRuntimeController {
       entry.finish(false);
     }
   }
+}
 
-  private createChatOptions(): AgentChatControllerOptions | undefined {
-    const resolvedRenderer = this.options.chatOptions?.uiRenderer ?? this.options.uiRenderer;
-    const uiCapabilities = {
-      ...resolveUiRendererCapabilities(undefined, resolvedRenderer),
-      ...(this.options.uiCapabilities ?? {}),
-      ...(this.options.chatOptions?.uiCapabilities ?? {}),
+function formatGoalRuntimeStatus(result: GoalRuntimeControlResultV2): string {
+  const state = result.state;
+  if (!state) return result.message;
+  const objective =
+    state.objective.length > 80 ? `${state.objective.slice(0, 77)}...` : state.objective;
+  return [
+    result.message,
+    `Goal: [${state.status}] ${objective}`,
+    `Progress: ${state.continuationCount} turns · ${state.tokensUsed}/${state.budget.maxTokens} tokens · ${state.elapsedMs}/${state.budget.maxElapsedMs}ms`,
+  ].join('\n');
+}
+
+function normalizeGoalRuntimeControl(control: GoalRuntimeControlV2): GoalRuntimeControlV2 {
+  if (control.action === 'create') {
+    return {
+      action: 'create',
+      objective: control.objective,
+      ...(control.budget ? { budget: control.budget } : {}),
     };
-    const chatOptions: AgentChatControllerOptions = {
-      uiCapabilities,
-      uiRenderer: resolvedRenderer,
-      agentModeLifecycle: this.agentModeLifecycle,
-      onVerificationStateChange: state => this.turnController.setVerificationState(state),
-      ...(this.options.chatOptions ?? {}),
-    };
-    chatOptions.uiCapabilities = uiCapabilities;
-    chatOptions.uiRenderer = chatOptions.uiRenderer ?? resolvedRenderer;
-    chatOptions.onVerificationStateChange =
-      chatOptions.onVerificationStateChange ??
-      (state => this.turnController.setVerificationState(state));
-    if (this.options.useRuntimeToolPermissions && !chatOptions.confirmToolUse) {
-      chatOptions.confirmToolUse = request => this.requestToolPermission(request);
-    }
-    // R6: wire live permission state so the subagent policy gate can prevent
-    // background delegation while the user is deciding a tool permission.
-    if (!chatOptions.hasPendingPermission) {
-      chatOptions.hasPendingPermission = () => this.pendingPermissions.size > 0;
-    }
-    // R6: wire child usage callback so CostTracker records subagent token
-    // consumption, making /cost complete and honest about child agent spend.
-    if (!chatOptions.onChildUsage) {
-      chatOptions.onChildUsage = (taskId, _role, usage, modelLabel) => {
-        const costTracker = this.options.runtime.store.getSnapshot().costTracker;
-        costTracker.record(
-          {
-            promptTokens: usage.promptTokens,
-            completionTokens: usage.completionTokens,
-            ...(usage.costUsd !== undefined ? { costUsd: usage.costUsd } : {}),
-            requestId: `subagent:${taskId}`,
-          },
-          {
-            model: modelLabel ?? 'unknown',
-            agentId: 'subagent',
-            taskId,
-            requestKind: 'subagent',
-          }
-        );
-      };
-    }
-    const configuredPreflight = chatOptions.beforeProviderRequest;
-    chatOptions.beforeProviderRequest = async context => {
-      if (configuredPreflight) {
-        const configuredDecision = await configuredPreflight(context);
-        if (!configuredDecision.available) return configuredDecision;
-      }
-
-      const coord = this.goalCoordinator;
-      const goal = coord?.goal;
-      if (!coord || !goal || goal.status !== 'active' || !goal.tokenBudget) {
-        return { available: true };
-      }
-
-      const projectedTokens = Math.max(
-        1,
-        context.estimatedPromptTokens,
-        goal.lastTurn?.totalTokens ?? 0
-      );
-      const decision = budgetPreflight(
-        goal.tokensUsed + this.goalProviderReservedTokens,
-        goal.tokenBudget,
-        projectedTokens
-      );
-      if (!decision.available) {
-        try {
-          coord.limitBudget(decision.reason ?? 'Token budget unavailable for provider request.');
-        } catch (cause) {
-          const message = this.failClosedGoalMutation(
-            coord,
-            'provider_budget_stop',
-            cause,
-            false,
-            goal.goalId
-          );
-          this.emitGoalMutationError(message);
-          return { available: false, reason: message };
-        }
-        const snapshot = coord.snapshot();
-        if (snapshot) {
-          this.emitGoalEvent({
-            type: 'goal_updated',
-            goal: snapshot,
-            reason: `provider request ${context.operation} attempt ${context.attempt} rejected by token budget`,
-          });
-        }
-        return decision;
-      }
-
-      // Reserve the projected cost before the network call. Failed retries and
-      // fallbacks keep their reservation because providers may charge attempts
-      // that fail before returning usage. Actual successful usage is persisted
-      // at turn finalization; reservations reset only when the next root turn starts.
-      this.goalProviderReservedTokens += projectedTokens;
-      return decision;
-    };
-    return Object.keys(chatOptions).length > 0 ? chatOptions : undefined;
   }
+  return { action: control.action };
+}
+
+function commandIdentity(command: RegisteredSlashCommand, success: boolean) {
+  return {
+    id: command.id,
+    name: command.name,
+    source: command.source,
+    success,
+  };
+}
+
+async function captureCommandOutput(
+  execute: () => CommandResult | Promise<CommandResult>
+): Promise<{ result: CommandResult; output: string }> {
+  const lines: string[] = [];
+  const originalLog = console.log;
+  const originalError = console.error;
+  const originalWarn = console.warn;
+  const capture = (...values: unknown[]): void => {
+    const line = values
+      .map(value => {
+        if (typeof value === 'string') return value;
+        try {
+          return JSON.stringify(value);
+        } catch {
+          return String(value);
+        }
+      })
+      .join(' ');
+    lines.push(sanitizeTerminalText(line));
+  };
+
+  console.log = capture;
+  console.error = capture;
+  console.warn = capture;
+  try {
+    return { result: await execute(), output: lines.join('\n').trim() };
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+    console.warn = originalWarn;
+  }
+}
+
+function createUnavailableRunner(): AgentRuntimeRunnerV1 {
+  return {
+    async runInput(): Promise<void> {
+      throw new Error(
+        'No OrionRuntimeV1 runner is configured. Initialize the product runtime before submitting a turn.'
+      );
+    },
+  };
 }

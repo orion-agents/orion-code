@@ -9,7 +9,8 @@ import {
 } from '../runtime/ui-view-model';
 import { resolveProjectToolAllowlist } from '../services/tool-allowlist';
 import { getAutoCompact } from '../services/compact/auto-compact';
-import { resolveModelContext } from '../services/model-context';
+import { compactMessages } from '../services/compact';
+import { createContextUsageSnapshot, resolveModelContext } from '../services/model-context';
 import { maskSecret } from '../utils/mask';
 import {
   getModelCatalogEntry,
@@ -25,7 +26,17 @@ import {
   type EffortPreference,
   type EffortScope,
 } from '../services/effort';
-import { updateSessionEffort } from '../services/session-storage';
+import {
+  commitSessionCompactCheckpoint,
+  prepareSessionCompactSourceReceipt,
+  appendSessionTraceEvent,
+  updateSessionEffort,
+} from '../services/session-storage';
+import { estimateMessagesTokens } from '../utils/token-estimate';
+import type {
+  ModelSwitchCompactPreflightReceipt,
+  ModelSwitchCompactPreflightRequest,
+} from '../runtime/model-coordinator';
 
 // ============================================================================
 // 颜色常量
@@ -119,6 +130,167 @@ function getCommandAutoCompact(ctx: CommandContext, modelId: string) {
   return getAutoCompact({ modelId });
 }
 
+async function commitModelSwitchCompact(
+  ctx: CommandContext,
+  request: ModelSwitchCompactPreflightRequest
+): Promise<ModelSwitchCompactPreflightReceipt> {
+  const history = ctx.store.getSnapshot().conversationHistory;
+  const currentTokens = estimateMessagesTokens(history);
+  if (currentTokens <= request.safeInputBudget) {
+    return { status: 'not_needed', currentTokens };
+  }
+
+  const session = ctx.getSession?.() ?? ctx.ensureSession?.();
+  if (!session) {
+    return {
+      status: 'rejected',
+      error: 'A durable session is required before compacting for a model switch.',
+    };
+  }
+  const prepareSource = prepareSessionCompactSourceReceipt(session.id);
+  const sourceMessageCount = prepareSource.sourceMessageCount;
+
+  const result = await compactMessages(history, {
+    maxMessages: 20,
+    contextCapsule: ctx.store.getSnapshot().harnessState?.capsule,
+    harnessState: ctx.store.getSnapshot().harnessState,
+    goalObjective: ctx.getActiveGoal?.()?.objective,
+    llm: ctx.llm ?? undefined,
+    compactMode: 'manual',
+    safeInputBudget: request.safeInputBudget,
+    targetRatio: 0.65,
+  });
+  if (result.afterTokens > request.targetTokens) {
+    return {
+      status: 'rejected',
+      error: `Compact candidate uses ${result.afterTokens} tokens; target is ${request.targetTokens}.`,
+    };
+  }
+
+  const afterUsage = {
+    ...createContextUsageSnapshot({
+      modelId: request.to.id,
+      usedTokens: result.afterTokens,
+      source: 'estimated',
+      outputReserveTokens: request.to.resolvedMaxOutputTokens,
+    }),
+    contextWindow: request.to.resolvedContextWindow,
+    safeInputBudget: request.safeInputBudget,
+    percent: Math.min(100, Math.floor((result.afterTokens / request.safeInputBudget) * 100)),
+    rawPercent: Math.min(
+      100,
+      Math.floor((result.afterTokens / request.to.resolvedContextWindow) * 100)
+    ),
+  };
+  const goal = ctx.getActiveGoal?.();
+  const traceTurnId = String(ctx.turnId ?? 'command:model-switch');
+  const traceDetails = {
+    model: request.to.id,
+    compactMode: 'manual' as const,
+    compactStrategy: 'model-switch-semantic-v2',
+    compactCandidateFingerprint: result.fingerprint,
+    compactBeforeTokens: result.beforeTokens,
+    compactAfterTokens: result.afterTokens,
+    compactTargetTokens: result.plan.targetTokens,
+    compactTargetRatio: result.plan.targetRatio,
+    compactDiagnosticsCount: result.diagnostics.length,
+    compactSourceMessageCount: sourceMessageCount,
+  };
+  appendSessionTraceEvent(session.id, {
+    turnId: traceTurnId,
+    type: 'compact_prepare',
+    ...traceDetails,
+  });
+  let checkpoint: ReturnType<typeof commitSessionCompactCheckpoint>;
+  try {
+    checkpoint = commitSessionCompactCheckpoint({
+      sessionId: session.id,
+      mode: 'manual',
+      modelId: request.to.id,
+      sourceMessageCount,
+      transcriptStartMessageIndex: Math.max(0, sourceMessageCount - 20),
+      modelHistory: result.messages,
+      summary: {
+        text: result.summary,
+        generatedAt: result.summaryGeneratedAt,
+        source: result.summarySource,
+      },
+      beforeUsage: createContextUsageSnapshot({
+        modelId: request.from.id,
+        usedTokens: currentTokens,
+        source: 'estimated',
+        outputReserveTokens: request.from.resolvedMaxOutputTokens,
+      }),
+      afterUsage,
+      strategy: 'model-switch-semantic-v2',
+      harnessState: ctx.store.getSnapshot().harnessState,
+      goalBinding: goal ? { goalId: goal.goalId, revision: goal.revision, state: goal } : undefined,
+      prepareSource,
+      candidate: {
+        fingerprint: result.fingerprint,
+        beforeTokens: result.beforeTokens,
+        afterTokens: result.afterTokens,
+        plan: result.plan,
+        semanticSummary: result.semanticSummary,
+        diagnostics: result.diagnostics,
+      },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    appendSessionTraceEvent(session.id, {
+      turnId: traceTurnId,
+      type: 'compact_rollback',
+      success: false,
+      error: message,
+      ...traceDetails,
+    });
+    appendSessionTraceEvent(session.id, {
+      turnId: traceTurnId,
+      type: 'compact_failed',
+      success: false,
+      error: message,
+      ...traceDetails,
+    });
+    throw error;
+  }
+  appendSessionTraceEvent(session.id, {
+    turnId: traceTurnId,
+    type: 'compact_validate',
+    checkpointId: checkpoint.checkpointId,
+    success: true,
+    ...traceDetails,
+  });
+  appendSessionTraceEvent(session.id, {
+    turnId: traceTurnId,
+    type: 'compact_commit',
+    checkpointId: checkpoint.checkpointId,
+    success: true,
+    ...traceDetails,
+  });
+
+  ctx.store.setState({ conversationHistory: checkpoint.modelHistory });
+  ctx.store.setContextUsage(afterUsage);
+  appendSessionTraceEvent(session.id, {
+    turnId: traceTurnId,
+    type: 'compact_boundary',
+    checkpointId: checkpoint.checkpointId,
+    success: true,
+    ...traceDetails,
+  });
+  appendSessionTraceEvent(session.id, {
+    turnId: traceTurnId,
+    type: 'compact_completed',
+    checkpointId: checkpoint.checkpointId,
+    success: true,
+    ...traceDetails,
+  });
+  return {
+    status: 'committed',
+    afterTokens: checkpoint.candidateReceipt.afterTokens,
+    candidateFingerprint: checkpoint.candidateReceipt.candidateFingerprint,
+  };
+}
+
 function showConfig(ctx: CommandContext): CommandResult {
   console.log();
   console.log(HEADER('Configuration'));
@@ -174,7 +346,7 @@ function showConfig(ctx: CommandContext): CommandResult {
   return { success: true };
 }
 
-function handleModel(ctx: CommandContext, args: string): CommandResult {
+async function handleModel(ctx: CommandContext, args: string): Promise<CommandResult> {
   const trimmedArgs = args.trim().toLowerCase();
   if (!trimmedArgs) return handleModels(ctx, args);
   const lines: string[] = [];
@@ -232,7 +404,7 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
     return result(true);
   }
 
-  // /model list|ls|help 已移除，统一由 /models 承接（交互式选择切换）
+  // /model list|ls|help 已移除；无参数 /model 统一打开交互式选择器。
   if (trimmedArgs === 'list' || trimmedArgs === 'ls' || trimmedArgs === 'help') {
     write();
     write(WARN(`/model ${trimmedArgs} was removed.`));
@@ -252,6 +424,22 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
   const resolvedModel = registryProfile ? registryProfile.model : resolveModelAlias(args);
   const resolvedProfileId = registryProfile ? registryProfile.id : resolvedModel;
 
+  if (registryProfile && ctx.modelCoordinator) {
+    const switchResult = await ctx.modelCoordinator.switchToWithCompactPreflight(
+      registryProfile.id,
+      request => commitModelSwitchCompact(ctx, request)
+    );
+    if (!switchResult.success) {
+      return { success: false, error: switchResult.error ?? 'Model switch failed.' };
+    }
+  }
+
+  if (registryProfile) {
+    const provider = ctx.config.modelRegistry?.providers.get(registryProfile.provider);
+    if (provider && ctx.config.modelClientPool && 'setProviderClient' in ctx.llm) {
+      ctx.llm.setProviderClient(ctx.config.modelClientPool.getClient(provider));
+    }
+  }
   ctx.llm.setModel(resolvedModel);
   if (registryProfile) {
     const provider = ctx.config.modelRegistry?.providers.get(registryProfile.provider);
@@ -283,7 +471,7 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
 }
 
 /**
- * /models — 交互式选择切换模型。
+ * No-argument `/model` — 交互式选择切换模型。
  * 交互式渲染器返回结构化 modelPicker 请求（渲染器弹出选择层，选中即 /model <id>）；
  * 非交互式渲染器直接打印候选列表并提示 /model <name|alias>。
  */

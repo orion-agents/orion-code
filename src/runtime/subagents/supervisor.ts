@@ -8,7 +8,7 @@
  * The supervisor does NOT own LLM state, tool execution, permission policy or
  * transcript storage. It composes the policy gate, the budget ledger, the
  * provider gate and the runner, and emits renderer-independent lifecycle
- * events that the root loop forwards to terminal/Ink/TUI.
+ * events that the root loop forwards to terminal/TUI.
  */
 
 import { SubagentBudgetLedger, TurnTaskState } from './budget';
@@ -17,9 +17,14 @@ import { SubagentProviderGate } from './provider-gate';
 import {
   runSubtask,
   type ExecuteChildQuery,
+  type ChildExecutionBudget,
   type ChildToolSet,
   type SubagentRunnerDeps,
 } from './runner';
+import type { AuthoritySnapshotV1 } from '../step-snapshot';
+import type { ParentThreadForkRequestV1 } from '../subagent-thread-runtime';
+import type { ProductionSubagentExecutionPortV1 } from './runtime-contract';
+import type { ParentThreadStepForkSourcePortV1 } from './parent-step-fork';
 import type { ScopeHolder } from './child-executor-guard';
 import { createResearchRequestForSubtask, validateResearchRequest } from './research-contract';
 import type { ResearchRequest } from './research-types';
@@ -39,10 +44,18 @@ export interface SubagentSupervisorDeps {
   cwd: string;
   budget: SubagentBudgetLedger;
   providerGate: SubagentProviderGate;
-  /** Injectable query binding shared with the runner (tests mock this). */
-  executeQuery: ExecuteChildQuery;
-  /** Filtered, child-safe tool set (already passed through presets). */
-  toolSet: ChildToolSet;
+  /** Modern production boundary. Child execution owns Thread/Loop/Gateway. */
+  executeChild?: ProductionSubagentExecutionPortV1;
+  /** Durable parent fork anchor required by the modern production boundary. */
+  parentFork?: ParentThreadForkRequestV1;
+  /** Resolves the current active step only when a subtask batch actually executes. */
+  parentForkSource?: ParentThreadStepForkSourcePortV1;
+  /** Root authority that the child role policy may only narrow. */
+  parentAuthority?: AuthoritySnapshotV1;
+  /** @deprecated Test-only legacy runner seam; production must inject executeChild. */
+  executeQuery?: ExecuteChildQuery;
+  /** @deprecated Test-only legacy runner seam; production must inject executeChild. */
+  toolSet?: ChildToolSet;
   /**
    * R3: async-context scope holder. The supervisor binds each child run to
    * its packet's canonical scope so parallel children cannot overwrite or
@@ -124,7 +137,7 @@ export interface RunBatchOutcome {
   result: SubtaskBatchResult;
   /** Whether policy rejected the entire batch before any child ran. */
   rejected: boolean;
-  rejectReason?: PolicyRejectReason;
+  rejectReason?: PolicyRejectReason | 'production_runtime_unavailable';
 }
 
 /**
@@ -136,8 +149,32 @@ export interface RunBatchOutcome {
  */
 export async function runSubtaskBatch(
   request: SubtaskRequest,
-  deps: SubagentSupervisorDeps
+  inputDeps: SubagentSupervisorDeps
 ): Promise<RunBatchOutcome> {
+  let resolvedParentFork = inputDeps.parentFork;
+  try {
+    resolvedParentFork ??= inputDeps.parentForkSource?.current();
+  } catch {
+    resolvedParentFork = undefined;
+  }
+  const deps: SubagentSupervisorDeps = resolvedParentFork
+    ? { ...inputDeps, parentFork: resolvedParentFork }
+    : inputDeps;
+  const modernReady = Boolean(deps.executeChild && deps.parentFork && deps.parentAuthority);
+  const legacyReady = Boolean(deps.executeQuery && deps.toolSet);
+  if ((deps.executeChild && !modernReady) || (!modernReady && !legacyReady)) {
+    const batchId = nextBatchId();
+    const results = request.tasks.map(packet => {
+      const result = buildRejectedResult(packet, 'production_runtime_unavailable');
+      finalizeTask(deps, batchId, result.id, packet, result);
+      return result;
+    });
+    return {
+      result: { batchId, results, aggregateUsage: sumSubtaskUsage([]) },
+      rejected: true,
+      rejectReason: 'production_runtime_unavailable',
+    };
+  }
   // Validate the authoritative ResearchRequest before policy/budget/provider
   // work. An external request without the dedicated root capability must fail
   // closed instead of silently degrading to local-only research.
@@ -206,6 +243,7 @@ export async function runSubtaskBatch(
   const batchId = nextBatchId();
   const tasks = request.tasks;
   const taskIds = tasks.map(() => nextTaskId());
+  const executionBudgets: ChildExecutionBudget[] = [];
 
   // Reserve a fair share per task: the per-task cap, but no more than an even
   // slice of the turn budget. This lets a 3-task batch fit when the turn limit
@@ -238,6 +276,10 @@ export async function runSubtaskBatch(
         rejectReason: 'budget_exhausted',
       };
     }
+    executionBudgets[i] = {
+      maxModelRequests: reserved.modelRequests,
+      maxToolCalls: deps.config.maxToolCallsPerTask,
+    };
     emit(deps, {
       batchId,
       taskId: taskIds[i],
@@ -247,22 +289,44 @@ export async function runSubtaskBatch(
     });
   }
 
-  const runnerDeps = (i: number): SubagentRunnerDeps => ({
-    cwd: deps.cwd,
-    canonicalScopePaths: verdict.canonicalScope.get(i),
-    toolSet: deps.toolSet,
-    executeQuery: deps.executeQuery,
-    timeoutMs: deps.config.timeoutMs,
-    parentAbortSignal: deps.parentAbortSignal,
-    rootObjectiveSummary: deps.rootObjectiveSummary,
-    modelLabel: deps.modelLabel,
-  });
+  const runnerDeps = (i: number): SubagentRunnerDeps | undefined =>
+    deps.executeQuery && deps.toolSet
+      ? {
+          cwd: deps.cwd,
+          canonicalScopePaths: verdict.canonicalScope.get(i),
+          toolSet: deps.toolSet,
+          executeQuery: deps.executeQuery,
+          executionBudget: executionBudgets[i],
+          timeoutMs: deps.config.timeoutMs,
+          parentAbortSignal: deps.parentAbortSignal,
+          rootObjectiveSummary: deps.rootObjectiveSummary,
+          modelLabel: deps.modelLabel,
+        }
+      : undefined;
 
   let outcomes: Array<{ result: SubtaskResult; parentCancelled: boolean }>;
+  const canonicalScopes = (i: number): readonly string[] | undefined =>
+    verdict.canonicalScope.get(i);
   if (request.execution === 'parallel') {
-    outcomes = await runParallel(tasks, taskIds, batchId, deps, runnerDeps);
+    outcomes = await runParallel(
+      tasks,
+      taskIds,
+      batchId,
+      deps,
+      runnerDeps,
+      canonicalScopes,
+      executionBudgets
+    );
   } else {
-    outcomes = await runSerial(tasks, taskIds, batchId, deps, runnerDeps);
+    outcomes = await runSerial(
+      tasks,
+      taskIds,
+      batchId,
+      deps,
+      runnerDeps,
+      canonicalScopes,
+      executionBudgets
+    );
   }
 
   // Reconcile budget for each task with its real usage.
@@ -284,13 +348,26 @@ async function runParallel(
   taskIds: string[],
   batchId: string,
   deps: SubagentSupervisorDeps,
-  runnerDeps: (i: number) => SubagentRunnerDeps
+  runnerDeps: (i: number) => SubagentRunnerDeps | undefined,
+  canonicalScopes: (i: number) => readonly string[] | undefined,
+  executionBudgets: readonly ChildExecutionBudget[]
 ): Promise<Array<{ result: SubtaskResult; parentCancelled: boolean }>> {
   // Launch each child; the provider gate bounds actual concurrency. Collect
   // by index so the final order matches the request order.
   // allSettled guarantees every task is accounted for even if a future
   // refactor breaks the "runOne never throws" contract.
-  const slots = tasks.map((task, i) => runOne(task, taskIds[i], batchId, i, deps, runnerDeps(i)));
+  const slots = tasks.map((task, i) =>
+    runOne(
+      task,
+      taskIds[i],
+      batchId,
+      i,
+      deps,
+      runnerDeps(i),
+      canonicalScopes(i),
+      executionBudgets[i]
+    )
+  );
   const settled = await Promise.allSettled(slots);
   return settled.map((s, i) => {
     if (s.status === 'fulfilled') return s.value;
@@ -325,7 +402,9 @@ async function runSerial(
   taskIds: string[],
   batchId: string,
   deps: SubagentSupervisorDeps,
-  runnerDeps: (i: number) => SubagentRunnerDeps
+  runnerDeps: (i: number) => SubagentRunnerDeps | undefined,
+  canonicalScopes: (i: number) => readonly string[] | undefined,
+  executionBudgets: readonly ChildExecutionBudget[]
 ): Promise<Array<{ result: SubtaskResult; parentCancelled: boolean }>> {
   const outcomes: Array<{ result: SubtaskResult; parentCancelled: boolean }> = [];
   for (let i = 0; i < tasks.length; i++) {
@@ -343,7 +422,16 @@ async function runSerial(
       }
       break;
     }
-    const outcome = await runOne(tasks[i], taskIds[i], batchId, i, deps, runnerDeps(i));
+    const outcome = await runOne(
+      tasks[i],
+      taskIds[i],
+      batchId,
+      i,
+      deps,
+      runnerDeps(i),
+      canonicalScopes(i),
+      executionBudgets[i]
+    );
     outcomes.push(outcome);
   }
   return outcomes;
@@ -355,20 +443,21 @@ async function runOne(
   batchId: string,
   _index: number,
   deps: SubagentSupervisorDeps,
-  runnerDeps: SubagentRunnerDeps
+  runnerDeps: SubagentRunnerDeps | undefined,
+  canonicalScopePaths: readonly string[] | undefined,
+  executionBudget: ChildExecutionBudget
 ): Promise<{ result: SubtaskResult; parentCancelled: boolean }> {
   // R4: pass the parent abort signal so a queued waiter is removed and
   // rejected when the user hits Ctrl+C, instead of hanging until a slot
   // frees. A rejected acquire yields a cancelled result, not a hung batch.
-  try {
-    await deps.providerGate.acquire(deps.parentAbortSignal);
-  } catch {
-    // AcquireAbortedError: parent aborted while queued. Treat as cancelled.
-    // R7: finalize the cancelled result so trace/artifact/usage are recorded
-    // exactly once, same as any other terminal state.
-    const cancelled = cancelledResult(taskId, task);
-    finalizeTask(deps, batchId, taskId, task, cancelled);
-    return { result: cancelled, parentCancelled: true };
+  if (!deps.executeChild) {
+    try {
+      await deps.providerGate.acquire(deps.parentAbortSignal);
+    } catch {
+      const cancelled = cancelledResult(taskId, task);
+      finalizeTask(deps, batchId, taskId, task, cancelled);
+      return { result: cancelled, parentCancelled: true };
+    }
   }
   try {
     const execute = async () => {
@@ -379,7 +468,23 @@ async function runOne(
         request && (request.mode === 'web' || request.mode === 'mixed')
           ? deps.runWebResearch!(request, deps.parentAbortSignal)
           : undefined;
-      const outcome = await runSubtask(task, runnerDeps, taskId);
+      const outcome = deps.executeChild
+        ? await deps.executeChild.execute({
+            taskId,
+            packet: task,
+            canonicalScopePaths,
+            parent: deps.parentFork!,
+            parentAuthority: deps.parentAuthority!,
+            budget: {
+              maxModelRequests: executionBudget.maxModelRequests,
+              maxToolCalls: executionBudget.maxToolCalls,
+            },
+            timeoutMs: deps.config.timeoutMs,
+            abortSignal: deps.parentAbortSignal,
+            rootObjectiveSummary: deps.rootObjectiveSummary,
+            modelLabel: deps.modelLabel,
+          })
+        : await runSubtask(task, requiredLegacyRunnerDeps(runnerDeps), taskId);
       let web: WebResearchResult | undefined;
       if (webPromise) {
         try {
@@ -388,9 +493,6 @@ async function runOne(
           web = failedWebResearchResult(error, Boolean(deps.parentAbortSignal?.aborted));
         }
       }
-      // R7: single finalize path - terminal event + result callback + usage
-      // callback all happen here, exactly once, with errors isolated so a
-      // throwing sink cannot reject the batch or corrupt sibling aggregation.
       finalizeTask(
         deps,
         batchId,
@@ -402,16 +504,18 @@ async function runOne(
       return outcome;
     };
 
-    // R3: bind the full child async chain to its canonical packet scope.
-    // AsyncLocalStorage automatically restores the parent context when this
-    // run finishes, so no child can clear a sibling or root boundary.
-    if (deps.scopeHolder) {
-      return await deps.scopeHolder.runWithScope(runnerDeps.canonicalScopePaths ?? [], execute);
+    if (!deps.executeChild && deps.scopeHolder) {
+      return await deps.scopeHolder.runWithScope(canonicalScopePaths ?? [], execute);
     }
     return await execute();
   } finally {
-    deps.providerGate.release();
+    if (!deps.executeChild) deps.providerGate.release();
   }
+}
+
+function requiredLegacyRunnerDeps(deps: SubagentRunnerDeps | undefined): SubagentRunnerDeps {
+  if (!deps) throw new Error('Legacy child runner dependencies are unavailable.');
+  return deps;
 }
 
 /**
