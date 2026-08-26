@@ -7,7 +7,7 @@ vulnerabilities and summarizes the security model you are opting into when you r
 ## Supported versions
 
 Only the latest released `vX.Y.Z` line receives security fixes. The current
-supported line is **`v0.1.4`** (see `CHANGELOG.md` for the delivery state of each
+supported line is **`v0.2.1`** (see `CHANGELOG.md` for the delivery state of each
 release). Pre-release / worktree-only builds carry no security-support promise.
 
 ## Reporting a vulnerability

@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 import type { LLMResponse, LLMService, Message } from '../src/services/llm';
+import type { ContextUsageSnapshot } from '../src/services/model-context';
 import {
   AgentLoopV1,
   ThreadStepSnapshotJournalV1,
@@ -108,6 +109,7 @@ describe('AgentLoopV1', () => {
       config: { completionGate: 'off' },
     });
     const snapshots: string[] = [];
+    const contextUsage: ContextUsageSnapshot[] = [];
     const journal = new ThreadStepSnapshotJournalV1(store);
     const turnJournal = new ThreadTurnCommitJournalV1(store);
     const loop = new AgentLoopV1({
@@ -115,6 +117,7 @@ describe('AgentLoopV1', () => {
       taskContext,
       gateway,
       loadBaseMessages: async () => [{ role: 'system', content: 'You are Orion.' }],
+      onContextUsage: usage => contextUsage.push(usage),
       onStepCaptured: snapshot => {
         snapshots.push(snapshot.digest);
         journal.commit(snapshot);
@@ -208,6 +211,12 @@ describe('AgentLoopV1', () => {
     await runtime.waitForIdle();
 
     expect(executions).toBe(1);
+    expect(contextUsage.length).toBeGreaterThan(0);
+    expect(contextUsage.at(-1)).toMatchObject({
+      modelId: 'test-model',
+      usedTokens: expect.any(Number),
+      percent: expect.any(Number),
+    });
     expect(snapshots).toHaveLength(2);
     expect(new Set(snapshots).size).toBe(2);
     expect(store.loadProjection().stepSnapshotDigests).toEqual(snapshots);

@@ -2,7 +2,8 @@
 
 面向终端的目标驱动 Coding Agent。
 
-> v0.2.0 发布候选：单一 Agent Loop、精确能力选择、按需 Skill/MCP、证据驱动 Goal 完成与崩溃可恢复。
+> v0.2.1 补丁候选：延续 v0.2 Harness，并修复 TUI 输入重复、Thread 会话恢复、实时上下文占用与
+> Goal 模式展示。
 
 [English](README.md) · [架构主计划](docs/plan/v0.2.0-dsh-harness-redesign-plan.md) ·
 [迁移指南](docs/migration/v0.1.9-to-v0.2.0.md) ·
@@ -40,10 +41,10 @@ MCP 仍是用户可见的扩展边界。
 
 支持 Node.js 20、22、24。
 
-当 npm 已存在不可变的 `0.2.0` 发布凭据后：
+当 npm 已存在不可变的 `0.2.1` 发布凭据后：
 
 ```bash
-npm install -g @orion-agents/orion-code@0.2.0
+npm install -g @orion-agents/orion-code@0.2.1
 orion --version
 orion doctor
 ```

@@ -80,6 +80,8 @@ export interface AgentLoopOptionsV1 {
   ) => ToolContext;
   readonly streamCallbacks?: StreamCallbacks;
   readonly loopBudget?: Partial<LoopBudget>;
+  /** Publish the latest model-context pressure without giving UI code loop ownership. */
+  readonly onContextUsage?: QueryParams['onContextUsage'];
   readonly onStepCaptured?: (snapshot: StepSnapshotV1) => void | Promise<void>;
   readonly commitTurn?: (commit: AgentLoopTurnCommitV1) => void | Promise<void>;
   readonly compactCoordinator?: QueryParams['compactCoordinator'];
@@ -199,6 +201,7 @@ export class AgentLoopV1 implements ThreadTurnRunnerV1 {
           config: { name: 'orion-code', mode: context.mode },
         },
         loopBudget: this.options.loopBudget,
+        onContextUsage: this.options.onContextUsage,
         compactCoordinator: this.options.compactCoordinator,
       })) {
         switch (event.type) {

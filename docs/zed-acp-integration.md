@@ -3,12 +3,18 @@
 > 调研日期：2026-08-08
 > 调研目标：搞清楚如何把 Orion Code（一个 TypeScript 编写的终端 AI 编码 Agent / CLI harness）对接到 Zed 编辑器，让 Zed 用户一键安装并使用它。
 > 信息来源：Zed 官方文档、`agentclientprotocol.com` 协议规范与 ACP Registry 仓储（含 `agent.schema.json`、CONTRIBUTING.md）、Zed 官方博客 "The ACP Registry is Live"（2026-01-28）。
+>
+> **2026-08-15 更正**：本文保留为调研背景，实施与发布以
+> [v0.2.0 Verified Project Agent Plan](plan/v0.2.0-coding-agent-platform-plan.md) 为准。
+> v0.2.0 只承诺官方 stable ACP v1 over stdio；Streamable HTTP 仍为 draft，WebSocket 不是
+> stable ACP transport。实现必须使用官方 `@agentclientprotocol/sdk` 的 stable v1 entry，
+> 不再手写 JSON-RPC parser/types；Registry manifest 必须固定精确 npm 版本。
 
 ---
 
 ## 0. 一句话结论
 
-**不要把精力花在"Zed 插件（Agent Server Extension）"上——那条路已经在 Zed v1.5.0 被官方弃用。** 现在的正确路径是：让 Orion Code 实现 **ACP（Agent Client Protocol）** 协议，然后把一个 `agent.json` 提交到 **ACP Registry**。提交合并后，Zed（以及 JetBrains 系列 IDE）用户即可在编辑器内置的 Registry 页面一键安装，并且永远自动拿到最新版本。
+**不要把精力花在"Zed 插件（Agent Server Extension）"上——那条路已经在 Zed v1.5.0 被官方弃用。** 现在的正确路径是：让 Orion Code 实现 **ACP（Agent Client Protocol）** 协议，然后把一个 `agent.json` 提交到 **ACP Registry**。只有 Registry PR 合并、CDN 可见且 Zed 从 Registry 真实安装通过，才能声明发布完成。
 
 ---
 
@@ -28,9 +34,9 @@ Orion Code 是一个目标驱动的终端编码 Agent，已有完整的运行时
 
 1. **Agent Server Extensions（ACP Extensions）已弃用**：自 Zed v1.5.0 起，原先基于 `zed-industries/extensions` 仓库子模块的 Agent 扩展方式被弃用，官方 blog 明确"at some point we will deprecate the extension-based approach entirely"。两种安装方式并存期间，**Registry 版本优先**。
 2. **ACP Registry 是新的分发层**：2026-01-28 上线，由 `agentclientprotocol.com/registry` 承载。开发者"提交一次，所有兼容 ACP 的客户端（Zed、JetBrains）都能用"。Zed 和 JetBrains IDE 已内置 Registry 支持。
-3. **Registry 自动更新**：合并后，Registry 每隔约 1 小时自动检测 npm / PyPI / GitHub Releases 的最新版本并更新，无需再走 Zed 的扩展审核周期。
+3. **Registry 使用精确分发版本**：manifest、npm package 与 Registry entry 必须一致；不能用 `latest` 或本地 artifact 代替公开 Registry 状态。
 4. **Registry 强制要求认证**：CI 会验证 Agent 在 `initialize` 响应里返回 `authMethods`，且至少有一种 `type: "agent"` 或 `type: "terminal"`。这点和"仅本地免登录 CLI"的 Agent 不同，实现时必须处理。
-5. **ACP 协议本身 = "Agent 界的 LSP"**：标准化编辑器↔编码 Agent 的通信，复用 MCP 的 JSON 表示，本地用 **stdio + JSON-RPC 2.0**，远程用 **HTTP / WebSocket**（远程支持仍在推进中）。
+5. **ACP 协议本身 = "Agent 界的 LSP"**：标准化编辑器↔编码 Agent 的通信。v0.2.0 只实现官方 stable v1 的 **stdio NDJSON**；Streamable HTTP 等协议稳定后另行评估，WebSocket 不作 stable 承诺。
 
 ---
 
@@ -71,7 +77,7 @@ Orion Code 是一个目标驱动的终端编码 Agent，已有完整的运行时
 
 ### 4.1 架构与传输
 
-- **Agent（服务端）**：Orion 这一侧。本地 Agent 作为编辑器子进程启动，通过 **stdio 上的 JSON-RPC 2.0** 通信；远程 Agent 走 HTTP / WebSocket（规范仍在完善）。
+- **Agent（服务端）**：Orion 这一侧。本地 Agent 作为编辑器子进程启动，通过官方 SDK 在 **stdio NDJSON** 上通信；远程 transport 不属于 v0.2.0。
 - **Client（客户端）**：Zed / JetBrains 这一侧，负责 UI 与编排。
 - 用户可读文本默认用 **Markdown**；协议复用 MCP 的 JSON 表示，并扩展出 diff 等编码 UX 类型。
 
@@ -192,12 +198,14 @@ Agent 必须回显协商后的协议版本、自身能力与 `authMethods`：
 
 ### 6.2 推荐架构：新增 `orion acp` 子命令
 
-在 `src/cli.ts` 增加 `orion acp` 分支，启动一个**stdio JSON-RPC 2.0 服务器**，复用现有运行时：
+增加专用 `orion acp` headless 分支，以官方 `@agentclientprotocol/sdk` stable v1 启动 stdio
+Agent，复用现有运行时：
 
-1. 进程启动后监听 stdin，按行（或带长度前缀）解析 JSON-RPC 请求。
+1. 使用官方 SDK 处理 stdio frame、schema 与 capability，不建立平行 parser/types。
 2. 实现协议方法：`initialize`、`authenticate`/`logout`（若需）、`session/new`、`session/prompt`、`session/cancel`、`session/update`。
 3. `session/new` 内部调用现有 `createSession()`；`session/prompt` 内部复用 `chat-controller` 的 turn 执行（含工具调用、MCP、abort），把进度通过 `session/update` notification 以 Markdown 流式回传；`session/cancel` 复用 `abortSignal`。
-4. 认证：采用 `type: "terminal"` 方法，复用本机已登录态或 `ORION_CODE_API_KEY` 环境变量（与现有配置体系一致），满足 Registry 的强制校验。
+4. 认证：采用 Registry 验证通过的 `type: "terminal"` 方法，调用独立 `orion auth login` 或
+   等价 setup 命令；API key 不进入 ACP frame、命令参数、日志或 fixture。
 
 > 关键原则：**不要在 ACP 模式里拉起 TUI/Ink UI**，ACP 模式下 UI 由 Zed 负责；Orion 只做"后端 Agent 引擎"。
 
@@ -211,7 +219,7 @@ Orion 已是 npm 包，最省事：`distribution.npx = { "package": "@orion-agen
 {
   "id": "orion-code",
   "name": "Orion Code",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "description": "Goal-driven coding agent for the terminal. Runs as an ACP server so Zed users can drive it in-editor.",
   "repository": "https://github.com/orion-agents/orion-code",
   "website": "https://github.com/orion-agents/orion-code#readme",
@@ -219,7 +227,7 @@ Orion 已是 npm 包，最省事：`distribution.npx = { "package": "@orion-agen
   "license": "MIT",
   "distribution": {
     "npx": {
-      "package": "@orion-agents/orion-code@0.1.4",
+      "package": "@orion-agents/orion-code@0.2.0",
       "args": ["acp"]
     }
   }

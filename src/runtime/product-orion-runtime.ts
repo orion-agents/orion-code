@@ -7,6 +7,7 @@ import { createStopDecision, type StopDecision } from '../framework/stop-decisio
 import type { OrionCodeCLIConfig } from '../services/config';
 import type { CompactCoordinator } from '../services/compact/coordinator';
 import { buildMemoryPromptContext } from '../memory/prompt-context';
+import type { HarnessState } from '../harness';
 import { buildReferencedFilesPrompt } from '../services/file-context';
 import { loadGoal } from '../services/goal-storage';
 import { LLMService, type LLMConfig, type Message } from '../services/llm';
@@ -18,6 +19,7 @@ import type { CapabilityToolCandidateV1 } from './capabilities';
 import type { GoalLifecycleStateV2 } from './goal-lifecycle-v2';
 import type { GoalRuntimeDefinitionV2 } from './goal-runtime-coordinator';
 import { materializeLegacyThreadV1, resolveSessionStorageV1 } from './legacy-thread-materializer';
+import { ThreadEventStore } from './thread-event-store';
 import type {
   LazyMcpRuntimeOptions,
   McpCatalogSnapshotV1,
@@ -122,14 +124,24 @@ export function createProductOrionRuntimeV1(
     throw new Error(`Session ${sessionId} did not cut over to a v2 Thread.`);
   }
 
+  const existingProjection = new ThreadEventStore(
+    getProjectThreadsV2Dir(options.cwd),
+    storage.threadId
+  ).loadProjection();
+  const hasDurableTurnCommit = Object.values(existingProjection.turns).some(turn => turn.commit);
+
   const profile = options.config.modelRegistry?.defaultProfile;
   const provider = profile
     ? options.config.modelRegistry?.providers.get(profile.provider)
     : undefined;
   const modelId = profile?.model ?? options.llm.getModel();
   const contextWindow = profile?.contextWindow ?? 128_000;
-  const taskState = loadSessionHarnessState(sessionId) ?? undefined;
-  const goalSeed = loadProductGoalSeed(options.cwd, sessionId);
+  // Legacy sidecars are migration seeds only. Once a TurnCommit exists, its
+  // TaskContext and Goal state are the sole durable authority on restart.
+  const taskState = hasDurableTurnCommit
+    ? undefined
+    : (loadSessionHarnessState(sessionId) ?? undefined);
+  const goalSeed = hasDurableTurnCommit ? undefined : loadProductGoalSeed(options.cwd, sessionId);
   const executionPolicy = createExecutionPolicySnapshotV1({
     policyId: 'orion-product-policy-v1',
     approvalMode: options.config.toolConfirmation === 'ask' ? 'interactive' : 'never',
@@ -217,6 +229,7 @@ export function createProductOrionRuntimeV1(
     },
     loop: {
       ...(options.compactCoordinator ? { compactCoordinator: options.compactCoordinator } : {}),
+      onContextUsage: usage => options.store.setContextUsage(usage),
       prepareTurnCommit: commit => {
         const active = promptState;
         if (!active || active.turnId !== commit.turnId || active.mode !== 'plan') return {};
@@ -244,6 +257,7 @@ export function createProductOrionRuntimeV1(
         }
       },
       onRuntimeStarted: ({ restoredCommit, thread }) => {
+        if (restoredCommit) projectRestoredTurnCommit(options.store, restoredCommit);
         const planReceipt = restoredCommit ? planReceiptFromCommit(restoredCommit) : undefined;
         if (!planReceipt) return;
         projectPlanReceipt(options.store, planReceipt);
@@ -864,6 +878,24 @@ function latestDurableHistory(
     throw new Error('Durable TurnCommit contains an invalid model history.');
   }
   return history.map(message => ({ ...message }));
+}
+
+function projectRestoredTurnCommit(store: Store, commit: TurnCommitV1): void {
+  const history = JSON.parse(commit.history) as unknown;
+  const harnessState = JSON.parse(commit.taskContext) as unknown;
+  if (!Array.isArray(history) || !history.every(isMessage)) {
+    throw new Error('Durable TurnCommit contains an invalid model history.');
+  }
+  if (!harnessState || typeof harnessState !== 'object' || Array.isArray(harnessState)) {
+    throw new Error('Durable TurnCommit contains an invalid TaskContext state.');
+  }
+  if (digestRuntimeValue(harnessState) !== commit.taskContextDigest) {
+    throw new Error('Durable TurnCommit TaskContext digest does not match its state.');
+  }
+  store.setState({
+    conversationHistory: history.map(message => ({ ...message })),
+    harnessState: structuredClone(harnessState) as HarnessState,
+  });
 }
 
 function latestDurablePlanReceipt(

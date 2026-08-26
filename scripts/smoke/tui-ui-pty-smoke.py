@@ -251,6 +251,21 @@ def assert_retained(needle: str, label: str, model: TerminalModel) -> None:
         )
 
 
+def assert_user_submission_once(value: str, label: str, model: TerminalModel) -> None:
+    # The terminal model stores the trailing cell of a wide CJK glyph as a
+    # blank. Compare whitespace-free cell text so ASCII and CJK submissions use
+    # the same exactly-once assertion.
+    expected = re.sub(r"\s+", "", f"› {value}")
+    matches = [
+        line for line in model.all_lines()
+        if re.sub(r"\s+", "", line) == expected
+    ]
+    if len(matches) != 1:
+        raise AssertionError(
+            f"{label}: expected one committed user row for {value!r}, observed {len(matches)}"
+        )
+
+
 def prompt_frame_rows(visible: str) -> tuple[list[int], list[int], list[int]]:
     lines = visible.splitlines()
     top_rows = [
@@ -762,6 +777,11 @@ def main() -> int:
         expect_prompt_frame("after revised response")
         sync_screen()
         assert_retained("revision-final-response", "TUI did not keep the restarted response visible", model)
+        assert_user_submission_once(
+            "修正目标",
+            "TUI duplicated the runtime-owned revision",
+            model,
+        )
 
         # Tab queues a bounded FIFO follow-up without aborting the active turn.
         queue_start = len(b"".join(output))
@@ -798,6 +818,12 @@ def main() -> int:
             "tool-final-response",
             timeout=8,
             start_offset=tool_start,
+        )
+        sync_screen()
+        assert_user_submission_once(
+            "tool order test",
+            "TUI duplicated the runtime-owned user submission",
+            model,
         )
         tool_output = strip_ansi(b"".join(output)[tool_start:].decode("utf-8", errors="replace"))
         assert_ordered(tool_output, [

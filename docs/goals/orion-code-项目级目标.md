@@ -2,12 +2,14 @@
 
 > 状态：Active
 >
-> 维护范围：Orion Code CLI、Agent Runtime、TUI、terminal-ui、Print、工具与扩展协议
+> 维护范围：Orion Code CLI、Agent Runtime、TUI、terminal-ui、exec、ACP、第一方编辑器客户端、
+> 工具与扩展协议
 >
-> 当前发布基线：稳定版 `@orion-agents/orion-code@0.1.4`（`latest`）；预发布渠道
-> `next=0.1.6`。`v0.1.6` tag、GitHub Release 与 npm 精确版本共同标识本次发布。
+> 当前源码基线：`main@7ef3df1`、package 0.1.8、annotated `v0.1.8` tag；公共 npm 渠道仍为
+> `latest=0.1.4`、`next=0.1.7`，GitHub v0.1.8 Release 与 npm 0.1.8 尚不存在，不能把源码/tag
+> 状态写成外部发布完成。
 >
-> 最近更新：2026-08-12
+> 最近更新：2026-08-15
 
 ## 1. 项目使命
 
@@ -50,6 +52,7 @@ Orion Code 的核心价值是位于用户、模型和本地开发环境之间的
 - 在终端中完成真实仓库工作的个人开发者；
 - 需要 Agent 持续实现、诊断、测试、发布和维护项目的工程团队成员；
 - 使用不同 LLM Provider、MCP Server 或项目 Skill，但希望保留一致执行体验的高级用户；
+- 希望在 Zed 或 VS Code 内使用 Orion，但不愿牺牲目标、权限和恢复语义的开发者；
 - 希望本地数据、权限和外部操作始终受自己控制的用户。
 
 ### 3.2 核心任务
@@ -93,25 +96,27 @@ Orion Code 应尽可能自主完成正常工程步骤，但自主性不能突破
 - 操作结果与返回状态一致，失败不能被包装为成功；
 - 敏感信息不会进入日志、transcript、Git 或发布包。
 
-### G3 — TUI 主产品、单一运行时
+### G3 — 多客户端、单一运行时
 
-TUI、terminal-ui、Print/JSON 和未来客户端应共享同一 Agent Runtime、命令语义、目标状态和
-结构化事件协议。
+TUI、terminal-ui、exec、ACP、Zed 和第一方 VS Code 扩展必须共享同一 Agent Runtime、
+Application API、命令语义、目标状态和结构化事件协议。
 
 产品边界：
 
-- **TUI 是默认交互界面，也是未来面向公众的重点产品方向**；
-- 面向用户的新交互、视觉体验、工作流入口和产品能力优先在 TUI 中设计和验收；
+- **TUI 是默认交互界面和完整 Mission Control 参考实现**；
+- 业务语义先在 Application API 和 contract tests 中定义；终端工作流由 TUI 验收，标准
+  editor workflow 由 Zed/VS Code 真实客户端验收；
 - **terminal-ui 只保留为技术版本**，用于 runtime 协议验证、诊断、兼容性排查和必要回退，
   不再作为与 TUI 并行发展的公众产品界面；
 - Print/Text 和 Print/JSON 是自动化边界；
+- ACP v1 是 v0.2.0 的稳定编辑器协议边界；Zed/VS Code 只是受控 client，不拥有 runtime；
 - **Ink 已废弃**，不再增加功能、修复非关键体验问题或承载新产品语义；在迁移窗口结束后删除；
 - UI 负责展示和输入，不复制目标、命令、权限或 Agent 执行引擎；
 - Help、palette、completion 和文档应来自同一命令注册信息。
 
 这里的“terminal-ui 技术版本”不代表可以发生运行时语义分叉。它仍需消费共享事件、遵守
-相同权限与目标状态，并承担最小 smoke/parity 验证；只是产品设计、公开文档和体验投入集中在
-TUI。
+相同权限与目标状态，并承担最小 smoke/parity 验证；TUI 保持完整体验参考，editor client
+只实现其承诺的标准能力，不能用 UI 便利性制造语义分叉。
 
 ### G4 — 可靠的终端原生体验
 
@@ -159,8 +164,10 @@ Orion Code 必须同时是可靠的交互式 CLI 和可组合的工程基础设�
 
 - 非交互执行具有稳定的 stdin/stdout/stderr、JSONL、schema、exit code、cancel 和 resume 契约；
 - TUI 与 exec 进入同一个 Application API，消费同一版本化 runtime event；
-- App Server 和 SDK 若以 beta 交付，也必须复用该 API；SDK 不得保留 mock 或平行执行路径；
-- beta App Server 的 approval、session、Goal、tool、artifact 和 usage 语义与 TUI 一致；
+- `orion acp` 使用官方 stable ACP v1，并与 TUI/exec 共用 API、policy、session、Goal 和 event；
+- Zed 通过 ACP Registry、VS Code 通过第一方 Marketplace 扩展分发，并保留真实安装 receipt；
+- editor client 不保存 Provider 凭据、不加载内部 Agent/native runtime、不复制权限或完成审计；
+- App Server/SDK 若在后续 beta 交付，也必须复用该 API；SDK 不得保留 mock 或平行执行路径；
 - CI/脚本默认使用最小权限，遇到必须询问的动作时 fail closed；
 - 协议、配置和事件支持 capability negotiation、版本迁移和明确的弃用窗口。
 
@@ -171,13 +178,13 @@ Orion Code 必须同时是可靠的交互式 CLI 和可组合的工程基础设�
 1. **目标优先于回合**：一次回复结束不代表项目目标结束。
 2. **证据优先于判断**：完成结论必须能指向当前证据。
 3. **单一引擎**：CLI、Desktop、Web 或 IDE 客户端不能各自复制 Agent 核心。
-4. **TUI 产品优先**：公众体验和新增交互集中在 TUI；技术 renderer 不形成第二条产品线。
+4. **参考体验明确**：TUI 承载完整 Mission Control；editor client 只投影声明的稳定协议能力。
 5. **结构化事件**：业务处理器不直接控制 stdout、进程退出或某个 renderer 的 surface。
 6. **安全默认值**：无确认不执行破坏性动作；无能力探测不发送终端图像协议。
 7. **兼容必须有期限**：旧命令、旧品牌、旧配置和废弃 renderer 只在声明的迁移窗口内保留。
 8. **文档不得超前声称**：实验、兼容和条件能力不能被写成无条件稳定能力。
-9. **控制面也是产品**：交互、exec、App Server 和 SDK 的输入、事件、错误和退出语义必须稳定。
-10. **真实环境验收**：本地 PATH、真实 PTY、生成 tarball 和外部服务状态都是发布证据。
+9. **控制面也是产品**：TUI、exec、ACP 与 editor client 的输入、事件、错误和退出语义必须稳定。
+10. **真实环境验收**：本地 PATH、真实 PTY、tarball、Registry、Marketplace 和外部状态都是证据。
 
 ## 6. 当前基线与主要缺口
 
@@ -196,13 +203,12 @@ Orion Code 必须同时是可靠的交互式 CLI 和可组合的工程基础设�
 
 **当前发布线：**
 
-- `0.1.4` 是稳定 `latest`；`0.1.5` 曾发布到 npm `next`，但没有对应 `v0.1.5`
-  Git tag 或 GitHub Release，不能把 registry 版本、tag 和 release 混为同一状态；
-- `main` 已合并 v0.1.6；PR #152 补充 Goal 显式授权与有界 continuation、
-  `/goal exit`、native migration、
-  测试确定性、seatbelt/exec cwd 和 terminal control-sequence 加固；
-- v0.1.6 已从最终发布提交重建 Node 20/22/24、coverage、PTY、tarball、clean install 和
-  真实 provider smoke 证据，并发布到 npm `next`；提升 `latest` 仍是独立授权动作。
+- npm 当前 `latest=0.1.4`、`next=0.1.7`；registry 精确版本最高为 0.1.7；
+- `main@7ef3df1` 的 package version 是 0.1.8，annotated `v0.1.8` tag 指向该提交；
+- GitHub v0.1.8 Release 与 npm 0.1.8 尚不存在，因此 v0.1.8 仍是 source/tag candidate，
+  不是外部发布完成状态；
+- 开始 v0.2.0 前必须显式关闭 v0.1.8 的 publish/no-publish 决策，并把 source、tag、Release、
+  npm version、dist-tag 和 clean install 分别留证。
 
 ### 6.2 v0.1.6 准出结果
 
@@ -273,11 +279,11 @@ Orion Code 必须同时是可靠的交互式 CLI 和可组合的工程基础设�
 | ------------------------- | -------------------------------------------------- | ----------------------------- | -------------------------------------------------------------------------------------------------------- |
 | G1 目标忠实度             | 持久化目标、跨回合继续、逐项证据关闭               | **solid（单 Session 范围）**  | v0.1.2 已发布并经 v0.1.4 加固；多 Goal/跨 Session 调度仍属 v0.2                                          |
 | G2 安全自主               | 统一风险元数据、破坏性预览确认、失败不被包装为成功 | **functional（加固中）**      | tool/sandbox/fork/web/Git 安全门已有广泛回归；command 统一参数/确认和 ACP 权限桥仍待闭环                 |
-| G3 TUI 主产品、单一运行时 | 共享 runtime/命令/目标/事件                        | **functional（加固中）**      | Goal/Research 已共享 runtime 并有 PTY/parity；command console capture 与 renderer-private 路由仍是主缺口 |
+| G3 多客户端、单一运行时   | TUI/exec/ACP/editor 共享 runtime/目标/权限/事件     | **functional（CLI）；editor absent** | CLI Goal/Research 已共享 runtime；当前无 ACP 实现、VS Code 扩展或真实 client parity                      |
 | G4 终端原生体验           | CJK/scrollback/resume/Ctrl+C 稳定                  | **functional（加固中）**      | TUI/terminal/research/Goal PTY 已有回归；每个新 picker/协议入口仍必须重做真实 PTY                        |
 | G5 Provider 可替换        | Provider/Model 显式建模、错误可定位                | **functional（effort 缺口）** | registry/fallback/diagnostics/runtime matrix 已有；能力级别和 provider-aware effort wire 尚未建立        |
 | G6 本地优先、可恢复       | 数据可解释、迁移可恢复、清理不破坏源               | **functional（加固中）**      | atomic/CAS/quarantine/native ABI 边界已加固；极端 stale-lock 回收与未来 cleanup 边界仍待硬化             |
-| G7 自动化与可嵌入         | exec/SDK/App Server 共享 runtime、协议稳定         | **stub**                      | print 仍是实验入口；SDK query 仍为 mock；尚无稳定 JSONL/schema/exit-code 和 App Server                   |
+| G7 自动化与可嵌入         | exec/ACP/editor 共享 runtime、协议和发布证据       | **stub**                      | print 仍实验、SDK query 为 mock；无稳定 exec/ACP、Zed Registry、VS Code extension/Marketplace            |
 
 **关键认知**：G1 仍是使命核心。当前不再是“Goal pre-commit candidate”阶段；单 Session
 Goal 已发布。v0.1.5 的重点是不让命令重构、effort 或 ACP 新客户端绕过这条
@@ -339,7 +345,7 @@ Goal 已发布。v0.1.5 的重点是不让命令重构、effort 或 ACP 新客�
 - 让 memory drift 校验具有真实、显式且有界的 `/memory validate` 运行入口；
 - 在最终发布 SHA 上重建 Node 矩阵、coverage、PTY、tarball、clean install 和 provider 证据。
 
-**v0.1.7（本地已实现，待发布）：一流 TUI 体验与 Orion Pixel**
+**v0.1.7（已发布至 npm next）：一流 TUI 体验与 Orion Pixel**
 
 - 用 typed Chrome view-model 重构模式、Goal、模型、权限、队列和工作活动的信息层级；
 - 将运行中 Enter steering 与 Tab follow-up queue 明确分轴，并接通历史搜索、外部编辑、
@@ -351,14 +357,20 @@ Goal 已发布。v0.1.5 的重点是不让命令重构、effort 或 ACP 新客�
 **范围约束**：v0.1.x 仍只承诺单 Session、单 Active Goal 的可靠性闭环，不提前承诺
 v0.2 的多目标、跨 Session 调度或 unattended 后台执行。
 
-退出条件：已发布能力与文档相符；v0.1.7 的 P0 不破坏 G1/G2/G3，并从最终 merge SHA 重建
-Node 矩阵、coverage、PTY、tarball、clean install 和发布证据。
+**v0.1.8（source/tag candidate，外部发布未闭合）：可靠性修复与 release metadata**
+
+- `main@7ef3df1`、package 0.1.8 与 annotated v0.1.8 tag 已对齐；
+- GitHub Release 与 npm 0.1.8 尚不存在；必须先形成 publish/no-publish 决策，不能由 v0.2.0
+  规划替代 v0.1.8 的外部交付证据。
+
+退出条件：已发布能力与文档相符；v0.1.x 的 P0 不破坏 G1/G2/G3，并从最终 artifact 重建
+Node 矩阵、coverage、PTY、tarball、clean install 和逐渠道发布证据。
 
 ### 阶段 B - v0.2.x：Verified Project Agent
 
 目标：先让 Orion Code 的日常编码、安全控制、恢复和自动化达到一流 CLI 的共同底线，再用
-Project Goal + Task Graph + Isolated Agents + Mission Control + Evidence Gate 形成可感知的
-质变；不把一流误解成在一个版本内堆齐所有扩展协议。
+Project Goal + Task Graph + Isolated Agents + Mission Control + Evidence Gate + Stable Editor
+Bridge 形成可感知的质变；不把一流误解成无边界地堆齐所有扩展协议。
 
 **v0.2.0：跨 Session 的可验证项目执行**
 
@@ -369,42 +381,48 @@ Project Goal + Task Graph + Isolated Agents + Mission Control + Evidence Gate �
 - 统一 Policy/Approval/Sandbox，保护 dirty worktree，并禁止 requested sandbox 静默降级；
 - 将 TUI 升级为 Mission Control：first-run、task tree、approval、diff/test/evidence review；
 - 稳定 orion exec、JSONL、schema、exit code、cancel、resume 和 CI 契约；
+- 稳定 `orion acp` 的官方 ACP v1 stdio 协议，Zed 通过 ACP Registry 正式安装；
+- 发布第一方 VS Code Desktop local workspace 扩展，以薄 ACP client 复用相同 runtime；
+- 将精确 npm package、Registry/CDN、Marketplace、真实 client install 分别作为发布证据；
 - 物理删除 Ink/React 正式路径和 mock SDK，不保留第二条正式 UI、Agent 或 SDK runtime；
-- 通过 Atomic Task、Project Mission、安全/恢复和真实安装四层执行型评测证明达到发布门槛。
+- 通过 Atomic Task、Project Mission、安全/恢复、UX/Automation 和 Editor Integration 五层
+  执行型评测证明达到发布门槛。
 
-**v0.2.0 beta 边界**
+**v0.2.0 preview 边界**
 
-- 本地 stdio App Server、真实 TypeScript SDK、session/mission fork 和自定义 Agent manifest
-  可以 beta 交付，但不能阻塞 stable 主循环，也不能冒充稳定能力；
+- session/mission fork、自定义 Agent manifest、Project Goal 导入/导出可以 preview 交付；
 - beta client 必须共用 Application API、policy 和 RuntimeEvent schema，禁止复制业务逻辑。
 
 **v0.2.x 后续：平台扩展与无人值守运行时**
 
-- App Server/SDK stable、网络 transport、multi-client lease 和远程认证；
+- App Server/SDK、网络 transport、multi-client lease 和远程认证；
 - Streamable HTTP MCP/OAuth、Hooks、Plugin、通用 LSP registry 和新增原生 Provider；
+- VS Code Remote SSH/WSL/Dev Container、Web extension、其他 IDE 和专有 Mission Control editor view；
 - 多 Goal 并发、目标队列、优先级、DAG 调度、lease/wake/budget 和本地 daemon；
 - 通用阶段编排器、远程 worker、团队策略、云同步与远程审计；
 - completion/blocked 协议在多目标、多客户端和远程执行下的一致性。
 
 v0.2.0 退出条件：一个非平凡项目目标能够跨至少三个 Session 和一次进程重启，经过
 Explore/Build/Test/Review、隔离写入和 Mission Control 审阅后，用当前证据完成或精确阻塞；
-TUI 与 exec 对同一 Goal、Task、权限和 Evidence 产生一致语义。
+TUI、exec、Zed 和 VS Code 对重叠 Goal、Task、权限和 Evidence 产生一致语义；Registry 与
+Marketplace 均从公开渠道 clean install 并跑通 permission/cancel/load 旅程。
 
 阶段 B 最终退出条件：上述能力进一步支持稳定嵌入、多 Goal 和无人值守调度，且
 unattended/remote 执行不降低本地优先、显式授权和完成审计标准。
 
-### 阶段 C — v0.3+：多客户端产品化
+### 阶段 C — v0.3+：远程与更多客户端产品化
 
-目标：在 v0.2.0 已建立的 Application API、App Server 和 SDK 上扩展使用场景，不复制核心引擎。
+目标：在 v0.2.0 已建立的 Application API、ACP 和第一方 client contract 上扩展使用场景，
+不复制核心引擎。
 
 - 扩展 App Server transport、multi-client lease、backpressure、auth 和兼容策略；
-- Desktop、IDE 或远程 UI 只作为受控客户端；
+- Zed/VS Code 之外的 IDE、Desktop、Web 或远程 UI 只作为受控客户端；
 - 可观察的 task/subagent 树和结构化 artifact；
 - 可移植的 MCP/Skill 扩展契约；
 - 团队策略与审计能力建立在同一 runtime 上。
 
-v0.2.0 的 stdio App Server 和 SDK 若交付，只代表本地 beta 嵌入边界，不提前声称
-Desktop/IDE、远程监听、多人并发或团队策略已经成为稳定产品能力。
+v0.2.0 只证明 Zed ACP Registry 和 VS Code Desktop local workspace 的稳定交付，不提前声称
+其他 IDE、Desktop/Web、remote workspace、多人并发或团队策略已经成为稳定产品能力。
 
 退出条件：不同客户端对同一 session、目标和权限状态产生一致结果。
 
@@ -417,13 +435,14 @@ Desktop/IDE、远程监听、多人并发或团队策略已经成为稳定产品
 | 目标连续性   | active 目标能跨回合、压缩和 session resume 保持语义        | 状态持久化测试、resume PTY、目标事件日志                                                  |
 | 完成可信度   | 每个完成结论都逐项对应成功条件与当前证据                   | completion audit、测试/文件/外部状态记录                                                  |
 | 安全性       | 所有破坏性入口无确认时不产生副作用                         | command contract、negative test、审计日志                                                 |
-| 交互一致性   | TUI、exec 和 beta client 产生等价 runtime event            | parity contract、真实 PTY                                                                 |
+| 交互一致性   | TUI、exec、ACP/editor 对重叠操作产生等价 runtime event     | parity contract、真实 PTY、ACP fixture、Extension Host                                   |
 | 安装可靠性   | 公共包可从干净环境安装并运行                               | `npm pack`、registry install、`orion --version`                                           |
 | 质量门槛     | 构建、lint、全量测试和聚焦回归全部通过                     | CI/本地日志；覆盖率不低于仓库 70% 指南；仅允许有 owner、期限和明确审批的分支覆盖率 waiver |
 | 文档一致性   | README、帮助、配置示例和版本文档不互相矛盾                 | registry 契约测试、文档审计                                                               |
 | 可恢复性     | 中断、失败、迁移和清理都有明确恢复路径                     | recovery test、迁移 hash、rollback 记录                                                   |
 | 自动化契约   | exec 的 JSONL/schema/exit code/cancel/resume 可稳定进入 CI | protocol fixture、schema validation、shell/CI E2E                                         |
-| 客户端一致性 | TUI、exec 共享 runtime 与权限语义；beta client 不得分叉    | application API contract、client parity；beta server approval/cancel E2E                  |
+| 客户端一致性 | TUI、exec、Zed、VS Code 共享 runtime、权限与恢复语义       | ACP contract、Zed/VS Code permission/cancel/load parity                                   |
+| 编辑器分发   | Zed Registry 与 VS Code Marketplace 真实可安装             | npm/Registry/CDN/Marketplace 分状态 receipt、clean install smoke                          |
 
 不得用总测试数量替代未覆盖的 PTY、破坏性动作、外部发布或真实安装验收。
 
@@ -449,6 +468,8 @@ Desktop/IDE、远程监听、多人并发或团队策略已经成为稳定产品
 - 适用的全量 Jest、契约测试和真实 PTY；
 - 目标 Node 支持矩阵验证；
 - `npm pack --dry-run` 和 tarball 干净安装；
+- 如版本包含 editor surface：ACP schema/stdout/capability contract、Zed Registry install、
+  VSIX audit、VS Code Extension Host 与 Marketplace clean install；
 - 用户实际终端/PATH smoke test；
 - 版本号、Banner、帮助、README、release note 和 npm metadata 一致；
 - P0 问题关闭，并有明确的 Go/No-Go 记录；
@@ -475,7 +496,7 @@ Desktop/IDE、远程监听、多人并发或团队策略已经成为稳定产品
 - 为每种 UI 维护独立 Agent 引擎；
 - 将 terminal-ui 继续建设为与 TUI 并行的公众产品，或继续为 Ink 开发新能力；
 - 以命令数量、模型数量或 Demo 效果替代可靠性；
-- 在 CLI 基础语义未稳定前同时扩张 Desktop、Web 和 IDE 产品面。
+- 在 v0.2.0 同时扩张 Zed/VS Code 之外的 Desktop、Web、IDE 或 remote workspace 产品面；
 - 在 v0.2.0 中同时承诺多 Goal daemon、远程 worker、云同步和团队控制台。
 
 ## 11. 主要风险与控制
@@ -491,6 +512,10 @@ Desktop/IDE、远程监听、多人并发或团队策略已经成为稳定产品
 | 本地数据迁移损坏            | copy/verify/hash/atomic switch/rollback           |
 | 测试总量掩盖关键缺口        | 单独记录 PTY、安全、安装和外部状态证据            |
 | 依赖与 Node 版本漂移        | 明确支持矩阵、干净安装、原生模块 smoke test       |
+| ACP/extension/CLI 版本偏移  | capability handshake、兼容矩阵、fail closed       |
+| Editor 权限或 Trust 绕过    | 单一 policy、Workspace Trust negative test         |
+| Registry/Marketplace 假完成 | npm、PR、CDN、listing、clean install 分别留证      |
+| Extension Host/native 崩溃  | thin client 子进程；不加载 Orion native runtime   |
 
 ## 12. 决策与文档维护
 
@@ -521,7 +546,9 @@ Desktop/IDE、远程监听、多人并发或团队策略已经成为稳定产品
 - [v0.1.4 发布检查清单](../archive/releases/v0.1.x/v0.1.4-release-checklist.md)
 - [v0.1.5 发布收敛、命令、Effort 与 ACP v1 计划](../archive/releases/v0.1.x/v0.1.5-plan.md)
 - [v0.1.6 发布检查清单](../archive/releases/v0.1.x/v0.1.6-release-checklist.md)
+- [v0.1.8 计划](../plan/v0.1.8-plan.md)
 - [v0.2.0 Coding Agent Platform 计划](../plan/v0.2.0-coding-agent-platform-plan.md)
+- [Zed ACP 对接调研与更正](../zed-acp-integration.md)
 - [Goal evidence and recovery](goal-evidence-and-recovery.md)
 - [English README](../../README.md)
 - [简体中文 README](../../README.zh-CN.md)

@@ -48,6 +48,24 @@ export class OrionSessionRunnerV1 implements AgentRuntimeRunnerV1 {
     return active.adapter.runRequest(request, options);
   }
 
+  async restoreSession(): Promise<void> {
+    if (this.closed) throw new Error('Orion session runner is closed.');
+    if (this.transition) await this.transition;
+    const sessionId = this.options.getSessionId();
+    if (!sessionId.trim()) throw new Error('Orion session identity is empty.');
+
+    const transition = this.switchTo(sessionId, 0);
+    this.transition = transition;
+    let active: ActiveSessionRuntimeV1;
+    try {
+      active = await transition;
+    } finally {
+      if (this.transition === transition) this.transition = undefined;
+    }
+    this.options.eventSink.clearTranscript();
+    active.adapter.flush();
+  }
+
   async controlGoal(control: GoalRuntimeControlV2): Promise<GoalRuntimeControlResultV2> {
     const active = await this.ensureActive();
     const result = await active.runtime.controlGoal(control);
@@ -114,7 +132,7 @@ export class OrionSessionRunnerV1 implements AgentRuntimeRunnerV1 {
     return this.transition;
   }
 
-  private async switchTo(sessionId: string): Promise<ActiveSessionRuntimeV1> {
+  private async switchTo(sessionId: string, cursor?: number): Promise<ActiveSessionRuntimeV1> {
     await this.closeActive('session switched');
     if (this.closed) throw new Error('Orion session runner closed during session switch.');
     const runtime = await this.options.createRuntime(sessionId);
@@ -124,6 +142,7 @@ export class OrionSessionRunnerV1 implements AgentRuntimeRunnerV1 {
         runtime: runtime.thread,
         uiEventSink: this.options.eventSink,
         mode: this.options.mode,
+        ...(cursor === undefined ? {} : { cursor }),
       });
       const active = Object.freeze({ sessionId, runtime, adapter });
       this.active = active;

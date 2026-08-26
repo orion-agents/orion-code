@@ -89,9 +89,7 @@ export function createTuiChromeViewModel(
       : '';
     const objective = ` ${state.goal.objective}`;
     const plan = state.goal.planPhase ? ` ${state.goal.planPhase}` : '';
-    const budget = state.goal.tokenBudget
-      ? ` ${state.goal.tokensUsed}/${state.goal.tokenBudget}tok`
-      : '';
+    const usage = ` tokens:${formatGoalTokenUsage(state.goal.tokensUsed)}`;
     const statusShowsAudit = state.statusMessage.startsWith('Goal audit failed (');
     const audit =
       !statusShowsAudit && state.goal.auditRemaining?.[0]
@@ -106,7 +104,7 @@ export function createTuiChromeViewModel(
       : '';
     all.set('goal', {
       id: 'goal',
-      label: `GOAL goal:${state.goal.status}${actions}${progress}${objective}${plan}${budget}${audit}${next}`,
+      label: `GOAL goal:${state.goal.status}${actions}${progress}${objective}${plan}${usage}${audit}${next}`,
       priority: 95,
       critical: true,
     });
@@ -130,7 +128,14 @@ export function createTuiChromeViewModel(
     all.set('effort', { id: 'effort', label: `EFFORT ${value}`, priority: 35 });
   }
   const context = contextUsageStatusText(snapshot?.context);
-  if (context) all.set('context', { id: 'context', label: context.toUpperCase(), priority: 50 });
+  if (context) {
+    all.set('context', {
+      id: 'context',
+      label: context.toUpperCase(),
+      priority: 100,
+      critical: true,
+    });
+  }
   all.set('permission', {
     id: 'permission',
     label: `PERM ${state.permissionMode} · NET ${state.agentMode.baseMode === 'auto' ? 'auto' : state.permissionMode}`,
@@ -193,4 +198,10 @@ export function createTuiChromeViewModel(
       ? 'Enter steer · Tab queue · Shift+Tab mode · Esc stop · ? help'
       : 'Enter send · Shift+Tab mode · / commands · @ files · ? help',
   };
+}
+
+function formatGoalTokenUsage(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}K`;
+  return String(tokens);
 }

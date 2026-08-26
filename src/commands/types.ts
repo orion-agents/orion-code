@@ -42,6 +42,8 @@ export interface CommandContext {
   ensureSession?: () => SessionMeta;
   /** Switch the active session after /resume. */
   setSession?: (session: SessionMeta) => void;
+  /** Rebind the product runtime and replay the selected durable Thread after /resume. */
+  restoreSessionRuntime?: () => Promise<void>;
   /** Notify renderer-independent runtime protocol consumers after /resume. */
   sessionRestored?: (event: RuntimeSessionRestoredEvent) => void;
   /** Return the active session if one exists. */

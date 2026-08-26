@@ -24,6 +24,8 @@ export type AgentRuntimeCompactResultV1 =
 export interface AgentRuntimeRunnerV1 {
   runInput(input: string, options?: AgentRuntimeRunInputOptionsV1): Promise<void>;
   runRequest?(request: AgentTurnRequest, options?: AgentRuntimeRunInputOptionsV1): Promise<void>;
+  /** Rebind the selected Session and replay its durable Thread facts without starting a turn. */
+  restoreSession?(): Promise<void>;
   controlGoal?(control: GoalRuntimeControlV2): Promise<GoalRuntimeControlResultV2>;
   compact?(input?: AgentRuntimeCompactInputV1): Promise<AgentRuntimeCompactResultV1>;
   interrupt?(reason?: string): void;

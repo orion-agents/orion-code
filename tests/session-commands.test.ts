@@ -2,6 +2,7 @@
  * Session command behavior tests.
  */
 
+import { randomUUID } from 'crypto';
 import { existsSync, mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -13,6 +14,7 @@ import {
   appendSessionMessage,
   commitSessionCompactCheckpoint,
   createSession,
+  listProjectSessions,
   loadSessionMeta,
   renameSession,
   type SessionMeta,
@@ -20,6 +22,10 @@ import {
 import type { CommandContext } from '../src/commands/types';
 import type { RuntimeSessionRestoredEvent } from '../src/runtime/ui-events';
 import { createContextUsageSnapshot } from '../src/services/model-context';
+import { materializeLegacyThreadV1 } from '../src/runtime/legacy-thread-materializer';
+import { getProjectThreadsV2Dir } from '../src/product/paths';
+import { ThreadEventStore } from '../src/runtime/thread-event-store';
+import { ThreadTurnCommitJournalV1 } from '../src/runtime/turn-commit';
 
 describe('session commands', () => {
   const testConfigDir = mkdtempSync(join(tmpdir(), 'openhorse-session-commands-'));
@@ -99,6 +105,74 @@ describe('session commands', () => {
         ],
       });
     }
+    return session;
+  }
+
+  function createV2OnlySession(userContent: string, assistantContent: string): SessionMeta {
+    const session = createSession(projectDir, 'gpt-4o');
+    const materialized = materializeLegacyThreadV1({
+      projectPath: projectDir,
+      sessionId: session.id,
+    });
+    const store = new ThreadEventStore(
+      getProjectThreadsV2Dir(projectDir),
+      materialized.plan.receipt.threadId,
+      {
+        clock: (() => {
+          let timestamp = Date.now();
+          return () => timestamp++;
+        })(),
+      }
+    );
+    const turnId = randomUUID();
+    const userItemId = randomUUID();
+    const assistantItemId = randomUUID();
+    const userStepId = randomUUID();
+    const assistantStepId = randomUUID();
+    store.appendDurableBatch([
+      {
+        turnId,
+        payload: { type: 'turn.started', data: { input: userContent, mode: 'build' } },
+      },
+      {
+        turnId,
+        stepId: userStepId,
+        itemId: userItemId,
+        payload: { type: 'item.started', data: { kind: 'message', role: 'user' } },
+      },
+      {
+        turnId,
+        stepId: userStepId,
+        itemId: userItemId,
+        payload: { type: 'item.completed', data: { content: userContent } },
+      },
+      {
+        turnId,
+        stepId: assistantStepId,
+        itemId: assistantItemId,
+        payload: { type: 'item.started', data: { kind: 'message', role: 'assistant' } },
+      },
+      {
+        turnId,
+        stepId: assistantStepId,
+        itemId: assistantItemId,
+        payload: { type: 'item.completed', data: { content: assistantContent } },
+      },
+    ]);
+    new ThreadTurnCommitJournalV1(store).commit({
+      turnId,
+      history: [
+        { role: 'user', content: userContent },
+        { role: 'assistant', content: assistantContent },
+      ],
+      taskContextState: { ledger: [], updatedAt: Date.now() },
+      taskContextRevision: 0,
+      terminal: { status: 'completed', outcome: 'v2 session fixture complete' },
+    });
+    store.appendDurable({
+      turnId,
+      payload: { type: 'turn.completed', data: { outcome: 'v2 session fixture complete' } },
+    });
     return session;
   }
 
@@ -247,6 +321,34 @@ describe('session commands', () => {
     expect(printed).toContain('(compact checkpoint)');
     expect(printed).toContain('Covers: 2 source messages');
     expect(printed).toContain('Restored 1 model-context messages / 1 transcript messages');
+  });
+
+  test('/resume --last discovers and restores a v2-only Thread without a legacy JSONL', async () => {
+    const session = createV2OnlySession('v2-only user context', 'v2-only durable answer');
+    const { ctx, restored, sessionRestored, store } = makeContext('terminal');
+
+    const listed = listProjectSessions(projectDir).find(candidate => candidate.id === session.id);
+    const result = await findCommand('resume')!.execute(ctx, '--last');
+
+    expect(listed).toMatchObject({
+      id: session.id,
+      messageCount: 2,
+      historySizeBytes: expect.any(Number),
+    });
+    expect(listed?.historySizeBytes).toBeGreaterThan(0);
+    expect(result.success).toBe(true);
+    expect(restored.at(-1)?.id).toBe(session.id);
+    expect(sessionRestored.at(-1)).toMatchObject({
+      sessionId: session.id,
+      restoredMessages: 2,
+      transcriptMessages: 2,
+      messageCount: 2,
+    });
+    expect(store.getSnapshot().conversationHistory).toEqual([
+      { role: 'user', content: 'v2-only user context' },
+      { role: 'assistant', content: 'v2-only durable answer' },
+    ]);
+    expect(result.output).not.toContain('No messages in session');
   });
 
   test('/session rename accepts a picker number and synchronizes the active session', async () => {
