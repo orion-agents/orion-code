@@ -3,6 +3,8 @@ import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { spawnSync } from 'child_process';
 
+import { captureReleaseArtifactSourceV1 } from '../scripts/release/build-release-artifact';
+
 type ReleaseResult = {
   id: string;
   status: 'pass' | 'fail' | 'warn' | 'skip';
@@ -122,6 +124,17 @@ afterEach(() => {
 });
 
 describe('release-check script contract', () => {
+  it('freezes clean source identity before creating an in-repository artifact directory', () => {
+    const cwd = createFixture('1.2.3', '## [1.2.3] - 2026-08-15\n\nStatus: candidate');
+
+    const source = captureReleaseArtifactSourceV1(cwd);
+    mkdirSync(join(cwd, '.release', 'package'), { recursive: true });
+    writeFileSync(join(cwd, '.release', 'package', 'artifact.json'), '{}\n');
+
+    expect(source).toMatchObject({ gitSha: git(cwd, ['rev-parse', 'HEAD']), dirty: false });
+    expect(captureReleaseArtifactSourceV1(cwd).dirty).toBe(true);
+  });
+
   it('builds the publish artifact before release:check validates the pack contents', () => {
     const pkg = JSON.parse(readFileSync(join(projectRoot, 'package.json'), 'utf8')) as {
       scripts?: Record<string, string>;

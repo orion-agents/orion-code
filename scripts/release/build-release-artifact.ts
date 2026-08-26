@@ -28,6 +28,11 @@ interface NpmPackEntryV1 {
   }[];
 }
 
+export interface ReleaseArtifactSourceV1 {
+  readonly gitSha: string;
+  readonly dirty: boolean;
+}
+
 export function parseBuildArtifactArgumentsV1(argv: readonly string[]): ArgumentsV1 {
   const outputDirectory = optionValue(argv, '--out-dir');
   const receiptPath = optionValue(argv, '--receipt');
@@ -39,6 +44,7 @@ export function parseBuildArtifactArgumentsV1(argv: readonly string[]): Argument
 
 function main(): void {
   const args = parseBuildArtifactArgumentsV1(process.argv.slice(2));
+  const source = captureReleaseArtifactSourceV1();
   mkdirSync(args.outputDirectory, { recursive: true });
   const packed = JSON.parse(
     execFileSync(
@@ -52,8 +58,6 @@ function main(): void {
   }
   const entry = packed[0];
   const tarballPath = join(args.outputDirectory, basename(entry.filename));
-  const gitSha = command('git', ['rev-parse', 'HEAD']).trim();
-  const dirty = command('git', ['status', '--porcelain']).trim().length > 0;
   const manifest = [...entry.files]
     .map(file => ({ path: file.path, size: file.size, mode: file.mode ?? null }))
     .sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
@@ -61,7 +65,7 @@ function main(): void {
     version: 1,
     kind: 'orion.tarball-artifact',
     createdAt: new Date().toISOString(),
-    source: { gitSha, dirty },
+    source,
     package: { name: entry.name, version: entry.version },
     tarball: {
       filename: basename(entry.filename),
@@ -78,9 +82,22 @@ function main(): void {
   process.stdout.write(`${JSON.stringify(receipt, null, 2)}\n`);
 }
 
-function command(executable: string, args: readonly string[]): string {
+export function captureReleaseArtifactSourceV1(
+  cwd = resolve(__dirname, '../..')
+): ReleaseArtifactSourceV1 {
+  return {
+    gitSha: command('git', ['rev-parse', 'HEAD'], cwd).trim(),
+    dirty: command('git', ['status', '--porcelain'], cwd).trim().length > 0,
+  };
+}
+
+function command(
+  executable: string,
+  args: readonly string[],
+  cwd = resolve(__dirname, '../..')
+): string {
   return execFileSync(executable, [...args], {
-    cwd: resolve(__dirname, '../..'),
+    cwd,
     encoding: 'utf8',
     maxBuffer: 16 * 1024 * 1024,
   });
