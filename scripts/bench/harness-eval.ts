@@ -34,6 +34,14 @@ interface HarnessEvalArgumentsV1 {
   readonly createdAt?: string;
 }
 
+export interface HarnessEvalRuntimeV1 {
+  readonly now: () => number;
+}
+
+const SYSTEM_HARNESS_EVAL_RUNTIME_V1: HarnessEvalRuntimeV1 = Object.freeze({
+  now: () => performance.now(),
+});
+
 const repoRoot = resolve(__dirname, '../..');
 const corpusPath = resolve(__dirname, 'fixtures/harness-eval-corpus-v1.json');
 const FROZEN_BASELINE_SCHEMA_TOKENS = 6_582;
@@ -50,7 +58,10 @@ export function parseHarnessEvalArgumentsV1(argv: readonly string[]): HarnessEva
   return { iterations, ...(output ? { output } : {}), ...(createdAt ? { createdAt } : {}) };
 }
 
-export function runHarnessEvalV1(args: HarnessEvalArgumentsV1): {
+export function runHarnessEvalV1(
+  args: HarnessEvalArgumentsV1,
+  runtime: HarnessEvalRuntimeV1 = SYSTEM_HARNESS_EVAL_RUNTIME_V1
+): {
   readonly baseline: HarnessEvalReceiptV1;
   readonly candidate: HarnessEvalReceiptV1;
   readonly comparison: ReturnType<typeof compareHarnessEvalReceiptsV1>;
@@ -76,7 +87,7 @@ export function runHarnessEvalV1(args: HarnessEvalArgumentsV1): {
     for (const task of corpus.tasks) {
       baselineSamples.push(runBaselineSample(task, iteration));
       candidateSamples.push(
-        runCandidateSample(task, iteration, universe.catalog.candidates, authority)
+        runCandidateSample(task, iteration, universe.catalog.candidates, authority, runtime.now)
       );
     }
   }
@@ -147,9 +158,10 @@ function runCandidateSample(
   task: HarnessEvalTaskV1,
   iteration: number,
   tools: Parameters<typeof compileCapabilityPlanV1>[0]['tools'],
-  authority: Parameters<typeof compileCapabilityPlanV1>[0]['authority']
+  authority: Parameters<typeof compileCapabilityPlanV1>[0]['authority'],
+  now: () => number
 ): HarnessEvalSampleV1 {
-  const started = performance.now();
+  const started = now();
   const compilation = compileCapabilityPlanV1({
     baseMode: 'build',
     taskContextRevision: 0,
@@ -183,7 +195,7 @@ function runCandidateSample(
     mcpCatalogDigest: 'eval-empty-mcp-catalog-v1',
     estimatedInputTokens: promptTokensForTask(task),
   });
-  const orchestrationMs = performance.now() - started;
+  const orchestrationMs = now() - started;
   const directTools = compilation.receipt.directToolNames;
   const directSet = new Set(directTools);
   const omittedRequiredTools = task.requiredTools
