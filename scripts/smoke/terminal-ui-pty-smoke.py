@@ -26,6 +26,7 @@ import threading
 import time
 import unicodedata
 import uuid
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -240,6 +241,27 @@ def assert_output_order(output: str, markers: list[str]) -> None:
         f"Output tail:\n{output[-4000:]}"
       )
     cursor = index + len(marker)
+
+
+def wait_for_screen_update(
+    sync_screen: Callable[[], str],
+    required: str,
+    forbidden: str,
+    timeout: float = 3.0,
+) -> str:
+    """Wait for an editor redraw instead of assuming a fixed event-loop latency."""
+    deadline = time.time() + timeout
+    visible = ""
+    while time.time() < deadline:
+        visible = sync_screen()
+        compact = visible.replace(" ", "")
+        if required in compact and forbidden not in compact:
+            return visible
+        time.sleep(0.05)
+    raise AssertionError(
+        f"Timed out waiting for terminal editor redraw ({required!r} without {forbidden!r}):\n"
+        + visible
+    )
 
 
 class MockOpenAIHandler(BaseHTTPRequestHandler):
@@ -567,12 +589,7 @@ def main() -> int:
         os.write(master, "开源小？事收到".encode("utf-8"))
         wait_for(master, output, "开源小？事收到", timeout=5)
         os.write(master, b"\x7f")
-        time.sleep(0.25)
-
-        visible = sync_screen()
-        compact_visible = visible.replace(" ", "")
-        if "开源小？事收到" in compact_visible or "开源小？事收" not in compact_visible:
-            raise AssertionError(f"Backspace did not update the visible terminal editor buffer:\n{visible}")
+        wait_for_screen_update(sync_screen, "开源小？事收", "开源小？事收到")
 
         set_window_size(master, rows=24, cols=42)
         model.resize(rows=24, cols=42)
@@ -650,14 +667,7 @@ def main() -> int:
             )
 
         os.write(master, b"\x7f")
-        time.sleep(0.25)
-        visible_after_stream_backspace = sync_screen()
-        compact_after_stream_backspace = visible_after_stream_backspace.replace(" ", "")
-        if "输入中事地方" in compact_after_stream_backspace or "输入中事地" not in compact_after_stream_backspace:
-            raise AssertionError(
-                "Backspace did not update CJK input while assistant output was active:\n"
-                + visible_after_stream_backspace
-            )
+        wait_for_screen_update(sync_screen, "输入中事地", "输入中事地方")
 
         os.write(master, b"\x15")
         os.write(master, b"revision target\r")
