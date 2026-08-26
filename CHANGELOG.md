@@ -41,6 +41,8 @@ which is **not** a pass.
   percentage instead of disappearing until the turn completes.
 - Goal V2 TurnCommits now restore the purple Goal mode chrome, clear it on completion, and display
   only compact cumulative usage such as `tokens:581.6K` instead of an internal unlimited sentinel.
+- Cross-process file locking no longer lets healthy contenders starve the active owner through the
+  recovery sentinel; stale recovery remains serialized and fail-closed.
 
 ## [0.2.0] — CANDIDATE
 

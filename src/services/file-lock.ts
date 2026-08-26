@@ -64,6 +64,19 @@ function processIsAlive(pid: number): boolean {
   }
 }
 
+function shouldAttemptStaleRecovery(lockPath: string, staleMs: number): boolean {
+  let observed;
+  try {
+    observed = statSync(lockPath);
+  } catch {
+    return false;
+  }
+  const owner = readOwner(lockPath);
+  if (!owner) return false;
+  const lastActivity = Math.max(observed.mtimeMs, owner.createdAt);
+  return Date.now() - lastActivity > staleMs && !processIsAlive(owner.pid);
+}
+
 function recoverStaleLock(
   lockPath: string,
   staleMs: number,
@@ -221,15 +234,26 @@ function acquireLock(
 ): LockOwner {
   const deadline = Date.now() + options.waitMs;
   while (true) {
+    // Atomic no-replace publication is safe without the recovery sentinel.
+    // Contenders for a healthy live lock must not repeatedly seize the
+    // sentinel, otherwise they can starve the actual owner when it needs the
+    // sentinel to release the main lock. An already-published sentinel still
+    // owns the transition and must be honored, including malformed legacy
+    // sentinels that intentionally fail closed during their grace period.
+    const sentinelExists = existsSync(`${lockPath}${RECOVERY_SUFFIX}`);
+    if (!sentinelExists) {
+      const published = createLock(lockPath);
+      if (published) return published;
+    }
+
     const remainingMs = Math.max(0, deadline - Date.now());
     let owner: LockOwner | null = null;
-
-    withRecoverySentinel(lockPath, { ...options, waitMs: remainingMs }, () => {
-      owner = createLock(lockPath);
-      if (!owner && recoverStaleLock(lockPath, options.staleMs)) {
+    if (sentinelExists || shouldAttemptStaleRecovery(lockPath, options.staleMs)) {
+      withRecoverySentinel(lockPath, { ...options, waitMs: remainingMs }, () => {
         owner = createLock(lockPath);
-      }
-    });
+        if (!owner && recoverStaleLock(lockPath, options.staleMs)) owner = createLock(lockPath);
+      });
+    }
     if (owner) return owner;
     if (Date.now() >= deadline) throw new Error(`Timed out waiting for file lock ${lockPath}`);
     sleepSync(options.retryMs);
