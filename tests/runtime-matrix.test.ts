@@ -12,14 +12,15 @@ const SHA = 'a'.repeat(64);
 const GIT_SHA = 'b'.repeat(40);
 
 function artifact(options: { dirty?: boolean; version?: string } = {}) {
+  const version = options.version ?? '0.2.1';
   return createTarballArtifactReceiptV1({
     version: 1,
     kind: 'orion.tarball-artifact',
     createdAt: '2026-08-26T00:00:00.000Z',
     source: { gitSha: GIT_SHA, dirty: options.dirty ?? false },
-    package: { name: '@orion-agents/orion-code', version: options.version ?? '0.2.0' },
+    package: { name: '@orion-agents/orion-code', version },
     tarball: {
-      filename: 'orion-agents-orion-code-0.2.0.tgz',
+      filename: `orion-agents-orion-code-${version}.tgz`,
       sha256: SHA,
       npmIntegrity: 'sha512-fixture',
       bytes: 100,
@@ -88,7 +89,7 @@ const evidence = {
   fullTestsPassed: true,
 };
 
-describe('v0.2.0 release receipts', () => {
+describe('v0.2.x release receipts', () => {
   test('parses fail-closed gate and aggregate receipt commands', () => {
     expect(
       parseGateEvidenceArgumentsV1([

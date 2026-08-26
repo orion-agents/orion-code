@@ -274,7 +274,7 @@ jobs:
           retention-days: 14
 
   release-receipt:
-    name: Aggregate fail-closed v0.2.0 release receipt
+    name: Aggregate fail-closed v0.2.x release receipt
     needs:
       - verify
       - typecheck

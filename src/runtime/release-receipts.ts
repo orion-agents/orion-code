@@ -2,6 +2,7 @@ import { digestRuntimeValue } from './protocol/canonical';
 
 export const RELEASE_RECEIPT_VERSION_V1 = 1 as const;
 export const SUPPORTED_RELEASE_NODE_MAJORS_V1 = Object.freeze([20, 22, 24] as const);
+export const SUPPORTED_RELEASE_VERSION_LINE_V1 = '0.2.x' as const;
 
 export type ReleaseGateDecisionV1 = 'GO' | 'NO_GO';
 
@@ -269,8 +270,8 @@ export function createReleaseReceiptV1(input: {
   });
   checks.push({
     id: 'release_version',
-    status: artifact.package.version === '0.2.0' ? 'pass' : 'fail',
-    detail: artifact.package.version,
+    status: /^0\.2\.(0|[1-9]\d*)$/.test(artifact.package.version) ? 'pass' : 'fail',
+    detail: `expected=${SUPPORTED_RELEASE_VERSION_LINE_V1} observed=${artifact.package.version}`,
   });
   checks.push({
     id: 'runtime_matrix_complete',
