@@ -22,10 +22,9 @@ which is **not** a pass.
 
 ## [Unreleased]
 
-## [0.2.2] — CANDIDATE
+## [0.2.2] — 2026-08-27
 
-> **Status: candidate.** This source version has no Git tag or npm publication until its external
-> release receipts are created and read back.
+> **Status: published.** The `v0.2.2` tag and npm `latest` package identify this release tree.
 
 ### Fixed
 
