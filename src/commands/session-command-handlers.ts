@@ -372,7 +372,7 @@ function handleSessionInfo(ctx: CommandContext, args: string = ''): CommandResul
   };
 }
 
-function handleResume(ctx: CommandContext, args: string): CommandResult {
+async function handleResume(ctx: CommandContext, args: string): Promise<CommandResult> {
   const lines: string[] = [];
   const write: SessionLineWriter = (text = '') => lines.push(text);
   const output = (success: boolean): CommandResult => ({ success, output: lines.join('\n') });
@@ -452,7 +452,11 @@ function handleResume(ctx: CommandContext, args: string): CommandResult {
   return restoreSession(ctx, result.session, false);
 }
 
-function restoreSession(ctx: CommandContext, session: SessionMeta, isLast: boolean): CommandResult {
+async function restoreSession(
+  ctx: CommandContext,
+  session: SessionMeta,
+  isLast: boolean
+): Promise<CommandResult> {
   const resumed = resumeSession(session.id) ?? session;
 
   // Swap in the resumed session's transcript BEFORE emitting any command output,
@@ -470,13 +474,16 @@ function restoreSession(ctx: CommandContext, session: SessionMeta, isLast: boole
     checkpoint?.summary.text ?? (history.length > 0 ? generateHistorySummary(history) : '');
   const summaryGeneratedAt = checkpoint?.summary.generatedAt ?? resumeGeneratedAt;
   const summarySource = checkpoint?.summary.source ?? 'resume_heuristic';
-  const summaryCoveredMessages = checkpoint?.summary.sourceMessageCount ?? rawMessages.length;
+  const summaryCoveredMessages =
+    checkpoint?.summary.sourceMessageCount ??
+    Math.max(rawMessages.length, transcriptMessages.length);
   if (history.length > 0) {
     const eventSummary = checkpoint?.summary.text ?? generateRestoredSessionEventSummary(history);
     ctx.store.setState({ conversationHistory: history });
     ctx.store.setState({
       harnessState: loadSessionHarnessState(resumed.id) ?? resumed.harnessState,
     });
+    await ctx.restoreSessionRuntime?.();
     ctx.sessionRestored?.({
       sessionId: resumed.id,
       projectPath: resumed.projectPath,
@@ -491,6 +498,7 @@ function restoreSession(ctx: CommandContext, session: SessionMeta, isLast: boole
       transcriptMessages: transcriptMessages.length,
     });
   } else {
+    await ctx.restoreSessionRuntime?.();
     ctx.sessionRestored?.({
       sessionId: resumed.id,
       projectPath: resumed.projectPath,

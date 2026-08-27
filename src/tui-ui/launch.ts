@@ -52,6 +52,7 @@ export async function launchTuiUI(
   // Once guard: shared cleanup promise so concurrent stop calls share one execution.
   let cleanupPromise: Promise<void> | null = null;
   let restoreConsole: (() => void) | null = null;
+  let unsubscribeRuntimeStore: (() => void) | null = null;
 
   const dimensions = () => {
     const size = readTtyDimensions(output);
@@ -151,6 +152,9 @@ export async function launchTuiUI(
       } catch {
         /* ok */
       }
+
+      unsubscribeRuntimeStore?.();
+      unsubscribeRuntimeStore = null;
 
       // Stop active turn (controller may not exist if init failed).
       if (controller) {
@@ -560,12 +564,21 @@ export async function launchTuiUI(
       runner.dispatch({ type: 'setStatusSnapshot', snapshot, phase });
       return statusSnapshotString(runtime);
     };
+    let lastContextUsage = runtime.store.getSnapshot().contextUsage;
+    unsubscribeRuntimeStore = runtime.store.subscribe(snapshot => {
+      if (stopping || snapshot.contextUsage === lastContextUsage) return;
+      lastContextUsage = snapshot.contextUsage;
+      dispatchStatusSnapshot(snapshot.isProcessing ? 'running' : 'ready');
+    });
     controller = new AgentRuntimeController({
       runtime,
       events: runner.events,
       uiCapabilities: resolveUiRendererCapabilities(undefined, 'tui'),
       uiRenderer: 'tui',
       useRuntimeToolPermissions: true,
+      // OrionSessionRunner projects the durable Thread user item. A second
+      // controller-owned optimistic append would render every submission twice.
+      echoSubmittedInput: false,
       runningStatus: () => dispatchStatusSnapshot('running'),
       readyStatus: () => dispatchStatusSnapshot('ready'),
     });

@@ -7,6 +7,7 @@ import {
   statusSnapshotString,
 } from '../src/tui-ui/launch';
 import type { OrionCodeUiRuntime } from '../src/runtime/ui-events';
+import { TerminalStateModel } from './terminal-state-model';
 
 class FakeTTYInput extends EventEmitter {
   isTTY = true;
@@ -57,6 +58,15 @@ class FailingTTYOutput extends FakeTTYOutput {
       this.writable = false;
       throw new Error('simulated terminal output failure');
     }
+    return super.write(chunk);
+  }
+}
+
+class ModeledTTYOutput extends FakeTTYOutput {
+  readonly terminal = new TerminalStateModel(this.columns, this.rows);
+
+  override write(chunk: string | Uint8Array): boolean {
+    this.terminal.write(String(chunk));
     return super.write(chunk);
   }
 }
@@ -131,6 +141,33 @@ describe('tui-ui launch', () => {
     expect(status).not.toContain('cost=');
   });
 
+  it('projects context pressure updates into the live status bar', async () => {
+    const input = new FakeTTYInput();
+    const output = new FakeTTYOutput();
+    output.columns = 122;
+    const runtime = makeRuntime();
+
+    const launch = launchTuiUI(runtime, { input: input as any, output: output as any });
+    await tick();
+    runtime.store.setProcessing(true);
+    runtime.store.setContextUsage({
+      modelId: 'glm-5',
+      usedTokens: 85138,
+      contextWindow: 202752,
+      percent: 42,
+      source: 'estimated',
+      warningThresholdPercent: 80,
+      autoCompactThresholdPercent: 95,
+      autoCompactEnabled: true,
+    });
+    await tick();
+    await tick();
+    input.emit('data', Buffer.from('/exit\r'));
+    await launch;
+
+    expect(output.text()).toContain('CTX=42%');
+  });
+
   it('owns terminal mode setup/teardown around the renderer', async () => {
     const input = new FakeTTYInput();
     const output = new FakeTTYOutput();
@@ -172,6 +209,36 @@ describe('tui-ui launch', () => {
     expect(text).toContain('开源小？事收到');
     expect(text).toContain('开源小？事收');
     expect(input.rawModeValues).toEqual([true, false]);
+  });
+
+  it('renders a runtime-owned user submission exactly once', async () => {
+    const input = new FakeTTYInput();
+    const output = new ModeledTTYOutput();
+    const runtime = makeRuntime();
+    const submitted = 'single-user-projection-probe';
+
+    runtime.createAgentRunner = events => ({
+      runInput: async text => {
+        events.append({ role: 'user', title: 'you', content: text });
+      },
+      runRequest: async request => {
+        events.append({ role: 'user', title: 'you', content: request.text ?? '' });
+      },
+    });
+
+    const launch = launchTuiUI(runtime, { input: input as any, output: output as any });
+    await tick();
+    input.emit('data', Buffer.from(`${submitted}\r`));
+    await tick();
+    await tick();
+    input.emit('data', Buffer.from('/exit\r'));
+    await launch;
+
+    const submittedRows = output.terminal
+      .allRows()
+      .map(row => row.trim())
+      .filter(row => row === `› ${submitted}`);
+    expect(submittedRows).toHaveLength(1);
   });
 
   it('routes asynchronous console diagnostics through the owned surface', async () => {

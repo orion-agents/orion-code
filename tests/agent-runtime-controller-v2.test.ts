@@ -63,6 +63,30 @@ describe('AgentRuntimeController v0.2 boundary', () => {
     ]);
   });
 
+  test('does not optimistically re-echo a revision when the runtime owns transcript projection', async () => {
+    const events: AgentRuntimeEvent[] = [];
+    const runner = deferredRunner();
+    const controller = new AgentRuntimeController({
+      runtime: createRuntime(),
+      eventSink: { emit: event => void events.push(event) },
+      runner,
+      echoSubmittedInput: false,
+    });
+
+    expect(controller.submit('first')).toEqual({ type: 'started' });
+    expect(controller.submit('revision')).toEqual({ type: 'revision_requested' });
+    expect(
+      events.filter(
+        event => event.type === 'transcript_append' && event.entry.content === 'revision'
+      )
+    ).toHaveLength(0);
+
+    runner.calls[0].resolve();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    runner.calls[1].resolve();
+    await controller.waitForIdle();
+  });
+
   test('queues follow-up work in FIFO order without aborting the active turn', async () => {
     const runner = deferredRunner();
     const controller = new AgentRuntimeController({

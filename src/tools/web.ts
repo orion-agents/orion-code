@@ -151,7 +151,7 @@ function isUrlSafeForSSRF(url: string): { safe: boolean; reason?: string } {
       return { safe: false, reason: `Blocked protocol: ${parsed.protocol}` };
     }
 
-    // 禁止 URL 内嵌凭据（http://user:pass@host），避免凭据外泄与解析歧义
+    // 禁止 URL 内嵌凭据（如 HTTP(S) URL 的 user-info 部分），避免凭据外泄与解析歧义
     if (parsed.username || parsed.password) {
       return { safe: false, reason: 'Blocked URL with embedded credentials' };
     }

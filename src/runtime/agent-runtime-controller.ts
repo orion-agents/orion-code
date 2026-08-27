@@ -27,10 +27,7 @@ import { resolveUiRendererCapabilities } from './ui-events';
 import type { CommandUiRenderer } from '../commands/types';
 import { TurnController, type TurnControllerOptions } from './turn-controller';
 import type { AgentTurnRequest } from './goals/types';
-import type {
-  GoalRuntimeControlResultV2,
-  GoalRuntimeControlV2,
-} from './goal-runtime-coordinator';
+import type { GoalRuntimeControlResultV2, GoalRuntimeControlV2 } from './goal-runtime-coordinator';
 import { updateGlobalConfig } from '../services/global-config';
 import type { ToolConfirmationPolicy } from '../services/global-config';
 import {
@@ -370,7 +367,11 @@ export class AgentRuntimeController {
       this.turnController.requestRevision(submitted);
       // v0.1.3 (G1): echo the incremental input to the transcript immediately,
       // so the user sees their correction without waiting for the turn to abort.
-      this.emitAppend(submittedEntry(submitted));
+      // A runtime-owned durable transcript disables this optimistic projection
+      // and emits the revision from its authoritative user item instead.
+      if (this.options.echoSubmittedInput ?? true) {
+        this.emitAppend(submittedEntry(submitted));
+      }
       this.emitStatus(this.options.revisionStatus ?? '已接收补充，正在中断当前轮…');
       return { type: 'revision_requested' };
     }
@@ -422,7 +423,8 @@ export class AgentRuntimeController {
   }
 
   private async runCommand(command: RegisteredSlashCommand, args: string): Promise<void> {
-    const renderer = this.options.uiRenderer ?? this.options.runtime.config.ui?.renderer ?? 'terminal';
+    const renderer =
+      this.options.uiRenderer ?? this.options.runtime.config.ui?.renderer ?? 'terminal';
     if (command.rendererScope && !command.rendererScope.includes(renderer)) {
       this.emitAppend({
         role: 'error',
@@ -490,7 +492,8 @@ export class AgentRuntimeController {
   }
 
   private createCommandContext(): CommandContext {
-    const renderer = this.options.uiRenderer ?? this.options.runtime.config.ui?.renderer ?? 'terminal';
+    const renderer =
+      this.options.uiRenderer ?? this.options.runtime.config.ui?.renderer ?? 'terminal';
     return {
       cwd: this.options.runtime.cwd,
       config: this.options.runtime.config,
@@ -501,6 +504,9 @@ export class AgentRuntimeController {
       sessionId: this.options.runtime.getSession()?.id,
       ensureSession: this.options.runtime.ensureSession,
       setSession: session => this.options.runtime.setSession(session),
+      restoreSessionRuntime: this.runner.restoreSession
+        ? () => this.runner.restoreSession!()
+        : undefined,
       sessionRestored: event => this.eventSink.emit({ type: 'session_restored', event }),
       getSession: this.options.runtime.getSession,
       writeOutput: text => {
@@ -559,10 +565,7 @@ export class AgentRuntimeController {
   }
 
   async waitForIdle(): Promise<void> {
-    await Promise.all([
-      this.activeRun ?? Promise.resolve(),
-      ...this.goalControlRuns,
-    ]);
+    await Promise.all([this.activeRun ?? Promise.resolve(), ...this.goalControlRuns]);
   }
 
   private async runTurn(firstRequest: AgentTurnRequest): Promise<void> {

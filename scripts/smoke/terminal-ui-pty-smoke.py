@@ -770,7 +770,9 @@ def main() -> int:
         wait_for(master, output, "B", timeout=8)
         os.write(master, b"n\r")
         wait_for(master, output, "page 2/2", timeout=8)
-        wait_for(master, output, "Showing 11-12 of 12", timeout=8)
+        # The active v2 Thread is now discoverable alongside the 12 legacy
+        # fixtures, so the second page contains entries 11-13.
+        wait_for(master, output, "Showing 11-13 of 13", timeout=8)
         wait_for(master, output, "resume fixture 12", timeout=8)
         os.write(master, b"resume fixture 12\r")
         wait_for(master, output, "Resumed session", timeout=8)

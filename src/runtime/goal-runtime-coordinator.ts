@@ -69,6 +69,18 @@ export interface GoalRuntimeDurableReceiptV2 {
   readonly stopDecisionDigest?: string;
 }
 
+export interface GoalRuntimePersistenceViewV2 {
+  readonly state?: GoalLifecycleStateV2;
+  readonly tombstone?: GoalRuntimeTombstoneV2;
+}
+
+/** Validate and expose the Goal fact owned by an authoritative TurnCommit. */
+export function readGoalRuntimePersistenceV2(
+  commit: TurnCommitV1 | undefined
+): GoalRuntimePersistenceViewV2 {
+  return deepFreeze(structuredClone(parseGoalPersistence(commit)));
+}
+
 export type GoalRuntimePersistTurnV2 = (
   fields: GoalRuntimeCommitFieldsV2
 ) => GoalRuntimeDurableReceiptV2;

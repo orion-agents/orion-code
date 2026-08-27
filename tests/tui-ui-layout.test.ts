@@ -6,6 +6,7 @@ import {
   renderTuiUiFrame,
 } from '../src/tui-ui/layout';
 import { initialTuiUiState, tuiUiReducer, type TuiUiAction } from '../src/tui-ui/state';
+import { createStatusSnapshot } from '../src/runtime/ui-view-model';
 import type { SessionMeta } from '../src/services/session-storage';
 import {
   makeToolFinishedEvent,
@@ -60,6 +61,35 @@ describe('tui-ui layout', () => {
     );
 
     expect(rows[4]).toMatch(/^MODE BUILD → PLAN NEXT/u);
+  });
+
+  it('keeps the CTX percentage ahead of lower-priority activity on a bounded status line', () => {
+    const state = reduce([
+      {
+        type: 'setStatusSnapshot',
+        phase: 'running',
+        snapshot: createStatusSnapshot({
+          renderer: 'tui',
+          model: 'ark-code-latest',
+          context: {
+            modelId: 'ark-code-latest',
+            usedTokens: 143_360,
+            contextWindow: 1_024_000,
+            percent: 14,
+            source: 'estimated',
+            warningThresholdPercent: 80,
+            autoCompactThresholdPercent: 95,
+            autoCompactEnabled: true,
+          },
+        }),
+      },
+      { type: 'setStatus', message: 'Running a deliberately verbose background activity' },
+    ]);
+
+    const status = renderFrameRows(renderTuiUiFrame(state, { width: 78, height: 8 }))[4];
+    expect(status).toContain('MODE BUILD');
+    expect(status).toContain('model=ark-code-latest');
+    expect(status).toContain('CTX=14%');
   });
 
   it.each([
@@ -341,7 +371,7 @@ describe('tui-ui layout', () => {
     }
   );
 
-  it('renders Goal objective, phase, budget and next action in the owned status row', () => {
+  it('renders Goal objective, phase, token usage and next action in the owned status row', () => {
     const state = reduce([
       {
         type: 'goalEvent',
@@ -371,8 +401,43 @@ describe('tui-ui layout', () => {
     expect(status).toContain('goal:active 1/3');
     expect(status).toContain('Ship typed Goal run');
     expect(status).toContain('verification');
-    expect(status).toContain('320/1000tok');
+    expect(status).toContain('tokens:320');
+    expect(status).not.toContain('/1000');
     expect(status).toContain('next:Run Goal E2E');
+  });
+
+  it.each([
+    [0, 'tokens:0'],
+    [999, 'tokens:999'],
+    [1_000, 'tokens:1.0K'],
+    [581_625, 'tokens:581.6K'],
+    [1_500_000, 'tokens:1.5M'],
+  ])('formats Goal token usage %i without rendering an upper limit', (tokensUsed, expected) => {
+    const state = reduce([
+      {
+        type: 'goalEvent',
+        event: {
+          type: 'goal_updated',
+          reason: 'turn_finalized',
+          goal: {
+            goalId: 'goal-token-usage',
+            revision: 1,
+            objective: 'Track usage',
+            status: 'active',
+            tokenBudget: Number.MAX_SAFE_INTEGER,
+            tokensUsed,
+            timeUsedMs: 0,
+            continuationCount: 1,
+            updatedAt: 100,
+          },
+        },
+      },
+    ]);
+
+    const status = renderFrameRows(renderTuiUiFrame(state, { width: 120, height: 8 }))[4];
+    expect(status).toContain(expected);
+    expect(status).not.toContain(String(Number.MAX_SAFE_INTEGER));
+    expect(status).not.toContain('/');
   });
 
   it('keeps the first failed audit requirement visible in the Goal status row', () => {

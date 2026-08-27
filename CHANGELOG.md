@@ -22,6 +22,28 @@ which is **not** a pass.
 
 ## [Unreleased]
 
+## [0.2.1] — CANDIDATE
+
+> **Status: candidate.** This source version is not a Git tag, GitHub Release, or npm publication
+> until each external receipt is created and read back.
+
+### Fixed
+
+- Project session discovery now projects message count, durable history size, and last activity
+  from the authoritative v2 Thread instead of treating an empty legacy JSONL sidecar as the session.
+- `/resume` and `/resume --last` restore the latest TurnCommit model history and replay the selected
+  Thread into the UI exactly once without starting an extra model turn or duplicating user input.
+- Runtime restart treats legacy Harness and Goal sidecars as first-migration seeds only; once a
+  TurnCommit exists, its TaskContext and Goal state remain the sole durable authority.
+- TUI submission uses the durable Thread user item as its only transcript echo, including queued
+  revisions, so one user input renders as one entry.
+- TUI context pressure now flows from the product Agent Loop into a live, width-prioritized `CTX`
+  percentage instead of disappearing until the turn completes.
+- Goal V2 TurnCommits now restore the purple Goal mode chrome, clear it on completion, and display
+  only compact cumulative usage such as `tokens:581.6K` instead of an internal unlimited sentinel.
+- Cross-process file locking no longer lets healthy contenders starve the active owner through the
+  recovery sentinel; stale recovery remains serialized and fail-closed.
+
 ## [0.2.0] — CANDIDATE
 
 > **Status: candidate.** Implementation evidence does not imply a Git tag, GitHub Release, npm

@@ -87,6 +87,11 @@ describe('v0.2.0 product OrionRuntime cutover', () => {
         expect.objectContaining({ role: 'assistant', content: 'durable answer' }),
       ]),
       lastLoopStats: expect.objectContaining({ llmRequests: 1 }),
+      contextUsage: expect.objectContaining({
+        modelId: 'model-test',
+        usedTokens: expect.any(Number),
+        percent: expect.any(Number),
+      }),
     });
 
     await runtime.close('integration complete');
@@ -134,6 +139,42 @@ describe('v0.2.0 product OrionRuntime cutover', () => {
     await runner.close('test complete');
     expect(runtimes[1].state).toBe('closed');
     await expect(runner.runInput('must not restart')).rejects.toThrow('closed');
+  });
+
+  test('replays a resumed v2 Thread exactly once without starting another model turn', async () => {
+    const session = createLegacySession('legacy resume context');
+    const llm = createFakeLlm([{ content: 'durable resume answer', model: 'model-test' }]);
+    const fixture = createProductFixture(llm);
+    const events = createUiSink();
+    const runtimes: ReturnType<typeof createProductOrionRuntimeV1>[] = [];
+    const runner = new OrionSessionRunnerV1({
+      eventSink: events.sink,
+      getSessionId: () => session.id,
+      createRuntime: id => {
+        const runtime = createProductOrionRuntimeV1(fixture, id);
+        runtimes.push(runtime);
+        return runtime;
+      },
+      mode: 'build',
+    });
+
+    await runner.runInput('durable user request');
+    events.appended.splice(0);
+    await runner.restoreSession();
+
+    expect(events.clears).toHaveLength(1);
+    expect(runtimes).toHaveLength(2);
+    expect(runtimes[0].state).toBe('closed');
+    expect(runtimes[1].state).toBe('started');
+    expect(events.appended.filter(entry => entry.content === 'durable user request')).toHaveLength(
+      1
+    );
+    expect(events.appended.filter(entry => entry.content === 'durable resume answer')).toHaveLength(
+      1
+    );
+    expect(llm.chatStream).toHaveBeenCalledTimes(1);
+
+    await runner.close('resume replay complete');
   });
 
   test('routes explicit compact through the active runtime maintenance turn', async () => {
@@ -841,21 +882,48 @@ function createFakeMcpConnection(): {
 function createUiSink(): {
   readonly sink: UiEventSink;
   readonly appended: Array<{ readonly title: string; readonly content: string }>;
+  readonly clears: string[];
 } {
   const appended: Array<{ title: string; content: string }> = [];
+  const entries = new Map<string, { title: string; content: string }>();
+  const clears: string[] = [];
   let nextId = 0;
   return {
     appended,
+    clears,
     sink: {
       append: entry => {
-        appended.push({ title: entry.title ?? '', content: entry.content });
-        return `entry-${++nextId}`;
+        const id = `entry-${++nextId}`;
+        const projected = { title: entry.title ?? '', content: entry.content };
+        appended.push(projected);
+        entries.set(id, projected);
+        return id;
       },
-      update: () => undefined,
-      finalize: () => undefined,
-      remove: () => undefined,
+      update: (id, patch) => {
+        const entry = entries.get(id);
+        if (!entry) return;
+        if (patch.title !== undefined) entry.title = patch.title;
+        if (patch.content !== undefined) entry.content = patch.content;
+      },
+      finalize: (id, patch) => {
+        const entry = entries.get(id);
+        if (!entry || !patch) return;
+        if (patch.title !== undefined) entry.title = patch.title;
+        if (patch.content !== undefined) entry.content = patch.content;
+      },
+      remove: id => {
+        const entry = entries.get(id);
+        if (!entry) return;
+        entries.delete(id);
+        const index = appended.indexOf(entry);
+        if (index >= 0) appended.splice(index, 1);
+      },
       replaceTranscript: () => undefined,
-      clearTranscript: () => undefined,
+      clearTranscript: () => {
+        clears.push('clear');
+        appended.splice(0);
+        entries.clear();
+      },
       setStatus: () => undefined,
       showSessionPicker: () => undefined,
       showEditPreview: () => undefined,

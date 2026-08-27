@@ -8,6 +8,8 @@ import type {
   AgentRuntimeEventSink,
 } from '../src/runtime/agent-runtime-protocol';
 import type { AgentTurnRequest } from '../src/runtime/goals/types';
+import { GoalLifecycleServiceV2 } from '../src/runtime/goal-lifecycle-v2';
+import { digestRuntimeValue } from '../src/runtime/protocol/canonical';
 import { ThreadEventStore } from '../src/runtime/thread-event-store';
 import {
   ThreadRuntimeV1,
@@ -15,6 +17,7 @@ import {
   type ThreadTurnRunnerV1,
 } from '../src/runtime/thread-runtime';
 import { ThreadUiAdapterError, ThreadUiAdapterV1 } from '../src/runtime/thread-ui-adapter';
+import { ThreadTurnCommitJournalV1 } from '../src/runtime/turn-commit';
 import type { TranscriptAppendEntry, UiEventSink } from '../src/runtime/ui-events';
 
 describe('ThreadUiAdapterV1', () => {
@@ -200,6 +203,87 @@ describe('ThreadUiAdapterV1', () => {
     expect(events).toContainEqual({ type: 'status_changed', message: 'stopped by user' });
     adapter.close();
     await expect(adapter.runInput('after close')).rejects.toBeInstanceOf(ThreadUiAdapterError);
+  });
+
+  test('projects authoritative Goal V2 commits for live and restored purple-mode UI state', async () => {
+    const store = createStore();
+    const journal = new ThreadTurnCommitJournalV1(store);
+    const lifecycle = new GoalLifecycleServiceV2({
+      goalId: randomUUID(),
+      objective: 'Keep Goal mode visibly purple',
+      budget: { maxTokens: 50_000, maxElapsedMs: 600_000 },
+      clock: () => 100,
+    });
+    const active = lifecycle.state;
+    const { digest: _activeDigest, ...completedContent } = active;
+    void _activeDigest;
+    const completed = {
+      ...completedContent,
+      status: 'completed' as const,
+      generation: active.generation + 1,
+      updatedAt: active.updatedAt + 1,
+    };
+    let persistedGoal = active;
+    const runtime = new ThreadRuntimeV1({
+      store,
+      requireTurnCommit: true,
+      runner: {
+        run: async context => {
+          journal.commit({
+            turnId: context.turnId,
+            history: [{ role: 'user', content: context.input }],
+            taskContextState: { version: 2, ledger: [], updatedAt: 100 },
+            taskContextRevision: 0,
+            goalState: persistedGoal,
+            terminal: { status: 'completed', outcome: 'goal state projected' },
+          });
+          return { status: 'completed', outcome: 'goal state projected' };
+        },
+      },
+    });
+    const live = collectAgentEvents();
+    const adapter = new ThreadUiAdapterV1({ runtime, eventSink: live.sink, mode: 'auto' });
+
+    await adapter.runInput('persist active Goal');
+    expect(live.events).toContainEqual({
+      type: 'goal_event',
+      event: {
+        type: 'goal_updated',
+        reason: 'durable_turn_commit',
+        goal: expect.objectContaining({
+          goalId: active.goalId,
+          status: 'active',
+          objective: active.objective,
+          tokenBudget: active.budget.maxTokens,
+        }),
+      },
+    });
+
+    const restored = collectAgentEvents();
+    const restoredAdapter = new ThreadUiAdapterV1({ runtime, eventSink: restored.sink });
+    expect(restored.events).toContainEqual(
+      expect.objectContaining({
+        type: 'goal_event',
+        event: expect.objectContaining({
+          type: 'goal_updated',
+          goal: expect.objectContaining({ goalId: active.goalId, status: 'active' }),
+        }),
+      })
+    );
+
+    persistedGoal = { ...completed, digest: digestRuntimeValue(completed) };
+    await adapter.runInput('complete Goal and exit its color override');
+    expect(live.events).toContainEqual({
+      type: 'goal_event',
+      event: {
+        type: 'goal_cleared',
+        goalId: active.goalId,
+        reason: 'completion_auto_exit',
+      },
+    });
+
+    restoredAdapter.close();
+    adapter.close();
   });
 
   test('recovers a slow live consumer through durable replay_required', async () => {

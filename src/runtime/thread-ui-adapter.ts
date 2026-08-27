@@ -5,10 +5,16 @@ import {
   type AgentRuntimeEventSink,
 } from './agent-runtime-protocol';
 import type { AgentTurnRequest } from './goals/types';
+import type { RuntimeGoalSnapshot } from './goals/types';
+import {
+  readGoalRuntimePersistenceV2,
+  type GoalRuntimePersistenceViewV2,
+} from './goal-runtime-coordinator';
 import { createRuntimeId, type RuntimeEventEnvelopeV1 } from './protocol/runtime-protocol-v1';
 import type { RuntimeEventBufferOptionsV1, RuntimeEventBufferV1 } from './runtime-event-buffer';
 import type { ThreadCommandAdmissionV1, ThreadTurnRequestV1 } from './thread-admission';
 import { ThreadRuntimeV1 } from './thread-runtime';
+import { parseTurnCommitV1 } from './turn-commit';
 import type { TranscriptAppendEntry, TranscriptRole, UiEventSink } from './ui-events';
 
 export const THREAD_UI_ADAPTER_VERSION = 1 as const;
@@ -107,6 +113,7 @@ export class ThreadUiAdapterV1 implements AgentRuntimeRunnerV1 {
     // Subscribe at the current edge first. Historical replay is projected
     // separately, so commits that arrive after construction cannot be missed.
     this.consumer = this.runtime.subscribe(this.consumerId, liveCursor, options.buffer);
+    if (cursor === liveCursor) this.projectLatestGoalState();
   }
 
   async runInput(input: string, options: AgentRuntimeRunInputOptionsV1 = {}): Promise<void> {
@@ -353,11 +360,56 @@ export class ThreadUiAdapterV1 implements AgentRuntimeRunnerV1 {
       case 'thread.started':
       case 'thread.resumed':
       case 'thread.forked':
-      case 'turn.committed':
       case 'step.snapshot':
       case 'capability.receipt':
       case 'tool.receipt':
         return;
+      case 'turn.committed':
+        this.projectGoalCommit(event.payload.data.receipt);
+        return;
+    }
+  }
+
+  private projectLatestGoalState(): void {
+    const latest = Object.values(this.runtime.getProjection().turns)
+      .flatMap(turn => (turn.commit ? [turn.commit] : []))
+      .sort((left, right) => right.seq - left.seq)[0];
+    if (latest) this.projectGoalCommit(latest.receipt);
+  }
+
+  private projectGoalCommit(receipt: string): void {
+    const persistence = readGoalRuntimePersistenceV2(parseTurnCommitV1(receipt));
+    if (persistence.state?.status === 'completed') {
+      this.emit({
+        type: 'goal_event',
+        event: {
+          type: 'goal_cleared',
+          goalId: persistence.state.goalId,
+          reason: 'completion_auto_exit',
+        },
+      });
+      return;
+    }
+    if (persistence.state) {
+      this.emit({
+        type: 'goal_event',
+        event: {
+          type: 'goal_updated',
+          goal: goalUiSnapshot(persistence.state),
+          reason: 'durable_turn_commit',
+        },
+      });
+      return;
+    }
+    if (persistence.tombstone) {
+      this.emit({
+        type: 'goal_event',
+        event: {
+          type: 'goal_cleared',
+          goalId: persistence.tombstone.goalId ?? 'cleared-goal',
+          reason: persistence.tombstone.reason,
+        },
+      });
     }
   }
 
@@ -505,6 +557,28 @@ export class ThreadUiAdapterV1 implements AgentRuntimeRunnerV1 {
   private assertOpen(): void {
     if (this.closed) throw new ThreadUiAdapterError('Thread UI adapter is closed.');
   }
+}
+
+function goalUiSnapshot(
+  state: NonNullable<GoalRuntimePersistenceViewV2['state']>
+): RuntimeGoalSnapshot {
+  return {
+    goalId: state.goalId,
+    revision: state.generation,
+    objective: state.objective,
+    status:
+      state.status === 'completed'
+        ? 'complete'
+        : state.status === 'failed'
+          ? 'blocked'
+          : state.status,
+    tokenBudget: state.budget.maxTokens,
+    tokensUsed: state.tokensUsed,
+    timeUsedMs: state.elapsedMs,
+    continuationCount: state.continuationCount,
+    updatedAt: state.updatedAt,
+    ...(state.lastStopDecision ? { stopReason: state.lastStopDecision.reason.message } : {}),
+  };
 }
 
 export class ThreadUiAdapterError extends Error {

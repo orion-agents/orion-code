@@ -64,6 +64,19 @@ function processIsAlive(pid: number): boolean {
   }
 }
 
+function shouldAttemptStaleRecovery(lockPath: string, staleMs: number): boolean {
+  let observed;
+  try {
+    observed = statSync(lockPath);
+  } catch {
+    return false;
+  }
+  const owner = readOwner(lockPath);
+  if (!owner) return false;
+  const lastActivity = Math.max(observed.mtimeMs, owner.createdAt);
+  return Date.now() - lastActivity > staleMs && !processIsAlive(owner.pid);
+}
+
 function recoverStaleLock(
   lockPath: string,
   staleMs: number,
@@ -202,10 +215,11 @@ function withRecoverySentinel<T>(
   options: { waitMs: number; retryMs: number; staleMs: number },
   operation: () => T
 ): T {
-  // Every main-lock acquire, stale recovery, and release passes through this
-  // short-lived sentinel, so a checked stale main lock cannot be replaced
-  // before it is renamed. The primitive sentinel still treats a live owner as
-  // authoritative and fails closed on contention.
+  // Stale recovery passes through this short-lived sentinel, so two recovery
+  // contenders cannot both move the same observed main lock. Healthy owners
+  // publish and release by token without taking this secondary lock: making a
+  // release queue behind ordinary waiters can starve the owner and turn normal
+  // high-contention writes into deterministic timeouts.
   const sentinelPath = `${lockPath}${RECOVERY_SUFFIX}`;
   const sentinel = acquirePrimitiveLock(sentinelPath, options);
   try {
@@ -221,15 +235,26 @@ function acquireLock(
 ): LockOwner {
   const deadline = Date.now() + options.waitMs;
   while (true) {
+    // Atomic no-replace publication is safe without the recovery sentinel.
+    // Contenders for a healthy live lock must not repeatedly seize the
+    // sentinel, otherwise they can starve the actual owner when it needs the
+    // sentinel to release the main lock. An already-published sentinel still
+    // owns the transition and must be honored, including malformed legacy
+    // sentinels that intentionally fail closed during their grace period.
+    const sentinelExists = existsSync(`${lockPath}${RECOVERY_SUFFIX}`);
+    if (!sentinelExists) {
+      const published = createLock(lockPath);
+      if (published) return published;
+    }
+
     const remainingMs = Math.max(0, deadline - Date.now());
     let owner: LockOwner | null = null;
-
-    withRecoverySentinel(lockPath, { ...options, waitMs: remainingMs }, () => {
-      owner = createLock(lockPath);
-      if (!owner && recoverStaleLock(lockPath, options.staleMs)) {
+    if (sentinelExists || shouldAttemptStaleRecovery(lockPath, options.staleMs)) {
+      withRecoverySentinel(lockPath, { ...options, waitMs: remainingMs }, () => {
         owner = createLock(lockPath);
-      }
-    });
+        if (!owner && recoverStaleLock(lockPath, options.staleMs)) owner = createLock(lockPath);
+      });
+    }
     if (owner) return owner;
     if (Date.now() >= deadline) throw new Error(`Timed out waiting for file lock ${lockPath}`);
     sleepSync(options.retryMs);
@@ -252,12 +277,10 @@ export function withFileLockSync<T>(
   try {
     return operation();
   } finally {
-    try {
-      withRecoverySentinel(lockPath, resolvedOptions, () => {
-        releaseOwnedLock(lockPath, owner, 'file-lock.release');
-      });
-    } catch (error) {
-      debugError('file-lock.release', error, lockPath);
-    }
+    // The owner token makes release conditional on the exact published lock.
+    // A live owner is never eligible for stale recovery, and stale recovery
+    // serializes its own check/rename path, so release must not contend for the
+    // recovery sentinel with processes that are merely waiting for this lock.
+    releaseOwnedLock(lockPath, owner, 'file-lock.release');
   }
 }

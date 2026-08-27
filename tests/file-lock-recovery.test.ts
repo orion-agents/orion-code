@@ -76,7 +76,7 @@ const sleep = ms => {
 
 let paused = false;
 fs.linkSync = (source, destination) => {
-  if (!paused && String(destination).endsWith('.lock.recovery')) {
+  if (!paused && String(destination).endsWith('.lock')) {
     paused = true;
     originalWriteFileSync(readyPath, 'ready');
     while (!fs.existsSync(releasePath)) sleep(10);
@@ -201,9 +201,7 @@ describe('file-lock stale recovery serialization', () => {
       await waitForFile(readyPath);
       expect(fs.existsSync(recoveryPath)).toBe(false);
       expect(
-        fs
-          .readdirSync(tempDir)
-          .some(entry => entry.startsWith('session.json.lock.recovery.candidate-'))
+        fs.readdirSync(tempDir).some(entry => entry.startsWith('session.json.lock.candidate-'))
       ).toBe(true);
 
       child.kill('SIGKILL');

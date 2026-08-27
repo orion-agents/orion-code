@@ -162,6 +162,7 @@ export interface OrionSubagentCompositionV1 extends RuntimeServicePort {
 export interface OrionRuntimeLoopOptionsV1 {
   readonly streamCallbacks?: StreamCallbacks;
   readonly loopBudget?: ConstructorParameters<typeof AgentLoopV1>[0]['loopBudget'];
+  readonly onContextUsage?: ConstructorParameters<typeof AgentLoopV1>[0]['onContextUsage'];
   readonly compactCoordinator?: ConstructorParameters<typeof AgentLoopV1>[0]['compactCoordinator'];
   /**
    * Synchronous pre-commit projection. It may specialize the request
@@ -924,6 +925,7 @@ export class OrionRuntimeV1 {
         toolContext: () => this.options.toolContext,
         streamCallbacks: this.options.loop?.streamCallbacks,
         loopBudget: this.options.loop?.loopBudget,
+        onContextUsage: this.options.loop?.onContextUsage,
         compactCoordinator: this.options.loop?.compactCoordinator,
         commitTurn: commit => {
           const prepared = this.options.loop?.prepareTurnCommit?.(commit);

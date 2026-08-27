@@ -50,6 +50,7 @@ import type { ContextUsageSnapshot } from './model-context';
 import { canonicalMessagesFingerprint } from './compact/fingerprint';
 import { estimateMessagesTokens } from '../utils/token-estimate';
 import type { EffortPreference } from './effort';
+import { loadThreadSessionViewV1 } from '../runtime/thread-session-view';
 import {
   summarizeHarnessStateForMeta,
   upgradeHarnessState,
@@ -1566,6 +1567,24 @@ function readSessionMetaAtPath(path: string): SessionMeta | null {
   return session ? tryNormalizeSessionMeta(session, path) : null;
 }
 
+function loadRawSessionMeta(sessionId: string): SessionMeta | null {
+  const path = findSessionMetaPath(sessionId);
+  return path ? readSessionMetaAtPath(path) : null;
+}
+
+function projectSessionMetaWithThread(session: SessionMeta): SessionMeta {
+  const threadView = loadThreadSessionViewV1(session.projectPath, session.id);
+  if (!threadView) return session;
+  const updatedAt = Math.max(session.updatedAt ?? session.startTime, threadView.updatedAt);
+  return {
+    ...session,
+    updatedAt,
+    updatedAtIso: new Date(updatedAt).toISOString(),
+    messageCount: threadView.messageCount,
+    historySizeBytes: threadView.historySizeBytes,
+  };
+}
+
 /**
  * Serialize a session read-modify-write transaction across Orion processes.
  * The metadata path is rediscovered before each transaction and re-read only
@@ -1615,8 +1634,8 @@ export function updateSessionEffort(
  * 加载会话元数据
  */
 export function loadSessionMeta(sessionId: string): SessionMeta | null {
-  const path = findSessionMetaPath(sessionId);
-  return path ? readSessionMetaAtPath(path) : null;
+  const session = loadRawSessionMeta(sessionId);
+  return session ? projectSessionMetaWithThread(session) : null;
 }
 
 /**
@@ -1635,12 +1654,13 @@ export function updateSessionStats(sessionId: string, tokens: number, cost: numb
  * Mark a saved session as active again and refresh project metadata.
  */
 export function resumeSession(sessionId: string): SessionMeta | null {
-  return mutateSessionMeta(sessionId, session => {
-    session.endTime = undefined;
-    session.gitBranch = getGitBranch(session.projectPath);
-    session.updatedAt = Date.now();
-    session.updatedAtIso = new Date(session.updatedAt).toISOString();
+  const session = mutateSessionMeta(sessionId, current => {
+    current.endTime = undefined;
+    current.gitBranch = getGitBranch(current.projectPath);
+    current.updatedAt = Date.now();
+    current.updatedAtIso = new Date(current.updatedAt).toISOString();
   });
+  return session ? projectSessionMetaWithThread(session) : null;
 }
 
 /** Keep the session metadata's additive Goal binding in sync with its sidecar. */
@@ -2159,6 +2179,23 @@ export function commitSessionCompactCheckpoint(
 }
 
 export function loadSessionTranscriptMessages(sessionId: string): SessionMessage[] {
+  const rawSession = loadRawSessionMeta(sessionId);
+  if (rawSession) {
+    const threadView = loadThreadSessionViewV1(rawSession.projectPath, rawSession.id);
+    if (threadView) {
+      return threadView.transcriptMessages.map(message => ({
+        role: message.role,
+        content: message.content,
+        timestamp: message.timestamp,
+        ...(message.modelVisibleContent
+          ? { modelVisibleContent: message.modelVisibleContent }
+          : {}),
+        ...(message.toolCallId ? { toolCallId: message.toolCallId } : {}),
+        ...(message.tool_calls ? { tool_calls: structuredClone(message.tool_calls) } : {}),
+        ...(message.appliedSkills ? { appliedSkills: [...message.appliedSkills] } : {}),
+      }));
+    }
+  }
   return (
     withLockedSession(sessionId, session => {
       const messages = readSessionMessagesForSession(session);
@@ -2497,7 +2534,7 @@ export function removeTrailingSessionUserMessage(sessionId: string): SessionMess
  * 读取会话消息
  */
 export function readSessionMessages(sessionId: string): SessionMessage[] {
-  const session = loadSessionMeta(sessionId);
+  const session = loadRawSessionMeta(sessionId);
   if (!session) return [];
 
   return readSessionMessagesForSession(session);
@@ -2604,6 +2641,13 @@ export function readSessionTraceEvents(sessionId: string): SessionTraceEvent[] {
  * 包含完整的 tool_calls 信息，确保 LLM 能理解之前的工具调用
  */
 export function loadSessionHistory(sessionId: string): Message[] {
+  const rawSession = loadRawSessionMeta(sessionId);
+  if (rawSession) {
+    const threadView = loadThreadSessionViewV1(rawSession.projectPath, rawSession.id);
+    if (threadView) {
+      return threadView.modelHistory.map(message => structuredClone(message));
+    }
+  }
   return (
     withLockedSession(sessionId, session => {
       const messages = readSessionMessagesForSession(session);
@@ -2660,7 +2704,9 @@ function sessionMessageToModelMessage(message: SessionMessage): Message {
  * 列出所有会话
  */
 export function listSessions(limit?: number): SessionMeta[] {
-  const sessions = sortSessionsNewestFirst(Object.values(loadOrRebuildSessionCatalog().sessions));
+  const sessions = sortSessionsNewestFirst(
+    Object.values(loadOrRebuildSessionCatalog().sessions).map(projectSessionMetaWithThread)
+  );
   return limit ? sessions.slice(0, limit) : sessions;
 }
 
@@ -2670,9 +2716,9 @@ export function listSessions(limit?: number): SessionMeta[] {
 export function listProjectSessions(projectPath: string, limit?: number): SessionMeta[] {
   const canonicalProjectPath = resolveProjectPath(projectPath);
   const sessions = sortSessionsNewestFirst(
-    Object.values(loadOrRebuildSessionCatalog().sessions).filter(
-      session => session.projectPath === canonicalProjectPath
-    )
+    Object.values(loadOrRebuildSessionCatalog().sessions)
+      .filter(session => session.projectPath === canonicalProjectPath)
+      .map(projectSessionMetaWithThread)
   );
   return limit ? sessions.slice(0, limit) : sessions;
 }
