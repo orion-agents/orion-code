@@ -2,7 +2,7 @@
 
 面向终端的目标驱动 Coding Agent。
 
-> v0.2.2 补丁候选：让 Thread 会话恢复具备单会话故障隔离，安全恢复中断的工具历史，并确保窄终端
+> v0.2.2：让 Thread 会话恢复具备单会话故障隔离，安全恢复中断的工具历史，并确保窄终端
 > 始终可见 Goal 已用 token。
 
 [English](README.md) · [架构主计划](docs/plan/v0.2.0-dsh-harness-redesign-plan.md) ·
@@ -41,7 +41,7 @@ MCP 仍是用户可见的扩展边界。
 
 支持 Node.js 20、22、24。
 
-当 npm 已存在不可变的 `0.2.2` 发布凭据后：
+安装已发布的 `0.2.2` 版本：
 
 ```bash
 npm install -g @orion-agents/orion-code@0.2.2

@@ -2,7 +2,7 @@
 
 Goal-driven coding agent for the terminal.
 
-> v0.2.2 patch candidate — resilient Thread session recovery, provider-safe interrupted tool
+> v0.2.2 — resilient Thread session recovery, provider-safe interrupted tool
 > history, and width-stable Goal usage visibility on the v0.2 Harness.
 
 [中文说明](README.zh-CN.md) · [Architecture plan](docs/plan/v0.2.0-dsh-harness-redesign-plan.md) ·
@@ -46,7 +46,7 @@ user extension boundaries.
 
 Node.js 20, 22, and 24 are supported.
 
-After the immutable `0.2.2` npm receipt exists:
+Install the published `0.2.2` release:
 
 ```bash
 npm install -g @orion-agents/orion-code@0.2.2
