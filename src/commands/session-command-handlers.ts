@@ -9,7 +9,7 @@ import {
   listSessions,
   listProjectSessions,
   lookupSessionRef,
-  loadSessionHistory,
+  loadSessionHistoryWithDiagnostics,
   loadSessionCompactCheckpoint,
   loadSessionTranscriptMessages,
   loadSessionHarnessState,
@@ -457,6 +457,15 @@ async function restoreSession(
   session: SessionMeta,
   isLast: boolean
 ): Promise<CommandResult> {
+  // Validate and normalize every read-side projection before switching the
+  // active runtime. A damaged target must never tear down the healthy session
+  // the user is currently using.
+  const historyResult = loadSessionHistoryWithDiagnostics(session.id);
+  const history = historyResult.messages.map(message => structuredClone(message));
+  const recoveryWarnings = historyResult.diagnostics.map(diagnostic => diagnostic.message);
+  const transcriptMessages = loadSessionTranscriptMessages(session.id);
+  const rawMessages = readSessionMessages(session.id);
+  const checkpoint = loadSessionCompactCheckpoint(session.id);
   const resumed = resumeSession(session.id) ?? session;
 
   // Swap in the resumed session's transcript BEFORE emitting any command output,
@@ -464,11 +473,7 @@ async function restoreSession(
   // transcript replacement below.
   ctx.setSession?.(resumed);
 
-  // Load history and notify runtime/TUI consumers.
-  const history = loadSessionHistory(resumed.id);
-  const transcriptMessages = loadSessionTranscriptMessages(resumed.id);
-  const rawMessages = readSessionMessages(resumed.id);
-  const checkpoint = loadSessionCompactCheckpoint(resumed.id);
+  // Notify runtime/TUI consumers only after the target view is validated.
   const resumeGeneratedAt = Date.now();
   const summary =
     checkpoint?.summary.text ?? (history.length > 0 ? generateHistorySummary(history) : '');
@@ -496,6 +501,7 @@ async function restoreSession(
       summaryCoveredMessages,
       checkpointId: checkpoint?.checkpointId,
       transcriptMessages: transcriptMessages.length,
+      ...(recoveryWarnings.length > 0 ? { warnings: recoveryWarnings } : {}),
     });
   } else {
     await ctx.restoreSessionRuntime?.();
@@ -510,6 +516,7 @@ async function restoreSession(
       summaryCoveredMessages,
       checkpointId: checkpoint?.checkpointId,
       transcriptMessages: transcriptMessages.length,
+      ...(recoveryWarnings.length > 0 ? { warnings: recoveryWarnings } : {}),
     });
   }
 
@@ -537,6 +544,7 @@ async function restoreSession(
   } else {
     bannerLines.push('  No messages in session');
   }
+  for (const warning of recoveryWarnings) bannerLines.push(`⚠ ${warning}`);
 
   if (ctx.uiRenderer === 'tui') {
     if (!ctx.sessionRestored) {
@@ -550,7 +558,11 @@ async function restoreSession(
     output: [
       '',
       HEADER(bannerLines[0]),
-      ...bannerLines.slice(1).map(line => (line.startsWith('✔') ? SUCCESS(line) : DIM(line))),
+      ...bannerLines
+        .slice(1)
+        .map(line =>
+          line.startsWith('✔') ? SUCCESS(line) : line.startsWith('⚠') ? WARN(line) : DIM(line)
+        ),
       '',
     ].join('\n'),
   };

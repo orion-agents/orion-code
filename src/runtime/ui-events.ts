@@ -302,6 +302,8 @@ export interface RuntimeSessionRestoredEvent {
   summaryCoveredMessages?: number;
   checkpointId?: string;
   transcriptMessages?: number;
+  /** Safe, user-visible recovery notices; never contains transcript content. */
+  warnings?: readonly string[];
 }
 
 export interface FollowupQueueItem {

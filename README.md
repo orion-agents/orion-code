@@ -2,8 +2,8 @@
 
 Goal-driven coding agent for the terminal.
 
-> v0.2.1 patch candidate — the v0.2 Harness with exact-once TUI input, Thread-authoritative
-> session recovery, live context pressure, and durable Goal mode presentation.
+> v0.2.2 patch candidate — resilient Thread session recovery, provider-safe interrupted tool
+> history, and width-stable Goal usage visibility on the v0.2 Harness.
 
 [中文说明](README.zh-CN.md) · [Architecture plan](docs/plan/v0.2.0-dsh-harness-redesign-plan.md) ·
 [Migration guide](docs/migration/v0.1.9-to-v0.2.0.md) ·
@@ -46,10 +46,10 @@ user extension boundaries.
 
 Node.js 20, 22, and 24 are supported.
 
-After the immutable `0.2.1` npm receipt exists:
+After the immutable `0.2.2` npm receipt exists:
 
 ```bash
-npm install -g @orion-agents/orion-code@0.2.1
+npm install -g @orion-agents/orion-code@0.2.2
 orion --version
 orion doctor
 ```

@@ -22,10 +22,12 @@ import { parsePlanReceiptV1, parseTurnCommitV1 } from '../src/runtime/turn-commi
 import type { UiEventSink } from '../src/runtime/ui-events';
 import type { OrionCodeCLIConfig } from '../src/services/config';
 import { CompactCoordinator } from '../src/services/compact/coordinator';
+import { assertToolCallGroups } from '../src/services/compact/tool-call-groups';
 import { createGoal } from '../src/services/goal-storage';
 import type { LLMResponse, LLMService, Message } from '../src/services/llm';
 import {
   appendSessionMessage,
+  appendSessionMessages,
   createSession,
   type SessionMeta,
 } from '../src/services/session-storage';
@@ -96,6 +98,59 @@ describe('v0.2.0 product OrionRuntime cutover', () => {
 
     await runtime.close('integration complete');
     expect(runtime.state).toBe('closed');
+  });
+
+  test('repairs an interrupted imported tool group before the next provider request', async () => {
+    const session = createSession(projectPath, 'model-test');
+    appendSessionMessages(session.id, [
+      { role: 'user', content: 'inspect both files', timestamp: Date.now() },
+      {
+        role: 'assistant',
+        content: '',
+        timestamp: Date.now(),
+        tool_calls: [
+          {
+            id: 'call-first',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{"path":"one.txt"}' },
+          },
+          {
+            id: 'call-second',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{"path":"two.txt"}' },
+          },
+        ],
+      },
+    ]);
+    const llm = createFakeLlm([{ content: 'continued safely', model: 'model-test' }]);
+    const runtime = createProductOrionRuntimeV1(createProductFixture(llm), session.id);
+
+    await runtime.start();
+    runtime.thread.dispatch({
+      type: 'turn.start',
+      data: { input: 'continue after the interruption', mode: 'build' },
+    });
+    await runtime.thread.waitForIdle();
+
+    const request = llm.chatStream.mock.calls[0]?.[0] as Message[];
+    expect(() =>
+      assertToolCallGroups(request.filter(message => message.role !== 'system'))
+    ).not.toThrow();
+    expect(request).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: 'user', content: 'inspect both files' }),
+        expect.objectContaining({ role: 'tool', tool_call_id: 'call-first' }),
+        expect.objectContaining({ role: 'tool', tool_call_id: 'call-second' }),
+        expect.objectContaining({ role: 'user', content: 'continue after the interruption' }),
+      ])
+    );
+    const repairedResults = request.filter(message => message.role === 'tool');
+    expect(repairedResults).toHaveLength(2);
+    for (const result of repairedResults) {
+      expect(JSON.parse(result.content)).toMatchObject({ success: false, status: 'cancelled' });
+    }
+
+    await runtime.close('repaired import verified');
   });
 
   test('switches Session ownership only after the previous Thread has drained and closed', async () => {

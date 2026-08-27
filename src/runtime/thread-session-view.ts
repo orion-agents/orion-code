@@ -1,10 +1,14 @@
 import { statSync } from 'fs';
 
 import { getProjectThreadsV2Dir } from '../product/paths';
-import { assertToolCallGroups } from '../services/compact/tool-call-groups';
 import type { Message } from '../services/llm';
 import { resolveSessionStorageV1 } from './legacy-thread-materializer';
 import type { RuntimeEventEnvelopeV1 } from './protocol/runtime-protocol-v1';
+import {
+  normalizeSessionModelHistoryV1,
+  type SessionHistoryRecoveryDiagnosticV1,
+  type SessionHistoryResolvedSourceV1,
+} from './session-history-recovery';
 import { ThreadEventStore } from './thread-event-store';
 import type { ItemProjectionV1 } from './thread-projection';
 
@@ -18,8 +22,8 @@ export interface ThreadSessionTranscriptMessageV1 {
   readonly appliedSkills?: readonly string[];
 }
 
-/** Read-only compatibility view over the authoritative v2 Thread facts. */
-export interface ThreadSessionViewV1 {
+/** Metadata/transcript projection that never needs to decode model history. */
+export interface ThreadSessionSummaryV1 {
   readonly version: 1;
   readonly sessionId: string;
   readonly threadId: string;
@@ -29,8 +33,14 @@ export interface ThreadSessionViewV1 {
   readonly updatedAt: number;
   readonly historySizeBytes: number;
   readonly messageCount: number;
-  readonly modelHistory: readonly Message[];
   readonly transcriptMessages: readonly ThreadSessionTranscriptMessageV1[];
+}
+
+/** Read-only compatibility view over the authoritative v2 Thread facts. */
+export interface ThreadSessionViewV1 extends ThreadSessionSummaryV1 {
+  readonly modelHistory: readonly Message[];
+  readonly modelHistorySource: SessionHistoryResolvedSourceV1;
+  readonly diagnostics: readonly SessionHistoryRecoveryDiagnosticV1[];
 }
 
 export class ThreadSessionViewError extends Error {
@@ -45,12 +55,71 @@ export class ThreadSessionViewError extends Error {
 /**
  * Resolve a Session identity through the cutover index and project its Thread
  * facts without writing a legacy JSONL mirror. The cutover index remains the
- * sole generation switch and malformed durable history fails closed.
+ * sole generation switch. Invalid authoritative model history is recovered
+ * from durable transcript facts with explicit diagnostics; invalid Thread
+ * identity, replay, or projection data still fails closed.
  */
 export function loadThreadSessionViewV1(
   projectPath: string,
   sessionId: string
 ): ThreadSessionViewV1 | undefined {
+  const captured = captureThreadSessionV1(projectPath, sessionId, true);
+  if (!captured) return undefined;
+
+  const transcriptHistory = captured.summary.transcriptMessages.map(
+    transcriptMessageToModelMessage
+  );
+  let recovery;
+  if (captured.durableHistory) {
+    try {
+      recovery = normalizeSessionModelHistoryV1(
+        parseModelHistory(captured.durableHistory),
+        'turn_commit'
+      );
+    } catch {
+      const transcriptRecovery = normalizeSessionModelHistoryV1(transcriptHistory, 'transcript');
+      recovery = {
+        ...transcriptRecovery,
+        diagnostics: [
+          {
+            code: 'authoritative_history_invalid' as const,
+            message:
+              'The authoritative model history was invalid; Orion recovered from durable transcript facts.',
+          },
+          ...transcriptRecovery.diagnostics,
+        ],
+      };
+    }
+  } else {
+    recovery = normalizeSessionModelHistoryV1(transcriptHistory, 'transcript');
+  }
+
+  return deepFreeze({
+    ...captured.summary,
+    modelHistory: recovery.messages,
+    modelHistorySource: recovery.source,
+    diagnostics: recovery.diagnostics,
+  });
+}
+
+/** Load list/picker metadata without allowing model-history damage to fan out. */
+export function loadThreadSessionSummaryV1(
+  projectPath: string,
+  sessionId: string
+): ThreadSessionSummaryV1 | undefined {
+  return captureThreadSessionV1(projectPath, sessionId, false)?.summary;
+}
+
+function captureThreadSessionV1(
+  projectPath: string,
+  sessionId: string,
+  includeDurableHistory: boolean
+):
+  | {
+      readonly summary: ThreadSessionSummaryV1;
+      readonly durableHistory: readonly unknown[] | undefined;
+    }
+  | undefined {
   const resolution = resolveSessionStorageV1(projectPath, sessionId);
   if (resolution.kind === 'legacy') return undefined;
 
@@ -60,14 +129,10 @@ export function loadThreadSessionViewV1(
   const { projection, events, durableHistory } = captureStableThreadView(
     store,
     resolution.cursor,
-    resolution.projectionDigest
+    resolution.projectionDigest,
+    includeDurableHistory
   );
   const transcriptMessages = projectTranscriptMessages(projection.items, events);
-  const modelHistory = durableHistory
-    ? parseModelHistory(durableHistory)
-    : transcriptMessages.map(transcriptMessageToModelMessage);
-  assertToolCallGroups(modelHistory);
-
   const startedAt = events[0]?.timestamp ?? 0;
   const updatedAt = events.at(-1)?.timestamp ?? startedAt;
   let historySizeBytes: number;
@@ -79,25 +144,28 @@ export function loadThreadSessionViewV1(
     );
   }
 
-  return deepFreeze({
-    version: 1,
-    sessionId,
-    threadId: resolution.threadId,
-    cursor: projection.cursor,
-    projectionDigest: projection.digest,
-    startedAt,
-    updatedAt,
-    historySizeBytes,
-    messageCount: transcriptMessages.length,
-    modelHistory,
-    transcriptMessages,
-  });
+  return {
+    summary: deepFreeze({
+      version: 1,
+      sessionId,
+      threadId: resolution.threadId,
+      cursor: projection.cursor,
+      projectionDigest: projection.digest,
+      startedAt,
+      updatedAt,
+      historySizeBytes,
+      messageCount: transcriptMessages.length,
+      transcriptMessages,
+    }),
+    durableHistory,
+  };
 }
 
 function captureStableThreadView(
   store: ThreadEventStore,
   minimumCursor: number,
-  minimumProjectionDigest: string
+  minimumProjectionDigest: string,
+  includeDurableHistory: boolean
 ): {
   readonly projection: ReturnType<ThreadEventStore['loadProjection']>;
   readonly events: readonly RuntimeEventEnvelopeV1[];
@@ -116,7 +184,9 @@ function captureStableThreadView(
       );
     }
     const events = replayAll(store, projection.cursor);
-    const durableHistory = store.loadAuthoritativeModelHistory();
+    const durableHistory = includeDurableHistory
+      ? store.loadAuthoritativeModelHistory()
+      : undefined;
     if (store.getCursor() === projection.cursor) {
       return { projection, events, durableHistory };
     }

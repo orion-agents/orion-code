@@ -343,6 +343,7 @@ export function formatTerminalSessionRestored(event: RuntimeSessionRestoredEvent
   if (typeof view.summaryCoveredMessages === 'number') {
     lines.push(`  Covers: ${view.summaryCoveredMessages} source messages`);
   }
+  for (const warning of view.warnings ?? []) lines.push(`⚠ ${warning}`);
   if (typeof view.transcriptMessages === 'number') {
     lines.push(
       `✔ Restored ${view.restoredMessages} model-context messages / ${view.transcriptMessages} transcript messages`

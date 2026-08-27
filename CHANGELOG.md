@@ -22,6 +22,20 @@ which is **not** a pass.
 
 ## [Unreleased]
 
+## [0.2.2] — CANDIDATE
+
+> **Status: candidate.** This source version has no Git tag or npm publication until its external
+> release receipts are created and read back.
+
+### Fixed
+
+- Isolate Session discovery from malformed historical model context so one interrupted V2 Thread
+  cannot block `/session`, `/resume --last`, or a healthy explicit resume for the whole project.
+- Recover incomplete imported tool-call groups as explicit cancelled tool results before provider
+  requests, retain the original transcript facts, and surface typed recovery provenance to users.
+- Keep compact Goal token usage visible ahead of long objective text on narrow TUI status rows while
+  preserving Goal escape controls and the purple mode override.
+
 ## [0.2.1] — CANDIDATE
 
 > **Status: candidate.** This source version is not a Git tag, GitHub Release, or npm publication

@@ -277,6 +277,7 @@ describe('tui-ui state', () => {
       summarySource: 'llm',
       summaryCoveredMessages: 25,
       checkpointId: 'checkpoint-1',
+      warnings: ['Recovered incomplete tool-call results as cancelled entries.'],
     });
 
     expect(staticTuiTranscriptEntries(state)).toEqual([
@@ -288,6 +289,9 @@ describe('tui-ui state', () => {
     ]);
     expect(state.transcript[0].content).toContain('(compact checkpoint)');
     expect(state.transcript[0].content).toContain('Covers: 25 source messages');
+    expect(state.transcript[0].content).toContain(
+      '⚠ Recovered incomplete tool-call results as cancelled entries.'
+    );
   });
 });
 

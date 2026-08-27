@@ -50,7 +50,14 @@ import type { ContextUsageSnapshot } from './model-context';
 import { canonicalMessagesFingerprint } from './compact/fingerprint';
 import { estimateMessagesTokens } from '../utils/token-estimate';
 import type { EffortPreference } from './effort';
-import { loadThreadSessionViewV1 } from '../runtime/thread-session-view';
+import {
+  loadThreadSessionSummaryV1,
+  loadThreadSessionViewV1,
+} from '../runtime/thread-session-view';
+import type {
+  SessionHistoryRecoveryDiagnosticV1,
+  SessionHistoryResolvedSourceV1,
+} from '../runtime/session-history-recovery';
 import {
   summarizeHarnessStateForMeta,
   upgradeHarnessState,
@@ -1573,16 +1580,24 @@ function loadRawSessionMeta(sessionId: string): SessionMeta | null {
 }
 
 function projectSessionMetaWithThread(session: SessionMeta): SessionMeta {
-  const threadView = loadThreadSessionViewV1(session.projectPath, session.id);
-  if (!threadView) return session;
-  const updatedAt = Math.max(session.updatedAt ?? session.startTime, threadView.updatedAt);
-  return {
-    ...session,
-    updatedAt,
-    updatedAtIso: new Date(updatedAt).toISOString(),
-    messageCount: threadView.messageCount,
-    historySizeBytes: threadView.historySizeBytes,
-  };
+  try {
+    const threadSummary = loadThreadSessionSummaryV1(session.projectPath, session.id);
+    if (!threadSummary) return session;
+    const updatedAt = Math.max(session.updatedAt ?? session.startTime, threadSummary.updatedAt);
+    return {
+      ...session,
+      updatedAt,
+      updatedAtIso: new Date(updatedAt).toISOString(),
+      messageCount: threadSummary.messageCount,
+      historySizeBytes: threadSummary.historySizeBytes,
+    };
+  } catch (error) {
+    // A damaged historical Thread must not make every healthy Session in the
+    // project undiscoverable. Its raw metadata remains selectable for an
+    // explicit, isolated recovery attempt.
+    debugError('session-storage.projectThreadMeta', error, session.id);
+    return session;
+  }
 }
 
 /**
@@ -2181,9 +2196,9 @@ export function commitSessionCompactCheckpoint(
 export function loadSessionTranscriptMessages(sessionId: string): SessionMessage[] {
   const rawSession = loadRawSessionMeta(sessionId);
   if (rawSession) {
-    const threadView = loadThreadSessionViewV1(rawSession.projectPath, rawSession.id);
-    if (threadView) {
-      return threadView.transcriptMessages.map(message => ({
+    const threadSummary = loadThreadSessionSummaryV1(rawSession.projectPath, rawSession.id);
+    if (threadSummary) {
+      return threadSummary.transcriptMessages.map(message => ({
         role: message.role,
         content: message.content,
         timestamp: message.timestamp,
@@ -2641,14 +2656,31 @@ export function readSessionTraceEvents(sessionId: string): SessionTraceEvent[] {
  * 包含完整的 tool_calls 信息，确保 LLM 能理解之前的工具调用
  */
 export function loadSessionHistory(sessionId: string): Message[] {
+  return loadSessionHistoryWithDiagnostics(sessionId).messages.map(message =>
+    structuredClone(message)
+  );
+}
+
+export interface SessionHistoryLoadResult {
+  readonly messages: readonly Message[];
+  readonly source: SessionHistoryResolvedSourceV1;
+  readonly diagnostics: readonly SessionHistoryRecoveryDiagnosticV1[];
+}
+
+/** Load provider-safe history together with any explicit recovery provenance. */
+export function loadSessionHistoryWithDiagnostics(sessionId: string): SessionHistoryLoadResult {
   const rawSession = loadRawSessionMeta(sessionId);
   if (rawSession) {
     const threadView = loadThreadSessionViewV1(rawSession.projectPath, rawSession.id);
     if (threadView) {
-      return threadView.modelHistory.map(message => structuredClone(message));
+      return {
+        messages: threadView.modelHistory.map(message => structuredClone(message)),
+        source: threadView.modelHistorySource,
+        diagnostics: threadView.diagnostics,
+      };
     }
   }
-  return (
+  const messages =
     withLockedSession(sessionId, session => {
       const messages = readSessionMessagesForSession(session);
       const checkpoint = loadCompactCheckpointForSession(session, messages);
@@ -2682,8 +2714,8 @@ export function loadSessionHistory(sessionId: string): Message[] {
       }
 
       return sealToolCallGroups(modelVisibleMessages.map(sessionMessageToModelMessage));
-    }) ?? []
-  );
+    }) ?? [];
+  return { messages, source: 'legacy', diagnostics: [] };
 }
 
 function sessionMessageToModelMessage(message: SessionMessage): Message {
