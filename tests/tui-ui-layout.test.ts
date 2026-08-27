@@ -440,6 +440,55 @@ describe('tui-ui layout', () => {
     expect(status).not.toContain('/');
   });
 
+  it.each([80, 100, 120])(
+    'keeps Goal token usage visible before a long objective at width %i',
+    width => {
+      const state = reduce([
+        {
+          type: 'goalEvent',
+          event: {
+            type: 'goal_updated',
+            reason: 'turn_finalized',
+            goal: {
+              goalId: 'goal-token-priority',
+              revision: 1,
+              objective:
+                'Deliver a deliberately long objective that must yield status-row space first',
+              status: 'active',
+              tokensUsed: 581_625,
+              timeUsedMs: 0,
+              continuationCount: 1,
+              updatedAt: 100,
+            },
+          },
+        },
+        {
+          type: 'setStatusSnapshot',
+          phase: 'running',
+          snapshot: createStatusSnapshot({
+            renderer: 'tui',
+            model: 'ark-code-latest',
+            context: {
+              modelId: 'ark-code-latest',
+              usedTokens: 143_360,
+              contextWindow: 1_024_000,
+              percent: 14,
+              source: 'estimated',
+              warningThresholdPercent: 80,
+              autoCompactThresholdPercent: 95,
+              autoCompactEnabled: true,
+            },
+          }),
+        },
+      ]);
+
+      const status = renderFrameRows(renderTuiUiFrame(state, { width, height: 8 }))[4];
+      expect(status).toContain('MODE GOAL · BUILD');
+      expect(status).toContain('tokens:581.6K');
+      expect(status).not.toContain(String(Number.MAX_SAFE_INTEGER));
+    }
+  );
+
   it('keeps the first failed audit requirement visible in the Goal status row', () => {
     const state = reduce([
       {

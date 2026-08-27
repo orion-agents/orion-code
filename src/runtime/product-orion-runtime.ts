@@ -54,6 +54,7 @@ import type {
   SkillProviderV1,
 } from './skills';
 import type { FirstPartyApprovalHandlerV1 } from './first-party-tool-services';
+import { normalizeSessionModelHistoryV1 } from './session-history-recovery';
 import {
   createAuthoritySnapshotV1,
   createExecutionPolicySnapshotV1,
@@ -1037,12 +1038,15 @@ function schedulePlanExecution(
 }
 
 function legacyHistory(sessionId: string): Message[] {
-  return readSessionMessages(sessionId).map(message => ({
-    role: message.role,
-    content: message.modelVisibleContent ?? message.content,
-    ...(message.toolCallId ? { toolCallId: message.toolCallId } : {}),
-    ...(message.tool_calls ? { tool_calls: structuredClone(message.tool_calls) } : {}),
-  }));
+  return normalizeSessionModelHistoryV1(
+    readSessionMessages(sessionId).map(message => ({
+      role: message.role,
+      content: message.modelVisibleContent ?? message.content,
+      ...(message.toolCallId ? { tool_call_id: message.toolCallId } : {}),
+      ...(message.tool_calls ? { tool_calls: structuredClone(message.tool_calls) } : {}),
+    })),
+    'legacy'
+  ).messages.map(message => ({ ...message }));
 }
 
 function isMessage(value: unknown): value is Message {

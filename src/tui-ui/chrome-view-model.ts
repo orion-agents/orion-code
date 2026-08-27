@@ -104,8 +104,11 @@ export function createTuiChromeViewModel(
       : '';
     all.set('goal', {
       id: 'goal',
-      label: `GOAL goal:${state.goal.status}${actions}${progress}${objective}${plan}${usage}${audit}${next}`,
-      priority: 95,
+      // Usage is the durable progress signal operators need most. Keep it at
+      // the left edge so objective/plan text can be clipped on narrow frames
+      // without hiding how much this Goal has consumed.
+      label: `${usage.trim()}${actions} goal:${state.goal.status}${progress}${objective}${plan}${audit}${next}`,
+      priority: 115,
       critical: true,
     });
   }

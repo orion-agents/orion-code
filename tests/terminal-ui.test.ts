@@ -940,12 +940,14 @@ describe('terminal UI renderer adapter', () => {
         summarySource: 'llm',
         summaryCoveredMessages: 25,
         checkpointId: 'checkpoint-1',
+        warnings: ['Recovered incomplete tool-call results as cancelled entries.'],
       })
     );
 
     expect(rendered).toContain('restored 8 model-context / 20 transcript messages');
     expect(rendered).toContain('(compact checkpoint)');
     expect(rendered).toContain('Covers: 25 source messages');
+    expect(rendered).toContain('⚠ Recovered incomplete tool-call results as cancelled entries.');
   });
 
   it('bounds restored session marker width and redacts summary secrets', () => {

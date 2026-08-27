@@ -845,6 +845,7 @@ export function createTuiUiEventSink(
       if (typeof view.summaryCoveredMessages === 'number') {
         lines.push(`Covers: ${view.summaryCoveredMessages} source messages`);
       }
+      for (const warning of view.warnings ?? []) lines.push(`⚠ ${warning}`);
       lines.push(
         `✔ Restored ${event.restoredMessages} model-context messages / ${event.transcriptMessages ?? event.messageCount ?? event.restoredMessages} transcript messages`
       );

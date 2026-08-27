@@ -501,6 +501,7 @@ export interface SessionRestoredView {
   summaryCoveredMessages?: number;
   checkpointId?: string;
   transcriptMessages?: number;
+  warnings?: readonly string[];
   headline: string;
 }
 
@@ -762,6 +763,9 @@ export function createSessionRestoredView(event: RuntimeSessionRestoredEvent): S
   }
   if (event.checkpointId !== undefined) view.checkpointId = event.checkpointId;
   if (event.transcriptMessages !== undefined) view.transcriptMessages = event.transcriptMessages;
+  if (event.warnings?.length) {
+    view.warnings = event.warnings.map(normalizeSingleLineText).filter(Boolean);
+  }
   return view;
 }
 

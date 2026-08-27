@@ -12,9 +12,11 @@ import { TOOLS } from './support/legacy-tools';
 import { loadConfig } from '../src/services/config';
 import {
   appendSessionMessage,
+  appendSessionMessages,
   commitSessionCompactCheckpoint,
   createSession,
   listProjectSessions,
+  loadSessionHistoryWithDiagnostics,
   loadSessionMeta,
   renameSession,
   type SessionMeta,
@@ -173,6 +175,27 @@ describe('session commands', () => {
       turnId,
       payload: { type: 'turn.completed', data: { outcome: 'v2 session fixture complete' } },
     });
+    return session;
+  }
+
+  function createIncompleteV2Session(): SessionMeta {
+    const session = createSession(projectDir, 'gpt-4o');
+    appendSessionMessages(session.id, [
+      { role: 'user', content: 'resume an interrupted tool turn', timestamp: Date.now() },
+      {
+        role: 'assistant',
+        content: '',
+        timestamp: Date.now(),
+        tool_calls: [
+          {
+            id: 'call-interrupted',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{"path":"package.json"}' },
+          },
+        ],
+      },
+    ]);
+    materializeLegacyThreadV1({ projectPath: projectDir, sessionId: session.id });
     return session;
   }
 
@@ -349,6 +372,48 @@ describe('session commands', () => {
       { role: 'assistant', content: 'v2-only durable answer' },
     ]);
     expect(result.output).not.toContain('No messages in session');
+  });
+
+  test('/resume --last isolates an incomplete historical Thread and restores the healthy latest session', async () => {
+    const incomplete = createIncompleteV2Session();
+    const healthy = createV2OnlySession('healthy latest context', 'healthy durable answer');
+    const { ctx, restored, store } = makeContext('terminal');
+
+    const listed = listProjectSessions(projectDir);
+    const result = await findCommand('resume')!.execute(ctx, '--last');
+
+    expect(listed.map(session => session.id)).toEqual(
+      expect.arrayContaining([incomplete.id, healthy.id])
+    );
+    expect(listed.find(session => session.id === incomplete.id)).toMatchObject({ messageCount: 2 });
+    expect(result.success).toBe(true);
+    expect(restored.at(-1)?.id).toBe(healthy.id);
+    expect(store.getSnapshot().conversationHistory).toEqual([
+      { role: 'user', content: 'healthy latest context' },
+      { role: 'assistant', content: 'healthy durable answer' },
+    ]);
+  });
+
+  test('/resume repairs an incomplete v2 tool group and reports the recovery', async () => {
+    const incomplete = createIncompleteV2Session();
+    const { ctx, sessionRestored, store } = makeContext('terminal');
+
+    const result = await findCommand('resume')!.execute(ctx, incomplete.id);
+    const loaded = loadSessionHistoryWithDiagnostics(incomplete.id);
+
+    expect(result.success).toBe(true);
+    expect(loaded.source).toBe('transcript_repaired');
+    expect(loaded.diagnostics).toEqual([
+      expect.objectContaining({ code: 'tool_call_groups_repaired' }),
+    ]);
+    expect(store.getSnapshot().conversationHistory.at(-1)).toMatchObject({
+      role: 'tool',
+      tool_call_id: 'call-interrupted',
+    });
+    expect(sessionRestored.at(-1)?.warnings).toEqual([
+      expect.stringContaining('Recovered incomplete tool-call results'),
+    ]);
+    expect(result.output).toContain('Recovered incomplete tool-call results');
   });
 
   test('/session rename accepts a picker number and synchronizes the active session', async () => {
