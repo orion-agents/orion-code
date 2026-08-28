@@ -1,13 +1,34 @@
 # Orion Code
 
-面向终端的目标驱动 Coding Agent。
+面向终端与浏览器、本地优先的目标驱动 Coding Agent。
 
-> v0.2.2 补丁候选：让 Thread 会话恢复具备单会话故障隔离，安全恢复中断的工具历史，并确保窄终端
-> 始终可见 Goal 已用 token。
+> v0.3.0 候选版本：一套 Orion Runtime，同时提供本地 Web Workbench 与既有 TUI/terminal。
+> Candidate 源码不代表已经创建 npm 发布或 Git tag。
 
-[English](README.md) · [架构主计划](docs/plan/v0.2.0-dsh-harness-redesign-plan.md) ·
-[迁移指南](docs/migration/v0.1.9-to-v0.2.0.md) ·
-[准出清单](docs/plan/v0.2.0-release-checklist.md)
+[English](README.md) · [v0.3.0 Web 方案](docs/plan/v0.3.0-web-workbench-plan.md) ·
+[Settings 方案](docs/plan/v0.3.0-settings-integration-plan.md) ·
+[Node 兼容方案](docs/plan/v0.3.0-node-runtime-compatibility-plan.md) ·
+[Web API](docs/architecture/v0.3.0-web-api.yaml) ·
+[迁移指南](docs/migration/v0.2.2-to-v0.3.0.md) ·
+[Settings 迁移](docs/migration/v0.2.2-to-v0.3.0-settings.md) ·
+[真实状态图册](docs/assets/screenshots/v0.3.0-web/README.md)
+
+## v0.3.0 将带来什么
+
+- **一个 Runtime、两个交互界面。** `orion web` 与终端产品共用 product bootstrap、
+  AgentRuntimeController、Session/Thread、ToolGateway、审批、Goal、Plan、Skills 和 MCP；浏览器不另起
+  一套 agent loop。
+- **可恢复的 Web 工作台。** React 界面覆盖工作区/会话、对话与工具活动、BUILD/PLAN/AUTO、follow-up、
+  interrupt、审批、Goal/Plan、模型/effort、Skills/MCP 和诊断。快照与 cursor replay 负责刷新和 SSE
+  重连恢复。
+- **本地安全边界。** Host 只绑定 `127.0.0.1`；写请求必须携带精确 Origin、进程 nonce、JSON body 和
+  幂等键。响应设置严格 CSP，浏览器 payload 经过脱敏，大型工具结果按字节分页读取。
+- **Host 管理的 Settings。** 外观、默认模型、工作区 Effort 与全局工具确认策略统一进入严格、带
+  revision 的 `orion.json` Coordinator。原子批量保存、文件锁内 CAS、外部编辑 invalidation、
+  last-good 恢复与明确的来源/作用域/生效时机，让浏览器、slash 命令、TUI 与 Runtime 使用同一持久真相。
+- **有边界地参考 DSH。** 方案基于固定 DeepSeek Harness revision 做了源码审计。DSH Web 实际使用
+  POST 加两条下行 WebSocket；Orion 有意选择 JSON HTTP 加一条可 replay 的 SSE，同时保留 Orion 的
+  Model/Skills/MCP 边界。
 
 ## v0.2.0 带来了什么
 
@@ -39,12 +60,13 @@ MCP 仍是用户可见的扩展边界。
 
 ## 安装
 
-支持 Node.js 20、22、24。
+支持 Node.js 22.12+、24 和 26。生产环境建议使用 Node 24 LTS，当前开发环境也支持 Node 26
+Current。Node 20 已结束上游维护，不再属于 v0.3 Runtime 合同。
 
-当 npm 已存在不可变的 `0.2.2` 发布凭据后：
+当 npm 已存在不可变的 `0.3.0` 发布凭据后：
 
 ```bash
-npm install -g @orion-agents/orion-code@0.2.2
+npm install -g @orion-agents/orion-code@0.3.0
 orion --version
 orion doctor
 ```
@@ -101,6 +123,9 @@ Orion 读取 `~/.orion-code/orion.json`。可从
 ```bash
 orion                         # 默认产品 TUI
 orion --ui terminal           # 技术诊断 terminal fallback
+orion web                     # 启动本地 Web Workbench 并打开浏览器
+orion web --no-open --port 0  # 使用操作系统分配的 loopback 端口
+orion web --cwd /path/to/repo # 指定另一个已存在工作区
 orion -p "解释这个仓库"       # 实验性的非交互模式
 orion -p --output-format json "运行 focused tests"
 orion diff
@@ -108,6 +133,28 @@ orion commit
 ```
 
 `orion -p` 是早期实验性的非交互入口；需要确认弹层或实时 steering 的任务应使用 TUI。
+
+### 本地 Web Workbench
+
+`orion web` 在同一个 loopback origin 提供打包后的客户端与 `/api/v1/*`，v0.3.0 不提供 LAN bind。
+Provider 凭据仍通过 Orion 配置/环境变量管理；浏览器负责选择工作区和会话、执行或 steer 任务、回答
+审批并查看运行态。关闭或刷新 tab 不会替用户批准/拒绝，pending approval 仍由 Runtime 持有；停止
+Host 时会 abort 并 fail-closed。
+
+浏览器只展示已提交 Plan receipt 的 `body`、`returnMode`、`digest`，不会额外插入 review gate。
+PLAN 提交后仍由既有 Runtime 恢复 BUILD/AUTO，并在新的 logical turn 中启动实现。
+
+#### Host 管理的 Settings
+
+Settings dialog 从当前 Host 读取设置，不把浏览器存储当成第二配置真源。主题和减少动效会跨刷新、端口
+和 Host 重启保留；默认模型只影响新建 Session，当前 Session 仍通过 `/model` 或会话控制显式切换；
+Effort 是当前 workspace 的 project default，Session override 优先；工具确认是全局策略，只能在 Runtime
+idle 时保存，并从下一个 logical request 生效。`allow` 不会绕过 hard policy、sandbox 或工作区边界。
+
+每次保存都是一次原子 CAS batch。并发标签页或外部 `orion.json` 编辑会显示冲突但保留草稿；非法 JSON
+只会让页面进入 invalid 状态，Runtime 继续使用 last-good，Web 绝不覆盖坏文件。Provider 凭据不会进入
+Web API，页面只显示 readiness，打开本地配置文件的动作也不接受 path。优先级、旧 appearance 一次迁移
+和回滚方法见 [Settings 迁移说明](docs/migration/v0.2.2-to-v0.3.0-settings.md)。
 
 ### BUILD、PLAN、AUTO
 
@@ -179,11 +226,13 @@ npm run bench:harness:baseline
 npm run bench:harness
 npm run bench:harness:compare -- <baseline.json> <candidate.json>
 npm run prepublishOnly
+npm run test:web-e2e -- --grep @settings
 ```
 
-正式准出还会只构建一次 exact tarball，并在 Node 20/22/24 安装同一个 hash，验证 package identity、
-native SQLite、TUI、terminal、print、Goal、subagent、Skill、MCP、Compact 与 resume。详见
-[`v0.2.0 准出清单`](docs/plan/v0.2.0-release-checklist.md)。
+正式准出还会只构建一次 exact tarball，并在 Node 22/24/26 安装同一个 hash，验证 package identity、
+native SQLite、TUI、terminal、print、Web、Goal、subagent、Skill、MCP、Compact 与 resume。详见
+[`v0.3.0 Web Workbench 方案`](docs/plan/v0.3.0-web-workbench-plan.md)与
+[`v0.3.0 Settings 集成方案`](docs/plan/v0.3.0-settings-integration-plan.md)。
 
 ## 安全
 

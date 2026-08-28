@@ -1,0 +1,320 @@
+{
+  "schemaVersion": 1,
+  "kind": "orion.web-state-gallery",
+  "createdAt": "2026-08-27T16:14:41.960Z",
+  "package": {
+    "name": "@orion-agents/orion-code",
+    "version": "0.3.0"
+  },
+  "artifact": {
+    "filename": "orion-agents-orion-code-0.3.0.tgz",
+    "sha256": "c2b90d2e4c310880149d8fbd0e9aa40b53cbef2f535c7abd0b8cba2c5084b6e7",
+    "receiptDigest": "111775c93cf69ad487befa9368f99247f4d6df4528025d3a1ddf4f40a942d0f7"
+  },
+  "runtime": {
+    "node": "v22.22.3",
+    "browser": "Google Chrome",
+    "browserVersion": "151.0.7922.174",
+    "hostTransport": "loopback-http-sse",
+    "provider": "deterministic-loopback-openai-sse"
+  },
+  "screenshots": [
+    {
+      "order": 1,
+      "id": "workspace-empty",
+      "title": "空工作台",
+      "file": "01-workspace-empty.png",
+      "sha256": "77ff3675caf7f88753cbeff38991c2773c72d8fa28340f599f3023f8cfe2be18",
+      "viewport": {
+        "width": 1440,
+        "height": 960
+      }
+    },
+    {
+      "order": 2,
+      "id": "session-ready",
+      "title": "BUILD 会话就绪",
+      "file": "02-session-ready.png",
+      "sha256": "6e72296ff31bd3d6e60928d1eb6d968cfef4f0e545a05a2e12baab26eaeff625",
+      "viewport": {
+        "width": 1440,
+        "height": 960
+      }
+    },
+    {
+      "order": 3,
+      "id": "approval-pending",
+      "title": "工具审批等待中",
+      "file": "03-approval-pending.png",
+      "sha256": "37e63974acb58c1f340a15bf3f7f661b4e1afeda7635700ebe52809221d8503d",
+      "viewport": {
+        "width": 1440,
+        "height": 960
+      }
+    },
+    {
+      "order": 4,
+      "id": "approval-denied",
+      "title": "审批拒绝且无副作用",
+      "file": "04-approval-denied.png",
+      "sha256": "57960cafd9d7dde872e527b916687b124a42464678ce668611a535cd116d604b",
+      "viewport": {
+        "width": 1440,
+        "height": 960
+      }
+    },
+    {
+      "order": 5,
+      "id": "build-complete",
+      "title": "BUILD 写入与测试完成",
+      "file": "05-build-complete.png",
+      "sha256": "527327ff25d918160e2a7bf70247a6ba76940de8c3979a52a7e0afac397d732e",
+      "viewport": {
+        "width": 1440,
+        "height": 960
+      }
+    },
+    {
+      "order": 6,
+      "id": "plan-complete",
+      "title": "PLAN 收据与执行结果",
+      "file": "06-plan-complete.png",
+      "sha256": "7c0aa33cccfacdfe85b595f7a90ddf3514694a004a7793d47b055541f423564d",
+      "viewport": {
+        "width": 1440,
+        "height": 960
+      }
+    },
+    {
+      "order": 7,
+      "id": "goal-complete",
+      "title": "Goal 完成与证据",
+      "file": "07-goal-complete.png",
+      "sha256": "ea62eda01819a5ae664b8692aea3540099748c3a9a0cb0781051d1671bb7d29a",
+      "viewport": {
+        "width": 1440,
+        "height": 960
+      }
+    },
+    {
+      "order": 8,
+      "id": "capabilities-dormant",
+      "title": "Skills 与 MCP 未激活",
+      "file": "08-capabilities-dormant.png",
+      "sha256": "dfeec0bef9ba1fe11b545531fee3d390a23ef9796ba37e17148d36645554e3c0",
+      "viewport": {
+        "width": 1440,
+        "height": 960
+      }
+    },
+    {
+      "order": 9,
+      "id": "mcp-approval",
+      "title": "MCP 工具审批",
+      "file": "09-mcp-approval.png",
+      "sha256": "74458223040e1e2695bd1209952039873e443ec66e6080026d92d0ac1ad7d163",
+      "viewport": {
+        "width": 1440,
+        "height": 960
+      }
+    },
+    {
+      "order": 10,
+      "id": "capabilities-connected",
+      "title": "MCP 已激活",
+      "file": "10-capabilities-connected.png",
+      "sha256": "3b647e3f2fb9a115ffaabe41f508b830fd36f8069c75072c583ee776e29e4eff",
+      "viewport": {
+        "width": 1440,
+        "height": 960
+      }
+    },
+    {
+      "order": 11,
+      "id": "tool-output",
+      "title": "工具大输出分页检查器",
+      "file": "11-tool-output.png",
+      "sha256": "e0c8e9e0f848833816b0c187ea46f191b6810740527b11038e0b5b2dbec820e5",
+      "viewport": {
+        "width": 1440,
+        "height": 960
+      }
+    },
+    {
+      "order": 12,
+      "id": "diagnostics",
+      "title": "连接与恢复诊断",
+      "file": "12-diagnostics.png",
+      "sha256": "a07d03bad9d64577879d589a01352a1de624d3328aa2691a46545e4c8b823677",
+      "viewport": {
+        "width": 1440,
+        "height": 960
+      }
+    },
+    {
+      "order": 13,
+      "id": "settings",
+      "title": "Settings · General",
+      "file": "13-settings.png",
+      "sha256": "8a52321685ac6fa70ad0eb055ba7cf9ad3049c02ff8c34079b89b42889dcf23b",
+      "viewport": {
+        "width": 1440,
+        "height": 960
+      }
+    },
+    {
+      "order": 14,
+      "id": "offline",
+      "title": "离线与待重连",
+      "file": "14-offline.png",
+      "sha256": "cb9741612ebea0e1ff3b2810e130de94b3e96fa8329e607ce1f309146283a020",
+      "viewport": {
+        "width": 1440,
+        "height": 960
+      }
+    },
+    {
+      "order": 15,
+      "id": "mobile-navigation",
+      "title": "移动端会话导航",
+      "file": "15-mobile-navigation.png",
+      "sha256": "3a5b622e3da806c78e2e59fbb3f815bdeafd851fb2109851b3802bafa573e239",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      }
+    },
+    {
+      "order": 16,
+      "id": "mobile-inspector",
+      "title": "移动端详情面板",
+      "file": "16-mobile-inspector.png",
+      "sha256": "ca6ded8b4b43028c3bd5dab10b93c99fca514e06b9d0a081a8b2b453d7fa2e6c",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      }
+    },
+    {
+      "order": 17,
+      "id": "settings-dirty",
+      "title": "Settings · 两项草稿",
+      "file": "17-settings-dirty.png",
+      "sha256": "48f1f2f9c448b8109a93410a797269f5cc986451e77023471b882bab56c88984",
+      "viewport": {
+        "width": 1440,
+        "height": 960
+      }
+    },
+    {
+      "order": 18,
+      "id": "settings-discard-confirm",
+      "title": "Settings · 放弃草稿确认",
+      "file": "18-settings-discard-confirm.png",
+      "sha256": "1767b9f5800a7bc024e5133e14d7c3f8f4411064611ebba97b8709f45d2fb3cb",
+      "viewport": {
+        "width": 1440,
+        "height": 960
+      }
+    },
+    {
+      "order": 19,
+      "id": "settings-saved",
+      "title": "Settings · 原子保存成功",
+      "file": "19-settings-saved.png",
+      "sha256": "3ec750741610b13b40e76adaee2bb5484ef9812f24560daf131f99b843161540",
+      "viewport": {
+        "width": 1440,
+        "height": 960
+      }
+    },
+    {
+      "order": 20,
+      "id": "settings-models",
+      "title": "Settings · 模型与推理",
+      "file": "20-settings-models.png",
+      "sha256": "a562271f1e7d8f87d903e236fb35d4d094e6c13eb968053da05ad2ea45552cd9",
+      "viewport": {
+        "width": 1440,
+        "height": 960
+      }
+    },
+    {
+      "order": 21,
+      "id": "settings-permissions",
+      "title": "Settings · 权限",
+      "file": "21-settings-permissions.png",
+      "sha256": "640d4b5b0b0c3e7a6f333ecd76fcdd20f9ba8a7e6556708a1354910d25378563",
+      "viewport": {
+        "width": 1440,
+        "height": 960
+      }
+    },
+    {
+      "order": 22,
+      "id": "settings-allow-confirm",
+      "title": "Settings · Allow 风险确认",
+      "file": "22-settings-allow-confirm.png",
+      "sha256": "a945f3b6bbe0a1a61f335186d35b40650bd04766118f8db9d5193f767c78fb7b",
+      "viewport": {
+        "width": 1440,
+        "height": 960
+      }
+    },
+    {
+      "order": 23,
+      "id": "settings-advanced",
+      "title": "Settings · 高级状态",
+      "file": "23-settings-advanced.png",
+      "sha256": "8d5e32666638f4e709d4a212a505317267e86044d853df00d8a728ea6a31ba25",
+      "viewport": {
+        "width": 1440,
+        "height": 960
+      }
+    },
+    {
+      "order": 24,
+      "id": "settings-conflict",
+      "title": "Settings · 双页面版本冲突",
+      "file": "24-settings-conflict.png",
+      "sha256": "4168a91a68c8ce1300fcc204e7fbbc488211c27f3570d4ad27220bad7c9b0a59",
+      "viewport": {
+        "width": 1440,
+        "height": 960
+      }
+    },
+    {
+      "order": 25,
+      "id": "settings-runtime-busy",
+      "title": "Settings · Runtime 忙碌锁定",
+      "file": "25-settings-runtime-busy.png",
+      "sha256": "a0d7db03393ce2b037935122eacaa9db0f06b9f7fa6a163d4bd236d9548381b5",
+      "viewport": {
+        "width": 1440,
+        "height": 960
+      }
+    },
+    {
+      "order": 26,
+      "id": "settings-invalid",
+      "title": "Settings · 非法配置与 last-good",
+      "file": "26-settings-invalid.png",
+      "sha256": "17ec210d3b9b18c17b31a750fad792b87a858781938924cc966e654cbea53ae9",
+      "viewport": {
+        "width": 1440,
+        "height": 960
+      }
+    },
+    {
+      "order": 27,
+      "id": "settings-read-only",
+      "title": "Settings · 只读配置",
+      "file": "27-settings-read-only.png",
+      "sha256": "1b98ad39f83c7bc46b48228d13d70e78956c6a9096286e5ec3de8f1849b2802a",
+      "viewport": {
+        "width": 1440,
+        "height": 960
+      }
+    }
+  ]
+}

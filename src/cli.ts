@@ -3,35 +3,12 @@
  */
 
 import chalk from 'chalk';
-import { LLMService } from './services/llm';
-import { ProviderResilienceCoordinator } from './services/provider-resilience';
-import { ModelCoordinator } from './runtime/model-coordinator';
 import {
   DEFAULT_UI_RENDERER,
-  loadConfig,
-  isConfigured,
   resolveUIRenderer,
   SUPPORTED_UI_RENDERERS,
   type UIRenderer,
 } from './services/config';
-import { ensureConfigDir } from './services/config-dir';
-import {
-  getProjectConfig,
-  recordFirstStartTime,
-  incrementSessionCount,
-} from './services/global-config';
-import { appendUsageRecord } from './services/usage-state';
-import {
-  createSession,
-  endSession,
-  readSessionMessages,
-  updateSessionSummary,
-  type SessionMeta,
-} from './services/session-storage';
-import { buildMemoryPromptContext } from './memory/prompt-context';
-import { loadProjectInstructions } from './services/project-instructions';
-import { Store } from './framework/store';
-import { discoverModelContexts } from './services/model-context';
 import { launchTuiUI } from './tui-ui/launch';
 import { launchTerminalUI } from './terminal-ui/launch';
 import {
@@ -43,15 +20,11 @@ import { collectDoctorReport, formatDoctorReport, hasDoctorFailures } from './se
 import { collectWorkspaceDiff, formatWorkspaceDiff } from './services/workspace-diff';
 import { createCommitPlan, formatCommitPlan } from './services/commit-plan';
 import type { OrionCodeUiRuntime } from './runtime/ui-events';
-import { createProductionFirstPartyToolUniverseV1 } from './runtime/first-party-tool-universe';
-import { createProductOrionRuntimeV1 } from './runtime/product-orion-runtime';
-import { createFirstPartyMcpAdapterV1, loadFirstPartyMcpConfigurationV1 } from './runtime/mcp';
-import { createProductionFilesystemSkillProviderV1 } from './runtime/skills';
-import { OrionSessionRunnerV1 } from './runtime/orion-session-runner';
-import { CompactCoordinator } from './services/compact';
+import { createProductUiRuntime } from './runtime/product-bootstrap';
 import { handleMigrateCommand } from './migration/command';
 import type { CommandContext } from './commands/types';
 import { PACKAGE_VERSION } from './product/version';
+import { runOrionWeb } from './web';
 
 const BRAND = chalk.hex('#FF6B35');
 const ACCENT = chalk.hex('#00D4AA');
@@ -72,6 +45,7 @@ function showCliHelp(): void {
   console.log('  orion diff        Summarize current git workspace changes');
   console.log('  orion commit      Create a read-only commit plan and suggested message');
   console.log('  orion migrate openhorse  Preview OpenHorse migration; add --yes to execute');
+  console.log('  orion web         Start the local Web Workbench');
   console.log('  orion -p "task"   Run an experimental non-interactive task');
   console.log('  orion --help      Show this help message');
   console.log('  orion --version   Show version');
@@ -89,6 +63,49 @@ function showCliHelp(): void {
     DIM('tui is the default product UI. terminal is the technical fallback; print is experimental.')
   );
   console.log();
+}
+
+interface WebCliOptions {
+  port: number;
+  open: boolean;
+  cwd: string;
+}
+
+function parseWebCliOptions(args: string[]): WebCliOptions {
+  let port = 3080;
+  let open = true;
+  let cwd = process.cwd();
+  for (let index = 0; index < args.length; index++) {
+    const argument = args[index];
+    if (argument === '--no-open') {
+      open = false;
+      continue;
+    }
+    if (argument === '--port' || argument.startsWith('--port=')) {
+      const portValue = argument === '--port' ? args[++index] : argument.slice('--port='.length);
+      if (!portValue || !/^\d+$/u.test(portValue)) {
+        throw new Error('--port must be an integer from 0 through 65535.');
+      }
+      port = Number(portValue);
+      if (!Number.isSafeInteger(port) || port < 0 || port > 65_535) {
+        throw new Error('--port must be an integer from 0 through 65535.');
+      }
+      continue;
+    }
+    if (argument === '--cwd' || argument.startsWith('--cwd=')) {
+      const cwdValue = argument === '--cwd' ? args[++index] : argument.slice('--cwd='.length);
+      if (!cwdValue?.trim()) throw new Error('--cwd requires a directory path.');
+      cwd = cwdValue;
+      continue;
+    }
+    throw new Error(`Unknown orion web option: ${argument}`);
+  }
+  return { port, open, cwd };
+}
+
+function showWebHelp(): void {
+  console.log('Usage: orion web [--port <number>] [--no-open] [--cwd <directory>]');
+  console.log('Starts the local-only Web Workbench on 127.0.0.1.');
 }
 
 interface CliOptions {
@@ -172,188 +189,23 @@ function parseCliOptions(args: string[]): CliOptions {
 }
 
 async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OrionCodeUiRuntime> {
-  ensureConfigDir();
-  recordFirstStartTime();
-
-  const cwd = process.cwd();
-  const config = loadConfig({ ui: { renderer: uiRenderer } });
-  const memoryContent = buildMemoryPromptContext('', cwd).content;
-  const projectInstructionsContent = loadProjectInstructions(cwd);
-  const firstPartyTools = createProductionFirstPartyToolUniverseV1({
-    context: { cwd, config: { name: config.name, mode: config.mode } },
+  return createProductUiRuntime({
+    cwd: process.cwd(),
+    uiRenderer,
+    shutdownReason: 'Orion CLI shutdown',
   });
-  const toolCatalog = firstPartyTools.catalog;
-  const skillProvider = createProductionFilesystemSkillProviderV1({
-    cwd,
-    configuredPaths: config.skills?.paths,
-  });
-  const mcpAdapter = createFirstPartyMcpAdapterV1({
-    config: loadFirstPartyMcpConfigurationV1(),
-    baseDirectory: cwd,
-  });
-
-  const store = new Store({
-    config,
-    tools: toolCatalog.entries.map(entry => entry.tool),
-    currentModel: config.model,
-    memoryContent,
-    // Skill descriptors/definitions are selected by the lazy v0.2.0 runtime.
-    // The presentation Store must never eagerly retain Skill bodies.
-    skillsContent: '',
-    projectInstructionsContent,
-  });
-
-  let llm: LLMService | null = null;
-  let modelCoordinator: ModelCoordinator | undefined;
-    // Resolve credentials from the configured model registry or legacy config.
-  const configured = config.modelRegistry
-    ? config.modelRegistry.defaultProfile !== null
-    : isConfigured(config);
-  if (configured) {
-    const defaultProvider = config.modelRegistry?.defaultProfile
-      ? config.modelRegistry.providers.get(config.modelRegistry.defaultProfile.provider)
-      : null;
-    llm = new LLMService({
-      apiKey: defaultProvider
-        ? defaultProvider.apiKey.startsWith('$')
-          ? (process.env[defaultProvider.apiKey.slice(1)] ?? '')
-          : defaultProvider.apiKey
-        : config.apiKey,
-      baseUrl: defaultProvider?.baseUrl ?? config.apiBaseUrl,
-      model: config.modelRegistry?.defaultProfile?.model ?? config.model,
-      fallbackModel: config.modelRegistry?.fallbackProfile?.model ?? config.fallbackModel,
-      providerProtocol: defaultProvider?.protocol,
-      reasoningCapability: config.modelRegistry?.defaultProfile?.reasoningCapability,
-      fallbackReasoningCapability: config.modelRegistry?.fallbackProfile?.reasoningCapability,
-      effortPreference: config.defaultEffort,
-    });
-    // Keep chat() and chatStream() on the shared provider-resilience layer.
-    llm.resilience = new ProviderResilienceCoordinator();
-
-    // Initialize ModelCoordinator for /model switching.
-    modelCoordinator = new ModelCoordinator();
-    if (config.modelRegistry && config.modelClientPool) {
-      modelCoordinator.bind(config.modelRegistry, config.modelClientPool);
-      modelCoordinator.initModel(config.model);
-    }
-
-    if (config.apiBaseUrl) {
-      discoverModelContexts(config.apiBaseUrl, config.apiKey).catch(() => undefined);
-    }
-  }
-
-  const compactCoordinator = new CompactCoordinator({
-    modelId: llm?.getModel() ?? config.model,
-    llm,
-    outputReserveTokens: llm?.getMaxTokens?.(),
-    compactInstructions: getProjectConfig(cwd).compactInstructions,
-    getContextCapsule: () => store.getSnapshot().harnessState?.capsule,
-    getHarnessState: () => store.getSnapshot().harnessState,
-  });
-
-  let currentSession: SessionMeta | null = null;
-  let sessionRunner: OrionSessionRunnerV1 | undefined;
-  let shuttingDown = false;
-
-  const ensureSession = (): SessionMeta => {
-    if (!currentSession) {
-      currentSession = createSession(
-        cwd,
-        store.getSnapshot().currentModel || store.getSnapshot().config.model
-      );
-      incrementSessionCount();
-    }
-    return currentSession;
-  };
-
-  const setSession = (session: SessionMeta | null): void => {
-    currentSession = session;
-  };
-
-  const getSession = (): SessionMeta | null => currentSession;
-
-  const costTracker = store.getSnapshot().costTracker;
-  costTracker.setRecordSink(record => {
-    appendUsageRecord(record, {
-      sessionId: currentSession?.id,
-      projectPath: cwd,
-    });
-  });
-  const unsubscribeLlmUsage = llm?.subscribeUsage(event => {
-    costTracker.record(event.usage, {
-      model: event.model,
-      requestKind: event.operation,
-    });
-  });
-
-  const shutdown = async (): Promise<void> => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-
-    await sessionRunner?.close('Orion CLI shutdown');
-
-    if (currentSession) {
-      const messages = readSessionMessages(currentSession.id);
-      if (messages.length > 0) {
-        updateSessionSummary(currentSession.id, messages);
-      }
-      endSession(currentSession.id);
-    }
-
-    unsubscribeLlmUsage?.();
-  };
-
-  const createAgentRunner: OrionCodeUiRuntime['createAgentRunner'] = llm
-    ? (events, runnerOptions) => {
-        if (sessionRunner) return sessionRunner;
-        sessionRunner = new OrionSessionRunnerV1({
-          eventSink: events,
-          getSessionId: () => ensureSession().id,
-          createRuntime: sessionId =>
-            createProductOrionRuntimeV1(
-              {
-                cwd,
-                config,
-                store,
-                llm: llm as LLMService,
-                compactCoordinator,
-                toolCatalog,
-                skillProviders: [skillProvider],
-                mcpDescriptors: mcpAdapter.descriptors,
-                mcpConnector: mcpAdapter.connector,
-                approvalHandler: runnerOptions.approvalHandler,
-              },
-              sessionId
-            ),
-          mode: () => {
-            const mode = store.getSnapshot().agentMode;
-            return mode === 'plan' ? 'plan' : mode === 'auto' ? 'auto' : 'build';
-          },
-        });
-        return sessionRunner;
-      }
-    : undefined;
-
-  return {
-    cwd,
-    version: VERSION,
-    config,
-    store,
-    llm,
-    compactCoordinator,
-    modelCoordinator,
-    createAgentRunner,
-    getHarnessDiagnostics: async () => sessionRunner?.diagnostics(),
-    isConfigured: isConfigured(config),
-    ensureSession,
-    setSession,
-    getSession,
-    shutdown,
-  };
 }
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
+  if (args[0] === 'web') {
+    if (args.includes('--help') || args.includes('-h')) {
+      showWebHelp();
+      return;
+    }
+    await runOrionWeb(parseWebCliOptions(args.slice(1)));
+    return;
+  }
   if (args[0] === 'migrate') {
     const result = handleMigrateCommand(
       { cwd: process.cwd() } as CommandContext,

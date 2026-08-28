@@ -1,0 +1,1309 @@
+openapi: 3.1.0
+info:
+  title: Orion Code Local Web API
+  version: 0.3.0
+  description: >-
+    Same-origin loopback API for the Orion Code Web Workbench. DSH's pinned browser carrier uses
+    HTTP POST for unary calls plus two downlink-only WebSockets (`/api/events.mux` and
+    `/api/events.host`). Orion v0.3.0 deliberately uses `POST /commands` as its control carrier plus
+    one replayable `GET /events` Server-Sent Events downlink; resource updates such as settings CAS
+    retain their explicit REST methods.
+servers:
+  - url: /api/v1
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      responses:
+        '200':
+          description: Process health without secret or workspace data.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /bootstrap:
+    get:
+      operationId: getBootstrap
+      responses:
+        '200':
+          description: Secret-free workbench bootstrap state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BootstrapResponse'
+  /workspaces:
+    get:
+      operationId: listWorkspaces
+      description: Cursor-paged canonical workspaces known to the local Orion installation.
+      parameters:
+        - $ref: '#/components/parameters/PageCursor'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: One bounded workspace page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspacePage'
+        '400': { $ref: '#/components/responses/Problem' }
+  /workspaces/activate:
+    post:
+      operationId: activateWorkspace
+      description: Select a canonical workspace after draining the previous runtime owner.
+      security: [{ webNonce: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ActivateWorkspaceRequest'
+      responses:
+        '200':
+          description: Workspace selected, or an exact requestId retry replayed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceMutationResult'
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /sessions:
+    get:
+      operationId: listSessions
+      description: Cursor-paged sessions whose canonical project is the active workspace.
+      parameters:
+        - $ref: '#/components/parameters/PageCursor'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: One bounded session page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionPage'
+        '400': { $ref: '#/components/responses/Problem' }
+    post:
+      operationId: createSession
+      security: [{ webNonce: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSessionRequest'
+      responses:
+        '201':
+          description: New active session, or an exact requestId retry replayed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionMutationResult'
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /sessions/{sessionId}:
+    patch:
+      operationId: renameSession
+      security: [{ webNonce: [] }]
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RenameSessionRequest'
+      responses:
+        '200':
+          description: Updated session, or an exact requestId retry replayed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionMutationResult'
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /sessions/{sessionId}/activate:
+    post:
+      operationId: activateSession
+      description: Select and restore a session after draining the previous runtime owner.
+      security: [{ webNonce: [] }]
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MutationRequest'
+      responses:
+        '200':
+          description: Session selected, or an exact requestId retry replayed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandResult'
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /sessions/{sessionId}/snapshot:
+    get:
+      operationId: getSessionSnapshot
+      description: >-
+        Recovery snapshot for one session. Transcript items are cursor-paged; `threadCursor`
+        identifies the durable Thread projection edge and the independent `eventCursor` resumes
+        `/events`. Pending approvals are projected here and remain pending across refresh, network
+        loss and tab closure.
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/PageCursor'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Sanitized recovery state from durable runtime sources.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionSnapshot'
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /tool-details:
+    get:
+      operationId: listToolDetails
+      description: >-
+        Cursor-paged safe summaries from the active workspace's project artifact repository.
+        Current artifact metadata has no session identity, so this route is deliberately
+        workspace/project-scoped and must not be presented as proof that an artifact belongs to a
+        particular session.
+      parameters:
+        - $ref: '#/components/parameters/PageCursor'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: One bounded tool-detail summary page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolDetailSummaryPage'
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+  /tool-details/{callId}:
+    get:
+      operationId: getToolDetail
+      description: >-
+        Byte-paged redacted tool output resolved only from the active workspace's artifact list.
+        The current artifact metadata cannot prove session ownership; the host returns no artifact
+        filesystem path and makes no session-attribution claim.
+      parameters:
+        - $ref: '#/components/parameters/CallId'
+        - $ref: '#/components/parameters/OffsetBytes'
+        - $ref: '#/components/parameters/LimitBytes'
+      responses:
+        '200':
+          description: One UTF-8-safe redacted output page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolDetailPage'
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+  /skills:
+    get:
+      operationId: listSkills
+      description: >-
+        Cursor-paged safe Skill descriptors. Bodies, resource paths and trigger implementations are
+        excluded.
+      parameters:
+        - $ref: '#/components/parameters/PageCursor'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: One bounded Skill descriptor page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillPage'
+        '400': { $ref: '#/components/responses/Problem' }
+  /mcp:
+    get:
+      operationId: listMcpServers
+      description: >-
+        Cursor-paged safe MCP catalog/runtime summaries. Commands, endpoints, headers and
+        credentials are excluded and this read never activates a dormant server.
+      parameters:
+        - $ref: '#/components/parameters/PageCursor'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: One bounded MCP summary page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpPage'
+        '400': { $ref: '#/components/responses/Problem' }
+  /commands:
+    post:
+      operationId: dispatchCommand
+      description: >-
+        Dispatch a renderer-neutral runtime mutation. Approval decisions allow only once, project
+        or global scope. Interrupt and shutdown paths deny affected unresolved approvals and fail
+        their waiting tool calls closed.
+      security: [{ webNonce: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebCommand'
+      responses:
+        '202':
+          description: Accepted command, or an exact requestId retry replayed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandResult'
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /events:
+    get:
+      operationId: streamEvents
+      description: >-
+        One Server-Sent Events downlink. `cursor` or `Last-Event-ID` is the last delivered durable
+        sequence; the query value wins when both are present. Each SSE `id` is the decimal cursor,
+        while the JSON envelope also carries a UUID `eventId`. Disconnecting this stream does not
+        resolve or deny pending approvals.
+      parameters:
+        - $ref: '#/components/parameters/EventCursor'
+        - $ref: '#/components/parameters/LastEventId'
+      responses:
+        '200':
+          description: text/event-stream of discriminated WebEventEnvelope values.
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/WebEventEnvelope'
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /diagnostics:
+    get:
+      operationId: getDiagnostics
+      responses:
+        '200':
+          description: Sanitized runtime and harness diagnostics.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /settings:
+    get:
+      operationId: getSettings
+      responses:
+        '200':
+          description: Current secret-free, source-aware Settings document and durable revision.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettingsDocument'
+    patch:
+      operationId: updateSettings
+      description: >-
+        Atomically apply one bounded batch only when `expectedRevision` equals the keyed revision of
+        the exact current orion.json bytes. Duplicate keys and partial commits are rejected.
+      security: [{ webNonce: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSettingsRequest'
+      responses:
+        '200':
+          description: Updated settings, or an exact requestId retry replayed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettingsMutationResult'
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409':
+          description: requestId/body conflict, stale expectedRevision, or busy Runtime; no field was applied.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /settings/open-document:
+    post:
+      operationId: openSettingsDocument
+      description: >-
+        Open the Host-resolved orion.json in the native text editor. This loopback-only action accepts
+        no path and never returns the resolved filesystem path.
+      security: [{ webNonce: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [requestId]
+              properties:
+                requestId: { $ref: '#/components/schemas/RequestId' }
+      responses:
+        '200':
+          description: The pathless open request was accepted or replayed idempotently.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [requestId, opened]
+                properties:
+                  requestId: { $ref: '#/components/schemas/RequestId' }
+                  opened: { type: boolean, const: true }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+components:
+  securitySchemes:
+    webNonce:
+      type: apiKey
+      in: header
+      name: X-Orion-Web-Nonce
+  parameters:
+    SessionId:
+      in: path
+      name: sessionId
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 256 }
+    CallId:
+      in: path
+      name: callId
+      required: true
+      description: >-
+        Opaque identifier returned by the active workspace's tool-detail summary. The current file
+        repository aliases callId to its project artifact identifier.
+      schema: { type: string, minLength: 1, maxLength: 256 }
+    PageCursor:
+      in: query
+      name: cursor
+      required: false
+      description: Opaque collection cursor returned by the preceding page.
+      schema: { type: string, minLength: 1, maxLength: 512 }
+    PageSize:
+      in: query
+      name: pageSize
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+    OffsetBytes:
+      in: query
+      name: offsetBytes
+      required: false
+      schema: { type: integer, minimum: 0, default: 0 }
+    LimitBytes:
+      in: query
+      name: limitBytes
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 1048576, default: 65536 }
+    EventCursor:
+      in: query
+      name: cursor
+      required: false
+      description: Last durable Web event cursor accepted by the client.
+      schema: { type: integer, minimum: 0, default: 0 }
+    LastEventId:
+      in: header
+      name: Last-Event-ID
+      required: false
+      description: Browser-provided fallback for the last durable Web event cursor.
+      schema: { type: string, pattern: '^[0-9]+$' }
+  responses:
+    Problem:
+      description: Safe structured error with no secret-bearing data.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+  schemas:
+    HealthResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, version]
+      properties:
+        ok: { type: boolean, const: true }
+        version: { type: string }
+    BootstrapResponse:
+      type: object
+      additionalProperties: false
+      required: [apiVersion, productVersion, nonce, workspace, configured, settings, capabilities]
+      properties:
+        apiVersion: { type: integer, const: 1 }
+        productVersion: { type: string }
+        nonce: { type: string, minLength: 32 }
+        workspace: { type: string }
+        configured: { type: boolean }
+        activeSessionId: { type: [string, 'null'] }
+        settings: { $ref: '#/components/schemas/SettingsDocument' }
+        capabilities:
+          type: object
+          additionalProperties: false
+          required: [goal, plan, skills, mcp, diagnostics]
+          properties:
+            goal: { type: boolean }
+            plan: { type: boolean }
+            skills: { type: boolean }
+            mcp: { type: boolean }
+            diagnostics: { type: boolean }
+    MutationRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId]
+      properties:
+        requestId: { $ref: '#/components/schemas/RequestId' }
+    RequestId:
+      type: string
+      minLength: 1
+      maxLength: 128
+      description: >-
+        Client-generated idempotency key. Reuse is valid only for a byte-equivalent normalized
+        mutation body.
+    ActivateWorkspaceRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId, path]
+      properties:
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        path: { type: string, minLength: 1, maxLength: 4096 }
+    CreateSessionRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId]
+      properties:
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        name: { type: string, minLength: 1, maxLength: 120 }
+    RenameSessionRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId, name]
+      properties:
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        name: { type: string, minLength: 1, maxLength: 120 }
+    WorkspaceSummary:
+      type: object
+      additionalProperties: false
+      required: [path, label, active, sessionCount]
+      properties:
+        path: { type: string }
+        label: { type: string }
+        active: { type: boolean }
+        sessionCount: { type: integer, minimum: 0 }
+    WorkspacePage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/WorkspaceSummary' }
+        nextCursor: { type: [string, 'null'] }
+    WorkspaceMutationResult:
+      type: object
+      additionalProperties: false
+      required: [requestId, active, page]
+      properties:
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        active: { type: string }
+        page: { $ref: '#/components/schemas/WorkspacePage' }
+    SessionSummary:
+      type: object
+      additionalProperties: false
+      required: [id, projectPath, model, createdAt, updatedAt, messageCount]
+      properties:
+        id: { type: string }
+        projectPath: { type: string }
+        name: { type: string }
+        model: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        messageCount: { type: integer, minimum: 0 }
+        taskSummary: { type: string }
+        activeGoalId: { type: string }
+        activeGoalObjective: { type: string }
+    SessionPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/SessionSummary' }
+        nextCursor: { type: [string, 'null'] }
+    SessionMutationResult:
+      type: object
+      additionalProperties: false
+      required: [requestId, session]
+      properties:
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        session: { $ref: '#/components/schemas/SessionSummary' }
+    TranscriptMessage:
+      type: object
+      additionalProperties: false
+      required: [id, role, content, timestamp]
+      properties:
+        id: { type: string }
+        role:
+          type: string
+          enum: [system, user, assistant, tool]
+        content: { type: string }
+        timestamp: { type: number, minimum: 0 }
+        modelVisibleContent: { type: string }
+        toolCallId: { type: string }
+        tool_calls:
+          type: array
+          items: {}
+        appliedSkills:
+          type: array
+          items: { type: string }
+    TranscriptPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/TranscriptMessage' }
+        nextCursor: { type: [string, 'null'] }
+    GoalView:
+      type: object
+      additionalProperties: false
+      description: >-
+        Goal projection from the latest valid TurnCommitV1. A legacy Goal sidecar is eligible only
+        as a one-time migration seed and is never a competing read authority.
+      required: [authority, digest, state]
+      properties:
+        authority: { type: string, const: turn_commit }
+        digest: { type: string, minLength: 1 }
+        state:
+          description: >-
+            Opaque JSON value parsed from TurnCommitV1.goalState. The v0.3.0 wire type is unknown;
+            this contract does not invent required Goal fields or status/revision enums.
+    PlanView:
+      type: object
+      additionalProperties: false
+      description: >-
+        Exact safe projection of the PlanReceipt bound into TurnCommitV1. There is no Web review,
+        approval, status or step model. After the planning turn commits, Orion restores returnMode
+        and automatically schedules a separate execution request.
+      required: [body, returnMode, digest]
+      properties:
+        body: { type: string, minLength: 1 }
+        returnMode: { type: string, enum: [build, auto] }
+        digest: { type: string, minLength: 1 }
+    PendingApproval:
+      type: object
+      additionalProperties: false
+      description: Runtime-owned approval that survives browser disconnect and tab closure.
+      required: [id, toolName, sanitizedArguments, allowedScopes]
+      properties:
+        id: { type: string }
+        toolName: { type: string }
+        reason: { type: string }
+        sanitizedArguments: { type: object, additionalProperties: true }
+        allowedScopes:
+          type: array
+          const: [once, project, global]
+          items: { type: string, enum: [once, project, global] }
+    FollowupItem:
+      type: object
+      additionalProperties: false
+      required: [id, text, queuedAt]
+      properties:
+        id: { type: string }
+        text: { type: string }
+        queuedAt: { type: number, minimum: 0 }
+    SessionRuntimeSnapshot:
+      type: object
+      additionalProperties: false
+      required:
+        - active
+        - processing
+        - agentMode
+        - permissionMode
+        - status
+        - followups
+        - followupLimit
+        - contextUsage
+        - tokenUsage
+      properties:
+        active: { type: boolean }
+        processing: { type: boolean }
+        agentMode: { type: string }
+        permissionMode: { type: string }
+        status: { type: string }
+        followups:
+          type: array
+          items: { $ref: '#/components/schemas/FollowupItem' }
+        followupLimit: { type: integer, minimum: 0 }
+        contextUsage:
+          description: Runtime context-usage projection or null; the wire type is currently unknown.
+        tokenUsage:
+          description: Runtime token-usage projection or null; the wire type is currently unknown.
+    SessionSnapshot:
+      type: object
+      additionalProperties: false
+      required:
+        - apiVersion
+        - session
+        - threadId
+        - threadCursor
+        - eventCursor
+        - threadStatus
+        - transcript
+        - runtime
+        - pendingApprovals
+        - goal
+        - plan
+        - recoveryDiagnostics
+      properties:
+        apiVersion: { type: integer, const: 1 }
+        session: { $ref: '#/components/schemas/SessionSummary' }
+        threadId:
+          type: [string, 'null']
+          description: Null for a legacy session that has no materialized Thread identity.
+        threadCursor:
+          type: integer
+          minimum: 0
+          description: Latest projected durable Thread sequence; independent of eventCursor.
+        eventCursor: { type: integer, minimum: 0 }
+        projectionDigest: { type: string }
+        threadStatus: { type: string, enum: [new, active, idle, legacy] }
+        activeTurnId: { type: string }
+        transcript: { $ref: '#/components/schemas/TranscriptPage' }
+        runtime: { $ref: '#/components/schemas/SessionRuntimeSnapshot' }
+        pendingApprovals:
+          type: array
+          items: { $ref: '#/components/schemas/PendingApproval' }
+        goal:
+          oneOf:
+            - $ref: '#/components/schemas/GoalView'
+            - type: 'null'
+        plan:
+          oneOf:
+            - $ref: '#/components/schemas/PlanView'
+            - type: 'null'
+        recoveryDiagnostics:
+          type: array
+          items: {}
+    SkillSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - name
+        - description
+        - providerId
+        - sourceScope
+        - modelInvocable
+        - userInvocable
+        - requestedCapabilities
+        - digest
+      properties:
+        id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        providerId: { type: string }
+        sourceScope: { type: string, enum: [builtin, user, configured, project, remote] }
+        modelInvocable: { type: boolean }
+        userInvocable: { type: boolean }
+        requestedCapabilities:
+          type: array
+          items: { type: string }
+        digest: { type: string }
+    SkillPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/SkillSummary' }
+        nextCursor: { type: [string, 'null'] }
+    McpServerSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - name
+        - transport
+        - tags
+        - disabled
+        - state
+        - generation
+        - toolCount
+        - activeCallCount
+      properties:
+        id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        transport:
+          type: string
+          enum: [stdio, sse, http, streamable-http, websocket]
+        tags:
+          type: array
+          items: { type: string }
+        disabled: { type: boolean }
+        state:
+          type: string
+          enum: [dormant, activating, connected, idle, draining, failed]
+        generation: { type: integer, minimum: 0 }
+        toolCount: { type: integer, minimum: 0 }
+        activeCallCount: { type: integer, minimum: 0 }
+        failure: { type: string }
+    McpPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/McpServerSummary' }
+        nextCursor: { type: [string, 'null'] }
+    ToolDetailSummary:
+      type: object
+      additionalProperties: false
+      required: [callId, sequence, toolName, state, outputBytes, hasArtifact]
+      properties:
+        callId: { type: string }
+        sequence: { type: integer, minimum: 0 }
+        turnId: { type: string }
+        toolName: { type: string }
+        state: { type: string, enum: [success, error, skipped] }
+        outputBytes: { type: integer, minimum: 0 }
+        artifactId:
+          type: string
+          description: Opaque project artifact identifier; it is not a filesystem path.
+        hasArtifact: { type: boolean }
+    ToolDetailSummaryPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/ToolDetailSummary' }
+        nextCursor: { type: [string, 'null'] }
+    ToolDetailPage:
+      type: object
+      additionalProperties: false
+      required: [content, offsetBytes, totalBytes, redacted]
+      properties:
+        content: { type: string }
+        offsetBytes: { type: integer, minimum: 0 }
+        nextOffsetBytes:
+          type: [integer, 'null']
+          minimum: 0
+          description: Omitted or null when the page reaches the end of the artifact.
+        totalBytes: { type: integer, minimum: 0 }
+        redacted: { type: boolean }
+    SettingsRevision:
+      type: string
+      pattern: '^hmac-sha256:[a-f0-9]{64}$'
+      description: >-
+        Opaque HMAC over the exact current config bytes. The local HMAC key is never exposed.
+    SettingsFieldCommon:
+      type: object
+      required: [source, scope, applies, overridden, writable]
+      properties:
+        source: { type: string, enum: [internal, model, global, project, session] }
+        scope: { type: string, enum: [global, project, session] }
+        applies:
+          type: string
+          enum: [live, next-logical-request, new-session, restart]
+        overridden: { type: boolean }
+        writable: { type: boolean }
+        blockedReason:
+          type: string
+          enum: [runtime_busy, read_only, invalid_document]
+    ThemeSettingsField:
+      allOf:
+        - $ref: '#/components/schemas/SettingsFieldCommon'
+        - type: object
+          required: [effectiveValue]
+          properties:
+            effectiveValue: { type: string, enum: [system, light, dark] }
+            explicitValue: { type: string, enum: [system, light, dark] }
+            inheritedValue: { type: string, enum: [system, light, dark] }
+    MotionSettingsField:
+      allOf:
+        - $ref: '#/components/schemas/SettingsFieldCommon'
+        - type: object
+          required: [effectiveValue]
+          properties:
+            effectiveValue: { type: string, enum: [system, reduced] }
+            explicitValue: { type: string, enum: [system, reduced] }
+            inheritedValue: { type: string, enum: [system, reduced] }
+    ModelSettingsField:
+      allOf:
+        - $ref: '#/components/schemas/SettingsFieldCommon'
+        - type: object
+          required: [effectiveValue]
+          properties:
+            effectiveValue: { type: string, minLength: 1 }
+            explicitValue: { type: string, minLength: 1 }
+            inheritedValue: { type: string, minLength: 1 }
+    EffortSettingsField:
+      allOf:
+        - $ref: '#/components/schemas/SettingsFieldCommon'
+        - type: object
+          required: [effectiveValue]
+          properties:
+            effectiveValue: { $ref: '#/components/schemas/EffortPreference' }
+            explicitValue: { $ref: '#/components/schemas/EffortPreference' }
+            inheritedValue: { $ref: '#/components/schemas/EffortPreference' }
+    ToolConfirmationSettingsField:
+      allOf:
+        - $ref: '#/components/schemas/SettingsFieldCommon'
+        - type: object
+          required: [effectiveValue]
+          properties:
+            effectiveValue: { type: string, enum: [allow, ask, deny] }
+            explicitValue: { type: string, enum: [allow, ask, deny] }
+            inheritedValue: { type: string, enum: [allow, ask, deny] }
+    EffortPreference:
+      type: string
+      enum: [auto, none, minimal, low, medium, high, xhigh, max]
+    ModelSummary:
+      type: object
+      additionalProperties: false
+      required: [id, label]
+      properties:
+        id: { type: string, minLength: 1 }
+        label: { type: string, minLength: 1 }
+        provider: { type: string }
+    CredentialSlot:
+      type: object
+      additionalProperties: false
+      required: [providerId, state, source, writable]
+      properties:
+        providerId: { type: string, minLength: 1 }
+        state: { type: string, enum: [ready, missing, unavailable] }
+        source: { type: string, enum: [environment, legacy, none] }
+        writable: { type: boolean, const: false }
+    SettingsDocument:
+      type: object
+      additionalProperties: false
+      required:
+        - schemaVersion
+        - revision
+        - state
+        - writable
+        - hasDocument
+        - workspace
+        - sections
+        - models
+        - credentials
+      properties:
+        schemaVersion: { type: integer, const: 1 }
+        revision: { $ref: '#/components/schemas/SettingsRevision' }
+        state: { type: string, enum: [ready, invalid, read-only, unavailable] }
+        writable: { type: boolean }
+        hasDocument: { type: boolean }
+        workspace: { type: string }
+        sections:
+          type: object
+          additionalProperties: false
+          required: [appearance, defaults, permissions]
+          properties:
+            appearance:
+              type: object
+              additionalProperties: false
+              required: [theme, motion]
+              properties:
+                theme: { $ref: '#/components/schemas/ThemeSettingsField' }
+                motion: { $ref: '#/components/schemas/MotionSettingsField' }
+            defaults:
+              type: object
+              additionalProperties: false
+              required: [model, effort]
+              properties:
+                model: { $ref: '#/components/schemas/ModelSettingsField' }
+                effort: { $ref: '#/components/schemas/EffortSettingsField' }
+            permissions:
+              type: object
+              additionalProperties: false
+              required: [toolConfirmation]
+              properties:
+                toolConfirmation:
+                  $ref: '#/components/schemas/ToolConfirmationSettingsField'
+        models:
+          type: array
+          items: { $ref: '#/components/schemas/ModelSummary' }
+        credentials:
+          type: array
+          items: { $ref: '#/components/schemas/CredentialSlot' }
+        currentSession:
+          type: object
+          additionalProperties: false
+          required: [model, effort, overridesProjectEffort]
+          properties:
+            model: { type: string }
+            effort: { $ref: '#/components/schemas/EffortPreference' }
+            overridesProjectEffort: { type: boolean }
+        diagnostic:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+    SettingsOperation:
+      oneOf:
+        - $ref: '#/components/schemas/SetThemeSetting'
+        - $ref: '#/components/schemas/UnsetThemeSetting'
+        - $ref: '#/components/schemas/SetMotionSetting'
+        - $ref: '#/components/schemas/UnsetMotionSetting'
+        - $ref: '#/components/schemas/SetModelSetting'
+        - $ref: '#/components/schemas/UnsetModelSetting'
+        - $ref: '#/components/schemas/SetEffortSetting'
+        - $ref: '#/components/schemas/UnsetEffortSetting'
+        - $ref: '#/components/schemas/SetToolConfirmationSetting'
+        - $ref: '#/components/schemas/UnsetToolConfirmationSetting'
+    SetThemeSetting:
+      type: object
+      additionalProperties: false
+      required: [op, key, value]
+      properties:
+        op: { type: string, const: set }
+        key: { type: string, const: appearance.theme }
+        value: { type: string, enum: [system, light, dark] }
+    UnsetThemeSetting:
+      type: object
+      additionalProperties: false
+      required: [op, key]
+      properties:
+        op: { type: string, const: unset }
+        key: { type: string, const: appearance.theme }
+    SetMotionSetting:
+      type: object
+      additionalProperties: false
+      required: [op, key, value]
+      properties:
+        op: { type: string, const: set }
+        key: { type: string, const: appearance.motion }
+        value: { type: string, enum: [system, reduced] }
+    UnsetMotionSetting:
+      type: object
+      additionalProperties: false
+      required: [op, key]
+      properties:
+        op: { type: string, const: unset }
+        key: { type: string, const: appearance.motion }
+    SetModelSetting:
+      type: object
+      additionalProperties: false
+      required: [op, key, value]
+      properties:
+        op: { type: string, const: set }
+        key: { type: string, const: defaults.model }
+        value: { type: string, minLength: 1, maxLength: 200 }
+    UnsetModelSetting:
+      type: object
+      additionalProperties: false
+      required: [op, key]
+      properties:
+        op: { type: string, const: unset }
+        key: { type: string, const: defaults.model }
+    SetEffortSetting:
+      type: object
+      additionalProperties: false
+      required: [op, key, value]
+      properties:
+        op: { type: string, const: set }
+        key: { type: string, const: defaults.effort }
+        value: { $ref: '#/components/schemas/EffortPreference' }
+    UnsetEffortSetting:
+      type: object
+      additionalProperties: false
+      required: [op, key]
+      properties:
+        op: { type: string, const: unset }
+        key: { type: string, const: defaults.effort }
+    SetToolConfirmationSetting:
+      type: object
+      additionalProperties: false
+      required: [op, key, value]
+      properties:
+        op: { type: string, const: set }
+        key: { type: string, const: permissions.toolConfirmation }
+        value: { type: string, enum: [allow, ask, deny] }
+    UnsetToolConfirmationSetting:
+      type: object
+      additionalProperties: false
+      required: [op, key]
+      properties:
+        op: { type: string, const: unset }
+        key: { type: string, const: permissions.toolConfirmation }
+    UpdateSettingsRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId, expectedRevision, operations]
+      properties:
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        expectedRevision: { $ref: '#/components/schemas/SettingsRevision' }
+        operations:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items: { $ref: '#/components/schemas/SettingsOperation' }
+    SettingsMutationResult:
+      type: object
+      additionalProperties: false
+      required: [requestId, revision, appliedKeys, settings]
+      properties:
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        revision: { $ref: '#/components/schemas/SettingsRevision' }
+        appliedKeys:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            type: string
+            enum:
+              - appearance.theme
+              - appearance.motion
+              - defaults.model
+              - defaults.effort
+              - permissions.toolConfirmation
+        settings: { $ref: '#/components/schemas/SettingsDocument' }
+    WebCommand:
+      type: object
+      additionalProperties: false
+      required: [requestId, type]
+      allOf:
+        - if:
+            properties:
+              type: { const: set_agent_mode }
+            required: [type]
+          then:
+            required: [agentMode]
+      properties:
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        type:
+          type: string
+          enum:
+            - submit
+            - queue_followup
+            - remove_followup
+            - clear_followups
+            - interrupt
+            - permission_decision
+            - goal_control
+            - permission_mode_change
+            - cycle_agent_mode
+            - set_agent_mode
+        text: { type: string, maxLength: 1048576 }
+        itemId: { type: string }
+        requestPermissionId: { type: string }
+        approved: { type: boolean }
+        scope: { type: string, enum: [once, project, global] }
+        goalAction: { type: string, enum: [create, status, pause, resume, clear] }
+        objective: { type: string }
+        toolConfirmation: { type: string, enum: [allow, ask, deny] }
+        agentMode: { type: string, enum: [interactive, plan, auto] }
+    CommandResult:
+      type: object
+      additionalProperties: false
+      required: [requestId, result]
+      properties:
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        result: { type: string }
+        detail: { type: string }
+    WebEventEnvelope:
+      description: >-
+        Versioned, cursor-ordered event union. `type` is the discriminator; every branch carries
+        explicit `sessionId` and `threadId` keys. Runtime events allow null identities before a
+        session or Thread exists; committed Thread events require both values to be non-null.
+      oneOf:
+        - $ref: '#/components/schemas/RuntimeEventEnvelope'
+        - $ref: '#/components/schemas/ThreadEventEnvelope'
+        - $ref: '#/components/schemas/WorkbenchStateEnvelope'
+        - $ref: '#/components/schemas/SettingsInvalidatedEnvelope'
+        - $ref: '#/components/schemas/ReplayResetEnvelope'
+      discriminator:
+        propertyName: type
+        mapping:
+          runtime_event: '#/components/schemas/RuntimeEventEnvelope'
+          thread_event: '#/components/schemas/ThreadEventEnvelope'
+          workbench_state: '#/components/schemas/WorkbenchStateEnvelope'
+          settings_invalidated: '#/components/schemas/SettingsInvalidatedEnvelope'
+          replay_reset: '#/components/schemas/ReplayResetEnvelope'
+    RuntimeEventEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - apiVersion
+        - eventId
+        - cursor
+        - sessionId
+        - threadId
+        - type
+        - durable
+        - timestamp
+        - payload
+      properties:
+        apiVersion: { type: integer, const: 1 }
+        eventId: { type: string, format: uuid }
+        cursor: { type: integer, minimum: 1 }
+        sessionId: { type: [string, 'null'] }
+        threadId: { type: [string, 'null'] }
+        type: { type: string, const: runtime_event }
+        durable: { type: boolean }
+        timestamp: { type: string, format: date-time }
+        payload:
+          type: object
+          additionalProperties: false
+          required: [eventType, value]
+          properties:
+            eventType: { type: string, minLength: 1 }
+            value: { type: object, additionalProperties: true }
+    ThreadEventEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - apiVersion
+        - eventId
+        - cursor
+        - sessionId
+        - threadId
+        - type
+        - durable
+        - timestamp
+        - payload
+      properties:
+        apiVersion: { type: integer, const: 1 }
+        eventId: { type: string, format: uuid }
+        cursor: { type: integer, minimum: 1 }
+        sessionId: { type: string, minLength: 1 }
+        threadId: { type: string, minLength: 1 }
+        type: { type: string, const: thread_event }
+        durable: { type: boolean, const: true }
+        timestamp: { type: string, format: date-time }
+        payload:
+          type: object
+          additionalProperties: false
+          required: [sequence, eventType, value]
+          properties:
+            sequence: { type: integer, minimum: 1 }
+            eventType: { type: string, minLength: 1 }
+            value: { type: object, additionalProperties: true }
+    WorkbenchStateEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - apiVersion
+        - eventId
+        - cursor
+        - sessionId
+        - threadId
+        - type
+        - durable
+        - timestamp
+        - payload
+      properties:
+        apiVersion: { type: integer, const: 1 }
+        eventId: { type: string, format: uuid }
+        cursor: { type: integer, minimum: 1 }
+        sessionId: { type: [string, 'null'] }
+        threadId: { type: [string, 'null'] }
+        type: { type: string, const: workbench_state }
+        durable: { type: boolean }
+        timestamp: { type: string, format: date-time }
+        payload:
+          type: object
+          additionalProperties: false
+          required: [workspace, activeSessionId]
+          properties:
+            workspace: { type: string }
+            activeSessionId: { type: [string, 'null'] }
+    SettingsInvalidatedEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - apiVersion
+        - eventId
+        - cursor
+        - sessionId
+        - threadId
+        - type
+        - durable
+        - timestamp
+        - payload
+      properties:
+        apiVersion: { type: integer, const: 1 }
+        eventId: { type: string, format: uuid }
+        cursor: { type: integer, minimum: 1 }
+        sessionId: { type: [string, 'null'] }
+        threadId: { type: [string, 'null'] }
+        type: { type: string, const: settings_invalidated }
+        durable: { type: boolean, const: false }
+        timestamp: { type: string, format: date-time }
+        payload:
+          type: object
+          additionalProperties: false
+          required: [revision, reason, state]
+          properties:
+            revision: { $ref: '#/components/schemas/SettingsRevision' }
+            reason: { type: string, enum: [local-write, external-edit, workspace-change] }
+            state: { type: string, enum: [ready, invalid] }
+    ReplayResetEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - apiVersion
+        - eventId
+        - cursor
+        - sessionId
+        - threadId
+        - type
+        - durable
+        - timestamp
+        - payload
+      properties:
+        apiVersion: { type: integer, const: 1 }
+        eventId: { type: string, format: uuid }
+        cursor: { type: integer, minimum: 1 }
+        sessionId: { type: [string, 'null'] }
+        threadId: { type: [string, 'null'] }
+        type: { type: string, const: replay_reset }
+        durable: { type: boolean, const: true }
+        timestamp: { type: string, format: date-time }
+        payload:
+          type: object
+          additionalProperties: false
+          required: [reason, snapshotRequired]
+          properties:
+            reason: { type: string }
+            snapshotRequired: { type: boolean, const: true }
+    Problem:
+      type: object
+      additionalProperties: false
+      required: [type, title, status, code]
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        code: { type: string, minLength: 1 }
+        detail: { type: string }

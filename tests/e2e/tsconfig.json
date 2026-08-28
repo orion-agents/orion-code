@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "../..",
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "lib": ["ES2020", "ES2022.Intl", "DOM", "DOM.Iterable"],
+    "types": ["node", "@playwright/test"]
+  },
+  "include": ["../../playwright.config.ts", "../../scripts/e2e/**/*.ts", "./**/*.ts"],
+  "exclude": ["../../node_modules", "../../dist", "../../tests/tmp"]
+}

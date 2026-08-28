@@ -1,5 +1,6 @@
 import type { AgentInputKind, AgentTurnRequest } from './goals/types';
 import type { GoalRuntimeControlResultV2, GoalRuntimeControlV2 } from './goal-runtime-coordinator';
+import type { ThreadSessionRuntimeActivationV1 } from './thread-session-view';
 
 /** Renderer-neutral options for one admitted runtime request. */
 export interface AgentRuntimeRunInputOptionsV1 {
@@ -25,7 +26,7 @@ export interface AgentRuntimeRunnerV1 {
   runInput(input: string, options?: AgentRuntimeRunInputOptionsV1): Promise<void>;
   runRequest?(request: AgentTurnRequest, options?: AgentRuntimeRunInputOptionsV1): Promise<void>;
   /** Rebind the selected Session and replay its durable Thread facts without starting a turn. */
-  restoreSession?(): Promise<void>;
+  restoreSession?(activation?: ThreadSessionRuntimeActivationV1): Promise<void>;
   controlGoal?(control: GoalRuntimeControlV2): Promise<GoalRuntimeControlResultV2>;
   compact?(input?: AgentRuntimeCompactInputV1): Promise<AgentRuntimeCompactResultV1>;
   interrupt?(reason?: string): void;

@@ -94,6 +94,8 @@ export interface OrionRuntimeEventStoreRootsV1 {
   readonly rootDir: string;
   readonly threadId: string;
   readonly options?: ThreadEventStoreOptionsV1;
+  /** Already-verified Store handed across a typed Session activation boundary. */
+  readonly store?: ThreadEventStore;
 }
 
 export type OrionCapabilityStepConfigurationV1 = Omit<CapabilityStepConfigurationV1, 'compiler'> & {
@@ -703,11 +705,13 @@ export class OrionRuntimeV1 {
   private async performStart(): Promise<this> {
     try {
       this.acquireOwnership();
-      const eventStore = new ThreadEventStore(
-        this.options.eventStore.rootDir,
-        this.options.eventStore.threadId,
-        this.options.eventStore.options
-      );
+      const eventStore =
+        this.options.eventStore.store ??
+        new ThreadEventStore(
+          this.options.eventStore.rootDir,
+          this.options.eventStore.threadId,
+          this.options.eventStore.options
+        );
       const compactPersistence = new ThreadCompactTransactionPersistenceV1(eventStore);
       const compactRunner = new ThreadCompactMaintenanceRunnerV1(eventStore, this.options.compact);
       const compactRecovery = await compactRunner.recoverOrphans();
@@ -1294,6 +1298,13 @@ function validateOptions(options: OrionRuntimeV1Options): OrionRuntimeV1Options 
   }
   if (!options.eventStore?.threadId?.trim()) {
     invalidConfiguration('eventStore.threadId is required.');
+  }
+  if (
+    options.eventStore.store &&
+    (resolve(options.eventStore.store.rootDir) !== resolve(options.eventStore.rootDir) ||
+      options.eventStore.store.threadId !== options.eventStore.threadId)
+  ) {
+    invalidConfiguration('eventStore.store identity must match rootDir and threadId.');
   }
   if (!options.projectPath?.trim()) invalidConfiguration('projectPath is required.');
   if (typeof options.resolveCapabilityConfiguration !== 'function') {

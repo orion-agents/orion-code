@@ -136,7 +136,7 @@ export const AGENT_RUNTIME_COMMAND_DEFINITIONS_V1 = {
     properties: {
       requestId: nonEmptyString,
       approved: { type: 'boolean' },
-      scope: { type: 'string', enum: ['once', 'session', 'project'] },
+      scope: { type: 'string', enum: ['once', 'project', 'global'] },
     },
     required: ['requestId', 'approved'],
     additionalProperties: false,

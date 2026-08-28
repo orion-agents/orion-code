@@ -8,11 +8,19 @@ import type { SessionMeta, SessionTraceEvent } from '../services/session-storage
 import type { RuntimeSubtaskEvent } from './subagents/types';
 import type { ResearchLifecycleEvent } from './subagents/research-renderer';
 import type { GoalRuntimeEvent } from './goals/types';
+import type { McpServerDescriptorInputV1 } from './mcp';
+import type { SkillDescriptorV1 } from './skills';
 import type { ToolExternalAssertion } from '../framework/external-assertion';
 import type { EffortLevel, EffortPreference, EffortScope } from '../services/effort';
 import type { AgentRuntimeRunnerV1 } from './agent-runtime-runner';
 import type { FirstPartyApprovalHandlerV1 } from './first-party-tool-services';
 import type { OrionRuntimeDiagnosticsV1 } from './orion-runtime-v1';
+import type {
+  SettingsCoordinatorV1,
+  SettingsDocumentViewV1,
+  SettingsOperationV1,
+  SettingsUpdateResultV1,
+} from '../services/settings-coordinator';
 
 /** Re-export so the runtime event protocol can reference subtask events. */
 export type { RuntimeSubtaskEvent } from './subagents/types';
@@ -246,6 +254,7 @@ function isInteractiveRendererName(renderer: unknown): boolean {
   return (
     renderer === 'terminal' ||
     renderer === 'tui' ||
+    renderer === 'web' ||
     renderer === 'legacy' ||
     renderer === 'v2'
   );
@@ -284,6 +293,10 @@ export interface RuntimeToolFinishedEvent {
   externalAssertion?: ToolExternalAssertion;
   /** Authorization provenance carried to every renderer and protocol consumer. */
   authorization?: ToolAuthorizationView;
+  /** Exact ExecutionPolicy digest embedded in the validated durable ToolInvocationReceipt. */
+  executionPolicyDigest?: string;
+  /** Exact validated durable ToolInvocationReceipt digest; never recomputed by a renderer. */
+  receiptDigest?: string;
   /** Monotonic tool invocation sequence across the session (1-based). */
   sequence: number;
   batchCount?: number;
@@ -302,6 +315,10 @@ export interface RuntimeSessionRestoredEvent {
   summaryCoveredMessages?: number;
   checkpointId?: string;
   transcriptMessages?: number;
+  /** Number of recent transcript messages projected into the current renderer. */
+  visibleTranscriptMessages?: number;
+  /** True when older transcript messages remain durable but are outside the restored UI window. */
+  transcriptTruncated?: boolean;
   /** Safe, user-visible recovery notices; never contains transcript content. */
   warnings?: readonly string[];
 }
@@ -345,6 +362,13 @@ export interface RuntimeSessionAccessors {
   getSession: () => SessionMeta | null;
 }
 
+/** Renderer-neutral durable Settings mutation accepted by the product composition root. */
+export interface RuntimeSettingsMutationV1 {
+  readonly requestId: string;
+  readonly expectedRevision: string;
+  readonly operations: readonly SettingsOperationV1[];
+}
+
 export interface OrionCodeUiRuntime extends RuntimeSessionAccessors {
   cwd: string;
   version: string;
@@ -356,10 +380,30 @@ export interface OrionCodeUiRuntime extends RuntimeSessionAccessors {
   /** Creates the sole product runner after a renderer-neutral event sink exists. */
   createAgentRunner?: (
     events: UiEventSink,
-    options: { readonly approvalHandler: FirstPartyApprovalHandlerV1 }
+    options: {
+      readonly approvalHandler: FirstPartyApprovalHandlerV1;
+      /** Defaults to true; Web snapshots history and opts out of replaying it through live events. */
+      readonly replayHistoryOnRestore?: boolean;
+    }
   ) => AgentRuntimeRunnerV1;
   /** Read-only v0.2 runtime diagnostics for `/harness explain`; never activates lazy providers. */
   getHarnessDiagnostics?: () => Promise<OrionRuntimeDiagnosticsV1 | undefined>;
+  /** Descriptor-only Skill catalog for trusted product surfaces; never loads Skill bodies. */
+  inspectSkills?: () => Promise<readonly SkillDescriptorV1[]>;
+  /** Descriptor-only MCP catalog; never opens a transport. */
+  inspectMcp?: () => readonly McpServerDescriptorInputV1[];
+  /** Recreate the active Session Runtime after an idle-boundary configuration change. */
+  rebindSessionRuntime?: () => Promise<void>;
+  /** Sole product-owned Settings authority shared by Web, TUI and slash commands. */
+  settingsCoordinator?: SettingsCoordinatorV1;
+  /** Describe effective, secret-free Settings with the current Session override state. */
+  describeSettings?: () => SettingsDocumentViewV1;
+  /** Commit one CAS Settings mutation through the product-owned runtime hooks. */
+  updateSettings?: (input: RuntimeSettingsMutationV1) => Promise<SettingsUpdateResultV1>;
+  /** Apply the latest valid external Settings edit before a logical transition starts. */
+  synchronizeSettings?: () => Promise<SettingsDocumentViewV1>;
+  /** Bind the controller-owned logical-turn idle probe used by Settings admission. */
+  bindSettingsRuntimeIdleProbe?: (probe: () => boolean) => () => void;
   isConfigured: boolean;
   shutdown: () => Promise<void>;
 }

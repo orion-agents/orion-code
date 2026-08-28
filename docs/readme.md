@@ -6,7 +6,7 @@
   direction, and product/runtime contracts.
 - [`goals/`](goals/orion-code-项目级目标.md) — durable product goals and Goal evidence/recovery
   guidance.
-- [`plan/`](plan/v0.2.0-dsh-harness-redesign-plan.md) — active execution plans, current release
+- [`plan/`](plan/v0.3.0-web-workbench-plan.md) — active execution plans, current release
   gates, and future roadmap.
 - [`archive/releases/v0.1.x/`](archive/releases/v0.1.x/README.md) — immutable historical plans,
   audits, freeze boundaries, and release receipts.
@@ -17,6 +17,17 @@
 The repository release history is canonical in [`CHANGELOG.md`](../CHANGELOG.md). Active plans may
 link into the archive, but historical evidence is not moved back into `plan/` merely to satisfy an
 old relative path.
+
+## v0.3.0 release set
+
+- [Web Workbench development plan](plan/v0.3.0-web-workbench-plan.md)
+- [Settings integration plan](plan/v0.3.0-settings-integration-plan.md)
+- [Web API contract](architecture/v0.3.0-web-api.yaml)
+- [v0.2.2 migration and rollback](migration/v0.2.2-to-v0.3.0.md)
+- [v0.2.2 to v0.3.0 Settings migration](migration/v0.2.2-to-v0.3.0-settings.md)
+- [Real Web E2E plan](test/v0.3.0-web-e2e-plan.md)
+- [Web E2E qualification report](test/v0.3.0-web-e2e-report.md)
+- [Real Chrome state gallery](assets/screenshots/v0.3.0-web/README.md)
 
 ## v0.2.0 release set
 

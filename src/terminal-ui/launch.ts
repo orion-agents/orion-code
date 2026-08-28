@@ -349,6 +349,13 @@ export function formatTerminalSessionRestored(event: RuntimeSessionRestoredEvent
       `✔ Restored ${view.restoredMessages} model-context messages / ${view.transcriptMessages} transcript messages`
     );
   }
+  if (view.transcriptTruncated) {
+    lines.push(
+      typeof view.visibleTranscriptMessages === 'number' && view.visibleTranscriptMessages > 0
+        ? `  Display: showing recent ${view.visibleTranscriptMessages}; older transcript remains durable`
+        : '  Display: transcript omitted from this view; history remains durable'
+    );
+  }
 
   return lines.join('\n');
 }

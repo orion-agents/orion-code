@@ -1,5 +1,3 @@
-#!/usr/bin/env ts-node
-
 import { spawnSync } from 'child_process';
 import { createHash } from 'crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';

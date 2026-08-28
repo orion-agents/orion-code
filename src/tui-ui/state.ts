@@ -849,6 +849,13 @@ export function createTuiUiEventSink(
       lines.push(
         `✔ Restored ${event.restoredMessages} model-context messages / ${event.transcriptMessages ?? event.messageCount ?? event.restoredMessages} transcript messages`
       );
+      if (event.transcriptTruncated) {
+        lines.push(
+          typeof event.visibleTranscriptMessages === 'number' && event.visibleTranscriptMessages > 0
+            ? `Display: showing recent ${event.visibleTranscriptMessages}; older transcript remains durable`
+            : 'Display: transcript omitted from this view; history remains durable'
+        );
+      }
       const id = idFactory();
       dispatch({
         type: 'appendTranscript',

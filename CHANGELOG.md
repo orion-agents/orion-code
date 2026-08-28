@@ -22,10 +22,49 @@ which is **not** a pass.
 
 ## [Unreleased]
 
-## [0.2.2] — CANDIDATE
+## [0.3.0] — CANDIDATE
 
-> **Status: candidate.** This source version has no Git tag or npm publication until its external
-> release receipts are created and read back.
+> **Status: candidate.** This source version is not a Git tag, GitHub Release or npm publication
+> until those external receipts are created and read back separately.
+
+### Added
+
+- Add `orion web`, a loopback-only React workbench for workspace/session navigation, streaming
+  conversation and tools, follow-up/interrupt, approvals, Goal/Plan, model/effort settings,
+  Skills/MCP metadata, large-output inspection and diagnostics.
+- Add a versioned same-origin Web API with bounded cursor pagination, process-lifetime idempotency
+  keys, settings compare-and-swap, session recovery snapshots and a replayable SSE event stream.
+- Add a Host-owned Settings subsystem with strict typed reads, keyed exact-byte revisions,
+  raw-preserving atomic batch updates, lock-inside CAS, external-edit convergence, last-good
+  recovery and browser conflict handling.
+- Add the source-audited v0.3.0 product plan, OpenAPI contract and v0.2.2 migration/rollback guide.
+
+### Changed
+
+- Set the release-qualification contract to maintained Node 22.12+, 24 and 26; publication now
+  requires exact-tarball native SQLite, CLI, TUI, Web and fail-closed evidence on every line.
+- Extract the CLI composition into one shared product bootstrap so Web, TUI, terminal and print
+  retain the same AgentRuntimeController, OrionSessionRunner, OrionRuntime and durable stores.
+- Resolve new root/child runtimes from the selected model profile and support exact
+  BUILD/PLAN/AUTO selection at the next logical-request boundary.
+- Align durable approval scopes with the product permission store as `once`, `project`, `global`.
+- Route Web, TUI and slash-command changes for default model, project/global effort and tool
+  confirmation through one Settings coordinator; keep the current-session model distinct from the
+  default for newly created sessions.
+
+### Security
+
+- Bind Web only to `127.0.0.1`; require exact Origin, per-process nonce and JSON for mutations; cap
+  bodies and pages; reject Host/path-boundary violations; and send restrictive browser headers.
+- Keep pending approvals runtime-owned across browser disconnects, redact browser-safe projections,
+  expose no provider credentials, and disconnect slow SSE clients so they recover by cursor rather
+  than growing an unbounded response buffer.
+- Expose credential readiness only, keep the configuration-file action pathless, preserve invalid
+  external bytes, and require Runtime-idle mutation for settings that alter execution policy.
+
+## [0.2.2] — 2026-08-27
+
+> **Status: published.** The `v0.2.2` tag and npm `latest` package identify this release tree.
 
 ### Fixed
 

@@ -5,7 +5,7 @@
       "id": "my-provider",
       "displayName": "My OpenAI-compatible Provider",
       "baseUrl": "https://your-endpoint.example/v1",
-      "apiKey": "sk-REPLACE_WITH_YOUR_KEY",
+      "apiKey": "$ORION_CODE_API_KEY",
       "protocol": "openai-completions"
     }
   ],
@@ -41,7 +41,14 @@
   "allowedTools": [],
   "projects": {
     "/absolute/path/to/project": {
-      "compactInstructions": "Retain architecture decisions, failed verification, and release receipts."
+      "compactInstructions": "Retain architecture decisions, failed verification, and release receipts.",
+      "defaultEffort": "medium"
+    }
+  },
+  "web": {
+    "appearance": {
+      "theme": "system",
+      "motion": "system"
     }
   },
   "ui": {

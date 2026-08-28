@@ -334,6 +334,7 @@ describe('global-config', () => {
 
   describe('recordFirstStartTime', () => {
     test('records first start time', () => {
+      writeFileSync(join(testDir, 'orion.json'), JSON.stringify({ schemaVersion: 1 }));
       recordFirstStartTime();
 
       const config = loadGlobalConfig();
@@ -344,6 +345,33 @@ describe('global-config', () => {
       recordFirstStartTime();
       const config2 = loadGlobalConfig();
       expect(config2.firstStartTime).toBe(firstTime);
+    });
+
+    test('preserves valid unknown fields while adding optional startup metadata', () => {
+      const path = join(testDir, 'orion.json');
+      writeFileSync(
+        path,
+        '{ "schemaVersion": 1, "defaultModel": "gpt-4o", "future": { "keep": true } }\n'
+      );
+
+      recordFirstStartTime();
+
+      expect(JSON.parse(readFileSync(path, 'utf8'))).toMatchObject({
+        schemaVersion: 1,
+        defaultModel: 'gpt-4o',
+        future: { keep: true },
+        firstStartTime: expect.any(String),
+      });
+    });
+
+    test('fails closed and leaves invalid document bytes untouched', () => {
+      const path = join(testDir, 'orion.json');
+      const invalidBytes = '{"apiKey":"must-not-be-overwritten"';
+      writeFileSync(path, invalidBytes);
+
+      recordFirstStartTime();
+
+      expect(readFileSync(path, 'utf8')).toBe(invalidBytes);
     });
   });
 

@@ -15,7 +15,10 @@ import {
   type FilesystemSkillProviderV1,
 } from '../src/runtime/skills';
 import type { McpConnectionV1, McpConnectorV1 } from '../src/runtime/mcp';
-import { resolveSessionStorageV1 } from '../src/runtime/legacy-thread-materializer';
+import {
+  materializeLegacyThreadV1,
+  resolveSessionStorageV1,
+} from '../src/runtime/legacy-thread-materializer';
 import { ThreadEventStore } from '../src/runtime/thread-event-store';
 import type { SubagentThreadReceiptV1 } from '../src/runtime/subagent-thread-runtime';
 import { parsePlanReceiptV1, parseTurnCommitV1 } from '../src/runtime/turn-commit';
@@ -29,6 +32,7 @@ import {
   appendSessionMessage,
   appendSessionMessages,
   createSession,
+  loadSessionRestoreBundle,
   type SessionMeta,
 } from '../src/services/session-storage';
 
@@ -98,6 +102,30 @@ describe('v0.2.0 product OrionRuntime cutover', () => {
 
     await runtime.close('integration complete');
     expect(runtime.state).toBe('closed');
+  });
+
+  test('starts from the exact Store verified by the typed Session activation bundle', async () => {
+    const session = createLegacySession('typed activation context');
+    materializeLegacyThreadV1({ projectPath, sessionId: session.id });
+    const activation = loadSessionRestoreBundle(session.id).runtimeActivation;
+    expect(activation).toBeDefined();
+    expect(activation?.view).toMatchObject({
+      sessionId: session.id,
+      threadId: activation?.threadId,
+      cursor: activation?.cursor,
+      projectionDigest: activation?.projectionDigest,
+    });
+    const runtime = createProductOrionRuntimeV1(
+      createProductFixture(createFakeLlm([])),
+      session.id,
+      activation
+    );
+
+    await runtime.start();
+
+    expect(runtime.graph.eventStore).toBe(activation?.store);
+    expect(runtime.graph.eventStore.getCursor()).toBeGreaterThanOrEqual(activation?.cursor ?? 0);
+    await runtime.close('typed activation verified');
   });
 
   test('repairs an interrupted imported tool group before the next provider request', async () => {
@@ -230,6 +258,34 @@ describe('v0.2.0 product OrionRuntime cutover', () => {
     expect(llm.chatStream).toHaveBeenCalledTimes(1);
 
     await runner.close('resume replay complete');
+  });
+
+  test('preserves the bounded surface during a same-session runtime rebind', async () => {
+    const session = createLegacySession('same-session rebind context');
+    const llm = createFakeLlm([{ content: 'visible answer', model: 'model-test' }]);
+    const fixture = createProductFixture(llm);
+    const events = createUiSink();
+    const runner = new OrionSessionRunnerV1({
+      eventSink: events.sink,
+      getSessionId: () => session.id,
+      createRuntime: id => createProductOrionRuntimeV1(fixture, id),
+      replayHistoryOnRestore: false,
+      mode: 'build',
+    });
+
+    await runner.runInput('visible request');
+    await runner.restoreSession();
+
+    expect(events.clears).toHaveLength(0);
+    expect(events.appended).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ content: 'visible request' }),
+        expect.objectContaining({ content: 'visible answer' }),
+      ])
+    );
+    expect(llm.chatStream).toHaveBeenCalledTimes(1);
+
+    await runner.close('bounded rebind complete');
   });
 
   test('routes explicit compact through the active runtime maintenance turn', async () => {

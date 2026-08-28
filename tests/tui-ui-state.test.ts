@@ -277,6 +277,8 @@ describe('tui-ui state', () => {
       summarySource: 'llm',
       summaryCoveredMessages: 25,
       checkpointId: 'checkpoint-1',
+      visibleTranscriptMessages: 10,
+      transcriptTruncated: true,
       warnings: ['Recovered incomplete tool-call results as cancelled entries.'],
     });
 
@@ -289,6 +291,9 @@ describe('tui-ui state', () => {
     ]);
     expect(state.transcript[0].content).toContain('(compact checkpoint)');
     expect(state.transcript[0].content).toContain('Covers: 25 source messages');
+    expect(state.transcript[0].content).toContain(
+      'Display: showing recent 10; older transcript remains durable'
+    );
     expect(state.transcript[0].content).toContain(
       '⚠ Recovered incomplete tool-call results as cancelled entries.'
     );

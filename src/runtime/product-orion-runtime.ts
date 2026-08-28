@@ -1,4 +1,5 @@
-import { join } from 'path';
+import { join, resolve } from 'path';
+import { realpathSync } from 'fs';
 
 import type { Store } from '../framework/store';
 import type { ToolContext } from '../framework/tool';
@@ -11,14 +12,24 @@ import type { HarnessState } from '../harness';
 import { buildReferencedFilesPrompt } from '../services/file-context';
 import { loadGoal } from '../services/goal-storage';
 import { LLMService, type LLMConfig, type Message } from '../services/llm';
-import { loadSessionHarnessState, readSessionMessages } from '../services/session-storage';
+import {
+  loadSessionHarnessState,
+  readSessionMessages,
+  updateSessionThreadReadModel,
+} from '../services/session-storage';
+import { lookupProfile } from '../services/model-registry';
 import { estimateTokens } from '../utils/token-estimate';
+import { debugError } from '../utils/debug-log';
 import { getProjectThreadsV2Dir } from '../product/paths';
 import { createBuiltinToolCatalogV1, type BuiltinToolCatalogV1 } from './builtin-tool-provider';
 import type { CapabilityToolCandidateV1 } from './capabilities';
 import type { GoalLifecycleStateV2 } from './goal-lifecycle-v2';
 import type { GoalRuntimeDefinitionV2 } from './goal-runtime-coordinator';
-import { materializeLegacyThreadV1, resolveSessionStorageV1 } from './legacy-thread-materializer';
+import {
+  loadThreadCutoverIndexV1,
+  materializeLegacyThreadV1,
+  openSessionStorageV1,
+} from './legacy-thread-materializer';
 import { ThreadEventStore } from './thread-event-store';
 import type {
   LazyMcpRuntimeOptions,
@@ -54,6 +65,7 @@ import type {
   SkillProviderV1,
 } from './skills';
 import type { FirstPartyApprovalHandlerV1 } from './first-party-tool-services';
+import type { ThreadSessionRuntimeActivationV1 } from './thread-session-view';
 import { normalizeSessionModelHistoryV1 } from './session-history-recovery';
 import {
   createAuthoritySnapshotV1,
@@ -102,7 +114,8 @@ export interface ProductOrionRuntimeOptionsV1 {
 /** Build one explicit OrionRuntime owner for a legacy Session/v2 Thread identity. */
 export function createProductOrionRuntimeV1(
   options: ProductOrionRuntimeOptionsV1,
-  sessionId: string
+  sessionId: string,
+  activation?: ThreadSessionRuntimeActivationV1
 ): OrionRuntimeV1 {
   let promptState:
     | {
@@ -116,22 +129,26 @@ export function createProductOrionRuntimeV1(
       }
     | undefined;
   const scheduledPlanReceipts = new Set<string>();
-  let storage = resolveSessionStorageV1(options.cwd, sessionId);
-  if (storage.kind === 'legacy') {
+  let openedStorage = activation
+    ? openedStorageFromActivation(options.cwd, sessionId, activation)
+    : openSessionStorageV1(options.cwd, sessionId);
+  if (openedStorage.resolution.kind === 'legacy') {
     materializeLegacyThreadV1({ projectPath: options.cwd, sessionId });
-    storage = resolveSessionStorageV1(options.cwd, sessionId);
+    openedStorage = openSessionStorageV1(options.cwd, sessionId);
   }
-  if (storage.kind !== 'thread') {
+  const { resolution: storage } = openedStorage;
+  if (storage.kind !== 'thread' || !('store' in openedStorage)) {
     throw new Error(`Session ${sessionId} did not cut over to a v2 Thread.`);
   }
 
-  const existingProjection = new ThreadEventStore(
-    getProjectThreadsV2Dir(options.cwd),
-    storage.threadId
-  ).loadProjection();
+  const existingProjection = openedStorage.store.loadProjection();
   const hasDurableTurnCommit = Object.values(existingProjection.turns).some(turn => turn.commit);
 
-  const profile = options.config.modelRegistry?.defaultProfile;
+  const selectedModel = options.store.getSnapshot().currentModel;
+  const profile = options.config.modelRegistry
+    ? (lookupProfile(options.config.modelRegistry, selectedModel) ??
+      options.config.modelRegistry.defaultProfile)
+    : undefined;
   const provider = profile
     ? options.config.modelRegistry?.providers.get(profile.provider)
     : undefined;
@@ -171,6 +188,7 @@ export function createProductOrionRuntimeV1(
     eventStore: {
       rootDir: getProjectThreadsV2Dir(options.cwd),
       threadId: storage.threadId,
+      store: openedStorage.store,
     },
     projectPath: options.cwd,
     taskContext: {
@@ -251,13 +269,15 @@ export function createProductOrionRuntimeV1(
           harnessState: commit.taskContextState,
           conversationHistory: commit.history.map(message => ({ ...message })),
         });
+        synchronizeSessionThreadReadModel(sessionId, storage.generation, runtime.graph.eventStore);
         const planReceipt = planReceiptFromCommit(durableCommit);
         if (planReceipt) {
           projectPlanReceipt(options.store, planReceipt);
           schedulePlanExecution(runtime, planReceipt, scheduledPlanReceipts);
         }
       },
-      onRuntimeStarted: ({ restoredCommit, thread }) => {
+      onRuntimeStarted: ({ restoredCommit, thread, eventStore }) => {
+        synchronizeSessionThreadReadModel(sessionId, storage.generation, eventStore);
         if (restoredCommit) projectRestoredTurnCommit(options.store, restoredCommit);
         const planReceipt = restoredCommit ? planReceiptFromCommit(restoredCommit) : undefined;
         if (!planReceipt) return;
@@ -271,6 +291,76 @@ export function createProductOrionRuntimeV1(
   return runtime;
 }
 
+function openedStorageFromActivation(
+  projectPath: string,
+  sessionId: string,
+  activation: ThreadSessionRuntimeActivationV1
+): Extract<ReturnType<typeof openSessionStorageV1>, { readonly store: ThreadEventStore }> {
+  if (
+    activation.version !== 1 ||
+    realpathSync(resolve(activation.projectPath)) !== realpathSync(resolve(projectPath)) ||
+    activation.sessionId !== sessionId ||
+    activation.store.threadId !== activation.threadId
+  ) {
+    throw new Error(`Session ${sessionId} Runtime activation does not match its target identity.`);
+  }
+
+  const index = loadThreadCutoverIndexV1(projectPath);
+  const entry = index.sessions[sessionId];
+  if (!entry || entry.threadId !== activation.threadId) {
+    throw new Error(`Session ${sessionId} Runtime activation no longer matches the cutover index.`);
+  }
+  const projection = activation.store.loadProjection();
+  if (
+    projection.cursor < activation.cursor ||
+    (projection.cursor === activation.cursor && projection.digest !== activation.projectionDigest)
+  ) {
+    throw new Error(`Session ${sessionId} Runtime activation moved behind its verified edge.`);
+  }
+  return Object.freeze({
+    resolution: Object.freeze({
+      kind: 'thread' as const,
+      sessionId,
+      threadId: activation.threadId,
+      cursor: projection.cursor,
+      projectionDigest: projection.digest,
+      generation: index.generation,
+    }),
+    store: activation.store,
+  });
+}
+
+function synchronizeSessionThreadReadModel(
+  sessionId: string,
+  cutoverGeneration: number,
+  eventStore: ThreadEventStore
+): void {
+  try {
+    const head = eventStore.captureReadModelHead();
+    const { projection } = head;
+    updateSessionThreadReadModel(sessionId, {
+      threadId: projection.threadId,
+      cursor: projection.cursor,
+      projectionDigest: projection.digest,
+      cutoverGeneration,
+      lastRecordHash: head.lastRecordHash,
+      logDevice: head.log.device,
+      logInode: head.log.inode,
+      logMtimeNs: head.log.mtimeNs,
+      logCtimeNs: head.log.ctimeNs,
+      messageCount: Object.values(projection.items).filter(
+        item => item.kind === 'message' && item.status !== 'started'
+      ).length,
+      historySizeBytes: head.log.bytes,
+      updatedAt: head.lastEventTimestamp,
+    });
+  } catch (error) {
+    // Session-list metadata is a rebuildable read model. A projection refresh
+    // must never turn a committed agent turn into a reported failure.
+    debugError('product-orion-runtime.sessionReadModel', error, sessionId);
+  }
+}
+
 function createProductSubagentCompositionV1(
   options: ProductOrionRuntimeOptionsV1,
   model: {
@@ -282,7 +372,11 @@ function createProductSubagentCompositionV1(
   }
 ): OrionSubagentCompositionV1 | undefined {
   const config = clampSubagentConfig(options.config.subagents ?? DEFAULT_SUBAGENT_CONFIG);
-  const rootLlmConfig = deriveRootLlmConfig(options.config);
+  const selectedProfileId = options.store.getSnapshot().currentModel;
+  const selectedProfile = options.config.modelRegistry
+    ? lookupProfile(options.config.modelRegistry, selectedProfileId)
+    : null;
+  const rootLlmConfig = deriveRootLlmConfig(options.config, selectedProfileId);
   if (config.mode === 'off' || !rootLlmConfig.apiKey) return undefined;
 
   const allowedNames = new Set<string>(READ_ONLY_INVESTIGATION_TOOLS);
@@ -345,7 +439,12 @@ function createProductSubagentCompositionV1(
           createModelExecutor: childInput => {
             const executor = options.createSubagentModelExecutor
               ? options.createSubagentModelExecutor(childInput)
-              : createProductChildModelExecutor(options, rootLlmConfig, model.providerProtocol);
+              : createProductChildModelExecutor(
+                  options,
+                  rootLlmConfig,
+                  model.providerProtocol,
+                  selectedProfile?.reasoningCapability
+                );
             if (executor === options.llm || issuedModels.has(executor)) {
               throw new Error(
                 'Subagent model factory must return a distinct LLMService for every child request.'
@@ -458,12 +557,13 @@ function createProductSubagentRolePolicies(
 function createProductChildModelExecutor(
   options: ProductOrionRuntimeOptionsV1,
   rootConfig: Parameters<typeof createChildLlmConfig>[0],
-  providerProtocol: LLMConfig['providerProtocol'] | undefined
+  providerProtocol: LLMConfig['providerProtocol'] | undefined,
+  reasoningCapability: LLMConfig['reasoningCapability'] | undefined
 ): LLMService {
   const executor = new LLMService({
     ...createChildLlmConfig(rootConfig),
     providerProtocol,
-    reasoningCapability: options.config.modelRegistry?.defaultProfile?.reasoningCapability,
+    reasoningCapability,
     fallbackReasoningCapability: options.config.modelRegistry?.fallbackProfile?.reasoningCapability,
     effortPreference: options.config.defaultEffort,
   });

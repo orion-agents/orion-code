@@ -1,13 +1,37 @@
 # Orion Code
 
-Goal-driven coding agent for the terminal.
+Local-first, goal-driven coding agent for the terminal and browser.
 
-> v0.2.2 patch candidate — resilient Thread session recovery, provider-safe interrupted tool
-> history, and width-stable Goal usage visibility on the v0.2 Harness.
+> v0.3.0 candidate — one Orion runtime with a local Web Workbench, replayable browser state and
+> the existing TUI/terminal surfaces. Candidate source is not an npm publication or Git tag.
 
-[中文说明](README.zh-CN.md) · [Architecture plan](docs/plan/v0.2.0-dsh-harness-redesign-plan.md) ·
-[Migration guide](docs/migration/v0.1.9-to-v0.2.0.md) ·
-[Release checklist](docs/plan/v0.2.0-release-checklist.md)
+[中文说明](README.zh-CN.md) · [v0.3.0 Web plan](docs/plan/v0.3.0-web-workbench-plan.md) ·
+[Settings plan](docs/plan/v0.3.0-settings-integration-plan.md) ·
+[Node compatibility](docs/plan/v0.3.0-node-runtime-compatibility-plan.md) ·
+[Web API](docs/architecture/v0.3.0-web-api.yaml) ·
+[Migration guide](docs/migration/v0.2.2-to-v0.3.0.md) ·
+[Settings migration](docs/migration/v0.2.2-to-v0.3.0-settings.md) ·
+[real-state gallery](docs/assets/screenshots/v0.3.0-web/README.md)
+
+## What changes in v0.3.0
+
+- **One runtime, two interactive surfaces.** `orion web` uses the same product bootstrap,
+  AgentRuntimeController, Session/Thread stores, ToolGateway, approvals, Goals, Plans, Skills and
+  MCP boundaries as the terminal product; the browser does not run a second agent loop.
+- **Recoverable Web workbench.** The React workbench includes workspace/session navigation,
+  transcript and tool activity, BUILD/PLAN/AUTO, follow-ups, interrupt, approvals, Goal/Plan,
+  model/effort settings, Skills/MCP and diagnostics. Snapshots plus cursor replay repair refreshes
+  and SSE reconnects.
+- **Local security boundary.** The host binds only `127.0.0.1`; writes require an exact Origin,
+  process nonce, JSON body and idempotency key. Responses use a restrictive CSP, browser payloads
+  are redacted, and large tool results are byte-paged instead of placed on the event stream.
+- **Host-owned Settings.** Appearance, the default model, workspace effort and the global tool
+  confirmation policy use one strict, revisioned `orion.json` coordinator. Atomic batches, file-lock
+  CAS, external-edit invalidation, last-good recovery and explicit source/scope/apply metadata keep
+  the browser, slash commands, TUI and Runtime on the same persisted truth.
+- **Deliberate DSH adaptation.** The design was source-audited against a fixed DeepSeek Harness
+  revision. DSH's browser uses POST plus two downlink WebSockets; Orion intentionally uses JSON
+  HTTP plus one replayable SSE downlink while retaining Orion's Model/Skills/MCP boundaries.
 
 ## What changed in v0.2.0
 
@@ -44,12 +68,13 @@ user extension boundaries.
 
 ## Install
 
-Node.js 20, 22, and 24 are supported.
+Node.js 22.12+, 24, and 26 are supported. Use Node 24 LTS for production or Node 26 Current for
+current development environments. Node 20 is upstream EOL and is no longer a v0.3 runtime.
 
-After the immutable `0.2.2` npm receipt exists:
+After the immutable `0.3.0` npm receipt exists:
 
 ```bash
-npm install -g @orion-agents/orion-code@0.2.2
+npm install -g @orion-agents/orion-code@0.3.0
 orion --version
 orion doctor
 ```
@@ -106,6 +131,9 @@ Run `orion doctor` after configuration. Diagnostics never need to print the secr
 ```bash
 orion                         # default product TUI
 orion --ui terminal           # technical terminal fallback
+orion web                     # local Web Workbench; opens a browser
+orion web --no-open --port 0  # choose an ephemeral loopback port
+orion web --cwd /path/to/repo # start against another existing workspace
 orion -p "explain this repo"  # experimental non-interactive mode
 orion -p --output-format json "run the focused tests"
 orion diff
@@ -114,6 +142,35 @@ orion commit
 
 Experimental non-interactive print mode is available through `orion -p`; keep it out of
 interactive workflows that require confirmations or live steering.
+
+### Local Web Workbench
+
+`orion web` serves the packaged client and `/api/v1/*` from one loopback origin. It does not expose
+a LAN bind. Configure provider credentials with the normal Orion config/environment flow, then use
+the browser to select a workspace and session, run or steer work, answer approvals, and inspect
+runtime state. Closing or refreshing a tab leaves pending approvals owned by the runtime; stopping
+the host aborts them fail-closed.
+
+The browser exposes Plan receipts exactly as committed (`body`, `returnMode`, `digest`). It does not
+insert an extra review gate: after PLAN commits, the existing runtime restores BUILD/AUTO and starts
+implementation in a separate logical turn.
+
+#### Host-managed Settings
+
+The Settings dialog reads from the active Host rather than treating browser storage as a second
+configuration source. Theme and reduced-motion preferences persist across refreshes, ports and Host
+restarts. The default model applies to newly created sessions; changing the current session remains
+an explicit `/model` or session-control action. Effort is the active workspace's project default,
+with a session override taking precedence. Tool confirmation is global, may be changed only while
+the Runtime is idle and applies at the next logical request; `allow` never bypasses hard policy,
+sandbox or workspace containment.
+
+Every save is one atomic compare-and-swap batch. A concurrent tab or external `orion.json` edit is
+shown as a conflict without discarding the draft. Invalid external JSON preserves the last-good
+Runtime configuration and is never overwritten by the Web UI. Provider credentials remain outside
+the Web API: Settings exposes readiness only and its local configuration action accepts no path.
+See the [Settings migration guide](docs/migration/v0.2.2-to-v0.3.0-settings.md) for precedence,
+legacy appearance import and rollback details.
 
 ### BUILD, PLAN, AUTO
 
@@ -190,12 +247,14 @@ npm run bench:harness:baseline
 npm run bench:harness
 npm run bench:harness:compare -- <baseline.json> <candidate.json>
 npm run prepublishOnly
+npm run test:web-e2e -- --grep @settings
 ```
 
 Release qualification additionally builds one exact tarball and installs that unchanged hash on
-Node 20/22/24 for package identity, native SQLite, TUI, terminal, print, Goal, subagent, Skill, MCP,
-Compact, and resume journeys. See the
-[`v0.2.0 release checklist`](docs/plan/v0.2.0-release-checklist.md).
+Node 22/24/26 for package identity, native SQLite, TUI, terminal, print, Web, Goal, subagent, Skill,
+MCP, Compact, and resume journeys. See the
+[`v0.3.0 Web Workbench plan`](docs/plan/v0.3.0-web-workbench-plan.md) and
+[`v0.3.0 Settings integration plan`](docs/plan/v0.3.0-settings-integration-plan.md).
 
 ## Security
 

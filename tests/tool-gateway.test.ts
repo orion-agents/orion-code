@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 
+import { digestRuntimeValue } from '../src/runtime/protocol/canonical';
 import {
   ExecutionService,
   captureStepSnapshotV1,
@@ -146,7 +147,10 @@ describe('ToolGateway', () => {
       success: true,
       snapshotDigest: snapshot.digest,
       routerDigest: snapshot.toolRouter.digest,
+      executionPolicyDigest: snapshot.executionPolicy.digest,
     });
+    const { digest, ...receiptContent } = result.receipt;
+    expect(digest).toBe(digestRuntimeValue(receiptContent));
   });
 
   test('persists policy denial without approval, sandbox, or execution', async () => {

@@ -4,6 +4,16 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 
+const [nodeMajor, nodeMinor] = process.versions.node.split('.').map(Number);
+const supportedNodeRuntime =
+  (nodeMajor === 22 && nodeMinor >= 12) || nodeMajor === 24 || nodeMajor === 26;
+if (!supportedNodeRuntime) {
+  console.error(
+    `Orion Code requires Node.js 22.12+, 24, or 26; current runtime is ${process.versions.node}.`
+  );
+  process.exit(1);
+}
+
 // ============================================================================
 // Multi-path .env loading
 //
@@ -22,22 +32,23 @@ function loadEnvFile(filePath) {
 }
 
 const envFilesLoaded = [];
+const loadConfiguredEnvFiles = process.env.ORION_CODE_DISABLE_ENV_FILES !== '1';
 
 // 1. Global config: ~/.orion-code.env
 const globalEnv = path.join(os.homedir(), '.orion-code.env');
-if (loadEnvFile(globalEnv)) {
+if (loadConfiguredEnvFiles && loadEnvFile(globalEnv)) {
   envFilesLoaded.push(globalEnv);
 }
 
 // 2. Current working directory: ./.env
 const localEnv = path.join(process.cwd(), '.env');
-if (loadEnvFile(localEnv)) {
+if (loadConfiguredEnvFiles && loadEnvFile(localEnv)) {
   envFilesLoaded.push(localEnv);
 }
 
 // 3. Package directory (development fallback)
 const packageEnv = path.join(__dirname, '..', '.env');
-if (loadEnvFile(packageEnv)) {
+if (loadConfiguredEnvFiles && loadEnvFile(packageEnv)) {
   envFilesLoaded.push(packageEnv);
 }
 

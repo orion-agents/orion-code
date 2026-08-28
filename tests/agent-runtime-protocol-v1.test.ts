@@ -78,6 +78,26 @@ describe('AgentRuntimeProtocolV1', () => {
     );
   });
 
+  test('aligns durable approval scopes with the tool permission store', () => {
+    const command = (scope: string) => ({
+      protocolVersion: 1,
+      commandId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      type: 'approval.respond',
+      data: {
+        requestId: 'permission-1',
+        approved: true,
+        scope,
+      },
+    });
+
+    for (const scope of ['once', 'project', 'global']) {
+      expect(() => assertAgentRuntimeCommandV1(command(scope))).not.toThrow();
+    }
+    expect(() => assertAgentRuntimeCommandV1(command('session'))).toThrow(
+      RuntimeProtocolValidationError
+    );
+  });
+
   test('creates stable UUID identities', () => {
     const ids = new Set(Array.from({ length: 100 }, createRuntimeId));
     expect(ids.size).toBe(100);

@@ -1,6 +1,12 @@
+import { randomUUID } from 'crypto';
 import { findCommand, getVisibleCommands } from '../commands';
 import { parseInput } from '../commands/parser';
-import type { CommandContext, CommandResult, RegisteredSlashCommand } from '../commands/types';
+import type {
+  AgentMode,
+  CommandContext,
+  CommandResult,
+  RegisteredSlashCommand,
+} from '../commands/types';
 import { isTargetCommand, parseTargetCommand } from '../commands/target-command';
 import type {
   AgentRuntimeEventSink,
@@ -26,16 +32,20 @@ import type {
 import { resolveUiRendererCapabilities } from './ui-events';
 import type { CommandUiRenderer } from '../commands/types';
 import { TurnController, type TurnControllerOptions } from './turn-controller';
-import type { AgentTurnRequest } from './goals/types';
+import type { AgentTurnRequest, GoalRuntimeEvent } from './goals/types';
 import type { GoalRuntimeControlResultV2, GoalRuntimeControlV2 } from './goal-runtime-coordinator';
-import { updateGlobalConfig } from '../services/global-config';
 import type { ToolConfirmationPolicy } from '../services/global-config';
 import {
   grantToolPermission,
   isToolPermissionScope,
   type ToolPermissionScope,
 } from '../services/tool-allowlist';
-import { AgentModeLifecycleController } from '../framework/agent-mode';
+import {
+  AgentModeLifecycleController,
+  nextAgentMode,
+  type AgentModeSnapshot,
+} from '../framework/agent-mode';
+import { redactTraceText } from '../services/redaction';
 import { sanitizeTerminalText } from '../tui-core/style';
 
 export type {
@@ -54,6 +64,23 @@ export interface AgentRuntimeToolPermissionRequest {
   reason?: string;
   abortSignal?: AbortSignal;
 }
+
+/** Secret-free immutable read model for reconnecting renderer surfaces. */
+export interface AgentRuntimePendingPermissionSnapshot {
+  readonly id: string;
+  readonly name: string;
+  readonly reason?: string;
+  readonly args: Readonly<Record<string, unknown>>;
+}
+
+/** Exact agent-mode input used by renderers with a three-state selector. */
+export interface AgentRuntimeSetAgentModeInput {
+  readonly type: 'set_agent_mode';
+  readonly mode: AgentMode;
+  readonly source?: 'picker' | 'command' | 'programmatic';
+}
+
+export type AgentRuntimeControllerInput = AgentRuntimeInput | AgentRuntimeSetAgentModeInput;
 
 export interface AgentRuntimeControllerOptions extends TurnControllerOptions {
   runtime: OrionCodeUiRuntime;
@@ -122,10 +149,18 @@ export class AgentRuntimeController {
   private readonly agentModeLifecycle: AgentModeLifecycleController;
   private readonly pendingPermissions = new Map<
     string,
-    { request: AgentRuntimeToolPermissionRequest; finish: (approved: boolean) => void }
+    {
+      request: AgentRuntimeToolPermissionRequest;
+      snapshot: AgentRuntimePendingPermissionSnapshot;
+      finish: (approved: boolean) => void;
+    }
   >();
   private activeRun: Promise<void> | null = null;
+  private pendingAgentMode: AgentMode | null = null;
   private readonly goalControlRuns = new Set<Promise<void>>();
+  private activeGoalRuntimeTransitions = 0;
+  private goalRuntimeActive = false;
+  private settingsBoundarySynchronizations = 0;
   private stopping = false;
   private nextPermissionRequestId = 1;
   private readonly queuedCommands: string[] = [];
@@ -142,6 +177,7 @@ export class AgentRuntimeController {
       options.eventSink ?? createAgentRuntimeEventSinkFromUiEvents(options.events as UiEventSink);
     this.eventSink = {
       emit: event => {
+        if (event.type === 'goal_event') this.observeGoalRuntimeEvent(event.event);
         const result = downstream.emit(event);
         if (event.type === 'session_restored') {
           if (this.followupQueue.length > 0) {
@@ -157,11 +193,21 @@ export class AgentRuntimeController {
     this.agentModeLifecycle.subscribe(snapshot => {
       this.eventSink.emit({ type: 'agent_mode_changed', snapshot });
     });
+    options.runtime.bindSettingsRuntimeIdleProbe?.(
+      () =>
+        (this.settingsBoundarySynchronizations > 0 || !this.turnController.hasActiveTurn()) &&
+        this.activeGoalRuntimeTransitions === 0 &&
+        !this.goalRuntimeActive
+    );
     const events = createUiEventSinkFromAgentRuntimeEvents(this.eventSink);
     this.runner =
       options.runner ??
       options.runtime.createAgentRunner?.(events, {
         approvalHandler: request => this.requestToolPermission(request),
+        // Every renderer restores history from a bounded, cursor-bound surface
+        // projection. Replaying the complete durable Thread here couples Runtime
+        // recovery to UI history size and makes /resume O(total Thread facts).
+        replayHistoryOnRestore: false,
       }) ??
       createUnavailableRunner();
     this.emitAgentModeSnapshot();
@@ -173,6 +219,14 @@ export class AgentRuntimeController {
 
   getFollowupQueue(): readonly FollowupQueueItem[] {
     return this.followupQueue;
+  }
+
+  /**
+   * Return a detached read model for browser refresh/reconnect recovery.
+   * AbortSignal and resolver ownership remain private to the controller.
+   */
+  getPendingPermissions(): readonly AgentRuntimePendingPermissionSnapshot[] {
+    return Object.freeze([...this.pendingPermissions.values()].map(entry => entry.snapshot));
   }
 
   /** Thin /goal control surface; GoalRuntimeCoordinatorV2 owns every mutation. */
@@ -233,7 +287,7 @@ export class AgentRuntimeController {
     this.turnController.clearExitIntent();
   }
 
-  handle(input: AgentRuntimeInput): AgentRuntimeInputResult {
+  handle(input: AgentRuntimeControllerInput): AgentRuntimeInputResult {
     switch (input.type) {
       case 'submit':
         return this.submit(input.text);
@@ -256,7 +310,32 @@ export class AgentRuntimeController {
         return this.applyPermissionModeChange(input.value);
       case 'cycle_agent_mode':
         return this.cycleAgentMode();
+      case 'set_agent_mode':
+        return this.setAgentMode(input.mode);
     }
+  }
+
+  /** Set an exact mode immediately while idle, or at the next logical-request boundary. */
+  setAgentMode(mode: AgentMode): AgentRuntimeInputResult {
+    const deferred = this.turnController.hasActiveTurn();
+    if (!deferred) {
+      this.pendingAgentMode = null;
+      return {
+        type: 'agent_mode_changed',
+        snapshot: this.agentModeLifecycle.setMode(mode),
+        appliesFrom: 'immediate',
+      };
+    }
+
+    const baseMode = this.agentModeLifecycle.snapshot().baseMode;
+    this.pendingAgentMode = mode === baseMode ? null : mode;
+    const snapshot = this.agentModeSnapshot();
+    this.emitAgentModeSnapshot(snapshot);
+    return {
+      type: 'agent_mode_changed',
+      snapshot,
+      appliesFrom: 'next-logical-request',
+    };
   }
 
   private queueFollowup(input: string): AgentRuntimeInputResult {
@@ -423,6 +502,7 @@ export class AgentRuntimeController {
   }
 
   private async runCommand(command: RegisteredSlashCommand, args: string): Promise<void> {
+    if (command.risk !== 'read-only') await this.options.runtime.synchronizeSettings?.();
     const renderer =
       this.options.uiRenderer ?? this.options.runtime.config.ui?.renderer ?? 'terminal';
     if (command.rendererScope && !command.rendererScope.includes(renderer)) {
@@ -505,9 +585,13 @@ export class AgentRuntimeController {
       ensureSession: this.options.runtime.ensureSession,
       setSession: session => this.options.runtime.setSession(session),
       restoreSessionRuntime: this.runner.restoreSession
-        ? () => this.runner.restoreSession!()
+        ? activation => this.runner.restoreSession!(activation)
         : undefined,
       sessionRestored: event => this.eventSink.emit({ type: 'session_restored', event }),
+      ...((renderer === 'terminal' || renderer === 'tui') && {
+        replaceTranscript: (entries: readonly import('./ui-events').TranscriptEntry[]) =>
+          this.eventSink.emit({ type: 'transcript_replace', entries: [...entries] }),
+      }),
       getSession: this.options.runtime.getSession,
       writeOutput: text => {
         if (text.trim()) this.emitAppend({ role: 'system', content: text });
@@ -521,6 +605,9 @@ export class AgentRuntimeController {
       uiCapabilities: resolveUiRendererCapabilities(this.options.uiCapabilities, renderer),
       agentModeLifecycle: this.agentModeLifecycle,
       getHarnessDiagnostics: this.options.runtime.getHarnessDiagnostics,
+      settingsCoordinator: this.options.runtime.settingsCoordinator,
+      describeSettings: this.options.runtime.describeSettings,
+      updateSettings: this.options.runtime.updateSettings,
       compact: this.runner.compact ? input => this.runner.compact!(input) : undefined,
     };
   }
@@ -586,12 +673,14 @@ export class AgentRuntimeController {
       this.options.beforeTurn?.(nextInput);
 
       const turn = this.turnController.beginTurn(nextInput);
-      this.options.runtime.store.setProcessing(true);
-      this.emitProcessing(true);
-      const runningStatus = statusText(this.options.runningStatus, nextInput);
-      if (runningStatus) this.emitStatus(runningStatus);
-
       try {
+        if (this.options.runtime.synchronizeSettings) {
+          await this.synchronizeSettingsAtLogicalBoundary();
+        }
+        this.options.runtime.store.setProcessing(true);
+        this.emitProcessing(true);
+        const runningStatus = statusText(this.options.runningStatus, nextInput);
+        if (runningStatus) this.emitStatus(runningStatus);
         if (this.runner.runRequest) {
           await this.runner.runRequest(request, {
             abortSignal: turn.abortSignal,
@@ -615,9 +704,12 @@ export class AgentRuntimeController {
         }
       } finally {
         const revision = this.turnController.finishTurn(turn.id);
-        const completedPlan =
-          this.agentModeLifecycle.completedPlanSince(planCompletionBeforeRequest) ?? undefined;
-        if (!completedPlan) this.agentModeLifecycle.applyPending();
+        // Durable request runners commit and enqueue Plan execution at the Thread boundary.
+        // The legacy runInput path still needs the controller-owned compatibility follow-up.
+        const completedPlan = this.runner.runRequest
+          ? undefined
+          : (this.agentModeLifecycle.completedPlanSince(planCompletionBeforeRequest) ?? undefined);
+        this.applyPendingAgentMode(Boolean(completedPlan));
 
         if (revision?.trim()) {
           this.emitStatus(this.options.restartingStatus ?? '根据补充调整方向中…');
@@ -694,6 +786,17 @@ export class AgentRuntimeController {
     this.options.afterTurnLoop?.();
   }
 
+  private async synchronizeSettingsAtLogicalBoundary(): Promise<void> {
+    const synchronize = this.options.runtime.synchronizeSettings;
+    if (!synchronize) return;
+    this.settingsBoundarySynchronizations += 1;
+    try {
+      await synchronize();
+    } finally {
+      this.settingsBoundarySynchronizations -= 1;
+    }
+  }
+
   private emitAppend(entry: TranscriptAppendEntry): string | void {
     return this.eventSink.emit({ type: 'transcript_append', entry });
   }
@@ -713,21 +816,50 @@ export class AgentRuntimeController {
     });
   }
 
-  private emitAgentModeSnapshot(): void {
+  private agentModeSnapshot(): AgentModeSnapshot {
+    const snapshot = this.agentModeLifecycle.snapshot();
+    return this.pendingAgentMode
+      ? { ...snapshot, pendingBaseMode: this.pendingAgentMode }
+      : snapshot;
+  }
+
+  private emitAgentModeSnapshot(snapshot = this.agentModeSnapshot()): void {
     this.eventSink.emit({
       type: 'agent_mode_changed',
-      snapshot: this.agentModeLifecycle.snapshot(),
+      snapshot,
     });
   }
 
   private cycleAgentMode(): AgentRuntimeInputResult {
     const deferred = this.turnController.hasActiveTurn();
-    const snapshot = this.agentModeLifecycle.cycle({ defer: deferred });
+    if (!deferred) this.pendingAgentMode = null;
+    const lifecycleSnapshot = this.agentModeLifecycle.snapshot();
+    const nextMode = nextAgentMode(
+      this.pendingAgentMode ?? lifecycleSnapshot.pendingBaseMode ?? lifecycleSnapshot.baseMode
+    );
+    let snapshot: AgentModeSnapshot;
+    if (deferred) {
+      this.pendingAgentMode = nextMode === lifecycleSnapshot.baseMode ? null : nextMode;
+      snapshot = this.agentModeSnapshot();
+      this.emitAgentModeSnapshot(snapshot);
+    } else {
+      snapshot = this.agentModeLifecycle.setMode(nextMode);
+    }
     return {
       type: 'agent_mode_changed',
       snapshot,
       appliesFrom: deferred ? 'next-logical-request' : 'immediate',
     };
+  }
+
+  private applyPendingAgentMode(completedPlan: boolean): void {
+    const pendingMode = this.pendingAgentMode;
+    this.pendingAgentMode = null;
+    if (pendingMode) {
+      this.agentModeLifecycle.setMode(pendingMode);
+      return;
+    }
+    if (!completedPlan) this.agentModeLifecycle.applyPending();
   }
 
   private requestIsCurrent(request: AgentTurnRequest): boolean {
@@ -746,6 +878,7 @@ export class AgentRuntimeController {
       reason: request.reason,
       abortSignal: request.abortSignal,
     };
+    const snapshot = createPendingPermissionSnapshot(id, request);
 
     return new Promise<boolean>(resolve => {
       const finish = (approved: boolean) => {
@@ -755,7 +888,7 @@ export class AgentRuntimeController {
       };
       const onAbort = () => finish(false);
 
-      this.pendingPermissions.set(id, { request, finish });
+      this.pendingPermissions.set(id, { request, snapshot, finish });
       request.abortSignal?.addEventListener('abort', onAbort, { once: true });
       this.emitStatus(permissionPendingStatus(request.name));
       this.eventSink.emit({ type: 'permission_requested', request: runtimeRequest });
@@ -771,23 +904,44 @@ export class AgentRuntimeController {
       return { type: 'command_handled' };
     }
     if (
-      (this.turnController.hasActiveTurn() || this.goalControlRuns.size > 0) &&
+      (this.turnController.hasActiveTurn() ||
+        this.goalControlRuns.size > 0 ||
+        this.goalRuntimeActive) &&
       (goalControl.action === 'create' || goalControl.action === 'resume')
     ) {
       const message = `/goal ${goalControl.action} is unavailable while Goal work is running; use /goal pause or /goal clear first.`;
       this.emitStatus(message);
       return { type: 'command_ignored' };
     }
-    if (goalControl.action === 'pause' || goalControl.action === 'clear') {
+    const stopsGoal = goalControl.action === 'pause' || goalControl.action === 'clear';
+    const interruptedRun = stopsGoal ? this.activeRun : null;
+    if (stopsGoal) {
       this.turnController.clearExitIntent();
       this.turnController.interruptActiveTurn();
       this.runner.interrupt?.(`goal ${goalControl.action}`);
       this.rejectPendingPermissions();
     }
 
-    const run = this.runner
-      .controlGoal(goalControl)
-      .then(result => this.renderGoalControl(result))
+    const run = Promise.resolve()
+      .then(async () => {
+        if (interruptedRun) await interruptedRun.catch(() => undefined);
+        if (!stopsGoal) await this.synchronizeSettingsAtLogicalBoundary();
+      })
+      .then(async () => {
+        this.activeGoalRuntimeTransitions += 1;
+        try {
+          return await this.runner.controlGoal!(goalControl);
+        } finally {
+          this.activeGoalRuntimeTransitions -= 1;
+        }
+      })
+      .then(async result => {
+        this.observeGoalControlResult(result);
+        this.renderGoalControl(result);
+        // Pause/clear must remain available while Goal work is active. Reconcile
+        // pending runtime-sensitive edits only after that work has stopped.
+        if (stopsGoal && result.accepted) await this.synchronizeSettingsAtLogicalBoundary();
+      })
       .catch(error => {
         const message = error instanceof Error ? error.message : String(error);
         this.emitAppend({ role: 'error', title: 'goal', content: message, errorLayer: 'runtime' });
@@ -809,6 +963,20 @@ export class AgentRuntimeController {
       ...(result.accepted ? {} : { errorLayer: 'runtime' as const }),
     });
     this.emitStatus(summary);
+  }
+
+  private observeGoalControlResult(result: GoalRuntimeControlResultV2): void {
+    if (!result.accepted) return;
+    this.goalRuntimeActive =
+      (result.action === 'create' || result.action === 'resume') && result.scheduleContinuation;
+  }
+
+  private observeGoalRuntimeEvent(event: GoalRuntimeEvent): void {
+    if (event.type === 'goal_updated') {
+      this.goalRuntimeActive = event.goal.status === 'active';
+    } else if (event.type === 'goal_cleared' || event.type === 'goal_completed') {
+      this.goalRuntimeActive = false;
+    }
   }
 
   private recordPermissionDecision(
@@ -852,14 +1020,40 @@ export class AgentRuntimeController {
   private applyPermissionModeChange(value: ToolConfirmationPolicy): AgentRuntimeInputResult {
     const allowed: ToolConfirmationPolicy[] = ['allow', 'ask', 'deny'];
     if (!allowed.includes(value)) return { type: 'permission_mode_invalid' };
-    // Persist to disk so the change survives restart...
-    updateGlobalConfig({ toolConfirmation: value });
-    // ...and mutate the live runtime config so the very next tool call uses it
-    // immediately (chat-controller passes this.runtime.config.toolConfirmation into
-    // the scheduler on every turn).
-    this.options.runtime.config.toolConfirmation = value;
-    this.emitStatus(`Tool confirmation → ${value}`);
-    return { type: 'permission_mode_changed' };
+    if (
+      this.activeRun ||
+      this.turnController.hasActiveTurn() ||
+      this.goalControlRuns.size > 0 ||
+      this.goalRuntimeActive
+    ) {
+      this.emitStatus('Tool confirmation was not changed: the runtime is busy.');
+      return { type: 'command_ignored' };
+    }
+    const describeSettings = this.options.runtime.describeSettings;
+    const updateSettings = this.options.runtime.updateSettings;
+    if (!describeSettings || !updateSettings) {
+      this.emitStatus('Tool confirmation was not changed: Settings are unavailable.');
+      return { type: 'command_ignored' };
+    }
+
+    const run = (async () => {
+      const before = describeSettings();
+      await updateSettings({
+        requestId: `runtime:permission-mode:${randomUUID()}`,
+        expectedRevision: before.revision,
+        operations: [{ op: 'set', key: 'permissions.toolConfirmation', value }],
+      });
+      this.emitStatus(`Tool confirmation → ${value}`);
+    })()
+      .catch(error => {
+        const reason = error instanceof Error ? error.message : String(error);
+        this.emitStatus(`Tool confirmation was not changed: ${reason}`);
+      })
+      .finally(() => {
+        if (this.activeRun === run) this.activeRun = null;
+      });
+    this.activeRun = run;
+    return { type: 'started' };
   }
 
   private rejectPendingPermissions(): void {
@@ -869,6 +1063,76 @@ export class AgentRuntimeController {
       entry.finish(false);
     }
   }
+}
+
+const PERMISSION_SECRET_ARG_KEY =
+  /(?:^|[_-])(?:api[_-]?key|access[_-]?token|auth[_-]?token|accesstoken|authtoken|password|secret|authorization|cookie|credential)(?:$|[_-])/iu;
+const MAX_PERMISSION_SNAPSHOT_DEPTH = 12;
+
+function createPendingPermissionSnapshot(
+  id: string,
+  request: AgentRuntimeToolPermissionRequest
+): AgentRuntimePendingPermissionSnapshot {
+  return Object.freeze({
+    id,
+    name: sanitizePermissionText(request.name),
+    ...(request.reason === undefined ? {} : { reason: sanitizePermissionText(request.reason) }),
+    args: sanitizePermissionArgs(request.args),
+  });
+}
+
+function sanitizePermissionArgs(
+  args: Readonly<Record<string, unknown>>
+): Readonly<Record<string, unknown>> {
+  const value = sanitizePermissionValue(args, undefined, new Set<object>(), 0);
+  return isPlainRecord(value) ? value : Object.freeze({});
+}
+
+function sanitizePermissionValue(
+  value: unknown,
+  key: string | undefined,
+  ancestors: Set<object>,
+  depth: number
+): unknown {
+  if (key && PERMISSION_SECRET_ARG_KEY.test(key)) return '[REDACTED_SECRET]';
+  if (typeof value === 'string') return sanitizePermissionText(value);
+  if (value === null || typeof value === 'boolean') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value !== 'object') return '[NON_JSON_VALUE]';
+  if (depth >= MAX_PERMISSION_SNAPSHOT_DEPTH) return '[TRUNCATED]';
+  if (ancestors.has(value)) return '[CIRCULAR]';
+
+  const prototype = Object.getPrototypeOf(value);
+  if (!Array.isArray(value) && prototype !== Object.prototype && prototype !== null) {
+    return '[NON_JSON_VALUE]';
+  }
+
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return Object.freeze(
+        value.map(entry => sanitizePermissionValue(entry, undefined, ancestors, depth + 1))
+      );
+    }
+    return Object.freeze(
+      Object.fromEntries(
+        Object.entries(value).map(([entryKey, entryValue]) => [
+          sanitizePermissionText(entryKey),
+          sanitizePermissionValue(entryValue, entryKey, ancestors, depth + 1),
+        ])
+      )
+    );
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+function sanitizePermissionText(value: string): string {
+  return sanitizeTerminalText(redactTraceText(value));
+}
+
+function isPlainRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function formatGoalRuntimeStatus(result: GoalRuntimeControlResultV2): string {

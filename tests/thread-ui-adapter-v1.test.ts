@@ -10,13 +10,29 @@ import type {
 import type { AgentTurnRequest } from '../src/runtime/goals/types';
 import { GoalLifecycleServiceV2 } from '../src/runtime/goal-lifecycle-v2';
 import { digestRuntimeValue } from '../src/runtime/protocol/canonical';
+import {
+  ExecutionService,
+  captureStepSnapshotV1,
+  createAuthoritySnapshotV1,
+  createCapabilityPlanV1,
+  createExecutionPolicySnapshotV1,
+  type ToolBindingV1,
+} from '../src/runtime/step-snapshot';
 import { ThreadEventStore } from '../src/runtime/thread-event-store';
+import { ThreadToolInvocationJournalV1 } from '../src/runtime/thread-tool-journal';
 import {
   ThreadRuntimeV1,
   type ThreadTurnExecutionContextV1,
   type ThreadTurnRunnerV1,
 } from '../src/runtime/thread-runtime';
 import { ThreadUiAdapterError, ThreadUiAdapterV1 } from '../src/runtime/thread-ui-adapter';
+import {
+  ToolGateway,
+  createSandboxPreparationV1,
+  createStaticApprovalDecisionV1,
+  createStaticPolicyDecisionV1,
+  type ToolInvocationReceiptV1,
+} from '../src/runtime/tool-gateway';
 import { ThreadTurnCommitJournalV1 } from '../src/runtime/turn-commit';
 import type { TranscriptAppendEntry, UiEventSink } from '../src/runtime/ui-events';
 
@@ -143,6 +159,137 @@ describe('ThreadUiAdapterV1', () => {
       ])
     );
     expect(adapter.snapshot().cursor).toBe(runtime.getProjection().cursor);
+    adapter.close();
+  });
+
+  test('projects policy and receipt digests only from a validated durable ToolGateway receipt', async () => {
+    const store = createStore();
+    const { events, sink } = collectAgentEvents();
+    let committedReceipt: ToolInvocationReceiptV1 | undefined;
+    let executionPolicyDigest: string | undefined;
+    const runtime = new ThreadRuntimeV1({
+      store,
+      runner: {
+        run: async context => {
+          const binding: ToolBindingV1 = {
+            descriptor: {
+              name: 'write_file',
+              aliases: [],
+              description: 'Write a fixture file',
+              inputSchema: {
+                type: 'object',
+                properties: { path: { type: 'string' }, content: { type: 'string' } },
+                required: ['path', 'content'],
+              },
+              executorId: 'fixture:write_file:v1',
+              risk: {
+                readOnly: false,
+                destructive: false,
+                fileEdit: true,
+                effect: 'workspace_write',
+                network: 'none',
+              },
+            },
+            execute: async () => ({ success: true, output: 'written' }),
+          };
+          const executionPolicy = createExecutionPolicySnapshotV1({
+            policyId: 'settings-policy-fixture',
+            approvalMode: 'never',
+            sandboxRequired: false,
+            sandboxBackend: 'fixture',
+            timeoutMs: 5_000,
+          });
+          executionPolicyDigest = executionPolicy.digest;
+          const snapshot = captureStepSnapshotV1({
+            threadId: context.threadId,
+            turnId: context.turnId,
+            stepId: randomUUID(),
+            taskEpoch: 0,
+            baseMode: 'build',
+            model: {
+              providerId: 'fixture',
+              modelId: 'fixture-model',
+              protocol: 'openai-completions',
+              contextWindow: 32_000,
+            },
+            authority: createAuthoritySnapshotV1({
+              authorityId: 'fixture-workspace',
+              projectRoot: '/workspace',
+              confirmation: 'allow',
+              filesystem: 'workspace',
+              network: 'deny',
+            }),
+            executionPolicy,
+            environment: {
+              cwd: '/workspace',
+              platform: 'test',
+              arch: 'test',
+              environmentDigest: 'fixture-environment',
+            },
+            capabilityPlan: createCapabilityPlanV1({
+              direct: [{ id: 'write_file', reason: 'fixture write' }],
+            }),
+            prompt: { version: 1, sections: [], estimatedTokens: 0, digest: 'fixture-prompt' },
+            toolBindings: [binding],
+            skills: { version: 1, selected: [], catalogDigest: 'skills', digest: 'skills-none' },
+            mcp: { version: 1, selected: [], catalogDigest: 'mcp', digest: 'mcp-none' },
+            taskContextRevision: 0,
+          });
+          const gateway = new ToolGateway({
+            policy: {
+              decide: () =>
+                createStaticPolicyDecisionV1({ behavior: 'ask', source: 'tool-policy' }),
+            },
+            approval: {
+              decide: () => createStaticApprovalDecisionV1({ approved: true, source: 'authority' }),
+            },
+            sandbox: {
+              prepare: () =>
+                createSandboxPreparationV1({ backend: 'fixture', enforcement: 'full' }),
+            },
+            execution: new ExecutionService(),
+            journal: new ThreadToolInvocationJournalV1(store),
+          });
+          const result = await gateway.invoke({
+            invocationId: randomUUID(),
+            snapshot,
+            toolName: 'write_file',
+            args: { path: 'fixture.txt', content: 'safe' },
+            context: { cwd: '/workspace', config: { name: 'orion', mode: 'test' } },
+          });
+          committedReceipt = result.receipt;
+          return { status: 'completed', outcome: 'tool receipt projected' };
+        },
+      },
+    });
+    const adapter = new ThreadUiAdapterV1({ runtime, eventSink: sink });
+
+    await adapter.runInput('exercise the real ToolGateway receipt path');
+
+    const finished = events.find(
+      (event): event is Extract<AgentRuntimeEvent, { type: 'tool_finished' }> =>
+        event.type === 'tool_finished'
+    );
+    expect(committedReceipt).toBeDefined();
+    expect(committedReceipt?.digest).toBe(
+      digestRuntimeValue({
+        ...committedReceipt,
+        digest: undefined,
+      })
+    );
+    expect(finished?.event).toMatchObject({
+      name: 'write_file',
+      success: true,
+      authorization: {
+        approved: true,
+        behavior: 'ask',
+        source: 'config_allow',
+      },
+      executionPolicyDigest,
+      receiptDigest: committedReceipt?.digest,
+    });
+    expect(finished?.event.receiptDigest).toBe(committedReceipt?.digest);
+    expect(finished?.event.executionPolicyDigest).toBe(committedReceipt?.executionPolicyDigest);
     adapter.close();
   });
 

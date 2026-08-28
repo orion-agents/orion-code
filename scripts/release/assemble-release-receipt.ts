@@ -21,6 +21,7 @@ import {
   verifyGateEvidenceReceiptV1,
   verifyRuntimeMatrixReceiptV1,
   verifyTarballArtifactReceiptV1,
+  verifyWebE2EReleaseReceiptV1,
 } from '../../src/runtime/release-receipts';
 
 interface AssembleArgumentsV1 {
@@ -32,6 +33,7 @@ interface AssembleArgumentsV1 {
   readonly evaluation: string;
   readonly confluence: string;
   readonly fullTests: string;
+  readonly webE2E: string;
   readonly output: string;
 }
 
@@ -52,6 +54,7 @@ export function parseAssembleReleaseArgumentsV1(argv: readonly string[]): Assemb
     evaluation: required('--evaluation'),
     confluence: required('--confluence'),
     fullTests: required('--full-tests'),
+    webE2E: required('--web-e2e'),
     output: required('--out'),
   };
 }
@@ -89,13 +92,23 @@ function main(): void {
   if (fullTests.gateId !== 'full-tests') {
     throw new Error(`Expected full-tests evidence, received ${fullTests.gateId}.`);
   }
+  const webE2E = verifyWebE2EReleaseReceiptV1(readJson(args.webE2E));
   assertSourceBinding(artifact, candidate.source.gitSha, candidate.source.packageVersion);
   assertSourceBinding(artifact, evalCandidate.source.gitSha, evalCandidate.source.packageVersion);
   assertSourceBinding(artifact, fullTests.source.gitSha, fullTests.source.packageVersion);
+  assertSourceBinding(artifact, webE2E.source.gitSha, webE2E.package.version);
+  if (
+    webE2E.artifactReceiptDigest !== artifact.receiptDigest ||
+    webE2E.tarballSha256 !== artifact.tarball.sha256 ||
+    webE2E.package.name !== artifact.package.name
+  ) {
+    throw new Error('Web E2E evidence is not bound to the exact release artifact.');
+  }
   const receipt = createReleaseReceiptV1({
     createdAt: new Date().toISOString(),
     artifact,
     runtimeMatrix: runtimes,
+    webE2E,
     evidence: {
       benchmarkComparisonDigest: digestRuntimeValue(benchmark),
       benchmarkOk: benchmark.ok,
@@ -105,6 +118,8 @@ function main(): void {
       architectureDecision: confluence.decision,
       fullTestDigest: fullTests.receiptDigest,
       fullTestsPassed: fullTests.status === 'pass',
+      webE2EReceiptDigest: webE2E.receiptDigest,
+      webE2EDecision: webE2E.decision,
     },
   });
   mkdirSync(dirname(args.output), { recursive: true });

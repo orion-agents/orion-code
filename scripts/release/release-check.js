@@ -39,8 +39,14 @@ const REQUIRED_PACKAGE_ENTRIES = [
   'docs/orion.example.json',
   'docs/readme.md',
   'docs/migration/v0.1.9-to-v0.2.0.md',
+  'docs/migration/v0.2.2-to-v0.3.0.md',
+  'docs/migration/v0.2.2-to-v0.3.0-settings.md',
+  'docs/architecture/v0.3.0-web-api.yaml',
   'docs/plan/v0.2.0-dsh-harness-redesign-plan.md',
   'docs/plan/v0.2.0-release-checklist.md',
+  'docs/plan/v0.3.0-web-workbench-plan.md',
+  'docs/plan/v0.3.0-settings-integration-plan.md',
+  'docs/plan/v0.3.0-node-runtime-compatibility-plan.md',
   'LICENSE',
   'README.md',
   'README.zh-CN.md',
@@ -773,11 +779,27 @@ function checkPack() {
       env: smokeEnv,
     }
   );
+  const webProbe = run(
+    process.execPath,
+    [
+      '-e',
+      "const {join}=require('path');" +
+        `const root=${JSON.stringify(installedPackage)};` +
+        "const {startOrionWebServer}=require(join(root,'dist','web'));" +
+        '(async()=>{const h=await startOrionWebServer({cwd:process.cwd(),port:0});' +
+        "try{const health=await fetch(h.url+'/api/v1/health');" +
+        "const page=await fetch(h.url+'/').then(r=>r.text());" +
+        "if(!health.ok||!page.includes('Orion Code'))process.exitCode=2;" +
+        '}finally{await h.close();}})().catch(e=>{console.error(e);process.exitCode=1;});',
+    ],
+    { cwd: installDir, env: smokeEnv }
+  );
   const smokeFailure = [
     ['version', versionSmoke],
     ['help', helpSmoke],
     ['dependency tree', treeProbe],
     ['native dependency', nativeProbe],
+    ['Web Workbench', webProbe],
   ].find(([, outcome]) => outcome.code !== 0);
   const versionMatches = versionSmoke.stdout.includes(String(tarball.version));
   const helpMatches = /Usage:|Orion Code/u.test(helpSmoke.stdout);
@@ -795,7 +817,7 @@ function checkPack() {
     'pack',
     'npm package artifact',
     STATUS.PASS,
-    `${detail} · sha256 ${tarballSha256} · clean install/version/help/native ok`
+    `${detail} · sha256 ${tarballSha256} · clean install/version/help/native/Web ok`
   );
 }
 

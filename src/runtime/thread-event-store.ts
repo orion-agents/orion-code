@@ -5,6 +5,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  statSync,
   truncateSync,
   writeSync,
 } from 'fs';
@@ -21,6 +22,7 @@ import {
   type RuntimeEventV1,
 } from './protocol/runtime-protocol-v1';
 import {
+  advanceThreadProjection,
   projectThreadEvents,
   verifyThreadProjectionDigest,
   type ThreadProjectionV1,
@@ -52,6 +54,19 @@ export interface ThreadEventReplayV1 {
 export interface ThreadEventCommitV1 {
   readonly events: readonly RuntimeEventEnvelopeV1[];
   readonly projection: ThreadProjectionV1;
+}
+
+export interface ThreadReadModelHeadV1 {
+  readonly projection: ThreadProjectionV1;
+  readonly lastEventTimestamp: number;
+  readonly lastRecordHash: string | null;
+  readonly log: {
+    readonly bytes: number;
+    readonly device: string;
+    readonly inode: string;
+    readonly mtimeNs: string;
+    readonly ctimeNs: string;
+  };
 }
 
 interface StoredCompactCheckpointV1 {
@@ -107,6 +122,12 @@ export interface ThreadEventStoreOptionsV1 {
     boundary: ThreadEventStoreBoundaryV1,
     context: { readonly threadId: string; readonly lastSeq: number }
   ) => void;
+  /** Read-path observability used by performance tests and diagnostics. */
+  readonly onLogScan?: (context: {
+    readonly threadId: string;
+    readonly bytes: number;
+    readonly events: number;
+  }) => void;
 }
 
 interface StoredThreadEventRecordV1 {
@@ -121,6 +142,13 @@ interface ScannedThreadEventLogV1 {
   readonly events: readonly RuntimeEventEnvelopeV1[];
   readonly safeByteLength: number;
   readonly discardedTailBytes: number;
+}
+
+interface CachedThreadHeadV1 {
+  readonly logFingerprint: string;
+  readonly projectionFingerprint?: string;
+  readonly scan: ScannedThreadEventLogV1;
+  readonly projection: ThreadProjectionV1;
 }
 
 export class ThreadEventStoreError extends Error {
@@ -161,7 +189,9 @@ export class ThreadEventStore {
   private readonly clock: () => number;
   private readonly idFactory: () => string;
   private readonly onBoundary?: ThreadEventStoreOptionsV1['onBoundary'];
+  private readonly onLogScan?: ThreadEventStoreOptionsV1['onLogScan'];
   private readonly commitListeners = new Set<(events: readonly RuntimeEventEnvelopeV1[]) => void>();
+  private cachedHead?: CachedThreadHeadV1;
 
   constructor(
     readonly rootDir: string,
@@ -187,6 +217,7 @@ export class ThreadEventStore {
     this.clock = options.clock ?? Date.now;
     this.idFactory = options.idFactory ?? createRuntimeId;
     this.onBoundary = options.onBoundary;
+    this.onLogScan = options.onLogScan;
   }
 
   appendDurable<T extends RuntimeEventV1>(
@@ -201,7 +232,8 @@ export class ThreadEventStore {
     }
     const commit = this.withLogLock(() => {
       ensurePrivateDirectory(this.rootDir);
-      const scan = scanThreadEventLog(this.logPath, this.threadId, this.maxLogBytes);
+      const head = this.loadVerifiedHead();
+      const { scan } = head;
       if (scan.discardedTailBytes > 0) truncateSync(this.logPath, scan.safeByteLength);
 
       let seq = scan.events.length;
@@ -237,10 +269,12 @@ export class ThreadEventStore {
         previousHash = hash;
       }
 
-      // Validate the complete lifecycle before a byte becomes durable. A bad
-      // duplicate terminal event must never poison the append-only fact log.
-      const allEvents = [...scan.events, ...records.map(record => record.event)];
-      const projection = projectThreadEvents(this.threadId, allEvents);
+      // Validate the new tail against the already verified projection before a
+      // byte becomes durable. Historical lifecycle facts were validated when
+      // cachedHead was established and are invalidated by any log fingerprint
+      // change, so append cost no longer grows with Session age.
+      const committedEvents = records.map(record => record.event);
+      const projection = advanceThreadProjection(head.projection, committedEvents);
 
       this.boundary('before_log_write', seq);
       appendRecordsAndFlush(this.logPath, records, () => this.boundary('after_log_write', seq));
@@ -254,7 +288,20 @@ export class ThreadEventStore {
       fsyncDirectory(this.rootDir);
       this.boundary('after_projection_write', seq);
 
-      return deepFreeze({ events: records.map(record => record.event), projection });
+      const nextScan = {
+        records: [...scan.records, ...records],
+        events: [...scan.events, ...committedEvents],
+        safeByteLength: statSync(this.logPath).size,
+        discardedTailBytes: 0,
+      } satisfies ScannedThreadEventLogV1;
+      this.cachedHead = {
+        logFingerprint: fileFingerprint(this.logPath),
+        projectionFingerprint: fileFingerprint(this.projectionPath),
+        scan: nextScan,
+        projection,
+      };
+
+      return deepFreeze({ events: committedEvents, projection });
     });
     this.notifyCommitted(commit.events);
     return commit;
@@ -302,7 +349,7 @@ export class ThreadEventStore {
     }
 
     return this.withLogLock(() => {
-      const scan = scanThreadEventLog(this.logPath, this.threadId, this.maxLogBytes);
+      const { scan } = this.loadVerifiedHead();
       const lastSeq = scan.events.length;
       if (cursor > lastSeq) {
         throw new ThreadEventStoreError(
@@ -322,16 +369,47 @@ export class ThreadEventStore {
   }
 
   getCursor(): number {
-    return this.withLogLock(
-      () => scanThreadEventLog(this.logPath, this.threadId, this.maxLogBytes).events.length
-    );
+    const cached = this.cachedHead;
+    if (cached && cached.logFingerprint === fileFingerprint(this.logPath)) {
+      return cached.projection.cursor;
+    }
+    return this.withLogLock(() => this.loadVerifiedHead().projection.cursor);
+  }
+
+  /** Capture the catalog read model and its exact verified log identity atomically. */
+  captureReadModelHead(): ThreadReadModelHeadV1 {
+    return this.withLogLock(() => {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const head = this.loadVerifiedHead();
+        const identity = readFileIdentity(this.logPath);
+        if (identity.fingerprint !== head.logFingerprint) {
+          this.cachedHead = undefined;
+          continue;
+        }
+        return deepFreeze({
+          projection: head.projection,
+          lastEventTimestamp: head.scan.events.at(-1)?.timestamp ?? 0,
+          lastRecordHash: head.scan.records.at(-1)?.hash ?? null,
+          log: {
+            bytes: identity.bytes,
+            device: identity.device,
+            inode: identity.inode,
+            mtimeNs: identity.mtimeNs,
+            ctimeNs: identity.ctimeNs,
+          },
+        });
+      }
+      throw corrupt('Thread event log changed while capturing its read model', 0);
+    });
   }
 
   loadProjection(): ThreadProjectionV1 {
     return this.withLogLock(() => {
       ensurePrivateDirectory(this.rootDir);
-      const scan = scanThreadEventLog(this.logPath, this.threadId, this.maxLogBytes);
-      const replayed = projectThreadEvents(this.threadId, scan.events);
+      const head = this.loadVerifiedHead();
+      const replayed = head.projection;
+      const projectionFingerprint = fileFingerprint(this.projectionPath);
+      if (head.projectionFingerprint === projectionFingerprint) return replayed;
       const cached = readProjection(this.projectionPath);
       if (
         cached &&
@@ -340,10 +418,15 @@ export class ThreadEventStore {
         cached.digest === replayed.digest &&
         verifyThreadProjectionDigest(cached)
       ) {
-        return deepFreeze(cached);
+        this.cachedHead = { ...head, projectionFingerprint };
+        return replayed;
       }
       writeProjection(this.projectionPath, replayed);
       fsyncDirectory(this.rootDir);
+      this.cachedHead = {
+        ...head,
+        projectionFingerprint: fileFingerprint(this.projectionPath),
+      };
       return replayed;
     });
   }
@@ -354,7 +437,7 @@ export class ThreadEventStore {
    */
   loadAuthoritativeModelHistory(): readonly unknown[] | undefined {
     return this.withLogLock(() => {
-      const scan = scanThreadEventLog(this.logPath, this.threadId, this.maxLogBytes);
+      const { scan } = this.loadVerifiedHead();
       const state = readCompactState(this.compactStatePath, this.threadId);
       if (state) this.assertCompactCheckpoint(state);
       const turnState = readLatestDurableTurnState(scan.events, this.threadId);
@@ -370,8 +453,7 @@ export class ThreadEventStore {
   captureCompactSource(turnId: string): CompactAuthoritativeSourceV1 {
     return this.withLogLock(() => {
       ensurePrivateDirectory(this.rootDir);
-      const scan = scanThreadEventLog(this.logPath, this.threadId, this.maxLogBytes);
-      const projection = projectThreadEvents(this.threadId, scan.events);
+      const { scan, projection } = this.loadVerifiedHead();
       assertActiveMaintenanceTurn(projection, turnId);
       const state = readCompactState(this.compactStatePath, this.threadId);
       if (state) this.assertCompactCheckpoint(state);
@@ -409,8 +491,7 @@ export class ThreadEventStore {
       validateCompactCommitInput(input, this.threadId);
 
       input.onBoundary('before_cas_recheck');
-      const scan = scanThreadEventLog(this.logPath, this.threadId, this.maxLogBytes);
-      const projection = projectThreadEvents(this.threadId, scan.events);
+      const { scan, projection } = this.loadVerifiedHead();
       const eventsAfterAnchor = scan.events.slice(input.expectedEventAnchor.cursor);
       const onlyQueuedFollowUps =
         eventsAfterAnchor.length > 0 &&
@@ -495,7 +576,7 @@ export class ThreadEventStore {
 
   listCompactEvents(): readonly RuntimeEventEnvelopeV1<CompactRuntimeEventV1>[] {
     return this.withLogLock(() => {
-      const scan = scanThreadEventLog(this.logPath, this.threadId, this.maxLogBytes);
+      const { scan } = this.loadVerifiedHead();
       return deepFreeze(
         scan.events.filter(
           (event): event is RuntimeEventEnvelopeV1<CompactRuntimeEventV1> =>
@@ -549,6 +630,27 @@ export class ThreadEventStore {
       }
     }
     return inputs.length > 0 ? this.appendDurableBatch(inputs).projection : projection;
+  }
+
+  /**
+   * Return the last fully verified log head, rescanning only after the file
+   * identity changes. Callers already hold the Thread log lock.
+   */
+  private loadVerifiedHead(): CachedThreadHeadV1 {
+    ensurePrivateDirectory(this.rootDir);
+    const logFingerprint = fileFingerprint(this.logPath);
+    if (this.cachedHead?.logFingerprint === logFingerprint) return this.cachedHead;
+
+    const scan = scanThreadEventLog(this.logPath, this.threadId, this.maxLogBytes);
+    this.onLogScan?.({
+      threadId: this.threadId,
+      bytes: scan.safeByteLength + scan.discardedTailBytes,
+      events: scan.events.length,
+    });
+    const projection = projectThreadEvents(this.threadId, scan.events);
+    const head: CachedThreadHeadV1 = { logFingerprint, scan, projection };
+    this.cachedHead = head;
+    return head;
   }
 
   private withLogLock<T>(operation: () => T): T {
@@ -725,6 +827,52 @@ function readProjection(path: string): ThreadProjectionV1 | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * A cheap identity for deciding whether a previously verified file head is
+ * still current. Size alone is insufficient because another process may
+ * rewrite bytes in place; inode and nanosecond timestamps make that mutation
+ * invalidate the cache and force the normal hash-chain verification path.
+ */
+interface FileIdentityV1 {
+  readonly fingerprint: string;
+  readonly bytes: number;
+  readonly device: string;
+  readonly inode: string;
+  readonly mtimeNs: string;
+  readonly ctimeNs: string;
+}
+
+function readFileIdentity(path: string): FileIdentityV1 {
+  try {
+    const stats = statSync(path, { bigint: true });
+    const device = stats.dev.toString();
+    const inode = stats.ino.toString();
+    const mtimeNs = stats.mtimeNs.toString();
+    const ctimeNs = stats.ctimeNs.toString();
+    return {
+      fingerprint: [device, inode, stats.size, mtimeNs, ctimeNs].join(':'),
+      bytes: Number(stats.size),
+      device,
+      inode,
+      mtimeNs,
+      ctimeNs,
+    };
+  } catch {
+    return {
+      fingerprint: 'missing',
+      bytes: 0,
+      device: '0',
+      inode: '0',
+      mtimeNs: '0',
+      ctimeNs: '0',
+    };
+  }
+}
+
+function fileFingerprint(path: string): string {
+  return readFileIdentity(path).fingerprint;
 }
 
 function ensurePrivateDirectory(path: string): void {

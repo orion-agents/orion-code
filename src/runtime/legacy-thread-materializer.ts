@@ -98,6 +98,15 @@ export type SessionStorageResolutionV1 =
       readonly generation: number;
     };
 
+export type OpenedSessionStorageV1 =
+  | {
+      readonly resolution: Extract<SessionStorageResolutionV1, { kind: 'legacy' }>;
+    }
+  | {
+      readonly resolution: Extract<SessionStorageResolutionV1, { kind: 'thread' }>;
+      readonly store: ThreadEventStore;
+    };
+
 export class LegacyThreadMaterializationError extends Error {
   constructor(
     readonly code:
@@ -218,27 +227,44 @@ export function resolveSessionStorageV1(
   projectPathInput: string,
   sessionId: string
 ): SessionStorageResolutionV1 {
+  return openSessionStorageV1(projectPathInput, sessionId).resolution;
+}
+
+/**
+ * Resolve and verify one storage generation while retaining the verified
+ * ThreadEventStore. Read-side projections can then capture transcript and
+ * model history without constructing a second cold store and rescanning the
+ * same append-only log.
+ */
+export function openSessionStorageV1(
+  projectPathInput: string,
+  sessionId: string
+): OpenedSessionStorageV1 {
   const projectPath = resolve(projectPathInput);
   const indexPath = getProjectThreadsV2IndexPath(projectPath);
   if (!existsSync(indexPath)) {
-    return {
-      kind: 'legacy',
-      sessionId,
-      metaPath: getProjectSessionMetaPath(projectPath, sessionId),
-    };
+    return Object.freeze({
+      resolution: Object.freeze({
+        kind: 'legacy' as const,
+        sessionId,
+        metaPath: getProjectSessionMetaPath(projectPath, sessionId),
+      }),
+    });
   }
   const index = readThreadCutoverIndex(indexPath);
   const entry = index.sessions[sessionId];
   if (!entry) {
-    return {
-      kind: 'legacy',
-      sessionId,
-      metaPath: getProjectSessionMetaPath(projectPath, sessionId),
-    };
+    return Object.freeze({
+      resolution: Object.freeze({
+        kind: 'legacy' as const,
+        sessionId,
+        metaPath: getProjectSessionMetaPath(projectPath, sessionId),
+      }),
+    });
   }
 
   const store = new ThreadEventStore(getProjectThreadsV2Dir(projectPath), entry.threadId, {
-    maxReplayEvents: Math.max(1, entry.cursor),
+    maxReplayEvents: Math.max(10_000, entry.cursor),
   });
   const replay = store.replay(0, Math.max(1, entry.cursor));
   const importedProjection = projectThreadEvents(entry.threadId, replay.events);
@@ -258,14 +284,15 @@ export function resolveSessionStorageV1(
       `Cutover index for ${sessionId} does not match its durable Thread facts`
     );
   }
-  return deepFreeze({
+  const resolution = deepFreeze({
     kind: 'thread',
     sessionId,
     threadId: entry.threadId,
     cursor: currentProjection.cursor,
     projectionDigest: currentProjection.digest,
     generation: index.generation,
-  });
+  } as const);
+  return Object.freeze({ resolution, store });
 }
 
 export function loadThreadCutoverIndexV1(projectPath: string): ThreadCutoverIndexV1 {

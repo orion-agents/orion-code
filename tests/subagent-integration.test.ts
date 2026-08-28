@@ -93,6 +93,39 @@ describe('subagent runtime integration', () => {
       const cfg = deriveRootLlmConfig(cliConfig({ modelRegistry: built.registry! }));
       expect(cfg.fallbackModel).toBeUndefined();
     });
+
+    it('derives child model credentials from the selected non-default profile', () => {
+      const built = buildRegistry({
+        providers: [
+          {
+            id: 'primary',
+            baseUrl: 'https://primary.example/v1',
+            apiKey: 'primary-key',
+            protocol: 'openai-completions',
+          },
+          {
+            id: 'selected',
+            baseUrl: 'https://selected.example/v1',
+            apiKey: 'selected-key',
+            protocol: 'openai-completions',
+          },
+        ],
+        models: [
+          { id: 'primary-profile', provider: 'primary', model: 'primary-model' },
+          { id: 'selected-profile', provider: 'selected', model: 'selected-model' },
+        ],
+        defaultModel: 'primary-profile',
+      });
+
+      expect(
+        deriveRootLlmConfig(cliConfig({ modelRegistry: built.registry! }), 'selected-profile')
+      ).toEqual({
+        apiKey: 'selected-key',
+        baseUrl: 'https://selected.example/v1',
+        model: 'selected-model',
+        fallbackModel: undefined,
+      });
+    });
   });
 
   describe('createSubagentToolForTurn', () => {

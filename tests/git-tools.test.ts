@@ -6,7 +6,7 @@ import {
   gitBranchTool,
 } from '../src/tools/git';
 import { execFileSync } from 'child_process';
-import { mkdtempSync, writeFileSync, rmSync, symlinkSync } from 'fs';
+import { mkdtempSync, writeFileSync, rmSync, symlinkSync, unlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { ToolContext } from '../src/framework/tool';
@@ -185,7 +185,7 @@ maybeDescribe('git tools (real temp repo)', () => {
         error: expect.stringContaining('outside the active workspace'),
       });
     } finally {
-      rmSync(link, { force: true });
+      unlinkSync(link);
       rmSync(outsideRepo, { recursive: true, force: true });
     }
   });

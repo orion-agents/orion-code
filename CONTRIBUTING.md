@@ -6,7 +6,7 @@ Thank you for your interest in contributing to Orion Code! This document provide
 
 ### Prerequisites
 
-- Node.js 20, 22, or 24
+- Node.js 22.12+, 24, or 26
 - npm 9+
 
 ### Getting Started

@@ -127,6 +127,52 @@ export function projectThreadEvents(
   return freezeProjection(state);
 }
 
+/**
+ * Advance an already verified projection with a contiguous durable event tail.
+ *
+ * ThreadEventStore uses this after it has verified that the underlying log head
+ * still matches its in-process cache. Re-projecting thousands of historical
+ * facts for every append made streaming latency grow with the lifetime of a
+ * Session; cloning the bounded projection and applying only the new tail keeps
+ * the same invariants without re-reading old facts.
+ */
+export function advanceThreadProjection(
+  projection: ThreadProjectionV1,
+  events: readonly RuntimeEventEnvelopeV1[]
+): ThreadProjectionV1 {
+  if (!verifyThreadProjectionDigest(projection)) {
+    throw new Error('Cannot advance a Thread projection with an invalid digest');
+  }
+  if (events.length === 0) return projection;
+
+  const state: MutableThreadProjectionV1 = {
+    version: 1,
+    threadId: projection.threadId,
+    cursor: projection.cursor,
+    status: projection.status,
+    ...(projection.activeTurnId ? { activeTurnId: projection.activeTurnId } : {}),
+    turns: Object.fromEntries(
+      Object.entries(projection.turns).map(([id, turn]) => [
+        id,
+        {
+          ...turn,
+          itemIds: [...turn.itemIds],
+          steeringItemIds: [...turn.steeringItemIds],
+        },
+      ])
+    ),
+    items: Object.fromEntries(
+      Object.entries(projection.items).map(([id, item]) => [id, { ...item }])
+    ),
+    queue: projection.queue.map(item => ({ ...item })),
+    stepSnapshotDigests: [...projection.stepSnapshotDigests],
+    capabilityReceiptDigests: [...projection.capabilityReceiptDigests],
+    toolInvocationIds: [...projection.toolInvocationIds],
+  };
+  for (const event of events) applyThreadEvent(state, event);
+  return freezeProjection(state);
+}
+
 export function applyThreadEvent(
   state: MutableThreadProjectionV1,
   event: RuntimeEventEnvelopeV1

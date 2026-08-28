@@ -13,6 +13,7 @@ import { atomicWriteFileSync } from './atomic-write';
 import { withFileLockSync } from './file-lock';
 import type { ModelPricing } from '../core/cost-tracker';
 import { isEffortPreference, type EffortPreference } from './effort';
+import { buildRegistry, type ModelRegistryConfig } from './model-registry';
 
 // ============================================================================
 // 类型定义
@@ -45,6 +46,17 @@ export interface ProjectConfig {
 
 /** How to handle tool permission checks that request interactive confirmation. */
 export type ToolConfirmationPolicy = 'ask' | 'allow' | 'deny';
+
+/** Browser appearance preferences persisted in the canonical global document. */
+export interface WebAppearanceConfigV1 {
+  theme?: 'system' | 'light' | 'dark';
+  motion?: 'system' | 'reduced';
+}
+
+/** Web-only preferences. Runtime/session state deliberately does not live here. */
+export interface WebConfigV1 {
+  appearance?: WebAppearanceConfigV1;
+}
 
 /**
  * OS-level isolation requested for shell command execution.
@@ -222,6 +234,8 @@ export interface GlobalConfig {
   webSearch?: WebSearchMcpConfig;
   /** Terminal UI configuration. */
   ui?: UIConfig;
+  /** Browser UI configuration. */
+  web?: WebConfigV1;
   /** Additional user-managed skills roots. */
   skills?: SkillsConfig;
   /** Agent-loop guardrails. */
@@ -252,6 +266,362 @@ const DEFAULT_CONFIG: GlobalConfig = {
 };
 
 const CONFIG_SCHEMA_VERSION = 1;
+
+/** A parsed canonical config document, including forward-compatible unknown fields. */
+export type GlobalConfigDocument = Record<string, unknown>;
+
+/** Raised only by the strict Settings path; the legacy startup loader remains tolerant. */
+export class GlobalConfigDocumentValidationError extends Error {
+  constructor(readonly field: string) {
+    super(`Invalid Orion configuration field: ${field}`);
+    this.name = 'GlobalConfigDocumentValidationError';
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function invalidField(field: string): never {
+  throw new GlobalConfigDocumentValidationError(field);
+}
+
+function validateOptionalString(
+  record: Record<string, unknown>,
+  key: string,
+  field: string,
+  allowEmpty = true
+): void {
+  const value = record[key];
+  if (value === undefined) return;
+  if (typeof value !== 'string' || (!allowEmpty && value.trim().length === 0)) invalidField(field);
+}
+
+function validateOptionalStringArray(
+  record: Record<string, unknown>,
+  key: string,
+  field: string
+): void {
+  const value = record[key];
+  if (value === undefined) return;
+  if (!Array.isArray(value) || !value.every(item => typeof item === 'string')) invalidField(field);
+}
+
+function validateOptionalBoolean(
+  record: Record<string, unknown>,
+  key: string,
+  field: string
+): void {
+  const value = record[key];
+  if (value !== undefined && typeof value !== 'boolean') invalidField(field);
+}
+
+function validateOptionalPositiveInteger(
+  record: Record<string, unknown>,
+  key: string,
+  field: string
+): void {
+  const value = record[key];
+  if (value !== undefined && (!Number.isSafeInteger(value) || Number(value) <= 0)) {
+    invalidField(field);
+  }
+}
+
+function validateSandboxDocument(value: unknown, field: string): void {
+  if (value === undefined) return;
+  if (!isRecord(value)) invalidField(field);
+  if (
+    value.profile !== undefined &&
+    value.profile !== 'none' &&
+    value.profile !== 'read-only' &&
+    value.profile !== 'workspace-write'
+  ) {
+    invalidField(`${field}.profile`);
+  }
+  if (
+    value.backend !== undefined &&
+    value.backend !== 'auto' &&
+    value.backend !== 'seatbelt' &&
+    value.backend !== 'bubblewrap' &&
+    value.backend !== 'docker'
+  ) {
+    invalidField(`${field}.backend`);
+  }
+  validateOptionalBoolean(value, 'allowNetwork', `${field}.allowNetwork`);
+  validateOptionalStringArray(value, 'writableRoots', `${field}.writableRoots`);
+  validateOptionalString(value, 'image', `${field}.image`);
+}
+
+function validateProjectDocument(value: unknown): void {
+  if (!isRecord(value)) invalidField('projects.*');
+  validateOptionalStringArray(value, 'allowedTools', 'projects.*.allowedTools');
+  validateOptionalString(value, 'compactInstructions', 'projects.*.compactInstructions');
+  validateSandboxDocument(value.sandbox, 'projects.*.sandbox');
+  validateOptionalString(value, 'lastSessionId', 'projects.*.lastSessionId');
+  validateOptionalString(value, 'lastModel', 'projects.*.lastModel');
+  validateOptionalBoolean(value, 'hasTrustDialogAccepted', 'projects.*.hasTrustDialogAccepted');
+  if (value.defaultEffort !== undefined && !isEffortPreference(value.defaultEffort)) {
+    invalidField('projects.*.defaultEffort');
+  }
+}
+
+function validatePricing(value: unknown, field: string): void {
+  if (!isRecord(value)) invalidField(field);
+  for (const key of ['input', 'output'] as const) {
+    if (typeof value[key] !== 'number' || !Number.isFinite(value[key]) || value[key] < 0) {
+      invalidField(`${field}.${key}`);
+    }
+  }
+  if (
+    value.cachedInput !== undefined &&
+    (typeof value.cachedInput !== 'number' ||
+      !Number.isFinite(value.cachedInput) ||
+      value.cachedInput < 0)
+  ) {
+    invalidField(`${field}.cachedInput`);
+  }
+}
+
+/**
+ * Validate the complete known schema without normalizing or dropping unknown
+ * fields. Settings mutations must call this before writing their raw clone.
+ */
+export function validateGlobalConfigDocumentStrict(
+  value: unknown
+): asserts value is GlobalConfigDocument {
+  if (!isRecord(value)) invalidField('$');
+  if (value.schemaVersion !== undefined && value.schemaVersion !== CONFIG_SCHEMA_VERSION) {
+    invalidField('schemaVersion');
+  }
+
+  validateOptionalString(value, 'apiKey', 'apiKey');
+  validateOptionalString(value, 'apiBaseUrl', 'apiBaseUrl');
+  validateOptionalString(value, 'defaultModel', 'defaultModel', false);
+  validateOptionalString(value, 'fallbackModel', 'fallbackModel', false);
+  validateOptionalString(value, 'userId', 'userId', false);
+  validateOptionalString(value, 'firstStartTime', 'firstStartTime', false);
+  validateOptionalStringArray(value, 'allowedTools', 'allowedTools');
+  if (
+    value.toolConfirmation !== undefined &&
+    value.toolConfirmation !== 'ask' &&
+    value.toolConfirmation !== 'allow' &&
+    value.toolConfirmation !== 'deny'
+  ) {
+    invalidField('toolConfirmation');
+  }
+  if (value.defaultEffort !== undefined && !isEffortPreference(value.defaultEffort)) {
+    invalidField('defaultEffort');
+  }
+  validateSandboxDocument(value.sandbox, 'sandbox');
+
+  if (value.projects !== undefined) {
+    if (!isRecord(value.projects)) invalidField('projects');
+    for (const project of Object.values(value.projects)) validateProjectDocument(project);
+  }
+
+  if (value.web !== undefined) {
+    if (!isRecord(value.web)) invalidField('web');
+    if (value.web.appearance !== undefined) {
+      if (!isRecord(value.web.appearance)) invalidField('web.appearance');
+      const { theme, motion } = value.web.appearance;
+      if (theme !== undefined && theme !== 'system' && theme !== 'light' && theme !== 'dark') {
+        invalidField('web.appearance.theme');
+      }
+      if (motion !== undefined && motion !== 'system' && motion !== 'reduced') {
+        invalidField('web.appearance.motion');
+      }
+    }
+  }
+
+  if (value.ui !== undefined) {
+    if (!isRecord(value.ui)) invalidField('ui');
+    const { renderer, confirmations, theme, motion } = value.ui;
+    if (renderer !== undefined && renderer !== 'terminal' && renderer !== 'tui') {
+      invalidField('ui.renderer');
+    }
+    if (
+      confirmations !== undefined &&
+      confirmations !== 'config' &&
+      confirmations !== 'interactive'
+    ) {
+      invalidField('ui.confirmations');
+    }
+    if (theme !== undefined && !TUI_THEME_PREFERENCES.has(theme as TuiThemePreference)) {
+      invalidField('ui.theme');
+    }
+    if (motion !== undefined && !TUI_MOTION_PREFERENCES.has(motion as TuiMotionPreference)) {
+      invalidField('ui.motion');
+    }
+    validateOptionalBoolean(value.ui, 'mascot', 'ui.mascot');
+    validateOptionalStringArray(value.ui, 'statusLine', 'ui.statusLine');
+    if (value.ui.keymap !== undefined && !isRecord(value.ui.keymap)) invalidField('ui.keymap');
+  }
+
+  if (value.webSearch !== undefined) {
+    if (!isRecord(value.webSearch)) invalidField('webSearch');
+    for (const key of [
+      'provider',
+      'endpoint',
+      'apiKey',
+      'toolName',
+      'apiKeyHeader',
+      'apiKeyQueryParam',
+    ]) {
+      validateOptionalString(value.webSearch, key, `webSearch.${key}`);
+    }
+    validateOptionalPositiveInteger(value.webSearch, 'timeoutMs', 'webSearch.timeoutMs');
+    if (
+      value.webSearch.authType !== undefined &&
+      !['bearer', 'header', 'query', 'none'].includes(String(value.webSearch.authType))
+    ) {
+      invalidField('webSearch.authType');
+    }
+    if (value.webSearch.headers !== undefined) {
+      if (
+        !isRecord(value.webSearch.headers) ||
+        !Object.values(value.webSearch.headers).every(header => typeof header === 'string')
+      ) {
+        invalidField('webSearch.headers');
+      }
+    }
+  }
+
+  if (value.skills !== undefined) {
+    if (!isRecord(value.skills)) invalidField('skills');
+    validateOptionalStringArray(value.skills, 'paths', 'skills.paths');
+  }
+  if (value.agentLoop !== undefined) {
+    if (!isRecord(value.agentLoop)) invalidField('agentLoop');
+    if (value.agentLoop.budget !== undefined) {
+      if (!isRecord(value.agentLoop.budget)) invalidField('agentLoop.budget');
+      for (const key of [
+        'maxLlmRequestsPerUserTurn',
+        'maxToolCallsPerUserTurn',
+        'maxReadOnlyFragmentation',
+        'maxModelVisibleToolBytes',
+      ]) {
+        validateOptionalPositiveInteger(value.agentLoop.budget, key, `agentLoop.budget.${key}`);
+      }
+    }
+  }
+  if (value.subagents !== undefined) {
+    if (!isRecord(value.subagents)) invalidField('subagents');
+    if (
+      value.subagents.mode !== undefined &&
+      value.subagents.mode !== 'off' &&
+      value.subagents.mode !== 'explicit' &&
+      value.subagents.mode !== 'auto'
+    ) {
+      invalidField('subagents.mode');
+    }
+    for (const key of [
+      'maxParallel',
+      'maxTasksPerTurn',
+      'maxTurnsPerTask',
+      'maxModelRequestsPerTask',
+      'maxModelRequestsPerTurn',
+      'maxToolCallsPerTask',
+      'timeoutMs',
+    ]) {
+      validateOptionalPositiveInteger(value.subagents, key, `subagents.${key}`);
+    }
+    if (value.subagents.roles !== undefined) {
+      if (
+        !Array.isArray(value.subagents.roles) ||
+        !value.subagents.roles.every(role =>
+          ['research', 'review', 'test-investigate'].includes(String(role))
+        )
+      ) {
+        invalidField('subagents.roles');
+      }
+    }
+  }
+  if (value.cost !== undefined) {
+    if (!isRecord(value.cost)) invalidField('cost');
+    if (value.cost.defaultPricing !== undefined) {
+      validatePricing(value.cost.defaultPricing, 'cost.defaultPricing');
+    }
+    if (value.cost.modelPricing !== undefined) {
+      if (!isRecord(value.cost.modelPricing)) invalidField('cost.modelPricing');
+      for (const pricing of Object.values(value.cost.modelPricing)) {
+        validatePricing(pricing, 'cost.modelPricing.*');
+      }
+    }
+  }
+
+  const hasProviders = value.providers !== undefined;
+  const hasModels = value.models !== undefined;
+  if (hasProviders || hasModels) {
+    if (!Array.isArray(value.providers) || !value.providers.every(isRecord)) {
+      invalidField('providers');
+    }
+    if (!Array.isArray(value.models) || !value.models.every(isRecord)) invalidField('models');
+    for (const provider of value.providers) {
+      validateOptionalString(provider, 'id', 'providers.*.id', false);
+      validateOptionalString(provider, 'baseUrl', 'providers.*.baseUrl', false);
+      validateOptionalString(provider, 'apiKey', 'providers.*.apiKey', false);
+      validateOptionalString(provider, 'displayName', 'providers.*.displayName');
+      if (
+        typeof provider.id !== 'string' ||
+        typeof provider.baseUrl !== 'string' ||
+        typeof provider.apiKey !== 'string'
+      ) {
+        invalidField('providers');
+      }
+      if (
+        provider.protocol !== 'openai-completions' &&
+        provider.protocol !== 'anthropic-messages'
+      ) {
+        invalidField('providers.*.protocol');
+      }
+    }
+    for (const model of value.models) {
+      validateOptionalString(model, 'id', 'models.*.id', false);
+      validateOptionalString(model, 'displayName', 'models.*.displayName');
+      validateOptionalString(model, 'provider', 'models.*.provider', false);
+      validateOptionalString(model, 'model', 'models.*.model', false);
+      if (
+        typeof model.id !== 'string' ||
+        typeof model.provider !== 'string' ||
+        typeof model.model !== 'string'
+      ) {
+        invalidField('models');
+      }
+      validateOptionalPositiveInteger(model, 'contextWindow', 'models.*.contextWindow');
+      validateOptionalPositiveInteger(model, 'maxOutputTokens', 'models.*.maxOutputTokens');
+      validateOptionalStringArray(model, 'aliases', 'models.*.aliases');
+      validateOptionalBoolean(model, 'enabled', 'models.*.enabled');
+      validateOptionalBoolean(model, 'reasoning', 'models.*.reasoning');
+      if (
+        model.temperatureMode !== undefined &&
+        model.temperatureMode !== 'supported' &&
+        model.temperatureMode !== 'unsupported'
+      ) {
+        invalidField('models.*.temperatureMode');
+      }
+      if (model.cost !== undefined) validatePricing(model.cost, 'models.*.cost');
+    }
+    let validation;
+    try {
+      validation = buildRegistry(value as unknown as ModelRegistryConfig);
+    } catch {
+      invalidField('providers/models');
+    }
+    if (!validation.valid) invalidField('providers/models');
+  }
+}
+
+/** Parse exact file bytes through the strict Settings validator. */
+export function parseGlobalConfigDocumentStrict(content: string | Buffer): GlobalConfigDocument {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(typeof content === 'string' ? content : content.toString('utf8'));
+  } catch {
+    invalidField('$json');
+  }
+  validateGlobalConfigDocumentStrict(parsed);
+  return parsed;
+}
 
 const TUI_THEME_PREFERENCES = new Set<TuiThemePreference>([
   'orion-pixel',
@@ -342,6 +712,31 @@ function sanitizeUiConfig(value: unknown): UIConfig | undefined {
   return Object.keys(ui).length > 0 ? ui : undefined;
 }
 
+function sanitizeWebConfig(value: unknown): WebConfigV1 | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  // Preserve forward-compatible Web fields while sanitizing the owned subtree.
+  const sanitized = { ...raw };
+  if (raw.appearance && typeof raw.appearance === 'object' && !Array.isArray(raw.appearance)) {
+    const appearance = { ...(raw.appearance as Record<string, unknown>) };
+    if (
+      appearance.theme !== 'system' &&
+      appearance.theme !== 'light' &&
+      appearance.theme !== 'dark'
+    ) {
+      delete appearance.theme;
+    }
+    if (appearance.motion !== 'system' && appearance.motion !== 'reduced') {
+      delete appearance.motion;
+    }
+    if (Object.keys(appearance).length > 0) sanitized.appearance = appearance;
+    else delete sanitized.appearance;
+  } else {
+    delete sanitized.appearance;
+  }
+  return sanitized as WebConfigV1;
+}
+
 interface LegacyUsageFields {
   totalSessions?: unknown;
   totalTokens?: unknown;
@@ -405,6 +800,7 @@ function sanitizeProjectConfig(value: unknown): ProjectConfig {
 function sanitizeGlobalConfig(config: GlobalConfig & LegacyUsageFields): GlobalConfig {
   const {
     ui,
+    web,
     totalSessions: _totalSessions,
     totalTokens: _totalTokens,
     totalCost: _totalCost,
@@ -440,6 +836,9 @@ function sanitizeGlobalConfig(config: GlobalConfig & LegacyUsageFields): GlobalC
   // UI renderer is a runtime choice, but product preferences are persisted.
   const persistedUi = sanitizeUiConfig(ui);
   if (persistedUi) sanitized.ui = persistedUi;
+
+  const persistedWeb = sanitizeWebConfig(web);
+  if (persistedWeb) sanitized.web = persistedWeb;
 
   return sanitized;
 }
@@ -557,10 +956,27 @@ export function recordFirstStartTime(): void {
   withFileLockSync(
     path,
     () => {
-      const config = loadGlobalConfig();
-      if (!config.firstStartTime) {
-        saveGlobalConfigUnlocked(path, { ...config, firstStartTime: new Date().toISOString() });
+      let document: GlobalConfigDocument;
+      if (existsSync(path)) {
+        try {
+          document = parseGlobalConfigDocumentStrict(readFileSync(path));
+        } catch {
+          // Startup metadata is optional. Never let the tolerant compatibility
+          // loader turn an invalid user document into defaults and overwrite it.
+          return;
+        }
+      } else {
+        document = { schemaVersion: CONFIG_SCHEMA_VERSION };
       }
+      if (typeof document.firstStartTime === 'string' && document.firstStartTime.trim()) return;
+
+      const candidate: GlobalConfigDocument = {
+        ...document,
+        schemaVersion: document.schemaVersion ?? CONFIG_SCHEMA_VERSION,
+        firstStartTime: new Date().toISOString(),
+      };
+      validateGlobalConfigDocumentStrict(candidate);
+      atomicWriteFileSync(path, JSON.stringify(candidate, null, 2), { mode: 0o600, fsync: true });
     },
     { waitMs: 10_000 }
   );

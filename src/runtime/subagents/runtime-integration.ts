@@ -10,6 +10,7 @@
 import type { OrionCodeTool } from '../../framework/tool';
 import type { LLMConfig } from '../../services/llm';
 import type { OrionCodeCLIConfig } from '../../services/config';
+import { lookupProfile } from '../../services/model-registry';
 import type { ProviderResilienceCoordinator } from '../../services/provider-resilience';
 import type { ProviderRequestPreflight } from '../../services/llm';
 import type { ProviderRequestGate } from '../../services/provider-resilience/request-gate';
@@ -148,10 +149,13 @@ export function createSubagentToolForTurn(inputs: SubagentTurnInputs): OrionCode
 
 /** Derive the root LLM config slice from the legacy runtime config. */
 export function deriveRootLlmConfig(
-  config: OrionCodeCLIConfig
+  config: OrionCodeCLIConfig,
+  selector?: string
 ): Pick<LLMConfig, 'apiKey' | 'baseUrl' | 'model' | 'fallbackModel'> {
   const registry = config.modelRegistry;
-  const profile = registry?.defaultProfile;
+  const profile = registry
+    ? ((selector ? lookupProfile(registry, selector) : null) ?? registry.defaultProfile)
+    : undefined;
   const provider = profile ? registry?.providers.get(profile.provider) : undefined;
   if (profile && provider) {
     const apiKey = provider.apiKey.startsWith('$')

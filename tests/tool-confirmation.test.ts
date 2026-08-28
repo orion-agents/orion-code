@@ -1,6 +1,12 @@
-import { AgentRuntimeController, type AgentRuntimeRunner } from '../src/runtime/agent-runtime-controller';
-import type { OrionCodeUiRuntime, TranscriptAppendEntry, UiEventSink } from '../src/runtime/ui-events';
-import * as globalConfig from '../src/services/global-config';
+import {
+  AgentRuntimeController,
+  type AgentRuntimeRunner,
+} from '../src/runtime/agent-runtime-controller';
+import type {
+  OrionCodeUiRuntime,
+  TranscriptAppendEntry,
+  UiEventSink,
+} from '../src/runtime/ui-events';
 
 function createRuntime(overrides: Partial<OrionCodeUiRuntime> = {}): OrionCodeUiRuntime {
   return {
@@ -47,42 +53,70 @@ function createEvents() {
 }
 
 describe('tool confirmation policy (toolConfirmation) live switch', () => {
-  let updateGlobalConfigSpy: jest.SpyInstance;
-
-  beforeEach(() => {
-    // updateGlobalConfig writes ~/.orion-code/orion.json; stub it to avoid touching disk.
-    updateGlobalConfigSpy = jest
-      .spyOn(globalConfig, 'updateGlobalConfig')
-      .mockImplementation(() => undefined as never);
-  });
-
-  afterEach(() => {
-    jest.restoreAllMocks();
-  });
-
-  function buildController(toolConfirmation: 'allow' | 'ask' | 'deny') {
+  function buildController(
+    toolConfirmation: 'allow' | 'ask' | 'deny',
+    update?: OrionCodeUiRuntime['updateSettings']
+  ) {
     const runtime = createRuntime({
       config: { model: 'test-model', toolConfirmation } as OrionCodeUiRuntime['config'],
     });
-    const { events } = createEvents();
+    runtime.describeSettings = jest.fn(() => ({ revision: 'hmac-sha256:test-revision' }) as never);
+    runtime.updateSettings =
+      update ??
+      jest.fn(async input => {
+        const operation = input.operations[0];
+        if (operation?.op === 'set' && operation.key === 'permissions.toolConfirmation') {
+          runtime.config.toolConfirmation = operation.value;
+        }
+        return {} as never;
+      });
+    const { events, statuses } = createEvents();
     const runner: AgentRuntimeRunner = {
       runInput: jest.fn(async () => {}),
     } as unknown as AgentRuntimeRunner;
     const controller = new AgentRuntimeController({ runtime, events, runner });
-    return { runtime, controller };
+    return { runtime, controller, statuses };
   }
 
-  it('mutates runtime.config immediately and persists on valid change', () => {
-    const { runtime, controller } = buildController('allow');
+  it('reports success only after the durable Settings update commits', async () => {
+    let commit!: () => void;
+    const committed = new Promise<void>(resolve => {
+      commit = resolve;
+    });
+    let runtime!: OrionCodeUiRuntime;
+    const updateSettings = jest.fn(async input => {
+      await committed;
+      const operation = input.operations[0];
+      if (operation?.op === 'set' && operation.key === 'permissions.toolConfirmation') {
+        runtime.config.toolConfirmation = operation.value;
+      }
+      return {} as never;
+    });
+    const built = buildController('allow', updateSettings);
+    runtime = built.runtime;
 
-    const result = controller.handle({ type: 'permission_mode_change', value: 'ask', source: 'command' });
+    const result = built.controller.handle({
+      type: 'permission_mode_change',
+      value: 'ask',
+      source: 'command',
+    });
 
-    expect(result).toEqual({ type: 'permission_mode_changed' });
-    // Live mutation: chat-controller passes this.runtime.config.toolConfirmation into the
-    // scheduler on every tool call, so the next call uses the new value without restart.
+    expect(result).toEqual({ type: 'started' });
+    expect(runtime.config.toolConfirmation).toBe('allow');
+    expect(built.statuses).not.toContain('Tool confirmation → ask');
+
+    commit();
+    await built.controller.waitForIdle();
+
     expect(runtime.config.toolConfirmation).toBe('ask');
-    // Persisted so the change survives restart.
-    expect(updateGlobalConfigSpy).toHaveBeenCalledWith({ toolConfirmation: 'ask' });
+    expect(built.statuses).toContain('Tool confirmation → ask');
+    expect(updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestId: expect.stringMatching(/^runtime:permission-mode:/u),
+        expectedRevision: 'hmac-sha256:test-revision',
+        operations: [{ op: 'set', key: 'permissions.toolConfirmation', value: 'ask' }],
+      })
+    );
   });
 
   it('rejects invalid policy values without mutating or persisting', () => {
@@ -96,21 +130,24 @@ describe('tool confirmation policy (toolConfirmation) live switch', () => {
 
     expect(result).toEqual({ type: 'permission_mode_invalid' });
     expect(runtime.config.toolConfirmation).toBe('allow');
-    expect(updateGlobalConfigSpy).not.toHaveBeenCalled();
+    expect(runtime.updateSettings).not.toHaveBeenCalled();
   });
 
-  it('round-trips allow -> deny -> allow', () => {
-    const { runtime, controller } = buildController('allow');
-
-    expect(controller.handle({ type: 'permission_mode_change', value: 'deny' }).type).toBe(
-      'permission_mode_changed'
+  it('keeps the previous policy and omits success when persistence fails', async () => {
+    const { runtime, controller, statuses } = buildController(
+      'allow',
+      jest.fn(async () => {
+        throw new Error('CAS conflict');
+      })
     );
-    expect(runtime.config.toolConfirmation).toBe('deny');
 
-    expect(controller.handle({ type: 'permission_mode_change', value: 'allow' }).type).toBe(
-      'permission_mode_changed'
-    );
+    expect(controller.handle({ type: 'permission_mode_change', value: 'deny' })).toEqual({
+      type: 'started',
+    });
+    await controller.waitForIdle();
+
     expect(runtime.config.toolConfirmation).toBe('allow');
-    expect(updateGlobalConfigSpy).toHaveBeenLastCalledWith({ toolConfirmation: 'allow' });
+    expect(statuses).not.toContain('Tool confirmation → deny');
+    expect(statuses).toContain('Tool confirmation was not changed: CAS conflict');
   });
 });

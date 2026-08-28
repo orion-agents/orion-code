@@ -88,6 +88,90 @@ describe('ThreadEventStore', () => {
     expect(store.getCursor()).toBe(5);
   });
 
+  test('keeps streaming cursor reads and local appends independent of historical log size', () => {
+    let logScans = 0;
+    const store = createStore({
+      onLogScan: () => {
+        logScans += 1;
+      },
+    });
+    const turnId = randomUUID();
+    const stepId = randomUUID();
+    const itemId = randomUUID();
+
+    store.appendDurable({ payload: { type: 'thread.started', data: {} } });
+    expect(logScans).toBe(1);
+
+    for (let index = 0; index < 100; index += 1) {
+      expect(
+        store.createEphemeral({
+          turnId,
+          stepId,
+          itemId,
+          payload: { type: 'item.delta', data: { delta: `chunk-${index}`, channel: 'content' } },
+        }).seq
+      ).toBe(1);
+    }
+    expect(store.getCursor()).toBe(1);
+
+    store.appendDurable({
+      turnId,
+      payload: { type: 'turn.started', data: { input: 'continue', mode: 'build' } },
+    });
+    expect(store.getCursor()).toBe(2);
+    expect(logScans).toBe(1);
+  });
+
+  test('invalidates the verified head when another store commits', () => {
+    let logScans = 0;
+    const store = createStore({
+      onLogScan: () => {
+        logScans += 1;
+      },
+    });
+    store.appendDurable({ payload: { type: 'thread.started', data: {} } });
+    expect(logScans).toBe(1);
+
+    const other = new ThreadEventStore(store.rootDir, store.threadId);
+    other.appendDurable({
+      turnId: randomUUID(),
+      payload: { type: 'turn.started', data: { input: 'external', mode: 'build' } },
+    });
+
+    expect(store.getCursor()).toBe(2);
+    expect(logScans).toBe(2);
+  });
+
+  test('captures projection and exact log identity from one verified head', () => {
+    let logScans = 0;
+    const store = createStore({
+      onLogScan: () => {
+        logScans += 1;
+      },
+    });
+    const committed = store.appendDurable({
+      payload: { type: 'thread.started', data: { projectPath: '/workspace' } },
+    });
+
+    const first = store.captureReadModelHead();
+    const second = store.captureReadModelHead();
+
+    expect(first).toMatchObject({
+      projection: { cursor: committed.seq },
+      lastEventTimestamp: committed.timestamp,
+      lastRecordHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      log: {
+        bytes: expect.any(Number),
+        device: expect.stringMatching(/^\d+$/),
+        inode: expect.stringMatching(/^\d+$/),
+        mtimeNs: expect.stringMatching(/^\d+$/),
+        ctimeNs: expect.stringMatching(/^\d+$/),
+      },
+    });
+    expect(second).toEqual(first);
+    expect(logScans).toBe(1);
+  });
+
   test('recovers a flushed event when projection publication crashes', () => {
     let crash = true;
     const store = createStore({

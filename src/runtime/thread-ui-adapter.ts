@@ -10,12 +10,19 @@ import {
   readGoalRuntimePersistenceV2,
   type GoalRuntimePersistenceViewV2,
 } from './goal-runtime-coordinator';
+import { digestRuntimeValue } from './protocol/canonical';
 import { createRuntimeId, type RuntimeEventEnvelopeV1 } from './protocol/runtime-protocol-v1';
 import type { RuntimeEventBufferOptionsV1, RuntimeEventBufferV1 } from './runtime-event-buffer';
 import type { ThreadCommandAdmissionV1, ThreadTurnRequestV1 } from './thread-admission';
 import { ThreadRuntimeV1 } from './thread-runtime';
+import type { ToolInvocationReceiptV1 } from './tool-gateway';
 import { parseTurnCommitV1 } from './turn-commit';
-import type { TranscriptAppendEntry, TranscriptRole, UiEventSink } from './ui-events';
+import type {
+  ToolAuthorizationView,
+  TranscriptAppendEntry,
+  TranscriptRole,
+  UiEventSink,
+} from './ui-events';
 
 export const THREAD_UI_ADAPTER_VERSION = 1 as const;
 
@@ -64,6 +71,15 @@ interface ItemPresentation {
   content: string;
 }
 
+interface DurableToolReceiptFact {
+  readonly invocationId: string;
+  readonly terminal: ToolInvocationReceiptV1['terminal'];
+  readonly success: boolean;
+  readonly outputDigest: string;
+  readonly receiptDigest: string;
+  readonly intentDigest: string;
+}
+
 type ItemKind = 'message' | 'reasoning' | 'command' | 'file_change' | 'mcp' | 'plan' | 'compact';
 
 type ThreadUiDispatchModeV1 = Exclude<ThreadTurnRequestV1['mode'], 'maintenance'>;
@@ -84,6 +100,7 @@ export class ThreadUiAdapterV1 implements AgentRuntimeRunnerV1 {
   private readonly mode: ThreadUiModeResolverV1;
   private readonly initialReplayTarget: number;
   private readonly presentations = new Map<string, ItemPresentation>();
+  private readonly toolReceiptFacts = new Map<string, DurableToolReceiptFact>();
   private cursorValue: number;
   private initialReplayComplete = false;
   private closed = false;
@@ -178,6 +195,7 @@ export class ThreadUiAdapterV1 implements AgentRuntimeRunnerV1 {
     this.runtime.unsubscribe(this.consumerId);
     this.runtime.close(reason);
     this.presentations.clear();
+    this.toolReceiptFacts.clear();
   }
 
   snapshot(): ThreadUiAdapterSnapshotV1 {
@@ -362,7 +380,9 @@ export class ThreadUiAdapterV1 implements AgentRuntimeRunnerV1 {
       case 'thread.forked':
       case 'step.snapshot':
       case 'capability.receipt':
+        return;
       case 'tool.receipt':
+        this.rememberToolReceipt(event);
         return;
       case 'turn.committed':
         this.projectGoalCommit(event.payload.data.receipt);
@@ -472,7 +492,13 @@ export class ThreadUiAdapterV1 implements AgentRuntimeRunnerV1 {
     if (!presentation.content && terminal.summary) presentation.content = terminal.summary;
 
     if (isToolItem(presentation.kind)) {
-      const success = event.payload.type === 'item.completed';
+      const durableReceiptFact = this.toolReceiptFacts.get(presentation.itemId);
+      const receipt =
+        terminal.receipt && durableReceiptFact
+          ? validateDurableToolReceipt(event, presentation, terminal.receipt, durableReceiptFact)
+          : undefined;
+      this.toolReceiptFacts.delete(presentation.itemId);
+      const success = receipt?.success ?? event.payload.type === 'item.completed';
       this.emit({
         type: 'tool_finished',
         event: {
@@ -486,6 +512,13 @@ export class ThreadUiAdapterV1 implements AgentRuntimeRunnerV1 {
           ...(terminal.error ? { error: terminal.error } : {}),
           ...(presentation.content
             ? { outputBytes: Buffer.byteLength(presentation.content, 'utf8') }
+            : {}),
+          ...(receipt
+            ? {
+                authorization: projectToolAuthorization(receipt),
+                executionPolicyDigest: receipt.executionPolicyDigest,
+                receiptDigest: receipt.digest,
+              }
             : {}),
         },
       });
@@ -501,6 +534,15 @@ export class ThreadUiAdapterV1 implements AgentRuntimeRunnerV1 {
       });
     }
     this.presentations.delete(presentation.itemId);
+  }
+
+  private rememberToolReceipt(event: RuntimeEventEnvelopeV1): void {
+    if (event.payload.type !== 'tool.receipt') return;
+    const fact = event.payload.data;
+    if (event.itemId && event.itemId !== fact.invocationId) {
+      throw new ThreadUiAdapterError('Durable tool receipt identity does not match its Item.');
+    }
+    this.toolReceiptFacts.set(fact.invocationId, Object.freeze({ ...fact }));
   }
 
   private ensurePresentation(event: RuntimeEventEnvelopeV1): ItemPresentation {
@@ -653,19 +695,140 @@ function terminalItemData(event: RuntimeEventEnvelopeV1): {
   readonly content?: string;
   readonly summary?: string;
   readonly error?: string;
+  readonly receipt?: string;
 } {
   switch (event.payload.type) {
     case 'item.completed':
       return {
         content: event.payload.data.content,
         summary: event.payload.data.summary,
+        receipt: event.payload.data.receipt,
       };
     case 'item.failed':
-      return { error: event.payload.data.error };
+      return { error: event.payload.data.error, receipt: event.payload.data.receipt };
     case 'item.interrupted':
-      return { error: event.payload.data.reason || 'Item interrupted.' };
+      return {
+        error: event.payload.data.reason || 'Item interrupted.',
+        receipt: event.payload.data.receipt,
+      };
     case 'item.indeterminate':
-      return { error: event.payload.data.reason };
+      return { error: event.payload.data.reason, receipt: event.payload.data.receipt };
+    default:
+      throw new ThreadUiAdapterError(`${event.payload.type} is not an Item terminal event.`);
+  }
+}
+
+function validateDurableToolReceipt(
+  event: RuntimeEventEnvelopeV1,
+  presentation: ItemPresentation,
+  receiptJson: string,
+  fact: DurableToolReceiptFact
+): ToolInvocationReceiptV1 {
+  let parsed: ToolInvocationReceiptV1;
+  try {
+    parsed = JSON.parse(receiptJson) as ToolInvocationReceiptV1;
+  } catch {
+    throw new ThreadUiAdapterError('Durable ToolInvocationReceipt is not valid JSON.');
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new ThreadUiAdapterError('Durable ToolInvocationReceipt is not an object.');
+  }
+  const { digest, ...content } = parsed;
+  const expectedTerminal = terminalReceiptStatus(event);
+  if (
+    parsed.version !== 1 ||
+    typeof digest !== 'string' ||
+    !digest ||
+    digestRuntimeValue(content) !== digest ||
+    parsed.invocationId !== presentation.itemId ||
+    parsed.invocationId !== event.itemId ||
+    parsed.threadId !== event.threadId ||
+    parsed.turnId !== event.turnId ||
+    parsed.stepId !== event.stepId ||
+    parsed.toolName !== presentation.name ||
+    parsed.terminal !== expectedTerminal ||
+    typeof parsed.success !== 'boolean' ||
+    typeof parsed.executionPolicyDigest !== 'string' ||
+    !parsed.executionPolicyDigest
+  ) {
+    throw new ThreadUiAdapterError('Durable ToolInvocationReceipt failed integrity validation.');
+  }
+  if (
+    fact.invocationId !== parsed.invocationId ||
+    fact.terminal !== parsed.terminal ||
+    fact.success !== parsed.success ||
+    fact.outputDigest !== parsed.outputDigest ||
+    fact.receiptDigest !== parsed.digest ||
+    fact.intentDigest !== parsed.intentDigest
+  ) {
+    throw new ThreadUiAdapterError(
+      'Durable tool receipt event does not match its canonical receipt.'
+    );
+  }
+  return parsed;
+}
+
+/**
+ * Project presentation provenance only after the canonical receipt and its
+ * separate durable `tool.receipt` fact have both passed validation.
+ */
+function projectToolAuthorization(receipt: ToolInvocationReceiptV1): ToolAuthorizationView {
+  const policy = receipt.policy;
+  const approval = receipt.approval;
+  if (!policy) {
+    return {
+      approved: false,
+      behavior: 'deny',
+      source: 'tool_policy',
+      reason:
+        receipt.result.error ??
+        `Tool invocation stopped during the ${receipt.terminalPhase} authorization phase.`,
+    };
+  }
+  return {
+    behavior: policy.behavior,
+    approved:
+      policy.behavior === 'allow' || (policy.behavior === 'ask' && approval?.approved === true),
+    source: normalizeToolAuthorizationSource(
+      policy.behavior,
+      policy.source,
+      approval?.source,
+      approval?.approved
+    ),
+    ...(approval?.reason || policy.reason ? { reason: approval?.reason ?? policy.reason } : {}),
+  };
+}
+
+function normalizeToolAuthorizationSource(
+  behavior: NonNullable<ToolAuthorizationView['behavior']>,
+  policySource: string,
+  approvalSource?: string,
+  approvalApproved?: boolean
+): ToolAuthorizationView['source'] {
+  if (approvalSource === 'user') return 'user';
+  if (approvalSource === 'authority') return approvalApproved ? 'config_allow' : 'config_deny';
+  if (approvalSource === 'unavailable') return 'missing_confirmation';
+  if (policySource.startsWith('allowlist:')) {
+    return behavior === 'allow'
+      ? 'allowlist_allow'
+      : behavior === 'deny'
+        ? 'allowlist_deny'
+        : 'allowlist_ask';
+  }
+  return 'tool_policy';
+}
+
+function terminalReceiptStatus(event: RuntimeEventEnvelopeV1): ToolInvocationReceiptV1['terminal'] {
+  switch (event.payload.type) {
+    case 'item.completed':
+      return 'completed';
+    case 'item.failed':
+      return 'failed';
+    case 'item.interrupted':
+      return 'interrupted';
+    case 'item.indeterminate':
+      return 'indeterminate';
     default:
       throw new ThreadUiAdapterError(`${event.payload.type} is not an Item terminal event.`);
   }
