@@ -317,6 +317,12 @@ describe('release-check script contract', () => {
     expect(workflow).toContain('npm run test:web-e2e:critical');
     expect(workflow).toContain('ORION_WEB_E2E_RUNNER_IMAGE');
     expect(workflow).toContain('--web-e2e .release/web-e2e/web-e2e-receipt.json');
+    expect(workflow).toContain(
+      "find .release/web-e2e/primary -path '*/run-*/manifest.json' -type f ! -path '*/scenarios/*'"
+    );
+    expect(workflow).toContain(
+      "find .release/web-e2e/runtime -name manifest.json -type f ! -path '*/scenarios/*'"
+    );
     expect(criticalRunner).toContain("'(?:E2E-P0-0[1-4]|@settings)'");
     expect(criticalRunner).toContain("manifest?.decision === 'GO'");
     expect(browserFixture).toContain(

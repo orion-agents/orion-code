@@ -439,8 +439,8 @@ jobs:
       - name: Verify and aggregate Web E2E evidence
         shell: bash
         run: |
-          mapfile -t PRIMARY < <(find .release/web-e2e/primary -path '*/run-*/manifest.json' -type f | sort)
-          mapfile -t RUNTIME < <(find .release/web-e2e/runtime -name manifest.json -type f | sort)
+          mapfile -t PRIMARY < <(find .release/web-e2e/primary -path '*/run-*/manifest.json' -type f ! -path '*/scenarios/*' | sort)
+          mapfile -t RUNTIME < <(find .release/web-e2e/runtime -name manifest.json -type f ! -path '*/scenarios/*' | sort)
           test "${#PRIMARY[@]}" -eq 3
           test "${#RUNTIME[@]}" -eq 3
           ARGS=(--artifact .release/package/artifact.json --live-canary NOT_RUN)
