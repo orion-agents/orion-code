@@ -1,4 +1,6 @@
-const DEFAULT_RENDER_CHUNK_CHARACTERS = 16 * 1024;
+// Keep one xterm write comfortably inside a 16.7ms frame on slower CI/browser CPUs.
+// A 4KiB slice still drains the 10MiB release fixture inside its 90 second budget.
+const DEFAULT_RENDER_CHUNK_CHARACTERS = 4 * 1024;
 
 export interface TerminalWriteTarget {
   write(data: string, callback: () => void): void;
