@@ -574,7 +574,11 @@ async function restoreSession(
   // Swap in the resumed session's transcript BEFORE emitting any command output,
   // so the output is appended after the history rather than wiped by the
   // transcript replacement below.
-  ctx.setSession?.(resumed);
+  if (ctx.activateSession) {
+    await ctx.activateSession(resumed, runtimeActivation);
+  } else {
+    ctx.setSession?.(resumed);
+  }
 
   // Notify runtime/TUI consumers only after the target view is validated.
   const resumeGeneratedAt = Date.now();
@@ -590,7 +594,7 @@ async function restoreSession(
   if (history.length > 0) {
     const eventSummary = checkpoint?.summary.text ?? generateRestoredSessionEventSummary(history);
     ctx.store.setState({ conversationHistory: history });
-    await ctx.restoreSessionRuntime?.(runtimeActivation);
+    if (!ctx.activateSession) await ctx.restoreSessionRuntime?.(runtimeActivation);
     ctx.replaceTranscript?.(transcriptWindow.entries);
     ctx.sessionRestored?.({
       sessionId: resumed.id,
@@ -609,7 +613,7 @@ async function restoreSession(
       ...(recoveryWarnings.length > 0 ? { warnings: recoveryWarnings } : {}),
     });
   } else {
-    await ctx.restoreSessionRuntime?.(runtimeActivation);
+    if (!ctx.activateSession) await ctx.restoreSessionRuntime?.(runtimeActivation);
     ctx.replaceTranscript?.(transcriptWindow.entries);
     ctx.sessionRestored?.({
       sessionId: resumed.id,

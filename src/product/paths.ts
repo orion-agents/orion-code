@@ -30,6 +30,15 @@ export function getConfigHome(): string {
   return process.env[`${ENV_PREFIX}CONFIG_DIR`] ?? join(homedir(), CONFIG_DIR_NAME);
 }
 
+/**
+ * Root for mutable runtime data. It intentionally falls back to the config
+ * root so existing CLI installations keep their current layout until a host
+ * explicitly opts into isolation.
+ */
+export function getDataHome(): string {
+  return process.env[`${ENV_PREFIX}DATA_DIR`] ?? getConfigHome();
+}
+
 /** Alias for getConfigHome */
 export function getConfigDir(): string {
   return getConfigHome();
@@ -47,12 +56,12 @@ export function getSettingsPath(): string {
 
 /** ~/.orion-code/usage.json */
 export function getUsageStatePath(): string {
-  return join(getConfigHome(), 'usage.json');
+  return join(getDataHome(), 'usage.json');
 }
 
 /** ~/.orion-code/cost/usage-ledger.jsonl */
 export function getUsageLedgerPath(): string {
-  return join(getConfigHome(), 'cost', 'usage-ledger.jsonl');
+  return join(getDataHome(), 'cost', 'usage-ledger.jsonl');
 }
 
 /** ~/.orion-code/ORION.md */
@@ -62,7 +71,7 @@ export function getUserMemoryPath(): string {
 
 /** ~/.orion-code/history.jsonl */
 export function getHistoryPath(): string {
-  return join(getConfigHome(), 'history.jsonl');
+  return join(getDataHome(), 'history.jsonl');
 }
 
 /** ~/.orion-code/mcp.json */
@@ -72,7 +81,27 @@ export function getMcpConfigPath(): string {
 
 /** ~/.orion-code/projects */
 export function getProjectsDir(): string {
-  return join(getConfigHome(), 'projects');
+  return join(getDataHome(), 'projects');
+}
+
+/** Durable index for sessions stored below the mutable data root. */
+export function getSessionCatalogPath(): string {
+  return join(getDataHome(), 'session-catalog.json');
+}
+
+/** Cross-process ACP session lease directories. */
+export function getSessionLeasesDir(): string {
+  return join(getDataHome(), 'session-leases');
+}
+
+/** Runtime diagnostic logs. */
+export function getLogsDir(): string {
+  return join(getDataHome(), 'logs');
+}
+
+/** Runtime and distribution receipts. */
+export function getReceiptsDir(): string {
+  return join(getDataHome(), 'receipts');
 }
 
 /** ~/.orion-code.env (outside config home) */
@@ -190,7 +219,7 @@ export function getProjectIndexesDir(projectPath: string): string {
 // ── Cost / Cache ────────────────────────────────────────────────────────────
 
 export function getCostDir(): string {
-  return join(getConfigHome(), 'cost');
+  return join(getDataHome(), 'cost');
 }
 
 export function getDailyCostPath(date?: Date): string {
@@ -200,7 +229,7 @@ export function getDailyCostPath(date?: Date): string {
 }
 
 export function getCacheDir(): string {
-  return join(getConfigHome(), 'cache');
+  return join(getDataHome(), 'cache');
 }
 
 // ── Memory paths (User / Project / Local) ───────────────────────────────────
@@ -235,14 +264,17 @@ function sweepStorageDirectory(directory: string): void {
 }
 
 export function ensureConfigDir(): void {
-  const dir = getConfigHome();
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  for (const sub of ['projects', 'cost', 'cache']) {
-    const p = join(dir, sub);
-    mkdirSync(p, { recursive: true, mode: 0o700 });
-    sweepStorageDirectory(p);
+  const configDirectory = getConfigHome();
+  const dataDirectory = getDataHome();
+  mkdirSync(configDirectory, { recursive: true, mode: 0o700 });
+  mkdirSync(dataDirectory, { recursive: true, mode: 0o700 });
+  for (const subdirectory of ['projects', 'cost', 'cache', 'logs', 'receipts', 'session-leases']) {
+    const path = join(dataDirectory, subdirectory);
+    mkdirSync(path, { recursive: true, mode: 0o700 });
+    sweepStorageDirectory(path);
   }
-  sweepStorageDirectory(dir);
+  sweepStorageDirectory(configDirectory);
+  if (dataDirectory !== configDirectory) sweepStorageDirectory(dataDirectory);
 }
 
 export function ensureProjectDir(projectPath: string): void {

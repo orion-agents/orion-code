@@ -11,28 +11,38 @@ import {
 
 describe('structured diagnostics', () => {
   let configDir: string;
+  let dataDir: string;
   let originalConfigDir: string | undefined;
+  let originalDataDir: string | undefined;
 
   beforeEach(() => {
     configDir = mkdtempSync(join(tmpdir(), 'orion-observability-'));
+    dataDir = mkdtempSync(join(tmpdir(), 'orion-observability-data-'));
     originalConfigDir = process.env.ORION_CODE_CONFIG_DIR;
+    originalDataDir = process.env.ORION_CODE_DATA_DIR;
     process.env.ORION_CODE_CONFIG_DIR = configDir;
+    process.env.ORION_CODE_DATA_DIR = dataDir;
   });
 
   afterEach(() => {
     rmSync(configDir, { recursive: true, force: true });
+    rmSync(dataDir, { recursive: true, force: true });
     if (originalConfigDir === undefined) delete process.env.ORION_CODE_CONFIG_DIR;
     else process.env.ORION_CODE_CONFIG_DIR = originalConfigDir;
+    if (originalDataDir === undefined) delete process.env.ORION_CODE_DATA_DIR;
+    else process.env.ORION_CODE_DATA_DIR = originalDataDir;
   });
 
-  test('persists redacted JSON diagnostics by default without polluting stderr', () => {
+  test('persists redacted JSON diagnostics under the data root without polluting stderr', () => {
     const stderr = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     runWithDiagnosticTrace({ traceId: 'trace-1', sessionId: 'session-1', turnId: 'turn-1' }, () =>
       debugError('auth.test', new Error('apiKey=sk-supersecret123'), '/tmp/project')
     );
 
     expect(stderr).not.toHaveBeenCalled();
+    expect(getDiagnosticLogPath()).toBe(join(dataDir, 'logs', 'orion.jsonl'));
     expect(existsSync(getDiagnosticLogPath())).toBe(true);
+    expect(existsSync(join(configDir, 'logs'))).toBe(false);
     const event = JSON.parse(readFileSync(getDiagnosticLogPath(), 'utf8').trim());
     expect(event).toMatchObject({
       level: 'error',

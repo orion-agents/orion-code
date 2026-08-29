@@ -5,7 +5,8 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "orion": "bin/orion"
+    "orion": "bin/orion",
+    "orion-code": "bin/orion-code-acp"
   },
   "files": [
     "dist/",
@@ -32,6 +33,7 @@
     "docs/architecture/v0.3.1-web-api.yaml",
     "docs/architecture/v0.3.2-web-api.yaml",
     "docs/architecture/agent-mode-permission-contract.md",
+    "docs/architecture/orion-code-acp-v1.md",
     "LICENSE",
     "README.md",
     "README.zh-CN.md",
@@ -43,10 +45,11 @@
     "cli": "ts-node src/cli.ts",
     "clean": "node scripts/maintenance/clean-dist.js",
     "build": "npm run clean && npm run build:server && npm run build:web && node scripts/maintenance/copy-runtime-assets.js",
-    "build:server": "tsc",
+    "build:server": "tsc && tsc -p tsconfig.acp.json",
     "build:web": "tsc -p web/tsconfig.json --noEmit && vite build --config web/vite.config.ts",
     "dev:web": "vite --config web/vite.config.ts",
     "test": "jest",
+    "test:acp": "npm run build:server && node scripts/smoke/acp-contract.mjs",
     "test:web-browser": "ts-node --transpile-only scripts/smoke/web-workbench-browser.ts",
     "test:web-e2e": "playwright test",
     "test:web-e2e:critical": "ts-node --transpile-only scripts/e2e/run-web-e2e-critical.ts",
@@ -54,8 +57,8 @@
     "test:web-e2e:matrix": "ts-node --transpile-only scripts/e2e/run-web-e2e-matrix.ts",
     "test:coverage": "jest --coverage",
     "deps:check": "bash scripts/release/dep-health-check.sh",
-    "lint": "eslint src/ web/src/ scripts/smoke/web-workbench-browser.ts scripts/e2e/ tests/e2e/ playwright.config.ts",
-    "format": "prettier --write src/ web/src/ scripts/smoke/web-workbench-browser.ts scripts/e2e/ tests/e2e/ playwright.config.ts",
+    "lint": "eslint src/ web/src/ scripts/smoke/web-workbench-browser.ts scripts/smoke/acp-contract.mjs scripts/e2e/ tests/e2e/ playwright.config.ts",
+    "format": "prettier --write src/ web/src/ scripts/smoke/web-workbench-browser.ts scripts/smoke/acp-contract.mjs scripts/e2e/ tests/e2e/ playwright.config.ts",
     "release:check": "node scripts/release/release-check.js",
     "bench:harness": "ts-node --transpile-only scripts/bench/harness-runtime.ts",
     "bench:harness:baseline": "ts-node --transpile-only scripts/bench/harness-runtime.ts --mode baseline",
@@ -99,6 +102,7 @@
     "access": "public"
   },
   "dependencies": {
+    "@agentclientprotocol/sdk": "1.4.0",
     "@clack/prompts": "^0.7.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
@@ -119,7 +123,8 @@
     "string-width": "^4.2.3",
     "throttle": "^1.0.3",
     "undici": "^6.28.0",
-    "ws": "^8.21.3"
+    "ws": "^8.21.3",
+    "zod": "4.5.2"
   },
   "devDependencies": {
     "@playwright/test": "1.62.1",

@@ -112,7 +112,12 @@ describe('WebWorkbenchController', () => {
     const rebind = new Promise<void>(resolve => {
       release = resolve;
     });
-    runtime.rebindSessionRuntime = jest.fn(() => rebind);
+    const activateSession = runtime.activateSession;
+    runtime.activateSession = jest.fn(async (session, activation) => {
+      if (!activateSession) throw new Error('test runtime activation is unavailable');
+      await activateSession(session, activation);
+      await rebind;
+    });
     const controller = await WebWorkbenchController.create({
       cwd: workspace,
       createRuntime: async () => runtime,

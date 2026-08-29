@@ -4,12 +4,32 @@ import { resolve } from 'path';
 interface PackageManifest {
   name?: string;
   version?: string;
+  bin?: Record<string, string>;
+  files?: string[];
   scripts?: Record<string, string>;
 }
 
 const rootDir = resolve(__dirname, '..');
 
 describe('npm package lifecycle', () => {
+  it('pins the ACP Preview package identity and public surface', () => {
+    const manifest = JSON.parse(
+      readFileSync(resolve(rootDir, 'package.json'), 'utf8')
+    ) as PackageManifest;
+
+    expect(manifest).toMatchObject({
+      name: '@orion-agents/orion-code',
+      version: '0.3.2',
+      bin: {
+        orion: 'bin/orion',
+        'orion-code': 'bin/orion-code-acp',
+      },
+    });
+    expect(manifest.files).toContain('docs/architecture/orion-code-acp-v1.md');
+    expect(manifest.files).not.toContain('tests/');
+    expect(manifest.files).not.toContain('.env');
+  });
+
   it('cleans generated output before every build and pack', () => {
     const manifest = JSON.parse(
       readFileSync(resolve(rootDir, 'package.json'), 'utf8')
@@ -19,7 +39,7 @@ describe('npm package lifecycle', () => {
       clean: 'node scripts/maintenance/clean-dist.js',
       build:
         'npm run clean && npm run build:server && npm run build:web && node scripts/maintenance/copy-runtime-assets.js',
-      'build:server': 'tsc',
+      'build:server': 'tsc && tsc -p tsconfig.acp.json',
       'build:web': 'tsc -p web/tsconfig.json --noEmit && vite build --config web/vite.config.ts',
       prepack: 'npm run build',
     });

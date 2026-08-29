@@ -15,6 +15,7 @@ import type {
 } from './tool-gateway';
 
 export interface FirstPartyApprovalRequestV1 {
+  readonly id: string;
   readonly name: string;
   readonly args: Readonly<Record<string, unknown>>;
   readonly reason?: string;
@@ -145,6 +146,7 @@ export class FirstPartyToolApprovalServiceV1 implements ToolApprovalServiceV1 {
         }
         try {
           const approved = await this.confirm({
+            id: input.invocationId,
             name: input.descriptor.name,
             args: { ...input.args },
             reason: input.policy.reason,

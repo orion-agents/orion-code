@@ -3,7 +3,8 @@
 面向终端与浏览器、本地优先的目标驱动 Coding Agent。
 
 > v0.3.2 候选版本：一套 Orion Runtime，同时提供可调宽本地 Web Workbench、Session 级
-> Composer Control Center 与既有 TUI/terminal。Candidate 源码不代表已创建 npm 发布或 Git tag。
+> Composer Control Center、既有 TUI/terminal 与由 Orion Studio 托管的 ACP sidecar。Candidate
+> 源码不代表已创建 npm 发布或 Git tag。
 
 [English](README.md) ·
 [v0.3.2 Workbench 方案](docs/plan/v0.3.2-web-workbench-layout-and-composer-plan.md) ·
@@ -93,6 +94,17 @@ npm install
 npm run build
 npm run start
 ```
+
+### Orion Studio / ACP sidecar
+
+Orion Studio 与其他 ACP client 使用独立的 `orion-code` 可执行文件启动 sidecar。它通过
+stdin/stdout 使用 ACP v1 的逐行 JSON-RPC，stdout 只允许输出协议帧。`orion acp` 是等价的人工
+调试别名，会在普通 CLI 与 `.env` 加载之前直接分流。
+
+宿主可设置 `ORION_CODE_DATA_DIR`，将可变的 session、cache、log、receipt 与 lease 隔离到自身
+管理的数据目录；用户的模型/provider/MCP 配置仍属于 `ORION_CODE_CONFIG_DIR`。未设置 data
+override 时继续沿用现有单目录布局，不会自动搬迁数据。冻结的 Preview 合同见
+[`docs/architecture/orion-code-acp-v1.md`](docs/architecture/orion-code-acp-v1.md)。
 
 ## 配置模型
 

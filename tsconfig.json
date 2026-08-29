@@ -26,6 +26,7 @@
     "src/runtime/goals/lifecycle.ts",
     "src/runtime/goals/prompt.ts",
     "src/runtime/goals/stop-policy.ts",
-    "src/runtime/goals/tools.ts"
+    "src/runtime/goals/tools.ts",
+    "src/acp/server.mts"
   ]
 }

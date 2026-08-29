@@ -29,8 +29,8 @@ import {
   getProjectSessionMetaPath,
   getProjectSessionTracePath,
   getProjectSessionsDir,
-  getConfigDir,
   getProjectsDir,
+  getSessionCatalogPath,
 } from './config-dir';
 import { atomicWriteFileSync } from './atomic-write';
 import { withFileLockSync } from './file-lock';
@@ -674,10 +674,6 @@ interface SessionCatalogCache {
 }
 
 let sessionCatalogCache: SessionCatalogCache | null = null;
-
-function getSessionCatalogPath(): string {
-  return join(getConfigDir(), 'session-catalog.json');
-}
 
 function emptySessionCatalog(): SessionCatalog {
   return { version: SESSION_CATALOG_VERSION, sessions: {} };

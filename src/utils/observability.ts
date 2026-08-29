@@ -1,8 +1,7 @@
 import { AsyncLocalStorage } from 'async_hooks';
 import { appendFileSync, mkdirSync, renameSync, statSync } from 'fs';
-import { homedir } from 'os';
 import { join } from 'path';
-import { CONFIG_DIR_NAME, ENV_PREFIX } from '../product/identity';
+import { getLogsDir } from '../product/paths';
 import { redactTraceText } from '../services/redaction';
 
 export interface DiagnosticTraceContext {
@@ -26,12 +25,8 @@ const metricCounters = new Map<string, number>();
 const MAX_RING_EVENTS = 256;
 const MAX_LOG_BYTES = 5 * 1024 * 1024;
 
-function configHome(): string {
-  return process.env[`${ENV_PREFIX}CONFIG_DIR`] ?? join(homedir(), CONFIG_DIR_NAME);
-}
-
 export function getDiagnosticLogPath(): string {
-  return join(configHome(), 'logs', 'orion.jsonl');
+  return join(getLogsDir(), 'orion.jsonl');
 }
 
 export function setDiagnosticTraceContext(context: DiagnosticTraceContext): void {
@@ -83,7 +78,7 @@ export function recordStructuredDiagnostic(
 
   try {
     const logPath = getDiagnosticLogPath();
-    mkdirSync(join(configHome(), 'logs'), { recursive: true, mode: 0o700 });
+    mkdirSync(getLogsDir(), { recursive: true, mode: 0o700 });
     try {
       if (statSync(logPath).size >= MAX_LOG_BYTES) renameSync(logPath, `${logPath}.1`);
     } catch {

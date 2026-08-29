@@ -1,0 +1,30 @@
+#!/usr/bin/env node
+
+const fs = require('fs');
+const path = require('path');
+const { pathToFileURL } = require('url');
+
+const [nodeMajor, nodeMinor] = process.versions.node.split('.').map(Number);
+const supportedNodeRuntime =
+  (nodeMajor === 22 && nodeMinor >= 12) || nodeMajor === 24 || nodeMajor === 26;
+if (!supportedNodeRuntime) {
+  console.error(
+    `Orion Code requires Node.js 22.12+, 24, or 26; current runtime is ${process.versions.node}.`
+  );
+  process.exitCode = 1;
+} else {
+  process.env.ORION_CODE_DISABLE_ENV_FILES = '1';
+  const serverEntry = path.join(__dirname, '..', 'dist', 'acp', 'server.mjs');
+  if (!fs.existsSync(serverEntry)) {
+    console.error('Orion Code ACP server is not built. Run npm run build:server first.');
+    process.exitCode = 1;
+  } else {
+    import(pathToFileURL(serverEntry).href)
+      .then(module => module.startOrionAcpServer())
+      .catch(error => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`Orion Code ACP server failed: ${message}`);
+        process.exitCode = 1;
+      });
+  }
+}

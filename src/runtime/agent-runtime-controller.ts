@@ -671,6 +671,7 @@ export class AgentRuntimeController {
       sessionId: this.options.runtime.getSession()?.id,
       ensureSession: this.options.runtime.ensureSession,
       setSession: session => this.options.runtime.setSession(session),
+      activateSession: this.options.runtime.activateSession,
       restoreSessionRuntime: this.runner.restoreSession
         ? activation => this.runner.restoreSession!(activation)
         : undefined,

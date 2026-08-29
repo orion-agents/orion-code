@@ -114,6 +114,49 @@ describe('Web Context transition', () => {
     await controller.shutdown();
   });
 
+  test('acquires the target Session before releasing the previous Workspace owner', async () => {
+    const first = createSession(firstWorkspace, 'test-model');
+    const second = createSession(secondWorkspace, 'test-model');
+    const events: string[] = [];
+    const createRuntime = jest.fn(async (cwd: string) => {
+      const runtime = createFakeWebRuntime(cwd);
+      if (cwd === firstWorkspace) {
+        const shutdown = runtime.shutdown;
+        runtime.shutdown = async () => {
+          events.push('previous:shutdown');
+          await shutdown();
+        };
+      } else if (cwd === secondWorkspace) {
+        const activateSession = runtime.activateSession;
+        runtime.activateSession = async (session, activation) => {
+          events.push(`target:activate:${session.id}`);
+          if (!activateSession) throw new Error('test runtime activation is unavailable');
+          await activateSession(session, activation);
+        };
+      }
+      return runtime;
+    });
+    const controller = await WebWorkbenchController.create({
+      cwd: firstWorkspace,
+      workspaceRegistry: registry,
+      createRuntime,
+    });
+    await controller.activateSession(first.id);
+    events.splice(0);
+    const target = registry.list().find(entry => entry.canonicalPath === secondWorkspace)!;
+
+    await controller.activateContext({
+      expectedContextRevision: controller.contextRevision,
+      workspaceId: target.id,
+      sessionId: second.id,
+    });
+
+    expect(events[0]).toBe(`target:activate:${second.id}`);
+    expect(events.indexOf('previous:shutdown')).toBeGreaterThan(0);
+    expect(controller.runtime.getSession()?.id).toBe(second.id);
+    await controller.shutdown();
+  });
+
   test('rejects stale revisions and cross-Workspace Session identities before draining Runtime', async () => {
     const second = createSession(secondWorkspace, 'test-model');
     const createRuntime = jest.fn(async (cwd: string) => createFakeWebRuntime(cwd));
@@ -184,7 +227,6 @@ describe('Web Context transition', () => {
     expect(createRuntime.mock.calls.map(call => call[0])).toEqual([
       firstWorkspace,
       failingWorkspace,
-      firstWorkspace,
     ]);
     await controller.shutdown();
   });
