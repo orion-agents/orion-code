@@ -1,7 +1,7 @@
-// Split a 4KiB frame budget into small parser entries so xterm can yield between entries.
+// Split a 3KiB frame budget into small parser entries so xterm can yield between entries.
 // One bounded batch per animation frame drains 10MiB without monopolizing the main thread.
 const DEFAULT_RENDER_CHUNK_CHARACTERS = 256;
-const DEFAULT_IN_FLIGHT_CHARACTERS = 16 * 256;
+const DEFAULT_IN_FLIGHT_CHARACTERS = 12 * 256;
 
 export interface TerminalWriteTarget {
   write(data: string, callback: () => void): void;
