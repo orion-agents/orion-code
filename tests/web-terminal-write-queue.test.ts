@@ -1,10 +1,10 @@
 import { TerminalWriteQueue } from '../web/src/components/terminal/terminal-write-queue';
 
-class FrameScheduler {
+class TaskScheduler {
   private nextHandle = 1;
-  private readonly callbacks = new Map<number, FrameRequestCallback>();
+  private readonly callbacks = new Map<number, () => void>();
 
-  schedule = (callback: FrameRequestCallback): number => {
+  schedule = (callback: () => void): number => {
     const handle = this.nextHandle;
     this.nextHandle += 1;
     this.callbacks.set(handle, callback);
@@ -16,12 +16,10 @@ class FrameScheduler {
   };
 
   runNext(): void {
-    const entry = this.callbacks.entries().next().value as
-      | [number, FrameRequestCallback]
-      | undefined;
-    if (!entry) throw new Error('No animation frame is scheduled.');
+    const entry = this.callbacks.entries().next().value as [number, () => void] | undefined;
+    if (!entry) throw new Error('No terminal write task is scheduled.');
     this.callbacks.delete(entry[0]);
-    entry[1](0);
+    entry[1]();
   }
 
   size(): number {
@@ -31,14 +29,14 @@ class FrameScheduler {
 
 describe('TerminalWriteQueue', () => {
   it('paces output and commits each reconnect sequence only after its complete xterm write', () => {
-    const scheduler = new FrameScheduler();
+    const scheduler = new TaskScheduler();
     const writes: Array<{ data: string; callback: () => void }> = [];
     const sequences: number[] = [];
     const queue = new TerminalWriteQueue({
       target: { write: (data, callback) => writes.push({ data, callback }) },
       onSequenceCommitted: sequence => sequences.push(sequence),
-      scheduleFrame: scheduler.schedule,
-      cancelFrame: scheduler.cancel,
+      scheduleTask: scheduler.schedule,
+      cancelTask: scheduler.cancel,
       maxChunkCharacters: 4,
     });
 
@@ -61,13 +59,13 @@ describe('TerminalWriteQueue', () => {
   });
 
   it('never splits a Unicode surrogate pair at a render boundary', () => {
-    const scheduler = new FrameScheduler();
+    const scheduler = new TaskScheduler();
     const writes: Array<{ data: string; callback: () => void }> = [];
     const queue = new TerminalWriteQueue({
       target: { write: (data, callback) => writes.push({ data, callback }) },
       onSequenceCommitted: () => undefined,
-      scheduleFrame: scheduler.schedule,
-      cancelFrame: scheduler.cancel,
+      scheduleTask: scheduler.schedule,
+      cancelTask: scheduler.cancel,
       maxChunkCharacters: 2,
     });
 
@@ -83,14 +81,14 @@ describe('TerminalWriteQueue', () => {
   });
 
   it('cancels pending work and suppresses late callbacks after disposal', () => {
-    const scheduler = new FrameScheduler();
+    const scheduler = new TaskScheduler();
     const writes: Array<{ data: string; callback: () => void }> = [];
     const sequences: number[] = [];
     const queue = new TerminalWriteQueue({
       target: { write: (data, callback) => writes.push({ data, callback }) },
       onSequenceCommitted: sequence => sequences.push(sequence),
-      scheduleFrame: scheduler.schedule,
-      cancelFrame: scheduler.cancel,
+      scheduleTask: scheduler.schedule,
+      cancelTask: scheduler.cancel,
       maxChunkCharacters: 4,
     });
 

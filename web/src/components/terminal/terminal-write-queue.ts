@@ -1,4 +1,4 @@
-// Keep one xterm write comfortably inside a 16.7ms frame on slower CI/browser CPUs.
+// Keep each xterm parser input bounded while letting xterm own the animation-frame render cycle.
 // A 4KiB slice still drains the 10MiB release fixture inside its 90 second budget.
 const DEFAULT_RENDER_CHUNK_CHARACTERS = 4 * 1024;
 
@@ -9,8 +9,8 @@ export interface TerminalWriteTarget {
 export interface TerminalWriteQueueOptions {
   readonly target: TerminalWriteTarget;
   readonly onSequenceCommitted: (sequence: number) => void;
-  readonly scheduleFrame?: (callback: FrameRequestCallback) => number;
-  readonly cancelFrame?: (handle: number) => void;
+  readonly scheduleTask?: (callback: () => void) => number;
+  readonly cancelTask?: (handle: number) => void;
   readonly maxChunkCharacters?: number;
 }
 
@@ -29,19 +29,18 @@ export class TerminalWriteQueue {
   private readonly pending: PendingTerminalWrite[] = [];
   private readonly target: TerminalWriteTarget;
   private readonly onSequenceCommitted: (sequence: number) => void;
-  private readonly scheduleFrame: (callback: FrameRequestCallback) => number;
-  private readonly cancelFrame: (handle: number) => void;
+  private readonly scheduleTask: (callback: () => void) => number;
+  private readonly cancelTask: (handle: number) => void;
   private readonly maxChunkCharacters: number;
-  private scheduledFrame: number | null = null;
+  private scheduledTask: number | null = null;
   private writing = false;
   private disposed = false;
 
   constructor(options: TerminalWriteQueueOptions) {
     this.target = options.target;
     this.onSequenceCommitted = options.onSequenceCommitted;
-    this.scheduleFrame =
-      options.scheduleFrame ?? (callback => window.requestAnimationFrame(callback));
-    this.cancelFrame = options.cancelFrame ?? (handle => window.cancelAnimationFrame(handle));
+    this.scheduleTask = options.scheduleTask ?? (callback => window.setTimeout(callback, 0));
+    this.cancelTask = options.cancelTask ?? (handle => window.clearTimeout(handle));
     this.maxChunkCharacters = Math.max(
       1,
       Math.floor(options.maxChunkCharacters ?? DEFAULT_RENDER_CHUNK_CHARACTERS)
@@ -61,23 +60,21 @@ export class TerminalWriteQueue {
     if (this.disposed) return;
     this.disposed = true;
     this.pending.length = 0;
-    if (this.scheduledFrame !== null) {
-      this.cancelFrame(this.scheduledFrame);
-      this.scheduledFrame = null;
+    if (this.scheduledTask !== null) {
+      this.cancelTask(this.scheduledTask);
+      this.scheduledTask = null;
     }
   }
 
   private requestFlush(): void {
-    if (
-      this.disposed ||
-      this.writing ||
-      this.pending.length === 0 ||
-      this.scheduledFrame !== null
-    ) {
+    if (this.disposed || this.writing || this.pending.length === 0 || this.scheduledTask !== null) {
       return;
     }
-    this.scheduledFrame = this.scheduleFrame(() => {
-      this.scheduledFrame = null;
+    // xterm already yields its parser after 12ms and schedules rendering itself. Scheduling this
+    // queue on requestAnimationFrame would consume a separate frame and make parsing and painting
+    // alternate at roughly half the display refresh rate on slower browsers.
+    this.scheduledTask = this.scheduleTask(() => {
+      this.scheduledTask = null;
       this.flush();
     });
   }

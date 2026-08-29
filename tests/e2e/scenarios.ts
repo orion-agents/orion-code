@@ -84,6 +84,8 @@ export const WEB31_REQUIRED_EVIDENCE_FACTS_V1: Readonly<
   'WEB31-P0-10': Object.freeze([
     { key: 'web31.sse_ws_isolated', equals: true },
     { key: 'web31.transport_dropped_events', equals: 0 },
+    { key: 'web31.terminal_idle_frame_rate_fps', minimum: 55 },
+    { key: 'web31.terminal_frame_rate_fps', minimum: 55 },
     { key: 'web31.terminal_burst_bytes', equals: 10485760 },
     { key: 'web31.terminal_performance_budget', equals: true },
   ]),

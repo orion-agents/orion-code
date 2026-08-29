@@ -207,6 +207,9 @@ test('WEB31-P0-10 terminal WebSocket burst stays isolated from Workbench SSE', a
   const echoLatencies = await measureTerminalEcho(page, panel, 20);
   const echoP95Ms = percentile(echoLatencies, 0.95);
   expect(echoP95Ms).toBeLessThanOrEqual(80);
+
+  await startFrameMeasurement(page, 2_000);
+  const idleFrameMetrics = await finishFrameMeasurement(page);
   await startFrameMeasurement(page, 2_000);
 
   const terminalMarker = 'WEB31_TERMINAL_BURST_DONE';
@@ -228,6 +231,21 @@ test('WEB31-P0-10 terminal WebSocket burst stays isolated from Workbench SSE', a
   expect(transport.terminalStreamQueries).toBe(0);
   expect(transport.maxBufferedAmount).toBeLessThanOrEqual(256 * 1024);
   const frameMetrics = await finishFrameMeasurement(page);
+
+  evidence.recordFact(
+    'web31.terminal_idle_frame_rate_fps',
+    roundMetric(idleFrameMetrics.framesPerSecond)
+  );
+  evidence.recordFact('web31.terminal_frame_rate_fps', roundMetric(frameMetrics.framesPerSecond));
+  evidence.recordFact(
+    'web31.terminal_frame_p95_interval_ms',
+    roundMetric(frameMetrics.p95IntervalMs)
+  );
+  evidence.recordFact('web31.terminal_echo_p95_ms', roundMetric(echoP95Ms));
+  evidence.recordFact('web31.terminal_ws_buffered_bytes', transport.maxBufferedAmount);
+  evidence.recordFact('web31.terminal_burst_bytes', 10 * 1024 * 1024);
+
+  expect(idleFrameMetrics.framesPerSecond).toBeGreaterThanOrEqual(55);
   expect(frameMetrics.framesPerSecond).toBeGreaterThanOrEqual(55);
 
   await captureProductSurface(
@@ -239,10 +257,6 @@ test('WEB31-P0-10 terminal WebSocket burst stays isolated from Workbench SSE', a
   await closeSelectedTerminal(panel);
   evidence.recordFact('web31.sse_ws_isolated', true);
   evidence.recordFact('web31.transport_dropped_events', evidence.snapshotCounters().droppedEvents);
-  evidence.recordFact('web31.terminal_echo_p95_ms', roundMetric(echoP95Ms));
-  evidence.recordFact('web31.terminal_frame_rate_fps', roundMetric(frameMetrics.framesPerSecond));
-  evidence.recordFact('web31.terminal_ws_buffered_bytes', transport.maxBufferedAmount);
-  evidence.recordFact('web31.terminal_burst_bytes', 10 * 1024 * 1024);
   evidence.recordFact('web31.terminal_performance_budget', true);
   page.off('requestfailed', onRequestFailed);
   expect(
