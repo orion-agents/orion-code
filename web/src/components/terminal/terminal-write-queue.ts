@@ -1,7 +1,7 @@
-// Keep each xterm parser input bounded while letting xterm own the animation-frame render cycle.
-// A 4KiB slice still drains the 10MiB release fixture inside its 90 second budget.
-const DEFAULT_RENDER_CHUNK_CHARACTERS = 4 * 1024;
-const DEFAULT_IN_FLIGHT_CHARACTERS = 64 * 1024;
+// Split a 4KiB frame budget into small parser entries so xterm can yield between entries.
+// One bounded batch per animation frame drains 10MiB without monopolizing the main thread.
+const DEFAULT_RENDER_CHUNK_CHARACTERS = 256;
+const DEFAULT_IN_FLIGHT_CHARACTERS = 16 * 256;
 
 export interface TerminalWriteTarget {
   write(data: string, callback: () => void): void;
@@ -45,8 +45,9 @@ export class TerminalWriteQueue {
   constructor(options: TerminalWriteQueueOptions) {
     this.target = options.target;
     this.onSequenceCommitted = options.onSequenceCommitted;
-    this.scheduleTask = options.scheduleTask ?? (callback => window.setTimeout(callback, 0));
-    this.cancelTask = options.cancelTask ?? (handle => window.clearTimeout(handle));
+    this.scheduleTask =
+      options.scheduleTask ?? (callback => window.requestAnimationFrame(() => callback()));
+    this.cancelTask = options.cancelTask ?? (handle => window.cancelAnimationFrame(handle));
     this.maxChunkCharacters = Math.max(
       2,
       Math.floor(options.maxChunkCharacters ?? DEFAULT_RENDER_CHUNK_CHARACTERS)
@@ -87,9 +88,8 @@ export class TerminalWriteQueue {
     ) {
       return;
     }
-    // xterm already yields its parser after 12ms and schedules rendering itself. Scheduling this
-    // queue on requestAnimationFrame would consume a separate frame and make parsing and painting
-    // alternate at roughly half the display refresh rate on slower browsers.
+    // A browser-frame boundary prevents a continuously reposted parser timer from starving paint.
+    // xterm still owns parsing and rendering; this queue only caps how much new work it receives.
     this.scheduledTask = this.scheduleTask(() => {
       this.scheduledTask = null;
       this.flush();

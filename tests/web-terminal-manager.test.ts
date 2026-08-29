@@ -255,6 +255,30 @@ describe('TerminalManagerV1', () => {
     ).toBeLessThanOrEqual(2 * 1024 * 1024);
   });
 
+  test('coalesces a burst of small PTY chunks into one bounded output frame', async () => {
+    const created = manager.create({
+      workspaceId: 'workspace-a',
+      expectedContextRevision: 'revision-a',
+    });
+    const frames: Array<{ type: 'output'; sequence: number; data: string }> = [];
+    manager.attach({
+      terminalId: created.terminal.id,
+      ticket: created.ticket,
+      afterSequence: 0,
+      onFrame: frame => frames.push(frame),
+      onExit: jest.fn(),
+      onReplaced: jest.fn(),
+    });
+
+    for (let index = 0; index < 100; index += 1) processes[0].emitData('0123456789');
+
+    expect(frames).toEqual([]);
+    await waitFor(() => frames.length > 0);
+    expect(frames).toEqual([
+      { type: 'output', sequence: 1, data: '0123456789'.repeat(100) },
+    ]);
+  });
+
   test('never splits a Unicode surrogate pair across terminal output frames', () => {
     const created = manager.create({
       workspaceId: 'workspace-a',

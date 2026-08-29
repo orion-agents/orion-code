@@ -11,6 +11,7 @@ const MAX_WORKSPACE_TERMINALS = 2;
 const MAX_SCROLLBACK_BYTES = 2 * 1024 * 1024;
 const MAX_INPUT_BYTES = 64 * 1024;
 const MAX_OUTPUT_FRAME_CHARS = 8_000;
+const OUTPUT_COALESCE_MS = 8;
 const DEFAULT_TICKET_TTL_MS = 15_000;
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_FORCE_KILL_DELAY_MS = 1_000;
@@ -144,6 +145,8 @@ interface TerminalEntry {
   nextSequence: number;
   frames: OutputFrame[];
   frameBytes: number;
+  pendingOutput: string;
+  outputFlushTimer?: NodeJS.Timeout;
   subscriber?: TerminalSubscriber;
   exitCode?: number;
   signal?: number;
@@ -299,6 +302,7 @@ export class TerminalManagerV1 {
       nextSequence: 1,
       frames: [],
       frameBytes: 0,
+      pendingOutput: '',
       dataSubscription: process.onData(data => this.appendOutput(entry, data)),
       exitSubscription: process.onExit(event => this.handleExit(entry, event)),
       removeAfterExit: false,
@@ -354,6 +358,7 @@ export class TerminalManagerV1 {
     }
     const entry = this.requireTerminal(input.terminalId);
     this.consumeTicket(entry.id, input.ticket);
+    this.flushPendingOutput(entry, true);
     if (entry.outputPaused) this.setProcessOutputPaused(entry, false);
     entry.subscriber?.onReplaced();
     const token = randomUUID();
@@ -572,18 +577,42 @@ export class TerminalManagerV1 {
 
   private appendOutput(entry: TerminalEntry, data: string): void {
     if (entry.state !== 'running' && entry.state !== 'closing') return;
-    for (let offset = 0; offset < data.length; ) {
-      let end = Math.min(data.length, offset + MAX_OUTPUT_FRAME_CHARS);
+    entry.pendingOutput += data;
+    this.flushPendingOutput(entry, data.length >= MAX_OUTPUT_FRAME_CHARS);
+    if (entry.pendingOutput && !entry.outputFlushTimer) {
+      entry.outputFlushTimer = setTimeout(() => {
+        entry.outputFlushTimer = undefined;
+        this.flushPendingOutput(entry, true);
+      }, OUTPUT_COALESCE_MS);
+      entry.outputFlushTimer.unref();
+    }
+  }
+
+  private flushPendingOutput(entry: TerminalEntry, force: boolean): void {
+    let emitted = false;
+    while (
+      entry.pendingOutput.length > 0 &&
+      (force || entry.pendingOutput.length >= MAX_OUTPUT_FRAME_CHARS)
+    ) {
+      let end = Math.min(entry.pendingOutput.length, MAX_OUTPUT_FRAME_CHARS);
       if (
-        end < data.length &&
-        end > offset &&
-        isHighSurrogate(data.charCodeAt(end - 1)) &&
-        isLowSurrogate(data.charCodeAt(end))
+        end < entry.pendingOutput.length &&
+        end > 0 &&
+        isHighSurrogate(entry.pendingOutput.charCodeAt(end - 1)) &&
+        isLowSurrogate(entry.pendingOutput.charCodeAt(end))
       ) {
         end -= 1;
       }
-      const value = data.slice(offset, end);
-      offset = end;
+      if (
+        !force &&
+        end === entry.pendingOutput.length &&
+        isHighSurrogate(entry.pendingOutput.charCodeAt(end - 1))
+      ) {
+        break;
+      }
+      if (end <= 0) break;
+      const value = entry.pendingOutput.slice(0, end);
+      entry.pendingOutput = entry.pendingOutput.slice(end);
       const frame = Object.freeze({
         sequence: entry.nextSequence++,
         data: value,
@@ -598,12 +627,18 @@ export class TerminalManagerV1 {
       entry.subscriber?.onFrame(
         Object.freeze({ type: 'output', sequence: frame.sequence, data: frame.data })
       );
+      emitted = true;
     }
-    this.touch(entry);
+    if (!entry.pendingOutput && entry.outputFlushTimer) {
+      clearTimeout(entry.outputFlushTimer);
+      entry.outputFlushTimer = undefined;
+    }
+    if (emitted) this.touch(entry);
   }
 
   private handleExit(entry: TerminalEntry, event: { exitCode: number; signal?: number }): void {
     if (this.terminals.get(entry.id) !== entry) return;
+    this.flushPendingOutput(entry, true);
     entry.state = 'exited';
     entry.exitCode = event.exitCode;
     entry.signal = event.signal;
@@ -725,6 +760,7 @@ export class TerminalManagerV1 {
     if (entry.idleTimer) clearTimeout(entry.idleTimer);
     if (entry.forceKillTimer) clearTimeout(entry.forceKillTimer);
     if (entry.reapTimer) clearTimeout(entry.reapTimer);
+    if (entry.outputFlushTimer) clearTimeout(entry.outputFlushTimer);
     entry.dataSubscription.dispose();
     entry.exitSubscription.dispose();
     entry.subscriber = undefined;
