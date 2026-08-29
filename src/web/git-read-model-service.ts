@@ -104,15 +104,27 @@ interface DiffCommand {
   readonly acceptedExitCodes?: readonly number[];
 }
 
+export interface WebGitPerformanceCountersV1 {
+  readonly processCount: number;
+  readonly bytesRead: number;
+  readonly itemsParsed: number;
+}
+
 /** Bounded argv-only Git status/log/diff projection for one active Workspace. */
 export class GitReadModelServiceV1 {
   private readonly workspace: string;
   private readonly secret = randomBytes(32);
   private readonly pathById = new Map<string, string>();
   private readonly idByPath = new Map<string, string>();
+  private repositoryRoot?: string;
+  private readonly performance = { processCount: 0, bytesRead: 0, itemsParsed: 0 };
 
   constructor(workspace: string) {
     this.workspace = canonicalDirectory(workspace);
+  }
+
+  performanceCounters(): WebGitPerformanceCountersV1 {
+    return Object.freeze({ ...this.performance });
   }
 
   async status(
@@ -208,6 +220,7 @@ export class GitReadModelServiceV1 {
       .map(record => record.replace(/^\s+/u, '').replace(/\s+$/u, ''))
       .filter(Boolean)
       .map(parseCommit);
+    this.performance.itemsParsed += commits.length;
     const hasMore = commits.length > pageSize;
     const items = commits.slice(0, pageSize);
     return Object.freeze({
@@ -262,7 +275,14 @@ export class GitReadModelServiceV1 {
       offset,
       lineLimit,
       byteLimit,
+      onProcess: () => {
+        this.performance.processCount += 1;
+      },
+      onBytes: bytes => {
+        this.performance.bytesRead += bytes;
+      },
     });
+    this.performance.itemsParsed += page.linesParsed;
     if (page.hasMore && page.returnedLines === 0) {
       throw new WebWorkbenchError(
         500,
@@ -302,10 +322,11 @@ export class GitReadModelServiceV1 {
   private async capture(): Promise<RepositorySnapshot> {
     let root: string;
     try {
-      root = realpathSync(
-        (await this.runGit(['rev-parse', '--show-toplevel'], this.workspace)).trim()
-      );
+      root =
+        this.repositoryRoot ??
+        realpathSync((await this.runGit(['rev-parse', '--show-toplevel'], this.workspace)).trim());
       if (!isWithinRoot(root, this.workspace)) throw new Error('repository root escaped workspace');
+      this.repositoryRoot = root;
     } catch {
       const revision = createHash('sha256').update(`not-git:${this.workspace}`).digest('hex');
       return Object.freeze({
@@ -341,6 +362,7 @@ export class GitReadModelServiceV1 {
       behind = Number.isSafeInteger(behindValue) ? behindValue : 0;
     }
     const records = parsePorcelainV1(rawStatus);
+    this.performance.itemsParsed += records.length;
     const fileFingerprints = records.map(record => fingerprintWorktreePath(root, record.path));
     const revision = createHash('sha256')
       .update(
@@ -394,6 +416,7 @@ export class GitReadModelServiceV1 {
 
   private runGit(args: readonly string[], cwd: string): Promise<string> {
     return new Promise((resolvePromise, reject) => {
+      this.performance.processCount += 1;
       execFile(
         'git',
         [...hardenedGitPrefix(), ...args],
@@ -405,6 +428,8 @@ export class GitReadModelServiceV1 {
           env: gitEnvironment(),
         },
         (error, stdout, stderr) => {
+          this.performance.bytesRead +=
+            Buffer.byteLength(stdout, 'utf8') + Buffer.byteLength(stderr, 'utf8');
           if (error) {
             const processError = error as Error & {
               readonly code?: string;
@@ -611,17 +636,22 @@ async function streamDiffPage(input: {
   readonly offset: number;
   readonly lineLimit: number;
   readonly byteLimit: number;
+  readonly onProcess: () => void;
+  readonly onBytes: (bytes: number) => void;
 }): Promise<{
   readonly lines: string[];
   readonly returnedLines: number;
   readonly hasMore: boolean;
+  readonly linesParsed: number;
 }> {
   const lines: string[] = [];
   let virtualLine = 0;
   let bytes = 0;
   let hasMore = false;
   let oversizedLine = false;
+  let linesParsed = 0;
   const acceptLine = (raw: string): boolean => {
+    linesParsed += 1;
     const line = redactTraceText(raw.split(input.cwd).join('[WORKSPACE]'));
     const lineBytes = Buffer.byteLength(line, 'utf8') + 1;
     if (lineBytes > input.byteLimit) {
@@ -649,6 +679,8 @@ async function streamDiffPage(input: {
       args: command.args,
       acceptedExitCodes: command.acceptedExitCodes ?? [0],
       onLine: acceptLine,
+      onProcess: input.onProcess,
+      onBytes: input.onBytes,
     });
     if (!completed) {
       hasMore = true;
@@ -662,7 +694,7 @@ async function streamDiffPage(input: {
       'git_line_too_long'
     );
   }
-  return Object.freeze({ lines, returnedLines: lines.length, hasMore });
+  return Object.freeze({ lines, returnedLines: lines.length, hasMore, linesParsed });
 }
 
 function streamGitLines(input: {
@@ -670,8 +702,11 @@ function streamGitLines(input: {
   readonly args: readonly string[];
   readonly acceptedExitCodes: readonly number[];
   readonly onLine: (line: string) => boolean;
+  readonly onProcess: () => void;
+  readonly onBytes: (bytes: number) => void;
 }): Promise<boolean> {
   return new Promise((resolvePromise, reject) => {
+    input.onProcess();
     const child = spawn('git', [...hardenedGitPrefix(), ...input.args], {
       cwd: input.cwd,
       env: gitEnvironment(),
@@ -691,6 +726,7 @@ function streamGitLines(input: {
     timer.unref();
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => {
+      input.onBytes(Buffer.byteLength(chunk, 'utf8'));
       if (paginationStopped || timedOut || outputTooLarge) return;
       outputBytes += Buffer.byteLength(chunk, 'utf8');
       if (outputBytes > GIT_MAX_BUFFER) {
@@ -716,6 +752,7 @@ function streamGitLines(input: {
     });
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', (chunk: string) => {
+      input.onBytes(Buffer.byteLength(chunk, 'utf8'));
       outputBytes += Buffer.byteLength(chunk, 'utf8');
       if (outputBytes > GIT_MAX_BUFFER && !outputTooLarge) {
         outputTooLarge = true;

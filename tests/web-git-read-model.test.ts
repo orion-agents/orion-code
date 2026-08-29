@@ -54,6 +54,9 @@ describe('GitReadModelServiceV1', () => {
       expect.objectContaining({ authorName: 'Orion Test', subject: 'initial commit' }),
     ]);
     expect(log.repositoryRevision).toBe(status.repositoryRevision);
+    expect(service.performanceCounters().processCount).toBeGreaterThan(0);
+    expect(service.performanceCounters().bytesRead).toBeGreaterThan(0);
+    expect(service.performanceCounters().itemsParsed).toBeGreaterThan(0);
   });
 
   test('separates staged, unstaged, untracked, rename and unicode status records', async () => {

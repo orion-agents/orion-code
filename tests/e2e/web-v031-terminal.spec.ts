@@ -204,6 +204,11 @@ test('WEB31-P0-10 terminal WebSocket burst stays isolated from Workbench SSE', a
   await createTerminalFromUi(panel);
   await expect(panel.getByText('PTY 已连接', { exact: true })).toBeVisible({ timeout: 30_000 });
 
+  const echoLatencies = await measureTerminalEcho(page, panel, 20);
+  const echoP95Ms = percentile(echoLatencies, 0.95);
+  expect(echoP95Ms).toBeLessThanOrEqual(80);
+  await startFrameMeasurement(page, 2_000);
+
   const terminalMarker = 'WEB31_TERMINAL_BURST_DONE';
   await writeTerminal(page, panel, `yes X | head -c 10485760; printf '\\n${terminalMarker}\\n'`);
   await submitPrompt(page, OPENAI_FIXTURE_PROMPTS.settingsProbe);
@@ -221,6 +226,9 @@ test('WEB31-P0-10 terminal WebSocket burst stays isolated from Workbench SSE', a
   expect(transport.gaps).toBe(0);
   expect(transport.invalidPayloads).toBe(0);
   expect(transport.terminalStreamQueries).toBe(0);
+  expect(transport.maxBufferedAmount).toBeLessThanOrEqual(256 * 1024);
+  const frameMetrics = await finishFrameMeasurement(page);
+  expect(frameMetrics.framesPerSecond).toBeGreaterThanOrEqual(55);
 
   await captureProductSurface(
     panel.locator('.terminal-status'),
@@ -231,6 +239,11 @@ test('WEB31-P0-10 terminal WebSocket burst stays isolated from Workbench SSE', a
   await closeSelectedTerminal(panel);
   evidence.recordFact('web31.sse_ws_isolated', true);
   evidence.recordFact('web31.transport_dropped_events', evidence.snapshotCounters().droppedEvents);
+  evidence.recordFact('web31.terminal_echo_p95_ms', roundMetric(echoP95Ms));
+  evidence.recordFact('web31.terminal_frame_rate_fps', roundMetric(frameMetrics.framesPerSecond));
+  evidence.recordFact('web31.terminal_ws_buffered_bytes', transport.maxBufferedAmount);
+  evidence.recordFact('web31.terminal_burst_bytes', 10 * 1024 * 1024);
+  evidence.recordFact('web31.terminal_performance_budget', true);
   page.off('requestfailed', onRequestFailed);
   expect(
     networkFailures.every(
@@ -407,6 +420,7 @@ interface TerminalTransportSnapshot {
   readonly gaps: number;
   readonly invalidPayloads: number;
   readonly terminalStreamQueries: number;
+  readonly maxBufferedAmount: number;
 }
 
 async function installTerminalFrameCapture(page: Page): Promise<void> {
@@ -417,6 +431,7 @@ async function installTerminalFrameCapture(page: Page): Promise<void> {
       gaps: 0,
       invalidPayloads: 0,
       terminalStreamQueries: 0,
+      maxBufferedAmount: 0,
     };
     Object.defineProperty(globalThis, '__orionTerminalTransport', {
       configurable: false,
@@ -433,6 +448,7 @@ async function installTerminalFrameCapture(page: Page): Promise<void> {
           state.connections += 1;
           if (parsed.search) state.terminalStreamQueries += 1;
           this.addEventListener('message', event => {
+            state.maxBufferedAmount = Math.max(state.maxBufferedAmount, this.bufferedAmount);
             if (typeof event.data !== 'string') {
               state.invalidPayloads += 1;
               return;
@@ -454,6 +470,126 @@ async function installTerminalFrameCapture(page: Page): Promise<void> {
       writable: false,
     });
   });
+}
+
+async function measureTerminalEcho(page: Page, panel: Locator, samples: number): Promise<number[]> {
+  const input = panel.locator('.xterm-helper-textarea');
+  await expect(input).toBeAttached({ timeout: 30_000 });
+  await input.focus();
+  const values: number[] = [];
+  for (let sample = 0; sample < samples; sample += 1) {
+    const marker = `z${sample.toString(36)}${Date.now().toString(36)}`;
+    await page.evaluate(value => {
+      const target = document.querySelector('.terminal-panel .xterm-rows');
+      if (!target) throw new Error('Terminal rows are unavailable for echo measurement.');
+      const state = { marker: value, startedAt: performance.now(), durationMs: -1 };
+      Object.defineProperty(globalThis, '__orionEchoMeasurement', {
+        configurable: true,
+        value: state,
+      });
+      const observer = new MutationObserver(() => {
+        if (!target.textContent?.includes(value)) return;
+        state.durationMs = performance.now() - state.startedAt;
+        observer.disconnect();
+      });
+      observer.observe(target, { childList: true, characterData: true, subtree: true });
+      window.setTimeout(() => observer.disconnect(), 2_000);
+    }, marker);
+    await page.keyboard.type(marker);
+    let durationMs = -1;
+    await expect
+      .poll(
+        async () => {
+          durationMs = await page.evaluate(() => {
+            const state = (
+              globalThis as typeof globalThis & {
+                __orionEchoMeasurement?: { readonly durationMs: number };
+              }
+            ).__orionEchoMeasurement;
+            return state?.durationMs ?? -1;
+          });
+          return durationMs;
+        },
+        { timeout: 2_000 }
+      )
+      .toBeGreaterThanOrEqual(0);
+    values.push(durationMs);
+    await page.keyboard.press('Control+U');
+  }
+  return values;
+}
+
+interface FrameMetrics {
+  readonly framesPerSecond: number;
+  readonly p95IntervalMs: number;
+}
+
+async function startFrameMeasurement(page: Page, durationMs: number): Promise<void> {
+  await page.evaluate(duration => {
+    const state = {
+      startedAt: performance.now(),
+      completedAt: 0,
+      intervals: [] as number[],
+      previousAt: 0,
+    };
+    Object.defineProperty(globalThis, '__orionFrameMeasurement', {
+      configurable: true,
+      value: state,
+    });
+    const tick = (now: number) => {
+      if (state.previousAt > 0) state.intervals.push(now - state.previousAt);
+      state.previousAt = now;
+      if (now - state.startedAt >= duration) {
+        state.completedAt = now;
+        return;
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }, durationMs);
+}
+
+async function finishFrameMeasurement(page: Page): Promise<FrameMetrics> {
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (
+            globalThis as typeof globalThis & {
+              __orionFrameMeasurement?: { readonly completedAt: number };
+            }
+          ).__orionFrameMeasurement?.completedAt ?? 0
+      )
+    )
+    .toBeGreaterThan(0);
+  return page.evaluate(() => {
+    const state = (
+      globalThis as typeof globalThis & {
+        __orionFrameMeasurement?: {
+          readonly startedAt: number;
+          readonly completedAt: number;
+          readonly intervals: readonly number[];
+        };
+      }
+    ).__orionFrameMeasurement;
+    if (!state || state.completedAt <= state.startedAt) {
+      throw new Error('Frame measurement did not finish.');
+    }
+    const intervals = [...state.intervals].sort((left, right) => left - right);
+    return {
+      framesPerSecond: (state.intervals.length * 1_000) / (state.completedAt - state.startedAt),
+      p95IntervalMs: intervals[Math.max(0, Math.ceil(intervals.length * 0.95) - 1)] ?? 0,
+    };
+  });
+}
+
+function percentile(values: readonly number[], quantile: number): number {
+  const ordered = [...values].sort((left, right) => left - right);
+  return ordered[Math.max(0, Math.ceil(ordered.length * quantile) - 1)];
+}
+
+function roundMetric(value: number): number {
+  return Math.round(value * 100) / 100;
 }
 
 async function terminalTransportSnapshot(page: Page): Promise<TerminalTransportSnapshot> {

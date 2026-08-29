@@ -135,13 +135,14 @@ async function handleRequest(context: RequestContext): Promise<void> {
     return;
   }
   if (method === 'GET' && path === '/workspaces') {
+    const contextGuard = requireContextGuardQuery(url);
     sendJson(
       response,
       200,
       collectionPage(
         url,
         'workspaces',
-        context.workbench.listWorkspaces(),
+        context.workbench.listWorkspaces(contextGuard),
         workspace => workspace.id
       )
     );
@@ -150,13 +151,14 @@ async function handleRequest(context: RequestContext): Promise<void> {
   const workspaceSessionsMatch = path.match(/^\/workspaces\/([^/]+)\/sessions$/);
   if (method === 'GET' && workspaceSessionsMatch) {
     const workspaceId = safeDecodePathSegment(workspaceSessionsMatch[1]);
+    const contextGuard = requireContextGuardQuery(url);
     sendJson(
       response,
       200,
       collectionPage(
         url,
         `workspace-sessions-${workspaceId}`,
-        context.workbench.listWorkspaceSessions(workspaceId),
+        context.workbench.listWorkspaceSessions(workspaceId, contextGuard),
         session => session.id
       )
     );
@@ -165,7 +167,11 @@ async function handleRequest(context: RequestContext): Promise<void> {
   const workspaceSummaryMatch = path.match(/^\/workspaces\/([^/]+)\/summary$/);
   if (method === 'GET' && workspaceSummaryMatch) {
     const workspaceId = requireUuid(safeDecodePathSegment(workspaceSummaryMatch[1]), 'workspaceId');
-    sendJson(response, 200, await context.workbench.workspaceProjectSummary(workspaceId));
+    sendJson(
+      response,
+      200,
+      await context.workbench.workspaceProjectSummary(workspaceId, requireContextGuardQuery(url))
+    );
     return;
   }
   const workspacePinMatch = path.match(/^\/workspaces\/([^/]+)\/pin$/);
@@ -391,18 +397,20 @@ async function handleRequest(context: RequestContext): Promise<void> {
     return;
   }
   if (method === 'GET' && path === '/skills') {
+    const contextGuard = requireContextGuardQuery(url);
     sendJson(
       response,
       200,
-      collectionPage(url, 'skills', await context.workbench.skills(), skill => skill.id)
+      collectionPage(url, 'skills', await context.workbench.skills(contextGuard), skill => skill.id)
     );
     return;
   }
   if (method === 'GET' && path === '/mcp') {
+    const contextGuard = requireContextGuardQuery(url);
     sendJson(
       response,
       200,
-      collectionPage(url, 'mcp', context.workbench.mcp(), server => server.id)
+      collectionPage(url, 'mcp', context.workbench.mcp(contextGuard), server => server.id)
     );
     return;
   }
@@ -589,13 +597,14 @@ async function handleRequest(context: RequestContext): Promise<void> {
     return;
   }
   if (method === 'GET' && path === '/tool-details') {
+    const contextGuard = requireContextGuardQuery(url);
     sendJson(
       response,
       200,
       collectionPage(
         url,
         'tool-details',
-        await context.workbench.listToolDetails(),
+        await context.workbench.listToolDetails(contextGuard),
         detail => `${detail.sequence}:${detail.callId}`
       )
     );
@@ -603,6 +612,7 @@ async function handleRequest(context: RequestContext): Promise<void> {
   }
   const toolDetailMatch = path.match(/^\/tool-details\/([^/]+)$/);
   if (method === 'GET' && toolDetailMatch) {
+    const contextGuard = requireContextGuardQuery(url);
     const offsetBytes = boundedInteger(url.searchParams.get('offsetBytes'), 0, 0, 2 ** 31 - 1);
     const limitBytes = boundedInteger(
       url.searchParams.get('limitBytes'),
@@ -616,13 +626,14 @@ async function handleRequest(context: RequestContext): Promise<void> {
       await context.workbench.readToolDetail(
         safeDecodePathSegment(toolDetailMatch[1]),
         offsetBytes,
-        limitBytes
+        limitBytes,
+        contextGuard
       )
     );
     return;
   }
   if (method === 'GET' && path === '/diagnostics') {
-    sendJson(response, 200, await context.workbench.diagnostics());
+    sendJson(response, 200, await context.workbench.diagnostics(requireContextGuardQuery(url)));
     return;
   }
   throw new HttpProblem(404, 'Route not found.');

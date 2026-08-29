@@ -17,10 +17,12 @@ import type { WebSessionSummaryV1 } from './types';
 import { useWorkbench } from './useWorkbench';
 
 const INSPECTOR_OVERLAY_QUERY = '(max-width: 1180px)';
+const NAVIGATION_OVERLAY_QUERY = '(max-width: 760px)';
 
 export function App() {
   const { state, actions } = useWorkbench();
   const [navigationOpen, setNavigationOpen] = useState(false);
+  const [navigationDockExpanded, setNavigationDockExpanded] = useState(true);
   const [panelPreference, setPanelPreference] = useState(loadWorkPanelPreference);
   const [panelOverlayOpen, setPanelOverlayOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -33,6 +35,7 @@ export function App() {
   const drawerTrigger = useRef<HTMLElement | null>(null);
   const shellRef = useRef<HTMLDivElement>(null);
   const panelOverlay = useMediaQuery(INSPECTOR_OVERLAY_QUERY);
+  const navigationOverlay = useMediaQuery(NAVIGATION_OVERLAY_QUERY);
   const panelExpanded = panelOverlay ? panelOverlayOpen : panelPreference.expanded;
   const panelModalOpen = panelOverlay && panelOverlayOpen;
   const drawersOpen = navigationOpen || panelModalOpen;
@@ -46,6 +49,12 @@ export function App() {
   const rememberDrawerTrigger = useCallback(() => {
     drawerTrigger.current =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  }, []);
+
+  const focusProjectSearch = useCallback(() => {
+    requestAnimationFrame(() =>
+      document.querySelector<HTMLInputElement>('.project-search input')?.focus()
+    );
   }, []);
 
   const closeDrawers = useCallback(() => {
@@ -74,7 +83,45 @@ export function App() {
     setNavigationOpen(false);
     setPanelOverlayOpen(false);
     drawerTrigger.current = null;
-  }, [panelOverlay]);
+  }, [navigationOverlay, panelOverlay]);
+
+  useEffect(() => {
+    const onShortcut = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey) return;
+      if (event.code !== 'KeyB') return;
+      event.preventDefault();
+      if (navigationOverlay) {
+        if (navigationOpen) {
+          closeDrawers();
+          return;
+        }
+        rememberDrawerTrigger();
+        setPanelOverlayOpen(false);
+        setNavigationOpen(true);
+        return;
+      }
+      const next = !navigationDockExpanded;
+      const restoreToggleFocus = Boolean(
+        !next && document.activeElement?.closest('.workspace-rail')
+      );
+      setNavigationDockExpanded(next);
+      if (next) focusProjectSearch();
+      else if (restoreToggleFocus) {
+        requestAnimationFrame(() =>
+          document.querySelector<HTMLButtonElement>('.mobile-nav-toggle')?.focus()
+        );
+      }
+    };
+    window.addEventListener('keydown', onShortcut);
+    return () => window.removeEventListener('keydown', onShortcut);
+  }, [
+    closeDrawers,
+    focusProjectSearch,
+    navigationOpen,
+    navigationDockExpanded,
+    navigationOverlay,
+    rememberDrawerTrigger,
+  ]);
 
   useEffect(() => {
     if (!drawersOpen) return undefined;
@@ -126,9 +173,7 @@ export function App() {
   );
 
   const focusConversationContext = useCallback(() => {
-    requestAnimationFrame(() =>
-      document.querySelector<HTMLElement>('#main-content h1')?.focus()
-    );
+    requestAnimationFrame(() => document.querySelector<HTMLElement>('#main-content h1')?.focus());
   }, []);
 
   const createSession = () => {
@@ -148,13 +193,14 @@ export function App() {
       </a>
       <div
         ref={shellRef}
-        className={`workbench-shell work-panel-${panelPreference.expanded ? 'expanded' : 'collapsed'}`}
+        className={`workbench-shell work-panel-${panelPreference.expanded ? 'expanded' : 'collapsed'} ${!navigationOverlay && !navigationDockExpanded ? 'project-navigation-collapsed' : ''}`}
         style={{ '--work-panel-width': `${panelPreference.widthPx}px` } as CSSProperties}
         aria-busy={state.boot === 'loading'}
       >
         <ProjectNavigator
           state={state}
           drawerOpen={navigationOpen}
+          dockVisible={navigationOverlay || navigationDockExpanded || navigationOpen}
           onCloseDrawer={closeDrawers}
           onOpenWorkspaceDialog={() => setWorkspaceOpen(true)}
           onLoadMoreWorkspaces={() => void actions.loadMoreWorkspaces()}
@@ -179,10 +225,15 @@ export function App() {
         <Conversation
           state={state}
           actions={actions}
-          navigationOpen={navigationOpen}
+          navigationOpen={navigationOverlay ? navigationOpen : navigationDockExpanded}
           inspectorExpanded={panelExpanded}
           settingsOpen={settingsOpen}
           onOpenNavigation={() => {
+            if (!navigationOverlay) {
+              setNavigationDockExpanded(true);
+              focusProjectSearch();
+              return;
+            }
             rememberDrawerTrigger();
             setPanelOverlayOpen(false);
             setNavigationOpen(true);

@@ -159,7 +159,7 @@ export function useWorkbench(): UseWorkbenchResult {
             .catch(error => ({ snapshot: null, error }))
         : Promise.resolve({ snapshot: null, error: undefined });
       const [workspaces, sessions, mirrorSnapshot, sessionResult] = await Promise.all([
-        api.listWorkspaces(),
+        api.listWorkspaces(context),
         api.listSessions(context),
         settingsMirror.refresh(),
         snapshotRequest,
@@ -207,7 +207,7 @@ export function useWorkbench(): UseWorkbenchResult {
       }
 
       void api
-        .workspaceProjectSummary(bootstrap.workspaceId)
+        .workspaceProjectSummary(bootstrap.workspaceId, context)
         .then(summary => {
           if (generation === resourceGeneration.current) {
             dispatch({ type: 'workspace_project_summary_loaded', summary });
@@ -219,10 +219,10 @@ export function useWorkbench(): UseWorkbenchResult {
       // cursor-bound transcript baseline so a large artifact directory cannot
       // hold the entire application in its boot overlay.
       void Promise.all([
-        api.diagnostics().catch(() => ({}) as DiagnosticsSnapshot),
-        api.skills().catch(() => ({ skills: [], nextCursor: null })),
-        api.mcp().catch(() => ({ servers: [], nextCursor: null })),
-        api.toolDetails().catch(() => ({ details: [], nextCursor: null })),
+        api.diagnostics(context).catch(() => ({}) as DiagnosticsSnapshot),
+        api.skills(context).catch(() => ({ skills: [], nextCursor: null })),
+        api.mcp(context).catch(() => ({ servers: [], nextCursor: null })),
+        api.toolDetails(context).catch(() => ({ details: [], nextCursor: null })),
       ]).then(([diagnostics, skills, mcp, toolDetails]) => {
         if (generation !== resourceGeneration.current) return;
         dispatch({ type: 'diagnostics_loaded', diagnostics });
@@ -265,7 +265,7 @@ export function useWorkbench(): UseWorkbenchResult {
       const generation = ++resourceGeneration.current;
       const context = requireContextGuard(stateRef.current);
       const [workspaces, sessions] = await Promise.all([
-        api.listWorkspaces(),
+        api.listWorkspaces(context),
         api.listSessions(context),
       ]);
       if (generation !== resourceGeneration.current) return;
@@ -277,10 +277,10 @@ export function useWorkbench(): UseWorkbenchResult {
       });
       if (sessionId) await loadSessionSnapshot(sessionId, context);
       void Promise.all([
-        api.diagnostics().catch(() => ({}) as DiagnosticsSnapshot),
-        api.skills().catch(() => ({ skills: [], nextCursor: null })),
-        api.mcp().catch(() => ({ servers: [], nextCursor: null })),
-        api.toolDetails().catch(() => ({ details: [], nextCursor: null })),
+        api.diagnostics(context).catch(() => ({}) as DiagnosticsSnapshot),
+        api.skills(context).catch(() => ({ skills: [], nextCursor: null })),
+        api.mcp(context).catch(() => ({ servers: [], nextCursor: null })),
+        api.toolDetails(context).catch(() => ({ details: [], nextCursor: null })),
       ]).then(([diagnostics, skills, mcp, toolDetails]) => {
         if (generation !== resourceGeneration.current) return;
         dispatch({ type: 'diagnostics_loaded', diagnostics });
@@ -480,7 +480,7 @@ export function useWorkbench(): UseWorkbenchResult {
     () =>
       runOperation('刷新诊断', async () => {
         const generation = ++resourceGeneration.current;
-        const diagnostics = await api.diagnostics();
+        const diagnostics = await api.diagnostics(requireContextGuard(stateRef.current));
         if (generation !== resourceGeneration.current) return;
         dispatch({ type: 'diagnostics_loaded', diagnostics });
       }),
@@ -491,7 +491,7 @@ export function useWorkbench(): UseWorkbenchResult {
     () =>
       runOperation('刷新工具详情', async () => {
         const generation = ++resourceGeneration.current;
-        const result = await api.toolDetails();
+        const result = await api.toolDetails(requireContextGuard(stateRef.current));
         if (generation !== resourceGeneration.current) return;
         dispatch({
           type: 'tool_details_loaded',
@@ -505,14 +505,15 @@ export function useWorkbench(): UseWorkbenchResult {
   const loadMoreWorkspaces = useCallback(
     () =>
       runOperation('加载更多工作区', async () => {
+        const context = requireContextGuard(stateRef.current);
         const cursor = stateRef.current.workspaceNextCursor;
         if (!cursor) return;
         try {
-          const result = await api.listWorkspaces(cursor);
+          const result = await api.listWorkspaces(context, cursor);
           dispatch({ type: 'workspaces_loaded', value: result, append: true });
         } catch (error) {
           if (!isCollectionCursorStale(error)) throw error;
-          dispatch({ type: 'workspaces_loaded', value: await api.listWorkspaces() });
+          dispatch({ type: 'workspaces_loaded', value: await api.listWorkspaces(context) });
         }
       }),
     [api, runOperation]
@@ -547,13 +548,14 @@ export function useWorkbench(): UseWorkbenchResult {
 
   const loadWorkspaceSessions = useCallback(
     async (workspaceId: string, append = false) => {
+      const context = requireContextGuard(stateRef.current);
       const current = stateRef.current.workspaceSessions[workspaceId];
       const cursor = append ? current?.nextCursor : undefined;
       if (append && !cursor) return;
       dispatch({ type: 'workspace_sessions_loading', workspaceId });
-      const summaryRequest = api.workspaceProjectSummary(workspaceId).catch(() => null);
+      const summaryRequest = api.workspaceProjectSummary(workspaceId, context).catch(() => null);
       try {
-        const result = await api.listWorkspaceSessions(workspaceId, cursor ?? undefined);
+        const result = await api.listWorkspaceSessions(workspaceId, context, cursor ?? undefined);
         dispatch({
           type: 'workspace_sessions_loaded',
           workspaceId,
@@ -573,7 +575,10 @@ export function useWorkbench(): UseWorkbenchResult {
 
   const refreshWorkspaceProjectSummary = useCallback(
     async (workspaceId: string) => {
-      const summary = await api.workspaceProjectSummary(workspaceId);
+      const summary = await api.workspaceProjectSummary(
+        workspaceId,
+        requireContextGuard(stateRef.current)
+      );
       dispatch({ type: 'workspace_project_summary_loaded', summary });
     },
     [api]
@@ -582,15 +587,18 @@ export function useWorkbench(): UseWorkbenchResult {
   const loadMoreCapabilities = useCallback(
     () =>
       runOperation('加载更多能力', async () => {
+        const context = requireContextGuard(stateRef.current);
         const skillCursor = stateRef.current.skillNextCursor;
         const mcpCursor = stateRef.current.mcpNextCursor;
         if (!skillCursor && !mcpCursor) return;
         try {
           const [skills, mcp] = await Promise.all([
             skillCursor
-              ? api.skills(skillCursor)
+              ? api.skills(context, skillCursor)
               : Promise.resolve({ skills: [], nextCursor: null }),
-            mcpCursor ? api.mcp(mcpCursor) : Promise.resolve({ servers: [], nextCursor: null }),
+            mcpCursor
+              ? api.mcp(context, mcpCursor)
+              : Promise.resolve({ servers: [], nextCursor: null }),
           ]);
           dispatch({
             type: 'capabilities_loaded',
@@ -602,7 +610,7 @@ export function useWorkbench(): UseWorkbenchResult {
           });
         } catch (error) {
           if (!isCollectionCursorStale(error)) throw error;
-          const [skills, mcp] = await Promise.all([api.skills(), api.mcp()]);
+          const [skills, mcp] = await Promise.all([api.skills(context), api.mcp(context)]);
           dispatch({
             type: 'capabilities_loaded',
             skills: skills.skills,
@@ -618,10 +626,11 @@ export function useWorkbench(): UseWorkbenchResult {
   const loadMoreToolDetails = useCallback(
     () =>
       runOperation('加载更多工具详情', async () => {
+        const context = requireContextGuard(stateRef.current);
         const cursor = stateRef.current.toolDetailNextCursor;
         if (!cursor) return;
         try {
-          const result = await api.toolDetails(cursor);
+          const result = await api.toolDetails(context, cursor);
           dispatch({
             type: 'tool_details_loaded',
             details: result.details,
@@ -630,7 +639,7 @@ export function useWorkbench(): UseWorkbenchResult {
           });
         } catch (error) {
           if (!isCollectionCursorStale(error)) throw error;
-          const refreshed = await api.toolDetails();
+          const refreshed = await api.toolDetails(context);
           dispatch({
             type: 'tool_details_loaded',
             details: refreshed.details,
@@ -714,7 +723,10 @@ export function useWorkbench(): UseWorkbenchResult {
     (workspaceId: string, pinned: boolean) =>
       runOperation(pinned ? '置顶项目' : '取消置顶', async () => {
         await api.setWorkspacePinned(workspaceId, pinned, requireContextGuard(stateRef.current));
-        dispatch({ type: 'workspaces_loaded', value: await api.listWorkspaces() });
+        dispatch({
+          type: 'workspaces_loaded',
+          value: await api.listWorkspaces(requireContextGuard(stateRef.current)),
+        });
       }),
     [api, runOperation]
   );
@@ -727,7 +739,10 @@ export function useWorkbench(): UseWorkbenchResult {
           throw new WebApiError('工作区上下文尚未完成同步。', 409, 'context_revision_conflict');
         }
         await api.removeWorkspace(workspaceId, requireContextGuard(current));
-        dispatch({ type: 'workspaces_loaded', value: await api.listWorkspaces() });
+        dispatch({
+          type: 'workspaces_loaded',
+          value: await api.listWorkspaces(requireContextGuard(stateRef.current)),
+        });
       }),
     [api, runOperation]
   );
@@ -865,8 +880,9 @@ export function useWorkbench(): UseWorkbenchResult {
       pauseEventStream();
       try {
         const sessionId = stateRef.current.activeSessionId;
+        const context = requireContextGuard(stateRef.current);
         const [diagnostics] = await Promise.all([
-          api.diagnostics(),
+          api.diagnostics(context),
           sessionId ? loadSessionSnapshot(sessionId) : Promise.resolve(),
         ]);
         if (generation !== resourceGeneration.current) return;
@@ -910,7 +926,8 @@ export function useWorkbench(): UseWorkbenchResult {
   }, [api]);
 
   const readToolDetail = useCallback(
-    (artifactId: string, offsetBytes = 0) => api.readToolDetail(artifactId, offsetBytes),
+    (artifactId: string, offsetBytes = 0) =>
+      api.readToolDetail(artifactId, requireContextGuard(stateRef.current), offsetBytes),
     [api]
   );
 

@@ -56,6 +56,7 @@ paths:
         project, without activating or constructing its Runtime.
       parameters:
         - $ref: '#/components/parameters/WorkspaceId'
+        - $ref: '#/components/parameters/ContextWorkspaceId'
         - $ref: '#/components/parameters/ExpectedContextRevision'
         - $ref: '#/components/parameters/CollectionCursor'
         - $ref: '#/components/parameters/PageSize'
@@ -74,6 +75,7 @@ paths:
       description: Return a bounded Git/project summary without activating the workspace Runtime.
       parameters:
         - $ref: '#/components/parameters/WorkspaceId'
+        - $ref: '#/components/parameters/ContextWorkspaceId'
         - $ref: '#/components/parameters/ExpectedContextRevision'
       responses:
         '200':
@@ -653,6 +655,8 @@ paths:
             application/json:
               schema:
                 type: object
+                properties:
+                  performance: { $ref: '#/components/schemas/WebPerformanceCounters' }
                 additionalProperties: true
         '409': { $ref: '#/components/responses/ContextConflict' }
   /settings:
@@ -893,6 +897,27 @@ components:
             code: context_revision_conflict
             detail: The active Context changed before the request was admitted.
   schemas:
+    WebPerformanceCounters:
+      type: object
+      additionalProperties: false
+      required: [files, git]
+      properties:
+        files:
+          type: object
+          additionalProperties: false
+          required: [readOperations, bytesRead, itemsParsed]
+          properties:
+            readOperations: { type: integer, minimum: 0 }
+            bytesRead: { type: integer, minimum: 0 }
+            itemsParsed: { type: integer, minimum: 0 }
+        git:
+          type: object
+          additionalProperties: false
+          required: [processCount, bytesRead, itemsParsed]
+          properties:
+            processCount: { type: integer, minimum: 0 }
+            bytesRead: { type: integer, minimum: 0 }
+            itemsParsed: { type: integer, minimum: 0 }
     HealthResponse:
       type: object
       additionalProperties: false
@@ -1113,10 +1138,14 @@ components:
     FileNode:
       type: object
       additionalProperties: false
-      required: [id, name, kind, modifiedAt, sensitive, readable]
+      required: [id, name, displayPath, kind, modifiedAt, sensitive, readable]
       properties:
         id: { type: string, minLength: 1 }
         name: { type: string, minLength: 1 }
+        displayPath:
+          type: string
+          minLength: 1
+          description: Sanitized workspace-relative display metadata; requests still use opaque id.
         kind: { type: string, enum: [file, directory, symlink] }
         sizeBytes: { type: integer, minimum: 0 }
         modifiedAt: { type: string, format: date-time }
@@ -1260,13 +1289,32 @@ components:
     ReviewVerification:
       type: object
       additionalProperties: false
-      required: [callId, toolName, state, outputBytes, hasArtifact]
+      required:
+        - callId
+        - sessionId
+        - threadId
+        - sequence
+        - toolName
+        - state
+        - terminal
+        - success
+        - outputBytes
+        - hasArtifact
+        - executionPolicyDigest
+        - receiptDigest
       properties:
-        callId: { type: string }
-        toolName: { type: string }
+        callId: { type: string, minLength: 1 }
+        sessionId: { type: string, minLength: 1 }
+        threadId: { type: string, minLength: 1 }
+        sequence: { type: integer, minimum: 1 }
+        toolName: { type: string, minLength: 1 }
         state: { type: string, enum: [success, error, skipped] }
+        terminal: { type: string, enum: [completed, failed, interrupted, indeterminate] }
+        success: { type: boolean }
         outputBytes: { type: integer, minimum: 0 }
         hasArtifact: { type: boolean }
+        executionPolicyDigest: { type: string, pattern: '^[a-f0-9]{64}$' }
+        receiptDigest: { type: string, pattern: '^[a-f0-9]{64}$' }
     ReviewSnapshot:
       type: object
       additionalProperties: false

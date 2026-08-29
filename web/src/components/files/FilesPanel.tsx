@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { WebApiError } from '../../api';
-import type { WebFileNodeV1 } from '../../types';
+import type { WebFileNodeV1, WebGitStatusV1 } from '../../types';
 import type { WorkbenchActions } from '../../useWorkbench';
 import { Icon } from '../Icon';
 import { sanitizeDisplayText } from '../Markdown';
@@ -13,6 +13,8 @@ interface DirectoryPage {
   readonly loading: boolean;
   readonly error?: string;
 }
+
+type GitDecorations = Readonly<Record<string, readonly string[]>>;
 
 export function FilesPanel({
   workspaceId,
@@ -34,6 +36,8 @@ export function FilesPanel({
   const [query, setQuery] = useState('');
   const [wrapLines, setWrapLines] = useState(false);
   const [targetLine, setTargetLine] = useState('1');
+  const [gitDecorations, setGitDecorations] = useState<GitDecorations>({});
+  const [gitDecorationNotice, setGitDecorationNotice] = useState('');
   const previewRef = useRef<HTMLPreElement>(null);
   const generationRef = useRef(0);
   const contentRequestRef = useRef(0);
@@ -88,6 +92,21 @@ export function FilesPanel({
     }
   };
 
+  const loadGitDecorations = async (generation = generationRef.current) => {
+    try {
+      const status = await actions.gitStatus();
+      if (generation !== generationRef.current) return;
+      setGitDecorations(buildGitDecorations(status));
+      setGitDecorationNotice(
+        status.nextCursor ? 'Git 装饰仅显示首批 200 个变更；在 Git 面板继续分页查看。' : ''
+      );
+    } catch (error) {
+      if (generation !== generationRef.current) return;
+      setGitDecorations({});
+      setGitDecorationNotice(`Git 状态装饰不可用：${message(error)}`);
+    }
+  };
+
   useEffect(() => {
     const generation = generationRef.current + 1;
     generationRef.current = generation;
@@ -100,7 +119,12 @@ export function FilesPanel({
     setBinary(false);
     setContentError('');
     setResourceNotice('');
-    if (workspaceId) void loadDirectory('workspace-root', false, generation);
+    setGitDecorations({});
+    setGitDecorationNotice('');
+    if (workspaceId) {
+      void loadDirectory('workspace-root', false, generation);
+      void loadGitDecorations(generation);
+    }
     // Loading is deliberately tied to the active Context identity.
   }, [refreshEpoch, workspaceId]);
 
@@ -177,7 +201,10 @@ export function FilesPanel({
           type="button"
           className="icon-button"
           aria-label="刷新文件树"
-          onClick={() => void loadDirectory('workspace-root')}
+          onClick={() => {
+            void loadDirectory('workspace-root');
+            void loadGitDecorations();
+          }}
         >
           <Icon name="refresh" size={15} />
         </button>
@@ -185,6 +212,11 @@ export function FilesPanel({
 
       <div className="files-layout">
         <section className="file-tree" aria-label="工作区文件">
+          {gitDecorationNotice ? (
+            <p className="resource-hint" role="status">
+              {gitDecorationNotice}
+            </p>
+          ) : null}
           {matches ? (
             <>
               <p className="resource-hint">搜索仅覆盖已加载的目录和文件。</p>
@@ -196,6 +228,7 @@ export function FilesPanel({
                     depth={0}
                     expanded={false}
                     selected={selected?.id === node.id}
+                    gitLabels={gitDecorations[node.displayPath] ?? []}
                     onToggle={toggleDirectory}
                     onSelect={node => void selectFile(node)}
                   />
@@ -209,6 +242,7 @@ export function FilesPanel({
               directories={directories}
               expanded={expanded}
               selectedId={selected?.id}
+              gitDecorations={gitDecorations}
               onToggle={toggleDirectory}
               onSelect={node => void selectFile(node)}
               onLoadMore={parentId => void loadDirectory(parentId, true)}
@@ -322,6 +356,7 @@ function DirectoryTree({
   directories,
   expanded,
   selectedId,
+  gitDecorations,
   onToggle,
   onSelect,
   onLoadMore,
@@ -331,6 +366,7 @@ function DirectoryTree({
   readonly directories: Readonly<Record<string, DirectoryPage>>;
   readonly expanded: ReadonlySet<string>;
   readonly selectedId?: string;
+  readonly gitDecorations: GitDecorations;
   readonly onToggle: (nodeId: string) => void;
   readonly onSelect: (node: WebFileNodeV1) => void;
   readonly onLoadMore: (parentId: string) => void;
@@ -354,6 +390,7 @@ function DirectoryTree({
               depth={depth}
               expanded={open}
               selected={selectedId === node.id}
+              gitLabels={gitDecorations[node.displayPath] ?? []}
               onToggle={onToggle}
               onSelect={onSelect}
             />
@@ -364,6 +401,7 @@ function DirectoryTree({
                 directories={directories}
                 expanded={expanded}
                 selectedId={selectedId}
+                gitDecorations={gitDecorations}
                 onToggle={onToggle}
                 onSelect={onSelect}
                 onLoadMore={onLoadMore}
@@ -389,6 +427,7 @@ function FileRow({
   depth,
   expanded,
   selected,
+  gitLabels,
   onToggle,
   onSelect,
 }: {
@@ -396,6 +435,7 @@ function FileRow({
   readonly depth: number;
   readonly expanded: boolean;
   readonly selected: boolean;
+  readonly gitLabels: readonly string[];
   readonly onToggle: (nodeId: string) => void;
   readonly onSelect: (node: WebFileNodeV1) => void;
 }) {
@@ -406,7 +446,7 @@ function FileRow({
       className={`file-node ${selected ? 'selected' : ''} ${blocked ? 'blocked' : ''}`}
       style={{ paddingInlineStart: `${8 + depth * 15}px` }}
       aria-expanded={node.kind === 'directory' ? expanded : undefined}
-      aria-label={`${fileKindLabel(node.kind)} ${node.name}${blocked ? '，不可读取' : ''}`}
+      aria-label={`${fileKindLabel(node.kind)} ${node.name}${blocked ? '，不可读取' : ''}${gitLabels.length ? `，Git ${gitLabels.join('、')}` : ''}`}
       onClick={() => (node.kind === 'directory' ? onToggle(node.id) : onSelect(node))}
       disabled={blocked}
     >
@@ -414,6 +454,11 @@ function FileRow({
       <span>{node.name}</span>
       {node.kind === 'symlink' ? <small>链接</small> : null}
       {node.sensitive ? <small>敏感</small> : null}
+      {gitLabels.length ? (
+        <small className="file-git-status" title={`Git ${gitLabels.join('、')}`}>
+          {gitLabels.join(' · ')}
+        </small>
+      ) : null}
     </button>
   );
 }
@@ -431,6 +476,32 @@ function mergeNodes(
   const byId = new Map(current.map(item => [item.id, item]));
   for (const item of next) byId.set(item.id, item);
   return [...byId.values()];
+}
+
+function buildGitDecorations(status: WebGitStatusV1): GitDecorations {
+  if (!status.isRepository) return {};
+  const decorations = new Map<string, Set<string>>();
+  const add = (path: string, label: string) => {
+    const normalized = path.replace(/\\/gu, '/').replace(/^\.\//u, '');
+    if (!normalized) return;
+    const labels = decorations.get(normalized) ?? new Set<string>();
+    labels.add(label);
+    decorations.set(normalized, labels);
+    const segments = normalized.split('/');
+    for (let index = 1; index < segments.length; index += 1) {
+      const ancestor = segments.slice(0, index).join('/');
+      const ancestorLabels = decorations.get(ancestor) ?? new Set<string>();
+      ancestorLabels.add('含变更');
+      decorations.set(ancestor, ancestorLabels);
+    }
+  };
+  status.conflicted.forEach(file => add(file.path, '冲突'));
+  status.staged.forEach(file => add(file.path, '已暂存'));
+  status.unstaged.forEach(file => add(file.path, '未暂存'));
+  status.untracked.forEach(file => add(file.path, '未跟踪'));
+  return Object.fromEntries(
+    [...decorations].map(([path, labels]) => [path, Object.freeze([...labels])])
+  );
 }
 
 function formatBytes(bytes: number): string {

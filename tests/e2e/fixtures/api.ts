@@ -93,6 +93,18 @@ export async function browserGet<T = unknown>(
   }, path);
 }
 
+export async function guardedBrowserGet<T = unknown>(
+  page: Page,
+  path: string,
+  context?: Pick<WebBootstrapV1, 'workspaceId' | 'contextRevision'>
+): Promise<BrowserApiResult<T>> {
+  const active = context ?? (await webBootstrap(page));
+  const url = new URL(path, 'http://orion.invalid');
+  url.searchParams.set('workspaceId', active.workspaceId);
+  url.searchParams.set('expectedContextRevision', active.contextRevision);
+  return browserGet<T>(page, `${url.pathname}?${url.searchParams.toString()}`);
+}
+
 export async function browserMutation<T = unknown>(
   page: Page,
   path: string,

@@ -3008,6 +3008,19 @@ export function listSessions(limit?: number): SessionMeta[] {
 }
 
 /**
+ * Count catalogued Sessions by their canonical project identity without
+ * sorting or touching every project directory. This is the lightweight read
+ * model used by project pickers and other collection summaries.
+ */
+export function countSessionsByProject(): ReadonlyMap<string, number> {
+  const counts = new Map<string, number>();
+  for (const session of Object.values(loadOrRebuildSessionCatalog().sessions)) {
+    counts.set(session.projectPath, (counts.get(session.projectPath) ?? 0) + 1);
+  }
+  return counts;
+}
+
+/**
  * List sessions for a single canonical project.
  */
 export function listProjectSessions(projectPath: string, limit?: number): SessionMeta[] {

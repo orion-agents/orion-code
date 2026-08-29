@@ -19,6 +19,7 @@ test('WEB31-P0-03 mouse pointer resizing clamps 320-720 and narrow layout preser
   await expect(handle).toHaveAttribute('aria-hidden', 'true');
   await expect(handle).not.toHaveAttribute('role', 'separator');
   expect(await handle.evaluate(element => (element as HTMLElement).tabIndex)).toBe(-1);
+  await expectPanelWidth(ui.inspectorDock, 420);
 
   await dragPanelToRequestedWidth(page, handle, 100);
   await expectPanelWidth(ui.inspectorDock, 320);
@@ -27,8 +28,23 @@ test('WEB31-P0-03 mouse pointer resizing clamps 320-720 and narrow layout preser
   await expectPanelWidth(ui.inspectorDock, 720);
   await expectStoredPanelWidth(page, 720);
 
+  await handle.dblclick();
+  await expectPanelWidth(ui.inspectorDock, 420);
+  await expectStoredPanelWidth(page, 420);
+
+  await dragPanelToRequestedWidth(page, handle, 900);
+  await expectPanelWidth(ui.inspectorDock, 720);
+  await expectStoredPanelWidth(page, 720);
+
   await page.reload({ waitUntil: 'domcontentloaded' });
   await waitForWorkbenchReady(page, { timeout: 30_000 });
+  await expectPanelWidth(ui.inspectorDock, 720);
+
+  await page.setViewportSize({ width: 1_440, height: 900 });
+  await expectPanelWidth(ui.inspectorDock, 600);
+  await expectStoredPanelWidth(page, 720);
+
+  await page.setViewportSize({ width: 1_600, height: 900 });
   await expectPanelWidth(ui.inspectorDock, 720);
 
   await page.setViewportSize({ width: 390, height: 844 });
@@ -54,6 +70,9 @@ test('WEB31-P0-03 mouse pointer resizing clamps 320-720 and narrow layout preser
   evidence.recordFact('web31.resize_input', 'mouse-pointer');
   evidence.recordFact('web31.resize_min_px', 320);
   evidence.recordFact('web31.resize_max_px', 720);
+  evidence.recordFact('web31.resize_default_px', 420);
+  evidence.recordFact('web31.resize_reset_px', 420);
+  evidence.recordFact('web31.resize_1440_clamp_px', 600);
   evidence.recordFact('web31.keyboard_fine_resize', false);
   evidence.recordFact('web31.desktop_width_preserved', true);
 });

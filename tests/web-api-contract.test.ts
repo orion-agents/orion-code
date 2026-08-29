@@ -151,6 +151,34 @@ describe('Orion Web OpenAPI contract', () => {
       expect.arrayContaining(['contextRevision', 'workspaceId', 'capabilities'])
     );
     expect(JSON.stringify(bootstrap)).toContain('terminal');
+
+    const fileNode = resolveReference(document, '#/components/schemas/FileNode') as JsonObject;
+    expect(fileNode.required).toEqual(expect.arrayContaining(['id', 'displayPath']));
+    expect(JSON.stringify((fileNode.properties as JsonObject).displayPath)).toContain(
+      'workspace-relative'
+    );
+
+    const verification = resolveReference(
+      document,
+      '#/components/schemas/ReviewVerification'
+    ) as JsonObject;
+    expect(verification.required).toEqual(
+      expect.arrayContaining([
+        'sessionId',
+        'threadId',
+        'sequence',
+        'terminal',
+        'success',
+        'executionPolicyDigest',
+        'receiptDigest',
+      ])
+    );
+    expect(((verification.properties as JsonObject).terminal as JsonObject).enum).toEqual([
+      'completed',
+      'failed',
+      'interrupted',
+      'indeterminate',
+    ]);
   });
 
   test('guards active context operations and makes stale admission side-effect free', () => {
@@ -191,6 +219,7 @@ describe('Orion Web OpenAPI contract', () => {
       expect(operation.parameters).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ $ref: '#/components/parameters/WorkspaceId' }),
+          expect.objectContaining({ $ref: '#/components/parameters/ContextWorkspaceId' }),
           expect.objectContaining({ $ref: '#/components/parameters/ExpectedContextRevision' }),
         ])
       );

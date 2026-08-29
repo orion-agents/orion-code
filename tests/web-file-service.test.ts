@@ -31,6 +31,7 @@ describe('FileReadServiceV1', () => {
     const first = service.list({ pageSize: 2 });
     expect(first.items).toHaveLength(2);
     expect(first.items.every(item => item.id.startsWith('file_'))).toBe(true);
+    expect(first.items.every(item => item.displayPath === item.name)).toBe(true);
     expect(first.items.map(item => item.name)).not.toEqual(
       expect.arrayContaining(['.git', 'node_modules'])
     );
@@ -42,6 +43,25 @@ describe('FileReadServiceV1', () => {
       'c.txt',
     ]);
     expect(second.nextCursor).toBeNull();
+    expect(JSON.stringify([...first.items, ...second.items])).not.toContain(workspace);
+    expect(service.performanceCounters()).toMatchObject({
+      readOperations: 2,
+      bytesRead: 0,
+    });
+    expect(service.performanceCounters().itemsParsed).toBeGreaterThanOrEqual(3);
+  });
+
+  test('returns workspace-relative display paths while keeping operations opaque', () => {
+    mkdirSync(join(workspace, 'src'));
+    writeFileSync(join(workspace, 'src', 'nested.ts'), 'export {};\n');
+    const service = new FileReadServiceV1(workspace);
+    const directory = service.list().items.find(item => item.name === 'src')!;
+    const nested = service.list({ parentId: directory.id }).items[0];
+
+    expect(directory.displayPath).toBe('src');
+    expect(nested.displayPath).toBe('src/nested.ts');
+    expect(nested.id).not.toContain('nested.ts');
+    expect(JSON.stringify(nested)).not.toContain(workspace);
   });
 
   test('returns bounded UTF-8 pages and binds cursors to immutable file revisions', () => {
@@ -63,6 +83,8 @@ describe('FileReadServiceV1', () => {
       limitBytes: 64,
     });
     expect(`${first.content}${second.content}`).toBe('first line\nsecond line\n');
+    expect(service.performanceCounters()).toMatchObject({ readOperations: 3 });
+    expect(service.performanceCounters().bytesRead).toBeGreaterThan(0);
 
     writeFileSync(join(workspace, 'notes.txt'), 'changed bytes\n');
     expect(() =>

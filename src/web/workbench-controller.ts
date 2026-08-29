@@ -27,6 +27,7 @@ import type { OrionCodeUiRuntime } from '../runtime/ui-events';
 import { incrementSessionCount } from '../services/global-config';
 import { SettingsCoordinatorError } from '../services/settings-coordinator';
 import {
+  countSessionsByProject,
   createSession,
   listProjectSessions,
   listSessions,
@@ -221,17 +222,14 @@ export class WebWorkbenchController {
     }
   }
 
-  listWorkspaces(): readonly WebWorkspaceSummaryV1[] {
-    const counts = new Map<string, number>();
-    for (const session of listSessions()) {
-      try {
-        const path = canonicalDirectory(session.projectPath);
-        counts.set(path, (counts.get(path) ?? 0) + 1);
-      } catch {
-        // Stale projects remain in session history but are not selectable workspaces.
-      }
-    }
-    return Object.freeze(
+  listWorkspaces(context?: WebContextGuardV1): readonly WebWorkspaceSummaryV1[] {
+    if (context) this.assertContextGuard(context);
+    // Session metadata is canonicalized before it enters the catalog. The
+    // summary read model deliberately avoids sorting Sessions or re-running
+    // realpath/stat for every historical entry. Availability is checked once
+    // per registered Workspace below.
+    const counts = countSessionsByProject();
+    const result = Object.freeze(
       this.workspaceRegistry.list().map(entry => {
         let available = false;
         try {
@@ -251,9 +249,15 @@ export class WebWorkbenchController {
         });
       })
     );
+    if (context) this.assertContextGuard(context);
+    return result;
   }
 
-  listWorkspaceSessions(workspaceId: string): readonly WebSessionSummaryV1[] {
+  listWorkspaceSessions(
+    workspaceId: string,
+    context?: WebContextGuardV1
+  ): readonly WebSessionSummaryV1[] {
+    if (context) this.assertContextGuard(context);
     const entry = this.workspaceRegistry.find(workspaceId);
     if (!entry) {
       throw new WebWorkbenchError(404, 'Workspace was not found.', 'workspace_not_found');
@@ -263,10 +267,18 @@ export class WebWorkbenchController {
     } catch {
       throw new WebWorkbenchError(409, 'Workspace is unavailable.', 'workspace_unavailable');
     }
-    return Object.freeze(listProjectSessions(entry.canonicalPath).map(projectSessionSummary));
+    const result = Object.freeze(
+      listProjectSessions(entry.canonicalPath).map(projectSessionSummary)
+    );
+    if (context) this.assertContextGuard(context);
+    return result;
   }
 
-  async workspaceProjectSummary(workspaceId: string): Promise<WebWorkspaceProjectSummaryV1> {
+  async workspaceProjectSummary(
+    workspaceId: string,
+    context?: WebContextGuardV1
+  ): Promise<WebWorkspaceProjectSummaryV1> {
+    if (context) this.assertContextGuard(context);
     const entry = this.workspaceRegistry.find(workspaceId);
     if (!entry) {
       throw new WebWorkbenchError(404, 'Workspace was not found.', 'workspace_not_found');
@@ -278,7 +290,7 @@ export class WebWorkbenchController {
       throw new WebWorkbenchError(409, 'Workspace is unavailable.', 'workspace_unavailable');
     }
     const status = await new GitReadModelServiceV1(workspace).status({ pageSize: 2_000 });
-    return Object.freeze({
+    const result = Object.freeze({
       workspaceId,
       repositoryRevision: status.repositoryRevision,
       isRepository: status.isRepository,
@@ -288,6 +300,8 @@ export class WebWorkbenchController {
       dirtyCount: status.totalFiles,
       conflictCount: status.conflicted.length,
     });
+    if (context) this.assertContextGuard(context);
+    return result;
   }
 
   setWorkspacePinned(
@@ -519,9 +533,10 @@ export class WebWorkbenchController {
     return snapshot;
   }
 
-  async skills(): Promise<readonly WebSkillSummaryV1[]> {
+  async skills(context?: WebContextGuardV1): Promise<readonly WebSkillSummaryV1[]> {
+    if (context) this.assertContextGuard(context);
     const descriptors = (await this.runtimeValue.inspectSkills?.()) ?? [];
-    return Object.freeze(
+    const result = Object.freeze(
       descriptors.map(descriptor =>
         Object.freeze({
           id: descriptor.id,
@@ -536,9 +551,12 @@ export class WebWorkbenchController {
         })
       )
     );
+    if (context) this.assertContextGuard(context);
+    return result;
   }
 
-  mcp(): readonly WebMcpServerSummaryV1[] {
+  mcp(context?: WebContextGuardV1): readonly WebMcpServerSummaryV1[] {
+    if (context) this.assertContextGuard(context);
     const descriptors = this.runtimeValue.inspectMcp?.() ?? [];
     let runtimeServers: ReadonlyMap<
       string,
@@ -554,7 +572,7 @@ export class WebWorkbenchController {
     } catch {
       // A concurrent session transition may close the previous diagnostics graph.
     }
-    return Object.freeze(
+    const result = Object.freeze(
       descriptors.map(descriptor => {
         const runtime = runtimeServers.get(descriptor.id);
         return Object.freeze({
@@ -574,22 +592,29 @@ export class WebWorkbenchController {
         });
       })
     );
+    if (context) this.assertContextGuard(context);
+    return result;
   }
 
-  async listToolDetails(): Promise<readonly WebToolDetailSummaryV1[]> {
-    return Object.freeze(await this.toolDetails.list(this.workspaceValue));
+  async listToolDetails(context?: WebContextGuardV1): Promise<readonly WebToolDetailSummaryV1[]> {
+    if (context) this.assertContextGuard(context);
+    const result = Object.freeze(await this.toolDetails.list(this.workspaceValue));
+    if (context) this.assertContextGuard(context);
+    return result;
   }
 
   async readToolDetail(
     callId: string,
     offsetBytes: number,
-    limitBytes: number
+    limitBytes: number,
+    context?: WebContextGuardV1
   ): Promise<WebToolDetailPageV1> {
+    if (context) this.assertContextGuard(context);
     const entry = (await this.toolDetails.list(this.workspaceValue)).find(
       detail => detail.callId === callId || detail.artifactId === callId
     );
     if (!entry?.artifactId) throw new WebWorkbenchError(404, 'Tool detail was not found.');
-    return this.toolDetails.read(
+    const result = await this.toolDetails.read(
       {
         callId: entry.callId,
         sequence: entry.sequence,
@@ -599,6 +624,8 @@ export class WebWorkbenchController {
       { offsetBytes, limitBytes },
       this.workspaceValue
     );
+    if (context) this.assertContextGuard(context);
+    return result;
   }
 
   listFiles(context: WebContextGuardV1, input: Parameters<FileReadServiceV1['list']>[0]) {
@@ -917,7 +944,8 @@ export class WebWorkbenchController {
     return result;
   }
 
-  async diagnostics(): Promise<Record<string, unknown>> {
+  async diagnostics(context?: WebContextGuardV1): Promise<Record<string, unknown>> {
+    if (context) this.assertContextGuard(context);
     const state = this.runtimeValue.store.getSnapshot();
     const mcp = loadFirstPartyMcpConfigurationV1();
     const activeSessionId = this.runtimeValue.getSession()?.id ?? null;
@@ -926,7 +954,7 @@ export class WebWorkbenchController {
     const harness = activeSessionId
       ? ((await this.runtimeValue.getHarnessDiagnostics?.()) ?? null)
       : null;
-    return {
+    const result = {
       workspace: this.workspaceValue,
       activeSessionId,
       configured: this.runtimeValue.isConfigured,
@@ -944,7 +972,13 @@ export class WebWorkbenchController {
       mcp: { servers: mcpServerIds(mcp) },
       harness,
       eventStream: this.eventHub.snapshot(),
+      performance: {
+        files: this.fileService.performanceCounters(),
+        git: this.gitService.performanceCounters(),
+      },
     };
+    if (context) this.assertContextGuard(context);
+    return result;
   }
 
   async shutdown(): Promise<void> {

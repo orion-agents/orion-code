@@ -218,21 +218,34 @@ p {
 }
 
 .workbench-shell {
+  --rail-column-width: var(--rail-width);
   --work-panel-column-width: min(
     var(--work-panel-width),
     55vw,
     720px,
-    calc(100vw - var(--rail-width) - 560px)
+    calc(100vw - var(--rail-column-width) - 560px)
   );
   --inspector-column-width: var(--work-panel-column-width);
 
   display: grid;
-  grid-template-columns: var(--rail-width) minmax(560px, 1fr) var(--work-panel-column-width);
+  grid-template-columns: var(--rail-column-width) minmax(560px, 1fr) var(--work-panel-column-width);
   width: 100%;
   height: 100dvh;
   background:
     radial-gradient(circle at 50% -20%, rgb(138 125 255 / 7%), transparent 40%), var(--bg);
   transition: grid-template-columns 180ms ease;
+}
+
+.workbench-shell.project-navigation-collapsed {
+  --rail-column-width: 0px;
+}
+
+.workbench-shell.project-navigation-collapsed .mobile-nav-toggle {
+  display: inline-flex;
+}
+
+.workspace-rail[hidden] {
+  display: none;
 }
 
 .workbench-shell.work-panel-collapsed {
@@ -583,6 +596,10 @@ p {
 .connection-dot.reconnecting {
   background: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.session-state.approval {
+  background: var(--warning);
+  box-shadow: 0 0 0 3px rgb(244 200 107 / 12%);
 }
 .state-dot.state-error,
 .state-dot.state-failed,
@@ -3327,6 +3344,10 @@ p {
   white-space: nowrap;
 }
 
+.project-session-main .project-session-status {
+  color: var(--warning);
+}
+
 .project-session-main strong {
   font-size: var(--font-body);
   font-weight: 580;
@@ -3642,6 +3663,14 @@ html[data-work-panel-resizing='true'] .workbench-shell {
 .file-node-list .file-node small {
   color: var(--warning);
   font-size: 11px;
+}
+
+.file-node-list .file-node .file-git-status {
+  max-width: 44%;
+  overflow: hidden;
+  color: var(--accent-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .file-preview,
@@ -4321,7 +4350,7 @@ html[data-work-panel-resizing='true'] .workbench-shell {
     --work-panel-column-width: 0px;
     --inspector-column-width: 0px;
 
-    grid-template-columns: var(--rail-width) minmax(0, 1fr);
+    grid-template-columns: var(--rail-column-width) minmax(0, 1fr);
   }
   .work-panel {
     position: fixed;

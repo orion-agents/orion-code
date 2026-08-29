@@ -9,7 +9,7 @@ import type {
   WebToolDetailPageV1,
   WebToolDetailSummaryV1,
 } from '../../src/web/protocol';
-import { activeSessionSnapshot, browserGet, webBootstrap } from './fixtures/api';
+import { activeSessionSnapshot, guardedBrowserGet, webBootstrap } from './fixtures/api';
 import { MCP_FIXTURE_ECHO_TOOL } from './fixtures/mcp-server';
 import { OPENAI_FIXTURE_MARKERS, OPENAI_FIXTURE_PROMPTS } from './fixtures/openai-provider';
 import { allowExpectedNetworkFailures, capturedSseEvents, expect, test } from './fixtures/test';
@@ -79,11 +79,11 @@ test('E2E-P0-07 workspaces stay isolated while MCP and large artifacts are expli
   evidence.recordFact('workspace.cross_activation_status', crossWorkspace.status);
   evidence.recordFact('workspace.active_preserved', true);
 
-  const skills = await browserGet<WebPageV1<WebSkillSummaryV1>>(
+  const skills = await guardedBrowserGet<WebPageV1<WebSkillSummaryV1>>(
     page,
     '/api/v1/skills?pageSize=100'
   );
-  const mcpBefore = await browserGet<WebPageV1<WebMcpServerSummaryV1>>(
+  const mcpBefore = await guardedBrowserGet<WebPageV1<WebMcpServerSummaryV1>>(
     page,
     '/api/v1/mcp?pageSize=100'
   );
@@ -99,7 +99,7 @@ test('E2E-P0-07 workspaces stay isolated while MCP and large artifacts are expli
 
   await submitPrompt(page, OPENAI_FIXTURE_PROMPTS.mcpEcho);
   await waitForApproval(page, MCP_FIXTURE_ECHO_TOOL, { timeout: 45_000 });
-  const mcpReady = await browserGet<WebPageV1<WebMcpServerSummaryV1>>(
+  const mcpReady = await guardedBrowserGet<WebPageV1<WebMcpServerSummaryV1>>(
     page,
     '/api/v1/mcp?pageSize=100'
   );
@@ -125,7 +125,7 @@ test('E2E-P0-07 workspaces stay isolated while MCP and large artifacts are expli
   });
   await waitForIdle(page);
 
-  const details = await browserGet<WebPageV1<WebToolDetailSummaryV1>>(
+  const details = await guardedBrowserGet<WebPageV1<WebToolDetailSummaryV1>>(
     page,
     '/api/v1/tool-details?pageSize=100'
   );
@@ -138,7 +138,7 @@ test('E2E-P0-07 workspaces stay isolated while MCP and large artifacts are expli
   expect(artifact!.artifactId).toMatch(/^[A-Za-z0-9_-]+$/u);
   expect(JSON.stringify(artifact)).not.toContain(workspace.secondaryWorkspace);
 
-  const first = await browserGet<WebToolDetailPageV1>(
+  const first = await guardedBrowserGet<WebToolDetailPageV1>(
     page,
     `/api/v1/tool-details/${encodeURIComponent(artifact!.artifactId!)}?offsetBytes=0&limitBytes=65536`
   );
@@ -150,7 +150,7 @@ test('E2E-P0-07 workspaces stay isolated while MCP and large artifacts are expli
     redacted: true,
   });
   expect(Buffer.byteLength(first.body.content, 'utf8')).toBe(65_536);
-  const second = await browserGet<WebToolDetailPageV1>(
+  const second = await guardedBrowserGet<WebToolDetailPageV1>(
     page,
     `/api/v1/tool-details/${encodeURIComponent(artifact!.artifactId!)}?offsetBytes=${first.body.nextOffsetBytes}&limitBytes=65536`
   );

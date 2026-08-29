@@ -183,7 +183,14 @@ describe('Orion local Web host', () => {
     );
 
     const sessions = await fetch(
-      `${handle.url}/api/v1/workspaces/${encodeURIComponent(bootstrap.workspaceId)}/sessions`
+      guardedUrl(
+        handle,
+        `/api/v1/workspaces/${encodeURIComponent(bootstrap.workspaceId)}/sessions`,
+        {
+          workspaceId: bootstrap.workspaceId,
+          expectedContextRevision: bootstrap.contextRevision,
+        }
+      )
     );
     expect(sessions.status).toBe(200);
     await expect(sessions.json()).resolves.toMatchObject({
@@ -225,6 +232,51 @@ describe('Orion local Web host', () => {
     });
     expect(stale.status).toBe(409);
     await expect(stale.json()).resolves.toMatchObject({
+      code: 'context_revision_conflict',
+    });
+  });
+
+  test('requires the active Context guard on every workspace-bound read', async () => {
+    const context = await activeContext(handle);
+    const guardedReads = [
+      '/api/v1/workspaces',
+      `/api/v1/workspaces/${encodeURIComponent(context.workspaceId)}/sessions`,
+      `/api/v1/workspaces/${encodeURIComponent(context.workspaceId)}/summary`,
+      '/api/v1/skills',
+      '/api/v1/mcp',
+      '/api/v1/tool-details',
+      '/api/v1/diagnostics',
+    ];
+
+    for (const path of guardedReads) {
+      const missing = await fetch(`${handle.url}${path}`);
+      expect({ path, status: missing.status }).toEqual({ path, status: 400 });
+
+      const current = await fetch(guardedUrl(handle, path, context));
+      expect({ path, status: current.status }).toEqual({ path, status: 200 });
+
+      const stale = await fetch(
+        guardedUrl(handle, path, { ...context, expectedContextRevision: randomUUID() })
+      );
+      expect({ path, status: stale.status }).toEqual({ path, status: 409 });
+      await expect(stale.json()).resolves.toMatchObject({
+        status: 409,
+        code: 'context_revision_conflict',
+      });
+    }
+
+    const missingDetail = '/api/v1/tool-details/not-a-real-artifact';
+    expect((await fetch(`${handle.url}${missingDetail}`)).status).toBe(400);
+    expect((await fetch(guardedUrl(handle, missingDetail, context))).status).toBe(404);
+    const staleDetail = await fetch(
+      guardedUrl(handle, missingDetail, {
+        ...context,
+        expectedContextRevision: randomUUID(),
+      })
+    );
+    expect(staleDetail.status).toBe(409);
+    await expect(staleDetail.json()).resolves.toMatchObject({
+      status: 409,
       code: 'context_revision_conflict',
     });
   });

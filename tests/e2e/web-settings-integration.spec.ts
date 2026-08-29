@@ -915,10 +915,15 @@ test('SET-P0-12 persisted Settings evidence is free of secrets, headers, env nam
   });
   expect(problem.status).toBe(400);
 
+  const captureContext = await hostBootstrap(host.url);
+  const diagnosticsQuery = new URLSearchParams({
+    workspaceId: captureContext.workspaceId,
+    expectedContextRevision: captureContext.contextRevision,
+  });
   const captures = await Promise.all([
     rawRequest(host.url, { path: '/api/v1/bootstrap' }),
     rawRequest(host.url, { path: '/api/v1/settings' }),
-    rawRequest(host.url, { path: '/api/v1/diagnostics' }),
+    rawRequest(host.url, { path: `/api/v1/diagnostics?${diagnosticsQuery.toString()}` }),
   ]);
   const liveMaterial = [
     ...captures.flatMap(value => [value.body, JSON.stringify(value.headers)]),

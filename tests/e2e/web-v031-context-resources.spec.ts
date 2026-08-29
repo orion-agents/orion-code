@@ -1,6 +1,17 @@
 import { spawnSync } from 'child_process';
 import { randomUUID } from 'crypto';
-import { appendFileSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'fs';
+import {
+  appendFileSync,
+  closeSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from 'fs';
 import { basename, join } from 'path';
 
 import type { Page, Request } from '@playwright/test';
@@ -112,6 +123,22 @@ test('WEB31-P0-02 cross-project Context CAS rejects a stale tab with zero side e
     expect(staleCreate.status).toBe(409);
     expect(problemCode(staleCreate.body)).toBe('context_revision_conflict');
 
+    const staleReadPaths = [
+      '/api/v1/workspaces',
+      `/api/v1/workspaces/${encodeURIComponent(secondary.workspaceId)}/sessions`,
+      `/api/v1/workspaces/${encodeURIComponent(secondary.workspaceId)}/summary`,
+      '/api/v1/skills',
+      '/api/v1/mcp',
+      '/api/v1/tool-details',
+      '/api/v1/tool-details/not-a-real-artifact',
+      '/api/v1/diagnostics',
+    ];
+    for (const path of staleReadPaths) {
+      const response = await guardedHostGet(host.url, path, stale);
+      expect(response.status, path).toBe(409);
+      expect(problemCode(response.body), path).toBe('context_revision_conflict');
+    }
+
     const authoritative = await webBootstrap(page);
     const secondarySessionsAfter = await workspaceSessions(page, secondary.workspaceId);
     const sideEffects = [
@@ -134,6 +161,7 @@ test('WEB31-P0-02 cross-project Context CAS rejects a stale tab with zero side e
     evidence.recordFact('screenshot.context', basename(screenshotName));
     evidence.recordFact('web31.context_target_verified', true);
     evidence.recordFact('web31.context_conflict_side_effects', sideEffects);
+    evidence.recordFact('web31.context_stale_read_conflicts', staleReadPaths.length);
   } finally {
     page.off('requestfailed', onRequestFailed);
     stalePage?.off('requestfailed', onRequestFailed);
@@ -156,13 +184,26 @@ test('WEB31-P0-05 file pages preserve line boundaries and block containment, sym
   host,
   page,
   workspace,
-}) => {
+}, testInfo) => {
+  testInfo.setTimeout(180_000);
+  git(workspace.primaryWorkspace, ['init', '-b', 'main']);
+  git(workspace.primaryWorkspace, ['config', 'user.name', 'Orion Web E2E']);
+  git(workspace.primaryWorkspace, ['config', 'user.email', 'web-e2e@example.invalid']);
+  git(workspace.primaryWorkspace, ['add', '--all']);
+  git(workspace.primaryWorkspace, ['commit', '-m', 'file panel base']);
+  appendFileSync(workspace.primaryPath('.git/info/exclude'), '\nhuge-tree/\n', 'utf8');
+
+  const fileScaleCount = 100_000;
+  const hugeTreePath = workspace.primaryPath('huge-tree');
+  createFileScale(hugeTreePath, fileScaleCount);
+
   const lineBodies = ['A', 'B', 'C', 'D'].map(marker => `${marker}${marker.repeat(39_999)}\n`);
   const expectedContent = lineBodies.join('');
   const pagedPath = workspace.primaryPath('paged-lines.txt');
   const sensitivePath = workspace.primaryPath('.env');
   const externalPath = join(workspace.rootDirectory, 'outside-file.txt');
   const symlinkPath = workspace.primaryPath('outside-link.txt');
+  const binaryPath = workspace.primaryPath('binary-preview.dat');
   writeFileSync(pagedPath, expectedContent, 'utf8');
   writeFileSync(sensitivePath, `ORION_CODE_API_KEY=${workspace.environment.ORION_CODE_API_KEY}\n`, {
     encoding: 'utf8',
@@ -170,8 +211,10 @@ test('WEB31-P0-05 file pages preserve line boundaries and block containment, sym
   });
   writeFileSync(externalPath, 'OUTSIDE_WORKSPACE_SENTINEL\n', { encoding: 'utf8', mode: 0o600 });
   symlinkSync(externalPath, symlinkPath, 'file');
+  writeFileSync(binaryPath, Buffer.from([0x00, 0x01, 0x02, 0xff]));
 
   const bootstrap = await webBootstrap(page);
+  const performanceBefore = await browserPerformanceCounters(page);
   const root = await guardedGet<WebFileTreePageV1>(page, '/api/v1/files', bootstrap, {
     parentId: 'workspace-root',
     pageSize: '100',
@@ -180,9 +223,30 @@ test('WEB31-P0-05 file pages preserve line boundaries and block containment, sym
   const paged = fileNode(root.body, 'paged-lines.txt');
   const sensitive = fileNode(root.body, '.env');
   const escaped = fileNode(root.body, 'outside-link.txt');
+  const binary = fileNode(root.body, 'binary-preview.dat');
+  const hugeTree = fileNode(root.body, 'huge-tree');
   expect(sensitive).toMatchObject({ sensitive: true, readable: true });
   expect(escaped).toMatchObject({ kind: 'symlink', readable: false });
   expect(JSON.stringify(root.body)).not.toContain(workspace.primaryWorkspace);
+
+  const binaryRead = await guardedGet<WebFileContentPageV1>(
+    page,
+    `/api/v1/files/${encodeURIComponent(binary.id)}/content`,
+    bootstrap
+  );
+  expect(binaryRead.status).toBe(200);
+  expect(binaryRead.body).toMatchObject({
+    fileId: binary.id,
+    binary: true,
+    mediaType: 'application/octet-stream',
+    nextCursor: null,
+  });
+  expect(binaryRead.body).not.toHaveProperty('content');
+
+  const fileMetrics = await measureFileDirectory(page, bootstrap, hugeTree.id);
+  expect(fileMetrics.items).toBe(100);
+  expect(fileMetrics.warmP95Ms).toBeLessThanOrEqual(250);
+  expect(fileMetrics.responseBytes).toBeLessThan(128 * 1024);
 
   const sensitiveRead = await guardedHostGet(
     host.url,
@@ -235,8 +299,16 @@ test('WEB31-P0-05 file pages preserve line boundaries and block containment, sym
 
   const panel = await openWorkPanel(page, '文件');
   const tree = panel.getByRole('region', { name: '工作区文件' });
-  await expect(tree.getByRole('button', { name: '文件 paged-lines.txt' })).toBeVisible();
-  await tree.getByRole('button', { name: '文件 paged-lines.txt' }).click();
+  await tree.getByRole('button', { name: /^目录 huge-tree/u }).click();
+  await expect
+    .poll(() => tree.locator('.file-node').count(), { timeout: 30_000 })
+    .toBeGreaterThanOrEqual(100);
+  const fileDomNodes = await tree.locator('.file-node').count();
+  expect(fileDomNodes).toBeLessThanOrEqual(120);
+  await expect(tree.getByRole('button', { name: '加载更多', exact: true })).toBeVisible();
+  const pagedFile = tree.getByRole('button', { name: /^文件 paged-lines\.txt，Git 未跟踪$/u });
+  await expect(pagedFile).toBeVisible();
+  await pagedFile.click();
   await expect(panel.getByRole('button', { name: '加载更多内容' })).toBeVisible();
   await panel.getByRole('button', { name: '加载更多内容' }).click();
   await expect.poll(() => panel.locator('.file-code-line').count()).toBeGreaterThanOrEqual(2);
@@ -244,6 +316,22 @@ test('WEB31-P0-05 file pages preserve line boundaries and block containment, sym
   await expect(
     tree.getByRole('button', { name: '符号链接 outside-link.txt，不可读取' })
   ).toBeDisabled();
+  const binaryFile = tree.getByRole('button', {
+    name: /^文件 binary-preview\.dat，Git 未跟踪$/u,
+  });
+  await expect(binaryFile).toBeVisible();
+  await binaryFile.click();
+  await expect(panel.getByText('二进制文件', { exact: true })).toBeVisible();
+  const performanceAfter = await browserPerformanceCounters(page);
+  const filePerformance = subtractCounters(
+    performanceAfter.files,
+    performanceBefore.files,
+    'File performance counters'
+  );
+  expect(filePerformance.readOperations).toBeGreaterThanOrEqual(21);
+  expect(filePerformance.bytesRead).toBeGreaterThan(0);
+  expect(filePerformance.itemsParsed).toBeGreaterThan(0);
+  expect(filePerformance.itemsParsed).toBeLessThan(10_000);
 
   const screenshotName = 'web31-p0-05-safe-file-pages.png';
   await panel.screenshot({
@@ -253,6 +341,17 @@ test('WEB31-P0-05 file pages preserve line boundaries and block containment, sym
   evidence.recordFact('screenshot.files', basename(screenshotName));
   evidence.recordFact('web31.file_security_verified', true);
   evidence.recordFact('web31.file_content_pages', pages.length);
+  evidence.recordFact('web31.file_binary_verified', true);
+  evidence.recordFact('web31.file_git_decoration', '未跟踪');
+  evidence.recordFact('web31.file_scale_entries', fileScaleCount);
+  evidence.recordFact('web31.file_page_warm_p95_ms', roundMetric(fileMetrics.warmP95Ms));
+  evidence.recordFact('web31.file_page_cold_ms', roundMetric(fileMetrics.coldMs));
+  evidence.recordFact('web31.file_page_response_bytes', fileMetrics.responseBytes);
+  evidence.recordFact('web31.file_dom_nodes', fileDomNodes);
+  evidence.recordFact('web31.file_read_operations', filePerformance.readOperations);
+  evidence.recordFact('web31.file_bytes_read', filePerformance.bytesRead);
+  evidence.recordFact('web31.file_items_parsed', filePerformance.itemsParsed);
+  evidence.recordFact('web31.file_performance_budget', true);
 });
 
 test('WEB31-P0-06 Git status, log, and diff enforce state, revision, and long-line bounds', async ({
@@ -260,9 +359,11 @@ test('WEB31-P0-06 Git status, log, and diff enforce state, revision, and long-li
   host,
   page,
   workspace,
-}) => {
+}, testInfo) => {
+  testInfo.setTimeout(180_000);
   seedGitStateMatrix(workspace.primaryWorkspace);
   const bootstrap = await webBootstrap(page);
+  const performanceBefore = await browserPerformanceCounters(page);
 
   const clean = await guardedGet<WebGitStatusV1>(page, '/api/v1/git/status', bootstrap, {
     pageSize: '2000',
@@ -277,6 +378,9 @@ test('WEB31-P0-06 Git status, log, and diff enforce state, revision, and long-li
   git(workspace.primaryWorkspace, ['switch', 'main']);
 
   createDirtyGitMatrix(workspace.primaryWorkspace);
+  createGitStatusScale(workspace.primaryWorkspace, 2_000);
+  const rawDiffBytes = measureRawGitDiffBytes(workspace.primaryWorkspace, 'large-diff.txt');
+  expect(rawDiffBytes).toBeGreaterThanOrEqual(50 * 1024 * 1024);
   const dirty = await guardedGet<WebGitStatusV1>(page, '/api/v1/git/status', bootstrap, {
     pageSize: '2000',
   });
@@ -288,6 +392,18 @@ test('WEB31-P0-06 Git status, log, and diff enforce state, revision, and long-li
   );
   expect(dirty.body.untracked.map(file => file.path)).toContain('untracked.txt');
   expect(dirty.body.conflicted.map(file => file.path)).toContain('conflict.txt');
+  expect(dirty.body.totalFiles).toBe(2_000);
+  expect(dirty.body.truncated).toBe(false);
+
+  const statusMetrics = await measureGitStatus(page, bootstrap);
+  expect(statusMetrics.warmP95Ms).toBeLessThanOrEqual(500);
+  expect(statusMetrics.items).toBe(2_000);
+
+  const largeDiff = gitFile(dirty.body, 'large-diff.txt');
+  const diffMetrics = await measureGitDiff(page, bootstrap, largeDiff.fileId);
+  expect(diffMetrics.warmP95Ms).toBeLessThanOrEqual(400);
+  expect(diffMetrics.lines).toBeGreaterThan(0);
+  expect(diffMetrics.responseBytes).toBeLessThanOrEqual(1024 * 1024 + 64 * 1024);
 
   const firstLog = await guardedGet<WebGitLogPageV1>(page, '/api/v1/git/log', bootstrap, {
     pageSize: '1',
@@ -360,6 +476,15 @@ test('WEB31-P0-06 Git status, log, and diff enforce state, revision, and long-li
   await expect(
     panel.getByRole('region', { name: 'Git Diff' }).locator('.diff-viewer')
   ).toBeVisible();
+  const performanceAfter = await browserPerformanceCounters(page);
+  const gitPerformance = subtractCounters(
+    performanceAfter.git,
+    performanceBefore.git,
+    'Git performance counters'
+  );
+  expect(gitPerformance.processCount).toBeGreaterThan(0);
+  expect(gitPerformance.bytesRead).toBeGreaterThan(0);
+  expect(gitPerformance.itemsParsed).toBeGreaterThan(0);
   const screenshotName = 'web31-p0-06-git-state-matrix.png';
   await panel.screenshot({
     path: join(evidence.scenarioDirectory, screenshotName),
@@ -369,6 +494,17 @@ test('WEB31-P0-06 Git status, log, and diff enforce state, revision, and long-li
   evidence.recordFact('web31.git_state_matrix_verified', true);
   evidence.recordFact('web31.git_revision_conflicts', 2);
   evidence.recordFact('web31.git_long_line_status', oversizedDiff.status);
+  evidence.recordFact('web31.git_changed_files', dirty.body.totalFiles);
+  evidence.recordFact('web31.git_raw_diff_bytes', rawDiffBytes);
+  evidence.recordFact('web31.git_status_warm_p95_ms', roundMetric(statusMetrics.warmP95Ms));
+  evidence.recordFact('web31.git_status_cold_ms', roundMetric(statusMetrics.coldMs));
+  evidence.recordFact('web31.git_diff_warm_p95_ms', roundMetric(diffMetrics.warmP95Ms));
+  evidence.recordFact('web31.git_diff_cold_ms', roundMetric(diffMetrics.coldMs));
+  evidence.recordFact('web31.git_diff_response_bytes', diffMetrics.responseBytes);
+  evidence.recordFact('web31.git_process_count', gitPerformance.processCount);
+  evidence.recordFact('web31.git_bytes_read', gitPerformance.bytesRead);
+  evidence.recordFact('web31.git_items_parsed', gitPerformance.itemsParsed);
+  evidence.recordFact('web31.git_performance_budget', true);
 });
 
 test('WEB31-P0-07 Review sends one structured hunk to an unsubmitted Composer draft', async ({
@@ -452,6 +588,214 @@ test('WEB31-P0-07 Review sends one structured hunk to an unsubmitted Composer dr
   allowExpectedNetworkFailures(testInfo, networkFailures.length);
 });
 
+function createFileScale(directory: string, count: number): void {
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  for (let index = 0; index < count; index += 1) {
+    writeFileSync(join(directory, `entry-${String(index).padStart(6, '0')}.txt`), '');
+  }
+}
+
+async function measureFileDirectory(
+  page: Page,
+  bootstrap: WebBootstrapV1,
+  parentId: string
+): Promise<{
+  readonly coldMs: number;
+  readonly warmP95Ms: number;
+  readonly items: number;
+  readonly responseBytes: number;
+}> {
+  return page.evaluate(
+    async input => {
+      const query = new URLSearchParams({
+        workspaceId: input.workspaceId,
+        expectedContextRevision: input.contextRevision,
+        parentId: input.parentId,
+        pageSize: '100',
+      });
+      const request = async () => {
+        const startedAt = performance.now();
+        const response = await fetch(`/api/v1/files?${query.toString()}`, {
+          cache: 'no-store',
+          headers: { Accept: 'application/json' },
+        });
+        const text = await response.text();
+        if (!response.ok)
+          throw new Error(`File performance request failed with ${response.status}.`);
+        const body = JSON.parse(text) as { readonly items: readonly unknown[] };
+        return {
+          durationMs: performance.now() - startedAt,
+          items: body.items.length,
+          responseBytes: new TextEncoder().encode(text).byteLength,
+        };
+      };
+      const cold = await request();
+      const warm: number[] = [];
+      for (let sample = 0; sample < 20; sample += 1) {
+        warm.push((await request()).durationMs);
+      }
+      warm.sort((left, right) => left - right);
+      return {
+        coldMs: cold.durationMs,
+        warmP95Ms: warm[Math.max(0, Math.ceil(warm.length * 0.95) - 1)],
+        items: cold.items,
+        responseBytes: cold.responseBytes,
+      };
+    },
+    {
+      workspaceId: bootstrap.workspaceId,
+      contextRevision: bootstrap.contextRevision,
+      parentId,
+    }
+  );
+}
+
+async function measureGitStatus(
+  page: Page,
+  bootstrap: WebBootstrapV1
+): Promise<{
+  readonly coldMs: number;
+  readonly warmP95Ms: number;
+  readonly items: number;
+}> {
+  return page.evaluate(async input => {
+    const query = new URLSearchParams({
+      workspaceId: input.workspaceId,
+      expectedContextRevision: input.contextRevision,
+      pageSize: '2000',
+    });
+    const request = async () => {
+      const startedAt = performance.now();
+      const response = await fetch(`/api/v1/git/status?${query.toString()}`, {
+        cache: 'no-store',
+        headers: { Accept: 'application/json' },
+      });
+      const body = (await response.json()) as {
+        readonly totalFiles: number;
+      };
+      if (!response.ok) throw new Error(`Git status performance failed with ${response.status}.`);
+      return { durationMs: performance.now() - startedAt, items: body.totalFiles };
+    };
+    const cold = await request();
+    const warm: number[] = [];
+    for (let sample = 0; sample < 20; sample += 1) warm.push((await request()).durationMs);
+    warm.sort((left, right) => left - right);
+    return {
+      coldMs: cold.durationMs,
+      warmP95Ms: warm[Math.max(0, Math.ceil(warm.length * 0.95) - 1)],
+      items: cold.items,
+    };
+  }, bootstrap);
+}
+
+async function measureGitDiff(
+  page: Page,
+  bootstrap: WebBootstrapV1,
+  fileId: string
+): Promise<{
+  readonly coldMs: number;
+  readonly warmP95Ms: number;
+  readonly lines: number;
+  readonly responseBytes: number;
+}> {
+  return page.evaluate(
+    async input => {
+      const query = new URLSearchParams({
+        workspaceId: input.workspaceId,
+        expectedContextRevision: input.contextRevision,
+        lineLimit: '240',
+        byteLimit: String(256 * 1024),
+      });
+      const path = `/api/v1/git/diff/${encodeURIComponent(input.fileId)}?${query.toString()}`;
+      const request = async () => {
+        const startedAt = performance.now();
+        const response = await fetch(path, {
+          cache: 'no-store',
+          headers: { Accept: 'application/json' },
+        });
+        const text = await response.text();
+        if (!response.ok) throw new Error(`Git diff performance failed with ${response.status}.`);
+        const body = JSON.parse(text) as { readonly lines: readonly string[] };
+        return {
+          durationMs: performance.now() - startedAt,
+          lines: body.lines.length,
+          responseBytes: new TextEncoder().encode(text).byteLength,
+        };
+      };
+      const cold = await request();
+      const warm: number[] = [];
+      for (let sample = 0; sample < 20; sample += 1) warm.push((await request()).durationMs);
+      warm.sort((left, right) => left - right);
+      return {
+        coldMs: cold.durationMs,
+        warmP95Ms: warm[Math.max(0, Math.ceil(warm.length * 0.95) - 1)],
+        lines: cold.lines,
+        responseBytes: cold.responseBytes,
+      };
+    },
+    { ...bootstrap, fileId }
+  );
+}
+
+function roundMetric(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+interface FilePerformanceCounters {
+  readonly readOperations: number;
+  readonly bytesRead: number;
+  readonly itemsParsed: number;
+}
+
+interface GitPerformanceCounters {
+  readonly processCount: number;
+  readonly bytesRead: number;
+  readonly itemsParsed: number;
+}
+
+interface PerformanceCountersSnapshot {
+  readonly files: FilePerformanceCounters;
+  readonly git: GitPerformanceCounters;
+}
+
+async function browserPerformanceCounters(page: Page): Promise<PerformanceCountersSnapshot> {
+  const bootstrap = await webBootstrap(page);
+  return page.evaluate(async context => {
+    const query = new URLSearchParams({
+      workspaceId: context.workspaceId,
+      expectedContextRevision: context.contextRevision,
+    });
+    const response = await fetch(`/api/v1/diagnostics?${query.toString()}`, {
+      cache: 'no-store',
+      headers: { Accept: 'application/json' },
+    });
+    if (!response.ok) throw new Error(`Diagnostics request failed with ${response.status}.`);
+    const value = (await response.json()) as {
+      readonly performance?: PerformanceCountersSnapshot;
+    };
+    if (!value.performance?.files || !value.performance.git) {
+      throw new Error('Host diagnostics omitted performance counters.');
+    }
+    return value.performance;
+  }, bootstrap);
+}
+
+function subtractCounters<T extends object>(after: T, before: T, label: string): T {
+  const result: Record<string, number> = {};
+  for (const [key, afterValue] of Object.entries(after)) {
+    const beforeValue = (before as Record<string, unknown>)[key];
+    if (typeof afterValue !== 'number' || typeof beforeValue !== 'number') {
+      throw new Error(`${label} field ${key} is not numeric.`);
+    }
+    const difference = afterValue - beforeValue;
+    if (!Number.isSafeInteger(difference) || difference < 0) {
+      throw new Error(`${label} field ${key} did not increase monotonically.`);
+    }
+    result[key] = difference;
+  }
+  return result as T;
+}
+
 async function switchWorkspaceThroughUi(page: Page, path: string): Promise<void> {
   const ui = workbenchUi(page);
   await ui.workspaceRail.getByRole('button', { name: '选择其他工作区' }).click();
@@ -468,9 +812,14 @@ async function workspaceSessions(
   page: Page,
   workspaceId: string
 ): Promise<WebPageV1<WebSessionSummaryV1>> {
+  const bootstrap = await webBootstrap(page);
   const result = await browserGet<WebPageV1<WebSessionSummaryV1>>(
     page,
-    `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/sessions?pageSize=100`
+    `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/sessions?${new URLSearchParams({
+      workspaceId: bootstrap.workspaceId,
+      expectedContextRevision: bootstrap.contextRevision,
+      pageSize: '100',
+    }).toString()}`
   );
   expect(result.status).toBe(200);
   return result.body;
@@ -573,6 +922,7 @@ function seedGitStateMatrix(workspace: string): void {
   writeFileSync(join(workspace, 'tracked.txt'), 'base\n', 'utf8');
   writeFileSync(join(workspace, 'conflict.txt'), 'base\n', 'utf8');
   writeFileSync(join(workspace, 'long-line.txt'), 'short\n', 'utf8');
+  writeFileSync(join(workspace, 'large-diff.txt'), largeDiffText('BASE', 26 * 1024 * 1024), 'utf8');
   git(workspace, ['add', '--all']);
   git(workspace, ['commit', '-m', 'base fixture']);
   appendFileSync(join(workspace, 'tracked.txt'), 'history\n', 'utf8');
@@ -595,6 +945,51 @@ function createDirtyGitMatrix(workspace: string): void {
   appendFileSync(join(workspace, 'tracked.txt'), 'unstaged\n', 'utf8');
   writeFileSync(join(workspace, 'untracked.txt'), 'untracked\n', 'utf8');
   writeFileSync(join(workspace, 'long-line.txt'), `${'L'.repeat(2_048)}\n`, 'utf8');
+  writeFileSync(
+    join(workspace, 'large-diff.txt'),
+    largeDiffText('CHANGED', 26 * 1024 * 1024),
+    'utf8'
+  );
+}
+
+function createGitStatusScale(workspace: string, targetFiles: number): void {
+  const current = git(workspace, ['status', '--porcelain=v1', '-z', '--untracked-files=all'])
+    .split('\0')
+    .filter(Boolean).length;
+  if (current > targetFiles) {
+    throw new Error(`Git scale already has ${current} changed files; target is ${targetFiles}.`);
+  }
+  for (let index = current; index < targetFiles; index += 1) {
+    writeFileSync(join(workspace, `scale-change-${String(index).padStart(4, '0')}.txt`), 'x\n');
+  }
+}
+
+function largeDiffText(marker: string, targetBytes: number): string {
+  const line = `${marker}:${'x'.repeat(104)}\n`;
+  const repeat = Math.ceil(targetBytes / Buffer.byteLength(line));
+  const value = line.repeat(repeat);
+  return value.slice(0, targetBytes - 1) + '\n';
+}
+
+function measureRawGitDiffBytes(workspace: string, path: string): number {
+  const outputPath = join(workspace, '.git', 'orion-web-e2e-raw-diff.tmp');
+  const descriptor = openSync(outputPath, 'w', 0o600);
+  let result: ReturnType<typeof spawnSync>;
+  try {
+    result = spawnSync('git', ['diff', '--no-ext-diff', '--no-textconv', '--', path], {
+      cwd: workspace,
+      stdio: ['ignore', descriptor, 'pipe'],
+      env: gitEnvironment(),
+    });
+  } finally {
+    closeSync(descriptor);
+  }
+  if (result!.status !== 0) {
+    throw new Error(`git raw diff failed: ${String(result!.stderr ?? '')}`);
+  }
+  const bytes = statSync(outputPath).size;
+  unlinkSync(outputPath);
+  return bytes;
 }
 
 function seedReviewFixture(workspace: string): void {
@@ -618,13 +1013,7 @@ function git(workspace: string, args: readonly string[], acceptedExitCodes = [0]
   const result = spawnSync('git', args, {
     cwd: workspace,
     encoding: 'utf8',
-    env: {
-      ...process.env,
-      GIT_CONFIG_NOSYSTEM: '1',
-      GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null',
-      GIT_TERMINAL_PROMPT: '0',
-      LC_ALL: 'C',
-    },
+    env: gitEnvironment(),
   });
   if (!acceptedExitCodes.includes(result.status ?? -1)) {
     throw new Error(
@@ -632,4 +1021,14 @@ function git(workspace: string, args: readonly string[], acceptedExitCodes = [0]
     );
   }
   return result.stdout.trim();
+}
+
+function gitEnvironment(): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null',
+    GIT_TERMINAL_PROMPT: '0',
+    LC_ALL: 'C',
+  };
 }

@@ -21,6 +21,7 @@ import {
   type TerminalTabNavigationKey,
 } from './terminal-preferences';
 import { closeTerminalSocket } from './terminal-socket';
+import { TerminalWriteQueue } from './terminal-write-queue';
 
 const TERMINAL_FONT_SIZES = Array.from(
   { length: TERMINAL_FONT_SIZE_MAX - TERMINAL_FONT_SIZE_MIN + 1 },
@@ -174,6 +175,7 @@ export function TerminalPanel({
         focusTerminalOnReadyRef.current = false;
         activeIdRef.current = successor;
         pendingTabFocusRef.current = successor;
+        if (successor) setStatus('connecting');
         setActiveId(successor);
       }
     } catch (caught) {
@@ -186,7 +188,11 @@ export function TerminalPanel({
     setTicket(null);
     focusTerminalOnReadyRef.current = false;
     activeIdRef.current = terminalId;
-    if (moveFocus) pendingTabFocusRef.current = terminalId;
+    if (moveFocus) {
+      pendingTabFocusRef.current = terminalId;
+      setStatus('connecting');
+      terminalTabRefs.current.get(terminalId)?.focus({ preventScroll: true });
+    }
     setActiveId(terminalId);
   };
 
@@ -200,9 +206,15 @@ export function TerminalPanel({
   useEffect(() => {
     const pending = pendingTabFocusRef.current;
     if (!pending || activeId !== pending) return;
-    pendingTabFocusRef.current = null;
-    requestAnimationFrame(() => terminalTabRefs.current.get(pending)?.focus());
-  }, [activeId, terminals]);
+    const frame = requestAnimationFrame(() => {
+      const target = terminalTabRefs.current.get(pending);
+      target?.focus({ preventScroll: true });
+      if (status !== 'connecting' && document.activeElement === target) {
+        pendingTabFocusRef.current = null;
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [activeId, status, terminals]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -237,6 +249,10 @@ export function TerminalPanel({
     let disposed = false;
     let socket: WebSocket | null = null;
     let dataDisposable: { dispose(): void } | undefined;
+    const outputQueue = new TerminalWriteQueue({
+      target: terminal,
+      onSequenceCommitted: sequence => writeTerminalSequence(activeId, sequence),
+    });
     const afterSequence = readTerminalSequence(activeId);
     const onPaste = (event: ClipboardEvent) => {
       const text = event.clipboardData?.getData('text/plain') ?? '';
@@ -275,16 +291,19 @@ export function TerminalPanel({
               }
             });
           } else if (frame.type === 'output') {
-            terminal.write(frame.data);
-            writeTerminalSequence(activeId, frame.sequence);
+            outputQueue.enqueue(frame.data, { sequence: frame.sequence });
           } else if (frame.type === 'gap') {
-            terminal.writeln(
-              '\r\n\x1b[33m[Orion] Earlier terminal output is no longer retained.\x1b[0m'
+            outputQueue.enqueue(
+              '\r\n\x1b[33m[Orion] Earlier terminal output is no longer retained.\x1b[0m\r\n'
             );
           } else if (frame.type === 'exit') {
-            terminal.writeln(`\r\n\x1b[90m[process exited ${frame.exitCode}]\x1b[0m`);
-            setStatus('lost');
-            void refresh();
+            outputQueue.enqueue(`\r\n\x1b[90m[process exited ${frame.exitCode}]\x1b[0m\r\n`, {
+              onCommitted: () => {
+                if (disposed) return;
+                setStatus('lost');
+                void refresh();
+              },
+            });
           } else if (frame.type === 'error') {
             setError(`Terminal protocol: ${frame.code}`);
             setStatus('error');
@@ -328,6 +347,7 @@ export function TerminalPanel({
       host.removeEventListener('paste', onPaste, true);
       closeTerminalSocket(socket, 'Panel detached');
       if (socketRef.current === socket) socketRef.current = null;
+      outputQueue.dispose();
       terminal.dispose();
       terminalRef.current = null;
       fitRef.current = null;

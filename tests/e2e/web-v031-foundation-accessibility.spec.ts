@@ -1,14 +1,17 @@
 import { createHash } from 'crypto';
-import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'fs';
 import { basename, join } from 'path';
 
 import type { BrowserContext, Locator, Page, Request, TestInfo } from '@playwright/test';
 
 import type { WebPageV1, WebWorkspaceSummaryV1 } from '../../src/web/protocol';
-import { activeSessionSnapshot, browserGet, webBootstrap } from './fixtures/api';
+import { WorkspaceRegistryV1 } from '../../src/services/workspace-registry';
+import { activeSessionSnapshot, browserGet, guardedBrowserGet, webBootstrap } from './fixtures/api';
 import { OPENAI_FIXTURE_MARKERS, OPENAI_FIXTURE_PROMPTS } from './fixtures/openai-provider';
 import { allowExpectedNetworkFailures, expect, installSseCapture, test } from './fixtures/test';
+import type { WorkspaceFixture } from './fixtures/workspace';
 import {
+  answerApproval,
   collapseInspector,
   createSession,
   openInspector,
@@ -16,6 +19,7 @@ import {
   selectInspectorTab,
   setAgentMode,
   submitPrompt,
+  waitForApproval,
   waitForWorkbenchReady,
   workbenchUi,
 } from './fixtures/ui';
@@ -44,10 +48,10 @@ test('WEB31-P0-01 packaged Workbench shows three projects and lazy-loads real Se
   await createSession(page);
   await createSession(page);
   await activateWorkspaceThroughUi(page, tertiaryWorkspace);
-  await createSession(page);
   await activateWorkspaceThroughUi(page, workspace.primaryWorkspace);
+  await createSession(page, { name: 'Primary Active Session' });
 
-  const listed = await browserGet<WebPageV1<WebWorkspaceSummaryV1>>(
+  const listed = await guardedBrowserGet<WebPageV1<WebWorkspaceSummaryV1>>(
     page,
     '/api/v1/workspaces?pageSize=50'
   );
@@ -86,6 +90,29 @@ test('WEB31-P0-01 packaged Workbench shows three projects and lazy-loads real Se
     const projectCount = await tree.locator('.project-toggle').count();
     expect(projectCount).toBe(3);
 
+    const tertiaryProject = projectTreeItem(tree, 'workspace-tertiary');
+    if ((await tertiaryProject.getAttribute('aria-expanded')) !== 'true') {
+      await tertiaryProject.click();
+    }
+    const tertiarySessions = rail.getByRole('list', {
+      name: 'workspace-tertiary 的会话',
+    });
+    await expect(tertiarySessions.locator('.project-session-row')).toHaveCount(0);
+    await expect(tertiarySessions.getByRole('button', { name: '打开项目' })).toBeVisible();
+
+    const tertiaryPin = rail.getByRole('button', {
+      name: '置顶项目 workspace-tertiary',
+    });
+    await tertiaryPin.click();
+    await expect(
+      rail.getByRole('button', { name: '取消置顶项目 workspace-tertiary' })
+    ).toHaveAttribute('aria-pressed', 'true');
+    const search = rail.getByRole('searchbox', { name: '搜索项目和会话' });
+    await search.fill('workspace-tertiary');
+    await expect(tree.locator('.project-toggle')).toHaveCount(1);
+    await expect(projectTreeItem(tree, 'workspace-tertiary')).toBeVisible();
+    await search.fill('');
+
     const secondaryProject = projectTreeItem(tree, 'workspace-secondary');
     await secondaryProject.click();
     await expect(secondaryProject).toHaveAttribute('aria-expanded', 'true');
@@ -117,10 +144,82 @@ test('WEB31-P0-01 packaged Workbench shows three projects and lazy-loads real Se
       .poll(async () => secondaryProject.locator('.project-copy > span').innerText())
       .toMatch(/(?:Git|clean|M\d+)/u);
 
+    await submitPrompt(lazyPage, OPENAI_FIXTURE_PROMPTS.pending);
+    await waitForApproval(lazyPage, 'write_file', { timeout: 30_000 });
+    const primaryProject = projectTreeItem(tree, 'workspace-primary');
+    const primaryNode = primaryProject.locator('xpath=ancestor::section[1]');
+    await expect(primaryNode.locator('.project-session-row.active')).toContainText('运行中');
+    await expect(primaryNode.locator('.project-session-row.active')).toContainText('等待审批');
+    await answerApproval(lazyPage, 'reject', 'write_file');
+    await expect
+      .poll(async () => (await activeSessionSnapshot(lazyPage)).runtime.processing, {
+        timeout: 30_000,
+      })
+      .toBe(false);
+
     await captureHashedScreenshot(rail, evidence, 'projects', 'web31-p0-01-projects-lazy-page.png');
+
+    await lazyPage.unroute('**/api/v1/workspaces/**/sessions**');
+    const scale = seedProjectSessionScale(workspace, listed.body.items);
+    const collectionMetrics = await measureProjectCollections(lazyPage, scale.sessionProjectLabel);
+    expect(collectionMetrics.workspaceItems).toBe(100);
+    expect(collectionMetrics.sessionItems).toBe(100);
+    expect(collectionMetrics.workspaceWarmP95Ms).toBeLessThanOrEqual(250);
+    expect(collectionMetrics.sessionWarmP95Ms).toBeLessThanOrEqual(250);
+
+    await lazyPage.reload({ waitUntil: 'domcontentloaded' });
+    await waitForWorkbenchReady(lazyPage, { timeout: 30_000 });
+    const scaledRail = workbenchUi(lazyPage).workspaceRail;
+    const scaledTree = scaledRail.getByRole('navigation', { name: '已知项目' });
+    let projectDomNodes = 0;
+    await expect
+      .poll(
+        async () => {
+          projectDomNodes = await scaledTree.locator('.project-node').count();
+          return projectDomNodes > 0 && projectDomNodes <= 40;
+        },
+        { timeout: 30_000 }
+      )
+      .toBe(true);
+    const scaledSearch = scaledRail.getByRole('searchbox', { name: '搜索项目和会话' });
+    await scaledSearch.fill(scale.sessionProjectLabel);
+    await expect(scaledTree.locator('.project-node')).toHaveCount(1);
+    const scaledProject = projectTreeItem(scaledTree, scale.sessionProjectLabel);
+    await scaledProject.click();
+    const scaledSessions = scaledRail.getByRole('list', {
+      name: `${scale.sessionProjectLabel} 的会话`,
+    });
+    await expect(scaledSessions.locator('.project-session-row')).toHaveCount(100, {
+      timeout: 30_000,
+    });
+    expect(await scaledTree.locator('.project-node').count()).toBeLessThanOrEqual(40);
+    expect(await scaledSessions.locator('.project-session-row').count()).toBeLessThanOrEqual(100);
+
     evidence.recordFact('web31.projects_visible', projectCount);
     evidence.recordFact('web31.lazy_session_page', true);
     evidence.recordFact('web31.lazy_session_requests', secondaryPageRequests);
+    evidence.recordFact('web31.zero_session_project', true);
+    evidence.recordFact('web31.project_pin_search', true);
+    evidence.recordFact('web31.session_status_badges', 'running,approval');
+    evidence.recordFact('web31.scale_projects', scale.projectCount);
+    evidence.recordFact('web31.scale_sessions_per_project', scale.sessionsPerProject);
+    evidence.recordFact(
+      'web31.workspace_list_warm_p95_ms',
+      roundMetric(collectionMetrics.workspaceWarmP95Ms)
+    );
+    evidence.recordFact(
+      'web31.session_page_warm_p95_ms',
+      roundMetric(collectionMetrics.sessionWarmP95Ms)
+    );
+    evidence.recordFact(
+      'web31.workspace_list_cold_ms',
+      roundMetric(collectionMetrics.workspaceColdMs)
+    );
+    evidence.recordFact('web31.session_page_cold_ms', roundMetric(collectionMetrics.sessionColdMs));
+    evidence.recordFact('web31.project_dom_nodes', projectDomNodes);
+    evidence.recordFact('web31.session_dom_nodes', 100);
+    evidence.recordFact('web31.project_collection_p95_budget', true);
+    evidence.recordFact('web31.project_dom_bounded', true);
   } finally {
     lazyPage.off('requestfailed', onRequestFailed);
     detach();
@@ -213,6 +312,37 @@ test('WEB31-P0-11 five responsive widths preserve keyboard focus and zero page o
 
   maximumOverflow = Math.max(maximumOverflow, await pageHorizontalOverflow(page));
   await expect(ui.inspectorDock).toHaveAttribute('data-mode', 'dock');
+
+  const projectSearch = ui.workspaceRail.getByRole('searchbox', {
+    name: '搜索项目和会话',
+  });
+  await projectSearch.focus();
+  await page.keyboard.press('Control+KeyB');
+  await expect(ui.workspaceRail).toBeHidden();
+  await expect(ui.navigationButton).toBeVisible();
+  await expect(ui.navigationButton).toBeFocused();
+  await page.keyboard.press('Control+KeyB');
+  await expect(ui.workspaceRail).toBeVisible();
+  await expect(projectSearch).toBeFocused();
+  focusChecks += 2;
+
+  await page.keyboard.press('Control+Shift+KeyB');
+  await expect(ui.inspectorDock).toHaveAttribute('data-state', 'collapsed');
+  await page.keyboard.press('Control+Shift+KeyB');
+  await expect(ui.inspectorDock).toHaveAttribute('data-state', 'expanded');
+  await page.keyboard.press('Control+Shift+Digit3');
+  await expect(ui.inspectorDock.getByRole('tab', { name: /^终端，/u })).toHaveAttribute(
+    'aria-selected',
+    'true'
+  );
+  await page.keyboard.press('Control+Shift+Digit1');
+  await expect(ui.inspectorDock.getByRole('tab', { name: /^Agent，/u })).toHaveAttribute(
+    'aria-selected',
+    'true'
+  );
+  const panelSwitchP95Ms = await measurePanelSwitchLatency(page, ui.inspectorDock, 20);
+  expect(panelSwitchP95Ms).toBeLessThanOrEqual(100);
+
   const collapse = ui.inspectorDock.getByRole('button', {
     name: '折叠工作面板',
     exact: true,
@@ -318,6 +448,9 @@ test('WEB31-P0-11 five responsive widths preserve keyboard focus and zero page o
   evidence.recordFact('web31.horizontal_overflow', maximumOverflow);
   evidence.recordFact('web31.responsive_widths', '320,390,760,1180,1440');
   evidence.recordFact('web31.zoom_method', 'direct-320-and-viewport-equivalent-200-percent');
+  evidence.recordFact('web31.ide_shortcuts_verified', 'Ctrl+B,Ctrl+Shift+B,Ctrl+Shift+1..5');
+  evidence.recordFact('web31.panel_switch_p95_ms', roundMetric(panelSwitchP95Ms));
+  evidence.recordFact('web31.panel_switch_budget', true);
   page.off('requestfailed', onRequestFailed);
   allowVerifiedEventStreamAborts(testInfo, networkFailures);
 });
@@ -376,6 +509,30 @@ test('WEB31-P0-12 light and dark reduced-motion surfaces pass axe with zero secr
     throw error;
   }
 
+  const forcedColors = await createAuditedContext(browser, 'dark', 'active');
+  try {
+    const forcedPage = await openAuditedPage(forcedColors, host.url, evidence);
+    try {
+      await expect
+        .poll(() => forcedPage.evaluate(() => matchMedia('(forced-colors: active)').matches))
+        .toBe(true);
+      blocking.push(...(await scanAxe(forcedPage)));
+      await assertSecretFreeBrowserState(forcedPage, workspace.environment.ORION_CODE_API_KEY);
+      await captureHashedScreenshot(
+        workbenchUi(forcedPage).main,
+        evidence,
+        'forced-colors',
+        'web31-p0-12-forced-colors.png'
+      );
+    } finally {
+      detachEvidence(forcedPage);
+      await forcedColors.close();
+    }
+  } catch (error) {
+    await forcedColors.close().catch(() => undefined);
+    throw error;
+  }
+
   const blockingFindings = blocking.filter(
     violation => violation.impact === 'critical' || violation.impact === 'serious'
   );
@@ -385,9 +542,218 @@ test('WEB31-P0-12 light and dark reduced-motion surfaces pass axe with zero secr
   evidence.recordFact('web31.axe_blocking_violations', blockingFindings.length);
   evidence.recordFact('web31.secret_findings', secretFindings);
   evidence.recordFact('web31.reduced_motion_verified', true);
-  evidence.recordFact('web31.themes_verified', 'light,dark');
-  evidence.recordFact('web31.axe_scans', 4);
+  evidence.recordFact('web31.forced_colors_verified', true);
+  evidence.recordFact('web31.themes_verified', 'light,dark,forced-colors');
+  evidence.recordFact('web31.axe_scans', 5);
 });
+
+function seedProjectSessionScale(
+  workspace: WorkspaceFixture,
+  registered: readonly WebWorkspaceSummaryV1[]
+): {
+  readonly projectCount: number;
+  readonly sessionsPerProject: number;
+  readonly sessionProjectLabel: string;
+} {
+  const projectCount = 100;
+  const sessionsPerProject = 200;
+  const projectPaths = registered.map(entry => realpathSync(entry.path));
+  for (let index = projectPaths.length; index < projectCount; index += 1) {
+    const projectPath = join(
+      workspace.rootDirectory,
+      `workspace-scale-${String(index).padStart(3, '0')}`
+    );
+    mkdirSync(projectPath, { recursive: true, mode: 0o700 });
+    projectPaths.push(realpathSync(projectPath));
+  }
+  const registry = new WorkspaceRegistryV1({
+    storagePath: join(workspace.configDirectory, 'workspaces.v1.json'),
+  });
+  registry.registerKnown(projectPaths, workspace.primaryWorkspace);
+
+  const catalogPath = join(workspace.configDirectory, 'session-catalog.json');
+  const existing = existsSync(catalogPath)
+    ? (JSON.parse(readFileSync(catalogPath, 'utf8')) as {
+        readonly sessions?: Readonly<Record<string, unknown>>;
+      })
+    : {};
+  const sessions: Record<string, unknown> = { ...(existing.sessions ?? {}) };
+  const now = Date.now();
+  projectPaths.forEach((projectPath, projectIndex) => {
+    for (let sessionIndex = 0; sessionIndex < sessionsPerProject; sessionIndex += 1) {
+      const id = `scale-${String(projectIndex).padStart(3, '0')}-${String(sessionIndex).padStart(3, '0')}`;
+      const updatedAt = now - projectIndex * sessionsPerProject - sessionIndex;
+      sessions[id] = {
+        id,
+        projectPath,
+        cwd: projectPath,
+        model: 'scale-model',
+        startTime: updatedAt,
+        createdAt: new Date(updatedAt).toISOString(),
+        updatedAt,
+        updatedAtIso: new Date(updatedAt).toISOString(),
+        messageCount: sessionIndex % 17,
+        tokenCount: 0,
+        cost: 0,
+        name: `Scale Session ${String(sessionIndex).padStart(3, '0')}`,
+      };
+    }
+  });
+  writeFileSync(catalogPath, JSON.stringify({ version: 1, sessions }), { mode: 0o600 });
+  return {
+    projectCount,
+    sessionsPerProject,
+    sessionProjectLabel: basename(projectPaths.at(-1)!),
+  };
+}
+
+interface ProjectCollectionMetrics {
+  readonly workspaceColdMs: number;
+  readonly workspaceWarmP95Ms: number;
+  readonly workspaceItems: number;
+  readonly sessionColdMs: number;
+  readonly sessionWarmP95Ms: number;
+  readonly sessionItems: number;
+}
+
+async function measureProjectCollections(
+  page: Page,
+  sessionProjectLabel: string
+): Promise<ProjectCollectionMetrics> {
+  const bootstrap = await webBootstrap(page);
+  return page.evaluate(
+    async input => {
+      const contextQuery = new URLSearchParams({
+        workspaceId: input.workspaceId,
+        expectedContextRevision: input.contextRevision,
+      });
+      const guardedPath = (path: string) => {
+        const url = new URL(path, location.origin);
+        for (const [key, value] of contextQuery) url.searchParams.set(key, value);
+        return `${url.pathname}?${url.searchParams.toString()}`;
+      };
+      const request = async (path: string) => {
+        const startedAt = performance.now();
+        const response = await fetch(path, {
+          cache: 'no-store',
+          headers: { Accept: 'application/json' },
+        });
+        const body = (await response.json()) as {
+          readonly items?: readonly { readonly id: string; readonly label?: string }[];
+        };
+        if (!response.ok) throw new Error(`Performance request failed with ${response.status}.`);
+        return { durationMs: performance.now() - startedAt, body };
+      };
+      const p95 = (samples: readonly number[]) => {
+        const ordered = [...samples].sort((left, right) => left - right);
+        return ordered[Math.max(0, Math.ceil(ordered.length * 0.95) - 1)];
+      };
+
+      const workspacePath = guardedPath('/api/v1/workspaces?pageSize=100');
+      const workspaceCold = await request(workspacePath);
+      const target = workspaceCold.body.items?.find(item => item.label === input.expectedLabel);
+      if (!target) throw new Error(`Scaled project ${input.expectedLabel} was not returned.`);
+      const workspaceWarm: number[] = [];
+      for (let sample = 0; sample < 20; sample += 1) {
+        workspaceWarm.push((await request(workspacePath)).durationMs);
+      }
+      const sessionPath = guardedPath(
+        `/api/v1/workspaces/${encodeURIComponent(target.id)}/sessions?pageSize=100`
+      );
+      const sessionCold = await request(sessionPath);
+      const sessionWarm: number[] = [];
+      for (let sample = 0; sample < 20; sample += 1) {
+        sessionWarm.push((await request(sessionPath)).durationMs);
+      }
+      return {
+        workspaceColdMs: workspaceCold.durationMs,
+        workspaceWarmP95Ms: p95(workspaceWarm),
+        workspaceItems: workspaceCold.body.items?.length ?? 0,
+        sessionColdMs: sessionCold.durationMs,
+        sessionWarmP95Ms: p95(sessionWarm),
+        sessionItems: sessionCold.body.items?.length ?? 0,
+      };
+    },
+    {
+      expectedLabel: sessionProjectLabel,
+      workspaceId: bootstrap.workspaceId,
+      contextRevision: bootstrap.contextRevision,
+    }
+  );
+}
+
+function roundMetric(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+async function measurePanelSwitchLatency(
+  page: Page,
+  dock: Locator,
+  samples: number
+): Promise<number> {
+  const tabs = ['审阅', '终端', '文件', 'Git', 'Agent'].map(label =>
+    dock.getByRole('tab', { name: new RegExp(`^${label}，`, 'u') })
+  );
+  const durations: number[] = [];
+  for (let index = 0; index < samples; index += 1) {
+    const tab = tabs[index % tabs.length];
+    await tab.evaluate(element => {
+      const target = element as HTMLButtonElement;
+      const state = { durationMs: -1 };
+      Object.defineProperty(globalThis, '__orionPanelSwitchMeasurement', {
+        configurable: true,
+        value: state,
+      });
+      target.addEventListener(
+        'pointerdown',
+        () => {
+          const startedAt = performance.now();
+          const panelId = target.getAttribute('aria-controls');
+          const inspect = () => {
+            const panel = panelId ? document.getElementById(panelId) : null;
+            if (
+              target.getAttribute('aria-selected') === 'true' &&
+              panel &&
+              !panel.hidden &&
+              panel.getClientRects().length > 0
+            ) {
+              state.durationMs = performance.now() - startedAt;
+              return;
+            }
+            requestAnimationFrame(inspect);
+          };
+          requestAnimationFrame(inspect);
+        },
+        { once: true }
+      );
+    });
+    await tab.click();
+    let durationMs = -1;
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const state = (
+            globalThis as typeof globalThis & {
+              __orionPanelSwitchMeasurement?: { readonly durationMs: number };
+            }
+          ).__orionPanelSwitchMeasurement;
+          return state?.durationMs ?? -1;
+        })
+      )
+      .toBeGreaterThanOrEqual(0);
+    durationMs = await page.evaluate(
+      () =>
+        (
+          globalThis as typeof globalThis & {
+            __orionPanelSwitchMeasurement?: { readonly durationMs: number };
+          }
+        ).__orionPanelSwitchMeasurement?.durationMs ?? -1
+    );
+    durations.push(durationMs);
+  }
+  durations.sort((left, right) => left - right);
+  return durations[Math.max(0, Math.ceil(durations.length * 0.95) - 1)];
+}
 
 async function activateWorkspaceThroughUi(page: Page, path: string): Promise<void> {
   const ui = workbenchUi(page);
@@ -530,10 +896,12 @@ interface AxeViolation {
 
 async function createAuditedContext(
   browser: import('@playwright/test').Browser,
-  colorScheme: 'light' | 'dark'
+  colorScheme: 'light' | 'dark',
+  forcedColors: 'active' | 'none' = 'none'
 ): Promise<BrowserContext> {
   const context = await browser.newContext({
     colorScheme,
+    forcedColors,
     reducedMotion: 'reduce',
     viewport: { width: 1_440, height: 900 },
   });
@@ -623,16 +991,16 @@ async function reducedMotionIsEffective(page: Page): Promise<boolean> {
 }
 
 async function assertSecretFreeBrowserState(page: Page, secret: string): Promise<void> {
-  const paths = [
-    '/api/v1/bootstrap',
-    '/api/v1/settings',
-    '/api/v1/diagnostics',
-    '/api/v1/skills',
-    '/api/v1/mcp',
-  ];
+  const publicPaths = ['/api/v1/bootstrap', '/api/v1/settings'];
+  const guardedPaths = ['/api/v1/diagnostics', '/api/v1/skills', '/api/v1/mcp'];
   const serialized: string[] = [];
-  for (const path of paths) {
+  for (const path of publicPaths) {
     const response = await browserGet(page, path);
+    expect(response.status, path).toBe(200);
+    serialized.push(JSON.stringify(response.body));
+  }
+  for (const path of guardedPaths) {
+    const response = await guardedBrowserGet(page, path);
     expect(response.status, path).toBe(200);
     serialized.push(JSON.stringify(response.body));
   }

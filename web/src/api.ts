@@ -99,8 +99,14 @@ export class OrionWebApi {
     } as WebBootstrapV1;
   }
 
-  async listWorkspaces(cursor?: string): Promise<WorkspaceListResponse> {
-    const page = await this.collectionPage<WebWorkspaceSummaryV1>('/workspaces', cursor);
+  async listWorkspaces(
+    context: WebContextGuardV1,
+    cursor?: string
+  ): Promise<WorkspaceListResponse> {
+    const page = await this.collectionPage<WebWorkspaceSummaryV1>(
+      withContext('/workspaces', context),
+      cursor
+    );
     const active = page.items.find(item => item.active);
     return {
       activeId: active?.id ?? '',
@@ -112,20 +118,26 @@ export class OrionWebApi {
 
   async listWorkspaceSessions(
     workspaceId: string,
+    context: WebContextGuardV1,
     cursor?: string
   ): Promise<{
     readonly sessions: readonly WebSessionSummaryV1[];
     readonly nextCursor: string | null;
   }> {
     const page = await this.collectionPage<WebSessionSummaryV1>(
-      `/workspaces/${encodeURIComponent(workspaceId)}/sessions`,
+      withContext(`/workspaces/${encodeURIComponent(workspaceId)}/sessions`, context),
       cursor
     );
     return { sessions: page.items, nextCursor: page.nextCursor };
   }
 
-  workspaceProjectSummary(workspaceId: string): Promise<WebWorkspaceProjectSummaryV1> {
-    return this.query(`/workspaces/${encodeURIComponent(workspaceId)}/summary`);
+  workspaceProjectSummary(
+    workspaceId: string,
+    context: WebContextGuardV1
+  ): Promise<WebWorkspaceProjectSummaryV1> {
+    return this.query(
+      withContext(`/workspaces/${encodeURIComponent(workspaceId)}/summary`, context)
+    );
   }
 
   async listSessions(
@@ -142,8 +154,8 @@ export class OrionWebApi {
     return { sessions: page.items, nextCursor: page.nextCursor };
   }
 
-  diagnostics(): Promise<DiagnosticsSnapshot> {
-    return this.query('/diagnostics');
+  diagnostics(context: WebContextGuardV1): Promise<DiagnosticsSnapshot> {
+    return this.query(withContext('/diagnostics', context));
   }
 
   async settings(): Promise<WebSettingsDocumentV1> {
@@ -161,32 +173,51 @@ export class OrionWebApi {
     );
   }
 
-  async skills(cursor?: string): Promise<{
+  async skills(
+    context: WebContextGuardV1,
+    cursor?: string
+  ): Promise<{
     readonly skills: readonly WebSkillSummaryV1[];
     readonly nextCursor: string | null;
   }> {
-    const page = await this.collectionPage<WebSkillSummaryV1>('/skills', cursor);
+    const page = await this.collectionPage<WebSkillSummaryV1>(
+      withContext('/skills', context),
+      cursor
+    );
     return { skills: page.items, nextCursor: page.nextCursor };
   }
 
-  async mcp(cursor?: string): Promise<{
+  async mcp(
+    context: WebContextGuardV1,
+    cursor?: string
+  ): Promise<{
     readonly servers: readonly WebMcpServerSummaryV1[];
     readonly nextCursor: string | null;
   }> {
-    const page = await this.collectionPage<WebMcpServerSummaryV1>('/mcp', cursor);
+    const page = await this.collectionPage<WebMcpServerSummaryV1>(
+      withContext('/mcp', context),
+      cursor
+    );
     return { servers: page.items, nextCursor: page.nextCursor };
   }
 
-  async toolDetails(cursor?: string): Promise<{
+  async toolDetails(
+    context: WebContextGuardV1,
+    cursor?: string
+  ): Promise<{
     readonly details: readonly WebToolDetailSummaryV1[];
     readonly nextCursor: string | null;
   }> {
-    const page = await this.collectionPage<WebToolDetailSummaryV1>('/tool-details', cursor);
+    const page = await this.collectionPage<WebToolDetailSummaryV1>(
+      withContext('/tool-details', context),
+      cursor
+    );
     return { details: page.items, nextCursor: page.nextCursor };
   }
 
   readToolDetail(
     artifactId: string,
+    context: WebContextGuardV1,
     offsetBytes = 0,
     limitBytes = 64 * 1024
   ): Promise<WebToolDetailPageV1> {
@@ -194,6 +225,7 @@ export class OrionWebApi {
       offsetBytes: String(offsetBytes),
       limitBytes: String(limitBytes),
     });
+    appendContext(query, context);
     return this.query(`/tool-details/${encodeURIComponent(artifactId)}?${query.toString()}`);
   }
 

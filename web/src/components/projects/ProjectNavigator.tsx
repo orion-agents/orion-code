@@ -16,6 +16,7 @@ const PROJECT_WINDOW_SIZE = 40;
 export interface ProjectNavigatorProps {
   readonly state: WorkbenchState;
   readonly drawerOpen: boolean;
+  readonly dockVisible: boolean;
   readonly onCloseDrawer: () => void;
   readonly onOpenWorkspaceDialog: () => void;
   readonly onLoadMoreWorkspaces: () => void;
@@ -31,6 +32,7 @@ export interface ProjectNavigatorProps {
 export function ProjectNavigator({
   state,
   drawerOpen,
+  dockVisible,
   onCloseDrawer,
   onOpenWorkspaceDialog,
   onLoadMoreWorkspaces,
@@ -66,12 +68,7 @@ export function ProjectNavigator({
     const sorted = [...state.workspaces].sort(compareProjects);
     if (!deferredQuery) return sorted;
     return sorted.filter(project => {
-      if (
-        project.label.toLocaleLowerCase().includes(deferredQuery) ||
-        project.path.toLocaleLowerCase().includes(deferredQuery)
-      ) {
-        return true;
-      }
+      if (projectMatchesQuery(project, deferredQuery)) return true;
       return (state.workspaceSessions[project.id]?.items ?? []).some(session =>
         [session.name, session.taskSummary, session.id]
           .filter((value): value is string => Boolean(value))
@@ -116,6 +113,7 @@ export function ProjectNavigator({
       id="workspace-rail"
       className={`workspace-rail project-navigator ${drawerOpen ? 'drawer-open' : ''}`}
       aria-label="项目与会话"
+      hidden={!dockVisible}
     >
       <div className="brand-row">
         <div className="brand-mark" aria-hidden="true">
@@ -184,7 +182,9 @@ export function ProjectNavigator({
           const open = expanded.has(project.id) || Boolean(deferredQuery);
           const sessionState = state.workspaceSessions[project.id];
           const projectSummary = state.workspaceProjectSummaries[project.id];
-          const sessions = filterSessions(sessionState?.items ?? [], deferredQuery);
+          const sessions = projectMatchesQuery(project, deferredQuery)
+            ? (sessionState?.items ?? [])
+            : filterSessions(sessionState?.items ?? [], deferredQuery);
           return (
             <Fragment key={project.id}>
               {projectIndex === 0 ||
@@ -296,6 +296,12 @@ export function ProjectNavigator({
                     ) : null}
                     {sessions.map(session => {
                       const active = project.active && session.id === state.activeSessionId;
+                      const activeStatuses = active
+                        ? [
+                            ...(state.processing ? ['运行中'] : []),
+                            ...(state.permission ? ['等待审批'] : []),
+                          ]
+                        : [];
                       return (
                         <div
                           key={session.id}
@@ -321,7 +327,7 @@ export function ProjectNavigator({
                             }}
                           >
                             <span
-                              className={`session-state ${active && state.processing ? 'running' : active ? 'ready' : ''}`}
+                              className={`session-state ${active && state.permission ? 'approval' : active && state.processing ? 'running' : active ? 'ready' : ''}`}
                               aria-hidden="true"
                             />
                             <span>
@@ -329,6 +335,11 @@ export function ProjectNavigator({
                               <small>
                                 {relativeTime(session.updatedAt)} · {session.messageCount} 条
                               </small>
+                              {activeStatuses.length ? (
+                                <small className="project-session-status">
+                                  {activeStatuses.join(' · ')}
+                                </small>
+                              ) : null}
                             </span>
                           </button>
                           {project.active ? (
@@ -445,6 +456,14 @@ function compareProjects(left: WebWorkspaceSummaryV1, right: WebWorkspaceSummary
     return left.pinnedOrder - right.pinnedOrder;
   }
   return Date.parse(right.lastActivatedAt) - Date.parse(left.lastActivatedAt);
+}
+
+function projectMatchesQuery(project: WebWorkspaceSummaryV1, query: string): boolean {
+  return Boolean(
+    query &&
+    (project.label.toLocaleLowerCase().includes(query) ||
+      project.path.toLocaleLowerCase().includes(query))
+  );
 }
 
 function filterSessions(

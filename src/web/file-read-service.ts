@@ -42,6 +42,8 @@ export type WebFileKindV1 = 'file' | 'directory' | 'symlink';
 export interface WebFileNodeV1 {
   readonly id: string;
   readonly name: string;
+  /** Sanitized Workspace-relative display path. Requests must continue to use the opaque id. */
+  readonly displayPath: string;
   readonly kind: WebFileKindV1;
   readonly sizeBytes?: number;
   readonly modifiedAt: string;
@@ -69,6 +71,12 @@ export interface WebFileContentPageV1 {
   readonly nextCursor: string | null;
 }
 
+export interface WebFileReadPerformanceCountersV1 {
+  readonly readOperations: number;
+  readonly bytesRead: number;
+  readonly itemsParsed: number;
+}
+
 interface CursorPayload {
   readonly version: 1;
   readonly kind: 'tree' | 'content';
@@ -92,6 +100,7 @@ export class FileReadServiceV1 {
   private readonly secret = randomBytes(32);
   private readonly pathById = new Map<string, string>([[ROOT_NODE_ID, '']]);
   private readonly idByPath = new Map<string, string>([['', ROOT_NODE_ID]]);
+  private readonly performance = { readOperations: 0, bytesRead: 0, itemsParsed: 0 };
 
   constructor(workspace: string) {
     this.root = canonicalDirectory(workspace);
@@ -99,6 +108,10 @@ export class FileReadServiceV1 {
 
   get rootId(): string {
     return ROOT_NODE_ID;
+  }
+
+  performanceCounters(): WebFileReadPerformanceCountersV1 {
+    return Object.freeze({ ...this.performance });
   }
 
   identifyRelativePath(relativePath: string): string {
@@ -114,6 +127,7 @@ export class FileReadServiceV1 {
       readonly pageSize?: number;
     } = {}
   ): WebFileTreePageV1 {
+    this.performance.readOperations += 1;
     const parentId = input.parentId ?? ROOT_NODE_ID;
     const pageSize = boundedPageSize(input.pageSize ?? DEFAULT_PAGE_SIZE);
     const parent = this.resolveNode(parentId);
@@ -132,6 +146,7 @@ export class FileReadServiceV1 {
       for (;;) {
         const entry = directory.readSync();
         if (!entry) break;
+        this.performance.itemsParsed += 1;
         if (IGNORED_NAMES.has(entry.name)) continue;
         if (visibleIndex < offset) {
           visibleIndex += 1;
@@ -179,6 +194,7 @@ export class FileReadServiceV1 {
     readonly cursor?: string;
     readonly limitBytes?: number;
   }): WebFileContentPageV1 {
+    this.performance.readOperations += 1;
     const limitBytes = boundedContentBytes(input.limitBytes ?? DEFAULT_CONTENT_BYTES);
     const node = this.resolveNode(input.fileId);
     if (!node.stat.isFile()) {
@@ -210,7 +226,9 @@ export class FileReadServiceV1 {
         );
       }
       const sample = Buffer.alloc(Math.min(8192, Number(before.size)));
-      if (sample.length > 0) readSync(descriptor, sample, 0, sample.length, 0);
+      if (sample.length > 0) {
+        this.performance.bytesRead += readSync(descriptor, sample, 0, sample.length, 0);
+      }
       const binary = isBinary(sample);
       if (binary) {
         return Object.freeze({
@@ -227,6 +245,7 @@ export class FileReadServiceV1 {
       }
       const remaining = Math.max(0, Number(before.size) - offset);
       const page = readLineSafePage(descriptor, offset, remaining, limitBytes);
+      this.performance.bytesRead += page.bytesRead;
       const contentBuffer = validUtf8Prefix(page.content);
       if (page.consumedBytes > 0 && contentBuffer.length === 0) {
         throw new WebWorkbenchError(415, 'File is not valid UTF-8 text.', 'file_binary');
@@ -284,6 +303,7 @@ export class FileReadServiceV1 {
     return Object.freeze({
       id: this.remember(relativePath),
       name: basename(relativePath),
+      displayPath: normalizeRelativePath(relativePath),
       kind: symlink ? 'symlink' : effectiveStat.isDirectory() ? 'directory' : 'file',
       ...(effectiveStat.isFile() ? { sizeBytes: Number(effectiveStat.size) } : {}),
       modifiedAt: new Date(Number(effectiveStat.mtimeMs)).toISOString(),
@@ -406,8 +426,8 @@ function readLineSafePage(
   offset: number,
   remaining: number,
   requestedBytes: number
-): { readonly content: Buffer; readonly consumedBytes: number } {
-  if (remaining === 0) return { content: Buffer.alloc(0), consumedBytes: 0 };
+): { readonly content: Buffer; readonly consumedBytes: number; readonly bytesRead: number } {
+  if (remaining === 0) return { content: Buffer.alloc(0), consumedBytes: 0, bytesRead: 0 };
   // Redaction rules are label-aware. Never split a logical line across pages or a caller could
   // request `token=` and its value in separate pages. A line larger than the bounded service
   // budget fails closed instead of returning an unsafe fragment.
@@ -417,19 +437,19 @@ function readLineSafePage(
   const content = buffer.subarray(0, bytesRead);
   const target = Math.min(requestedBytes, bytesRead);
   const atEnd = offset + bytesRead >= offset + remaining;
-  if (target === bytesRead && atEnd) return { content, consumedBytes: bytesRead };
+  if (target === bytesRead && atEnd) return { content, consumedBytes: bytesRead, bytesRead };
 
   const lastNewline = content.lastIndexOf(0x0a, Math.max(0, target - 1));
   if (lastNewline >= 0) {
     const consumedBytes = lastNewline + 1;
-    return { content: content.subarray(0, consumedBytes), consumedBytes };
+    return { content: content.subarray(0, consumedBytes), consumedBytes, bytesRead };
   }
   const nextNewline = content.indexOf(0x0a, target);
   if (nextNewline >= 0) {
     const consumedBytes = nextNewline + 1;
-    return { content: content.subarray(0, consumedBytes), consumedBytes };
+    return { content: content.subarray(0, consumedBytes), consumedBytes, bytesRead };
   }
-  if (atEnd) return { content, consumedBytes: bytesRead };
+  if (atEnd) return { content, consumedBytes: bytesRead, bytesRead };
   throw new WebWorkbenchError(
     413,
     'A text line exceeds the safe Web preview limit.',

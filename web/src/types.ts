@@ -234,6 +234,18 @@ export interface DiagnosticsSnapshot extends Record<string, unknown> {
     readonly latest?: number;
     readonly retained?: number;
   };
+  readonly performance?: {
+    readonly files?: {
+      readonly readOperations: number;
+      readonly bytesRead: number;
+      readonly itemsParsed: number;
+    };
+    readonly git?: {
+      readonly processCount: number;
+      readonly bytesRead: number;
+      readonly itemsParsed: number;
+    };
+  };
 }
 
 export type ConnectionPhase =
