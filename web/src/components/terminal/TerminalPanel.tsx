@@ -20,6 +20,7 @@ import {
   type TerminalPreferenceV1,
   type TerminalTabNavigationKey,
 } from './terminal-preferences';
+import { closeTerminalSocket } from './terminal-socket';
 
 const TERMINAL_FONT_SIZES = Array.from(
   { length: TERMINAL_FONT_SIZE_MAX - TERMINAL_FONT_SIZE_MIN + 1 },
@@ -168,7 +169,7 @@ export function TerminalPanel({
       terminalsRef.current = next;
       setTerminals(next);
       if (activeIdRef.current === terminalId) {
-        socketRef.current?.close(1000, 'User closed terminal');
+        closeTerminalSocket(socketRef.current, 'User closed terminal');
         setTicket(null);
         focusTerminalOnReadyRef.current = false;
         activeIdRef.current = successor;
@@ -325,7 +326,7 @@ export function TerminalPanel({
       resizeObserver.disconnect();
       dataDisposable?.dispose();
       host.removeEventListener('paste', onPaste, true);
-      socket?.close(1000, 'Panel detached');
+      closeTerminalSocket(socket, 'Panel detached');
       if (socketRef.current === socket) socketRef.current = null;
       terminal.dispose();
       terminalRef.current = null;
