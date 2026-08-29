@@ -35,12 +35,8 @@ import type {
   WebSettingsDocumentV1,
   WebSettingsMutationResultV1,
 } from './settings/types';
-import {
-  initialWorkbenchState,
-  type DiagnosticsSnapshot,
-  type WebSessionSummaryV1,
-  type WorkbenchState,
-} from './types';
+import { initialWorkbenchState, type DiagnosticsSnapshot, type WorkbenchState } from './types';
+import { upsertSessionSummary } from './state/session-collection';
 
 export type WorkbenchAgentMode = 'interactive' | 'plan' | 'auto';
 
@@ -807,7 +803,7 @@ export function useWorkbench(): UseWorkbenchResult {
           name,
           requireContextGuard(stateRef.current)
         );
-        const sessions = replaceSession(stateRef.current.sessions, updated);
+        const sessions = upsertSessionSummary(stateRef.current.sessions, updated);
         dispatch({
           type: 'sessions_loaded',
           sessions,
@@ -1127,13 +1123,6 @@ async function migrateLegacyAppearance(
   }
 
   return document;
-}
-
-function replaceSession(
-  sessions: readonly WebSessionSummaryV1[],
-  updated: WebSessionSummaryV1
-): readonly WebSessionSummaryV1[] {
-  return sessions.map(session => (session.id === updated.id ? updated : session));
 }
 
 function requireContextGuard(

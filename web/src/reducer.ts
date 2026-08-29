@@ -8,6 +8,7 @@ import type {
   WebToolDetailSummaryV1,
   WebWorkspaceProjectSummaryV1,
 } from './types';
+import { upsertSessionSummary } from './state/session-collection';
 import type { SettingsMirrorSnapshot } from './settings/settings-mirror';
 import {
   initialWorkbenchState,
@@ -812,13 +813,13 @@ function applySessionSnapshot(
     ...clearSessionProjection(state),
     lastCursor: Math.max(state.lastCursor, snapshot.eventCursor),
     activeSessionId: snapshot.session.id,
-    sessions: replaceSession(state.sessions, snapshot.session),
+    sessions: upsertSessionSummary(state.sessions, snapshot.session),
     workspaceSessions: state.workspaceId
       ? {
           ...state.workspaceSessions,
           [state.workspaceId]: {
             status: 'ready',
-            items: replaceSession(
+            items: upsertSessionSummary(
               state.workspaceSessions[state.workspaceId]?.items ?? state.sessions,
               snapshot.session
             ),
@@ -868,7 +869,7 @@ function applyDurableSessionMetadata(
   state: WorkbenchState,
   snapshot: WebSessionSnapshotV1
 ): WorkbenchState {
-  const sessions = replaceSession(state.sessions, snapshot.session);
+  const sessions = upsertSessionSummary(state.sessions, snapshot.session);
   const currentWorkspaceSessions = state.workspaceSessions[state.workspaceId];
   return {
     ...state,
@@ -877,7 +878,10 @@ function applyDurableSessionMetadata(
       ...state.workspaceSessions,
       [state.workspaceId]: {
         status: 'ready',
-        items: replaceSession(currentWorkspaceSessions?.items ?? state.sessions, snapshot.session),
+        items: upsertSessionSummary(
+          currentWorkspaceSessions?.items ?? state.sessions,
+          snapshot.session
+        ),
         nextCursor: currentWorkspaceSessions?.nextCursor ?? state.sessionNextCursor,
       },
     },
@@ -1160,16 +1164,6 @@ function clearSessionProjection(state: WorkbenchState): WorkbenchState {
     loopStats: null,
     traces: [],
   };
-}
-
-function replaceSession(
-  sessions: readonly WebSessionSummaryV1[],
-  updated: WebSessionSummaryV1
-): readonly WebSessionSummaryV1[] {
-  const found = sessions.some(session => session.id === updated.id);
-  return found
-    ? sessions.map(session => (session.id === updated.id ? updated : session))
-    : [updated, ...sessions];
 }
 
 function addGoalActivity(
