@@ -1,6 +1,7 @@
 // Keep each xterm parser input bounded while letting xterm own the animation-frame render cycle.
 // A 4KiB slice still drains the 10MiB release fixture inside its 90 second budget.
 const DEFAULT_RENDER_CHUNK_CHARACTERS = 4 * 1024;
+const DEFAULT_IN_FLIGHT_CHARACTERS = 64 * 1024;
 
 export interface TerminalWriteTarget {
   write(data: string, callback: () => void): void;
@@ -12,6 +13,7 @@ export interface TerminalWriteQueueOptions {
   readonly scheduleTask?: (callback: () => void) => number;
   readonly cancelTask?: (handle: number) => void;
   readonly maxChunkCharacters?: number;
+  readonly maxInFlightCharacters?: number;
 }
 
 interface PendingTerminalWrite {
@@ -19,6 +21,7 @@ interface PendingTerminalWrite {
   readonly sequence?: number;
   readonly onCommitted?: () => void;
   offset: number;
+  pendingChunks: number;
 }
 
 /**
@@ -27,13 +30,16 @@ interface PendingTerminalWrite {
  */
 export class TerminalWriteQueue {
   private readonly pending: PendingTerminalWrite[] = [];
+  private readonly awaitingCommit: PendingTerminalWrite[] = [];
   private readonly target: TerminalWriteTarget;
   private readonly onSequenceCommitted: (sequence: number) => void;
   private readonly scheduleTask: (callback: () => void) => number;
   private readonly cancelTask: (handle: number) => void;
   private readonly maxChunkCharacters: number;
+  private readonly maxInFlightCharacters: number;
   private scheduledTask: number | null = null;
-  private writing = false;
+  private inFlightCharacters = 0;
+  private flushing = false;
   private disposed = false;
 
   constructor(options: TerminalWriteQueueOptions) {
@@ -42,8 +48,12 @@ export class TerminalWriteQueue {
     this.scheduleTask = options.scheduleTask ?? (callback => window.setTimeout(callback, 0));
     this.cancelTask = options.cancelTask ?? (handle => window.clearTimeout(handle));
     this.maxChunkCharacters = Math.max(
-      1,
+      2,
       Math.floor(options.maxChunkCharacters ?? DEFAULT_RENDER_CHUNK_CHARACTERS)
+    );
+    this.maxInFlightCharacters = Math.max(
+      this.maxChunkCharacters,
+      Math.floor(options.maxInFlightCharacters ?? DEFAULT_IN_FLIGHT_CHARACTERS)
     );
   }
 
@@ -52,7 +62,7 @@ export class TerminalWriteQueue {
     options: { readonly sequence?: number; readonly onCommitted?: () => void } = {}
   ) {
     if (this.disposed) return;
-    this.pending.push({ data, offset: 0, ...options });
+    this.pending.push({ data, offset: 0, pendingChunks: 0, ...options });
     this.requestFlush();
   }
 
@@ -60,6 +70,7 @@ export class TerminalWriteQueue {
     if (this.disposed) return;
     this.disposed = true;
     this.pending.length = 0;
+    this.awaitingCommit.length = 0;
     if (this.scheduledTask !== null) {
       this.cancelTask(this.scheduledTask);
       this.scheduledTask = null;
@@ -67,7 +78,13 @@ export class TerminalWriteQueue {
   }
 
   private requestFlush(): void {
-    if (this.disposed || this.writing || this.pending.length === 0 || this.scheduledTask !== null) {
+    if (
+      this.disposed ||
+      this.flushing ||
+      this.pending.length === 0 ||
+      this.inFlightCharacters >= this.maxInFlightCharacters ||
+      this.scheduledTask !== null
+    ) {
       return;
     }
     // xterm already yields its parser after 12ms and schedules rendering itself. Scheduling this
@@ -80,41 +97,73 @@ export class TerminalWriteQueue {
   }
 
   private flush(): void {
-    if (this.disposed || this.writing || this.pending.length === 0) return;
-    const chunks: string[] = [];
-    const completed: PendingTerminalWrite[] = [];
-    let remaining = this.maxChunkCharacters;
-
-    while (remaining > 0 && this.pending.length > 0) {
-      const current = this.pending[0];
-      const end = safeTerminalChunkEnd(current.data, current.offset, remaining);
-      if (end > current.offset) {
-        chunks.push(current.data.slice(current.offset, end));
-        remaining -= end - current.offset;
-        current.offset = end;
-      }
-      if (current.offset < current.data.length) break;
-      this.pending.shift();
-      completed.push(current);
-    }
-
-    const data = chunks.join('');
-    if (!data) {
-      this.commit(completed);
-      this.requestFlush();
+    if (
+      this.disposed ||
+      this.flushing ||
+      this.pending.length === 0 ||
+      this.inFlightCharacters >= this.maxInFlightCharacters
+    ) {
       return;
     }
-    this.writing = true;
-    this.target.write(data, () => {
-      this.writing = false;
-      if (this.disposed) return;
-      this.commit(completed);
-      this.requestFlush();
-    });
+    this.flushing = true;
+    let submittedCharacters = 0;
+    try {
+      while (
+        this.pending.length > 0 &&
+        this.inFlightCharacters < this.maxInFlightCharacters &&
+        submittedCharacters < this.maxInFlightCharacters
+      ) {
+        const current = this.pending[0];
+        if (current.offset >= current.data.length) {
+          this.pending.shift();
+          this.awaitingCommit.push(current);
+          this.commitReady();
+          continue;
+        }
+        const capacity = Math.min(
+          this.maxChunkCharacters,
+          this.maxInFlightCharacters - this.inFlightCharacters,
+          this.maxInFlightCharacters - submittedCharacters
+        );
+        const end = safeTerminalChunkEnd(current.data, current.offset, capacity);
+        if (end <= current.offset) break;
+        const data = current.data.slice(current.offset, end);
+        current.offset = end;
+        current.pendingChunks += 1;
+        this.inFlightCharacters += data.length;
+        submittedCharacters += data.length;
+        if (current.offset >= current.data.length) {
+          this.pending.shift();
+          this.awaitingCommit.push(current);
+        }
+        try {
+          this.target.write(data, () => this.acknowledge(current, data.length));
+        } catch (error) {
+          current.pendingChunks -= 1;
+          this.inFlightCharacters -= data.length;
+          this.dispose();
+          throw error;
+        }
+      }
+    } finally {
+      this.flushing = false;
+    }
+    this.commitReady();
+    this.requestFlush();
   }
 
-  private commit(entries: readonly PendingTerminalWrite[]): void {
-    for (const entry of entries) {
+  private acknowledge(entry: PendingTerminalWrite, characters: number): void {
+    entry.pendingChunks = Math.max(0, entry.pendingChunks - 1);
+    this.inFlightCharacters = Math.max(0, this.inFlightCharacters - characters);
+    if (this.disposed) return;
+    this.commitReady();
+    this.requestFlush();
+  }
+
+  private commitReady(): void {
+    while (this.awaitingCommit[0]?.pendingChunks === 0) {
+      const entry = this.awaitingCommit.shift();
+      if (!entry) return;
       if (entry.sequence !== undefined) this.onSequenceCommitted(entry.sequence);
       entry.onCommitted?.();
     }

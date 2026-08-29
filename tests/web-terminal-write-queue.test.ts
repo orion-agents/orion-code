@@ -38,6 +38,7 @@ describe('TerminalWriteQueue', () => {
       scheduleTask: scheduler.schedule,
       cancelTask: scheduler.cancel,
       maxChunkCharacters: 4,
+      maxInFlightCharacters: 4,
     });
 
     queue.enqueue('abcdef', { sequence: 1 });
@@ -51,11 +52,40 @@ describe('TerminalWriteQueue', () => {
     writes[0].callback();
     expect(scheduler.size()).toBe(1);
     scheduler.runNext();
-    expect(writes.map(write => write.data)).toEqual(['abcd', 'efgh']);
+    expect(writes.map(write => write.data)).toEqual(['abcd', 'ef', 'gh']);
     expect(sequences).toEqual([]);
     writes[1].callback();
+    expect(sequences).toEqual([1]);
+    writes[2].callback();
     expect(sequences).toEqual([1, 2]);
     expect(scheduler.size()).toBe(0);
+  });
+
+  it('keeps a bounded pipeline fed while preserving callback commit order', () => {
+    const scheduler = new TaskScheduler();
+    const writes: Array<{ data: string; callback: () => void }> = [];
+    const sequences: number[] = [];
+    const queue = new TerminalWriteQueue({
+      target: { write: (data, callback) => writes.push({ data, callback }) },
+      onSequenceCommitted: sequence => sequences.push(sequence),
+      scheduleTask: scheduler.schedule,
+      cancelTask: scheduler.cancel,
+      maxChunkCharacters: 4,
+      maxInFlightCharacters: 8,
+    });
+
+    queue.enqueue('abcdefghijkl', { sequence: 1 });
+    scheduler.runNext();
+    expect(writes.map(write => write.data)).toEqual(['abcd', 'efgh']);
+    expect(scheduler.size()).toBe(0);
+    writes[0].callback();
+    expect(scheduler.size()).toBe(1);
+    scheduler.runNext();
+    expect(writes.map(write => write.data)).toEqual(['abcd', 'efgh', 'ijkl']);
+    writes[1].callback();
+    expect(sequences).toEqual([]);
+    writes[2].callback();
+    expect(sequences).toEqual([1]);
   });
 
   it('never splits a Unicode surrogate pair at a render boundary', () => {
@@ -67,6 +97,7 @@ describe('TerminalWriteQueue', () => {
       scheduleTask: scheduler.schedule,
       cancelTask: scheduler.cancel,
       maxChunkCharacters: 2,
+      maxInFlightCharacters: 2,
     });
 
     queue.enqueue('a😀b');
@@ -90,6 +121,7 @@ describe('TerminalWriteQueue', () => {
       scheduleTask: scheduler.schedule,
       cancelTask: scheduler.cancel,
       maxChunkCharacters: 4,
+      maxInFlightCharacters: 4,
     });
 
     queue.enqueue('abcd', { sequence: 1 });
