@@ -263,12 +263,12 @@ test('WEB31-P0-11 five responsive widths preserve keyboard focus and zero page o
   await page.keyboard.press('Escape');
   await expect(ui.navigationButton).toBeFocused();
   focusChecks += 1;
-  expect(await centerHitTarget(ui.settingsButton)).toBe(true);
+  await expectCenterHitTarget(ui.settingsButton);
 
   await page.setViewportSize({ width: 320, height: 720 });
   maximumOverflow = Math.max(maximumOverflow, await assertResponsiveBounds(page));
-  expect(await centerHitTarget(ui.navigationButton)).toBe(true);
-  expect(await centerHitTarget(ui.settingsButton)).toBe(true);
+  await expectCenterHitTarget(ui.navigationButton);
+  await expectCenterHitTarget(ui.settingsButton);
   await openNavigationWithKeyboard(page);
   await page.keyboard.press('Escape');
   await expect(ui.navigationButton).toBeFocused();
@@ -295,8 +295,8 @@ test('WEB31-P0-11 five responsive widths preserve keyboard focus and zero page o
       )
       .toEqual({ dpr: 2, innerWidth: 320, visualWidth: 320 });
     maximumOverflow = Math.max(maximumOverflow, await pageHorizontalOverflow(page));
-    expect(await centerHitTarget(ui.navigationButton)).toBe(true);
-    expect(await centerHitTarget(ui.settingsButton)).toBe(true);
+    await expectCenterHitTarget(ui.navigationButton);
+    await expectCenterHitTarget(ui.settingsButton);
     await openNavigationWithKeyboard(page);
     await page.keyboard.press('Escape');
     await expect(ui.navigationButton).toBeFocused();
@@ -478,6 +478,10 @@ async function centerHitTarget(locator: Locator): Promise<boolean> {
     );
     return target === element || element.contains(target);
   });
+}
+
+async function expectCenterHitTarget(locator: Locator): Promise<void> {
+  await expect.poll(() => centerHitTarget(locator)).toBe(true);
 }
 
 async function assertResponsiveBounds(page: Page): Promise<number> {
