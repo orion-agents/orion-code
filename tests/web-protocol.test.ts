@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 
 import {
   parseWebCommand,
+  parseWebContextActivate,
   parseWebOpenSettingsDocument,
   parseWebSettingsUpdate,
   toAgentRuntimeInput,
@@ -9,11 +10,52 @@ import {
 } from '../src/web/protocol';
 
 describe('Web protocol v1', () => {
+  test('parses an atomic Context activation CAS and rejects loose identities', () => {
+    const requestId = randomUUID();
+    const expectedContextRevision = randomUUID();
+    const workspaceId = randomUUID();
+    expect(
+      parseWebContextActivate({
+        requestId,
+        expectedContextRevision,
+        workspaceId,
+        sessionId: null,
+      })
+    ).toEqual({ requestId, expectedContextRevision, workspaceId, sessionId: null });
+    expect(() =>
+      parseWebContextActivate({
+        requestId,
+        expectedContextRevision: 'stale',
+        workspaceId,
+        sessionId: null,
+      })
+    ).toThrow('expectedContextRevision must be a UUID');
+    expect(() =>
+      parseWebContextActivate({
+        requestId,
+        expectedContextRevision,
+        workspaceId,
+        sessionId: null,
+        path: '/must-not-be-an-identity',
+      })
+    ).toThrow('Unknown context activation request field');
+  });
+
   test('parses a typed submit command and preserves its stable request id', () => {
     const requestId = randomUUID();
-    const command = parseWebCommand({ requestId, type: 'submit', text: 'ship v0.3.0' });
+    const command = parseWebCommand({
+      requestId,
+      expectedSessionId: 'session-1',
+      type: 'submit',
+      text: 'ship v0.3.0',
+    });
 
-    expect(command).toEqual({ requestId, type: 'submit', text: 'ship v0.3.0' });
+    expect(command).toEqual({
+      requestId,
+      expectedSessionId: 'session-1',
+      type: 'submit',
+      text: 'ship v0.3.0',
+    });
     expect(toAgentRuntimeInput(command)).toEqual({
       type: 'submit',
       text: 'ship v0.3.0',
@@ -24,6 +66,7 @@ describe('Web protocol v1', () => {
   test('supports exact BUILD, PLAN and AUTO selection', () => {
     const command = parseWebCommand({
       requestId: randomUUID(),
+      expectedSessionId: 'session-1',
       type: 'set_agent_mode',
       agentMode: 'plan',
     });
@@ -40,6 +83,7 @@ describe('Web protocol v1', () => {
       toAgentRuntimeInput(
         parseWebCommand({
           requestId: randomUUID(),
+          expectedSessionId: 'session-1',
           type: 'permission_decision',
           requestPermissionId: 'permission-1',
           approved: true,
@@ -51,6 +95,7 @@ describe('Web protocol v1', () => {
     expect(() =>
       parseWebCommand({
         requestId: randomUUID(),
+        expectedSessionId: 'session-1',
         type: 'permission_decision',
         requestPermissionId: 'permission-1',
         approved: true,
@@ -58,8 +103,17 @@ describe('Web protocol v1', () => {
       })
     ).toThrow(WebProtocolError);
     expect(() =>
-      parseWebCommand({ requestId: randomUUID(), type: 'submit', text: 'x', extra: true })
+      parseWebCommand({
+        requestId: randomUUID(),
+        expectedSessionId: 'session-1',
+        type: 'submit',
+        text: 'x',
+        extra: true,
+      })
     ).toThrow('Unknown command field');
+    expect(() => parseWebCommand({ requestId: randomUUID(), type: 'submit', text: 'x' })).toThrow(
+      'expectedSessionId must be a non-empty string'
+    );
   });
 
   test('parses one bounded atomic Settings batch and rejects duplicate or loose operations', () => {

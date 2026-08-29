@@ -1,15 +1,26 @@
 import type {
   WebCommandResultV1,
   WebCommandV1,
+  WebContextGuardV1,
+  WebContextMutationResultV1,
+  WebFileContentPageV1,
+  WebFileTreePageV1,
+  WebGitDiffPageV1,
+  WebGitLogPageV1,
+  WebGitStatusV1,
   WebMcpServerSummaryV1,
   WebPageV1,
+  WebReviewSnapshotV1,
   WebSessionMutationResultV1,
   WebSessionSnapshotV1,
   WebSessionSummaryV1,
   WebSkillSummaryV1,
+  WebTerminalCreateResultV1,
+  WebTerminalMetadataV1,
   WebToolDetailPageV1,
   WebToolDetailSummaryV1,
   WebWorkspaceSummaryV1,
+  WebWorkspaceProjectSummaryV1,
 } from '../../src/web/protocol';
 
 import {
@@ -33,7 +44,6 @@ const API_ROOT = '/api/v1';
 const NONCE_HEADER = 'x-orion-web-nonce';
 const COLLECTION_PAGE_SIZE = 100;
 const TRANSCRIPT_PAGE_SIZE = 50;
-const MAX_COLLECTION_PAGES = 100;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export class WebApiError extends Error {
@@ -69,6 +79,11 @@ interface WorkspaceMutationResult {
   readonly page: WebPageV1<WebWorkspaceSummaryV1>;
 }
 
+export interface WebTerminalMutationResult {
+  readonly requestId: string;
+  readonly terminal: WebTerminalMetadataV1;
+}
+
 export class OrionWebApi {
   private nonce = '';
 
@@ -84,16 +99,47 @@ export class OrionWebApi {
     } as WebBootstrapV1;
   }
 
-  async listWorkspaces(): Promise<WorkspaceListResponse> {
-    const items = await this.collectPages<WebWorkspaceSummaryV1>('/workspaces');
+  async listWorkspaces(cursor?: string): Promise<WorkspaceListResponse> {
+    const page = await this.collectionPage<WebWorkspaceSummaryV1>('/workspaces', cursor);
+    const active = page.items.find(item => item.active);
     return {
-      active: items.find(item => item.active)?.path ?? '',
-      workspaces: items.map(item => item.path),
+      activeId: active?.id ?? '',
+      activePath: active?.path ?? '',
+      workspaces: page.items,
+      nextCursor: page.nextCursor,
     };
   }
 
-  async listSessions(): Promise<{ readonly sessions: readonly WebSessionSummaryV1[] }> {
-    return { sessions: await this.collectPages<WebSessionSummaryV1>('/sessions') };
+  async listWorkspaceSessions(
+    workspaceId: string,
+    cursor?: string
+  ): Promise<{
+    readonly sessions: readonly WebSessionSummaryV1[];
+    readonly nextCursor: string | null;
+  }> {
+    const page = await this.collectionPage<WebSessionSummaryV1>(
+      `/workspaces/${encodeURIComponent(workspaceId)}/sessions`,
+      cursor
+    );
+    return { sessions: page.items, nextCursor: page.nextCursor };
+  }
+
+  workspaceProjectSummary(workspaceId: string): Promise<WebWorkspaceProjectSummaryV1> {
+    return this.query(`/workspaces/${encodeURIComponent(workspaceId)}/summary`);
+  }
+
+  async listSessions(
+    context: WebContextGuardV1,
+    cursor?: string
+  ): Promise<{
+    readonly sessions: readonly WebSessionSummaryV1[];
+    readonly nextCursor: string | null;
+  }> {
+    const page = await this.collectionPage<WebSessionSummaryV1>(
+      withContext('/sessions', context),
+      cursor
+    );
+    return { sessions: page.items, nextCursor: page.nextCursor };
   }
 
   diagnostics(): Promise<DiagnosticsSnapshot> {
@@ -104,23 +150,39 @@ export class OrionWebApi {
     return parseSettingsDocument(await this.query<unknown>('/settings'));
   }
 
-  async sessionSnapshot(sessionId: string, cursor?: string): Promise<WebSessionSnapshotV1> {
+  async sessionSnapshot(
+    sessionId: string,
+    context: WebContextGuardV1,
+    cursor?: string
+  ): Promise<WebSessionSnapshotV1> {
     const path = `/sessions/${encodeURIComponent(sessionId)}/snapshot`;
     return this.query<WebSessionSnapshotV1>(
-      withPage(path, cursor ?? null, true, TRANSCRIPT_PAGE_SIZE)
+      withPage(withContext(path, context), cursor ?? null, true, TRANSCRIPT_PAGE_SIZE)
     );
   }
 
-  async skills(): Promise<{ readonly skills: readonly WebSkillSummaryV1[] }> {
-    return { skills: await this.collectPages<WebSkillSummaryV1>('/skills') };
+  async skills(cursor?: string): Promise<{
+    readonly skills: readonly WebSkillSummaryV1[];
+    readonly nextCursor: string | null;
+  }> {
+    const page = await this.collectionPage<WebSkillSummaryV1>('/skills', cursor);
+    return { skills: page.items, nextCursor: page.nextCursor };
   }
 
-  async mcp(): Promise<{ readonly servers: readonly WebMcpServerSummaryV1[] }> {
-    return { servers: await this.collectPages<WebMcpServerSummaryV1>('/mcp') };
+  async mcp(cursor?: string): Promise<{
+    readonly servers: readonly WebMcpServerSummaryV1[];
+    readonly nextCursor: string | null;
+  }> {
+    const page = await this.collectionPage<WebMcpServerSummaryV1>('/mcp', cursor);
+    return { servers: page.items, nextCursor: page.nextCursor };
   }
 
-  async toolDetails(): Promise<{ readonly details: readonly WebToolDetailSummaryV1[] }> {
-    return { details: await this.collectPages<WebToolDetailSummaryV1>('/tool-details') };
+  async toolDetails(cursor?: string): Promise<{
+    readonly details: readonly WebToolDetailSummaryV1[];
+    readonly nextCursor: string | null;
+  }> {
+    const page = await this.collectionPage<WebToolDetailSummaryV1>('/tool-details', cursor);
+    return { details: page.items, nextCursor: page.nextCursor };
   }
 
   readToolDetail(
@@ -135,38 +197,186 @@ export class OrionWebApi {
     return this.query(`/tool-details/${encodeURIComponent(artifactId)}?${query.toString()}`);
   }
 
+  listFiles(
+    context: WebContextGuardV1,
+    parentId?: string,
+    cursor?: string
+  ): Promise<WebFileTreePageV1> {
+    const query = new URLSearchParams({ pageSize: '100' });
+    appendContext(query, context);
+    if (parentId) query.set('parentId', parentId);
+    if (cursor) query.set('cursor', cursor);
+    return this.query(`/files?${query.toString()}`);
+  }
+
+  readFileContent(
+    fileId: string,
+    context: WebContextGuardV1,
+    cursor?: string
+  ): Promise<WebFileContentPageV1> {
+    const query = new URLSearchParams({ limitBytes: String(64 * 1024) });
+    appendContext(query, context);
+    if (cursor) query.set('cursor', cursor);
+    return this.query(`/files/${encodeURIComponent(fileId)}/content?${query.toString()}`);
+  }
+
+  gitStatus(context: WebContextGuardV1, cursor?: string): Promise<WebGitStatusV1> {
+    const query = new URLSearchParams({ pageSize: '200' });
+    appendContext(query, context);
+    if (cursor) query.set('cursor', cursor);
+    return this.query(`/git/status?${query.toString()}`);
+  }
+
+  gitLog(context: WebContextGuardV1, cursor?: string): Promise<WebGitLogPageV1> {
+    const query = new URLSearchParams({ pageSize: '30' });
+    appendContext(query, context);
+    if (cursor) query.set('cursor', cursor);
+    return this.query(`/git/log?${query.toString()}`);
+  }
+
+  gitDiff(fileId: string, context: WebContextGuardV1, cursor?: string): Promise<WebGitDiffPageV1> {
+    const query = new URLSearchParams({ lineLimit: '240', byteLimit: String(256 * 1024) });
+    appendContext(query, context);
+    if (cursor) query.set('cursor', cursor);
+    return this.query(`/git/diff/${encodeURIComponent(fileId)}?${query.toString()}`);
+  }
+
+  review(context: WebContextGuardV1): Promise<WebReviewSnapshotV1> {
+    return this.query(withContext('/review', context));
+  }
+
+  async terminals(
+    context: WebContextGuardV1,
+    cursor?: string
+  ): Promise<{
+    readonly terminals: readonly WebTerminalMetadataV1[];
+    readonly nextCursor: string | null;
+  }> {
+    const page = await this.collectionPage<WebTerminalMetadataV1>(
+      withContext('/terminals', context),
+      cursor
+    );
+    return { terminals: page.items, nextCursor: page.nextCursor };
+  }
+
+  createTerminal(input: {
+    readonly expectedContextRevision: string;
+    readonly workspaceId: string;
+    readonly cols: number;
+    readonly rows: number;
+  }): Promise<WebTerminalCreateResultV1 & { readonly requestId: string }> {
+    return this.mutate(
+      '/terminals',
+      'POST',
+      { ...input, requestId: requestId() },
+      { 'X-Orion-User-Gesture': 'terminal-create-v1' }
+    );
+  }
+
+  terminalAttachTicket(
+    terminalId: string,
+    input: { readonly expectedContextRevision: string; readonly workspaceId: string }
+  ): Promise<WebTerminalCreateResultV1 & { readonly requestId: string }> {
+    return this.mutate(`/terminals/${encodeURIComponent(terminalId)}/attach-ticket`, 'POST', {
+      ...input,
+      requestId: requestId(),
+    });
+  }
+
+  closeTerminal(
+    terminalId: string,
+    input: { readonly expectedContextRevision: string; readonly workspaceId: string }
+  ): Promise<WebTerminalMutationResult> {
+    return this.mutate(`/terminals/${encodeURIComponent(terminalId)}`, 'DELETE', {
+      ...input,
+      requestId: requestId(),
+    });
+  }
+
+  terminalSocket(terminalId: string): WebSocket {
+    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return new WebSocket(
+      `${protocol}//${location.host}${API_ROOT}/terminals/${encodeURIComponent(terminalId)}/stream`,
+      'orion-terminal-v1'
+    );
+  }
+
+  activateContext(input: {
+    readonly expectedContextRevision: string;
+    readonly workspaceId: string;
+    readonly sessionId: string | null;
+  }): Promise<WebContextMutationResultV1> {
+    return this.mutate('/context/activate', 'POST', { ...input, requestId: requestId() });
+  }
+
+  async setWorkspacePinned(
+    workspaceId: string,
+    pinned: boolean,
+    context: WebContextGuardV1
+  ): Promise<WebWorkspaceSummaryV1> {
+    const result = await this.mutate<{
+      readonly requestId: string;
+      readonly workspace: WebWorkspaceSummaryV1;
+    }>(`/workspaces/${encodeURIComponent(workspaceId)}/pin`, 'POST', {
+      requestId: requestId(),
+      pinned,
+      ...context,
+    });
+    return result.workspace;
+  }
+
+  removeWorkspace(
+    workspaceId: string,
+    context: WebContextGuardV1
+  ): Promise<{ readonly requestId: string; readonly removed: true }> {
+    return this.mutate(`/workspaces/${encodeURIComponent(workspaceId)}`, 'DELETE', {
+      requestId: requestId(),
+      ...context,
+    });
+  }
+
   async activateWorkspace(
-    path: string
+    path: string,
+    context: WebContextGuardV1
   ): Promise<WorkspaceListResponse & { readonly requestId: string }> {
     const result = await this.mutate<WorkspaceMutationResult>('/workspaces/activate', 'POST', {
       requestId: requestId(),
       path,
+      ...context,
     });
     return {
       requestId: result.requestId,
-      active: result.active,
-      workspaces: result.page.items.map(item => item.path),
+      activeId: result.page.items.find(item => item.active)?.id ?? '',
+      activePath: result.active,
+      workspaces: result.page.items,
+      nextCursor: result.page.nextCursor,
     };
   }
 
-  async createSession(): Promise<WebSessionSummaryV1> {
+  async createSession(context: WebContextGuardV1): Promise<WebSessionSummaryV1> {
     const result = await this.mutate<WebSessionMutationResultV1>('/sessions', 'POST', {
       requestId: requestId(),
+      ...context,
     });
     return result.session;
   }
 
-  activateSession(sessionId: string): Promise<WebCommandResultV1> {
+  activateSession(sessionId: string, context: WebContextGuardV1): Promise<WebCommandResultV1> {
     return this.mutate(`/sessions/${encodeURIComponent(sessionId)}/activate`, 'POST', {
       requestId: requestId(),
+      ...context,
     });
   }
 
-  async renameSession(sessionId: string, name: string): Promise<WebSessionSummaryV1> {
+  async renameSession(
+    sessionId: string,
+    name: string,
+    context: WebContextGuardV1
+  ): Promise<WebSessionSummaryV1> {
     const result = await this.mutate<WebSessionMutationResultV1>(
       `/sessions/${encodeURIComponent(sessionId)}`,
       'PATCH',
-      { requestId: requestId(), name }
+      { requestId: requestId(), name, ...context }
     );
     return result.session;
   }
@@ -213,9 +423,10 @@ export class OrionWebApi {
     let retryTimer: number | undefined;
     let attempt = 0;
     let closed = false;
+    let suspendedForReplay = false;
 
     const connect = () => {
-      if (closed) return;
+      if (closed || suspendedForReplay) return;
       if (!navigator.onLine) {
         handlers.onStatus('offline', attempt);
         return;
@@ -227,11 +438,16 @@ export class OrionWebApi {
         handlers.onStatus('live', attempt);
       };
       source.addEventListener('orion', raw => {
+        if (closed || suspendedForReplay) return;
         try {
           const envelope = parseEnvelope((raw as MessageEvent<string>).data);
           if (envelope.type === 'replay_reset') {
             cursor = envelope.cursor;
             handlers.onEvent(envelope);
+            suspendedForReplay = true;
+            source?.close();
+            source = null;
+            window.clearTimeout(retryTimer);
             return;
           }
           if (envelope.cursor <= cursor) return;
@@ -246,7 +462,7 @@ export class OrionWebApi {
       source.onerror = () => {
         source?.close();
         source = null;
-        if (closed) return;
+        if (closed || suspendedForReplay) return;
         attempt += 1;
         handlers.onStatus(navigator.onLine ? 'reconnecting' : 'offline', attempt);
         const delay = Math.min(10_000, 500 * 2 ** Math.min(attempt, 5));
@@ -256,7 +472,7 @@ export class OrionWebApi {
     };
 
     const reconnectWhenOnline = () => {
-      if (closed || source) return;
+      if (closed || suspendedForReplay || source) return;
       window.clearTimeout(retryTimer);
       connect();
     };
@@ -264,6 +480,7 @@ export class OrionWebApi {
       window.clearTimeout(retryTimer);
       source?.close();
       source = null;
+      if (suspendedForReplay) return;
       handlers.onStatus('offline', attempt);
     };
 
@@ -284,21 +501,8 @@ export class OrionWebApi {
     };
   }
 
-  private async collectPages<T>(path: string): Promise<readonly T[]> {
-    const items: T[] = [];
-    let cursor: string | null = null;
-    const seen = new Set<string>();
-    for (let page = 0; page < MAX_COLLECTION_PAGES; page += 1) {
-      const result: WebPageV1<T> = await this.query<WebPageV1<T>>(withPage(path, cursor));
-      items.push(...result.items);
-      if (!result.nextCursor) return items;
-      if (seen.has(result.nextCursor)) {
-        throw new WebApiError('集合分页游标重复。', 502);
-      }
-      seen.add(result.nextCursor);
-      cursor = result.nextCursor;
-    }
-    throw new WebApiError('集合超过 Web Workbench 的分页上限。', 413);
+  private collectionPage<T>(path: string, cursor?: string): Promise<WebPageV1<T>> {
+    return this.query<WebPageV1<T>>(withPage(path, cursor ?? null, false, COLLECTION_PAGE_SIZE));
   }
 
   private async query<T>(path: string): Promise<T> {
@@ -311,7 +515,12 @@ export class OrionWebApi {
     return readResponse<T>(response);
   }
 
-  private async mutate<T>(path: string, method: 'POST' | 'PATCH', body: unknown): Promise<T> {
+  private async mutate<T>(
+    path: string,
+    method: 'POST' | 'PATCH' | 'DELETE',
+    body: unknown,
+    extraHeaders: Readonly<Record<string, string>> = {}
+  ): Promise<T> {
     if (!this.nonce) throw new WebApiError('Web Workbench 尚未完成安全握手。', 503);
     const response = await fetch(`${API_ROOT}${path}`, {
       method,
@@ -319,6 +528,7 @@ export class OrionWebApi {
         Accept: 'application/json',
         'Content-Type': 'application/json',
         [NONCE_HEADER]: this.nonce,
+        ...extraHeaders,
       },
       credentials: 'same-origin',
       cache: 'no-store',
@@ -364,6 +574,7 @@ function parseEnvelope(raw: string): WebEventEnvelopeV1 {
       'workbench_state',
       'replay_reset',
       'settings_invalidated',
+      'workspace_resource_invalidated',
     ].includes(String(value.type)) ||
     !isRecord(value.payload)
   ) {
@@ -391,7 +602,11 @@ function parseEnvelope(raw: string): WebEventEnvelopeV1 {
   }
   if (
     value.type === 'workbench_state' &&
-    (typeof value.payload.workspace !== 'string' ||
+    (typeof value.payload.contextRevision !== 'string' ||
+      !UUID_PATTERN.test(value.payload.contextRevision) ||
+      typeof value.payload.workspaceId !== 'string' ||
+      !UUID_PATTERN.test(value.payload.workspaceId) ||
+      typeof value.payload.workspace !== 'string' ||
       (value.payload.activeSessionId !== null && typeof value.payload.activeSessionId !== 'string'))
   ) {
     throw new Error('Workbench 状态事件无效。');
@@ -404,6 +619,24 @@ function parseEnvelope(raw: string): WebEventEnvelopeV1 {
   }
   if (value.type === 'settings_invalidated') {
     return parseSettingsInvalidatedEvent(value);
+  }
+  if (
+    value.type === 'workspace_resource_invalidated' &&
+    (value.sessionId !== null ||
+      value.threadId !== null ||
+      value.durable !== false ||
+      typeof value.payload.workspaceId !== 'string' ||
+      !UUID_PATTERN.test(value.payload.workspaceId) ||
+      !Array.isArray(value.payload.resources) ||
+      value.payload.resources.length < 1 ||
+      value.payload.resources.some(
+        resource => !['files', 'git', 'review'].includes(String(resource))
+      ) ||
+      !['context-change', 'filesystem-change', 'terminal-command', 'tool-finished'].includes(
+        String(value.payload.reason)
+      ))
+  ) {
+    throw new Error('Workspace resource invalidation 事件无效。');
   }
   if (
     value.type === 'replay_reset' &&
@@ -423,7 +656,18 @@ function withPage(
   const query = new URLSearchParams({ pageSize: String(pageSize) });
   if (cursor) query.set('cursor', cursor);
   if (tail) query.set('tail', '1');
-  return `${path}?${query.toString()}`;
+  return `${path}${path.includes('?') ? '&' : '?'}${query.toString()}`;
+}
+
+function appendContext(query: URLSearchParams, context: WebContextGuardV1): void {
+  query.set('expectedContextRevision', context.expectedContextRevision);
+  query.set('workspaceId', context.workspaceId);
+}
+
+function withContext(path: string, context: WebContextGuardV1): string {
+  const query = new URLSearchParams();
+  appendContext(query, context);
+  return `${path}${path.includes('?') ? '&' : '?'}${query.toString()}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

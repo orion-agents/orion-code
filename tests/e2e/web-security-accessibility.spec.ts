@@ -41,14 +41,21 @@ test('E2E-P0-08 Host attacks fail closed while real-CSP UI remains keyboard and 
   const documentResponse = await fetch(`${host.url}/`);
   expect(documentResponse.status).toBe(200);
   const csp = documentResponse.headers.get('content-security-policy') ?? '';
-  expect(csp).toContain("script-src 'self'");
+  const cspDirectives = parseCspDirectives(csp);
+  expect(cspDirectives.get('script-src')).toEqual(["'self'"]);
+  expect(cspDirectives.get('style-src-elem')).toEqual(["'self'", `'nonce-${nonce}'`]);
+  expect(cspDirectives.get('style-src-attr')).toEqual(["'unsafe-inline'"]);
   expect(csp).toContain("frame-ancestors 'none'");
-  expect(csp).not.toContain("'unsafe-inline'");
+  expect(cspDirectives.get('script-src')).not.toContain("'unsafe-inline'");
+  expect(cspDirectives.get('style-src-elem')).not.toContain("'unsafe-inline'");
   expect(documentResponse.headers.get('x-frame-options')).toBe('DENY');
   expect(documentResponse.headers.get('cross-origin-resource-policy')).toBe('same-origin');
   evidence.recordFact('csp.script_self', csp.includes("script-src 'self'"));
   evidence.recordFact('csp.frame_ancestors_none', csp.includes("frame-ancestors 'none'"));
-  evidence.recordFact('csp.unsafe_inline', csp.includes("'unsafe-inline'"));
+  evidence.recordFact(
+    'csp.unsafe_inline',
+    cspDirectives.get('script-src')?.includes("'unsafe-inline'") ?? false
+  );
 
   expect(
     (await rawRequest(host.url, { path: '/api/v1/health', host: 'evil.invalid' })).status
@@ -159,29 +166,87 @@ test('E2E-P0-08 Host attacks fail closed while real-CSP UI remains keyboard and 
   }
   expect(await hostGetSessionCount(host.url)).toBe(sessionsBeforeHostile);
 
-  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.setViewportSize({ width: 1600, height: 900 });
   const ui = workbenchUi(page);
   const workspaceRailState = page.getByRole('complementary', {
-    name: '工作区与会话',
+    name: '项目与会话',
     includeHidden: true,
   });
   await expect(ui.inspectorDock).toBeVisible();
   await expect(ui.inspectorDock).toHaveAttribute('data-mode', 'dock');
   await expect(ui.inspectorPanel).toBeVisible();
   expect(await ui.main.evaluate(element => (element as HTMLElement).inert)).toBe(false);
+  const resizeHandle = page.locator('.work-panel-resize-handle');
+  await expect(resizeHandle).toBeVisible();
+  await expect(resizeHandle).not.toHaveAttribute('role', 'separator');
+  expect(await resizeHandle.getAttribute('tabindex')).toBeNull();
+  const dragToWidth = async (width: number) => {
+    const box = await resizeHandle.boundingBox();
+    if (!box) throw new Error('Work Panel resize handle has no pointer bounds.');
+    const viewportWidth = page.viewportSize()?.width;
+    if (!viewportWidth) throw new Error('Work Panel resize test requires a fixed viewport.');
+    await page.mouse.move(box.x + box.width / 2, box.y + Math.min(120, box.height / 2));
+    await page.mouse.down();
+    await page.mouse.move(viewportWidth - width, box.y + Math.min(120, box.height / 2), {
+      steps: 8,
+    });
+    await page.mouse.up();
+    await expect
+      .poll(async () =>
+        Math.round(
+          await ui.inspectorDock.evaluate(element => element.getBoundingClientRect().width)
+        )
+      )
+      .toBe(width);
+  };
+  await dragToWidth(320);
+  await dragToWidth(720);
+  expect(
+    await page.evaluate(
+      () => JSON.parse(localStorage.getItem('orion.web.work-panel.v1') ?? '{}').widthPx
+    )
+  ).toBe(720);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await waitForWorkbenchReady(page, { timeout: 30_000 });
+  await expect
+    .poll(async () =>
+      Math.round(await ui.inspectorDock.evaluate(element => element.getBoundingClientRect().width))
+    )
+    .toBe(720);
+  evidence.recordFact('layout.pointer_resize_min', 320);
+  evidence.recordFact('layout.pointer_resize_max', 720);
+  evidence.recordFact('layout.keyboard_resize_surface_count', 0);
+  evidence.recordFact('layout.pointer_resize_persisted', true);
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await expect
+    .poll(async () =>
+      Math.round(await ui.inspectorDock.evaluate(element => element.getBoundingClientRect().width))
+    )
+    .toBe(600);
+  expect(
+    Math.round(await ui.main.evaluate(element => element.getBoundingClientRect().width))
+  ).toBeGreaterThanOrEqual(560);
   const expandedMainWidth = await ui.main.evaluate(
     element => element.getBoundingClientRect().width
   );
+  expect(
+    await page.evaluate(
+      () => JSON.parse(localStorage.getItem('orion.web.work-panel.v1') ?? '{}').widthPx
+    )
+  ).toBe(720);
+  evidence.recordFact('layout.pointer_resize_1440_clamped', 600);
+  evidence.recordFact('layout.conversation_min_preserved', true);
 
   const collapseButton = ui.inspectorDock.getByRole('button', {
-    name: '折叠工作详情',
+    name: '折叠工作面板',
     exact: true,
   });
   await collapseButton.focus();
   await collapseButton.press('Enter');
   await expect(ui.inspectorPanel).toBeHidden();
   await expect(ui.inspectorShortcuts).toBeVisible();
-  const goalShortcut = ui.inspectorShortcuts.getByRole('button', { name: /^打开 Goal 详情/ });
+  const goalShortcut = ui.inspectorShortcuts.getByRole('button', { name: /^打开Agent面板/u });
   await expect(goalShortcut).toBeFocused();
   await expect
     .poll(async () =>
@@ -204,17 +269,15 @@ test('E2E-P0-08 Host attacks fail closed while real-CSP UI remains keyboard and 
   ).toBe(true);
   await expect(page.getByRole('button', { name: '关闭侧边面板' })).toHaveCount(0);
 
-  const activityShortcut = ui.inspectorShortcuts.getByRole('button', {
-    name: /^打开活动详情/,
-  });
-  await activityShortcut.focus();
-  await activityShortcut.press('Enter');
+  await goalShortcut.focus();
+  await goalShortcut.press('Enter');
   const activityTab = ui.inspectorDock.getByRole('tab', { name: '活动', exact: true });
+  await activityTab.click();
   await expect(activityTab).toHaveAttribute('aria-selected', 'true');
   await expect(activityTab).toBeFocused();
   await collapseInspector(page);
-  await expect(activityShortcut).toBeFocused();
-  await expect(activityShortcut).toHaveAttribute('aria-current', 'page');
+  await expect(goalShortcut).toBeFocused();
+  await expect(goalShortcut).toHaveAttribute('aria-current', 'page');
   expect(await ui.main.evaluate(element => (element as HTMLElement).inert)).toBe(false);
 
   evidence.recordFact('a11y.inspector_dock_width', railWidth);
@@ -235,7 +298,7 @@ test('E2E-P0-08 Host attacks fail closed while real-CSP UI remains keyboard and 
   await expect(ui.inspectorDialog).toBeVisible();
   await expect(ui.inspectorDialog).toHaveAttribute('aria-modal', 'true');
   await expect(
-    ui.inspectorDialog.getByRole('button', { name: '关闭工作详情', exact: true })
+    ui.inspectorDialog.getByRole('button', { name: '关闭工作面板', exact: true })
   ).toBeFocused();
   await expect(ui.inspectorDialog.getByRole('tab', { name: '活动', exact: true })).toHaveAttribute(
     'aria-selected',
@@ -282,7 +345,7 @@ test('E2E-P0-08 Host attacks fail closed while real-CSP UI remains keyboard and 
   await page.setViewportSize({ width: 1440, height: 900 });
   await expect(ui.inspectorDock).toBeVisible();
   await expect(ui.inspectorShortcuts).toBeVisible();
-  await expect(activityShortcut).toHaveAttribute('aria-current', 'page');
+  await expect(goalShortcut).toHaveAttribute('aria-current', 'page');
   evidence.recordFact('a11y.mobile_keyboard_focus', true);
   evidence.recordFact('a11y.inspector_overlay_focus_trap', true);
 
@@ -353,6 +416,16 @@ async function scanAxe(page: import('@playwright/test').Page): Promise<AxeViolat
   });
 }
 
+function parseCspDirectives(value: string): ReadonlyMap<string, readonly string[]> {
+  const directives = new Map<string, readonly string[]>();
+  for (const rawDirective of value.split(';')) {
+    const tokens = rawDirective.trim().split(/\s+/u).filter(Boolean);
+    const name = tokens.shift();
+    if (name) directives.set(name, tokens);
+  }
+  return directives;
+}
+
 interface RawRequestOptions {
   readonly method?: 'GET' | 'POST';
   readonly path: string;
@@ -407,7 +480,18 @@ async function rawRequest(
 }
 
 async function hostGetSessionCount(hostUrl: string): Promise<number> {
-  const response = await fetch(`${hostUrl}/api/v1/sessions?pageSize=100`, {
+  const bootstrap = (await fetch(`${hostUrl}/api/v1/bootstrap`, {
+    headers: { Accept: 'application/json' },
+  }).then(response => response.json())) as {
+    readonly contextRevision: string;
+    readonly workspaceId: string;
+  };
+  const query = new URLSearchParams({
+    pageSize: '100',
+    expectedContextRevision: bootstrap.contextRevision,
+    workspaceId: bootstrap.workspaceId,
+  });
+  const response = await fetch(`${hostUrl}/api/v1/sessions?${query.toString()}`, {
     headers: { Accept: 'application/json' },
   });
   if (!response.ok) throw new Error(`Session count failed with HTTP ${response.status}.`);

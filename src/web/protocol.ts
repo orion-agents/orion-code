@@ -5,9 +5,27 @@ import type { RuntimeEventEnvelopeV1 } from '../runtime/protocol/runtime-protoco
 import type { ToolDetailPage, ToolDetailSummary } from '../runtime/tool-detail-repository';
 import type { SessionMeta } from '../services/session-storage';
 import type { ToolConfirmationPolicy } from '../services/global-config';
+import type { WebFileContentPageV1, WebFileNodeV1, WebFileTreePageV1 } from './file-read-service';
+import type {
+  WebGitCommitV1,
+  WebGitDiffPageV1,
+  WebGitFileV1,
+  WebGitLogPageV1,
+  WebGitStatusV1,
+} from './git-read-model-service';
+import type { WebReviewSnapshotV1, WebReviewVerificationV1 } from './review-service';
+import type {
+  WebTerminalCreateResultV1,
+  WebTerminalExitV1,
+  WebTerminalGapV1,
+  WebTerminalMetadataV1,
+  WebTerminalOutputFrameV1,
+  WebTerminalStateV1,
+} from './terminal-manager';
 
 export const WEB_API_VERSION = 1 as const;
 export const WEB_NONCE_HEADER = 'x-orion-web-nonce';
+export const WEB_USER_GESTURE_HEADER = 'x-orion-user-gesture';
 export const WEB_MAX_BODY_BYTES = 1024 * 1024;
 
 export interface WebModelSummaryV1 {
@@ -211,19 +229,61 @@ export interface WebMcpServerSummaryV1 {
 }
 
 export interface WebWorkspaceSummaryV1 {
+  readonly id: string;
   readonly path: string;
   readonly label: string;
   readonly active: boolean;
+  readonly available: boolean;
   readonly sessionCount: number;
+  readonly lastActivatedAt: string;
+  readonly pinnedOrder?: number;
 }
+
+export interface WebWorkspaceProjectSummaryV1 {
+  readonly workspaceId: string;
+  readonly repositoryRevision: string;
+  readonly isRepository: boolean;
+  readonly branch: string | null;
+  readonly detached: boolean;
+  readonly head: string | null;
+  readonly dirtyCount: number;
+  readonly conflictCount: number;
+}
+
+export type WebWorkspaceResourceV1 = 'files' | 'git' | 'review';
+export type WebWorkspaceInvalidationReasonV1 =
+  | 'context-change'
+  | 'filesystem-change'
+  | 'terminal-command'
+  | 'tool-finished';
 
 export type WebToolDetailSummaryV1 = ToolDetailSummary;
 export type WebToolDetailPageV1 = ToolDetailPage;
+export type {
+  WebFileContentPageV1,
+  WebFileNodeV1,
+  WebFileTreePageV1,
+  WebGitCommitV1,
+  WebGitDiffPageV1,
+  WebGitFileV1,
+  WebGitLogPageV1,
+  WebGitStatusV1,
+  WebReviewSnapshotV1,
+  WebReviewVerificationV1,
+  WebTerminalCreateResultV1,
+  WebTerminalExitV1,
+  WebTerminalGapV1,
+  WebTerminalMetadataV1,
+  WebTerminalOutputFrameV1,
+  WebTerminalStateV1,
+};
 
 export interface WebBootstrapV1 {
   readonly apiVersion: 1;
   readonly productVersion: string;
   readonly nonce: string;
+  readonly contextRevision: string;
+  readonly workspaceId: string;
   readonly workspace: string;
   readonly configured: boolean;
   readonly activeSessionId: string | null;
@@ -234,7 +294,30 @@ export interface WebBootstrapV1 {
     readonly skills: true;
     readonly mcp: true;
     readonly diagnostics: true;
+    readonly review: true;
+    readonly files: true;
+    readonly git: true;
+    readonly terminal: boolean;
   };
+}
+
+export interface WebContextActivateRequestV1 {
+  readonly requestId: string;
+  readonly expectedContextRevision: string;
+  readonly workspaceId: string;
+  readonly sessionId: string | null;
+}
+
+/** Binds a Workspace-scoped operation to the Context observed by its caller. */
+export interface WebContextGuardV1 {
+  readonly expectedContextRevision: string;
+  readonly workspaceId: string;
+}
+
+export interface WebContextMutationResultV1 {
+  readonly requestId: string;
+  readonly contextRevision: string;
+  readonly bootstrap: WebBootstrapV1;
 }
 
 export interface WebSessionSummaryV1 {
@@ -264,6 +347,7 @@ export type WebCommandTypeV1 =
 
 export interface WebCommandV1 {
   readonly requestId: string;
+  readonly expectedSessionId: string;
   readonly type: WebCommandTypeV1;
   readonly text?: string;
   readonly itemId?: string;
@@ -299,6 +383,8 @@ export type WebWorkbenchEventV1 =
   | { readonly type: 'thread_event'; readonly value: RuntimeEventEnvelopeV1 }
   | {
       readonly type: 'workbench_state';
+      readonly contextRevision: string;
+      readonly workspaceId: string;
       readonly workspace: string;
       readonly activeSessionId: string | null;
     }
@@ -307,6 +393,12 @@ export type WebWorkbenchEventV1 =
       readonly revision: string;
       readonly reason: 'local-write' | 'external-edit' | 'workspace-change';
       readonly state: 'ready' | 'invalid';
+    }
+  | {
+      readonly type: 'workspace_resource_invalidated';
+      readonly workspaceId: string;
+      readonly resources: readonly WebWorkspaceResourceV1[];
+      readonly reason: WebWorkspaceInvalidationReasonV1;
     }
   | { readonly type: 'replay_reset'; readonly reason: string };
 
@@ -342,7 +434,12 @@ export type WebEventEnvelopeV1 = WebEventEnvelopeBaseV1 &
       }
     | {
         readonly type: 'workbench_state';
-        readonly payload: { readonly workspace: string; readonly activeSessionId: string | null };
+        readonly payload: {
+          readonly contextRevision: string;
+          readonly workspaceId: string;
+          readonly workspace: string;
+          readonly activeSessionId: string | null;
+        };
       }
     | {
         readonly type: 'settings_invalidated';
@@ -351,6 +448,15 @@ export type WebEventEnvelopeV1 = WebEventEnvelopeBaseV1 &
           readonly revision: string;
           readonly reason: 'local-write' | 'external-edit' | 'workspace-change';
           readonly state: 'ready' | 'invalid';
+        };
+      }
+    | {
+        readonly type: 'workspace_resource_invalidated';
+        readonly durable: false;
+        readonly payload: {
+          readonly workspaceId: string;
+          readonly resources: readonly WebWorkspaceResourceV1[];
+          readonly reason: WebWorkspaceInvalidationReasonV1;
         };
       }
     | {
@@ -394,6 +500,30 @@ export function parseWebOpenSettingsDocument(value: unknown): WebOpenSettingsDoc
   const requestId = requireBoundedString(row.requestId, 'requestId', 128);
   if (!UUID_PATTERN.test(requestId)) throw new WebProtocolError('requestId must be a UUID');
   return Object.freeze({ requestId });
+}
+
+export function parseWebContextActivate(value: unknown): WebContextActivateRequestV1 {
+  const row = requireRecord(value, 'Context activation request');
+  assertOnlyKeys(
+    row,
+    ['requestId', 'expectedContextRevision', 'workspaceId', 'sessionId'],
+    'context activation request'
+  );
+  const requestId = requireBoundedString(row.requestId, 'requestId', 128);
+  if (!UUID_PATTERN.test(requestId)) throw new WebProtocolError('requestId must be a UUID');
+  const expectedContextRevision = requireBoundedString(
+    row.expectedContextRevision,
+    'expectedContextRevision',
+    128
+  );
+  if (!UUID_PATTERN.test(expectedContextRevision)) {
+    throw new WebProtocolError('expectedContextRevision must be a UUID');
+  }
+  const workspaceId = requireBoundedString(row.workspaceId, 'workspaceId', 128);
+  if (!UUID_PATTERN.test(workspaceId)) throw new WebProtocolError('workspaceId must be a UUID');
+  const sessionId =
+    row.sessionId === null ? null : requireBoundedString(row.sessionId, 'sessionId', 256);
+  return Object.freeze({ requestId, expectedContextRevision, workspaceId, sessionId });
 }
 
 function parseWebSettingsUpdateValue(value: unknown): WebSettingsUpdateRequestV1 {
@@ -499,6 +629,7 @@ export function parseWebCommand(value: unknown): WebCommandV1 {
   const row = requireRecord(value, 'Command body');
   assertOnlyKeys(row, [
     'requestId',
+    'expectedSessionId',
     'type',
     'text',
     'itemId',
@@ -511,6 +642,7 @@ export function parseWebCommand(value: unknown): WebCommandV1 {
     'agentMode',
   ]);
   const requestId = requireBoundedString(row.requestId, 'requestId', 128);
+  const expectedSessionId = requireBoundedString(row.expectedSessionId, 'expectedSessionId', 256);
   const type = requireEnum(row.type, 'type', [
     'submit',
     'queue_followup',
@@ -525,6 +657,7 @@ export function parseWebCommand(value: unknown): WebCommandV1 {
   ] as const);
   const command: WebCommandV1 = {
     requestId,
+    expectedSessionId,
     type,
     ...(row.text === undefined
       ? {}

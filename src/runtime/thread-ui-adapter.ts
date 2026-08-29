@@ -10,12 +10,15 @@ import {
   readGoalRuntimePersistenceV2,
   type GoalRuntimePersistenceViewV2,
 } from './goal-runtime-coordinator';
-import { digestRuntimeValue } from './protocol/canonical';
 import { createRuntimeId, type RuntimeEventEnvelopeV1 } from './protocol/runtime-protocol-v1';
 import type { RuntimeEventBufferOptionsV1, RuntimeEventBufferV1 } from './runtime-event-buffer';
 import type { ThreadCommandAdmissionV1, ThreadTurnRequestV1 } from './thread-admission';
 import { ThreadRuntimeV1 } from './thread-runtime';
 import type { ToolInvocationReceiptV1 } from './tool-gateway';
+import {
+  DurableToolReceiptValidationError,
+  validateDurableToolInvocationReceiptV1,
+} from './tool-receipt-validator';
 import { parseTurnCommitV1 } from './turn-commit';
 import type {
   ToolAuthorizationView,
@@ -71,15 +74,6 @@ interface ItemPresentation {
   content: string;
 }
 
-interface DurableToolReceiptFact {
-  readonly invocationId: string;
-  readonly terminal: ToolInvocationReceiptV1['terminal'];
-  readonly success: boolean;
-  readonly outputDigest: string;
-  readonly receiptDigest: string;
-  readonly intentDigest: string;
-}
-
 type ItemKind = 'message' | 'reasoning' | 'command' | 'file_change' | 'mcp' | 'plan' | 'compact';
 
 type ThreadUiDispatchModeV1 = Exclude<ThreadTurnRequestV1['mode'], 'maintenance'>;
@@ -100,7 +94,7 @@ export class ThreadUiAdapterV1 implements AgentRuntimeRunnerV1 {
   private readonly mode: ThreadUiModeResolverV1;
   private readonly initialReplayTarget: number;
   private readonly presentations = new Map<string, ItemPresentation>();
-  private readonly toolReceiptFacts = new Map<string, DurableToolReceiptFact>();
+  private readonly toolReceiptFacts = new Map<string, RuntimeEventEnvelopeV1>();
   private cursorValue: number;
   private initialReplayComplete = false;
   private closed = false;
@@ -493,10 +487,21 @@ export class ThreadUiAdapterV1 implements AgentRuntimeRunnerV1 {
 
     if (isToolItem(presentation.kind)) {
       const durableReceiptFact = this.toolReceiptFacts.get(presentation.itemId);
-      const receipt =
-        terminal.receipt && durableReceiptFact
-          ? validateDurableToolReceipt(event, presentation, terminal.receipt, durableReceiptFact)
-          : undefined;
+      let receipt: ToolInvocationReceiptV1 | undefined;
+      if (terminal.receipt && durableReceiptFact) {
+        try {
+          receipt = validateDurableToolInvocationReceiptV1({
+            terminalEvent: event,
+            factEvent: durableReceiptFact,
+            item: { itemId: presentation.itemId, toolName: presentation.name },
+          });
+        } catch (error) {
+          if (error instanceof DurableToolReceiptValidationError) {
+            throw new ThreadUiAdapterError(error.message);
+          }
+          throw error;
+        }
+      }
       this.toolReceiptFacts.delete(presentation.itemId);
       const success = receipt?.success ?? event.payload.type === 'item.completed';
       this.emit({
@@ -542,7 +547,7 @@ export class ThreadUiAdapterV1 implements AgentRuntimeRunnerV1 {
     if (event.itemId && event.itemId !== fact.invocationId) {
       throw new ThreadUiAdapterError('Durable tool receipt identity does not match its Item.');
     }
-    this.toolReceiptFacts.set(fact.invocationId, Object.freeze({ ...fact }));
+    this.toolReceiptFacts.set(fact.invocationId, event);
   }
 
   private ensurePresentation(event: RuntimeEventEnvelopeV1): ItemPresentation {
@@ -718,57 +723,6 @@ function terminalItemData(event: RuntimeEventEnvelopeV1): {
   }
 }
 
-function validateDurableToolReceipt(
-  event: RuntimeEventEnvelopeV1,
-  presentation: ItemPresentation,
-  receiptJson: string,
-  fact: DurableToolReceiptFact
-): ToolInvocationReceiptV1 {
-  let parsed: ToolInvocationReceiptV1;
-  try {
-    parsed = JSON.parse(receiptJson) as ToolInvocationReceiptV1;
-  } catch {
-    throw new ThreadUiAdapterError('Durable ToolInvocationReceipt is not valid JSON.');
-  }
-
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new ThreadUiAdapterError('Durable ToolInvocationReceipt is not an object.');
-  }
-  const { digest, ...content } = parsed;
-  const expectedTerminal = terminalReceiptStatus(event);
-  if (
-    parsed.version !== 1 ||
-    typeof digest !== 'string' ||
-    !digest ||
-    digestRuntimeValue(content) !== digest ||
-    parsed.invocationId !== presentation.itemId ||
-    parsed.invocationId !== event.itemId ||
-    parsed.threadId !== event.threadId ||
-    parsed.turnId !== event.turnId ||
-    parsed.stepId !== event.stepId ||
-    parsed.toolName !== presentation.name ||
-    parsed.terminal !== expectedTerminal ||
-    typeof parsed.success !== 'boolean' ||
-    typeof parsed.executionPolicyDigest !== 'string' ||
-    !parsed.executionPolicyDigest
-  ) {
-    throw new ThreadUiAdapterError('Durable ToolInvocationReceipt failed integrity validation.');
-  }
-  if (
-    fact.invocationId !== parsed.invocationId ||
-    fact.terminal !== parsed.terminal ||
-    fact.success !== parsed.success ||
-    fact.outputDigest !== parsed.outputDigest ||
-    fact.receiptDigest !== parsed.digest ||
-    fact.intentDigest !== parsed.intentDigest
-  ) {
-    throw new ThreadUiAdapterError(
-      'Durable tool receipt event does not match its canonical receipt.'
-    );
-  }
-  return parsed;
-}
-
 /**
  * Project presentation provenance only after the canonical receipt and its
  * separate durable `tool.receipt` fact have both passed validation.
@@ -817,21 +771,6 @@ function normalizeToolAuthorizationSource(
         : 'allowlist_ask';
   }
   return 'tool_policy';
-}
-
-function terminalReceiptStatus(event: RuntimeEventEnvelopeV1): ToolInvocationReceiptV1['terminal'] {
-  switch (event.payload.type) {
-    case 'item.completed':
-      return 'completed';
-    case 'item.failed':
-      return 'failed';
-    case 'item.interrupted':
-      return 'interrupted';
-    case 'item.indeterminate':
-      return 'indeterminate';
-    default:
-      throw new ThreadUiAdapterError(`${event.payload.type} is not an Item terminal event.`);
-  }
 }
 
 function isItemRole(value: string | undefined): value is 'user' | 'assistant' | 'system' | 'tool' {

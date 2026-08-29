@@ -8,7 +8,13 @@ import {
   OPENAI_FIXTURE_PROMPTS,
 } from './fixtures/openai-provider';
 import { allowExpectedNetworkFailures, test, expect } from './fixtures/test';
-import { answerApproval, createSession, submitPrompt, waitForApproval } from './fixtures/ui';
+import {
+  answerApproval,
+  createSession,
+  submitPrompt,
+  waitForApproval,
+  workbenchUi,
+} from './fixtures/ui';
 
 test('E2E-P0-02 denial has no effect and allow-once performs one real write and test command', async ({
   evidence,
@@ -34,6 +40,55 @@ test('E2E-P0-02 denial has no effect and allow-once performs one real write and 
     sanitizedArguments: { path: OPENAI_FIXTURE_FILES.deniedWrite },
     allowedScopes: ['once', 'project', 'global'],
   });
+
+  await page.setViewportSize({ width: 320, height: 720 });
+  const ui = workbenchUi(page);
+  for (let index = 1; index <= 16; index += 1) {
+    await expect(ui.composer).toBeEnabled();
+    await ui.composer.fill(`queued layout probe ${index}`);
+    await ui.queueButton.click();
+    await expect(ui.composer).toHaveValue('');
+  }
+  const queue = page.locator('.queue-dock');
+  await expect(queue.getByText('16 条排队消息', { exact: true })).toBeVisible();
+  await queue.locator('summary').click();
+  await expect(queue).toHaveAttribute('open', '');
+  const dockLayout = await page.evaluate(() => {
+    const rect = (selector: string) => {
+      const node = document.querySelector(selector);
+      if (!(node instanceof HTMLElement)) throw new Error(`${selector} is missing`);
+      const bounds = node.getBoundingClientRect();
+      return { top: bounds.top, bottom: bounds.bottom, height: bounds.height };
+    };
+    return {
+      viewportHeight: window.innerHeight,
+      dock: rect('.input-dock'),
+      transients: rect('.input-transients'),
+      queue: rect('.queue-list'),
+      composer: rect('.composer'),
+    };
+  });
+  expect(dockLayout.composer.bottom).toBeLessThanOrEqual(dockLayout.viewportHeight + 1);
+  expect(dockLayout.composer.top).toBeGreaterThanOrEqual(dockLayout.transients.bottom - 1);
+  expect(dockLayout.queue.height).toBeLessThanOrEqual(304);
+  for (const label of ['拒绝', '仅本次', '允许此项目', '始终允许']) {
+    const button = page.getByRole('button', { name: label, exact: true });
+    await button.scrollIntoViewIfNeeded();
+    await expect(button).toBeVisible();
+    expect(
+      await button.evaluate(element => {
+        const rect = element.getBoundingClientRect();
+        const hit = document.elementFromPoint(
+          rect.left + rect.width / 2,
+          rect.top + rect.height / 2
+        );
+        return hit === element || element.contains(hit);
+      })
+    ).toBe(true);
+  }
+  await queue.getByRole('button', { name: '清空队列', exact: true }).click();
+  await expect(queue).toBeHidden();
+  evidence.recordFact('layout.mobile_pending_queue_composer_docked', true);
 
   await answerApproval(page, 'reject', 'write_file');
   await expect(page.getByRole('article', { name: '工具 write_file：失败' })).toContainText(
@@ -94,8 +149,13 @@ async function activeSnapshot(
     const bootstrapResponse = await fetch('/api/v1/bootstrap', { cache: 'no-store' });
     const bootstrap = (await bootstrapResponse.json()) as WebBootstrapV1;
     if (!bootstrap.activeSessionId) throw new Error('No active session for Web E2E snapshot.');
+    const query = new URLSearchParams({
+      pageSize: '100',
+      expectedContextRevision: bootstrap.contextRevision,
+      workspaceId: bootstrap.workspaceId,
+    });
     const snapshotResponse = await fetch(
-      `/api/v1/sessions/${encodeURIComponent(bootstrap.activeSessionId)}/snapshot?pageSize=100`,
+      `/api/v1/sessions/${encodeURIComponent(bootstrap.activeSessionId)}/snapshot?${query.toString()}`,
       { cache: 'no-store' }
     );
     if (!snapshotResponse.ok) throw new Error(`Snapshot failed with ${snapshotResponse.status}.`);

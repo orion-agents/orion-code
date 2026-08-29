@@ -22,14 +22,15 @@ export interface SubmitPromptOptions extends UiOperationOptions {
 /** Stable, accessibility-first locators for the Web Workbench. */
 export function workbenchUi(page: Page) {
   const main = page.getByRole('main');
-  const workspaceRail = page.getByRole('complementary', { name: '工作区与会话' });
-  const sessionList = workspaceRail.getByRole('list', { name: '当前工作区的会话' });
-  const inspectorDock = page.getByRole('complementary', { name: '工作详情' });
-  const inspectorDialog = page.getByRole('dialog', { name: '工作详情' });
+  const workspaceRail = page.getByRole('complementary', { name: '项目与会话' });
+  const activeProject = workspaceRail.locator('.project-node.active');
+  const sessionList = activeProject.getByRole('list', { name: / 的会话$/u });
+  const inspectorDock = page.getByRole('complementary', { name: '工作面板' });
+  const inspectorDialog = page.getByRole('dialog', { name: '工作面板' });
   const inspector = inspectorDock.or(inspectorDialog);
-  const inspectorSurface = page.locator('#session-inspector');
-  const inspectorShortcuts = page.getByRole('navigation', { name: '工作详情快捷入口' });
-  const inspectorPanel = inspector.getByRole('tabpanel');
+  const inspectorSurface = page.locator('#work-panel');
+  const inspectorShortcuts = page.getByRole('navigation', { name: '工作面板快捷入口' });
+  const inspectorPanel = inspector.locator('.work-panel-detail');
 
   return {
     main,
@@ -44,10 +45,10 @@ export function workbenchUi(page: Page) {
     composer: main.getByRole('textbox', { name: '发送给 Orion' }),
     sendButton: main.getByRole('button', { name: '发送消息', exact: true }),
     queueButton: main.getByRole('button', { name: '加入消息队列', exact: true }),
-    newSessionButton: workspaceRail.getByRole('button', { name: '新建会话', exact: true }),
-    sessionSearch: workspaceRail.getByRole('searchbox', { name: '搜索会话' }),
+    newSessionButton: activeProject.getByRole('button', { name: /^在 .* 新建会话$/u }),
+    sessionSearch: workspaceRail.getByRole('searchbox', { name: '搜索项目和会话' }),
     navigationButton: main.getByRole('button', { name: '打开会话导航', exact: true }),
-    inspectorButton: main.getByRole('button', { name: /^(打开|关闭)工作详情$/ }),
+    inspectorButton: main.getByRole('button', { name: /^(打开|关闭)工作面板$/u }),
     settingsButton: main.getByRole('button', { name: '打开设置', exact: true }),
     modeSelector: main.getByRole('group', { name: 'Agent 模式' }),
     transcript: main.getByRole('list', { name: '会话记录' }),
@@ -184,7 +185,7 @@ export async function openInspector(
     });
     if (!overlay) {
       await expect(ui.inspectorShortcuts).toBeVisible({ timeout: options.timeout });
-      await ui.inspectorShortcuts.getByRole('button', { name: /^展开工作详情/ }).click();
+      await ui.inspectorShortcuts.getByRole('button', { name: /^展开工作面板/u }).click();
     } else {
       await expect(ui.inspectorButton).toBeVisible({ timeout: options.timeout });
       await ui.inspectorButton.click();
@@ -203,7 +204,7 @@ export async function collapseInspector(
   options: UiOperationOptions = {}
 ): Promise<void> {
   const inspector = await openInspector(page, options);
-  await inspector.getByRole('button', { name: /^(折叠|关闭)工作详情$/ }).click();
+  await inspector.getByRole('button', { name: /^(折叠|关闭)工作面板$/u }).click();
   await expect(workbenchUi(page).inspectorPanel).toBeHidden({ timeout: options.timeout });
 }
 
@@ -215,22 +216,14 @@ export async function openInspectorShortcut(
   const ui = workbenchUi(page);
   await expect(ui.inspectorDock).toBeVisible({ timeout: options.timeout });
   if (!(await ui.inspectorShortcuts.isVisible())) await collapseInspector(page, options);
-  const shortcutName: Record<InspectorTab, RegExp> = {
-    Goal: /^打开 Goal 详情/,
-    活动: /^打开活动详情/,
-    能力: /^打开能力详情/,
-    诊断: /^打开诊断详情/,
-  };
   const shortcut = ui.inspectorShortcuts.getByRole('button', {
-    name: shortcutName[tab],
+    name: /^打开Agent面板/u,
   });
   await shortcut.click();
   await expect(ui.inspectorPanel).toBeVisible({ timeout: options.timeout });
-  await expect(ui.inspector.getByRole('tab', { name: tab, exact: true })).toHaveAttribute(
-    'aria-selected',
-    'true',
-    { timeout: options.timeout }
-  );
+  const target = ui.inspector.getByRole('tab', { name: tab, exact: true });
+  await target.click();
+  await expect(target).toHaveAttribute('aria-selected', 'true', { timeout: options.timeout });
   return ui.inspectorPanel;
 }
 
@@ -243,7 +236,7 @@ export async function selectInspectorTab(
   const target = inspector.getByRole('tab', { name: tab, exact: true });
   await target.click();
   await expect(target).toHaveAttribute('aria-selected', 'true', { timeout: options.timeout });
-  return inspector.getByRole('tabpanel');
+  return inspector.locator('.inspector-body');
 }
 
 /** Resolve the current session from semantic list/button roles and aria-current. */
@@ -252,7 +245,7 @@ export async function activeSessionButton(
   options: UiOperationOptions = {}
 ): Promise<Locator> {
   const row = await activeSessionRow(page, options);
-  return row.getByRole('button').first();
+  return row.locator('.project-session-main');
 }
 
 export async function setAgentMode(
@@ -274,7 +267,7 @@ export async function createSession(
   options: CreateSessionOptions = {}
 ): Promise<Locator> {
   const ui = workbenchUi(page);
-  const rows = ui.sessionList.getByRole('listitem');
+  const rows = ui.sessionList.locator('.project-session-row');
   let trigger = ui.newSessionButton;
 
   if (!(await trigger.isVisible())) {
@@ -328,12 +321,12 @@ export async function createSession(
   await expect(activeRow.getByRole('button', { name: /^重命名会话 / })).toBeEnabled({
     timeout: options.timeout,
   });
-  let active = activeRow.getByRole('button').first();
+  let active = activeRow.locator('.project-session-main');
 
   if (options.name) {
     await renameActiveSession(page, options.name, options);
     activeRow = await activeSessionRow(page, options);
-    active = activeRow.getByRole('button').first();
+    active = activeRow.locator('.project-session-main');
   }
   await expect(ui.modeSelector.getByRole('button', { name: 'BUILD', exact: true })).toBeEnabled({
     timeout: options.timeout,
@@ -368,7 +361,9 @@ export async function renameActiveSession(
   await ui.renameDialog.getByRole('button', { name: '保存', exact: true }).click();
   await expect(ui.renameDialog).toBeHidden({ timeout: options.timeout });
   await expect(
-    ui.sessionList.getByRole('button', { name: new RegExp(`^${escapeRegex(nextName)}`) })
+    ui.sessionList
+      .locator('.project-session-main')
+      .filter({ hasText: new RegExp(`^${escapeRegex(nextName)}`, 'u') })
   ).toHaveCount(1, { timeout: options.timeout });
 }
 
@@ -443,12 +438,12 @@ async function activeSessionRow(page: Page, options: UiOperationOptions = {}): P
 async function currentActiveSession(
   page: Page
 ): Promise<{ readonly button: Locator; readonly row: Locator } | undefined> {
-  const rows = workbenchUi(page).sessionList.getByRole('listitem');
+  const rows = workbenchUi(page).sessionList.locator('.project-session-row');
   const count = await rows.count();
   let active: { readonly button: Locator; readonly row: Locator } | undefined;
   for (let index = 0; index < count; index += 1) {
     const row = rows.nth(index);
-    const button = row.getByRole('button').first();
+    const button = row.locator('.project-session-main');
     if ((await button.getAttribute('aria-current')) !== 'page') continue;
     if (active) return undefined;
     active = { button, row };

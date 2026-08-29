@@ -6,10 +6,9 @@
  * limits. Never loads full multi-MB artifacts into memory at once.
  */
 
-import { closeSync, existsSync, openSync, readSync, statSync } from 'fs';
-import { listArtifacts } from '../core/tool-artifacts';
+import { closeSync, constants, fstatSync, openSync, readSync } from 'fs';
+import { listArtifacts, TOOL_ARTIFACT_WEB_SAFE_SUFFIX } from '../core/tool-artifacts';
 import { getProjectArtifactsDir } from '../services/config-dir';
-import { redactTraceText } from '../services/redaction';
 import { join } from 'path';
 
 // ============================================================================
@@ -40,7 +39,7 @@ export interface ToolDetailRepository {
   read(
     ref: ToolDetailRef,
     options: { offsetBytes: number; limitBytes: number },
-    projectPath: string,
+    projectPath: string
   ): Promise<ToolDetailPage>;
 }
 
@@ -79,7 +78,7 @@ export class FileToolDetailRepository implements ToolDetailRepository {
   async read(
     ref: ToolDetailRef,
     options: { offsetBytes: number; limitBytes: number },
-    projectPath: string,
+    projectPath: string
   ): Promise<ToolDetailPage> {
     const limitBytes = Math.min(options.limitBytes || DEFAULT_LIMIT_BYTES, MAX_PAGE_BYTES);
     const offsetBytes = Math.max(0, options.offsetBytes || 0);
@@ -87,41 +86,52 @@ export class FileToolDetailRepository implements ToolDetailRepository {
     // Try reading from artifact file on disk.
     if (ref.artifactId) {
       // v0.2.23: reject path traversal in artifact IDs.
-      if (ref.artifactId.includes('..') || ref.artifactId.includes('/') || ref.artifactId.includes('\\')) {
+      if (
+        ref.artifactId.includes('..') ||
+        ref.artifactId.includes('/') ||
+        ref.artifactId.includes('\\')
+      ) {
         return { content: 'detail unavailable', offsetBytes: 0, totalBytes: 0, redacted: false };
       }
       try {
         const artifactDir = getProjectArtifactsDir(projectPath);
-        const filePath = join(artifactDir, `${ref.artifactId}.txt`);
-        if (existsSync(filePath)) {
-          const totalBytes = statSync(filePath).size;
+        const filePath = join(artifactDir, `${ref.artifactId}.txt${TOOL_ARTIFACT_WEB_SAFE_SUFFIX}`);
+        const fd = openSync(
+          filePath,
+          constants.O_RDONLY | (typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0)
+        );
+        try {
+          const opened = fstatSync(fd);
+          if (!opened.isFile()) {
+            return {
+              content: 'detail unavailable',
+              offsetBytes: 0,
+              totalBytes: 0,
+              redacted: false,
+            };
+          }
+          const totalBytes = opened.size;
           if (offsetBytes >= totalBytes) {
             return { content: '', offsetBytes, totalBytes, redacted: false };
           }
           const requestedBytes = Math.min(limitBytes + 3, totalBytes - offsetBytes);
           const buffer = Buffer.allocUnsafe(requestedBytes);
-          const fd = openSync(filePath, 'r');
-          let bytesRead = 0;
-          try {
-            bytesRead = readSync(fd, buffer, 0, requestedBytes, offsetBytes);
-          } finally {
-            closeSync(fd);
-          }
+          const bytesRead = readSync(fd, buffer, 0, requestedBytes, offsetBytes);
           const targetBytes = Math.min(limitBytes, bytesRead);
           const safeBytes = utf8SafePrefixLength(buffer.subarray(0, targetBytes));
-          const consumedBytes = safeBytes > 0
-            ? safeBytes
-            : Math.min(bytesRead, utf8SequenceLength(buffer[0]));
-          const rawPage = buffer.subarray(0, consumedBytes).toString('utf8');
-          const content = redactTraceText(rawPage);
+          const consumedBytes =
+            safeBytes > 0 ? safeBytes : Math.min(bytesRead, utf8SequenceLength(buffer[0]));
+          const content = buffer.subarray(0, consumedBytes).toString('utf8');
           const nextOffset = offsetBytes + consumedBytes;
           return {
             content,
             offsetBytes,
             nextOffsetBytes: nextOffset < totalBytes ? nextOffset : undefined,
             totalBytes,
-            redacted: content !== rawPage,
+            redacted: true,
           };
+        } finally {
+          closeSync(fd);
         }
       } catch {
         // Fall through to unavailable.
@@ -148,15 +158,16 @@ function utf8SafePrefixLength(buffer: Buffer): number {
   while (lead >= 0 && (buffer[lead] & 0xc0) === 0x80) lead -= 1;
   if (lead < 0) return 0;
   const first = buffer[lead];
-  const expected = (first & 0x80) === 0
-    ? 1
-    : (first & 0xe0) === 0xc0
-      ? 2
-      : (first & 0xf0) === 0xe0
-        ? 3
-        : (first & 0xf8) === 0xf0
-          ? 4
-          : 1;
+  const expected =
+    (first & 0x80) === 0
+      ? 1
+      : (first & 0xe0) === 0xc0
+        ? 2
+        : (first & 0xf0) === 0xe0
+          ? 3
+          : (first & 0xf8) === 0xf0
+            ? 4
+            : 1;
   return buffer.length - lead < expected ? lead : buffer.length;
 }
 

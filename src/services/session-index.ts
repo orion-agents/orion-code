@@ -46,53 +46,70 @@ export function updateSessionIndex(
     tool_calls?: Array<{ function: { name: string; arguments: string } }>;
   }
 ): void {
+  updateSessionIndexBatch(sessionId, projectPath, [message]);
+}
+
+/**
+ * Apply a batch of transcript messages with one lock/read/write cycle.
+ *
+ * Callers that already persist messages as a batch must not turn the
+ * best-effort search index into one fsync per message.
+ */
+export function updateSessionIndexBatch(
+  sessionId: string,
+  projectPath: string,
+  messages: ReadonlyArray<{
+    role: string;
+    content?: string;
+    tool_calls?: Array<{ function: { name: string; arguments: string } }>;
+  }>
+): void {
+  if (messages.length === 0) return;
   try {
     const indexPath = ensureIndexPath(sessionId, projectPath);
     withFileLockSync(indexPath, () => {
       const index = loadSessionIndex(sessionId, projectPath) ?? createEmptyIndex(sessionId);
-
-      // Track user topics
-      if (message.role === 'user' && message.content) {
-        const topic = redactTraceText(message.content).slice(0, 50).trim();
-        if (topic && !index.topics.includes(topic)) {
-          index.topics.push(topic);
-          // Keep only last 20 topics
-          if (index.topics.length > 20) {
-            index.topics = index.topics.slice(-20);
-          }
-        }
-      }
-
-      // Track tool calls and file paths
-      if (message.role === 'assistant' && message.tool_calls) {
-        for (const tc of message.tool_calls) {
-          const toolName = tc.function.name;
-          index.tools[toolName] = (index.tools[toolName] || 0) + 1;
-
-          // Extract file paths from common file tools
-          try {
-            const args = JSON.parse(tc.function.arguments);
-            const filePath = args.path || args.file || args.file_path;
-            if (filePath && typeof filePath === 'string') {
-              const safeFilePath = redactTraceText(filePath);
-              if (index.files.includes(safeFilePath)) continue;
-              index.files.push(safeFilePath);
-              // Keep only last 100 files
-              if (index.files.length > 100) {
-                index.files = index.files.slice(-100);
-              }
-            }
-          } catch {
-            // Invalid JSON arguments — skip
-          }
-        }
-      }
+      for (const message of messages) applyMessageToIndex(index, message);
 
       index.updatedAt = Date.now();
       writeSessionIndex(indexPath, index);
     });
   } catch {
     // Best-effort index maintenance must not fail the main transcript write.
+  }
+}
+
+function applyMessageToIndex(
+  index: SessionIndex,
+  message: {
+    role: string;
+    content?: string;
+    tool_calls?: Array<{ function: { name: string; arguments: string } }>;
+  }
+): void {
+  if (message.role === 'user' && message.content) {
+    const topic = redactTraceText(message.content).slice(0, 50).trim();
+    if (topic && !index.topics.includes(topic)) {
+      index.topics.push(topic);
+      if (index.topics.length > 20) index.topics = index.topics.slice(-20);
+    }
+  }
+
+  if (message.role !== 'assistant' || !message.tool_calls) return;
+  for (const tc of message.tool_calls) {
+    const toolName = tc.function.name;
+    index.tools[toolName] = (index.tools[toolName] || 0) + 1;
+    try {
+      const args = JSON.parse(tc.function.arguments) as Record<string, unknown>;
+      const filePath = args.path || args.file || args.file_path;
+      if (!filePath || typeof filePath !== 'string') continue;
+      const safeFilePath = redactTraceText(filePath);
+      if (index.files.includes(safeFilePath)) continue;
+      index.files.push(safeFilePath);
+      if (index.files.length > 100) index.files = index.files.slice(-100);
+    } catch {
+      // Invalid JSON arguments — skip.
+    }
   }
 }
 

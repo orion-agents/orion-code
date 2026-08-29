@@ -11,7 +11,7 @@ export const SUPPORTED_RELEASE_NODE_FLOORS_V1: Readonly<
   26: Object.freeze([26, 0, 0] as const),
 });
 export const SUPPORTED_RELEASE_VERSION_LINE_V1 = '0.3.x' as const;
-export const WEB_E2E_FULL_SCENARIOS_V1 = Object.freeze([
+export const WEB_E2E_LEGACY_SCENARIOS_V1 = Object.freeze([
   'E2E-P0-01',
   'E2E-P0-02',
   'E2E-P0-03',
@@ -35,12 +35,39 @@ export const WEB_E2E_FULL_SCENARIOS_V1 = Object.freeze([
   'SET-P0-13',
   'SET-P0-14',
 ] as const);
+export const WEB_E2E_WEB31_SCENARIOS_V1 = Object.freeze([
+  'WEB31-P0-01',
+  'WEB31-P0-02',
+  'WEB31-P0-03',
+  'WEB31-P0-04',
+  'WEB31-P0-05',
+  'WEB31-P0-06',
+  'WEB31-P0-07',
+  'WEB31-P0-08',
+  'WEB31-P0-09',
+  'WEB31-P0-10',
+  'WEB31-P0-11',
+  'WEB31-P0-12',
+] as const);
+export const WEB_E2E_FULL_SCENARIOS_V1 = Object.freeze([
+  ...WEB_E2E_LEGACY_SCENARIOS_V1,
+  ...WEB_E2E_WEB31_SCENARIOS_V1,
+]);
 export const WEB_E2E_SETTINGS_SCENARIOS_V1 = Object.freeze(
   WEB_E2E_FULL_SCENARIOS_V1.filter(id => id.startsWith('SET-P0-'))
 );
+export const WEB_E2E_WEB31_CRITICAL_SCENARIOS_V1 = Object.freeze([
+  'WEB31-P0-01',
+  'WEB31-P0-02',
+  'WEB31-P0-08',
+  'WEB31-P0-09',
+  'WEB31-P0-10',
+  'WEB31-P0-12',
+] as const);
 export const WEB_E2E_CRITICAL_SCENARIOS_V1 = Object.freeze([
-  ...WEB_E2E_FULL_SCENARIOS_V1.slice(0, 4),
+  ...WEB_E2E_LEGACY_SCENARIOS_V1.slice(0, 4),
   ...WEB_E2E_SETTINGS_SCENARIOS_V1,
+  ...WEB_E2E_WEB31_CRITICAL_SCENARIOS_V1,
 ]);
 
 export type ReleaseGateDecisionV1 = 'GO' | 'NO_GO';
@@ -401,7 +428,7 @@ export function createWebE2EReleaseReceiptV1(
     status: primaryCoverage && runtimeCoverage ? 'pass' : 'fail',
     detail:
       primaryCoverage && runtimeCoverage
-        ? 'primary=E2E-P0-01..08+SET-P0-01..14 runtime=E2E-P0-01..04+SET-P0-01..14'
+        ? `primary=${WEB_E2E_FULL_SCENARIOS_V1.length} scenarios runtime=${WEB_E2E_CRITICAL_SCENARIOS_V1.length} critical scenarios`
         : 'one or more runs have incomplete or reordered scenarios',
   });
   const artifactBound = allRuns.every(
@@ -471,6 +498,31 @@ export function createWebE2EReleaseReceiptV1(
     detail: settingsMatrixComplete
       ? `Settings journey passed without skip on Node ${runtimeMajors.join(',')} using one tgz`
       : `Settings journey missing, skipped, failed, or not bound to one tgz on Node ${SUPPORTED_RELEASE_NODE_MAJORS_V1.join('/')}`,
+  });
+  const web31PrimaryComplete =
+    primaryRuns.length === 3 &&
+    primaryRuns.every(
+      run =>
+        run.decision === 'GO' &&
+        run.cleanEvidence &&
+        WEB_E2E_WEB31_SCENARIOS_V1.every(id => run.scenarioIds.includes(id))
+    );
+  const web31MatrixComplete =
+    runtimeRuns.length === SUPPORTED_RELEASE_NODE_MAJORS_V1.length &&
+    runtimeRuns.every(
+      run =>
+        run.decision === 'GO' &&
+        run.cleanEvidence &&
+        run.tarballSha256 === input.tarballSha256 &&
+        WEB_E2E_WEB31_CRITICAL_SCENARIOS_V1.every(id => run.scenarioIds.includes(id))
+    );
+  checks.push({
+    id: 'WEB31-P0-12',
+    status: web31PrimaryComplete && web31MatrixComplete ? 'pass' : 'fail',
+    detail:
+      web31PrimaryComplete && web31MatrixComplete
+        ? `all WEB31 journeys passed in three primary runs; critical Web/PTY journeys passed on Node ${runtimeMajors.join(',')} using one tgz`
+        : 'WEB31 full or critical exact-tarball coverage is missing, skipped, failed, or dirty',
   });
   const decision: ReleaseGateDecisionV1 = checks.every(check => check.status === 'pass')
     ? 'GO'

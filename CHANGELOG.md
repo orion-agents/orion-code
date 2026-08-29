@@ -22,6 +22,48 @@ which is **not** a pass.
 
 ## [Unreleased]
 
+## [0.3.1] — CANDIDATE
+
+> **Status: candidate.** This branch carries the v0.3 Web quality and long-session recovery fixes.
+> It is not a Git tag, GitHub Release or npm publication until those receipts exist.
+
+### Added
+
+- Add a registered multi-project navigator with lazy inactive-project Session pages and one atomic,
+  revision-guarded active Workspace/Session transition.
+- Add a professional right work dock for Agent, Review, Terminal, Files and Git, with an IDE-style
+  mouse-resized 320–720px desktop panel and responsive drawers that preserve desktop width.
+- Add bounded, revisioned read models for workspace-contained files, Git status/log/diff and review
+  metadata, plus an explicit real-PTY terminal with short-lived WebSocket attach tickets.
+- Add the v0.3.1 OpenAPI, migration guide and exact-artifact WEB31-P0-01..12 qualification contract.
+
+### Changed
+
+- Extend full browser qualification to 34 scenarios and the Node 22.12/24/26 critical matrix to 24
+  scenarios, all bound to one source-clean tgz, installed-target identity and real Chrome runner.
+- Raise the packed-package ceiling from 2.00 to 2.25 MiB for the bundled xterm client while keeping
+  the 10 MiB unpacked and 1,500-entry limits unchanged.
+- Keep terminal output off the Workbench SSE and durable Session history; Host restart reports the
+  terminal as lost instead of fabricating recovery.
+
+### Fixed
+
+- Keep the conversation composer in a bounded bottom dock while transcript history and pending
+  approval or follow-up content scroll independently.
+- Bind Web commands and recovery snapshots to the active Session, make replay reset a terminal
+  barrier, and preserve Session-scoped drafts across navigation.
+- Serve large tool output only from a browser-safe derivative so arbitrary byte offsets cannot
+  bypass redaction.
+- Persist verified Thread heads and immutable transcript pages, use revision-bound collection
+  cursors, and load additional browser history explicitly instead of draining every page at boot.
+
+### Security
+
+- Require UUID idempotency keys and current Workspace/Context guards for v0.3.1 resource operations;
+  stale guards return `context_revision_conflict` with zero side effects.
+- Bind every WEB31 screenshot and high-risk structured fact into the Web E2E receipt, including
+  context targeting, PTY orphan count, SSE/WS isolation, axe and secret gates.
+
 ## [0.3.0] — CANDIDATE
 
 > **Status: candidate.** This source version is not a Git tag, GitHub Release or npm publication

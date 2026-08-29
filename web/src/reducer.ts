@@ -6,6 +6,7 @@ import type {
   WebSettingsSnapshotV1,
   WebSkillSummaryV1,
   WebToolDetailSummaryV1,
+  WebWorkspaceProjectSummaryV1,
 } from './types';
 import type { SettingsMirrorSnapshot } from './settings/settings-mirror';
 import {
@@ -41,11 +42,15 @@ export type WorkbenchAction =
       readonly bootstrap: WebBootstrapV1;
       readonly workspaces: WorkspaceListResponse;
       readonly sessions: readonly WebSessionSummaryV1[];
+      readonly sessionNextCursor: string | null;
       readonly diagnostics: DiagnosticsSnapshot;
       readonly settings: WebSettingsSnapshotV1;
       readonly skills: readonly WebSkillSummaryV1[];
+      readonly skillNextCursor: string | null;
       readonly mcpServers: readonly WebMcpServerSummaryV1[];
+      readonly mcpNextCursor: string | null;
       readonly toolDetails: readonly WebToolDetailSummaryV1[];
+      readonly toolDetailNextCursor: string | null;
     }
   | { readonly type: 'boot_failed'; readonly message: string }
   | {
@@ -55,21 +60,62 @@ export type WorkbenchAction =
     }
   | { readonly type: 'event_received'; readonly envelope: WebEventEnvelopeV1 }
   | { readonly type: 'session_snapshot_loaded'; readonly snapshot: WebSessionSnapshotV1 }
+  | {
+      readonly type: 'durable_session_metadata_loaded';
+      readonly snapshot: WebSessionSnapshotV1;
+      readonly contextRevision: string;
+      readonly workspaceId: string;
+    }
   | { readonly type: 'older_transcript_loaded'; readonly snapshot: WebSessionSnapshotV1 }
-  | { readonly type: 'sessions_loaded'; readonly sessions: readonly WebSessionSummaryV1[] }
-  | { readonly type: 'workspaces_loaded'; readonly value: WorkspaceListResponse }
+  | {
+      readonly type: 'sessions_loaded';
+      readonly sessions: readonly WebSessionSummaryV1[];
+      readonly nextCursor: string | null;
+      readonly append?: boolean;
+    }
+  | {
+      readonly type: 'workspaces_loaded';
+      readonly value: WorkspaceListResponse;
+      readonly append?: boolean;
+    }
+  | { readonly type: 'workspace_sessions_loading'; readonly workspaceId: string }
+  | {
+      readonly type: 'workspace_sessions_loaded';
+      readonly workspaceId: string;
+      readonly sessions: readonly WebSessionSummaryV1[];
+      readonly nextCursor: string | null;
+      readonly append?: boolean;
+    }
+  | {
+      readonly type: 'workspace_sessions_failed';
+      readonly workspaceId: string;
+      readonly detail: string;
+    }
+  | {
+      readonly type: 'workspace_project_summary_loaded';
+      readonly summary: WebWorkspaceProjectSummaryV1;
+    }
   | { readonly type: 'settings_loaded'; readonly settings: WebSettingsSnapshotV1 }
   | { readonly type: 'settings_mirror_changed'; readonly snapshot: SettingsMirrorSnapshot }
   | { readonly type: 'diagnostics_loaded'; readonly diagnostics: DiagnosticsSnapshot }
   | {
       readonly type: 'capabilities_loaded';
       readonly skills: readonly WebSkillSummaryV1[];
+      readonly skillNextCursor: string | null;
       readonly mcpServers: readonly WebMcpServerSummaryV1[];
+      readonly mcpNextCursor: string | null;
+      readonly append?: boolean;
     }
-  | { readonly type: 'tool_details_loaded'; readonly details: readonly WebToolDetailSummaryV1[] }
+  | {
+      readonly type: 'tool_details_loaded';
+      readonly details: readonly WebToolDetailSummaryV1[];
+      readonly nextCursor: string | null;
+      readonly append?: boolean;
+    }
   | { readonly type: 'pending_action'; readonly label: string | null }
   | { readonly type: 'notice'; readonly notice: WorkbenchNotice | null }
   | { readonly type: 'approval_resolved'; readonly requestId: string; readonly approved: boolean }
+  | { readonly type: 'snapshot_failed'; readonly detail: string }
   | { readonly type: 'reset_session_view'; readonly activeSessionId: string | null }
   | { readonly type: 'recovering' };
 
@@ -89,15 +135,30 @@ export function workbenchReducer(
         boot: 'ready',
         bootError: undefined,
         bootstrap: action.bootstrap,
-        workspace: action.workspaces.active || action.bootstrap.workspace,
+        contextRevision: action.bootstrap.contextRevision,
+        workspaceId: action.bootstrap.workspaceId,
+        workspace: action.workspaces.activePath || action.bootstrap.workspace,
         workspaces: action.workspaces.workspaces,
         sessions: action.sessions,
+        workspaceSessions: {
+          ...base.workspaceSessions,
+          [action.bootstrap.workspaceId]: {
+            status: 'ready',
+            items: action.sessions,
+            nextCursor: action.sessionNextCursor,
+          },
+        },
+        workspaceNextCursor: action.workspaces.nextCursor,
+        sessionNextCursor: action.sessionNextCursor,
         activeSessionId: action.bootstrap.activeSessionId,
         settings: action.settings,
         diagnostics: action.diagnostics,
         skills: action.skills,
+        skillNextCursor: action.skillNextCursor,
         mcpServers: action.mcpServers,
+        mcpNextCursor: action.mcpNextCursor,
         toolDetails: action.toolDetails,
+        toolDetailNextCursor: action.toolDetailNextCursor,
         processing: Boolean(action.diagnostics.processing),
         mode,
         statusMessage: action.bootstrap.configured
@@ -115,6 +176,7 @@ export function workbenchReducer(
         announcement: `启动失败：${action.message}`,
       };
     case 'connection_changed':
+      if (state.connection === 'replay-required') return state;
       return {
         ...state,
         connection: action.phase,
@@ -124,7 +186,23 @@ export function workbenchReducer(
     case 'event_received':
       return reduceEnvelope(state, action.envelope);
     case 'session_snapshot_loaded':
+      if (
+        state.activeSessionId !== action.snapshot.session.id ||
+        action.snapshot.runtime.active !== true
+      ) {
+        return state;
+      }
       return applySessionSnapshot(state, action.snapshot);
+    case 'durable_session_metadata_loaded':
+      if (
+        state.contextRevision !== action.contextRevision ||
+        state.workspaceId !== action.workspaceId ||
+        state.activeSessionId !== action.snapshot.session.id ||
+        action.snapshot.runtime.active !== true
+      ) {
+        return state;
+      }
+      return applyDurableSessionMetadata(state, action.snapshot);
     case 'older_transcript_loaded': {
       if (state.activeSessionId !== action.snapshot.session.id || !state.sessionSnapshot) {
         return state;
@@ -149,12 +227,87 @@ export function workbenchReducer(
       };
     }
     case 'sessions_loaded':
-      return { ...state, sessions: action.sessions };
+      return {
+        ...state,
+        sessions: action.append
+          ? mergeByKey(state.sessions, action.sessions, session => session.id)
+          : action.sessions,
+        sessionNextCursor: action.nextCursor,
+        workspaceSessions: state.workspaceId
+          ? {
+              ...state.workspaceSessions,
+              [state.workspaceId]: {
+                status: 'ready',
+                items: action.append
+                  ? mergeByKey(state.sessions, action.sessions, session => session.id)
+                  : action.sessions,
+                nextCursor: action.nextCursor,
+              },
+            }
+          : state.workspaceSessions,
+      };
     case 'workspaces_loaded':
       return {
         ...state,
-        workspace: action.value.active,
-        workspaces: action.value.workspaces,
+        workspaceId: action.value.activeId || state.workspaceId,
+        workspace: action.value.activePath || state.workspace,
+        workspaces: action.append
+          ? mergeByKey(state.workspaces, action.value.workspaces, workspace => workspace.id)
+          : action.value.workspaces,
+        workspaceNextCursor: action.value.nextCursor,
+      };
+    case 'workspace_sessions_loading':
+      return {
+        ...state,
+        workspaceSessions: {
+          ...state.workspaceSessions,
+          [action.workspaceId]: {
+            status: 'loading',
+            items: state.workspaceSessions[action.workspaceId]?.items ?? [],
+            nextCursor: state.workspaceSessions[action.workspaceId]?.nextCursor ?? null,
+          },
+        },
+      };
+    case 'workspace_sessions_loaded': {
+      const current = state.workspaceSessions[action.workspaceId];
+      const items = action.append
+        ? mergeByKey(current?.items ?? [], action.sessions, session => session.id)
+        : action.sessions;
+      return {
+        ...state,
+        sessions: action.workspaceId === state.workspaceId ? items : state.sessions,
+        sessionNextCursor:
+          action.workspaceId === state.workspaceId ? action.nextCursor : state.sessionNextCursor,
+        workspaceSessions: {
+          ...state.workspaceSessions,
+          [action.workspaceId]: {
+            status: 'ready',
+            items,
+            nextCursor: action.nextCursor,
+          },
+        },
+      };
+    }
+    case 'workspace_sessions_failed':
+      return {
+        ...state,
+        workspaceSessions: {
+          ...state.workspaceSessions,
+          [action.workspaceId]: {
+            status: 'error',
+            items: state.workspaceSessions[action.workspaceId]?.items ?? [],
+            nextCursor: state.workspaceSessions[action.workspaceId]?.nextCursor ?? null,
+            error: action.detail,
+          },
+        },
+      };
+    case 'workspace_project_summary_loaded':
+      return {
+        ...state,
+        workspaceProjectSummaries: {
+          ...state.workspaceProjectSummaries,
+          [action.summary.workspaceId]: action.summary,
+        },
       };
     case 'settings_loaded':
       return { ...state, settings: action.settings };
@@ -172,9 +325,29 @@ export function workbenchReducer(
         mode: modeFromDiagnostics(action.diagnostics, state.mode),
       };
     case 'capabilities_loaded':
-      return { ...state, skills: action.skills, mcpServers: action.mcpServers };
+      return {
+        ...state,
+        skills: action.append
+          ? mergeByKey(state.skills, action.skills, skill => skill.id)
+          : action.skills,
+        skillNextCursor: action.skillNextCursor,
+        mcpServers: action.append
+          ? mergeByKey(state.mcpServers, action.mcpServers, server => server.id)
+          : action.mcpServers,
+        mcpNextCursor: action.mcpNextCursor,
+      };
     case 'tool_details_loaded':
-      return { ...state, toolDetails: action.details };
+      return {
+        ...state,
+        toolDetails: action.append
+          ? mergeByKey(
+              state.toolDetails,
+              action.details,
+              detail => `${detail.sequence}:${detail.callId}`
+            )
+          : action.details,
+        toolDetailNextCursor: action.nextCursor,
+      };
     case 'pending_action':
       return { ...state, pendingAction: action.label };
     case 'notice':
@@ -185,6 +358,19 @@ export function workbenchReducer(
         ...state,
         permission: null,
         announcement: action.approved ? '工具权限已授予' : '工具请求已拒绝',
+      };
+    case 'snapshot_failed':
+      return {
+        ...state,
+        connection: 'replay-required',
+        replayReason: action.detail,
+        notice: {
+          id: state.lastCursor,
+          tone: 'warning',
+          title: '会话状态尚未同步',
+          detail: action.detail,
+        },
+        announcement: '会话状态尚未同步，需要恢复后才能继续操作',
       };
     case 'reset_session_view':
       return {
@@ -221,6 +407,7 @@ function reduceEnvelope(state: WorkbenchState, envelope: WebEventEnvelopeV1): Wo
       announcement: '事件历史已超出保留窗口，需要重新载入会话',
     };
   }
+  if (state.connection === 'replay-required') return state;
   if (envelope.cursor <= state.lastCursor) return state;
 
   const received: WorkbenchState = {
@@ -241,6 +428,24 @@ function reduceEnvelope(state: WorkbenchState, envelope: WebEventEnvelopeV1): Wo
     };
   }
 
+  if (envelope.type === 'workspace_resource_invalidated') {
+    const current = state.workspaceResourceEpochs[envelope.payload.workspaceId] ?? {
+      files: 0,
+      git: 0,
+      review: 0,
+    };
+    const next = { ...current };
+    for (const resource of envelope.payload.resources) next[resource] = envelope.cursor;
+    return {
+      ...received,
+      workspaceResourceEpochs: {
+        ...state.workspaceResourceEpochs,
+        [envelope.payload.workspaceId]: next,
+      },
+      announcement: '项目资源已变化，可用面板正在刷新',
+    };
+  }
+
   if (envelope.type === 'workbench_state') {
     const projectionChanged =
       (state.workspace !== '' && state.workspace !== envelope.payload.workspace) ||
@@ -248,16 +453,14 @@ function reduceEnvelope(state: WorkbenchState, envelope: WebEventEnvelopeV1): Wo
     const next = projectionChanged ? clearSessionProjection(received) : received;
     return {
       ...next,
+      contextRevision: envelope.payload.contextRevision,
+      workspaceId: envelope.payload.workspaceId,
       workspace: envelope.payload.workspace,
       activeSessionId: envelope.payload.activeSessionId,
     };
   }
 
-  if (
-    envelope.sessionId &&
-    received.activeSessionId &&
-    envelope.sessionId !== received.activeSessionId
-  ) {
+  if (envelope.sessionId !== null && envelope.sessionId !== received.activeSessionId) {
     return received;
   }
 
@@ -392,10 +595,40 @@ function reduceRuntimeEvent(
       };
     }
     case 'transcript_update':
+      if (event.contentDelta !== undefined) {
+        const target = state.transcript.find(entry => entry.id === event.id);
+        if (
+          !target ||
+          event.contentStart === undefined ||
+          (target.content ?? '').length !== event.contentStart
+        ) {
+          const detail = '流式回复基线已变化，需要重新载入会话。';
+          return {
+            ...state,
+            connection: 'replay-required',
+            replayReason: detail,
+            notice: {
+              id: cursor,
+              tone: 'warning',
+              title: '需要重新载入会话',
+              detail,
+            },
+            announcement: detail,
+          };
+        }
+      }
       return {
         ...state,
         transcript: state.transcript.map(entry =>
-          entry.id === event.id ? { ...entry, ...event.patch } : entry
+          entry.id === event.id
+            ? {
+                ...entry,
+                ...event.patch,
+                ...(event.contentDelta === undefined
+                  ? {}
+                  : { content: `${entry.content ?? ''}${event.contentDelta}` }),
+              }
+            : entry
         ),
       };
     case 'transcript_finalize':
@@ -580,6 +813,20 @@ function applySessionSnapshot(
     lastCursor: Math.max(state.lastCursor, snapshot.eventCursor),
     activeSessionId: snapshot.session.id,
     sessions: replaceSession(state.sessions, snapshot.session),
+    workspaceSessions: state.workspaceId
+      ? {
+          ...state.workspaceSessions,
+          [state.workspaceId]: {
+            status: 'ready',
+            items: replaceSession(
+              state.workspaceSessions[state.workspaceId]?.items ?? state.sessions,
+              snapshot.session
+            ),
+            nextCursor:
+              state.workspaceSessions[state.workspaceId]?.nextCursor ?? state.sessionNextCursor,
+          },
+        }
+      : state.workspaceSessions,
     transcript,
     permission: permission
       ? {
@@ -614,6 +861,43 @@ function applySessionSnapshot(
     connection: state.connection === 'replay-required' ? 'connecting' : state.connection,
     replayReason: undefined,
     announcement: '会话状态已恢复',
+  };
+}
+
+function applyDurableSessionMetadata(
+  state: WorkbenchState,
+  snapshot: WebSessionSnapshotV1
+): WorkbenchState {
+  const sessions = replaceSession(state.sessions, snapshot.session);
+  const currentWorkspaceSessions = state.workspaceSessions[state.workspaceId];
+  return {
+    ...state,
+    sessions,
+    workspaceSessions: {
+      ...state.workspaceSessions,
+      [state.workspaceId]: {
+        status: 'ready',
+        items: replaceSession(currentWorkspaceSessions?.items ?? state.sessions, snapshot.session),
+        nextCursor: currentWorkspaceSessions?.nextCursor ?? state.sessionNextCursor,
+      },
+    },
+    goal: goalFromPersistentSnapshot(snapshot.goal),
+    plan: snapshot.plan,
+    sessionSnapshot:
+      state.sessionSnapshot?.session.id === snapshot.session.id
+        ? {
+            ...state.sessionSnapshot,
+            session: snapshot.session,
+            goal: snapshot.goal,
+            plan: snapshot.plan,
+            recoveryDiagnostics: snapshot.recoveryDiagnostics,
+          }
+        : state.sessionSnapshot,
+    diagnostics: {
+      ...(state.diagnostics ?? {}),
+      plan: snapshot.plan?.body ?? null,
+      recoveryDiagnostics: snapshot.recoveryDiagnostics,
+    },
   };
 }
 
@@ -675,6 +959,16 @@ function goalFromPersistentSnapshot(goalView: WebSessionSnapshotV1['goal']): Goa
       ? goal.auditRemaining.filter((item): item is string => typeof item === 'string')
       : undefined,
   };
+}
+
+function mergeByKey<T>(
+  current: readonly T[],
+  incoming: readonly T[],
+  keyOf: (value: T) => string
+): readonly T[] {
+  const merged = new Map(current.map(value => [keyOf(value), value]));
+  for (const value of incoming) merged.set(keyOf(value), value);
+  return [...merged.values()];
 }
 
 function reduceGoalEvent(

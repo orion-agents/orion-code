@@ -5,8 +5,7 @@ import { existsSync, readFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 
 import { WEB_E2E_CRITICAL_SCENARIOS_V1 } from '../../src/runtime/release-receipts';
-
-const CRITICAL_GREP = '(?:E2E-P0-0[1-4]|@settings)';
+import { WEB_E2E_CRITICAL_GREP } from '../../tests/e2e/scenarios';
 
 async function main(): Promise<void> {
   const repositoryRoot = resolve(__dirname, '../..');
@@ -46,8 +45,8 @@ function sameOrderedValues(left: readonly string[], right: readonly string[]): b
 }
 
 function assertArguments(args: readonly string[]): void {
-  if (args.length !== 2 || args[0] !== '--grep' || args[1] !== CRITICAL_GREP) {
-    throw new Error(`Critical Web E2E runner requires --grep '${CRITICAL_GREP}'.`);
+  if (args.length !== 0) {
+    throw new Error('Critical Web E2E runner owns its scenario grep and accepts no arguments.');
   }
 }
 
@@ -78,7 +77,7 @@ async function runPlaywright(repositoryRoot: string, runRoot: string): Promise<n
       : {}),
   };
   return new Promise((resolveRun, reject) => {
-    const child = spawn(process.execPath, [cli, 'test', '--grep', CRITICAL_GREP], {
+    const child = spawn(process.execPath, [cli, 'test', '--grep', WEB_E2E_CRITICAL_GREP], {
       cwd: repositoryRoot,
       env: environment,
       stdio: 'inherit',

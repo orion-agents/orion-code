@@ -40,9 +40,15 @@ export async function sessionSnapshot(
   page: Page,
   sessionId: string
 ): Promise<WebSessionSnapshotV1> {
+  const bootstrap = await webBootstrap(page);
+  const query = new URLSearchParams({
+    pageSize: '100',
+    expectedContextRevision: bootstrap.contextRevision,
+    workspaceId: bootstrap.workspaceId,
+  });
   const result = await browserGet<WebSessionSnapshotV1>(
     page,
-    `/api/v1/sessions/${encodeURIComponent(sessionId)}/snapshot?pageSize=100`
+    `/api/v1/sessions/${encodeURIComponent(sessionId)}/snapshot?${query.toString()}`
   );
   if (result.status !== 200) throw new Error(`Snapshot failed with HTTP ${result.status}.`);
   return result.body;

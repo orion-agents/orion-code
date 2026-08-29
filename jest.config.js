@@ -26,6 +26,7 @@ module.exports = {
         tsconfig: {
           module: 'commonjs',
           target: 'ES2020',
+          lib: ['ES2020', 'ES2022.Intl', 'DOM', 'DOM.Iterable'],
           strict: true,
           esModuleInterop: true,
           skipLibCheck: true,

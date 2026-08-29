@@ -30,9 +30,18 @@ const SECRET_PATTERNS: Array<[RegExp, string]> = [
     '$1$2[REDACTED_SECRET]',
   ],
   [
+    /\b((?:token|client[_-]?secret|private[_-]?key|secret[_-]?key|signing[_-]?key|encryption[_-]?key|session[_-]?key|db[_-]?password|credential[_-]?value|account[_-]?key|connection[_-]?string|database[_-]?url|dsn|pwd|auth)\s*[:=]\s*)(["']?)[^\s"',;]+/gi,
+    '$1$2[REDACTED_SECRET]',
+  ],
+  [
     /(["'](?:api[_-]?key|access[_-]?token|auth[_-]?token|password|secret)["']\s*:\s*)(["'])(?:[^"']+)(["'])/gi,
     '$1$2[REDACTED_SECRET]$3',
   ],
+  [
+    /(["'](?:token|client[_-]?secret|private[_-]?key|secret[_-]?key|signing[_-]?key|encryption[_-]?key|session[_-]?key|db[_-]?password|credential[_-]?value|account[_-]?key|connection[_-]?string|database[_-]?url|dsn|pwd|auth)["']\s*:\s*)(["'])(?:[^"']+)(["'])/gi,
+    '$1$2[REDACTED_SECRET]$3',
+  ],
+  [/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/:@]+:[^\s/@]+@/gi, '$1[REDACTED_CREDENTIAL]@'],
   [
     /\b((?:OPENAI_API_KEY|DASHSCOPE_API_KEY|ANTHROPIC_API_KEY|XAI_API_KEY)\s*=\s*)(["']?)[^\s"',;]+/g,
     '$1$2[REDACTED_SECRET]',
@@ -54,6 +63,56 @@ const SECRET_PATTERNS: Array<[RegExp, string]> = [
   [/\bgsk_[A-Za-z0-9]{16,}\b/g, '[REDACTED_SECRET]'],
   [/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, 'Bearer [REDACTED_SECRET]'],
 ];
+
+/** Field-name guard shared by browser/event and approval snapshot projections. */
+export function isSensitiveFieldName(field: string): boolean {
+  const normalized = field.replace(/[^a-z0-9]/giu, '').toLowerCase();
+  if (!normalized) return false;
+  return (
+    normalized === 'env' ||
+    normalized === 'environment' ||
+    normalized === 'header' ||
+    normalized === 'headers' ||
+    normalized.endsWith('authorization') ||
+    normalized.endsWith('cookie') ||
+    normalized.endsWith('password') ||
+    normalized.endsWith('passphrase') ||
+    normalized.endsWith('token') ||
+    normalized.endsWith('apikey') ||
+    normalized.endsWith('privatekey') ||
+    normalized.endsWith('signingkey') ||
+    normalized.endsWith('encryptionkey') ||
+    normalized.endsWith('sessionkey') ||
+    normalized.endsWith('accountkey') ||
+    normalized.endsWith('connectionstring') ||
+    normalized.endsWith('databaseurl') ||
+    normalized === 'dsn' ||
+    normalized === 'pwd' ||
+    normalized === 'auth' ||
+    normalized.endsWith('auth') ||
+    normalized.endsWith('secret') ||
+    normalized.endsWith('secretkey') ||
+    normalized.includes('secretaccesskey') ||
+    normalized.includes('credential')
+  );
+}
+
+/** File-name policy shared by local browser read models. */
+export function isSensitiveFilePath(path: string): boolean {
+  const segments = path
+    .replace(/\\/gu, '/')
+    .split('/')
+    .filter(Boolean)
+    .map(segment => segment.toLowerCase());
+  return segments.some(segment => {
+    if (segment === '.ssh' || segment === '.gnupg' || segment === 'keychain') return true;
+    if (segment === '.npmrc' || segment === '.pypirc' || segment === '.netrc') return true;
+    if (segment === '.env' || segment.startsWith('.env.')) return true;
+    if (/^(?:credentials?|secrets?)(?:\.|$)/u.test(segment)) return true;
+    if (/^id_(?:rsa|dsa|ecdsa|ed25519)(?:\.|$)/u.test(segment)) return true;
+    return /\.(?:pem|key|p12|pfx|kdbx|keystore|jks)$/u.test(segment);
+  });
+}
 
 export function redactTraceText(text: string): string {
   return SECRET_PATTERNS.reduce(

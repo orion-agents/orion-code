@@ -29,7 +29,7 @@ const { tmpdir } = require('os');
 const { resolve, join } = require('path');
 
 const projectRoot = resolve(__dirname, '../..');
-const MAX_PACKED_PACKAGE_BYTES = 2 * 1024 * 1024;
+const MAX_PACKED_PACKAGE_BYTES = 2304 * 1024;
 const MAX_UNPACKED_PACKAGE_BYTES = 10 * 1024 * 1024;
 const MAX_PACKAGE_ENTRIES = 1500;
 const REQUIRED_PACKAGE_ENTRIES = [
@@ -41,12 +41,16 @@ const REQUIRED_PACKAGE_ENTRIES = [
   'docs/migration/v0.1.9-to-v0.2.0.md',
   'docs/migration/v0.2.2-to-v0.3.0.md',
   'docs/migration/v0.2.2-to-v0.3.0-settings.md',
+  'docs/migration/v0.3.0-to-v0.3.1.md',
   'docs/architecture/v0.3.0-web-api.yaml',
+  'docs/architecture/v0.3.1-web-api.yaml',
   'docs/plan/v0.2.0-dsh-harness-redesign-plan.md',
   'docs/plan/v0.2.0-release-checklist.md',
   'docs/plan/v0.3.0-web-workbench-plan.md',
   'docs/plan/v0.3.0-settings-integration-plan.md',
   'docs/plan/v0.3.0-node-runtime-compatibility-plan.md',
+  'docs/plan/v0.3.1-web-workbench-professional-shell-plan.md',
+  'docs/test/v0.3.1-web-workbench-e2e-plan.md',
   'LICENSE',
   'README.md',
   'README.zh-CN.md',

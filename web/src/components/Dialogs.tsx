@@ -63,9 +63,16 @@ export interface WorkspaceDialogProps {
   readonly onClose: () => void;
   readonly state: WorkbenchState;
   readonly onSelect: (path: string) => Promise<void>;
+  readonly onLoadMore: () => Promise<void>;
 }
 
-export function WorkspaceDialog({ open, onClose, state, onSelect }: WorkspaceDialogProps) {
+export function WorkspaceDialog({
+  open,
+  onClose,
+  state,
+  onSelect,
+  onLoadMore,
+}: WorkspaceDialogProps) {
   const [path, setPath] = useState('');
   const [localError, setLocalError] = useState('');
   useEffect(() => {
@@ -112,25 +119,37 @@ export function WorkspaceDialog({ open, onClose, state, onSelect }: WorkspaceDia
         {state.workspaces.map(workspace => (
           <button
             type="button"
-            className={`workspace-option ${workspace === state.workspace ? 'active' : ''}`}
-            key={workspace}
-            disabled={workspace === state.workspace || Boolean(state.pendingAction)}
-            onClick={() => void select(workspace)}
+            className={`workspace-option ${workspace.active ? 'active' : ''}`}
+            key={workspace.id}
+            disabled={workspace.active || !workspace.available || Boolean(state.pendingAction)}
+            onClick={() => void select(workspace.path)}
           >
             <span className="workspace-icon">
               <Icon name="workspace" size={17} />
             </span>
             <span>
-              <strong>{basename(workspace)}</strong>
-              <small title={workspace}>{workspace}</small>
+              <strong>{workspace.label || basename(workspace.path)}</strong>
+              <small title={workspace.path}>{workspace.path}</small>
             </span>
-            {workspace === state.workspace ? (
+            {workspace.active ? (
               <span className="current-pill">当前</span>
+            ) : !workspace.available ? (
+              <span className="current-pill">不可用</span>
             ) : (
               <Icon name="chevron" size={15} />
             )}
           </button>
         ))}
+        {state.workspaceNextCursor ? (
+          <button
+            type="button"
+            className="text-button"
+            onClick={() => void onLoadMore()}
+            disabled={Boolean(state.pendingAction)}
+          >
+            加载更多工作区
+          </button>
+        ) : null}
       </div>
       <form className="workspace-path-form" onSubmit={submit}>
         <label htmlFor="workspace-path-input">打开其他本地目录</label>

@@ -19,6 +19,7 @@ import {
   type WebE2ERunManifest,
   type WebE2EScenarioManifest,
 } from '../scripts/e2e/assemble-web-e2e-receipt';
+import { WEB31_REQUIRED_EVIDENCE_FACTS_V1 } from './e2e/scenarios';
 
 type ReleaseResult = {
   id: string;
@@ -44,6 +45,8 @@ const ONE_PIXEL_PNG = Buffer.from(
 
 function createWebEvidenceBundle(
   options: {
+    scenarioId?: string;
+    factOverrides?: Readonly<Record<string, string | number | boolean>>;
     includeScreenshotFact?: boolean;
     screenshotFact?: string;
     screenshotBody?: Buffer;
@@ -52,18 +55,29 @@ function createWebEvidenceBundle(
 ) {
   const root = mkdtempSync(join(tmpdir(), 'orion-web-evidence-'));
   fixtures.push(root);
-  const scenarioRoot = join(root, 'scenarios', 'SET-P0-01-fixture');
+  const scenarioId = options.scenarioId ?? 'SET-P0-01';
+  const scenarioRoot = join(root, 'scenarios', `${scenarioId}-fixture`);
   mkdirSync(scenarioRoot, { recursive: true });
   const screenshotFact = options.screenshotFact ?? 'settings-dialog.png';
+  const requiredFacts = Object.fromEntries(
+    (WEB31_REQUIRED_EVIDENCE_FACTS_V1[scenarioId] ?? []).map(requirement => [
+      requirement.key,
+      requirement.equals ?? requirement.minimum,
+    ])
+  );
   const scenario: WebE2EScenarioManifest = {
-    scenarioId: 'SET-P0-01',
+    scenarioId,
     startedAt: '2026-08-27T00:00:00.000Z',
     completedAt: '2026-08-27T00:00:01.000Z',
     durationMs: 1000,
     status: 'pass',
     browser: { name: 'chromium', version: '151.0.0.0' },
     counters: { secretFindings: 0 },
-    facts: options.includeScreenshotFact === false ? {} : { 'screenshot.dialog': screenshotFact },
+    facts: {
+      ...requiredFacts,
+      ...options.factOverrides,
+      ...(options.includeScreenshotFact === false ? {} : { 'screenshot.dialog': screenshotFact }),
+    },
     logs: { stdout: 'stdout.log', stderr: 'stderr.log' },
   };
   const manifest: WebE2ERunManifest = {
@@ -218,7 +232,7 @@ describe('release-check script contract', () => {
     expect(releaseCheckIndex).toBeGreaterThan(buildIndex);
     expect(prepublishOnly).toContain('npm run test:coverage -- --runInBand');
     expect(prepublishOnly).toContain('npm run test:web-browser');
-    expect(criticalWebE2E).toContain('@settings');
+    expect(criticalWebE2E).toBe('ts-node --transpile-only scripts/e2e/run-web-e2e-critical.ts');
     expect(build).toContain('node scripts/maintenance/copy-runtime-assets.js');
     expect(pkg.files).toContain('npm-shrinkwrap.json');
     expect(pkg.files).toContain('assets/orion-tui-icon.png');
@@ -227,12 +241,16 @@ describe('release-check script contract', () => {
     expect(pkg.files).toContain('docs/migration/v0.1.9-to-v0.2.0.md');
     expect(pkg.files).toContain('docs/migration/v0.2.2-to-v0.3.0.md');
     expect(pkg.files).toContain('docs/migration/v0.2.2-to-v0.3.0-settings.md');
+    expect(pkg.files).toContain('docs/migration/v0.3.0-to-v0.3.1.md');
     expect(pkg.files).toContain('docs/architecture/v0.3.0-web-api.yaml');
+    expect(pkg.files).toContain('docs/architecture/v0.3.1-web-api.yaml');
     expect(pkg.files).toContain('docs/plan/v0.2.0-dsh-harness-redesign-plan.md');
     expect(pkg.files).toContain('docs/plan/v0.2.0-release-checklist.md');
     expect(pkg.files).toContain('docs/plan/v0.3.0-web-workbench-plan.md');
     expect(pkg.files).toContain('docs/plan/v0.3.0-settings-integration-plan.md');
     expect(pkg.files).toContain('docs/plan/v0.3.0-node-runtime-compatibility-plan.md');
+    expect(pkg.files).toContain('docs/plan/v0.3.1-web-workbench-professional-shell-plan.md');
+    expect(pkg.files).toContain('docs/test/v0.3.1-web-workbench-e2e-plan.md');
     expect(pkg.files).not.toContain('assets/');
   });
 
@@ -262,7 +280,7 @@ describe('release-check script contract', () => {
   it('enforces exact package contents and hard package-size budgets', () => {
     const script = readFileSync(releaseScript, 'utf8');
 
-    expect(script).toContain('MAX_PACKED_PACKAGE_BYTES = 2 * 1024 * 1024');
+    expect(script).toContain('MAX_PACKED_PACKAGE_BYTES = 2304 * 1024');
     expect(script).toContain('MAX_UNPACKED_PACKAGE_BYTES = 10 * 1024 * 1024');
     expect(script).toContain('MAX_PACKAGE_ENTRIES = 1500');
     expect(script).toContain("'assets/orion-tui-icon.png'");
@@ -271,12 +289,16 @@ describe('release-check script contract', () => {
     expect(script).toContain("'docs/migration/v0.1.9-to-v0.2.0.md'");
     expect(script).toContain("'docs/migration/v0.2.2-to-v0.3.0.md'");
     expect(script).toContain("'docs/migration/v0.2.2-to-v0.3.0-settings.md'");
+    expect(script).toContain("'docs/migration/v0.3.0-to-v0.3.1.md'");
     expect(script).toContain("'docs/architecture/v0.3.0-web-api.yaml'");
+    expect(script).toContain("'docs/architecture/v0.3.1-web-api.yaml'");
     expect(script).toContain("'docs/plan/v0.2.0-dsh-harness-redesign-plan.md'");
     expect(script).toContain("'docs/plan/v0.2.0-release-checklist.md'");
     expect(script).toContain("'docs/plan/v0.3.0-web-workbench-plan.md'");
     expect(script).toContain("'docs/plan/v0.3.0-settings-integration-plan.md'");
     expect(script).toContain("'docs/plan/v0.3.0-node-runtime-compatibility-plan.md'");
+    expect(script).toContain("'docs/plan/v0.3.1-web-workbench-professional-shell-plan.md'");
+    expect(script).toContain("'docs/test/v0.3.1-web-workbench-e2e-plan.md'");
     expect(script).toContain("['Web Workbench', webProbe]");
     expect(script).toContain('unexpected tarball entries');
   });
@@ -323,7 +345,7 @@ describe('release-check script contract', () => {
     expect(workflow).toContain(
       "find .release/web-e2e/runtime -name manifest.json -type f ! -path '*/scenarios/*'"
     );
-    expect(criticalRunner).toContain("'(?:E2E-P0-0[1-4]|@settings)'");
+    expect(criticalRunner).toContain('WEB_E2E_CRITICAL_GREP');
     expect(criticalRunner).toContain("manifest?.decision === 'GO'");
     expect(browserFixture).toContain(
       "testInfo.status === 'passed' && testInfo.expectedStatus === 'passed'"
@@ -365,6 +387,39 @@ describe('release-check script contract', () => {
     expect(
       verifyEvidenceBundle(fixture.manifestPath, fixture.manifest, [fixture.scenario])
     ).not.toBe(originalDigest);
+  });
+
+  it('requires and digest-binds WEB31 screenshots', () => {
+    const fixture = createWebEvidenceBundle({ scenarioId: 'WEB31-P0-08' });
+    const originalDigest = verifyEvidenceBundle(fixture.manifestPath, fixture.manifest, [
+      fixture.scenario,
+    ]);
+    writeFileSync(
+      fixture.screenshotPath,
+      Buffer.concat([ONE_PIXEL_PNG, Buffer.from('replacement')])
+    );
+
+    expect(
+      verifyEvidenceBundle(fixture.manifestPath, fixture.manifest, [fixture.scenario])
+    ).not.toBe(originalDigest);
+
+    const missing = createWebEvidenceBundle({
+      scenarioId: 'WEB31-P0-12',
+      includeScreenshotFact: false,
+    });
+    expect(() =>
+      verifyEvidenceBundle(missing.manifestPath, missing.manifest, [missing.scenario])
+    ).toThrow('screenshot evidence is missing');
+  });
+
+  it('rejects a missing or failing WEB31 release fact', () => {
+    const failing = createWebEvidenceBundle({
+      scenarioId: 'WEB31-P0-09',
+      factOverrides: { 'web31.terminal_orphan_processes': 1 },
+    });
+    expect(() =>
+      verifyEvidenceBundle(failing.manifestPath, failing.manifest, [failing.scenario])
+    ).toThrow('web31.terminal_orphan_processes is missing or invalid');
   });
 
   it('rejects missing, unsafe-path, symlinked, or malformed Settings screenshots', () => {

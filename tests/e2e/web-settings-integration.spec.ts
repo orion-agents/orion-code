@@ -1074,7 +1074,7 @@ test('SET-P0-14 installed tarball critical Settings journey runs on the supporte
   allowExpectedNetworkFailures(testInfo, 2);
   expect(artifactState.artifact.receipt.package).toMatchObject({
     name: '@orion-agents/orion-code',
-    version: '0.3.0',
+    version: '0.3.1',
   });
   expect(artifactState.environment.nodeMajor).toBe(Number(process.versions.node.split('.')[0]));
   expect([22, 24, 26]).toContain(artifactState.environment.nodeMajor);

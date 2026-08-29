@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync } from 'fs';
+import { randomUUID } from 'crypto';
+import { existsSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -7,7 +8,15 @@ import {
   createSession,
   loadSessionMeta,
 } from '../src/services/session-storage';
-import { pageItems, WebWorkbenchController } from '../src/web/workbench-controller';
+import { getProjectThreadsV2Dir } from '../src/product/paths';
+import { materializeLegacyThreadV1 } from '../src/runtime/legacy-thread-materializer';
+import { ThreadEventStore } from '../src/runtime/thread-event-store';
+import { loadThreadSessionViewV1 } from '../src/runtime/thread-session-view';
+import {
+  pageCollectionItems,
+  pageItems,
+  WebWorkbenchController,
+} from '../src/web/workbench-controller';
 import { createFakeWebRuntime } from './support/web-runtime';
 
 describe('WebWorkbenchController', () => {
@@ -57,6 +66,72 @@ describe('WebWorkbenchController', () => {
 
     release('accepted');
     await expect(Promise.all([first, retry])).resolves.toEqual(['accepted', 'accepted']);
+    await controller.shutdown();
+  });
+
+  test('keeps completed mutation results idempotent for the Host process lifetime', async () => {
+    const controller = await WebWorkbenchController.create({
+      cwd: workspace,
+      createRuntime: async cwd => createFakeWebRuntime(cwd),
+    });
+    let victimCalls = 0;
+    await expect(
+      controller.executeMutation('victim', 'test', { value: 0 }, () => {
+        victimCalls += 1;
+        return 'original';
+      })
+    ).resolves.toBe('original');
+    for (let index = 0; index < 4_095; index += 1) {
+      await controller.executeMutation(`filler-${index}`, 'test', { value: index }, () => index);
+    }
+
+    await expect(
+      controller.executeMutation('victim', 'test', { value: 0 }, () => {
+        victimCalls += 1;
+        return 'duplicate';
+      })
+    ).resolves.toBe('original');
+    expect(victimCalls).toBe(1);
+
+    let overflowCalls = 0;
+    expect(() =>
+      controller.executeMutation('overflow', 'test', { value: 'overflow' }, () => {
+        overflowCalls += 1;
+        return 'must not run';
+      })
+    ).toThrow(expect.objectContaining({ status: 503, code: 'mutation_capacity_exhausted' }));
+    expect(overflowCalls).toBe(0);
+    await controller.shutdown();
+  });
+
+  test('rejects commands while a Session rebind is still in progress', async () => {
+    const runtime = createFakeWebRuntime(workspace);
+    let release!: () => void;
+    const rebind = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    runtime.rebindSessionRuntime = jest.fn(() => rebind);
+    const controller = await WebWorkbenchController.create({
+      cwd: workspace,
+      createRuntime: async () => runtime,
+    });
+
+    const creation = controller.createSession('held transition');
+    await Promise.resolve();
+    const sessionId = controller.runtime.getSession()?.id;
+    expect(sessionId).toEqual(expect.any(String));
+    await expect(
+      controller.dispatch({
+        requestId: 'held-command',
+        expectedSessionId: sessionId,
+        type: 'submit',
+        text: 'must not run during rebind',
+      })
+    ).rejects.toMatchObject({ status: 409, code: 'runtime_busy' });
+
+    release();
+    await expect(creation).resolves.toMatchObject({ id: sessionId });
+    expect(controller.runtime.store.getSnapshot().isProcessing).toBe(false);
     await controller.shutdown();
   });
 
@@ -145,6 +220,35 @@ describe('WebWorkbenchController', () => {
     expect(() => pageItems(['a'], undefined, 101)).toThrow('pageSize');
   });
 
+  test('binds collection cursors to a stable revision and item key', () => {
+    const items = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+    const first = pageCollectionItems('sessions', items, undefined, 2, item => item.id);
+    expect(first.items).toEqual([{ id: 'a' }, { id: 'b' }]);
+    expect(first.nextCursor).toEqual(expect.any(String));
+
+    const second = pageCollectionItems(
+      'sessions',
+      items,
+      first.nextCursor ?? undefined,
+      2,
+      item => item.id
+    );
+    expect(second).toEqual({ items: [{ id: 'c' }], nextCursor: null });
+
+    expect(() =>
+      pageCollectionItems(
+        'sessions',
+        [{ id: 'new' }, ...items],
+        first.nextCursor ?? undefined,
+        2,
+        item => item.id
+      )
+    ).toThrow(expect.objectContaining({ status: 409, code: 'collection_cursor_stale' }));
+    expect(() =>
+      pageCollectionItems('skills', items, first.nextCursor ?? undefined, 2, item => item.id)
+    ).toThrow(expect.objectContaining({ status: 400 }));
+  });
+
   test('serves the latest transcript page first and pages backward without collecting history', async () => {
     const session = createSession(workspace, 'test-model');
     appendSessionMessages(
@@ -200,6 +304,86 @@ describe('WebWorkbenchController', () => {
       'message-5',
     ]);
     expect(oldest.transcript.nextCursor).toBeNull();
+    await controller.shutdown();
+  });
+
+  test('serves v2 transcript pages without reopening the full projection and stales old cursors', async () => {
+    const session = createSession(workspace, 'test-model');
+    appendSessionMessages(
+      session.id,
+      Array.from({ length: 205 }, (_, index) => ({
+        role: index % 2 === 0 ? ('user' as const) : ('assistant' as const),
+        content: `indexed-${index + 1}`,
+        timestamp: index + 1,
+      }))
+    );
+    const materialized = materializeLegacyThreadV1({
+      projectPath: workspace,
+      sessionId: session.id,
+    });
+    expect(loadThreadSessionViewV1(workspace, session.id)?.messageCount).toBe(205);
+    const store = new ThreadEventStore(
+      getProjectThreadsV2Dir(workspace),
+      materialized.plan.receipt.threadId
+    );
+    const activeProjection = store.captureReadModelHead().projection;
+    rmSync(store.projectionPath);
+    expect(existsSync(store.projectionPath)).toBe(false);
+
+    const controller = await WebWorkbenchController.create({
+      cwd: workspace,
+      createRuntime: async cwd => createFakeWebRuntime(cwd),
+    });
+    controller.runtime.setSession(session);
+    const activeRuntimeSlot = controller as unknown as {
+      activeOrionRuntime?: {
+        readonly sessionId: string;
+        readonly runtime: { readonly thread: { getProjection(): typeof activeProjection } };
+      };
+    };
+    activeRuntimeSlot.activeOrionRuntime = {
+      sessionId: session.id,
+      runtime: { thread: { getProjection: () => activeProjection } },
+    };
+    const latest = controller.sessionSnapshot(session.id, undefined, 50, true);
+    expect(latest.transcript.items).toHaveLength(50);
+    expect(latest.transcript.items[0]).toMatchObject({ content: 'indexed-156' });
+    expect(latest.transcript.items.at(-1)).toMatchObject({ content: 'indexed-205' });
+    expect(existsSync(store.projectionPath)).toBe(false);
+    const oldCursor = latest.transcript.nextCursor;
+
+    const turnId = randomUUID();
+    const stepId = randomUUID();
+    const itemId = randomUUID();
+    store.appendDurableBatch([
+      {
+        turnId,
+        payload: { type: 'turn.started', data: { input: 'new indexed message', mode: 'build' } },
+      },
+      {
+        turnId,
+        stepId,
+        itemId,
+        payload: { type: 'item.started', data: { kind: 'message', role: 'assistant' } },
+      },
+      {
+        turnId,
+        stepId,
+        itemId,
+        payload: { type: 'item.completed', data: { content: 'indexed-206' } },
+      },
+    ]);
+    const consistentActive = controller.sessionSnapshot(session.id, undefined, 50, true);
+    expect(consistentActive.runtime.active).toBe(true);
+    expect(consistentActive.threadCursor).toBe(activeProjection.cursor);
+    expect(consistentActive.projectionDigest).toBe(activeProjection.digest);
+    expect(consistentActive.transcript.items.at(-1)).toMatchObject({ content: 'indexed-205' });
+    expect(consistentActive.transcript.items).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ content: 'indexed-206' })])
+    );
+    expect(() => controller.sessionSnapshot(session.id, oldCursor ?? undefined, 50, true)).toThrow(
+      expect.objectContaining({ status: 409, code: 'transcript_cursor_stale' })
+    );
     await controller.shutdown();
   });
 });

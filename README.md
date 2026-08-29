@@ -2,10 +2,15 @@
 
 Local-first, goal-driven coding agent for the terminal and browser.
 
-> v0.3.0 candidate — one Orion runtime with a local Web Workbench, replayable browser state and
+> v0.3.1 candidate — one Orion runtime with a local Web Workbench, replayable browser state and
 > the existing TUI/terminal surfaces. Candidate source is not an npm publication or Git tag.
 
-[中文说明](README.zh-CN.md) · [v0.3.0 Web plan](docs/plan/v0.3.0-web-workbench-plan.md) ·
+[中文说明](README.zh-CN.md) ·
+[v0.3.1 professional shell plan](docs/plan/v0.3.1-web-workbench-professional-shell-plan.md) ·
+[v0.3.1 Web API](docs/architecture/v0.3.1-web-api.yaml) ·
+[v0.3.1 E2E plan](docs/test/v0.3.1-web-workbench-e2e-plan.md) ·
+[v0.3.1 migration](docs/migration/v0.3.0-to-v0.3.1.md) ·
+[v0.3.0 Web plan](docs/plan/v0.3.0-web-workbench-plan.md) ·
 [Settings plan](docs/plan/v0.3.0-settings-integration-plan.md) ·
 [Node compatibility](docs/plan/v0.3.0-node-runtime-compatibility-plan.md) ·
 [Web API](docs/architecture/v0.3.0-web-api.yaml) ·
@@ -13,7 +18,7 @@ Local-first, goal-driven coding agent for the terminal and browser.
 [Settings migration](docs/migration/v0.2.2-to-v0.3.0-settings.md) ·
 [real-state gallery](docs/assets/screenshots/v0.3.0-web/README.md)
 
-## What changes in v0.3.0
+## What v0.3.1 includes
 
 - **One runtime, two interactive surfaces.** `orion web` uses the same product bootstrap,
   AgentRuntimeController, Session/Thread stores, ToolGateway, approvals, Goals, Plans, Skills and
@@ -22,6 +27,10 @@ Local-first, goal-driven coding agent for the terminal and browser.
   transcript and tool activity, BUILD/PLAN/AUTO, follow-ups, interrupt, approvals, Goal/Plan,
   model/effort settings, Skills/MCP and diagnostics. Snapshots plus cursor replay repair refreshes
   and SSE reconnects.
+- **Professional project shell.** The left navigator shows registered projects with lazy Session
+  pages while the center remains the only Agent conversation. A resizable right dock provides
+  Agent, Review, Terminal, Files and Git surfaces; files/Git/review are bounded read models and the
+  terminal is an explicit, ephemeral real PTY isolated from Session history and SSE.
 - **Local security boundary.** The host binds only `127.0.0.1`; writes require an exact Origin,
   process nonce, JSON body and idempotency key. Responses use a restrictive CSP, browser payloads
   are redacted, and large tool results are byte-paged instead of placed on the event stream.
@@ -71,10 +80,10 @@ user extension boundaries.
 Node.js 22.12+, 24, and 26 are supported. Use Node 24 LTS for production or Node 26 Current for
 current development environments. Node 20 is upstream EOL and is no longer a v0.3 runtime.
 
-After the immutable `0.3.0` npm receipt exists:
+After the immutable `0.3.1` npm receipt exists:
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.0
+npm install -g @orion-agents/orion-code@0.3.1
 orion --version
 orion doctor
 ```
@@ -154,6 +163,12 @@ the host aborts them fail-closed.
 The browser exposes Plan receipts exactly as committed (`body`, `returnMode`, `digest`). It does not
 insert an extra review gate: after PLAN commits, the existing runtime restores BUILD/AUTO and starts
 implementation in a separate logical turn.
+
+The project navigator does not create multiple runtimes. Cross-project Session selection is one
+atomic, revision-guarded Context transition. The right dock is 320–720px on desktop and is adjusted
+with an IDE-style mouse drag; there is no keyboard fine-resize control. Narrow layouts use drawers
+without overwriting the saved desktop width. Files, Git and Review are read-only; terminal creation
+requires an explicit gesture and its short-lived ticket and output never enter the Workbench SSE.
 
 #### Host-managed Settings
 
@@ -252,9 +267,10 @@ npm run test:web-e2e -- --grep @settings
 
 Release qualification additionally builds one exact tarball and installs that unchanged hash on
 Node 22/24/26 for package identity, native SQLite, TUI, terminal, print, Web, Goal, subagent, Skill,
-MCP, Compact, and resume journeys. See the
-[`v0.3.0 Web Workbench plan`](docs/plan/v0.3.0-web-workbench-plan.md) and
-[`v0.3.0 Settings integration plan`](docs/plan/v0.3.0-settings-integration-plan.md).
+MCP, Compact, and resume journeys. WEB31-P0-01..12 additionally qualify the multi-project shell,
+read-only engineering panels, real PTY and responsive/accessibility contract. See the
+[`v0.3.1 Web Workbench plan`](docs/plan/v0.3.1-web-workbench-professional-shell-plan.md) and
+[`v0.3.1 E2E qualification plan`](docs/test/v0.3.1-web-workbench-e2e-plan.md).
 
 ## Security
 

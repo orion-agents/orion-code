@@ -9,11 +9,14 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { getProjectArtifactsDir, getProjectSessionsDir } from '../services/config-dir';
+import { redactTraceText } from '../services/redaction';
 
 /** Maximum output size before truncation + artifact storage (10KB) */
 export const ARTIFACT_THRESHOLD = 10_240;
 const DEFAULT_ARTIFACT_TOOL_NAME = 'tool';
 const MAX_ARTIFACT_TOOL_NAME_LENGTH = 64;
+/** Browser-safe derivative suffix. It deliberately does not end in `.txt`. */
+export const TOOL_ARTIFACT_WEB_SAFE_SUFFIX = '.web-safe';
 
 const SECRETISH_ARTIFACT_NAME_PATTERNS = [
   /sk-[A-Za-z0-9_-]{8,}/gi,
@@ -87,7 +90,7 @@ export function storeArtifact(
   projectPath: string | undefined,
   toolName: string,
   output: string,
-  outputBytes: number,
+  outputBytes: number
 ): ToolArtifact | null {
   if (!projectPath) return null;
 
@@ -102,6 +105,9 @@ export function storeArtifact(
 
   try {
     fs.writeFileSync(artifactPath, output, { mode: 0o600 });
+    fs.writeFileSync(`${artifactPath}${TOOL_ARTIFACT_WEB_SAFE_SUFFIX}`, redactTraceText(output), {
+      mode: 0o600,
+    });
     return {
       id,
       outputBytes,
@@ -109,6 +115,16 @@ export function storeArtifact(
       path: artifactPath,
     };
   } catch {
+    try {
+      fs.unlinkSync(artifactPath);
+    } catch {
+      // Best-effort rollback; readers require the safe derivative and fail closed without it.
+    }
+    try {
+      fs.unlinkSync(`${artifactPath}${TOOL_ARTIFACT_WEB_SAFE_SUFFIX}`);
+    } catch {
+      // Best-effort rollback of a partially written safe derivative.
+    }
     return null;
   }
 }
@@ -198,6 +214,13 @@ export function cleanupArtifacts(projectPath: string): void {
         const stat = fs.statSync(fullPath);
         if (now - stat.mtimeMs > 24 * 60 * 60 * 1000) {
           fs.unlinkSync(fullPath);
+          if (entry.endsWith('.txt')) {
+            try {
+              fs.unlinkSync(`${fullPath}${TOOL_ARTIFACT_WEB_SAFE_SUFFIX}`);
+            } catch {
+              // Safe derivative may not exist for legacy artifacts.
+            }
+          }
         }
       } catch {
         // Best-effort

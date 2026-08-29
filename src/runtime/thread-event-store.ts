@@ -27,6 +27,10 @@ import {
   verifyThreadProjectionDigest,
   type ThreadProjectionV1,
 } from './thread-projection';
+import {
+  advanceThreadSessionIndexV1,
+  type ThreadSessionIndexHeadV1,
+} from './thread-session-index';
 import type {
   CompactAuthoritativeSourceV1,
   CompactCheckpointCommitReceiptV1,
@@ -56,17 +60,57 @@ export interface ThreadEventCommitV1 {
   readonly projection: ThreadProjectionV1;
 }
 
+export interface ThreadLogIdentityV1 {
+  readonly bytes: number;
+  readonly device: string;
+  readonly inode: string;
+  readonly mtimeNs: string;
+  readonly ctimeNs: string;
+}
+
 export interface ThreadReadModelHeadV1 {
   readonly projection: ThreadProjectionV1;
   readonly lastEventTimestamp: number;
   readonly lastRecordHash: string | null;
-  readonly log: {
-    readonly bytes: number;
-    readonly device: string;
-    readonly inode: string;
-    readonly mtimeNs: string;
-    readonly ctimeNs: string;
-  };
+  readonly log: ThreadLogIdentityV1;
+}
+
+export interface ThreadCheckpointHeadV1 {
+  readonly cursor: number;
+  readonly projectionDigest: string;
+  readonly lastEventTimestamp: number;
+  readonly lastRecordHash: string | null;
+  readonly log: ThreadLogIdentityV1;
+  readonly verifiedPrefixes: readonly ThreadVerifiedPrefixV1[];
+}
+
+export interface ThreadVerifiedPrefixV1 {
+  readonly cursor: number;
+  readonly eventDigest: string;
+  readonly projectionDigest: string;
+}
+
+/**
+ * Crash-safe derived checkpoint for opening a Thread in a fresh process.
+ *
+ * The JSONL remains authoritative. This receipt is accepted only while its
+ * exact file identity and independently digested projection still match; any
+ * mismatch falls back to the full hash-chain verification path.
+ */
+export interface ThreadHeadV1 {
+  readonly version: 1;
+  readonly generation: number;
+  readonly threadId: string;
+  readonly cursor: number;
+  readonly projectionDigest: string;
+  readonly lastEventTimestamp: number;
+  readonly lastRecordHash: string | null;
+  readonly safeByteLength: number;
+  readonly discardedTailBytes: number;
+  readonly eventIds: readonly string[];
+  readonly verifiedPrefixes: readonly ThreadVerifiedPrefixV1[];
+  readonly log: ThreadLogIdentityV1;
+  readonly digest: string;
 }
 
 interface StoredCompactCheckpointV1 {
@@ -145,10 +189,19 @@ interface ScannedThreadEventLogV1 {
 }
 
 interface CachedThreadHeadV1 {
+  readonly generation: number;
   readonly logFingerprint: string;
+  readonly log: ThreadLogIdentityV1;
   readonly projectionFingerprint?: string;
-  readonly scan: ScannedThreadEventLogV1;
+  readonly scan?: ScannedThreadEventLogV1;
   readonly projection: ThreadProjectionV1;
+  readonly lastEventTimestamp: number;
+  readonly lastRecordHash: string | null;
+  readonly safeByteLength: number;
+  readonly discardedTailBytes: number;
+  readonly eventIds: readonly string[];
+  readonly eventIdSet: ReadonlySet<string>;
+  readonly verifiedPrefixes: readonly ThreadVerifiedPrefixV1[];
 }
 
 export class ThreadEventStoreError extends Error {
@@ -181,6 +234,7 @@ const DEFAULT_LOCK_WAIT_MS = 10_000;
 export class ThreadEventStore {
   readonly logPath: string;
   readonly projectionPath: string;
+  readonly headPath: string;
   readonly compactStatePath: string;
   readonly compactCheckpointsDir: string;
   private readonly maxLogBytes: number;
@@ -206,6 +260,7 @@ export class ThreadEventStore {
     }
     this.logPath = join(rootDir, `${threadId}.events.v1.jsonl`);
     this.projectionPath = join(rootDir, `${threadId}.projection.v1.json`);
+    this.headPath = join(rootDir, `${threadId}.head.v1.json`);
     this.compactStatePath = join(rootDir, `${threadId}.compact-state.v1.json`);
     this.compactCheckpointsDir = join(rootDir, `${threadId}.compact-checkpoints.v1`);
     this.maxLogBytes = positiveInteger(options.maxLogBytes ?? DEFAULT_MAX_LOG_BYTES, 'maxLogBytes');
@@ -233,13 +288,12 @@ export class ThreadEventStore {
     const commit = this.withLogLock(() => {
       ensurePrivateDirectory(this.rootDir);
       const head = this.loadVerifiedHead();
-      const { scan } = head;
-      if (scan.discardedTailBytes > 0) truncateSync(this.logPath, scan.safeByteLength);
+      if (head.discardedTailBytes > 0) truncateSync(this.logPath, head.safeByteLength);
 
-      let seq = scan.events.length;
-      let previousHash = scan.records.at(-1)?.hash ?? null;
+      let seq = head.projection.cursor;
+      let previousHash = head.lastRecordHash;
       const records: StoredThreadEventRecordV1[] = [];
-      const eventIds = new Set(scan.events.map(event => event.eventId));
+      const eventIds = new Set(head.eventIdSet);
 
       for (const input of inputs) {
         seq += 1;
@@ -288,18 +342,46 @@ export class ThreadEventStore {
       fsyncDirectory(this.rootDir);
       this.boundary('after_projection_write', seq);
 
-      const nextScan = {
-        records: [...scan.records, ...records],
-        events: [...scan.events, ...committedEvents],
-        safeByteLength: statSync(this.logPath).size,
-        discardedTailBytes: 0,
-      } satisfies ScannedThreadEventLogV1;
-      this.cachedHead = {
-        logFingerprint: fileFingerprint(this.logPath),
+      const nextLogIdentity = readFileIdentity(this.logPath);
+      const safeByteLength = nextLogIdentity.bytes;
+      const nextScan = head.scan
+        ? ({
+            records: [...head.scan.records, ...records],
+            events: [...head.scan.events, ...committedEvents],
+            safeByteLength,
+            discardedTailBytes: 0,
+          } satisfies ScannedThreadEventLogV1)
+        : undefined;
+      const nextHead: CachedThreadHeadV1 = {
+        generation: head.generation + 1,
+        logFingerprint: nextLogIdentity.fingerprint,
+        log: storedLogIdentity(nextLogIdentity),
         projectionFingerprint: fileFingerprint(this.projectionPath),
-        scan: nextScan,
+        ...(nextScan ? { scan: nextScan } : {}),
         projection,
+        lastEventTimestamp: committedEvents.at(-1)?.timestamp ?? head.lastEventTimestamp,
+        lastRecordHash: previousHash,
+        safeByteLength,
+        discardedTailBytes: 0,
+        eventIds: [...eventIds],
+        eventIdSet: eventIds,
+        verifiedPrefixes: head.verifiedPrefixes,
       };
+      this.cachedHead = nextHead;
+      this.tryPersistVerifiedHead(nextHead);
+      try {
+        advanceThreadSessionIndexV1({
+          rootDir: this.rootDir,
+          threadId: this.threadId,
+          previousHead: sessionIndexHead(head),
+          nextHead: sessionIndexHead(nextHead),
+          projection,
+          committedEvents,
+        });
+      } catch {
+        // The immutable transcript index is derived. A stale manifest forces
+        // a verified rebuild on the next snapshot and cannot veto the fact.
+      }
 
       return deepFreeze({ events: committedEvents, projection });
     });
@@ -349,7 +431,7 @@ export class ThreadEventStore {
     }
 
     return this.withLogLock(() => {
-      const { scan } = this.loadVerifiedHead();
+      const scan = requireVerifiedScan(this.loadVerifiedHead(true));
       const lastSeq = scan.events.length;
       if (cursor > lastSeq) {
         throw new ThreadEventStoreError(
@@ -368,12 +450,92 @@ export class ThreadEventStore {
     });
   }
 
+  /**
+   * Verify and seal an immutable imported prefix. The first call may scan the
+   * authoritative log; later processes reuse the prefix receipt while the
+   * exact log identity/projection checkpoint remains current. Internal append
+   * carries the proof forward because the hash-chained prefix cannot change.
+   */
+  verifyDurablePrefix(
+    cursor: number,
+    eventDigest: string,
+    projectionDigest: string
+  ): boolean {
+    if (
+      !Number.isSafeInteger(cursor) ||
+      cursor <= 0 ||
+      !isSha256(eventDigest) ||
+      !isSha256(projectionDigest)
+    ) {
+      return false;
+    }
+    return this.withLogLock(() => {
+      let head = this.loadVerifiedHead();
+      if (cursor > head.projection.cursor) return false;
+      const expected = { cursor, eventDigest, projectionDigest };
+      if (head.verifiedPrefixes.some(prefix => sameVerifiedPrefix(prefix, expected))) return true;
+
+      head = this.loadVerifiedHead(true);
+      const scan = requireVerifiedScan(head);
+      const events = scan.events.slice(0, cursor);
+      if (
+        events.length !== cursor ||
+        digestRuntimeValue(events) !== eventDigest ||
+        projectThreadEvents(this.threadId, events).digest !== projectionDigest
+      ) {
+        return false;
+      }
+
+      const next: CachedThreadHeadV1 = {
+        ...head,
+        generation: head.generation + 1,
+        verifiedPrefixes: [...head.verifiedPrefixes, expected].sort(
+          (left, right) => left.cursor - right.cursor
+        ),
+      };
+      this.cachedHead = next;
+      this.tryPersistVerifiedHead(next);
+      return true;
+    });
+  }
+
   getCursor(): number {
     const cached = this.cachedHead;
     if (cached && cached.logFingerprint === fileFingerprint(this.logPath)) {
       return cached.projection.cursor;
     }
     return this.withLogLock(() => this.loadVerifiedHead().projection.cursor);
+  }
+
+  /**
+   * Read the compact persisted receipt without parsing the potentially large
+   * projection. Callers must fall back to the authoritative scan whenever the
+   * receipt is missing, stale, or lacks their required cutover proof.
+   */
+  capturePersistedCheckpointHead(): ThreadCheckpointHeadV1 | undefined {
+    return this.withLogLock(() => {
+      const identity = readFileIdentity(this.logPath);
+      const cached = this.cachedHead;
+      if (cached?.logFingerprint === identity.fingerprint) {
+        return checkpointHead(cached);
+      }
+      const stored = readStoredThreadHead(this.headPath, this.threadId);
+      if (
+        !stored ||
+        !sameStoredLogIdentity(stored.log, identity) ||
+        stored.safeByteLength + stored.discardedTailBytes !== identity.bytes
+      ) {
+        return undefined;
+      }
+      return deepFreeze({
+        cursor: stored.cursor,
+        projectionDigest: stored.projectionDigest,
+        lastEventTimestamp: stored.lastEventTimestamp,
+        lastRecordHash: stored.lastRecordHash,
+        log: { ...stored.log },
+        verifiedPrefixes: stored.verifiedPrefixes.map(prefix => ({ ...prefix })),
+      });
+    });
   }
 
   /** Capture the catalog read model and its exact verified log identity atomically. */
@@ -388,8 +550,8 @@ export class ThreadEventStore {
         }
         return deepFreeze({
           projection: head.projection,
-          lastEventTimestamp: head.scan.events.at(-1)?.timestamp ?? 0,
-          lastRecordHash: head.scan.records.at(-1)?.hash ?? null,
+          lastEventTimestamp: head.lastEventTimestamp,
+          lastRecordHash: head.lastRecordHash,
           log: {
             bytes: identity.bytes,
             device: identity.device,
@@ -409,7 +571,10 @@ export class ThreadEventStore {
       const head = this.loadVerifiedHead();
       const replayed = head.projection;
       const projectionFingerprint = fileFingerprint(this.projectionPath);
-      if (head.projectionFingerprint === projectionFingerprint) return replayed;
+      if (head.projectionFingerprint === projectionFingerprint) {
+        this.tryPersistVerifiedHead(head);
+        return replayed;
+      }
       const cached = readProjection(this.projectionPath);
       if (
         cached &&
@@ -418,15 +583,19 @@ export class ThreadEventStore {
         cached.digest === replayed.digest &&
         verifyThreadProjectionDigest(cached)
       ) {
-        this.cachedHead = { ...head, projectionFingerprint };
+        const current = { ...head, projectionFingerprint };
+        this.cachedHead = current;
+        this.tryPersistVerifiedHead(current);
         return replayed;
       }
       writeProjection(this.projectionPath, replayed);
       fsyncDirectory(this.rootDir);
-      this.cachedHead = {
+      const current = {
         ...head,
         projectionFingerprint: fileFingerprint(this.projectionPath),
       };
+      this.cachedHead = current;
+      this.tryPersistVerifiedHead(current);
       return replayed;
     });
   }
@@ -437,7 +606,7 @@ export class ThreadEventStore {
    */
   loadAuthoritativeModelHistory(): readonly unknown[] | undefined {
     return this.withLogLock(() => {
-      const { scan } = this.loadVerifiedHead();
+      const scan = requireVerifiedScan(this.loadVerifiedHead(true));
       const state = readCompactState(this.compactStatePath, this.threadId);
       if (state) this.assertCompactCheckpoint(state);
       const turnState = readLatestDurableTurnState(scan.events, this.threadId);
@@ -453,7 +622,9 @@ export class ThreadEventStore {
   captureCompactSource(turnId: string): CompactAuthoritativeSourceV1 {
     return this.withLogLock(() => {
       ensurePrivateDirectory(this.rootDir);
-      const { scan, projection } = this.loadVerifiedHead();
+      const head = this.loadVerifiedHead(true);
+      const scan = requireVerifiedScan(head);
+      const { projection } = head;
       assertActiveMaintenanceTurn(projection, turnId);
       const state = readCompactState(this.compactStatePath, this.threadId);
       if (state) this.assertCompactCheckpoint(state);
@@ -491,7 +662,9 @@ export class ThreadEventStore {
       validateCompactCommitInput(input, this.threadId);
 
       input.onBoundary('before_cas_recheck');
-      const { scan, projection } = this.loadVerifiedHead();
+      const head = this.loadVerifiedHead(true);
+      const scan = requireVerifiedScan(head);
+      const { projection } = head;
       const eventsAfterAnchor = scan.events.slice(input.expectedEventAnchor.cursor);
       const onlyQueuedFollowUps =
         eventsAfterAnchor.length > 0 &&
@@ -576,7 +749,7 @@ export class ThreadEventStore {
 
   listCompactEvents(): readonly RuntimeEventEnvelopeV1<CompactRuntimeEventV1>[] {
     return this.withLogLock(() => {
-      const { scan } = this.loadVerifiedHead();
+      const scan = requireVerifiedScan(this.loadVerifiedHead(true));
       return deepFreeze(
         scan.events.filter(
           (event): event is RuntimeEventEnvelopeV1<CompactRuntimeEventV1> =>
@@ -633,13 +806,35 @@ export class ThreadEventStore {
   }
 
   /**
-   * Return the last fully verified log head, rescanning only after the file
-   * identity changes. Callers already hold the Thread log lock.
+   * Return the last verified log head. A fresh process may adopt the persisted
+   * receipt only when the exact JSONL identity and independently validated
+   * projection still match. Callers that need historical events explicitly
+   * request a scan; cursor/projection/append paths stay O(head + projection).
    */
-  private loadVerifiedHead(): CachedThreadHeadV1 {
+  private loadVerifiedHead(requireScan = false): CachedThreadHeadV1 {
     ensurePrivateDirectory(this.rootDir);
-    const logFingerprint = fileFingerprint(this.logPath);
-    if (this.cachedHead?.logFingerprint === logFingerprint) return this.cachedHead;
+    const logIdentity = readFileIdentity(this.logPath);
+    if (
+      this.cachedHead?.logFingerprint === logIdentity.fingerprint &&
+      (!requireScan || this.cachedHead.scan)
+    ) {
+      return this.cachedHead;
+    }
+
+    const stored = readStoredThreadHead(this.headPath, this.threadId);
+    if (!requireScan && stored) {
+      const projection = readProjection(this.projectionPath);
+      const persisted = hydratePersistedThreadHead(
+        stored,
+        logIdentity,
+        projection,
+        fileFingerprint(this.projectionPath)
+      );
+      if (persisted) {
+        this.cachedHead = persisted;
+        return persisted;
+      }
+    }
 
     const scan = scanThreadEventLog(this.logPath, this.threadId, this.maxLogBytes);
     this.onLogScan?.({
@@ -648,9 +843,46 @@ export class ThreadEventStore {
       events: scan.events.length,
     });
     const projection = projectThreadEvents(this.threadId, scan.events);
-    const head: CachedThreadHeadV1 = { logFingerprint, scan, projection };
+    const eventIds = scan.events.map(event => event.eventId);
+    const projectionFingerprint = projectionFileMatches(this.projectionPath, projection)
+      ? fileFingerprint(this.projectionPath)
+      : undefined;
+    const head: CachedThreadHeadV1 = {
+      generation: (stored?.generation ?? 0) + 1,
+      logFingerprint: logIdentity.fingerprint,
+      log: storedLogIdentity(logIdentity),
+      ...(projectionFingerprint ? { projectionFingerprint } : {}),
+      scan,
+      projection,
+      lastEventTimestamp: scan.events.at(-1)?.timestamp ?? 0,
+      lastRecordHash: scan.records.at(-1)?.hash ?? null,
+      safeByteLength: scan.safeByteLength,
+      discardedTailBytes: scan.discardedTailBytes,
+      eventIds,
+      eventIdSet: new Set(eventIds),
+      verifiedPrefixes: retainVerifiedPrefixes(stored?.verifiedPrefixes ?? [], scan, this.threadId),
+    };
     this.cachedHead = head;
+    if (projectionFingerprint) this.tryPersistVerifiedHead(head);
     return head;
+  }
+
+  private tryPersistVerifiedHead(head: CachedThreadHeadV1): void {
+    try {
+      const logIdentity = readFileIdentity(this.logPath);
+      if (logIdentity.fingerprint !== head.logFingerprint) return;
+      if (!projectionFileMatches(this.projectionPath, head.projection)) return;
+      const stored = createStoredThreadHead(head, logIdentity);
+      atomicWriteFileSync(this.headPath, `${canonicalRuntimeJson(stored)}\n`, {
+        mode: 0o600,
+        fsync: true,
+      });
+      fsyncDirectory(this.rootDir);
+    } catch {
+      // The JSONL fact and projection are already durable. A missing/stale
+      // derived head merely makes the next process take the full verification
+      // path; it must never turn a committed fact into a reported failure.
+    }
   }
 
   private withLogLock<T>(operation: () => T): T {
@@ -827,6 +1059,225 @@ function readProjection(path: string): ThreadProjectionV1 | null {
   } catch {
     return null;
   }
+}
+
+function projectionFileMatches(path: string, expected: ThreadProjectionV1): boolean {
+  const projection = readProjection(path);
+  return Boolean(
+    projection &&
+      projection.threadId === expected.threadId &&
+      projection.cursor === expected.cursor &&
+      projection.digest === expected.digest &&
+      verifyThreadProjectionDigest(projection)
+  );
+}
+
+function readStoredThreadHead(path: string, threadId: string): ThreadHeadV1 | null {
+  if (!existsSync(path)) return null;
+  try {
+    const value = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+    if (!isRecord(value)) return null;
+    const { digest: _digest, ...content } = value;
+    void _digest;
+    if (
+      value.version !== 1 ||
+      value.threadId !== threadId ||
+      !Number.isSafeInteger(value.generation) ||
+      (value.generation as number) < 1 ||
+      !Number.isSafeInteger(value.cursor) ||
+      (value.cursor as number) < 0 ||
+      typeof value.projectionDigest !== 'string' ||
+      !Number.isSafeInteger(value.lastEventTimestamp) ||
+      (value.lastEventTimestamp as number) < 0 ||
+      (value.lastRecordHash !== null && !isSha256(value.lastRecordHash)) ||
+      !Number.isSafeInteger(value.safeByteLength) ||
+      (value.safeByteLength as number) < 0 ||
+      !Number.isSafeInteger(value.discardedTailBytes) ||
+      (value.discardedTailBytes as number) < 0 ||
+      !Array.isArray(value.eventIds) ||
+      !Array.isArray(value.verifiedPrefixes) ||
+      value.verifiedPrefixes.length > 32 ||
+      !isStoredLogIdentity(value.log) ||
+      typeof value.digest !== 'string' ||
+      digestRuntimeValue(content) !== value.digest
+    ) {
+      return null;
+    }
+    const eventIds = value.eventIds;
+    if (
+      eventIds.length !== value.cursor ||
+      eventIds.some(eventId => typeof eventId !== 'string' || !isRuntimeId(eventId)) ||
+      new Set(eventIds).size !== eventIds.length ||
+      ((value.cursor as number) === 0) !== (value.lastRecordHash === null) ||
+      ((value.cursor as number) === 0 && (value.lastEventTimestamp as number) !== 0)
+    ) {
+      return null;
+    }
+    const prefixes = value.verifiedPrefixes;
+    if (
+      prefixes.some(prefix => !isStoredVerifiedPrefix(prefix, value.cursor as number)) ||
+      new Set(prefixes.map(prefix => (prefix as ThreadVerifiedPrefixV1).cursor)).size !==
+        prefixes.length
+    ) {
+      return null;
+    }
+    return deepFreeze(value as unknown as ThreadHeadV1);
+  } catch {
+    return null;
+  }
+}
+
+function hydratePersistedThreadHead(
+  stored: ThreadHeadV1,
+  logIdentity: FileIdentityV1,
+  projection: ThreadProjectionV1 | null,
+  projectionFingerprint: string
+): CachedThreadHeadV1 | null {
+  if (
+    !sameStoredLogIdentity(stored.log, logIdentity) ||
+    stored.safeByteLength + stored.discardedTailBytes !== logIdentity.bytes ||
+    !projection ||
+    projection.threadId !== stored.threadId ||
+    projection.cursor !== stored.cursor ||
+    projection.digest !== stored.projectionDigest ||
+    !verifyThreadProjectionDigest(projection)
+  ) {
+    return null;
+  }
+  const eventIds = [...stored.eventIds];
+  return {
+    generation: stored.generation,
+    logFingerprint: logIdentity.fingerprint,
+    log: storedLogIdentity(logIdentity),
+    projectionFingerprint,
+    projection,
+    lastEventTimestamp: stored.lastEventTimestamp,
+    lastRecordHash: stored.lastRecordHash,
+    safeByteLength: stored.safeByteLength,
+    discardedTailBytes: stored.discardedTailBytes,
+    eventIds,
+    eventIdSet: new Set(eventIds),
+    verifiedPrefixes: stored.verifiedPrefixes.map(prefix => ({ ...prefix })),
+  };
+}
+
+function createStoredThreadHead(
+  head: CachedThreadHeadV1,
+  logIdentity: FileIdentityV1
+): ThreadHeadV1 {
+  const content = {
+    version: 1 as const,
+    generation: head.generation,
+    threadId: head.projection.threadId,
+    cursor: head.projection.cursor,
+    projectionDigest: head.projection.digest,
+    lastEventTimestamp: head.lastEventTimestamp,
+    lastRecordHash: head.lastRecordHash,
+    safeByteLength: head.safeByteLength,
+    discardedTailBytes: head.discardedTailBytes,
+    eventIds: [...head.eventIds],
+    verifiedPrefixes: head.verifiedPrefixes.map(prefix => ({ ...prefix })),
+    log: storedLogIdentity(logIdentity),
+  };
+  return deepFreeze({ ...content, digest: digestRuntimeValue(content) });
+}
+
+function retainVerifiedPrefixes(
+  prefixes: readonly ThreadVerifiedPrefixV1[],
+  scan: ScannedThreadEventLogV1,
+  threadId: string
+): readonly ThreadVerifiedPrefixV1[] {
+  return prefixes.filter(prefix => {
+    if (prefix.cursor > scan.events.length) return false;
+    const events = scan.events.slice(0, prefix.cursor);
+    return (
+      digestRuntimeValue(events) === prefix.eventDigest &&
+      projectThreadEvents(threadId, events).digest === prefix.projectionDigest
+    );
+  });
+}
+
+function requireVerifiedScan(head: CachedThreadHeadV1): ScannedThreadEventLogV1 {
+  if (!head.scan) throw new Error('Thread event history was not loaded');
+  return head.scan;
+}
+
+function sessionIndexHead(head: CachedThreadHeadV1): ThreadSessionIndexHeadV1 {
+  return {
+    cursor: head.projection.cursor,
+    projectionDigest: head.projection.digest,
+    lastEventTimestamp: head.lastEventTimestamp,
+    lastRecordHash: head.lastRecordHash,
+    log: head.log,
+  };
+}
+
+function checkpointHead(head: CachedThreadHeadV1): ThreadCheckpointHeadV1 {
+  return deepFreeze({
+    cursor: head.projection.cursor,
+    projectionDigest: head.projection.digest,
+    lastEventTimestamp: head.lastEventTimestamp,
+    lastRecordHash: head.lastRecordHash,
+    log: { ...head.log },
+    verifiedPrefixes: head.verifiedPrefixes.map(prefix => ({ ...prefix })),
+  });
+}
+
+function isStoredVerifiedPrefix(value: unknown, headCursor: number): boolean {
+  return (
+    isRecord(value) &&
+    Number.isSafeInteger(value.cursor) &&
+    (value.cursor as number) > 0 &&
+    (value.cursor as number) <= headCursor &&
+    isSha256(value.eventDigest) &&
+    isSha256(value.projectionDigest)
+  );
+}
+
+function sameVerifiedPrefix(
+  left: ThreadVerifiedPrefixV1,
+  right: ThreadVerifiedPrefixV1
+): boolean {
+  return (
+    left.cursor === right.cursor &&
+    left.eventDigest === right.eventDigest &&
+    left.projectionDigest === right.projectionDigest
+  );
+}
+
+function isStoredLogIdentity(value: unknown): value is ThreadLogIdentityV1 {
+  return (
+    isRecord(value) &&
+    Number.isSafeInteger(value.bytes) &&
+    (value.bytes as number) >= 0 &&
+    ['device', 'inode', 'mtimeNs', 'ctimeNs'].every(
+      key => typeof value[key] === 'string' && /^\d+$/.test(value[key] as string)
+    )
+  );
+}
+
+function sameStoredLogIdentity(stored: ThreadLogIdentityV1, current: FileIdentityV1): boolean {
+  return (
+    stored.bytes === current.bytes &&
+    stored.device === current.device &&
+    stored.inode === current.inode &&
+    stored.mtimeNs === current.mtimeNs &&
+    stored.ctimeNs === current.ctimeNs
+  );
+}
+
+function storedLogIdentity(identity: FileIdentityV1): ThreadLogIdentityV1 {
+  return {
+    bytes: identity.bytes,
+    device: identity.device,
+    inode: identity.inode,
+    mtimeNs: identity.mtimeNs,
+    ctimeNs: identity.ctimeNs,
+  };
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 }
 
 /**

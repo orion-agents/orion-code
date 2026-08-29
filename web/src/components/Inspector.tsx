@@ -2,7 +2,6 @@ import {
   useEffect,
   useId,
   useMemo,
-  useRef,
   useState,
   type FormEvent,
   type KeyboardEvent,
@@ -13,11 +12,10 @@ import type { WebToolCall, WorkbenchState } from '../types';
 import { Icon } from './Icon';
 import { Markdown, safeJson, sanitizeDisplayText } from './Markdown';
 
-type InspectorMode = 'dock' | 'overlay';
-type InspectorTab = 'goal' | 'activity' | 'integrations' | 'diagnostics';
+export type AgentPanelTab = 'goal' | 'activity' | 'integrations' | 'diagnostics';
 
 const TABS: ReadonlyArray<{
-  readonly id: InspectorTab;
+  readonly id: AgentPanelTab;
   readonly label: string;
   readonly icon: 'goal' | 'activity' | 'branch' | 'diagnostics';
 }> = [
@@ -27,88 +25,15 @@ const TABS: ReadonlyArray<{
   { id: 'diagnostics', label: '诊断', icon: 'diagnostics' },
 ];
 
-export interface InspectorProps {
+export interface AgentPanelProps {
   readonly state: WorkbenchState;
   readonly actions: WorkbenchActions;
-  readonly mode: InspectorMode;
-  readonly expanded: boolean;
-  readonly settingsOpen: boolean;
-  readonly onExpand: () => void;
-  readonly onCollapse: () => void;
-  readonly onOpenSettings: () => void;
+  readonly tab: AgentPanelTab;
+  readonly onTabChange: (tab: AgentPanelTab) => void;
 }
 
-export function Inspector({
-  state,
-  actions,
-  mode,
-  expanded,
-  settingsOpen,
-  onExpand,
-  onCollapse,
-  onOpenSettings,
-}: InspectorProps) {
-  const [tab, setTab] = useState<InspectorTab>('goal');
-  const surfaceRef = useRef<HTMLElement>(null);
-  const closeRef = useRef<HTMLButtonElement>(null);
-  const tabRefs = useRef<Partial<Record<InspectorTab, HTMLButtonElement>>>({});
-  const shortcutRefs = useRef<Partial<Record<InspectorTab, HTMLButtonElement>>>({});
-  const pendingFocus = useRef<InspectorTab | null>(null);
-  const wasExpanded = useRef(expanded);
+export function AgentPanel({ state, actions, tab, onTabChange }: AgentPanelProps) {
   const panelId = useId();
-
-  useEffect(() => {
-    const opened = expanded && !wasExpanded.current;
-    const closed = !expanded && wasExpanded.current;
-
-    if (opened) {
-      if (mode === 'overlay') closeRef.current?.focus();
-      else if (pendingFocus.current) tabRefs.current[pendingFocus.current]?.focus();
-    } else if (closed && mode === 'dock' && pendingFocus.current) {
-      const focusTarget = pendingFocus.current;
-      requestAnimationFrame(() => shortcutRefs.current[focusTarget]?.focus());
-    }
-
-    wasExpanded.current = expanded;
-    pendingFocus.current = null;
-  }, [expanded, mode]);
-
-  const expandTab = (nextTab: InspectorTab) => {
-    pendingFocus.current = nextTab;
-    setTab(nextTab);
-    onExpand();
-  };
-
-  const collapse = () => {
-    if (mode === 'dock') pendingFocus.current = tab;
-    onCollapse();
-  };
-
-  const onSurfaceKeyDown = (event: KeyboardEvent<HTMLElement>) => {
-    if (mode !== 'overlay' || !expanded) return;
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      event.stopPropagation();
-      onCollapse();
-      return;
-    }
-    if (event.key !== 'Tab') return;
-
-    const focusable = focusableElements(surfaceRef.current);
-    if (!focusable.length) {
-      event.preventDefault();
-      surfaceRef.current?.focus();
-      return;
-    }
-    const current = focusable.indexOf(document.activeElement as HTMLElement);
-    if (event.shiftKey && current <= 0) {
-      event.preventDefault();
-      focusable.at(-1)?.focus();
-    } else if (!event.shiftKey && (current === -1 || current === focusable.length - 1)) {
-      event.preventDefault();
-      focusable[0].focus();
-    }
-  };
 
   const onTabKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (
@@ -126,104 +51,14 @@ export function Inspector({
         : event.key === 'End'
           ? TABS.length - 1
           : (current + (event.key === 'ArrowRight' ? 1 : -1) + TABS.length) % TABS.length;
-    setTab(TABS[next].id);
+    onTabChange(TABS[next].id);
     requestAnimationFrame(() =>
       document.getElementById(`${panelId}-tab-${TABS[next].id}`)?.focus()
     );
   };
 
   return (
-    <aside
-      ref={surfaceRef}
-      id="session-inspector"
-      className={`inspector inspector-${mode} ${expanded ? 'drawer-open inspector-expanded' : 'inspector-collapsed'}`}
-      role={mode === 'overlay' ? 'dialog' : undefined}
-      aria-modal={mode === 'overlay' && expanded ? true : undefined}
-      aria-label="工作详情"
-      data-mode={mode}
-      data-state={expanded ? 'expanded' : 'collapsed'}
-      tabIndex={mode === 'overlay' && expanded ? -1 : undefined}
-      onKeyDownCapture={onSurfaceKeyDown}
-    >
-      <nav
-        className="inspector-shortcuts"
-        aria-label="工作详情快捷入口"
-        hidden={mode === 'overlay' || expanded}
-      >
-        <button
-          type="button"
-          className="inspector-shortcut inspector-shortcut-expand"
-          aria-label={`展开工作详情，当前类别${tabLabel(tab)}`}
-          title={`展开工作详情，当前类别${tabLabel(tab)}`}
-          data-tooltip="展开工作详情"
-          aria-controls="session-inspector-detail"
-          aria-expanded="false"
-          onClick={() => expandTab(tab)}
-        >
-          <Icon name="sidebar" size={18} />
-        </button>
-        <span className="inspector-shortcut-divider" aria-hidden="true" />
-        {TABS.map(item => {
-          const badge = shortcutBadge(item.id, state);
-          const label = shortcutLabel(item.id, state);
-          return (
-            <button
-              ref={element => {
-                shortcutRefs.current[item.id] = element ?? undefined;
-              }}
-              key={item.id}
-              type="button"
-              className="inspector-shortcut"
-              aria-label={label}
-              title={label}
-              data-tooltip={item.label}
-              aria-current={tab === item.id ? 'page' : undefined}
-              aria-controls="session-inspector-detail"
-              onClick={() => expandTab(item.id)}
-            >
-              <Icon name={item.icon} size={17} />
-              <span
-                className={`inspector-shortcut-indicator indicator-${shortcutTone(item.id, state)}`}
-                aria-hidden="true"
-              >
-                {badge}
-              </span>
-            </button>
-          );
-        })}
-      </nav>
-
-      <div id="session-inspector-detail" className="inspector-detail" hidden={!expanded}>
-        <header className="inspector-header">
-          <div>
-            <span className="eyebrow">SESSION CONTEXT</span>
-            <h2 id="work-details-heading">工作详情</h2>
-          </div>
-          <div className="inspector-header-actions">
-            <button
-              type="button"
-              className="icon-button"
-              onClick={onOpenSettings}
-              aria-label="打开设置"
-              aria-haspopup="dialog"
-              aria-controls="settings-dialog"
-              aria-expanded={settingsOpen}
-            >
-              <Icon name="settings" />
-            </button>
-            <button
-              ref={closeRef}
-              type="button"
-              className="icon-button inspector-collapse"
-              onClick={collapse}
-              aria-label={mode === 'overlay' ? '关闭工作详情' : '折叠工作详情'}
-              aria-controls="session-inspector-detail"
-              aria-expanded="true"
-            >
-              <Icon name={mode === 'overlay' ? 'close' : 'sidebar'} />
-            </button>
-          </div>
-        </header>
+    <div className="agent-panel">
         <div
           className="inspector-tabs"
           role="tablist"
@@ -232,9 +67,6 @@ export function Inspector({
         >
           {TABS.map(item => (
             <button
-              ref={element => {
-                tabRefs.current[item.id] = element ?? undefined;
-              }}
               id={`${panelId}-tab-${item.id}`}
               key={item.id}
               type="button"
@@ -242,7 +74,7 @@ export function Inspector({
               aria-selected={tab === item.id}
               aria-controls={`${panelId}-panel`}
               tabIndex={tab === item.id ? 0 : -1}
-              onClick={() => setTab(item.id)}
+              onClick={() => onTabChange(item.id)}
             >
               <Icon name={item.icon} size={15} />
               <span>{item.label}</span>
@@ -258,11 +90,10 @@ export function Inspector({
         >
           {tab === 'goal' ? <GoalPanel state={state} actions={actions} /> : null}
           {tab === 'activity' ? <ActivityPanel state={state} actions={actions} /> : null}
-          {tab === 'integrations' ? <IntegrationsPanel state={state} /> : null}
+          {tab === 'integrations' ? <IntegrationsPanel state={state} actions={actions} /> : null}
           {tab === 'diagnostics' ? <DiagnosticsPanel state={state} actions={actions} /> : null}
         </div>
-      </div>
-    </aside>
+    </div>
   );
 }
 
@@ -277,6 +108,7 @@ function GoalPanel({
   const plan =
     state.plan?.body ?? (typeof state.diagnostics?.plan === 'string' ? state.diagnostics.plan : '');
   const pending = Boolean(state.pendingAction);
+  const commandBlocked = pending || state.connection !== 'live';
   if (!goal) {
     return (
       <div className="inspector-stack">
@@ -289,7 +121,7 @@ function GoalPanel({
         </section>
         <GoalCreateForm
           onCreate={objective => actions.controlGoal('create', objective)}
-          disabled={pending || !state.activeSessionId}
+          disabled={commandBlocked || !state.activeSessionId}
         />
         <PlanSection mode={state.mode.baseMode} plan={plan} />
       </div>
@@ -373,7 +205,7 @@ function GoalPanel({
               type="button"
               className="secondary-button"
               onClick={() => void actions.controlGoal('pause')}
-              disabled={pending}
+              disabled={commandBlocked}
             >
               <Icon name="pause" size={14} />
               暂停
@@ -383,7 +215,7 @@ function GoalPanel({
               type="button"
               className="secondary-button"
               onClick={() => void actions.controlGoal('resume')}
-              disabled={pending}
+              disabled={commandBlocked}
             >
               <Icon name="refresh" size={14} />
               恢复
@@ -396,7 +228,7 @@ function GoalPanel({
               if (window.confirm('清除此 Goal？会话记录仍会保留。'))
                 void actions.controlGoal('clear');
             }}
-            disabled={pending}
+            disabled={commandBlocked}
           >
             清除
           </button>
@@ -736,6 +568,16 @@ function ToolDetailsSection({
       ) : (
         <EmptySmall text="没有可读取的持久化输出" />
       )}
+      {state.toolDetailNextCursor ? (
+        <button
+          type="button"
+          className="text-button"
+          onClick={() => void actions.loadMoreToolDetails()}
+          disabled={Boolean(state.pendingAction)}
+        >
+          加载更多输出记录
+        </button>
+      ) : null}
       {error ? (
         <p className="field-error" role="alert">
           {error}
@@ -764,7 +606,13 @@ function ToolDetailsSection({
   );
 }
 
-function IntegrationsPanel({ state }: { readonly state: WorkbenchState }) {
+function IntegrationsPanel({
+  state,
+  actions,
+}: {
+  readonly state: WorkbenchState;
+  readonly actions: WorkbenchActions;
+}) {
   const skills = state.skills;
   const servers = state.mcpServers;
   return (
@@ -835,6 +683,16 @@ function IntegrationsPanel({ state }: { readonly state: WorkbenchState }) {
           <p className="muted-copy">没有可用的 MCP Server。浏览器不会接收环境变量或认证 Header。</p>
         )}
       </section>
+      {state.skillNextCursor || state.mcpNextCursor ? (
+        <button
+          type="button"
+          className="secondary-button"
+          onClick={() => void actions.loadMoreCapabilities()}
+          disabled={Boolean(state.pendingAction)}
+        >
+          加载更多能力
+        </button>
+      ) : null}
       <section className="security-note">
         <Icon name="info" size={16} />
         <p>
@@ -936,58 +794,6 @@ function EmptySmall({ text }: { readonly text: string }) {
       <span className="empty-line" aria-hidden="true" />
       <p>{text}</p>
     </div>
-  );
-}
-
-function tabLabel(tab: InspectorTab): string {
-  return TABS.find(item => item.id === tab)?.label ?? 'Goal';
-}
-
-function shortcutLabel(tab: InspectorTab, state: WorkbenchState): string {
-  if (tab === 'goal') {
-    return state.goal
-      ? `打开 Goal 详情，状态 ${state.goal.status.replace(/_/g, ' ')}`
-      : '打开 Goal 详情，没有活动 Goal';
-  }
-  if (tab === 'activity') {
-    const running = state.processing ? '，Orion 运行中' : '';
-    return `打开活动详情，${state.tools.length} 项工具活动${running}`;
-  }
-  if (tab === 'integrations') {
-    return `打开能力详情，${state.skills.length} 个 Skill，${state.mcpServers.length} 个 MCP Server`;
-  }
-  return `打开诊断详情，${connectionTitle(state.connection)}`;
-}
-
-function shortcutBadge(tab: InspectorTab, state: WorkbenchState): string {
-  if (tab === 'activity') return compactBadge(state.tools.length);
-  if (tab === 'integrations') return compactBadge(state.skills.length + state.mcpServers.length);
-  return '';
-}
-
-function shortcutTone(tab: InspectorTab, state: WorkbenchState): 'active' | 'neutral' | 'warning' {
-  if (tab === 'goal') return state.goal?.status === 'active' ? 'active' : 'neutral';
-  if (tab === 'activity') return state.processing ? 'active' : 'neutral';
-  if (tab === 'diagnostics' && state.connection !== 'live') return 'warning';
-  return 'neutral';
-}
-
-function compactBadge(count: number): string {
-  if (count <= 0) return '';
-  return count > 99 ? '99+' : `${count}`;
-}
-
-function focusableElements(container: HTMLElement | null): HTMLElement[] {
-  if (!container) return [];
-  return Array.from(
-    container.querySelectorAll<HTMLElement>(
-      'a[href], button, input, select, textarea, summary, [tabindex]:not([tabindex="-1"])'
-    )
-  ).filter(
-    element =>
-      !element.hasAttribute('disabled') &&
-      !element.closest('[hidden]') &&
-      element.getClientRects().length > 0
   );
 }
 

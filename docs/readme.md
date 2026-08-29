@@ -18,6 +18,16 @@ The repository release history is canonical in [`CHANGELOG.md`](../CHANGELOG.md)
 link into the archive, but historical evidence is not moved back into `plan/` merely to satisfy an
 old relative path.
 
+## v0.3.1 candidate release set
+
+- [Professional Web Workbench plan](plan/v0.3.1-web-workbench-professional-shell-plan.md)
+- [v0.3.1 Web API contract](architecture/v0.3.1-web-api.yaml)
+- [v0.3.1 real Web E2E qualification plan](test/v0.3.1-web-workbench-e2e-plan.md)
+- [v0.3.0 to v0.3.1 migration and rollback](migration/v0.3.0-to-v0.3.1.md)
+
+Candidate plans and contracts describe required behavior; they are not release evidence. A v0.3.1
+GO still requires the source-clean exact-tarball receipts described by the E2E plan.
+
 ## v0.3.0 release set
 
 - [Web Workbench development plan](plan/v0.3.0-web-workbench-plan.md)

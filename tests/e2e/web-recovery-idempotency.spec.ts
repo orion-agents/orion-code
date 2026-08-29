@@ -162,6 +162,7 @@ test('E2E-P0-04 SSE reconnect replays a completed real-tool turn without duplica
   await context.setOffline(true);
   const approval = await hostMutation(host.url, (await hostBootstrap(host.url)).nonce, {
     requestId: randomUUID(),
+    expectedSessionId: pending.session.id,
     type: 'permission_decision',
     requestPermissionId: pending.pendingApprovals[0].id,
     approved: true,
@@ -213,21 +214,26 @@ test('E2E-P0-05 exact mutation retry is idempotent and stale settings CAS is rej
   page,
 }, testInfo) => {
   allowExpectedNetworkFailures(testInfo, 2);
-  const nonce = (await hostBootstrap(host.url)).nonce;
+  const bootstrap = await hostBootstrap(host.url);
+  const nonce = bootstrap.nonce;
+  const contextGuard = {
+    expectedContextRevision: bootstrap.contextRevision,
+    workspaceId: bootstrap.workspaceId,
+  };
   const requestId = randomUUID();
   const first = await hostJson<{ requestId: string; session: { id: string } }>(
     host.url,
     nonce,
     '/api/v1/sessions',
     'POST',
-    { requestId, name: 'idempotent-session' }
+    { requestId, name: 'idempotent-session', ...contextGuard }
   );
   const retry = await hostJson<{ requestId: string; session: { id: string } }>(
     host.url,
     nonce,
     '/api/v1/sessions',
     'POST',
-    { requestId, name: 'idempotent-session' }
+    { requestId, name: 'idempotent-session', ...contextGuard }
   );
   expect(first.status).toBe(201);
   expect(retry).toEqual(first);
@@ -238,10 +244,14 @@ test('E2E-P0-05 exact mutation retry is idempotent and stale settings CAS is rej
   const conflict = await hostJson(host.url, nonce, '/api/v1/sessions', 'POST', {
     requestId,
     name: 'conflicting-session',
+    ...contextGuard,
   });
   expect(conflict.status).toBe(409);
   evidence.recordFact('idempotency.conflict_status', conflict.status);
-  const sessions = await hostGet(host.url, '/api/v1/sessions?pageSize=100');
+  const sessions = await hostGet(
+    host.url,
+    contextPath('/api/v1/sessions', await hostBootstrap(host.url), { pageSize: '100' })
+  );
   expect(
     (sessions as { items: { name?: string }[] }).items.filter(
       session => session.name === 'idempotent-session'
@@ -271,22 +281,18 @@ test('E2E-P0-05 exact mutation retry is idempotent and stale settings CAS is rej
     }>(host.url, nonce, '/api/v1/settings', 'PATCH', {
       requestId: randomUUID(),
       expectedRevision: left.revision,
-      operations: [
-        { op: 'set', key: 'permissions.toolConfirmation', value: 'allow' },
-      ],
+      operations: [{ op: 'set', key: 'permissions.toolConfirmation', value: 'allow' }],
     });
     expect(committed.status).toBe(200);
-    expect(
-      committed.body.settings.sections.permissions.toolConfirmation.effectiveValue
-    ).toBe('allow');
+    expect(committed.body.settings.sections.permissions.toolConfirmation.effectiveValue).toBe(
+      'allow'
+    );
     expect(committed.body.settings.revision).not.toBe(left.revision);
 
     const stale = await hostJson(host.url, nonce, '/api/v1/settings', 'PATCH', {
       requestId: randomUUID(),
       expectedRevision: right.revision,
-      operations: [
-        { op: 'set', key: 'permissions.toolConfirmation', value: 'deny' },
-      ],
+      operations: [{ op: 'set', key: 'permissions.toolConfirmation', value: 'deny' }],
     });
     expect(stale.status).toBe(409);
     const final = await settingsSnapshot(page);
@@ -315,9 +321,12 @@ function isWebEventEnvelope(value: unknown): value is WebEventEnvelopeV1 {
   );
 }
 
-async function hostBootstrap(
-  hostUrl: string
-): Promise<{ readonly nonce: string; readonly activeSessionId?: string | null }> {
+async function hostBootstrap(hostUrl: string): Promise<{
+  readonly nonce: string;
+  readonly activeSessionId?: string | null;
+  readonly contextRevision: string;
+  readonly workspaceId: string;
+}> {
   const response = await fetch(`${hostUrl}/api/v1/bootstrap`, {
     headers: { Accept: 'application/json' },
   });
@@ -325,6 +334,8 @@ async function hostBootstrap(
   return response.json() as Promise<{
     readonly nonce: string;
     readonly activeSessionId?: string | null;
+    readonly contextRevision: string;
+    readonly workspaceId: string;
   }>;
 }
 
@@ -381,8 +392,13 @@ async function waitForHostTurn(
   await expect
     .poll(
       async () => {
+        const bootstrap = await hostBootstrap(hostUrl);
         const response = await fetch(
-          `${hostUrl}/api/v1/sessions/${encodeURIComponent(sessionId)}/snapshot?pageSize=100`,
+          `${hostUrl}${contextPath(
+            `/api/v1/sessions/${encodeURIComponent(sessionId)}/snapshot`,
+            bootstrap,
+            { pageSize: '100' }
+          )}`,
           { headers: { Accept: 'application/json' } }
         );
         if (!response.ok) throw new Error(`Host snapshot failed with HTTP ${response.status}.`);
@@ -393,6 +409,18 @@ async function waitForHostTurn(
     )
     .toBe(true);
   return latest!;
+}
+
+function contextPath(
+  path: string,
+  context: { readonly contextRevision: string; readonly workspaceId: string },
+  extra: Readonly<Record<string, string>> = {}
+): string {
+  const url = new URL(path, 'http://orion.invalid');
+  url.searchParams.set('expectedContextRevision', context.contextRevision);
+  url.searchParams.set('workspaceId', context.workspaceId);
+  for (const [key, value] of Object.entries(extra)) url.searchParams.set(key, value);
+  return `${url.pathname}${url.search}`;
 }
 
 function digestIdentifier(value: string): string {

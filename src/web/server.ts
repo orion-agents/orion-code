@@ -8,11 +8,16 @@ import { redactTraceText } from '../services/redaction';
 import {
   WEB_MAX_BODY_BYTES,
   WEB_NONCE_HEADER,
+  WEB_USER_GESTURE_HEADER,
   WebProtocolError,
+  parseWebContextActivate,
   parseWebOpenSettingsDocument,
   parseWebSettingsUpdate,
+  type WebContextGuardV1,
 } from './protocol';
-import { pageItems, WebWorkbenchController, WebWorkbenchError } from './workbench-controller';
+import { WebWorkbenchError } from './errors';
+import { attachTerminalWebSocketServer } from './terminal-server';
+import { pageCollectionItems, WebWorkbenchController } from './workbench-controller';
 
 export interface OrionWebServerOptions {
   readonly cwd: string;
@@ -43,6 +48,9 @@ export async function startOrionWebServer(
     throw new Error('Web port must be an integer from 0 through 65535.');
   }
   const nonce = options.nonce ?? randomBytes(32).toString('base64url');
+  if (!/^[A-Za-z0-9_-]+$/u.test(nonce)) {
+    throw new Error('Web nonce must use unpadded base64url characters.');
+  }
   const workbench =
     options.workbench ?? (await WebWorkbenchController.create({ cwd: options.cwd }));
   const staticRoot = options.staticRoot ?? resolveDefaultStaticRoot();
@@ -58,6 +66,11 @@ export async function startOrionWebServer(
       sendProblem(response, error);
     });
   });
+  const terminalSockets = attachTerminalWebSocketServer(
+    server,
+    () => origin,
+    workbench.terminalManager
+  );
   server.requestTimeout = 30_000;
   server.headersTimeout = 15_000;
   server.keepAliveTimeout = 5_000;
@@ -78,6 +91,7 @@ export async function startOrionWebServer(
     if (closing) return closing;
     closing = (async () => {
       clearInterval(heartbeat);
+      await terminalSockets.close();
       await workbench.shutdown();
       await closeServer(server);
     })();
@@ -98,7 +112,7 @@ interface RequestContext {
 
 async function handleRequest(context: RequestContext): Promise<void> {
   const { request, response } = context;
-  applySecurityHeaders(response);
+  applySecurityHeaders(response, context.nonce);
   assertHost(request, context.origin);
   const url = new URL(request.url ?? '/', context.origin);
   if (!url.pathname.startsWith(API_PREFIX)) {
@@ -121,25 +135,132 @@ async function handleRequest(context: RequestContext): Promise<void> {
     return;
   }
   if (method === 'GET' && path === '/workspaces') {
-    sendJson(response, 200, collectionPage(url, context.workbench.listWorkspaces()));
+    sendJson(
+      response,
+      200,
+      collectionPage(
+        url,
+        'workspaces',
+        context.workbench.listWorkspaces(),
+        workspace => workspace.id
+      )
+    );
+    return;
+  }
+  const workspaceSessionsMatch = path.match(/^\/workspaces\/([^/]+)\/sessions$/);
+  if (method === 'GET' && workspaceSessionsMatch) {
+    const workspaceId = safeDecodePathSegment(workspaceSessionsMatch[1]);
+    sendJson(
+      response,
+      200,
+      collectionPage(
+        url,
+        `workspace-sessions-${workspaceId}`,
+        context.workbench.listWorkspaceSessions(workspaceId),
+        session => session.id
+      )
+    );
+    return;
+  }
+  const workspaceSummaryMatch = path.match(/^\/workspaces\/([^/]+)\/summary$/);
+  if (method === 'GET' && workspaceSummaryMatch) {
+    const workspaceId = requireUuid(safeDecodePathSegment(workspaceSummaryMatch[1]), 'workspaceId');
+    sendJson(response, 200, await context.workbench.workspaceProjectSummary(workspaceId));
+    return;
+  }
+  const workspacePinMatch = path.match(/^\/workspaces\/([^/]+)\/pin$/);
+  if (method === 'POST' && workspacePinMatch) {
+    assertMutation(request, context.nonce, context.origin);
+    const body = requireRecord(await readJson(request), 'Workspace pin request');
+    assertOnlyKeys(body, ['requestId', 'pinned', 'expectedContextRevision', 'workspaceId']);
+    const requestId = requireUuid(body.requestId, 'requestId');
+    const contextGuard = requireContextGuardRecord(body);
+    if (typeof body.pinned !== 'boolean') {
+      throw new WebWorkbenchError(400, 'pinned must be a boolean.', 'invalid_request');
+    }
+    const workspaceId = requireUuid(safeDecodePathSegment(workspacePinMatch[1]), 'workspaceId');
+    const result = await context.workbench.executeMutation(
+      requestId,
+      'workspace.pin',
+      { targetWorkspaceId: workspaceId, pinned: body.pinned, ...contextGuard },
+      () => ({
+        requestId,
+        workspace: context.workbench.setWorkspacePinned(
+          workspaceId,
+          body.pinned as boolean,
+          contextGuard
+        ),
+      })
+    );
+    sendJson(response, 200, result);
+    return;
+  }
+  const workspaceRemoveMatch = path.match(/^\/workspaces\/([^/]+)$/);
+  if (method === 'DELETE' && workspaceRemoveMatch) {
+    assertMutation(request, context.nonce, context.origin);
+    const body = requireRecord(await readJson(request), 'Workspace removal request');
+    assertOnlyKeys(body, ['requestId', 'expectedContextRevision', 'workspaceId']);
+    const requestId = requireUuid(body.requestId, 'requestId');
+    const contextGuard = requireContextGuardRecord(body);
+    const workspaceId = requireUuid(safeDecodePathSegment(workspaceRemoveMatch[1]), 'workspaceId');
+    const result = await context.workbench.executeMutation(
+      requestId,
+      'workspace.remove',
+      { targetWorkspaceId: workspaceId, ...contextGuard },
+      () => {
+        context.workbench.removeWorkspace(workspaceId, contextGuard);
+        return { requestId, removed: true as const };
+      }
+    );
+    sendJson(response, 200, result);
+    return;
+  }
+  if (method === 'POST' && path === '/context/activate') {
+    assertMutation(request, context.nonce, context.origin);
+    const body = parseWebContextActivate(await readJson(request));
+    const result = await context.workbench.executeMutation(
+      body.requestId,
+      'context.activate',
+      {
+        expectedContextRevision: body.expectedContextRevision,
+        workspaceId: body.workspaceId,
+        sessionId: body.sessionId,
+      },
+      async () => {
+        await context.workbench.activateContext(body);
+        return {
+          requestId: body.requestId,
+          contextRevision: context.workbench.contextRevision,
+          bootstrap: context.workbench.bootstrap(context.nonce),
+        };
+      }
+    );
+    sendJson(response, 200, result);
     return;
   }
   if (method === 'POST' && path === '/workspaces/activate') {
     assertMutation(request, context.nonce, context.origin);
     const body = requireRecord(await readJson(request), 'Workspace request');
-    assertOnlyKeys(body, ['requestId', 'path']);
-    const requestId = requireText(body.requestId, 'requestId', 128);
+    assertOnlyKeys(body, ['requestId', 'path', 'expectedContextRevision', 'workspaceId']);
+    const requestId = requireUuid(body.requestId, 'requestId');
+    const contextGuard = requireContextGuardRecord(body);
     const workspace = requireText(body.path, 'path', 4096);
     const result = await context.workbench.executeMutation(
       requestId,
       'workspace.activate',
-      { path: workspace },
+      { path: workspace, ...contextGuard },
       async () => {
-        await context.workbench.switchWorkspace(workspace);
+        await context.workbench.switchWorkspace(workspace, contextGuard);
         return {
           requestId,
           active: context.workbench.workspace,
-          page: pageItems(context.workbench.listWorkspaces()),
+          page: pageCollectionItems(
+            'workspaces',
+            context.workbench.listWorkspaces(),
+            undefined,
+            50,
+            workspace => workspace.id
+          ),
         };
       }
     );
@@ -147,20 +268,34 @@ async function handleRequest(context: RequestContext): Promise<void> {
     return;
   }
   if (method === 'GET' && path === '/sessions') {
-    sendJson(response, 200, collectionPage(url, context.workbench.listSessions()));
+    const contextGuard = requireContextGuardQuery(url);
+    sendJson(
+      response,
+      200,
+      collectionPage(
+        url,
+        'sessions',
+        context.workbench.listSessions(contextGuard),
+        session => session.id
+      )
+    );
     return;
   }
   if (method === 'POST' && path === '/sessions') {
     assertMutation(request, context.nonce, context.origin);
     const body = requireRecord(await readJson(request), 'Session request');
-    assertOnlyKeys(body, ['requestId', 'name']);
-    const requestId = requireText(body.requestId, 'requestId', 128);
+    assertOnlyKeys(body, ['requestId', 'name', 'expectedContextRevision', 'workspaceId']);
+    const requestId = requireUuid(body.requestId, 'requestId');
+    const contextGuard = requireContextGuardRecord(body);
     const name = body.name === undefined ? undefined : requireText(body.name, 'name', 120);
     const result = await context.workbench.executeMutation(
       requestId,
       'session.create',
-      { name },
-      async () => ({ requestId, session: await context.workbench.createSession(name) })
+      { name, ...contextGuard },
+      async () => ({
+        requestId,
+        session: await context.workbench.createSession(name, contextGuard),
+      })
     );
     sendJson(response, 201, result);
     return;
@@ -169,20 +304,25 @@ async function handleRequest(context: RequestContext): Promise<void> {
   if (method === 'POST' && activateMatch) {
     assertMutation(request, context.nonce, context.origin);
     const body = requireRecord(await readJson(request), 'Session activation request');
-    assertOnlyKeys(body, ['requestId']);
-    const requestId = requireText(body.requestId, 'requestId', 128);
+    assertOnlyKeys(body, ['requestId', 'expectedContextRevision', 'workspaceId']);
+    const requestId = requireUuid(body.requestId, 'requestId');
+    const contextGuard = requireContextGuardRecord(body);
     const sessionId = safeDecodePathSegment(activateMatch[1]);
     const result = await context.workbench.executeMutation(
       requestId,
       'session.activate',
-      { sessionId },
-      async () => ({ ...(await context.workbench.activateSession(sessionId)), requestId })
+      { sessionId, ...contextGuard },
+      async () => ({
+        ...(await context.workbench.activateSession(sessionId, contextGuard)),
+        requestId,
+      })
     );
     sendJson(response, 200, result);
     return;
   }
   const snapshotMatch = path.match(/^\/sessions\/([^/]+)\/snapshot$/);
   if (method === 'GET' && snapshotMatch) {
+    const contextGuard = requireContextGuardQuery(url);
     sendJson(
       response,
       200,
@@ -190,7 +330,8 @@ async function handleRequest(context: RequestContext): Promise<void> {
         safeDecodePathSegment(snapshotMatch[1]),
         url.searchParams.get('cursor') ?? undefined,
         pageSize(url),
-        url.searchParams.get('tail') === '1'
+        url.searchParams.get('tail') === '1',
+        contextGuard
       )
     );
     return;
@@ -199,15 +340,19 @@ async function handleRequest(context: RequestContext): Promise<void> {
   if (method === 'PATCH' && sessionMatch) {
     assertMutation(request, context.nonce, context.origin);
     const body = requireRecord(await readJson(request), 'Session update request');
-    assertOnlyKeys(body, ['requestId', 'name']);
-    const requestId = requireText(body.requestId, 'requestId', 128);
+    assertOnlyKeys(body, ['requestId', 'name', 'expectedContextRevision', 'workspaceId']);
+    const requestId = requireUuid(body.requestId, 'requestId');
+    const contextGuard = requireContextGuardRecord(body);
     const name = typeof body.name === 'string' ? body.name : '';
     const sessionId = safeDecodePathSegment(sessionMatch[1]);
     const result = await context.workbench.executeMutation(
       requestId,
       'session.rename',
-      { sessionId, name },
-      () => ({ requestId, session: context.workbench.renameSession(sessionId, name) })
+      { sessionId, name, ...contextGuard },
+      () => ({
+        requestId,
+        session: context.workbench.renameSession(sessionId, name, contextGuard),
+      })
     );
     sendJson(response, 200, result);
     return;
@@ -246,15 +391,214 @@ async function handleRequest(context: RequestContext): Promise<void> {
     return;
   }
   if (method === 'GET' && path === '/skills') {
-    sendJson(response, 200, collectionPage(url, await context.workbench.skills()));
+    sendJson(
+      response,
+      200,
+      collectionPage(url, 'skills', await context.workbench.skills(), skill => skill.id)
+    );
     return;
   }
   if (method === 'GET' && path === '/mcp') {
-    sendJson(response, 200, collectionPage(url, context.workbench.mcp()));
+    sendJson(
+      response,
+      200,
+      collectionPage(url, 'mcp', context.workbench.mcp(), server => server.id)
+    );
+    return;
+  }
+  if (method === 'GET' && path === '/files') {
+    const contextGuard = requireContextGuardQuery(url);
+    sendJson(
+      response,
+      200,
+      context.workbench.listFiles(contextGuard, {
+        ...(url.searchParams.get('parentId')
+          ? { parentId: url.searchParams.get('parentId') as string }
+          : {}),
+        ...(url.searchParams.get('cursor')
+          ? { cursor: url.searchParams.get('cursor') as string }
+          : {}),
+        pageSize: pageSize(url),
+      })
+    );
+    return;
+  }
+  const fileContentMatch = path.match(/^\/files\/([^/]+)\/content$/);
+  if (method === 'GET' && fileContentMatch) {
+    const contextGuard = requireContextGuardQuery(url);
+    sendJson(
+      response,
+      200,
+      context.workbench.readFileContent(contextGuard, {
+        fileId: safeDecodePathSegment(fileContentMatch[1]),
+        ...(url.searchParams.get('cursor')
+          ? { cursor: url.searchParams.get('cursor') as string }
+          : {}),
+        limitBytes: boundedInteger(url.searchParams.get('limitBytes'), 64 * 1024, 1, 256 * 1024),
+      })
+    );
+    return;
+  }
+  if (method === 'GET' && path === '/git/status') {
+    const contextGuard = requireContextGuardQuery(url);
+    sendJson(
+      response,
+      200,
+      await context.workbench.gitStatus(contextGuard, {
+        ...(url.searchParams.get('cursor')
+          ? { cursor: url.searchParams.get('cursor') as string }
+          : {}),
+        pageSize: boundedInteger(url.searchParams.get('pageSize'), 200, 1, 2_000),
+      })
+    );
+    return;
+  }
+  if (method === 'GET' && path === '/git/log') {
+    const contextGuard = requireContextGuardQuery(url);
+    sendJson(
+      response,
+      200,
+      await context.workbench.gitLog(contextGuard, {
+        ...(url.searchParams.get('cursor')
+          ? { cursor: url.searchParams.get('cursor') as string }
+          : {}),
+        pageSize: boundedInteger(url.searchParams.get('pageSize'), 30, 1, 100),
+      })
+    );
+    return;
+  }
+  const gitDiffMatch = path.match(/^\/git\/diff\/([^/]+)$/);
+  if (method === 'GET' && gitDiffMatch) {
+    const contextGuard = requireContextGuardQuery(url);
+    sendJson(
+      response,
+      200,
+      await context.workbench.gitDiff(contextGuard, {
+        fileId: safeDecodePathSegment(gitDiffMatch[1]),
+        ...(url.searchParams.get('cursor')
+          ? { cursor: url.searchParams.get('cursor') as string }
+          : {}),
+        lineLimit: boundedInteger(url.searchParams.get('lineLimit'), 240, 1, 500),
+        byteLimit: boundedInteger(url.searchParams.get('byteLimit'), 256 * 1024, 1024, 1024 * 1024),
+      })
+    );
+    return;
+  }
+  if (method === 'GET' && path === '/review') {
+    sendJson(response, 200, await context.workbench.review(requireContextGuardQuery(url)));
+    return;
+  }
+  if (method === 'GET' && path === '/terminals') {
+    const contextGuard = requireContextGuardQuery(url);
+    sendJson(
+      response,
+      200,
+      collectionPage(
+        url,
+        'terminals',
+        context.workbench.listTerminals(contextGuard),
+        terminal => terminal.id
+      )
+    );
+    return;
+  }
+  if (method === 'POST' && path === '/terminals') {
+    assertMutation(request, context.nonce, context.origin, 'terminal_create_forbidden');
+    assertTerminalUserGesture(request);
+    const body = requireRecord(await readJson(request), 'Terminal create request');
+    assertOnlyKeys(body, ['requestId', 'expectedContextRevision', 'workspaceId', 'cols', 'rows']);
+    const requestId = requireUuid(body.requestId, 'requestId');
+    const expectedContextRevision = requireUuid(
+      body.expectedContextRevision,
+      'expectedContextRevision'
+    );
+    const workspaceId = requireUuid(body.workspaceId, 'workspaceId');
+    const cols = boundedIntegerValue(body.cols, 100, 2, 400, 'cols');
+    const rows = boundedIntegerValue(body.rows, 30, 1, 200, 'rows');
+    const result = await context.workbench.executeMutation(
+      requestId,
+      'terminal.create',
+      { expectedContextRevision, workspaceId, cols, rows },
+      () => ({
+        requestId,
+        ...context.workbench.terminalManager.create({
+          expectedContextRevision,
+          workspaceId,
+          cols,
+          rows,
+        }),
+      })
+    );
+    sendJson(response, 201, result);
+    return;
+  }
+  const terminalTicketMatch = path.match(/^\/terminals\/([^/]+)\/attach-ticket$/);
+  if (method === 'POST' && terminalTicketMatch) {
+    assertMutation(request, context.nonce, context.origin, 'terminal_attach_forbidden');
+    const body = requireRecord(await readJson(request), 'Terminal ticket request');
+    assertOnlyKeys(body, ['requestId', 'expectedContextRevision', 'workspaceId']);
+    const requestId = requireUuid(body.requestId, 'requestId');
+    const expectedContextRevision = requireUuid(
+      body.expectedContextRevision,
+      'expectedContextRevision'
+    );
+    const workspaceId = requireUuid(body.workspaceId, 'workspaceId');
+    const terminalId = safeDecodePathSegment(terminalTicketMatch[1]);
+    const result = await context.workbench.executeMutation(
+      requestId,
+      'terminal.attach-ticket',
+      { terminalId, expectedContextRevision, workspaceId },
+      () => ({
+        requestId,
+        ...context.workbench.terminalManager.issueAttachTicket({
+          terminalId,
+          expectedContextRevision,
+          workspaceId,
+        }),
+      })
+    );
+    sendJson(response, 200, result);
+    return;
+  }
+  const terminalMatch = path.match(/^\/terminals\/([^/]+)$/);
+  if (method === 'DELETE' && terminalMatch) {
+    assertMutation(request, context.nonce, context.origin, 'terminal_close_forbidden');
+    const body = requireRecord(await readJson(request), 'Terminal close request');
+    assertOnlyKeys(body, ['requestId', 'expectedContextRevision', 'workspaceId']);
+    const requestId = requireUuid(body.requestId, 'requestId');
+    const expectedContextRevision = requireUuid(
+      body.expectedContextRevision,
+      'expectedContextRevision'
+    );
+    const workspaceId = requireUuid(body.workspaceId, 'workspaceId');
+    const terminalId = safeDecodePathSegment(terminalMatch[1]);
+    const result = await context.workbench.executeMutation(
+      requestId,
+      'terminal.close',
+      { terminalId, expectedContextRevision, workspaceId },
+      () => ({
+        requestId,
+        terminal: context.workbench.terminalManager.closeTerminal({
+          terminalId,
+          expectedContextRevision,
+          workspaceId,
+        }),
+      })
+    );
+    sendJson(response, 200, result);
     return;
   }
   if (method === 'GET' && path === '/tool-details') {
-    sendJson(response, 200, collectionPage(url, await context.workbench.listToolDetails()));
+    sendJson(
+      response,
+      200,
+      collectionPage(
+        url,
+        'tool-details',
+        await context.workbench.listToolDetails(),
+        detail => `${detail.sequence}:${detail.callId}`
+      )
+    );
     return;
   }
   const toolDetailMatch = path.match(/^\/tool-details\/([^/]+)$/);
@@ -327,6 +671,16 @@ function assertMutation(
   const contentType = request.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase();
   if (contentType !== 'application/json') {
     throw new HttpProblem(415, 'Mutations require application/json.');
+  }
+}
+
+function assertTerminalUserGesture(request: IncomingMessage): void {
+  if (request.headers[WEB_USER_GESTURE_HEADER] !== 'terminal-create-v1') {
+    throw new HttpProblem(
+      403,
+      'Terminal creation requires an explicit browser user gesture.',
+      'terminal_user_gesture_required'
+    );
   }
 }
 
@@ -414,10 +768,10 @@ async function serveStatic(
   });
 }
 
-function applySecurityHeaders(response: ServerResponse): void {
+function applySecurityHeaders(response: ServerResponse, styleNonce: string): void {
   response.setHeader(
     'Content-Security-Policy',
-    "default-src 'self'; base-uri 'none'; connect-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self'; style-src 'self'"
+    `default-src 'self'; base-uri 'none'; connect-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self'; style-src 'self'; style-src-elem 'self' 'nonce-${styleNonce}'; style-src-attr 'unsafe-inline'`
   );
   response.setHeader('X-Content-Type-Options', 'nosniff');
   response.setHeader('X-Frame-Options', 'DENY');
@@ -516,6 +870,45 @@ function requireText(value: unknown, name: string, maxLength: number): string {
   return value.trim();
 }
 
+function requireUuid(value: unknown, name: string): string {
+  const text = requireText(value, name, 128);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(text)) {
+    throw new HttpProblem(400, `${name} must be a UUID.`);
+  }
+  return text;
+}
+
+function requireContextGuardRecord(value: Record<string, unknown>): WebContextGuardV1 {
+  return Object.freeze({
+    expectedContextRevision: requireUuid(value.expectedContextRevision, 'expectedContextRevision'),
+    workspaceId: requireUuid(value.workspaceId, 'workspaceId'),
+  });
+}
+
+function requireContextGuardQuery(url: URL): WebContextGuardV1 {
+  return Object.freeze({
+    expectedContextRevision: requireUuid(
+      url.searchParams.get('expectedContextRevision'),
+      'expectedContextRevision'
+    ),
+    workspaceId: requireUuid(url.searchParams.get('workspaceId'), 'workspaceId'),
+  });
+}
+
+function boundedIntegerValue(
+  value: unknown,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+  name: string
+): number {
+  if (value === undefined) return fallback;
+  if (!Number.isSafeInteger(value) || Number(value) < minimum || Number(value) > maximum) {
+    throw new HttpProblem(400, `${name} must be between ${minimum} and ${maximum}.`);
+  }
+  return Number(value);
+}
+
 function assertOnlyKeys(value: Record<string, unknown>, allowedKeys: readonly string[]): void {
   const allowed = new Set(allowedKeys);
   const unknown = Object.keys(value).find(key => !allowed.has(key));
@@ -568,8 +961,19 @@ function pageSize(url: URL): number {
   return boundedInteger(url.searchParams.get('pageSize'), 50, 1, 100);
 }
 
-function collectionPage<T>(url: URL, items: readonly T[]) {
-  return pageItems(items, url.searchParams.get('cursor') ?? undefined, pageSize(url));
+function collectionPage<T>(
+  url: URL,
+  scope: string,
+  items: readonly T[],
+  keyOf: (item: T) => string
+) {
+  return pageCollectionItems(
+    scope,
+    items,
+    url.searchParams.get('cursor') ?? undefined,
+    pageSize(url),
+    keyOf
+  );
 }
 
 function contentType(path: string): string {

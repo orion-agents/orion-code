@@ -35,6 +35,7 @@ export interface ConversationProps {
   readonly onToggleInspector: () => void;
   readonly onOpenSettings: () => void;
   readonly onCreateSession: () => void;
+  readonly composerInsertion: { readonly id: number; readonly text: string } | null;
 }
 
 type TimelineItem =
@@ -54,6 +55,7 @@ export function Conversation({
   onToggleInspector,
   onOpenSettings,
   onCreateSession,
+  composerInsertion,
 }: ConversationProps) {
   const activeSession = state.sessions.find(session => session.id === state.activeSessionId);
   const allTimeline = useMemo(
@@ -63,6 +65,7 @@ export function Conversation({
   const [visibleCount, setVisibleCount] = useState(INITIAL_TIMELINE_WINDOW);
   const timeline = allTimeline.slice(-visibleCount);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(true);
   const prependAnchor = useRef<{ height: number; top: number } | null>(null);
   const [pinned, setPinned] = useState(true);
@@ -84,6 +87,17 @@ export function Conversation({
     }
     if (pinnedRef.current) viewport.scrollTop = viewport.scrollHeight;
   }, [timeline.length, state.processing]);
+
+  useLayoutEffect(() => {
+    const viewport = scrollRef.current;
+    const content = contentRef.current;
+    if (!viewport || !content || typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(() => {
+      if (pinnedRef.current) viewport.scrollTop = viewport.scrollHeight;
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [state.activeSessionId]);
 
   const updatePinned = () => {
     const viewport = scrollRef.current;
@@ -135,7 +149,7 @@ export function Conversation({
         </button>
         <div className="conversation-identity">
           <div className="title-line">
-            <h1>{activeSession ? sessionTitle(activeSession) : 'Orion Code'}</h1>
+            <h1 tabIndex={-1}>{activeSession ? sessionTitle(activeSession) : 'Orion Code'}</h1>
             {state.processing ? <span className="running-pulse">运行中</span> : null}
           </div>
           <p title={state.workspace}>
@@ -169,8 +183,8 @@ export function Conversation({
             type="button"
             className="icon-button inspector-toggle"
             onClick={onToggleInspector}
-            aria-label={inspectorExpanded ? '关闭工作详情' : '打开工作详情'}
-            aria-controls="session-inspector"
+            aria-label={inspectorExpanded ? '关闭工作面板' : '打开工作面板'}
+            aria-controls="work-panel"
             aria-expanded={inspectorExpanded}
           >
             <Icon name="sidebar" />
@@ -204,7 +218,7 @@ export function Conversation({
         onScroll={updatePinned}
         aria-busy={state.processing}
       >
-        <div className="transcript-content">
+        <div className="transcript-content" ref={contentRef}>
           {allTimeline.length > timeline.length || hasRemoteHistory ? (
             <button
               type="button"
@@ -260,9 +274,13 @@ export function Conversation({
       ) : null}
 
       <div className="input-dock">
-        {state.permission ? <ApprovalCard state={state} actions={actions} /> : null}
-        {state.queue.items.length > 0 ? <QueueDock state={state} actions={actions} /> : null}
-        <Composer state={state} actions={actions} />
+        {state.permission || state.queue.items.length > 0 ? (
+          <div className="input-transients">
+            {state.permission ? <ApprovalCard state={state} actions={actions} /> : null}
+            {state.queue.items.length > 0 ? <QueueDock state={state} actions={actions} /> : null}
+          </div>
+        ) : null}
+        <Composer state={state} actions={actions} insertion={composerInsertion} />
       </div>
     </main>
   );
@@ -554,7 +572,7 @@ function ApprovalCard({
     previousRequest.current = request.id;
     cardRef.current?.focus();
   }, [request.id]);
-  const disabled = Boolean(state.pendingAction);
+  const disabled = Boolean(state.pendingAction) || state.connection !== 'live';
   return (
     <section
       ref={cardRef}
@@ -625,6 +643,7 @@ function QueueDock({
   readonly state: WorkbenchState;
   readonly actions: WorkbenchActions;
 }) {
+  const disabled = Boolean(state.pendingAction) || state.connection !== 'live';
   return (
     <details className="queue-dock">
       <summary>
@@ -641,7 +660,7 @@ function QueueDock({
               className="icon-button"
               aria-label={`移除排队消息 ${index + 1}`}
               onClick={() => void actions.removeQueued(item.id)}
-              disabled={Boolean(state.pendingAction)}
+              disabled={disabled}
             >
               <Icon name="trash" size={14} />
             </button>
@@ -651,7 +670,7 @@ function QueueDock({
           type="button"
           className="text-button queue-clear"
           onClick={() => void actions.clearQueue()}
-          disabled={Boolean(state.pendingAction)}
+          disabled={disabled}
         >
           清空队列
         </button>
@@ -663,28 +682,46 @@ function QueueDock({
 function Composer({
   state,
   actions,
+  insertion,
 }: {
   readonly state: WorkbenchState;
   readonly actions: WorkbenchActions;
+  readonly insertion: { readonly id: number; readonly text: string } | null;
 }) {
   const [draft, setDraft] = useState('');
+  const drafts = useRef(new Map<string, string>());
+  const activeSessionRef = useRef(state.activeSessionId);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const disabled =
-    !state.activeSessionId || !state.bootstrap?.configured || state.connection === 'closed';
+    !state.activeSessionId || !state.bootstrap?.configured || state.connection !== 'live';
   const pending = Boolean(state.pendingAction);
   const composerReady = !disabled && !pending;
+  activeSessionRef.current = state.activeSessionId;
 
   useEffect(() => {
-    setDraft('');
+    const sessionId = state.activeSessionId;
+    setDraft(sessionId ? (drafts.current.get(sessionId) ?? '') : '');
   }, [state.activeSessionId]);
+
+  useEffect(() => {
+    if (!insertion || !state.activeSessionId) return;
+    setDraft(current => {
+      const next = current.trim() ? `${current.trimEnd()}\n\n${insertion.text}` : insertion.text;
+      drafts.current.set(state.activeSessionId as string, next);
+      return next;
+    });
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  }, [insertion, state.activeSessionId]);
 
   const deliver = async (mode: 'submit' | 'queue') => {
     const text = draft.trim();
     if (!text || !composerReady) return;
+    const sessionId = state.activeSessionId;
     try {
       if (mode === 'queue') await actions.queue(text);
       else await actions.submit(text);
-      setDraft('');
+      if (sessionId) drafts.current.delete(sessionId);
+      if (activeSessionRef.current === sessionId) setDraft('');
       textareaRef.current?.focus();
     } catch {
       textareaRef.current?.focus();
@@ -714,7 +751,11 @@ function Composer({
         rows={3}
         maxLength={1_000_000}
         value={draft}
-        onChange={event => setDraft(event.target.value)}
+        onChange={event => {
+          const next = event.target.value;
+          setDraft(next);
+          if (state.activeSessionId) drafts.current.set(state.activeSessionId, next);
+        }}
         onKeyDown={onKeyDown}
         placeholder={
           pending
@@ -753,7 +794,7 @@ function Composer({
                 type="button"
                 className="icon-text-button stop-button"
                 onClick={() => void actions.interrupt()}
-                disabled={pending}
+                disabled={!composerReady}
               >
                 <Icon name="stop" size={14} />
                 停止
@@ -762,7 +803,7 @@ function Composer({
                 type="button"
                 className="secondary-button"
                 onClick={() => void deliver('submit')}
-                disabled={!draft.trim() || pending}
+                disabled={!draft.trim() || !composerReady}
               >
                 Steer
               </button>

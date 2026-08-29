@@ -51,7 +51,7 @@ export function createFakeWebRuntime(cwd: string): OrionCodeUiRuntime {
 
   return {
     cwd,
-    version: '0.3.0-test',
+    version: '0.3.1-test',
     config,
     store,
     llm: null,

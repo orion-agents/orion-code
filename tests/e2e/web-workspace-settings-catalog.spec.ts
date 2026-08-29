@@ -64,7 +64,11 @@ test('E2E-P0-07 workspaces stay isolated while MCP and large artifacts are expli
     host.url,
     bootstrap.nonce,
     `/api/v1/sessions/${encodeURIComponent(primary.session.id)}/activate`,
-    { requestId: randomUUID() }
+    {
+      requestId: randomUUID(),
+      expectedContextRevision: bootstrap.contextRevision,
+      workspaceId: bootstrap.workspaceId,
+    }
   );
   expect(crossWorkspace.status).toBe(409);
   const afterRejectedActivation = await webBootstrap(page);
@@ -143,7 +147,7 @@ test('E2E-P0-07 workspaces stay isolated while MCP and large artifacts are expli
     offsetBytes: 0,
     nextOffsetBytes: 65_536,
     totalBytes: LARGE_OUTPUT_BYTES,
-    redacted: false,
+    redacted: true,
   });
   expect(Buffer.byteLength(first.body.content, 'utf8')).toBe(65_536);
   const second = await browserGet<WebToolDetailPageV1>(

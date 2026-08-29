@@ -2,9 +2,21 @@ import type {
   WebBootstrapV1 as ProtocolWebBootstrapV1,
   WebEventEnvelopeV1 as ProtocolWebEventEnvelopeV1,
   WebMcpServerSummaryV1,
+  WebFileContentPageV1,
+  WebFileNodeV1,
+  WebFileTreePageV1,
+  WebGitDiffPageV1,
+  WebGitFileV1,
+  WebGitLogPageV1,
+  WebGitStatusV1,
+  WebReviewSnapshotV1,
   WebSessionSummaryV1,
   WebSessionSnapshotV1,
   WebSkillSummaryV1,
+  WebTerminalMetadataV1,
+  WebTerminalCreateResultV1,
+  WebWorkspaceSummaryV1,
+  WebWorkspaceProjectSummaryV1,
   WebToolDetailPageV1,
   WebToolDetailSummaryV1,
 } from '../../src/web/protocol';
@@ -20,12 +32,24 @@ export type WebSettingsSnapshotV1 = WebSettingsDocumentV1;
 
 export type {
   WebMcpServerSummaryV1,
+  WebFileContentPageV1,
+  WebFileNodeV1,
+  WebFileTreePageV1,
+  WebGitDiffPageV1,
+  WebGitFileV1,
+  WebGitLogPageV1,
+  WebGitStatusV1,
+  WebReviewSnapshotV1,
   WebSessionSummaryV1,
   WebSessionSnapshotV1,
   WebSettingsDocumentV1,
   WebSkillSummaryV1,
+  WebTerminalMetadataV1,
+  WebTerminalCreateResultV1,
   WebToolDetailPageV1,
   WebToolDetailSummaryV1,
+  WebWorkspaceSummaryV1,
+  WebWorkspaceProjectSummaryV1,
 };
 
 export type RuntimeEvent = Extract<
@@ -65,8 +89,17 @@ export type EditPreviewRequest = Extract<
 >['request'];
 
 export interface WorkspaceListResponse {
-  readonly active: string;
-  readonly workspaces: readonly string[];
+  readonly activeId: string;
+  readonly activePath: string;
+  readonly workspaces: readonly WebWorkspaceSummaryV1[];
+  readonly nextCursor: string | null;
+}
+
+export interface WorkspaceSessionsState {
+  readonly status: 'idle' | 'loading' | 'ready' | 'error';
+  readonly items: readonly WebSessionSummaryV1[];
+  readonly nextCursor: string | null;
+  readonly error?: string;
 }
 
 export interface WebTranscriptEntry {
@@ -218,6 +251,12 @@ export interface WorkbenchNotice {
   readonly detail?: string;
 }
 
+export interface WorkspaceResourceEpochs {
+  readonly files: number;
+  readonly git: number;
+  readonly review: number;
+}
+
 export interface WorkbenchState {
   readonly boot: 'loading' | 'ready' | 'error';
   readonly bootError?: string;
@@ -227,9 +266,16 @@ export interface WorkbenchState {
   readonly lastCursor: number;
   readonly lastEventId: string | null;
   readonly replayReason?: string;
+  readonly contextRevision: string;
+  readonly workspaceId: string;
   readonly workspace: string;
-  readonly workspaces: readonly string[];
+  readonly workspaces: readonly WebWorkspaceSummaryV1[];
   readonly sessions: readonly WebSessionSummaryV1[];
+  readonly workspaceSessions: Readonly<Record<string, WorkspaceSessionsState>>;
+  readonly workspaceProjectSummaries: Readonly<Record<string, WebWorkspaceProjectSummaryV1>>;
+  readonly workspaceResourceEpochs: Readonly<Record<string, WorkspaceResourceEpochs>>;
+  readonly workspaceNextCursor: string | null;
+  readonly sessionNextCursor: string | null;
   readonly activeSessionId: string | null;
   readonly transcript: readonly WebTranscriptEntry[];
   readonly tools: readonly WebToolCall[];
@@ -253,6 +299,9 @@ export interface WorkbenchState {
   readonly skills: readonly WebSkillSummaryV1[];
   readonly mcpServers: readonly WebMcpServerSummaryV1[];
   readonly toolDetails: readonly WebToolDetailSummaryV1[];
+  readonly skillNextCursor: string | null;
+  readonly mcpNextCursor: string | null;
+  readonly toolDetailNextCursor: string | null;
   readonly loopStats: unknown;
   readonly traces: readonly unknown[];
   readonly pendingAction: string | null;
@@ -267,9 +316,16 @@ export const initialWorkbenchState: WorkbenchState = {
   connectionAttempt: 0,
   lastCursor: 0,
   lastEventId: null,
+  contextRevision: '',
+  workspaceId: '',
   workspace: '',
   workspaces: [],
   sessions: [],
+  workspaceSessions: {},
+  workspaceProjectSummaries: {},
+  workspaceResourceEpochs: {},
+  workspaceNextCursor: null,
+  sessionNextCursor: null,
   activeSessionId: null,
   transcript: [],
   tools: [],
@@ -300,6 +356,9 @@ export const initialWorkbenchState: WorkbenchState = {
   skills: [],
   mcpServers: [],
   toolDetails: [],
+  skillNextCursor: null,
+  mcpNextCursor: null,
+  toolDetailNextCursor: null,
   loopStats: null,
   traces: [],
   pendingAction: null,

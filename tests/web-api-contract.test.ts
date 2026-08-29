@@ -5,7 +5,7 @@ import { load } from 'js-yaml';
 
 type JsonObject = Record<string, unknown>;
 
-const contractPath = resolve(__dirname, '../docs/architecture/v0.3.0-web-api.yaml');
+const contractPath = resolve(__dirname, '../docs/architecture/v0.3.1-web-api.yaml');
 
 describe('Orion Web OpenAPI contract', () => {
   const document = load(readFileSync(contractPath, 'utf8')) as JsonObject;
@@ -25,11 +25,17 @@ describe('Orion Web OpenAPI contract', () => {
 
   test('requires requestId on every mutation and an atomic Settings batch CAS', () => {
     const mutations = collectOperations(document).filter(operation => operation.method !== 'get');
-    expect(mutations).toHaveLength(7);
+    expect(mutations).toHaveLength(13);
     for (const operation of mutations) {
       const schema = requestSchema(document, operation.value);
       expect(schema.required).toEqual(expect.arrayContaining(['requestId']));
+      expect(operation.value.security).toEqual(
+        expect.arrayContaining([expect.objectContaining({ webNonce: [] })])
+      );
     }
+
+    const requestId = resolveReference(document, '#/components/schemas/RequestId') as JsonObject;
+    expect(requestId.format).toBe('uuid');
 
     const settings = resolveReference(
       document,
@@ -89,13 +95,187 @@ describe('Orion Web OpenAPI contract', () => {
     );
 
     const event = resolveReference(document, '#/components/schemas/WebEventEnvelope') as JsonObject;
-    expect(event.oneOf).toHaveLength(5);
+    expect(event.oneOf).toHaveLength(6);
     for (const branch of event.oneOf as JsonObject[]) {
       const schema = resolveReference(document, branch.$ref as string) as JsonObject;
       expect(schema.required).toEqual(
         expect.arrayContaining(['eventId', 'cursor', 'sessionId', 'threadId', 'type'])
       );
     }
+  });
+
+  test('freezes multi-project, read-only engineering and isolated terminal routes', () => {
+    const paths = document.paths as JsonObject;
+    for (const path of [
+      '/workspaces/{workspaceId}/sessions',
+      '/workspaces/{workspaceId}/summary',
+      '/context/activate',
+      '/files',
+      '/files/{fileId}/content',
+      '/git/status',
+      '/git/log',
+      '/git/diff/{fileId}',
+      '/review',
+      '/terminals',
+      '/terminals/{terminalId}/attach-ticket',
+      '/terminals/{terminalId}',
+      '/terminals/{terminalId}/stream',
+    ]) {
+      expect(paths).toHaveProperty(path);
+    }
+
+    const context = requestSchema(
+      document,
+      (paths['/context/activate'] as JsonObject).post as JsonObject
+    );
+    expect(context.required).toEqual([
+      'requestId',
+      'expectedContextRevision',
+      'workspaceId',
+      'sessionId',
+    ]);
+
+    const createTerminal = (paths['/terminals'] as JsonObject).post as JsonObject;
+    expect(createTerminal.security).toEqual([{ webNonce: [], terminalUserGesture: [] }]);
+    const stream = (paths['/terminals/{terminalId}/stream'] as JsonObject).get as JsonObject;
+    const websocket = stream['x-orion-websocket'] as JsonObject;
+    expect(websocket.subprotocol).toBe('orion-terminal-v1');
+    expect(JSON.stringify(stream)).toContain('TerminalAuthenticateMessage');
+    expect(JSON.stringify(stream)).not.toContain('EventSource');
+
+    const bootstrap = resolveReference(
+      document,
+      '#/components/schemas/BootstrapResponse'
+    ) as JsonObject;
+    expect(bootstrap.required).toEqual(
+      expect.arrayContaining(['contextRevision', 'workspaceId', 'capabilities'])
+    );
+    expect(JSON.stringify(bootstrap)).toContain('terminal');
+  });
+
+  test('guards active context operations and makes stale admission side-effect free', () => {
+    const paths = document.paths as JsonObject;
+    const guardedReads = [
+      '/workspaces',
+      '/sessions',
+      '/sessions/{sessionId}/snapshot',
+      '/files',
+      '/files/{fileId}/content',
+      '/git/status',
+      '/git/log',
+      '/git/diff/{fileId}',
+      '/review',
+      '/terminals',
+      '/tool-details',
+      '/tool-details/{callId}',
+      '/skills',
+      '/mcp',
+      '/diagnostics',
+    ];
+    for (const path of guardedReads) {
+      const operation = (paths[path] as JsonObject).get as JsonObject;
+      expect(operation.parameters).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ $ref: '#/components/parameters/ContextWorkspaceId' }),
+          expect.objectContaining({ $ref: '#/components/parameters/ExpectedContextRevision' }),
+        ])
+      );
+      expect(operation.responses as JsonObject).toHaveProperty('409');
+    }
+
+    for (const path of [
+      '/workspaces/{workspaceId}/sessions',
+      '/workspaces/{workspaceId}/summary',
+    ]) {
+      const operation = (paths[path] as JsonObject).get as JsonObject;
+      expect(operation.parameters).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ $ref: '#/components/parameters/WorkspaceId' }),
+          expect.objectContaining({ $ref: '#/components/parameters/ExpectedContextRevision' }),
+        ])
+      );
+      expect(operation.responses as JsonObject).toHaveProperty('409');
+    }
+
+    const guardedMutationSchemas = [
+      '#/components/schemas/ContextActivateRequest',
+      '#/components/schemas/ActivateWorkspaceRequest',
+      '#/components/schemas/CreateSessionRequest',
+      '#/components/schemas/RenameSessionRequest',
+      '#/components/schemas/ContextGuardRequest',
+      '#/components/schemas/TerminalCreateRequest',
+      '#/components/schemas/WebCommand',
+    ];
+    for (const reference of guardedMutationSchemas) {
+      const schema = resolveReference(document, reference) as JsonObject;
+      expect(schema.required).toEqual(
+        expect.arrayContaining(['requestId', 'expectedContextRevision'])
+      );
+    }
+
+    const expectedContext = resolveReference(
+      document,
+      '#/components/parameters/ExpectedContextRevision'
+    ) as JsonObject;
+    expect(expectedContext.description).toContain('409 context_revision_conflict');
+    expect(expectedContext.description).toContain('zero side effects');
+    const conflict = resolveReference(
+      document,
+      '#/components/responses/ContextConflict'
+    ) as JsonObject;
+    expect(JSON.stringify(conflict)).toContain('context_revision_conflict');
+    expect(JSON.stringify(conflict)).toContain('zero side effects');
+  });
+
+  test('separates revision-bound collection and transcript cursor contracts', () => {
+    const paths = document.paths as JsonObject;
+    for (const path of ['/workspaces', '/sessions', '/skills', '/mcp', '/tool-details']) {
+      const operation = (paths[path] as JsonObject).get as JsonObject;
+      expect(operation.parameters).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ $ref: '#/components/parameters/CollectionCursor' }),
+        ])
+      );
+      expect(operation.responses as JsonObject).toHaveProperty('409');
+    }
+
+    const workspaceSessions = (paths['/workspaces/{workspaceId}/sessions'] as JsonObject)
+      .get as JsonObject;
+    expect(workspaceSessions.parameters).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ $ref: '#/components/parameters/CollectionCursor' }),
+      ])
+    );
+    expect(workspaceSessions.responses as JsonObject).toHaveProperty('409');
+
+    for (const path of ['/files', '/files/{fileId}/content', '/git/status', '/git/log']) {
+      const operation = (paths[path] as JsonObject).get as JsonObject;
+      expect(operation.parameters).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ $ref: '#/components/parameters/ResourceCursor' }),
+        ])
+      );
+      expect(operation.responses as JsonObject).toHaveProperty('409');
+    }
+
+    const snapshot = (paths['/sessions/{sessionId}/snapshot'] as JsonObject).get as JsonObject;
+    expect(snapshot.parameters).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ $ref: '#/components/parameters/TranscriptCursor' }),
+      ])
+    );
+    expect(snapshot.responses as JsonObject).toHaveProperty('409');
+
+    const parameters = ((document.components as JsonObject).parameters ?? {}) as JsonObject;
+    expect((parameters.CollectionCursor as JsonObject).description).toContain(
+      'collection_cursor_stale'
+    );
+    expect((parameters.TranscriptCursor as JsonObject).description).toContain(
+      'transcript_cursor_stale'
+    );
+    expect(
+      ((paths['/tool-details/{callId}'] as JsonObject).get as JsonObject).description as string
+    ).toContain('pre-sanitized derivative');
   });
 });
 

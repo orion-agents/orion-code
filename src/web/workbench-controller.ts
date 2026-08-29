@@ -1,14 +1,21 @@
-import { realpathSync, statSync } from 'fs';
+import { randomUUID } from 'crypto';
+import { existsSync, realpathSync, statSync, watch, type FSWatcher } from 'fs';
 import { basename, resolve } from 'path';
 
 import { AgentRuntimeController } from '../runtime/agent-runtime-controller';
 import type { AgentRuntimeEvent } from '../runtime/agent-runtime-protocol';
+import {
+  DurableToolReceiptReaderError,
+  listProjectDurableToolReceiptRefsV1,
+} from '../runtime/durable-tool-receipt-reader';
 import { loadFirstPartyMcpConfigurationV1 } from '../runtime/mcp';
 import { createProductUiRuntime } from '../runtime/product-bootstrap';
 import type { OrionRuntimeV1 } from '../runtime/orion-runtime-v1';
 import { digestRuntimeValue } from '../runtime/protocol/canonical';
 import type { RuntimeEventEnvelopeV1 } from '../runtime/protocol/runtime-protocol-v1';
+import { ThreadSessionIndexError } from '../runtime/thread-session-index';
 import {
+  loadThreadSessionSnapshotPageV1,
   loadThreadSessionViewV1,
   type ThreadSessionRuntimeActivationV1,
   type ThreadSessionViewV1,
@@ -28,7 +35,11 @@ import {
   readSessionMessages,
   type SessionMeta,
 } from '../services/session-storage';
+import { WorkspaceRegistryError, WorkspaceRegistryV1 } from '../services/workspace-registry';
+import { WebWorkbenchError } from './errors';
 import { WebEventHub } from './event-hub';
+import { FileReadServiceV1 } from './file-read-service';
+import { GitReadModelServiceV1 } from './git-read-model-service';
 import {
   WEB_API_VERSION,
   parseWebCommand,
@@ -36,6 +47,8 @@ import {
   toAgentRuntimeInput,
   type WebBootstrapV1,
   type WebCommandResultV1,
+  type WebContextActivateRequestV1,
+  type WebContextGuardV1,
   type WebMcpServerSummaryV1,
   type WebPageV1,
   type WebSessionSnapshotV1,
@@ -48,18 +61,13 @@ import {
   type WebToolDetailPageV1,
   type WebToolDetailSummaryV1,
   type WebWorkspaceSummaryV1,
+  type WebWorkspaceProjectSummaryV1,
+  type WebWorkspaceInvalidationReasonV1,
 } from './protocol';
+import { ReviewServiceV1 } from './review-service';
+import { TerminalManagerV1 } from './terminal-manager';
 
-export class WebWorkbenchError extends Error {
-  constructor(
-    readonly status: number,
-    message: string,
-    readonly code = status === 409 ? 'request_conflict' : 'web_workbench_error'
-  ) {
-    super(message);
-    this.name = 'WebWorkbenchError';
-  }
-}
+export { WebWorkbenchError } from './errors';
 
 interface CachedMutationResult {
   readonly fingerprint: string;
@@ -73,11 +81,13 @@ interface CachedSessionView {
 }
 
 const SESSION_VIEW_CACHE_BYTES = 16 * 1024 * 1024;
+const MAX_MUTATION_RESULTS = 4_096;
 
 export interface WebWorkbenchControllerOptions {
   readonly cwd: string;
   readonly eventHub?: WebEventHub;
   readonly createRuntime?: (cwd: string) => Promise<OrionCodeUiRuntime>;
+  readonly workspaceRegistry?: WorkspaceRegistryV1;
 }
 
 /** Owns the sole runtime/controller pair exposed through the local Web host. */
@@ -89,17 +99,40 @@ export class WebWorkbenchController {
   private controllerValue!: AgentRuntimeController;
   private activeOrionRuntime?: { readonly runtime: OrionRuntimeV1; readonly sessionId: string };
   private readonly createRuntime: (cwd: string) => Promise<OrionCodeUiRuntime>;
+  private readonly workspaceRegistry: WorkspaceRegistryV1;
+  readonly terminalManager: TerminalManagerV1;
   private readonly mutationResults = new Map<string, CachedMutationResult>();
   private readonly sessionViews = new Map<string, CachedSessionView>();
   private sessionViewBytes = 0;
   private readonly toolDetails = new FileToolDetailRepository();
+  private fileService!: FileReadServiceV1;
+  private gitService!: GitReadModelServiceV1;
+  private reviewService!: ReviewServiceV1;
+  private contextRevisionValue = randomUUID();
+  private suppressContextEdges = 0;
   private latestStatus = 'Ready';
   private transition: Promise<void> | undefined;
+  private sessionTransition = false;
   private closed = false;
+  private workspaceWatchers: FSWatcher[] = [];
+  private resourceInvalidationTimer?: NodeJS.Timeout;
 
   private constructor(options: WebWorkbenchControllerOptions) {
     this.workspaceValue = canonicalDirectory(options.cwd);
     this.eventHub = options.eventHub ?? new WebEventHub();
+    this.workspaceRegistry = options.workspaceRegistry ?? new WorkspaceRegistryV1();
+    this.terminalManager = new TerminalManagerV1({
+      resolveWorkspace: workspaceId => this.workspaceRegistry.find(workspaceId)?.canonicalPath,
+      getActiveContext: () => ({
+        workspaceId: this.activeWorkspaceEntry().id,
+        contextRevision: this.contextRevisionValue,
+      }),
+      onWorkspaceMutationHint: workspaceId => {
+        if (workspaceId === this.activeWorkspaceEntry().id) {
+          this.scheduleWorkspaceResourceInvalidation('terminal-command');
+        }
+      },
+    });
     this.createRuntime =
       options.createRuntime ??
       (cwd =>
@@ -109,6 +142,7 @@ export class WebWorkbenchController {
           onActiveSessionRuntime: (runtime, sessionId, activation) =>
             this.observeThreadRuntime(runtime, sessionId, activation),
           onSettingsInvalidated: event => {
+            if (this.suppressContextEdges > 0) return;
             this.eventHub.emit(
               {
                 type: 'settings_invalidated',
@@ -124,6 +158,7 @@ export class WebWorkbenchController {
 
   static async create(options: WebWorkbenchControllerOptions): Promise<WebWorkbenchController> {
     const workbench = new WebWorkbenchController(options);
+    workbench.initializeWorkspaceRegistry();
     await workbench.installRuntime(workbench.workspaceValue);
     return workbench;
   }
@@ -140,11 +175,17 @@ export class WebWorkbenchController {
     return this.controllerValue;
   }
 
+  get contextRevision(): string {
+    return this.contextRevisionValue;
+  }
+
   bootstrap(nonce: string): WebBootstrapV1 {
     return Object.freeze({
       apiVersion: WEB_API_VERSION,
       productVersion: this.runtimeValue.version,
       nonce,
+      contextRevision: this.contextRevisionValue,
+      workspaceId: this.activeWorkspaceEntry().id,
       workspace: this.workspaceValue,
       configured: this.runtimeValue.isConfigured,
       activeSessionId: this.runtimeValue.getSession()?.id ?? null,
@@ -155,6 +196,10 @@ export class WebWorkbenchController {
         skills: true as const,
         mcp: true as const,
         diagnostics: true as const,
+        review: true as const,
+        files: true as const,
+        git: true as const,
+        terminal: this.terminalManager.available,
       },
     });
   }
@@ -177,39 +222,128 @@ export class WebWorkbenchController {
   }
 
   listWorkspaces(): readonly WebWorkspaceSummaryV1[] {
-    const paths = new Set<string>([this.workspaceValue]);
     const counts = new Map<string, number>();
     for (const session of listSessions()) {
       try {
         const path = canonicalDirectory(session.projectPath);
-        paths.add(path);
         counts.set(path, (counts.get(path) ?? 0) + 1);
       } catch {
         // Stale projects remain in session history but are not selectable workspaces.
       }
     }
     return Object.freeze(
-      [...paths].sort().map(path =>
-        Object.freeze({
-          path,
-          label: basename(path) || path,
-          active: path === this.workspaceValue,
-          sessionCount: counts.get(path) ?? 0,
-        })
-      )
+      this.workspaceRegistry.list().map(entry => {
+        let available = false;
+        try {
+          available = canonicalDirectory(entry.canonicalPath) === entry.canonicalPath;
+        } catch {
+          available = false;
+        }
+        return Object.freeze({
+          id: entry.id,
+          path: entry.canonicalPath,
+          label: entry.label || basename(entry.canonicalPath) || entry.canonicalPath,
+          active: entry.canonicalPath === this.workspaceValue,
+          available,
+          sessionCount: counts.get(entry.canonicalPath) ?? 0,
+          lastActivatedAt: entry.lastActivatedAt,
+          ...(entry.pinnedOrder !== undefined ? { pinnedOrder: entry.pinnedOrder } : {}),
+        });
+      })
     );
   }
 
-  listSessions(): readonly WebSessionSummaryV1[] {
-    return Object.freeze(listProjectSessions(this.workspaceValue).map(projectSessionSummary));
+  listWorkspaceSessions(workspaceId: string): readonly WebSessionSummaryV1[] {
+    const entry = this.workspaceRegistry.find(workspaceId);
+    if (!entry) {
+      throw new WebWorkbenchError(404, 'Workspace was not found.', 'workspace_not_found');
+    }
+    try {
+      canonicalDirectory(entry.canonicalPath);
+    } catch {
+      throw new WebWorkbenchError(409, 'Workspace is unavailable.', 'workspace_unavailable');
+    }
+    return Object.freeze(listProjectSessions(entry.canonicalPath).map(projectSessionSummary));
+  }
+
+  async workspaceProjectSummary(workspaceId: string): Promise<WebWorkspaceProjectSummaryV1> {
+    const entry = this.workspaceRegistry.find(workspaceId);
+    if (!entry) {
+      throw new WebWorkbenchError(404, 'Workspace was not found.', 'workspace_not_found');
+    }
+    let workspace: string;
+    try {
+      workspace = canonicalDirectory(entry.canonicalPath);
+    } catch {
+      throw new WebWorkbenchError(409, 'Workspace is unavailable.', 'workspace_unavailable');
+    }
+    const status = await new GitReadModelServiceV1(workspace).status({ pageSize: 2_000 });
+    return Object.freeze({
+      workspaceId,
+      repositoryRevision: status.repositoryRevision,
+      isRepository: status.isRepository,
+      branch: status.branch,
+      detached: status.detached,
+      head: status.head,
+      dirtyCount: status.totalFiles,
+      conflictCount: status.conflicted.length,
+    });
+  }
+
+  setWorkspacePinned(
+    workspaceId: string,
+    pinned: boolean,
+    context: WebContextGuardV1
+  ): WebWorkspaceSummaryV1 {
+    this.assertContextGuard(context);
+    try {
+      this.workspaceRegistry.setPinned(workspaceId, pinned);
+    } catch (error) {
+      throw mapWorkspaceRegistryError(error);
+    }
+    const updated = this.listWorkspaces().find(workspace => workspace.id === workspaceId);
+    if (!updated) {
+      throw new WebWorkbenchError(404, 'Workspace was not found.', 'workspace_not_found');
+    }
+    return updated;
+  }
+
+  removeWorkspace(workspaceId: string, context: WebContextGuardV1): void {
+    this.assertContextGuard(context);
+    const entry = this.workspaceRegistry.find(workspaceId);
+    if (!entry) {
+      throw new WebWorkbenchError(404, 'Workspace was not found.', 'workspace_not_found');
+    }
+    if (entry.canonicalPath === this.workspaceValue) {
+      throw new WebWorkbenchError(
+        409,
+        'The active Workspace cannot be removed.',
+        'workspace_active'
+      );
+    }
+    this.terminalManager.closeWorkspace(workspaceId);
+    if (!this.workspaceRegistry.remove(workspaceId)) {
+      throw new WebWorkbenchError(404, 'Workspace was not found.', 'workspace_not_found');
+    }
+  }
+
+  listSessions(context?: WebContextGuardV1): readonly WebSessionSummaryV1[] {
+    if (context) this.assertContextGuard(context);
+    const result = Object.freeze(
+      listProjectSessions(this.workspaceValue).map(projectSessionSummary)
+    );
+    if (context) this.assertContextGuard(context);
+    return result;
   }
 
   sessionSnapshot(
     sessionId: string,
     cursor?: string,
     pageSize = 50,
-    tail = false
+    tail = false,
+    context?: WebContextGuardV1
   ): WebSessionSnapshotV1 {
+    if (context) this.assertContextGuard(context);
     const session = requireSession(sessionId);
     if (canonicalDirectory(session.projectPath) !== this.workspaceValue) {
       throw new WebWorkbenchError(409, 'Session belongs to another workspace.');
@@ -219,43 +353,95 @@ export class WebWorkbenchController {
       this.activeOrionRuntime?.sessionId === session.id
         ? this.activeOrionRuntime.runtime.thread.getProjection()
         : undefined;
-    let view: ReturnType<typeof loadThreadSessionViewV1>;
-    try {
-      view = this.loadSessionView(session, activeProjection);
-    } catch (error) {
-      if (!activeProjection) throw error;
-      view = undefined;
+    let indexedPage: ReturnType<typeof loadThreadSessionSnapshotPageV1>;
+    if (tail) {
+      try {
+        indexedPage = loadThreadSessionSnapshotPageV1(
+          this.workspaceValue,
+          session.id,
+          cursor,
+          pageSize
+        );
+      } catch (error) {
+        if (error instanceof ThreadSessionIndexError) {
+          throw new WebWorkbenchError(
+            error.code === 'ORION_THREAD_SESSION_CURSOR_STALE' ? 409 : 400,
+            error.message,
+            error.code === 'ORION_THREAD_SESSION_CURSOR_STALE'
+              ? 'transcript_cursor_stale'
+              : 'page_cursor_invalid'
+          );
+        }
+        throw error;
+      }
     }
-    const transcriptSource = view
-      ? view.transcriptMessages
-      : activeProjection
-        ? Object.values(activeProjection.items)
-            .filter(
-              item =>
-                item.kind === 'message' &&
-                item.status !== 'started' &&
-                ['system', 'user', 'assistant', 'tool'].includes(item.role ?? '')
-            )
-            .sort((left, right) => left.startedSeq - right.startedSeq)
-            .map(item => ({
-              role: item.role as 'system' | 'user' | 'assistant' | 'tool',
-              content: item.content ?? item.summary ?? item.error ?? '',
-              timestamp: item.terminalSeq ?? item.startedSeq,
-            }))
-        : readSessionMessages(session.id).map(message => ({
-            role: message.role,
-            content: message.content,
-            timestamp: message.timestamp,
-            ...(message.toolCallId ? { toolCallId: message.toolCallId } : {}),
-            ...(message.tool_calls ? { tool_calls: message.tool_calls } : {}),
-            ...(message.modelVisibleContent
-              ? { modelVisibleContent: message.modelVisibleContent }
-              : {}),
-            ...(message.appliedSkills ? { appliedSkills: message.appliedSkills } : {}),
-          }));
-    const tailPage = tail ? pageTranscriptTail(transcriptSource, cursor, pageSize) : undefined;
-    const transcriptPage = tailPage ?? pageItems(transcriptSource, cursor, pageSize);
-    const transcriptOffset = tailPage?.offset ?? (cursor ? decodePageCursor(cursor) : 0);
+    if (
+      indexedPage &&
+      activeProjection &&
+      (indexedPage.cursor !== activeProjection.cursor ||
+        indexedPage.projectionDigest !== activeProjection.digest)
+    ) {
+      if (cursor) {
+        throw new WebWorkbenchError(
+          409,
+          'Active Thread changed after this transcript cursor was issued.',
+          'transcript_cursor_stale'
+        );
+      }
+      // Another process may have advanced the durable Thread before the active
+      // Runtime has adopted that head. Never combine the newer page with the
+      // older in-memory cursor/digest in one snapshot.
+      indexedPage = undefined;
+    }
+    let view: ReturnType<typeof loadThreadSessionViewV1>;
+    if (!indexedPage && !activeProjection) {
+      try {
+        view = this.loadSessionView(session, activeProjection);
+      } catch (error) {
+        if (!activeProjection) throw error;
+        view = undefined;
+      }
+    }
+    const transcriptSource = indexedPage
+      ? indexedPage.transcript.items
+      : view
+        ? view.transcriptMessages
+        : activeProjection
+          ? Object.values(activeProjection.items)
+              .filter(
+                item =>
+                  item.kind === 'message' &&
+                  item.status !== 'started' &&
+                  ['system', 'user', 'assistant', 'tool'].includes(item.role ?? '')
+              )
+              .sort((left, right) => left.startedSeq - right.startedSeq)
+              .map(item => ({
+                role: item.role as 'system' | 'user' | 'assistant' | 'tool',
+                content: item.content ?? item.summary ?? item.error ?? '',
+                timestamp: item.terminalSeq ?? item.startedSeq,
+              }))
+          : readSessionMessages(session.id).map(message => ({
+              role: message.role,
+              content: message.content,
+              timestamp: message.timestamp,
+              ...(message.toolCallId ? { toolCallId: message.toolCallId } : {}),
+              ...(message.tool_calls ? { tool_calls: message.tool_calls } : {}),
+              ...(message.modelVisibleContent
+                ? { modelVisibleContent: message.modelVisibleContent }
+                : {}),
+              ...(message.appliedSkills ? { appliedSkills: message.appliedSkills } : {}),
+            }));
+    const tailPage =
+      tail && !indexedPage ? pageTranscriptTail(transcriptSource, cursor, pageSize) : undefined;
+    const transcriptPage = indexedPage
+      ? {
+          items: indexedPage.transcript.items,
+          nextCursor: indexedPage.transcript.nextCursor,
+        }
+      : (tailPage ?? pageItems(transcriptSource, cursor, pageSize));
+    const transcriptOffset = indexedPage
+      ? indexedPage.transcript.offset
+      : (tailPage?.offset ?? (cursor ? decodePageCursor(cursor) : 0));
     const transcript = Object.freeze({
       items: Object.freeze(
         transcriptPage.items.map((message, index) => ({
@@ -263,13 +449,15 @@ export class WebWorkbenchController {
           id: `${session.id}:message:${transcriptOffset + index + 1}`,
         }))
       ),
-      nextCursor: transcriptPage.nextCursor,
+      nextCursor: indexedPage?.transcript.nextCursor ?? transcriptPage.nextCursor,
     });
-    const commitProjections = view
-      ? uniqueCommitProjections([view.latestPlanTurnCommit, view.latestTurnCommit])
-      : activeProjection
-        ? latestAuthorityCommits(activeProjection)
-        : [];
+    const commitProjections = indexedPage
+      ? uniqueCommitProjections([indexedPage.latestPlanTurnCommit, indexedPage.latestTurnCommit])
+      : view
+        ? uniqueCommitProjections([view.latestPlanTurnCommit, view.latestTurnCommit])
+        : activeProjection
+          ? latestAuthorityCommits(activeProjection)
+          : [];
     const commits = commitProjections.map(commit => parseTurnCommitV1(commit.receipt));
     const latestCommit = commits.at(-1);
     const planCommit = [...commits].reverse().find(commit => commit.planReceipt);
@@ -287,7 +475,7 @@ export class WebWorkbenchController {
         }))
       : [];
     const projectionStatus: WebSessionSnapshotV1['threadStatus'] =
-      activeProjection?.status ?? (view ? 'idle' : 'legacy');
+      activeProjection?.status ?? (indexedPage || view ? 'idle' : 'legacy');
     const goal =
       latestCommit?.goalState && latestCommit.goalStateDigest
         ? {
@@ -296,14 +484,17 @@ export class WebWorkbenchController {
             state: JSON.parse(latestCommit.goalState) as unknown,
           }
         : null;
-    return Object.freeze({
+    const snapshot = Object.freeze({
       apiVersion: WEB_API_VERSION,
       session: projectSessionSummary(session),
-      threadId: activeProjection?.threadId ?? view?.threadId ?? null,
-      threadCursor: activeProjection?.cursor ?? view?.cursor ?? 0,
+      threadId: activeProjection?.threadId ?? indexedPage?.threadId ?? view?.threadId ?? null,
+      threadCursor: activeProjection?.cursor ?? indexedPage?.cursor ?? view?.cursor ?? 0,
       eventCursor: this.eventHub.snapshot().latest,
-      ...(activeProjection?.digest || view?.projectionDigest
-        ? { projectionDigest: activeProjection?.digest ?? view?.projectionDigest }
+      ...(activeProjection?.digest || indexedPage?.projectionDigest || view?.projectionDigest
+        ? {
+            projectionDigest:
+              activeProjection?.digest ?? indexedPage?.projectionDigest ?? view?.projectionDigest,
+          }
         : {}),
       threadStatus: projectionStatus,
       ...(activeProjection?.activeTurnId ? { activeTurnId: activeProjection.activeTurnId } : {}),
@@ -322,8 +513,10 @@ export class WebWorkbenchController {
       pendingApprovals: Object.freeze(pendingPermissions),
       goal,
       plan,
-      recoveryDiagnostics: view?.diagnostics ?? [],
+      recoveryDiagnostics: indexedPage ? [] : (view?.diagnostics ?? []),
     });
+    if (context) this.assertContextGuard(context);
+    return snapshot;
   }
 
   async skills(): Promise<readonly WebSkillSummaryV1[]> {
@@ -375,7 +568,9 @@ export class WebWorkbenchController {
           generation: runtime?.generation ?? 0,
           toolCount: runtime?.toolCount ?? 0,
           activeCallCount: runtime?.activeCallCount ?? 0,
-          ...(runtime?.failure ? { failure: runtime.failure } : {}),
+          ...(runtime?.failure
+            ? { failure: 'Runtime transport failure. See local Host diagnostics for details.' }
+            : {}),
         });
       })
     );
@@ -406,42 +601,129 @@ export class WebWorkbenchController {
     );
   }
 
-  async createSession(name?: string): Promise<WebSessionSummaryV1> {
+  listFiles(context: WebContextGuardV1, input: Parameters<FileReadServiceV1['list']>[0]) {
+    this.assertContextGuard(context);
+    const result = this.fileService.list(input);
+    this.assertContextGuard(context);
+    return result;
+  }
+
+  readFileContent(
+    context: WebContextGuardV1,
+    input: Parameters<FileReadServiceV1['readContent']>[0]
+  ) {
+    this.assertContextGuard(context);
+    const result = this.fileService.readContent(input);
+    this.assertContextGuard(context);
+    return result;
+  }
+
+  async gitStatus(
+    context: WebContextGuardV1,
+    input: Parameters<GitReadModelServiceV1['status']>[0]
+  ) {
+    this.assertContextGuard(context);
+    const result = await this.gitService.status(input);
+    this.assertContextGuard(context);
+    return result;
+  }
+
+  async gitLog(context: WebContextGuardV1, input: Parameters<GitReadModelServiceV1['log']>[0]) {
+    this.assertContextGuard(context);
+    const result = await this.gitService.log(input);
+    this.assertContextGuard(context);
+    return result;
+  }
+
+  async gitDiff(context: WebContextGuardV1, input: Parameters<GitReadModelServiceV1['diff']>[0]) {
+    this.assertContextGuard(context);
+    const result = await this.gitService.diff(input);
+    this.assertContextGuard(context);
+    return result;
+  }
+
+  async review(context: WebContextGuardV1) {
+    this.assertContextGuard(context);
+    try {
+      const result = await this.reviewService.snapshot();
+      this.assertContextGuard(context);
+      return result;
+    } catch (error) {
+      if (error instanceof DurableToolReceiptReaderError) {
+        throw new WebWorkbenchError(
+          500,
+          'Durable Review receipt facts failed integrity validation.',
+          'review_receipt_invalid'
+        );
+      }
+      throw error;
+    }
+  }
+
+  listTerminals(context: WebContextGuardV1) {
+    this.assertContextGuard(context);
+    const result = this.terminalManager.list(this.activeWorkspaceEntry().id);
+    this.assertContextGuard(context);
+    return result;
+  }
+
+  async createSession(name?: string, context?: WebContextGuardV1): Promise<WebSessionSummaryV1> {
     this.assertReadyForTransition('create a session');
-    // A new Session inherits the durable default; an override on the currently
-    // active Session must never leak into the next Session.
-    const session = createSession(
-      this.workspaceValue,
-      this.settings().sections.defaults.model.effectiveValue
-    );
-    incrementSessionCount();
-    const named = name?.trim() ? (renameSession(session.id, name.trim()) ?? session) : session;
-    this.runtimeValue.setSession(named);
-    await this.runtimeValue.rebindSessionRuntime?.();
-    this.eventHub.emitRuntime({ type: 'transcript_clear' });
-    this.emitState();
-    return projectSessionSummary(named);
+    if (context) this.assertContextGuard(context);
+    this.sessionTransition = true;
+    try {
+      // A new Session inherits the durable default; an override on the currently
+      // active Session must never leak into the next Session.
+      const session = createSession(
+        this.workspaceValue,
+        this.settings().sections.defaults.model.effectiveValue
+      );
+      incrementSessionCount();
+      const named = name?.trim() ? (renameSession(session.id, name.trim()) ?? session) : session;
+      this.runtimeValue.setSession(named);
+      await this.runtimeValue.rebindSessionRuntime?.();
+      this.eventHub.emitRuntime({ type: 'transcript_clear' });
+      this.emitState();
+      return projectSessionSummary(named);
+    } finally {
+      this.sessionTransition = false;
+    }
   }
 
-  async activateSession(sessionId: string): Promise<WebCommandResultV1> {
+  async activateSession(
+    sessionId: string,
+    context?: WebContextGuardV1
+  ): Promise<WebCommandResultV1> {
     this.assertReadyForTransition('switch sessions');
-    const session = requireSession(sessionId);
-    if (canonicalDirectory(session.projectPath) !== this.workspaceValue) {
-      throw new WebWorkbenchError(409, 'Session belongs to another workspace.');
+    if (context) this.assertContextGuard(context);
+    this.sessionTransition = true;
+    this.suppressContextEdges += 1;
+    let activated = false;
+    try {
+      const session = requireSession(sessionId);
+      if (canonicalDirectory(session.projectPath) !== this.workspaceValue) {
+        throw new WebWorkbenchError(409, 'Session belongs to another workspace.');
+      }
+      const result = this.controllerValue.handle({
+        type: 'select_session',
+        sessionId: session.id,
+        source: 'programmatic',
+      });
+      await this.controllerValue.waitForIdle();
+      if (this.runtimeValue.getSession()?.id !== session.id) {
+        throw new WebWorkbenchError(409, 'Session activation was rejected by the runtime.');
+      }
+      activated = true;
+      return { requestId: `activate:${session.id}`, result: result.type };
+    } finally {
+      this.suppressContextEdges -= 1;
+      this.sessionTransition = false;
+      if (activated) this.emitState();
     }
-    const result = this.controllerValue.handle({
-      type: 'select_session',
-      sessionId: session.id,
-      source: 'programmatic',
-    });
-    await this.controllerValue.waitForIdle();
-    if (this.runtimeValue.getSession()?.id !== session.id) {
-      throw new WebWorkbenchError(409, 'Session activation was rejected by the runtime.');
-    }
-    return { requestId: `activate:${session.id}`, result: result.type };
   }
 
-  renameSession(sessionId: string, name: string): WebSessionSummaryV1 {
+  renameSession(sessionId: string, name: string, context?: WebContextGuardV1): WebSessionSummaryV1 {
+    if (context) this.assertContextGuard(context);
     const session = requireSession(sessionId);
     if (canonicalDirectory(session.projectPath) !== this.workspaceValue) {
       throw new WebWorkbenchError(409, 'Session belongs to another workspace.');
@@ -452,49 +734,84 @@ export class WebWorkbenchController {
     return projectSessionSummary(updated);
   }
 
-  async switchWorkspace(path: string): Promise<void> {
-    if (this.transition) throw new WebWorkbenchError(409, 'A workspace transition is running.');
+  async switchWorkspace(path: string, context: WebContextGuardV1): Promise<void> {
+    this.assertContextGuard(context);
     const next = canonicalDirectory(path);
     if (next === this.workspaceValue) return;
-    this.assertReadyForTransition('switch workspaces');
+    let entry;
+    try {
+      entry = this.workspaceRegistry.register(next);
+    } catch (error) {
+      throw mapWorkspaceRegistryError(error);
+    }
+    await this.activateContext({
+      expectedContextRevision: context.expectedContextRevision,
+      workspaceId: entry.id,
+      sessionId: null,
+    });
+  }
+
+  async activateContext(input: Omit<WebContextActivateRequestV1, 'requestId'>): Promise<void> {
+    if (input.expectedContextRevision !== this.contextRevisionValue) {
+      throw new WebWorkbenchError(
+        409,
+        'The active Context changed before activation was admitted.',
+        'context_revision_conflict'
+      );
+    }
+    const entry = this.workspaceRegistry.find(input.workspaceId);
+    if (!entry) throw new WebWorkbenchError(404, 'Workspace was not found.', 'workspace_not_found');
+    const targetWorkspace = canonicalDirectory(entry.canonicalPath);
+    const targetSession = input.sessionId ? requireSession(input.sessionId) : null;
+    if (targetSession && canonicalDirectory(targetSession.projectPath) !== targetWorkspace) {
+      throw new WebWorkbenchError(
+        409,
+        'Session does not belong to the requested Workspace.',
+        'context_session_mismatch'
+      );
+    }
+    const currentSessionId = this.runtimeValue.getSession()?.id ?? null;
+    if (targetWorkspace === this.workspaceValue && targetSession?.id === currentSessionId) return;
+    if (targetWorkspace === this.workspaceValue && !targetSession && currentSessionId === null)
+      return;
+
+    this.assertReadyForTransition('activate a Context');
+    const previousWorkspace = this.workspaceValue;
+    const previousSessionId = currentSessionId;
     const previousRuntime = this.runtimeValue;
     const previousController = this.controllerValue;
-    const previousWorkspace = this.workspaceValue;
     const transition = (async () => {
-      await previousController.stopActiveTurn();
-      await previousController.waitForIdle();
-      await previousRuntime.shutdown();
+      this.suppressContextEdges += 1;
       try {
-        await this.installRuntime(next);
-      } catch (error) {
+        await previousController.stopActiveTurn();
+        await previousController.waitForIdle();
+        if (targetWorkspace !== previousWorkspace) {
+          await previousRuntime.shutdown();
+          await this.installRuntime(targetWorkspace, false);
+        }
+        await this.restoreContextSession(targetSession?.id ?? null);
+        this.workspaceRegistry.register(targetWorkspace, { activated: true });
+      } catch (activationError) {
         try {
-          await this.installRuntime(previousWorkspace);
+          if (targetWorkspace !== previousWorkspace) {
+            if (this.runtimeValue !== previousRuntime) await this.runtimeValue.shutdown();
+            await this.installRuntime(previousWorkspace, false);
+          }
+          await this.restoreContextSession(previousSessionId);
         } catch {
           throw new WebWorkbenchError(
             503,
-            'Workspace activation failed and the previous workspace could not be restored.'
+            'Context activation failed and the previous Context could not be restored.',
+            'context_recovery_required'
           );
         }
-        throw error;
+        throw activationError;
+      } finally {
+        this.suppressContextEdges -= 1;
       }
-      const describe = this.runtimeValue.describeSettings;
-      if (!describe) {
-        throw new WebWorkbenchError(
-          503,
-          'The product Settings coordinator is unavailable.',
-          'settings_document_unavailable'
-        );
-      }
-      const settings = describe();
-      this.eventHub.emit(
-        {
-          type: 'settings_invalidated',
-          revision: settings.revision,
-          reason: 'workspace-change',
-          state: settings.state === 'ready' || settings.state === 'read-only' ? 'ready' : 'invalid',
-        },
-        false
-      );
+      this.emitState();
+      this.emitWorkspaceResourceInvalidation('context-change');
+      if (targetWorkspace !== previousWorkspace) this.emitSettingsWorkspaceChange();
     })().finally(() => {
       if (this.transition === transition) this.transition = undefined;
     });
@@ -505,6 +822,7 @@ export class WebWorkbenchController {
   dispatch(raw: unknown): Promise<WebCommandResultV1> {
     const command = parseWebCommand(raw);
     return this.executeMutation(command.requestId, 'command', command, () => {
+      this.assertCommandSession(command.expectedSessionId);
       const runtimeResult = this.controllerValue.handle(toAgentRuntimeInput(command));
       return Object.freeze({
         requestId: command.requestId,
@@ -584,13 +902,18 @@ export class WebWorkbenchController {
       }
       return cached.result as Promise<T>;
     }
-    const result = Promise.resolve().then(action);
-    this.mutationResults.set(requestId, { fingerprint, result });
-    while (this.mutationResults.size > 512) {
-      const oldest = this.mutationResults.keys().next().value as string | undefined;
-      if (!oldest) break;
-      this.mutationResults.delete(oldest);
+    if (this.mutationResults.size >= MAX_MUTATION_RESULTS) {
+      throw new WebWorkbenchError(
+        503,
+        'The mutation idempotency ledger is full; restart the local Web Host before retrying.',
+        'mutation_capacity_exhausted'
+      );
     }
+    const result = Promise.resolve().then(() => {
+      this.assertMutationAdmission();
+      return action();
+    });
+    this.mutationResults.set(requestId, { fingerprint, result });
     return result;
   }
 
@@ -629,21 +952,30 @@ export class WebWorkbenchController {
     this.closed = true;
     await this.controllerValue.stopActiveTurn();
     await this.controllerValue.waitForIdle();
+    this.closeWorkspaceWatchers();
+    await this.terminalManager.shutdown();
     await this.runtimeValue.shutdown();
     this.eventHub.close();
   }
 
-  private async installRuntime(workspace: string): Promise<void> {
+  private async installRuntime(workspace: string, publishState = true): Promise<void> {
     const runtime = await this.createRuntime(workspace);
+    this.closeWorkspaceWatchers();
     this.activeOrionRuntime = undefined;
     this.sessionViews.clear();
     this.sessionViewBytes = 0;
     this.latestStatus = 'Ready';
     this.workspaceValue = workspace;
     this.runtimeValue = runtime;
+    this.fileService = new FileReadServiceV1(workspace);
+    this.gitService = new GitReadModelServiceV1(workspace);
+    this.reviewService = new ReviewServiceV1(this.gitService, () =>
+      listProjectDurableToolReceiptRefsV1(this.workspaceValue)
+    );
     const eventSink = {
       emit: (event: AgentRuntimeEvent): string | void => {
         if (event.type === 'status_changed') this.latestStatus = event.message;
+        if (this.suppressContextEdges > 0) return undefined;
         const activeSessionId = this.runtimeValue.getSession()?.id;
         const activeThread =
           activeSessionId && this.activeOrionRuntime?.sessionId === activeSessionId
@@ -654,6 +986,9 @@ export class WebWorkbenchController {
           ...(activeThread ? { threadId: activeThread } : {}),
         });
         if (event.type === 'session_restored') this.emitState();
+        if (event.type === 'tool_finished') {
+          this.scheduleWorkspaceResourceInvalidation('tool-finished');
+        }
         return event.type === 'transcript_append' ? `web-entry-${envelope.cursor}` : undefined;
       },
     };
@@ -673,15 +1008,119 @@ export class WebWorkbenchController {
         suppressAbortNotice: true,
       },
     });
-    this.emitState();
+    this.installWorkspaceWatchers();
+    if (publishState) this.emitState(false);
   }
 
-  private emitState(): void {
+  private emitState(advanceRevision = true): void {
+    if (this.suppressContextEdges > 0) return;
+    if (advanceRevision) this.contextRevisionValue = randomUUID();
+    const workspace = this.activeWorkspaceEntry();
     this.eventHub.emit({
       type: 'workbench_state',
+      contextRevision: this.contextRevisionValue,
+      workspaceId: workspace.id,
       workspace: this.workspaceValue,
       activeSessionId: this.runtimeValue.getSession()?.id ?? null,
     });
+  }
+
+  private emitWorkspaceResourceInvalidation(reason: WebWorkspaceInvalidationReasonV1): void {
+    if (this.closed || this.suppressContextEdges > 0) return;
+    this.eventHub.emit(
+      {
+        type: 'workspace_resource_invalidated',
+        workspaceId: this.activeWorkspaceEntry().id,
+        resources: ['files', 'git', 'review'],
+        reason,
+      },
+      false
+    );
+  }
+
+  private scheduleWorkspaceResourceInvalidation(reason: WebWorkspaceInvalidationReasonV1): void {
+    if (this.closed) return;
+    if (this.resourceInvalidationTimer) clearTimeout(this.resourceInvalidationTimer);
+    const workspace = this.workspaceValue;
+    this.resourceInvalidationTimer = setTimeout(() => {
+      this.resourceInvalidationTimer = undefined;
+      if (!this.closed && this.workspaceValue === workspace) {
+        this.emitWorkspaceResourceInvalidation(reason);
+      }
+    }, 120);
+    this.resourceInvalidationTimer.unref();
+  }
+
+  private installWorkspaceWatchers(): void {
+    const watchPaths = [this.workspaceValue, resolve(this.workspaceValue, '.git')].filter(path =>
+      existsSync(path)
+    );
+    for (const path of watchPaths) {
+      try {
+        const watcher = watch(path, { persistent: false }, () =>
+          this.scheduleWorkspaceResourceInvalidation('filesystem-change')
+        );
+        watcher.on('error', () => {
+          watcher.close();
+          this.workspaceWatchers = this.workspaceWatchers.filter(item => item !== watcher);
+        });
+        this.workspaceWatchers.push(watcher);
+      } catch {
+        // Watchers are only refresh hints. Revisioned reads and explicit refresh remain authoritative.
+      }
+    }
+  }
+
+  private closeWorkspaceWatchers(): void {
+    if (this.resourceInvalidationTimer) clearTimeout(this.resourceInvalidationTimer);
+    this.resourceInvalidationTimer = undefined;
+    for (const watcher of this.workspaceWatchers) watcher.close();
+    this.workspaceWatchers = [];
+  }
+
+  private async restoreContextSession(sessionId: string | null): Promise<void> {
+    if (!sessionId) {
+      this.runtimeValue.setSession(null);
+      await this.runtimeValue.rebindSessionRuntime?.();
+      if (this.suppressContextEdges === 0) {
+        this.eventHub.emitRuntime({ type: 'transcript_clear' });
+      }
+      return;
+    }
+    const result = this.controllerValue.handle({
+      type: 'select_session',
+      sessionId,
+      source: 'programmatic',
+    });
+    await this.controllerValue.waitForIdle();
+    if (this.runtimeValue.getSession()?.id !== sessionId) {
+      throw new WebWorkbenchError(
+        409,
+        `Session activation was rejected by the runtime (${result.type}).`,
+        'context_session_rejected'
+      );
+    }
+  }
+
+  private emitSettingsWorkspaceChange(): void {
+    const describe = this.runtimeValue.describeSettings;
+    if (!describe) {
+      throw new WebWorkbenchError(
+        503,
+        'The product Settings coordinator is unavailable.',
+        'settings_document_unavailable'
+      );
+    }
+    const settings = describe();
+    this.eventHub.emit(
+      {
+        type: 'settings_invalidated',
+        revision: settings.revision,
+        reason: 'workspace-change',
+        state: settings.state === 'ready' || settings.state === 'read-only' ? 'ready' : 'invalid',
+      },
+      false
+    );
   }
 
   private observeThreadRuntime(
@@ -768,7 +1207,7 @@ export class WebWorkbenchController {
 
   private assertReadyForTransition(operation: string): void {
     if (this.closed) throw new WebWorkbenchError(503, 'Web Workbench is closed.');
-    if (this.transition) {
+    if (this.transition || this.sessionTransition) {
       throw new WebWorkbenchError(409, 'A workspace transition is running.', 'runtime_busy');
     }
     if (this.controllerValue.hasActiveTurn()) {
@@ -776,6 +1215,41 @@ export class WebWorkbenchController {
         409,
         `Cannot ${operation} while a turn is active.`,
         'runtime_busy'
+      );
+    }
+  }
+
+  private assertMutationAdmission(): void {
+    if (this.closed) throw new WebWorkbenchError(503, 'Web Workbench is closed.');
+    if (this.transition || this.sessionTransition) {
+      throw new WebWorkbenchError(409, 'A Context transition is running.', 'runtime_busy');
+    }
+  }
+
+  private assertContextGuard(context: WebContextGuardV1): void {
+    this.assertMutationAdmission();
+    if (
+      context.expectedContextRevision !== this.contextRevisionValue ||
+      context.workspaceId !== this.activeWorkspaceEntry().id
+    ) {
+      throw new WebWorkbenchError(
+        409,
+        'The active Context changed before the operation was admitted.',
+        'context_revision_conflict'
+      );
+    }
+  }
+
+  private assertCommandSession(expectedSessionId: string): void {
+    if (this.closed) throw new WebWorkbenchError(503, 'Web Workbench is closed.');
+    if (this.transition || this.sessionTransition) {
+      throw new WebWorkbenchError(409, 'A Session transition is running.', 'runtime_busy');
+    }
+    if (this.runtimeValue.getSession()?.id !== expectedSessionId) {
+      throw new WebWorkbenchError(
+        409,
+        'The active Session changed before the command was admitted.',
+        'active_session_changed'
       );
     }
   }
@@ -788,6 +1262,42 @@ export class WebWorkbenchController {
       throw new WebWorkbenchError(409, 'A workspace transition is running.', 'runtime_busy');
     }
   }
+
+  private initializeWorkspaceRegistry(): void {
+    const paths = [this.workspaceValue];
+    for (const session of listSessions()) {
+      try {
+        paths.push(canonicalDirectory(session.projectPath));
+      } catch {
+        // Unavailable historical projects remain in the Session catalog but
+        // are not imported as selectable Workspace registry entries.
+      }
+    }
+    try {
+      this.workspaceRegistry.registerKnown(paths, this.workspaceValue);
+    } catch (error) {
+      throw mapWorkspaceRegistryError(error);
+    }
+  }
+
+  private activeWorkspaceEntry() {
+    const entry = this.workspaceRegistry
+      .list()
+      .find(candidate => candidate.canonicalPath === this.workspaceValue);
+    if (!entry) {
+      throw new WebWorkbenchError(503, 'Active Workspace is missing from the registry.');
+    }
+    return entry;
+  }
+}
+
+function mapWorkspaceRegistryError(error: unknown): WebWorkbenchError {
+  if (error instanceof WebWorkbenchError) return error;
+  if (error instanceof WorkspaceRegistryError) {
+    const status = error.code === 'workspace_registry_invalid' ? 503 : 409;
+    return new WebWorkbenchError(status, error.message, error.code);
+  }
+  return new WebWorkbenchError(503, 'Workspace registry is unavailable.');
 }
 
 function mapSettingsError(error: unknown): WebWorkbenchError {
@@ -878,6 +1388,54 @@ export function pageItems<T>(items: readonly T[], cursor?: string, pageSize = 50
   });
 }
 
+export function pageCollectionItems<T>(
+  scope: string,
+  items: readonly T[],
+  cursor: string | undefined,
+  pageSize: number,
+  keyOf: (item: T) => string
+): WebPageV1<T> {
+  if (!scope || scope.length > 80 || !/^[a-z][a-z0-9_-]*$/.test(scope)) {
+    throw new WebWorkbenchError(500, 'Collection scope is invalid.');
+  }
+  if (!Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 100) {
+    throw new WebWorkbenchError(400, 'pageSize must be an integer from 1 through 100.');
+  }
+  const keys = items.map(keyOf);
+  if (keys.some(key => !key || key.length > 4096) || new Set(keys).size !== keys.length) {
+    throw new WebWorkbenchError(500, `Collection ${scope} has invalid or duplicate keys.`);
+  }
+  const revision = digestRuntimeValue(items);
+  let offset = 0;
+  if (cursor) {
+    const decoded = decodeCollectionCursor(cursor, scope);
+    if (decoded.revision !== revision) {
+      throw new WebWorkbenchError(
+        409,
+        'Collection changed after this page cursor was issued.',
+        'collection_cursor_stale'
+      );
+    }
+    offset = keys.indexOf(decoded.after) + 1;
+    if (offset === 0) {
+      throw new WebWorkbenchError(
+        409,
+        'Collection page boundary no longer exists.',
+        'collection_cursor_stale'
+      );
+    }
+  }
+  const page = items.slice(offset, offset + pageSize);
+  const nextOffset = offset + page.length;
+  return Object.freeze({
+    items: Object.freeze(page),
+    nextCursor:
+      nextOffset < items.length && page.length > 0
+        ? encodeCollectionCursor(scope, revision, keys[nextOffset - 1])
+        : null,
+  });
+}
+
 function pageTranscriptTail<T>(
   items: readonly T[],
   cursor?: string,
@@ -898,6 +1456,42 @@ function pageTranscriptTail<T>(
 
 function encodePageCursor(offset: number): string {
   return Buffer.from(JSON.stringify({ version: 1, offset })).toString('base64url');
+}
+
+function encodeCollectionCursor(scope: string, revision: string, after: string): string {
+  return Buffer.from(
+    JSON.stringify({ version: 2, kind: 'collection', scope, revision, after })
+  ).toString('base64url');
+}
+
+function decodeCollectionCursor(
+  cursor: string,
+  expectedScope: string
+): { readonly revision: string; readonly after: string } {
+  if (!cursor || cursor.length > 8192) {
+    throw new WebWorkbenchError(400, 'Collection page cursor is invalid.');
+  }
+  try {
+    const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as unknown;
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      Array.isArray(parsed) ||
+      (parsed as Record<string, unknown>).version !== 2 ||
+      (parsed as Record<string, unknown>).kind !== 'collection' ||
+      (parsed as Record<string, unknown>).scope !== expectedScope ||
+      typeof (parsed as Record<string, unknown>).revision !== 'string' ||
+      typeof (parsed as Record<string, unknown>).after !== 'string'
+    ) {
+      throw new Error('invalid');
+    }
+    return {
+      revision: (parsed as Record<string, unknown>).revision as string,
+      after: (parsed as Record<string, unknown>).after as string,
+    };
+  } catch {
+    throw new WebWorkbenchError(400, 'Collection page cursor is invalid.');
+  }
 }
 
 function decodePageCursor(cursor: string): number {

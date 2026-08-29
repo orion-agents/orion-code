@@ -34,7 +34,7 @@ import {
 } from './config-dir';
 import { atomicWriteFileSync } from './atomic-write';
 import { withFileLockSync } from './file-lock';
-import { deleteSessionIndex, updateSessionIndex } from './session-index';
+import { deleteSessionIndex, updateSessionIndex, updateSessionIndexBatch } from './session-index';
 import { assertToolCallGroups, sealToolCallGroups } from './compact/tool-call-groups';
 import { redactTraceText } from './redaction';
 import { debugError } from '../utils/debug-log';
@@ -2586,10 +2586,8 @@ export function appendSessionMessages(sessionId: string, messages: SessionMessag
       mode: 0o600,
     });
 
-    for (const message of messages) {
-      updateSessionIndex(sessionId, session.projectPath, message);
-      mergeMessageSummary(session, message);
-    }
+    updateSessionIndexBatch(sessionId, session.projectPath, messages);
+    for (const message of messages) mergeMessageSummary(session, message);
     session.updatedAt = Date.now();
     session.updatedAtIso = new Date(session.updatedAt).toISOString();
     session.messageCount = (session.messageCount ?? 0) + messages.length;
@@ -2630,9 +2628,7 @@ function overwriteSessionMessagesUnlocked(session: SessionMeta, messages: Sessio
   });
 
   deleteSessionIndex(session.id, session.projectPath);
-  for (const message of messages) {
-    updateSessionIndex(session.id, session.projectPath, message);
-  }
+  updateSessionIndexBatch(session.id, session.projectPath, messages);
   session.messageCount = messages.length;
   session.historySizeBytes = computeSessionHistorySizeBytes(session);
   const summary = summarizeSessionMessages(messages);

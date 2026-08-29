@@ -12,7 +12,7 @@ import {
   type ReleaseGateDecisionV1,
   type WebE2ERunEvidenceV1,
 } from '../../src/runtime/release-receipts';
-import { webE2ERunnerDigest } from '../../tests/e2e/scenarios';
+import { WEB31_REQUIRED_EVIDENCE_FACTS_V1, webE2ERunnerDigest } from '../../tests/e2e/scenarios';
 
 export interface WebE2EScenarioManifest {
   readonly scenarioId?: string;
@@ -143,6 +143,7 @@ function toRunEvidence(
     if (!scenario.facts || Object.keys(scenario.facts).length === 0) {
       throw new Error(`Scenario ${scenario.scenarioId ?? 'unknown'} has no structured facts.`);
     }
+    assertWeb31EvidenceFacts(scenario, path);
   }
   if (browserIdentities.size !== 1) {
     throw new Error(`Web E2E run used inconsistent browser identities: ${path}.`);
@@ -245,6 +246,7 @@ export function verifyEvidenceBundle(
     }
     observedDigests.add(digest);
     assertNoSensitiveEvidence(scenario, scenarioManifestPath);
+    assertWeb31EvidenceFacts(scenario, scenarioManifestPath);
     addEvidenceFile(files, runRoot, scenarioManifestPath);
     for (const key of ['stdout', 'stderr'] as const) {
       const filename = scenario.logs?.[key];
@@ -267,6 +269,27 @@ export function verifyEvidenceBundle(
   });
 }
 
+function assertWeb31EvidenceFacts(scenario: WebE2EScenarioManifest, path: string): void {
+  const scenarioId = scenario.scenarioId ?? '';
+  const requirements = WEB31_REQUIRED_EVIDENCE_FACTS_V1[scenarioId];
+  if (!requirements) return;
+  const facts = scenario.facts ?? {};
+  for (const requirement of requirements) {
+    const observed = facts[requirement.key];
+    const exactOk = requirement.equals === undefined || observed === requirement.equals;
+    const minimumOk =
+      requirement.minimum === undefined ||
+      (typeof observed === 'number' &&
+        Number.isFinite(observed) &&
+        observed >= requirement.minimum);
+    if (!exactOk || !minimumOk) {
+      throw new Error(
+        `WEB31 evidence fact ${requirement.key} is missing or invalid for ${scenarioId}: ${path}.`
+      );
+    }
+  }
+}
+
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const MAX_SCREENSHOT_BYTES = 32 * 1024 * 1024;
 const MAX_SCREENSHOT_DIMENSION = 32_768;
@@ -282,9 +305,9 @@ function addScreenshotEvidence(
   const screenshotFacts = Object.entries(scenario.facts ?? {}).filter(([key]) =>
     key.startsWith('screenshot.')
   );
-  const isSettingsScenario = /^SET-P0-\d{2}$/u.test(scenario.scenarioId ?? '');
-  if (isSettingsScenario && screenshotFacts.length === 0) {
-    throw new Error(`Settings scenario screenshot evidence is missing: ${manifestPath}.`);
+  const requiresScreenshot = /^(?:SET|WEB31)-P0-\d{2}$/u.test(scenario.scenarioId ?? '');
+  if (requiresScreenshot && screenshotFacts.length === 0) {
+    throw new Error(`Release scenario screenshot evidence is missing: ${manifestPath}.`);
   }
 
   const filenames = new Set<string>();

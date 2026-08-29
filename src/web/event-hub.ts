@@ -4,7 +4,7 @@ import type { ServerResponse } from 'http';
 import type { AgentRuntimeEvent } from '../runtime/agent-runtime-protocol';
 import type { RuntimeEventEnvelopeV1 } from '../runtime/protocol/runtime-protocol-v1';
 import type { ToolAuthorizationSource, ToolAuthorizationView } from '../runtime/ui-events';
-import { redactTraceText } from '../services/redaction';
+import { isSensitiveFieldName, redactTraceText } from '../services/redaction';
 import { WEB_API_VERSION, type WebEventEnvelopeV1, type WebWorkbenchEventV1 } from './protocol';
 
 export interface WebEventHubOptions {
@@ -42,11 +42,13 @@ const TOOL_AUTHORIZATION_SOURCES = new Set<ToolAuthorizationSource>([
 export class WebEventHub {
   private readonly retained: RetainedEvent[] = [];
   private readonly clients = new Set<ServerResponse>();
+  private readonly transcriptContents = new Map<string, string>();
   private readonly maxEvents: number;
   private readonly maxBytes: number;
   private readonly now: () => number;
   private nextCursor = 1;
   private retainedBytes = 0;
+  private discardedDurableThrough = 0;
 
   constructor(options: WebEventHubOptions = {}) {
     this.maxEvents = positiveInteger(options.maxEvents ?? DEFAULT_MAX_EVENTS, 'maxEvents');
@@ -59,7 +61,7 @@ export class WebEventHub {
     context: { readonly sessionId?: string; readonly threadId?: string } = {}
   ): WebEventEnvelopeV1 {
     return this.emit(
-      { type: 'runtime_event', value: sanitizeRuntimeEvent(event) },
+      { type: 'runtime_event', value: this.compactRuntimeEvent(sanitizeRuntimeEvent(event)) },
       isDurableRuntimeEvent(event),
       context
     );
@@ -89,9 +91,15 @@ export class WebEventHub {
     const envelope = Object.freeze(toEnvelope(base, event));
     const encoded = encodeSse(envelope);
     const retained = { envelope, encoded, bytes: Buffer.byteLength(encoded) };
-    this.retained.push(retained);
-    this.retainedBytes += retained.bytes;
-    this.trim();
+    if (
+      durable ||
+      event.type === 'settings_invalidated' ||
+      event.type === 'workspace_resource_invalidated'
+    ) {
+      this.retained.push(retained);
+      this.retainedBytes += retained.bytes;
+      this.trim();
+    }
     for (const client of this.clients) {
       if (!writeClient(client, encoded)) this.clients.delete(client);
     }
@@ -99,9 +107,8 @@ export class WebEventHub {
   }
 
   attach(response: ServerResponse, cursor: number): () => void {
-    const earliest = this.retained[0]?.envelope.cursor ?? this.nextCursor;
     const latest = this.nextCursor - 1;
-    if (cursor > latest || cursor < earliest - 1) {
+    if (cursor > latest || cursor < this.discardedDurableThrough) {
       const reset: WebEventEnvelopeV1 = {
         apiVersion: WEB_API_VERSION,
         eventId: randomUUID(),
@@ -116,7 +123,8 @@ export class WebEventHub {
           snapshotRequired: true,
         },
       };
-      if (!writeClient(response, encodeSse(reset))) return () => undefined;
+      if (writeClient(response, encodeSse(reset)) && !response.writableEnded) response.end();
+      return () => undefined;
     } else {
       for (const item of this.retained) {
         if (item.envelope.cursor > cursor && !writeClient(response, item.encoded)) {
@@ -152,6 +160,45 @@ export class WebEventHub {
       const removed = this.retained.shift();
       if (!removed) break;
       this.retainedBytes -= removed.bytes;
+      this.discardedDurableThrough = Math.max(
+        this.discardedDurableThrough,
+        removed.envelope.cursor
+      );
+    }
+  }
+
+  private compactRuntimeEvent(event: AgentRuntimeEvent): AgentRuntimeEvent {
+    if (event.type === 'transcript_update' && typeof event.patch.content === 'string') {
+      const content = event.patch.content;
+      const previous = this.transcriptContents.get(event.id);
+      this.rememberTranscriptContent(event.id, content);
+      if (previous !== undefined && content.startsWith(previous)) {
+        const patch = { ...event.patch };
+        delete patch.content;
+        return {
+          ...event,
+          patch,
+          contentDelta: content.slice(previous.length),
+          contentStart: previous.length,
+        };
+      }
+      return event;
+    }
+    if (event.type === 'transcript_finalize' || event.type === 'transcript_remove') {
+      this.transcriptContents.delete(event.id);
+    } else if (event.type === 'transcript_clear' || event.type === 'transcript_replace') {
+      this.transcriptContents.clear();
+    }
+    return event;
+  }
+
+  private rememberTranscriptContent(id: string, content: string): void {
+    this.transcriptContents.delete(id);
+    this.transcriptContents.set(id, content);
+    while (this.transcriptContents.size > 128) {
+      const oldest = this.transcriptContents.keys().next().value as string | undefined;
+      if (!oldest) break;
+      this.transcriptContents.delete(oldest);
     }
   }
 }
@@ -195,7 +242,12 @@ function toEnvelope(
       return {
         ...base,
         type: event.type,
-        payload: { workspace: event.workspace, activeSessionId: event.activeSessionId },
+        payload: {
+          contextRevision: event.contextRevision,
+          workspaceId: event.workspaceId,
+          workspace: event.workspace,
+          activeSessionId: event.activeSessionId,
+        },
       };
     case 'settings_invalidated':
       return {
@@ -206,6 +258,17 @@ function toEnvelope(
           revision: event.revision,
           reason: event.reason,
           state: event.state,
+        },
+      };
+    case 'workspace_resource_invalidated':
+      return {
+        ...base,
+        durable: false,
+        type: event.type,
+        payload: {
+          workspaceId: event.workspaceId,
+          resources: event.resources,
+          reason: event.reason,
         },
       };
     case 'replay_reset':
@@ -270,18 +333,16 @@ function sanitizeValue(value: unknown, key = ''): unknown {
   if (!value || typeof value !== 'object') return undefined;
   const result: Record<string, unknown> = {};
   for (const [childKey, childValue] of Object.entries(value)) {
-    if (
-      /^(?:api[-_]?key|authorization|cookie|password|secret|access[-_]?token|refresh[-_]?token|auth[-_]?token|credential)$/i.test(
-        childKey
-      )
-    ) {
-      continue;
-    }
+    if (isSecretKey(childKey)) continue;
     if (childKey === 'abortSignal') continue;
     result[childKey] = sanitizeValue(childValue, childKey);
   }
   void key;
   return result;
+}
+
+function isSecretKey(key: string): boolean {
+  return isSensitiveFieldName(key);
 }
 
 function encodeSse(envelope: WebEventEnvelopeV1): string {

@@ -1,6 +1,6 @@
 {
   "name": "@orion-agents/orion-code",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Orion Code - local-first goal-driven coding agent for terminal and Web.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -17,12 +17,16 @@
     "docs/migration/v0.1.9-to-v0.2.0.md",
     "docs/migration/v0.2.2-to-v0.3.0.md",
     "docs/migration/v0.2.2-to-v0.3.0-settings.md",
+    "docs/migration/v0.3.0-to-v0.3.1.md",
     "docs/plan/v0.2.0-dsh-harness-redesign-plan.md",
     "docs/plan/v0.2.0-release-checklist.md",
     "docs/plan/v0.3.0-web-workbench-plan.md",
     "docs/plan/v0.3.0-settings-integration-plan.md",
     "docs/plan/v0.3.0-node-runtime-compatibility-plan.md",
+    "docs/plan/v0.3.1-web-workbench-professional-shell-plan.md",
+    "docs/test/v0.3.1-web-workbench-e2e-plan.md",
     "docs/architecture/v0.3.0-web-api.yaml",
+    "docs/architecture/v0.3.1-web-api.yaml",
     "LICENSE",
     "README.md",
     "README.zh-CN.md",
@@ -40,7 +44,7 @@
     "test": "jest",
     "test:web-browser": "ts-node --transpile-only scripts/smoke/web-workbench-browser.ts",
     "test:web-e2e": "playwright test",
-    "test:web-e2e:critical": "ts-node --transpile-only scripts/e2e/run-web-e2e-critical.ts --grep '(?:E2E-P0-0[1-4]|@settings)'",
+    "test:web-e2e:critical": "ts-node --transpile-only scripts/e2e/run-web-e2e-critical.ts",
     "test:web-e2e:primary": "ts-node --transpile-only scripts/e2e/run-web-e2e-primary.ts",
     "test:web-e2e:matrix": "ts-node --transpile-only scripts/e2e/run-web-e2e-matrix.ts",
     "test:coverage": "jest --coverage",
@@ -91,6 +95,8 @@
   },
   "dependencies": {
     "@clack/prompts": "^0.7.0",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "axios": "^1.6.0",
     "better-sqlite3": "^12.10.0",
     "chalk": "^4.1.2",
@@ -101,12 +107,14 @@
     "js-yaml": "^4.3.0",
     "marked": "^11.2.0",
     "marked-terminal": "^6.2.0",
+    "node-pty": "1.2.0-beta.15",
     "openai": "^6.49.0",
     "signal-exit": "^4.1.0",
     "sqlite-vec": "^0.1.9",
     "string-width": "^4.2.3",
     "throttle": "^1.0.3",
-    "undici": "^6.28.0"
+    "undici": "^6.28.0",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@playwright/test": "1.62.1",
@@ -117,6 +125,7 @@
     "@types/node": "^22.0.0",
     "@types/react": "18.3.24",
     "@types/react-dom": "18.3.7",
+    "@types/ws": "^8.18.1",
     "@typescript-eslint/eslint-plugin": "^7.18.0",
     "@typescript-eslint/parser": "^7.18.0",
     "@vitejs/plugin-react": "5.1.4",
@@ -141,5 +150,8 @@
     "doc": "docs",
     "test": "tests"
   },
-  "type": "commonjs"
+  "type": "commonjs",
+  "allowScripts": {
+    "node-pty@1.2.0-beta.15": true
+  }
 }

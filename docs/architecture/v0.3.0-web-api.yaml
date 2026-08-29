@@ -36,7 +36,7 @@ paths:
       operationId: listWorkspaces
       description: Cursor-paged canonical workspaces known to the local Orion installation.
       parameters:
-        - $ref: '#/components/parameters/PageCursor'
+        - $ref: '#/components/parameters/CollectionCursor'
         - $ref: '#/components/parameters/PageSize'
       responses:
         '200':
@@ -46,6 +46,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/WorkspacePage'
         '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
   /workspaces/activate:
     post:
       operationId: activateWorkspace
@@ -72,7 +73,7 @@ paths:
       operationId: listSessions
       description: Cursor-paged sessions whose canonical project is the active workspace.
       parameters:
-        - $ref: '#/components/parameters/PageCursor'
+        - $ref: '#/components/parameters/CollectionCursor'
         - $ref: '#/components/parameters/PageSize'
       responses:
         '200':
@@ -82,6 +83,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/SessionPage'
         '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
     post:
       operationId: createSession
       security: [{ webNonce: [] }]
@@ -158,7 +160,7 @@ paths:
         loss and tab closure.
       parameters:
         - $ref: '#/components/parameters/SessionId'
-        - $ref: '#/components/parameters/PageCursor'
+        - $ref: '#/components/parameters/TranscriptCursor'
         - $ref: '#/components/parameters/PageSize'
       responses:
         '200':
@@ -179,7 +181,7 @@ paths:
         workspace/project-scoped and must not be presented as proof that an artifact belongs to a
         particular session.
       parameters:
-        - $ref: '#/components/parameters/PageCursor'
+        - $ref: '#/components/parameters/CollectionCursor'
         - $ref: '#/components/parameters/PageSize'
       responses:
         '200':
@@ -190,13 +192,16 @@ paths:
                 $ref: '#/components/schemas/ToolDetailSummaryPage'
         '400': { $ref: '#/components/responses/Problem' }
         '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
   /tool-details/{callId}:
     get:
       operationId: getToolDetail
       description: >-
-        Byte-paged redacted tool output resolved only from the active workspace's artifact list.
-        The current artifact metadata cannot prove session ownership; the host returns no artifact
-        filesystem path and makes no session-attribution claim.
+        Byte-paged output from a pre-sanitized derivative resolved only from the active workspace's
+        artifact list. `offsetBytes` addresses derivative bytes, never raw tool-output bytes, so a
+        caller cannot bypass redaction by choosing a sensitive-field boundary. The current artifact
+        metadata cannot prove session ownership; the host returns no artifact filesystem path and
+        makes no session-attribution claim.
       parameters:
         - $ref: '#/components/parameters/CallId'
         - $ref: '#/components/parameters/OffsetBytes'
@@ -217,7 +222,7 @@ paths:
         Cursor-paged safe Skill descriptors. Bodies, resource paths and trigger implementations are
         excluded.
       parameters:
-        - $ref: '#/components/parameters/PageCursor'
+        - $ref: '#/components/parameters/CollectionCursor'
         - $ref: '#/components/parameters/PageSize'
       responses:
         '200':
@@ -227,6 +232,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/SkillPage'
         '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
   /mcp:
     get:
       operationId: listMcpServers
@@ -234,7 +240,7 @@ paths:
         Cursor-paged safe MCP catalog/runtime summaries. Commands, endpoints, headers and
         credentials are excluded and this read never activates a dormant server.
       parameters:
-        - $ref: '#/components/parameters/PageCursor'
+        - $ref: '#/components/parameters/CollectionCursor'
         - $ref: '#/components/parameters/PageSize'
       responses:
         '200':
@@ -244,6 +250,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/McpPage'
         '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
   /commands:
     post:
       operationId: dispatchCommand
@@ -391,11 +398,24 @@ components:
         Opaque identifier returned by the active workspace's tool-detail summary. The current file
         repository aliases callId to its project artifact identifier.
       schema: { type: string, minLength: 1, maxLength: 256 }
-    PageCursor:
+    CollectionCursor:
       in: query
       name: cursor
       required: false
-      description: Opaque collection cursor returned by the preceding page.
+      description: >-
+        Opaque continuation returned by the preceding page. It binds the route scope, the complete
+        ordered collection revision and the last stable item key. Any insertion, deletion or
+        reorder makes it stale; the Host returns 409 collection_cursor_stale and the client restarts
+        from the first page.
+      schema: { type: string, minLength: 1, maxLength: 512 }
+    TranscriptCursor:
+      in: query
+      name: cursor
+      required: false
+      description: >-
+        Opaque backward-page continuation bound to the Session's Thread identity, immutable
+        transcript-manifest revision and page boundary. A newer Thread revision returns 409
+        transcript_cursor_stale; the client must recover a fresh tail snapshot before paging again.
       schema: { type: string, minLength: 1, maxLength: 512 }
     PageSize:
       in: query
@@ -817,7 +837,11 @@ components:
           minimum: 0
           description: Omitted or null when the page reaches the end of the artifact.
         totalBytes: { type: integer, minimum: 0 }
-        redacted: { type: boolean }
+        redacted:
+          type: boolean
+          description: >-
+            True when content is served from the browser-safe, pre-sanitized derivative. It does
+            not imply that this particular page contained a secret replacement.
     SettingsRevision:
       type: string
       pattern: '^hmac-sha256:[a-f0-9]{64}$'
@@ -1091,7 +1115,7 @@ components:
     WebCommand:
       type: object
       additionalProperties: false
-      required: [requestId, type]
+      required: [requestId, expectedSessionId, type]
       allOf:
         - if:
             properties:
@@ -1101,6 +1125,13 @@ components:
             required: [agentMode]
       properties:
         requestId: { $ref: '#/components/schemas/RequestId' }
+        expectedSessionId:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: >-
+            Compare-and-swap guard for the active Session. The Host returns 409
+            active_session_changed without dispatching when the selection no longer matches.
         type:
           type: string
           enum:

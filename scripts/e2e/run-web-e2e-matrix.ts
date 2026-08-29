@@ -12,6 +12,7 @@ import {
   WEB_E2E_CRITICAL_SCENARIOS_V1,
   type SupportedReleaseNodeMajorV1,
 } from '../../src/runtime/release-receipts';
+import { WEB_E2E_CRITICAL_GREP } from '../../tests/e2e/scenarios';
 
 interface CliOptions {
   readonly tarball: string;
@@ -47,8 +48,8 @@ async function main(): Promise<void> {
   }
   const observedSha = sha256(options.tarball);
   if (observedSha !== expectedSha) throw new Error('Tarball SHA-256 differs from its receipt.');
-  if (receipt.package?.name !== '@orion-agents/orion-code' || receipt.package.version !== '0.3.0') {
-    throw new Error('Matrix requires @orion-agents/orion-code@0.3.0.');
+  if (receipt.package?.name !== '@orion-agents/orion-code' || receipt.package.version !== '0.3.1') {
+    throw new Error('Matrix requires @orion-agents/orion-code@0.3.1.');
   }
 
   const matrixRoot = join(
@@ -209,15 +210,11 @@ async function runPlaywright(options: {
       process.env.ORION_WEB_E2E_CHROME_CHANNEL ?? 'system-google-chrome',
   };
   return new Promise((resolveRun, reject) => {
-    const child = spawn(
-      options.executable,
-      [cli, 'test', '--grep', '(?:E2E-P0-0[1-4]|@settings)'],
-      {
-        cwd: options.repositoryRoot,
-        env: environment,
-        stdio: 'inherit',
-      }
-    );
+    const child = spawn(options.executable, [cli, 'test', '--grep', WEB_E2E_CRITICAL_GREP], {
+      cwd: options.repositoryRoot,
+      env: environment,
+      stdio: 'inherit',
+    });
     child.once('error', reject);
     child.once('exit', (code, signal) => {
       if (signal) {

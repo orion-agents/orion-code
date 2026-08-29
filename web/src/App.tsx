@@ -1,33 +1,41 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 
 import { Conversation } from './components/Conversation';
 import { RenameDialog, WorkspaceDialog } from './components/Dialogs';
 import { Icon } from './components/Icon';
-import { Inspector } from './components/Inspector';
 import { SettingsDialog } from './components/SettingsDialog';
-import { WorkspaceRail } from './components/WorkspaceRail';
+import { ProjectNavigator } from './components/projects/ProjectNavigator';
+import { WorkPanelDock } from './layout/WorkPanelDock';
+import {
+  loadWorkPanelPreference,
+  saveWorkPanelPreference,
+  type AgentPanelId,
+  type WorkPanelId,
+  type WorkPanelPreferenceV1,
+} from './state/layout-preferences';
 import type { WebSessionSummaryV1 } from './types';
 import { useWorkbench } from './useWorkbench';
 
 const INSPECTOR_OVERLAY_QUERY = '(max-width: 1180px)';
 
-type InspectorDockPreference = 'expanded' | 'collapsed';
-
 export function App() {
   const { state, actions } = useWorkbench();
   const [navigationOpen, setNavigationOpen] = useState(false);
-  const [desktopInspector, setDesktopInspector] = useState<InspectorDockPreference>('expanded');
-  const [inspectorOverlayOpen, setInspectorOverlayOpen] = useState(false);
+  const [panelPreference, setPanelPreference] = useState(loadWorkPanelPreference);
+  const [panelOverlayOpen, setPanelOverlayOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState<WebSessionSummaryV1 | null>(null);
+  const [composerInsertion, setComposerInsertion] = useState<{
+    readonly id: number;
+    readonly text: string;
+  } | null>(null);
   const drawerTrigger = useRef<HTMLElement | null>(null);
-  const inspectorOverlay = useMediaQuery(INSPECTOR_OVERLAY_QUERY);
-  const inspectorExpanded = inspectorOverlay
-    ? inspectorOverlayOpen
-    : desktopInspector === 'expanded';
-  const inspectorModalOpen = inspectorOverlay && inspectorOverlayOpen;
-  const drawersOpen = navigationOpen || inspectorModalOpen;
+  const shellRef = useRef<HTMLDivElement>(null);
+  const panelOverlay = useMediaQuery(INSPECTOR_OVERLAY_QUERY);
+  const panelExpanded = panelOverlay ? panelOverlayOpen : panelPreference.expanded;
+  const panelModalOpen = panelOverlay && panelOverlayOpen;
+  const drawersOpen = navigationOpen || panelModalOpen;
   const appearance =
     state.settings?.state === 'ready'
       ? state.settings
@@ -42,7 +50,7 @@ export function App() {
 
   const closeDrawers = useCallback(() => {
     setNavigationOpen(false);
-    setInspectorOverlayOpen(false);
+    setPanelOverlayOpen(false);
     const trigger = drawerTrigger.current;
     drawerTrigger.current = null;
     if (trigger) requestAnimationFrame(() => trigger.focus());
@@ -58,30 +66,41 @@ export function App() {
 
   useEffect(() => {
     setNavigationOpen(false);
-    setInspectorOverlayOpen(false);
+    setPanelOverlayOpen(false);
     drawerTrigger.current = null;
   }, [state.activeSessionId, state.workspace]);
 
   useEffect(() => {
     setNavigationOpen(false);
-    setInspectorOverlayOpen(false);
+    setPanelOverlayOpen(false);
     drawerTrigger.current = null;
-  }, [inspectorOverlay]);
+  }, [panelOverlay]);
 
   useEffect(() => {
     if (!drawersOpen) return undefined;
     const main = document.querySelector<HTMLElement>('.conversation-column');
     const rail = document.querySelector<HTMLElement>('.workspace-rail');
-    const inspector = document.querySelector<HTMLElement>('.inspector');
+    const inspector = document.querySelector<HTMLElement>('.work-panel');
     const notice = document.querySelector<HTMLElement>('.workbench-notice');
     const skipLink = document.querySelector<HTMLElement>('.skip-link');
     if (main) main.inert = true;
-    if (rail) rail.inert = inspectorModalOpen;
+    if (rail) rail.inert = panelModalOpen;
     if (inspector) inspector.inert = navigationOpen;
     if (notice) notice.inert = true;
     if (skipLink) skipLink.inert = true;
+    const focusTimer = window.setTimeout(() => {
+      const target = panelModalOpen
+        ? inspector?.querySelector<HTMLButtonElement>('[aria-label="关闭工作面板"]')
+        : rail?.querySelector<HTMLButtonElement>('.drawer-close');
+      target?.focus();
+    }, 0);
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') closeDrawers();
+      if (
+        event.key === 'Escape' &&
+        !(event.target as HTMLElement | null)?.closest?.('[role="alertdialog"]')
+      ) {
+        closeDrawers();
+      }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => {
@@ -90,18 +109,31 @@ export function App() {
       if (inspector) inspector.inert = false;
       if (notice) notice.inert = false;
       if (skipLink) skipLink.inert = false;
+      window.clearTimeout(focusTimer);
       window.removeEventListener('keydown', onKeyDown);
     };
-  }, [closeDrawers, drawersOpen, inspectorModalOpen, navigationOpen, state.notice]);
+  }, [closeDrawers, drawersOpen, navigationOpen, panelModalOpen, state.notice]);
+
+  const updatePanelPreference = useCallback(
+    (patch: Partial<Omit<WorkPanelPreferenceV1, 'schemaVersion'>>) => {
+      setPanelPreference(current => {
+        const next = { ...current, ...patch };
+        saveWorkPanelPreference(next);
+        return next;
+      });
+    },
+    []
+  );
+
+  const focusConversationContext = useCallback(() => {
+    requestAnimationFrame(() =>
+      document.querySelector<HTMLElement>('#main-content h1')?.focus()
+    );
+  }, []);
 
   const createSession = () => {
     setNavigationOpen(false);
-    void actions.createSession();
-  };
-
-  const activateSession = (sessionId: string) => {
-    setNavigationOpen(false);
-    void actions.activateSession(sessionId);
+    void actions.createSession().then(focusConversationContext, focusConversationContext);
   };
 
   const goToSessionControls = () => {
@@ -115,16 +147,32 @@ export function App() {
         跳到主要内容
       </a>
       <div
-        className={`workbench-shell inspector-${desktopInspector}`}
+        ref={shellRef}
+        className={`workbench-shell work-panel-${panelPreference.expanded ? 'expanded' : 'collapsed'}`}
+        style={{ '--work-panel-width': `${panelPreference.widthPx}px` } as CSSProperties}
         aria-busy={state.boot === 'loading'}
       >
-        <WorkspaceRail
+        <ProjectNavigator
           state={state}
           drawerOpen={navigationOpen}
           onCloseDrawer={closeDrawers}
           onOpenWorkspaceDialog={() => setWorkspaceOpen(true)}
+          onLoadMoreWorkspaces={() => void actions.loadMoreWorkspaces()}
           onCreateSession={createSession}
-          onActivateSession={activateSession}
+          onLoadWorkspaceSessions={(workspaceId, append) =>
+            void actions.loadWorkspaceSessions(workspaceId, append)
+          }
+          onActivateContext={(workspaceId, sessionId) => {
+            setNavigationOpen(false);
+            void actions
+              .activateContext(workspaceId, sessionId)
+              .then(focusConversationContext, focusConversationContext);
+          }}
+          onSetPinned={(workspaceId, pinned) =>
+            void actions.setWorkspacePinned(workspaceId, pinned)
+          }
+          onRemoveWorkspace={workspaceId => void actions.removeWorkspace(workspaceId)}
+          onRefreshSummary={workspaceId => void actions.refreshWorkspaceProjectSummary(workspaceId)}
           onRenameSession={setRenameTarget}
         />
 
@@ -132,45 +180,61 @@ export function App() {
           state={state}
           actions={actions}
           navigationOpen={navigationOpen}
-          inspectorExpanded={inspectorExpanded}
+          inspectorExpanded={panelExpanded}
           settingsOpen={settingsOpen}
           onOpenNavigation={() => {
             rememberDrawerTrigger();
-            setInspectorOverlayOpen(false);
+            setPanelOverlayOpen(false);
             setNavigationOpen(true);
           }}
           onToggleInspector={() => {
-            if (inspectorOverlay) {
-              if (inspectorOverlayOpen) {
+            if (panelOverlay) {
+              if (panelOverlayOpen) {
                 closeDrawers();
                 return;
               }
               rememberDrawerTrigger();
               setNavigationOpen(false);
-              setInspectorOverlayOpen(true);
+              setPanelOverlayOpen(true);
               return;
             }
-            setDesktopInspector(current => (current === 'expanded' ? 'collapsed' : 'expanded'));
+            updatePanelPreference({ expanded: !panelPreference.expanded });
           }}
           onOpenSettings={() => setSettingsOpen(true)}
           onCreateSession={createSession}
+          composerInsertion={composerInsertion}
         />
 
-        <Inspector
+        <WorkPanelDock
           state={state}
           actions={actions}
-          mode={inspectorOverlay ? 'overlay' : 'dock'}
-          expanded={inspectorExpanded}
+          mode={panelOverlay ? 'overlay' : 'dock'}
+          expanded={panelExpanded}
+          activePanel={panelPreference.activePanel}
+          agentPanel={panelPreference.agentPanel}
           settingsOpen={settingsOpen}
           onExpand={() => {
-            if (inspectorOverlay) setInspectorOverlayOpen(true);
-            else setDesktopInspector('expanded');
+            if (panelOverlay) setPanelOverlayOpen(true);
+            else updatePanelPreference({ expanded: true });
           }}
           onCollapse={() => {
-            if (inspectorOverlay) closeDrawers();
-            else setDesktopInspector('collapsed');
+            if (panelOverlay) closeDrawers();
+            else updatePanelPreference({ expanded: false });
           }}
+          onPanelChange={(activePanel: WorkPanelId) => updatePanelPreference({ activePanel })}
+          onAgentPanelChange={(agentPanel: AgentPanelId) => updatePanelPreference({ agentPanel })}
           onOpenSettings={() => setSettingsOpen(true)}
+          onWidthPreview={width =>
+            shellRef.current?.style.setProperty('--work-panel-width', `${width}px`)
+          }
+          onWidthCommit={width => updatePanelPreference({ widthPx: width })}
+          onSendToComposer={text => {
+            setComposerInsertion({ id: Date.now(), text });
+            if (panelOverlay) closeDrawers();
+            requestAnimationFrame(() =>
+              document.querySelector<HTMLElement>('#orion-composer')?.focus()
+            );
+          }}
         />
 
         {drawersOpen ? (
@@ -215,14 +279,16 @@ export function App() {
                 恢复
               </button>
             ) : null}
-            <button
-              type="button"
-              className="icon-button"
-              onClick={actions.dismissNotice}
-              aria-label="关闭通知"
-            >
-              <Icon name="close" size={15} />
-            </button>
+            {state.connection !== 'replay-required' ? (
+              <button
+                type="button"
+                className="icon-button"
+                onClick={actions.dismissNotice}
+                aria-label="关闭通知"
+              >
+                <Icon name="close" size={15} />
+              </button>
+            ) : null}
           </aside>
         ) : null}
 
@@ -274,6 +340,7 @@ export function App() {
         onClose={() => setWorkspaceOpen(false)}
         state={state}
         onSelect={actions.switchWorkspace}
+        onLoadMore={actions.loadMoreWorkspaces}
       />
       <RenameDialog
         open={Boolean(renameTarget)}

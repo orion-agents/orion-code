@@ -2,10 +2,15 @@
 
 面向终端与浏览器、本地优先的目标驱动 Coding Agent。
 
-> v0.3.0 候选版本：一套 Orion Runtime，同时提供本地 Web Workbench 与既有 TUI/terminal。
+> v0.3.1 候选版本：一套 Orion Runtime，同时提供本地 Web Workbench 与既有 TUI/terminal。
 > Candidate 源码不代表已经创建 npm 发布或 Git tag。
 
-[English](README.md) · [v0.3.0 Web 方案](docs/plan/v0.3.0-web-workbench-plan.md) ·
+[English](README.md) ·
+[v0.3.1 专业工作台方案](docs/plan/v0.3.1-web-workbench-professional-shell-plan.md) ·
+[v0.3.1 Web API](docs/architecture/v0.3.1-web-api.yaml) ·
+[v0.3.1 E2E 方案](docs/test/v0.3.1-web-workbench-e2e-plan.md) ·
+[v0.3.1 迁移](docs/migration/v0.3.0-to-v0.3.1.md) ·
+[v0.3.0 Web 方案](docs/plan/v0.3.0-web-workbench-plan.md) ·
 [Settings 方案](docs/plan/v0.3.0-settings-integration-plan.md) ·
 [Node 兼容方案](docs/plan/v0.3.0-node-runtime-compatibility-plan.md) ·
 [Web API](docs/architecture/v0.3.0-web-api.yaml) ·
@@ -13,7 +18,7 @@
 [Settings 迁移](docs/migration/v0.2.2-to-v0.3.0-settings.md) ·
 [真实状态图册](docs/assets/screenshots/v0.3.0-web/README.md)
 
-## v0.3.0 将带来什么
+## v0.3.1 包含什么
 
 - **一个 Runtime、两个交互界面。** `orion web` 与终端产品共用 product bootstrap、
   AgentRuntimeController、Session/Thread、ToolGateway、审批、Goal、Plan、Skills 和 MCP；浏览器不另起
@@ -21,6 +26,9 @@
 - **可恢复的 Web 工作台。** React 界面覆盖工作区/会话、对话与工具活动、BUILD/PLAN/AUTO、follow-up、
   interrupt、审批、Goal/Plan、模型/effort、Skills/MCP 和诊断。快照与 cursor replay 负责刷新和 SSE
   重连恢复。
+- **专业项目工作台。** 左侧展示已注册项目并懒加载 Session，中间仍是唯一 Agent 会话。右侧可变宽面板
+  提供 Agent、审阅、终端、文件和 Git；文件/Git/审阅是有界只读投影，终端是显式启动、与 Session
+  history 和 SSE 隔离的临时真实 PTY。
 - **本地安全边界。** Host 只绑定 `127.0.0.1`；写请求必须携带精确 Origin、进程 nonce、JSON body 和
   幂等键。响应设置严格 CSP，浏览器 payload 经过脱敏，大型工具结果按字节分页读取。
 - **Host 管理的 Settings。** 外观、默认模型、工作区 Effort 与全局工具确认策略统一进入严格、带
@@ -63,10 +71,10 @@ MCP 仍是用户可见的扩展边界。
 支持 Node.js 22.12+、24 和 26。生产环境建议使用 Node 24 LTS，当前开发环境也支持 Node 26
 Current。Node 20 已结束上游维护，不再属于 v0.3 Runtime 合同。
 
-当 npm 已存在不可变的 `0.3.0` 发布凭据后：
+当 npm 已存在不可变的 `0.3.1` 发布凭据后：
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.0
+npm install -g @orion-agents/orion-code@0.3.1
 orion --version
 orion doctor
 ```
@@ -136,13 +144,18 @@ orion commit
 
 ### 本地 Web Workbench
 
-`orion web` 在同一个 loopback origin 提供打包后的客户端与 `/api/v1/*`，v0.3.0 不提供 LAN bind。
+`orion web` 在同一个 loopback origin 提供打包后的客户端与 `/api/v1/*`，v0.3.1 不提供 LAN bind。
 Provider 凭据仍通过 Orion 配置/环境变量管理；浏览器负责选择工作区和会话、执行或 steer 任务、回答
 审批并查看运行态。关闭或刷新 tab 不会替用户批准/拒绝，pending approval 仍由 Runtime 持有；停止
 Host 时会 abort 并 fail-closed。
 
 浏览器只展示已提交 Plan receipt 的 `body`、`returnMode`、`digest`，不会额外插入 review gate。
 PLAN 提交后仍由既有 Runtime 恢复 BUILD/AUTO，并在新的 logical turn 中启动实现。
+
+多项目导航不会创建多个 Runtime；跨项目 Session 选择是一次带 revision guard 的原子 Context 切换。
+桌面右栏可用 IDE 式鼠标拖动在 320–720px 间调整，不提供键盘精细调宽；窄屏自动使用 drawer，且不覆盖
+桌面宽度偏好。文件、Git 和审阅保持只读；创建终端需要显式 user gesture，短期 ticket 与输出均不进入
+Workbench SSE。
 
 #### Host 管理的 Settings
 
@@ -230,9 +243,10 @@ npm run test:web-e2e -- --grep @settings
 ```
 
 正式准出还会只构建一次 exact tarball，并在 Node 22/24/26 安装同一个 hash，验证 package identity、
-native SQLite、TUI、terminal、print、Web、Goal、subagent、Skill、MCP、Compact 与 resume。详见
-[`v0.3.0 Web Workbench 方案`](docs/plan/v0.3.0-web-workbench-plan.md)与
-[`v0.3.0 Settings 集成方案`](docs/plan/v0.3.0-settings-integration-plan.md)。
+native SQLite、TUI、terminal、print、Web、Goal、subagent、Skill、MCP、Compact 与 resume；
+WEB31-P0-01..12 还会验证多项目工作台、只读工程面板、真实 PTY、响应式与无障碍合同。详见
+[`v0.3.1 Web Workbench 方案`](docs/plan/v0.3.1-web-workbench-professional-shell-plan.md)与
+[`v0.3.1 E2E 资格计划`](docs/test/v0.3.1-web-workbench-e2e-plan.md)。
 
 ## 安全
 

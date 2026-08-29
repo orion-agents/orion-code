@@ -384,7 +384,22 @@ describe('AgentRuntimeController v0.2 boundary', () => {
     const args = {
       path: 'src/index.ts',
       headers: { authorization: 'Bearer secret-value-123' },
-      nested: ['safe', { apiKey: 'plain-secret-value' }],
+      nested: [
+        'safe',
+        {
+          apiKey: 'plain-secret-value',
+          DEPLOY_TOKEN: 'opaque-token',
+          clientSecret: 'opaque-client-secret',
+          privateKey: 'opaque-private-key',
+          dbPassword: 'opaque-db-password',
+          AWS_SECRET_ACCESS_KEY: 'opaque-aws-secret',
+          connectionString: 'opaque-connection-string',
+          databaseUrl: 'opaque-database-url',
+          dsn: 'opaque-dsn',
+          pwd: 'opaque-pwd',
+          auth: 'opaque-auth',
+        },
+      ],
     };
 
     const pending = controller.requestToolPermission({
@@ -402,15 +417,29 @@ describe('AgentRuntimeController v0.2 boundary', () => {
         reason: 'write after checking [REDACTED_SECRET]',
         args: {
           path: 'src/index.ts',
-          headers: { authorization: '[REDACTED_SECRET]' },
-          nested: ['safe', { apiKey: '[REDACTED_SECRET]' }],
+          headers: '[REDACTED_SECRET]',
+          nested: [
+            'safe',
+            {
+              apiKey: '[REDACTED_SECRET]',
+              DEPLOY_TOKEN: '[REDACTED_SECRET]',
+              clientSecret: '[REDACTED_SECRET]',
+              privateKey: '[REDACTED_SECRET]',
+              dbPassword: '[REDACTED_SECRET]',
+              AWS_SECRET_ACCESS_KEY: '[REDACTED_SECRET]',
+              connectionString: '[REDACTED_SECRET]',
+              databaseUrl: '[REDACTED_SECRET]',
+              dsn: '[REDACTED_SECRET]',
+              pwd: '[REDACTED_SECRET]',
+              auth: '[REDACTED_SECRET]',
+            },
+          ],
         },
       },
     ]);
     expect(Object.isFrozen(snapshots)).toBe(true);
     expect(Object.isFrozen(snapshots[0])).toBe(true);
     expect(Object.isFrozen(snapshots[0].args)).toBe(true);
-    expect(Object.isFrozen(snapshots[0].args.headers)).toBe(true);
     expect('abortSignal' in snapshots[0]).toBe(false);
     expect(JSON.stringify(snapshots)).not.toContain('secret-value');
 

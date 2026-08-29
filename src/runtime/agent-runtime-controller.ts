@@ -45,7 +45,7 @@ import {
   nextAgentMode,
   type AgentModeSnapshot,
 } from '../framework/agent-mode';
-import { redactTraceText } from '../services/redaction';
+import { isSensitiveFieldName, redactTraceText } from '../services/redaction';
 import { sanitizeTerminalText } from '../tui-core/style';
 
 export type {
@@ -1065,8 +1065,6 @@ export class AgentRuntimeController {
   }
 }
 
-const PERMISSION_SECRET_ARG_KEY =
-  /(?:^|[_-])(?:api[_-]?key|access[_-]?token|auth[_-]?token|accesstoken|authtoken|password|secret|authorization|cookie|credential)(?:$|[_-])/iu;
 const MAX_PERMISSION_SNAPSHOT_DEPTH = 12;
 
 function createPendingPermissionSnapshot(
@@ -1094,7 +1092,7 @@ function sanitizePermissionValue(
   ancestors: Set<object>,
   depth: number
 ): unknown {
-  if (key && PERMISSION_SECRET_ARG_KEY.test(key)) return '[REDACTED_SECRET]';
+  if (key && isSensitiveFieldName(key)) return '[REDACTED_SECRET]';
   if (typeof value === 'string') return sanitizePermissionText(value);
   if (value === null || typeof value === 'boolean') return value;
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;

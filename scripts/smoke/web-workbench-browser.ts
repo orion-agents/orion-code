@@ -41,7 +41,7 @@ async function main(): Promise<void> {
     await page.getByText('本地 Runtime 已连接').waitFor();
     await page.getByRole('button', { name: '创建会话', exact: true }).first().click();
     await page.getByText('模型尚未配置').waitFor();
-    await page.locator('.session-row.active').waitFor();
+    await page.locator('.project-session-main[aria-current="page"]').waitFor();
 
     const axeSource = readFileSync(require.resolve('axe-core/axe.min.js'), 'utf8');
     await page.addScriptTag({ content: axeSource });
