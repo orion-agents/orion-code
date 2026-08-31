@@ -262,8 +262,15 @@ export async function setAgentMode(
   const menu = page.getByRole('menu', { name: '工作模式' });
   const option = menu.getByRole('menuitemradio', { name: new RegExp(`^${mode}\\b`, 'u') });
   await expect(option).toBeVisible({ timeout: options.timeout });
-  if ((await option.getAttribute('aria-checked')) !== 'true') await option.click();
-  else await page.keyboard.press('Escape');
+  if ((await option.getAttribute('aria-checked')) !== 'true') {
+    await option.click();
+    if (mode === 'AUTO') {
+      const dialog = page.getByRole('alertdialog', { name: '启用 AUTO 模式？' });
+      await expect(dialog).toBeVisible({ timeout: options.timeout });
+      await dialog.getByRole('checkbox', { name: '我理解这会扩大本会话的默认执行范围' }).check();
+      await dialog.getByRole('button', { name: '确认启用', exact: true }).click();
+    }
+  } else await page.keyboard.press('Escape');
   await expect(trigger).toContainText(mode, { timeout: options.timeout });
   return trigger;
 }

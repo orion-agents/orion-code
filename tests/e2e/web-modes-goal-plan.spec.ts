@@ -2,6 +2,7 @@ import { createHash } from 'crypto';
 import { existsSync, readFileSync } from 'fs';
 
 import type { WebEventEnvelopeV1 } from '../../src/web/protocol';
+import { digestRuntimeValue } from '../../src/runtime/protocol/canonical';
 import { activeSessionSnapshot } from './fixtures/api';
 import {
   OPENAI_FIXTURE_FILES,
@@ -41,7 +42,7 @@ test('E2E-P0-06 PLAN receipt, durable Goal completion and AUTO authority remain 
   expect(planned.plan!.body).toContain('# WEB_E2E_PLAN');
   expect(planned.plan!.digest).toMatch(/^[a-f0-9]{64}$/u);
   expect(planned.composer.planReview).toMatchObject({
-    planDigest: planned.plan!.digest,
+    planDigest: digestRuntimeValue(planned.plan!.body.trim()),
     status: 'awaiting_review',
   });
   await expect(page.getByRole('heading', { name: '计划已保存，尚未执行' })).toBeVisible();
@@ -60,10 +61,12 @@ test('E2E-P0-06 PLAN receipt, durable Goal completion and AUTO authority remain 
   await expect(page.getByRole('button', { name: '工作模式' })).toContainText('BUILD');
 
   const planRequests = provider.requests.filter(request => request.scenario === 'plan');
-  expect(planRequests).toHaveLength(3);
+  expect(planRequests).toHaveLength(4);
   expect(planRequests.slice(0, 2).every(request => isPlanPrompt(request.systemText))).toBe(true);
   expect(isPlanPrompt(planRequests[2].systemText)).toBe(false);
   expect(planRequests[2].lastUserText).toContain('action=approve');
+  expect(isPlanPrompt(planRequests[3].systemText)).toBe(false);
+  expect(planRequests[3].lastUserText).toContain('[Harness Completion Gate]');
   const planCommits = (await capturedSseEvents(page))
     .filter(isWebEventEnvelope)
     .filter(event => event.type === 'thread_event' && event.payload.eventType === 'turn.committed');

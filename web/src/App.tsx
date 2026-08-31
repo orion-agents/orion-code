@@ -138,9 +138,12 @@ export function App() {
       updateProjectNavigationPreference({ expanded: next });
       if (next) focusProjectSearch();
       else if (restoreToggleFocus) {
-        requestAnimationFrame(() =>
-          document.querySelector<HTMLButtonElement>('.mobile-nav-toggle')?.focus()
-        );
+        requestAnimationFrame(() => {
+          const railToggle = document.querySelector<HTMLButtonElement>(
+            '.project-navigator-collapsed [aria-label="展开项目导航"]'
+          );
+          (railToggle ?? document.querySelector<HTMLButtonElement>('.mobile-nav-toggle'))?.focus();
+        });
       }
     };
     window.addEventListener('keydown', onShortcut);

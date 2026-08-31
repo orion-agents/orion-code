@@ -3,6 +3,7 @@ import { request as httpRequest } from 'http';
 import { join } from 'path';
 
 import type { Browser } from '@playwright/test';
+import { WORKBENCH_LAYOUT_STORAGE_KEY } from '../../web/src/state/layout-preferences';
 
 import {
   collapseInspector,
@@ -203,7 +204,8 @@ test('E2E-P0-08 Host attacks fail closed while real-CSP UI remains keyboard and 
   await dragToWidth(720);
   expect(
     await page.evaluate(
-      () => JSON.parse(localStorage.getItem('orion.web.work-panel.v1') ?? '{}').widthPx
+      key => JSON.parse(localStorage.getItem(key) ?? '{}').workPanel?.widthPx,
+      WORKBENCH_LAYOUT_STORAGE_KEY
     )
   ).toBe(720);
   await page.reload({ waitUntil: 'domcontentloaded' });
@@ -232,7 +234,8 @@ test('E2E-P0-08 Host attacks fail closed while real-CSP UI remains keyboard and 
   );
   expect(
     await page.evaluate(
-      () => JSON.parse(localStorage.getItem('orion.web.work-panel.v1') ?? '{}').widthPx
+      key => JSON.parse(localStorage.getItem(key) ?? '{}').workPanel?.widthPx,
+      WORKBENCH_LAYOUT_STORAGE_KEY
     )
   ).toBe(720);
   evidence.recordFact('layout.pointer_resize_1440_clamped', 600);

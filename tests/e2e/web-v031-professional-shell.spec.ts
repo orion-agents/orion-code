@@ -1,5 +1,6 @@
 import { basename, join } from 'path';
 
+import { WORKBENCH_LAYOUT_STORAGE_KEY } from '../../web/src/state/layout-preferences';
 import { openInspector, waitForWorkbenchReady, workbenchUi } from './fixtures/ui';
 import { expect, test } from './fixtures/test';
 
@@ -110,7 +111,8 @@ async function expectStoredPanelWidth(
   await expect
     .poll(() =>
       page.evaluate(
-        () => JSON.parse(localStorage.getItem('orion.web.work-panel.v1') ?? '{}').widthPx
+        key => JSON.parse(localStorage.getItem(key) ?? '{}').workPanel?.widthPx,
+        WORKBENCH_LAYOUT_STORAGE_KEY
       )
     )
     .toBe(width);

@@ -2,6 +2,7 @@ import { useEffect, useRef, type PointerEvent as ReactPointerEvent } from 'react
 
 export interface PanelResizeHandleProps {
   readonly side: 'left' | 'right';
+  readonly className?: string;
   readonly minWidth: number;
   readonly maxWidth: number;
   readonly defaultWidth: number;
@@ -13,6 +14,7 @@ export interface PanelResizeHandleProps {
 /** Pointer-only IDE splitter. Keyboard users use the adjacent expand/collapse control. */
 export function PanelResizeHandle({
   side,
+  className,
   minWidth,
   maxWidth,
   defaultWidth,
@@ -96,7 +98,7 @@ export function PanelResizeHandle({
 
   return (
     <div
-      className={`panel-resize-handle panel-resize-handle-${side}`}
+      className={`panel-resize-handle panel-resize-handle-${side}${className ? ` ${className}` : ''}`}
       aria-hidden="true"
       title={`${label}；双击恢复默认宽度`}
       onPointerDown={onPointerDown}

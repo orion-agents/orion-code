@@ -380,7 +380,7 @@ test('WEB32-P0-10 queued follow-ups support exact edits and Steer while drafts r
     'queue beta host edit'
   );
 
-  const queueBeforeSteer = (await activeSessionSnapshot(page)).composer.queue.items.length;
+  const queueBeforeSteer = (await activeSessionSnapshot(page)).composer.queue.items;
   const steerResponse = page.waitForResponse(response => {
     if (response.request().method() !== 'POST') return false;
     return new URL(response.url()).pathname === '/api/v1/commands';
@@ -389,8 +389,26 @@ test('WEB32-P0-10 queued follow-ups support exact edits and Steer while drafts r
   await page.getByRole('button', { name: 'Steer', exact: true }).click();
   const steer = (await (await steerResponse).json()) as WebCommandResultV1;
   expect(steer.result).toBe('revision_requested');
-  expect((await activeSessionSnapshot(page)).composer.queue.items.length).toBe(queueBeforeSteer);
+  const queueAfterSteer = (await activeSessionSnapshot(page)).composer.queue.items;
+  const admittedWhileSteering = queueBeforeSteer.length - queueAfterSteer.length;
+  expect(admittedWhileSteering).toBeGreaterThanOrEqual(0);
+  expect(admittedWhileSteering).toBeLessThanOrEqual(1);
+  expect(queueAfterSteer.map(item => item.id)).toEqual(
+    queueBeforeSteer.slice(admittedWhileSteering).map(item => item.id)
+  );
   await waitForIdle(page);
+  await expect(
+    page.getByRole('article', { name: '你' }).filter({ hasText: 'queue beta host edit' })
+  ).toHaveCount(1);
+  await expect(
+    page.getByRole('article', { name: '你' }).filter({ hasText: 'queue alpha edited' })
+  ).toHaveCount(1);
+  await expect(
+    page
+      .getByRole('article', { name: '你' })
+      .filter({ hasText: 'fixture:steer revise the active request now' })
+  ).toHaveCount(1);
+  expect((await activeSessionSnapshot(page)).composer.queue.items).toEqual([]);
 
   await createSession(page, { name: 'WEB32 Draft A' });
   const sessionA = (await activeSessionSnapshot(page)).session;

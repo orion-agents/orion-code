@@ -14,6 +14,7 @@ export function WorkPanelResizeHandle({ onPreview, onCommit }: WorkPanelResizeHa
   return (
     <PanelResizeHandle
       side="right"
+      className="work-panel-resize-handle"
       minWidth={WORK_PANEL_MIN_WIDTH}
       maxWidth={WORK_PANEL_MAX_WIDTH}
       defaultWidth={WORK_PANEL_DEFAULT_WIDTH}

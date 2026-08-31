@@ -266,7 +266,10 @@ test('WEB31-P0-04 Agent panel preserves Plan, activity, capabilities, diagnostic
       timeout: 60_000,
     })
     .toBe(false);
-  expect(provider.requests.filter(request => request.scenario === 'plan')).toHaveLength(3);
+  const completedPlanRequests = provider.requests.filter(request => request.scenario === 'plan');
+  expect(completedPlanRequests).toHaveLength(4);
+  expect(completedPlanRequests[2].lastUserText).toContain('action=approve');
+  expect(completedPlanRequests[3].lastUserText).toContain('[Harness Completion Gate]');
   await expect(workbenchUi(page).modeButton).toContainText('BUILD');
 
   const inspector = await openInspector(page, { timeout: 30_000 });
@@ -328,9 +331,14 @@ test('WEB31-P0-11 five responsive widths preserve keyboard focus and zero page o
   });
   await projectSearch.focus();
   await page.keyboard.press('Control+KeyB');
-  await expect(ui.workspaceRail).toBeHidden();
-  await expect(ui.navigationButton).toBeVisible();
-  await expect(ui.navigationButton).toBeFocused();
+  await expect(ui.workspaceRail).toBeVisible();
+  await expect(ui.workspaceRail).toHaveClass(/project-navigator-collapsed/u);
+  const projectRailToggle = ui.workspaceRail.getByRole('button', {
+    name: '展开项目导航',
+    exact: true,
+  });
+  await expect(projectRailToggle).toBeVisible();
+  await expect(projectRailToggle).toBeFocused();
   await page.keyboard.press('Control+KeyB');
   await expect(ui.workspaceRail).toBeVisible();
   await expect(projectSearch).toBeFocused();
