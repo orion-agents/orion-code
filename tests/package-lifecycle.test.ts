@@ -26,6 +26,7 @@ describe('npm package lifecycle', () => {
       },
     });
     expect(manifest.files).toContain('docs/architecture/orion-code-acp-v1.md');
+    expect(manifest.files).toContain('!dist/**/*.d.ts.map');
     expect(manifest.files).not.toContain('tests/');
     expect(manifest.files).not.toContain('.env');
   });
