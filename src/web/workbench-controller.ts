@@ -563,6 +563,28 @@ export class WebWorkbenchController {
   }
 
   private projectComposerState(session: SessionMeta, active: boolean): WebComposerControlStateV1 {
+    const state = this.projectComposerStateValue(session, active);
+    if (!active) return state;
+    // Durable Thread and Store authority can advance before the debounced SSE
+    // observer runs. Keep every projected control state and its CAS token in
+    // the same synchronous boundary so the UI never receives new controls
+    // paired with an older revision.
+    const authorityDigest = composerAuthorityDigest(state);
+    if (this.composerAuthorityDigest === undefined) {
+      this.composerAuthorityDigest = authorityDigest;
+      return state;
+    }
+    if (authorityDigest === this.composerAuthorityDigest) return state;
+
+    this.bumpComposerRevision();
+    this.composerAuthorityDigest = authorityDigest;
+    return Object.freeze({ ...state, controlRevision: this.composerRevisionValue });
+  }
+
+  private projectComposerStateValue(
+    session: SessionMeta,
+    active: boolean
+  ): WebComposerControlStateV1 {
     const controls = this.runtimeValue.sessionComposerControls;
     if (!controls) {
       throw new WebWorkbenchError(
@@ -636,7 +658,8 @@ export class WebWorkbenchController {
   async applyComposerAction(input: WebComposerActionV1): Promise<WebComposerActionResultV1> {
     this.assertContextGuard(input);
     this.assertCommandSession(input.expectedSessionId);
-    if (input.expectedControlRevision !== this.composerRevisionValue) {
+    const admittedState = this.composerState(input.expectedSessionId);
+    if (input.expectedControlRevision !== admittedState.controlRevision) {
       throw new WebWorkbenchError(
         409,
         'Composer controls changed before the action was admitted.',
@@ -732,7 +755,7 @@ export class WebWorkbenchController {
       this.suppressComposerEdges -= 1;
     }
     this.bumpComposerRevision();
-    const state = this.composerState(input.expectedSessionId);
+    const state = this.projectComposerStateValue(requireSession(input.expectedSessionId), true);
     this.composerAuthorityDigest = composerAuthorityDigest(state);
     this.eventHub.emit({ type: 'composer_state_changed', state }, true, {
       sessionId: input.expectedSessionId,
@@ -1486,7 +1509,7 @@ export class WebWorkbenchController {
     if (sessionId) {
       try {
         this.composerAuthorityDigest = composerAuthorityDigest(
-          this.projectComposerState(requireSession(sessionId), true)
+          this.projectComposerStateValue(requireSession(sessionId), true)
         );
       } catch {
         this.composerAuthorityDigest = undefined;
@@ -1548,13 +1571,7 @@ export class WebWorkbenchController {
       const sessionId = this.runtimeValue.getSession()?.id;
       if (!sessionId || this.closed || this.suppressComposerEdges > 0) return;
       try {
-        let state = this.composerState(sessionId);
-        const authorityDigest = composerAuthorityDigest(state);
-        if (authorityDigest !== this.composerAuthorityDigest) {
-          this.bumpComposerRevision();
-          state = this.composerState(sessionId);
-          this.composerAuthorityDigest = authorityDigest;
-        }
+        const state = this.composerState(sessionId);
         this.eventHub.emit({ type: 'composer_state_changed', state }, true, { sessionId });
       } catch {
         // A concurrent Context transition publishes a fresh baseline instead.

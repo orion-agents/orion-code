@@ -207,10 +207,35 @@ describe('WebWorkbenchController', () => {
     expect(telemetry.controlRevision).toBe(before.controlRevision);
 
     controller.controller.setAgentMode('plan');
-    await new Promise(resolve => setTimeout(resolve, 140));
-    const authority = controller.composerState(session.id, guard);
+    await expect(
+      controller.applyComposerAction({
+        requestId: randomUUID(),
+        ...guard,
+        expectedSessionId: session.id,
+        expectedControlRevision: before.controlRevision,
+        type: 'set_agent_mode',
+        mode: 'auto',
+      })
+    ).rejects.toMatchObject({ status: 409, code: 'composer_control_conflict' });
+    const snapshot = controller.sessionSnapshot(session.id, undefined, 50, false, guard);
+    const authority = snapshot.composer;
     expect(authority.mode.baseMode).toBe('plan');
     expect(authority.controlRevision).not.toBe(before.controlRevision);
+
+    await new Promise(resolve => setTimeout(resolve, 140));
+    expect(controller.composerState(session.id, guard).controlRevision).toBe(
+      authority.controlRevision
+    );
+    await expect(
+      controller.applyComposerAction({
+        requestId: randomUUID(),
+        ...guard,
+        expectedSessionId: session.id,
+        expectedControlRevision: authority.controlRevision,
+        type: 'set_agent_mode',
+        mode: 'interactive',
+      })
+    ).resolves.toMatchObject({ state: { mode: { baseMode: 'interactive' } } });
     await controller.shutdown();
   });
 
