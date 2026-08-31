@@ -1457,6 +1457,21 @@ export class WebWorkbenchController {
         if (event.type === 'status_changed') this.latestStatus = event.message;
         if (this.suppressContextEdges > 0) return undefined;
         const activeSessionId = this.runtimeValue.getSession()?.id;
+        if (event.type === 'followup_queue_changed') {
+          // The queue is part of the Composer CAS authority. Publishing the
+          // Runtime queue event on its own lets the browser observe new items
+          // with an older controlRevision and guarantees a 409 on its next
+          // edit/move/remove action. Project one complete Composer state in
+          // this same synchronous boundary instead. Composer actions suppress
+          // their intermediate queue edge and publish their final state below.
+          if (activeSessionId && this.suppressComposerEdges === 0) {
+            const state = this.composerState(activeSessionId);
+            this.eventHub.emit({ type: 'composer_state_changed', state }, true, {
+              sessionId: activeSessionId,
+            });
+          }
+          return undefined;
+        }
         const activeThread =
           activeSessionId && this.activeOrionRuntime?.sessionId === activeSessionId
             ? this.activeOrionRuntime.runtime.thread.getProjection().threadId

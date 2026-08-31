@@ -13,6 +13,7 @@ import { materializeLegacyThreadV1 } from '../src/runtime/legacy-thread-material
 import { ThreadEventStore } from '../src/runtime/thread-event-store';
 import { loadThreadSessionViewV1 } from '../src/runtime/thread-session-view';
 import { createContextUsageSnapshot } from '../src/services/model-context';
+import { WebEventHub } from '../src/web/event-hub';
 import {
   pageCollectionItems,
   pageItems,
@@ -236,6 +237,86 @@ describe('WebWorkbenchController', () => {
         mode: 'interactive',
       })
     ).resolves.toMatchObject({ state: { mode: { baseMode: 'interactive' } } });
+    await controller.shutdown();
+  });
+
+  test('publishes queued messages atomically with the Composer control revision', async () => {
+    const runtime = createFakeWebRuntime(workspace);
+    let releaseFirstTurn!: () => void;
+    const firstTurn = new Promise<void>(resolve => {
+      releaseFirstTurn = resolve;
+    });
+    const runInput = jest
+      .fn()
+      .mockImplementationOnce(() => firstTurn)
+      .mockImplementation(async () => undefined);
+    runtime.createAgentRunner = () => ({ runInput });
+    const eventHub = new WebEventHub();
+    const emit = jest.spyOn(eventHub, 'emit');
+    const emitRuntime = jest.spyOn(eventHub, 'emitRuntime');
+    const controller = await WebWorkbenchController.create({
+      cwd: workspace,
+      eventHub,
+      createRuntime: async () => runtime,
+    });
+    const session = await controller.createSession('queued Composer CAS');
+    const baseline = controller.bootstrap('nonce');
+    const guard = {
+      workspaceId: baseline.workspaceId,
+      expectedContextRevision: baseline.contextRevision,
+    };
+
+    await controller.dispatch({
+      requestId: randomUUID(),
+      expectedSessionId: session.id,
+      type: 'submit',
+      text: 'hold the first turn',
+    });
+    await Promise.resolve();
+    expect(runInput).toHaveBeenCalledTimes(1);
+    emit.mockClear();
+    emitRuntime.mockClear();
+
+    await controller.dispatch({
+      requestId: randomUUID(),
+      expectedSessionId: session.id,
+      type: 'queue_followup',
+      text: 'queued original',
+    });
+
+    const projected = emit.mock.calls
+      .map(call => call[0])
+      .filter(event => event.type === 'composer_state_changed');
+    expect(projected).toHaveLength(1);
+    const queuedState = projected[0].type === 'composer_state_changed' ? projected[0].state : null;
+    expect(queuedState).toMatchObject({
+      sessionId: session.id,
+      queue: { items: [{ text: 'queued original', revision: 1 }] },
+    });
+    expect(emitRuntime.mock.calls.some(([event]) => event.type === 'followup_queue_changed')).toBe(
+      false
+    );
+
+    const queuedItem = queuedState?.queue.items[0];
+    expect(queuedItem).toBeDefined();
+    await expect(
+      controller.applyComposerAction({
+        requestId: randomUUID(),
+        ...guard,
+        expectedSessionId: session.id,
+        expectedControlRevision: queuedState!.controlRevision,
+        type: 'edit_queue_item',
+        itemId: queuedItem!.id,
+        expectedItemRevision: queuedItem!.revision,
+        text: 'queued edited',
+      })
+    ).resolves.toMatchObject({
+      outcome: 'applied',
+      state: { queue: { items: [{ text: 'queued edited', revision: 2 }] } },
+    });
+
+    releaseFirstTurn();
+    await controller.controller.waitForIdle();
     await controller.shutdown();
   });
 
