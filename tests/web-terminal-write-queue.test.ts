@@ -88,7 +88,7 @@ describe('TerminalWriteQueue', () => {
     expect(sequences).toEqual([1]);
   });
 
-  it('caps the default animation-frame submission budget at 3KiB', () => {
+  it('caps the default animation-frame submission budget at three 1KiB writes', () => {
     const scheduler = new TaskScheduler();
     const writes: Array<{ data: string; callback: () => void }> = [];
     const queue = new TerminalWriteQueue({
@@ -101,7 +101,7 @@ describe('TerminalWriteQueue', () => {
     queue.enqueue('x'.repeat(4 * 1024));
     scheduler.runNext();
 
-    expect(writes).toHaveLength(12);
+    expect(writes).toHaveLength(3);
     expect(writes.reduce((total, write) => total + write.data.length, 0)).toBe(3 * 1024);
     expect(scheduler.size()).toBe(0);
   });
