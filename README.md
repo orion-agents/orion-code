@@ -1,10 +1,13 @@
+> [!IMPORTANT]
+> Remove this line to confirm you've reviewed this PR before submitting.
+
 # Orion Code
 
 Local-first, goal-driven coding agent for the terminal and browser.
 
 > v0.3.2 candidate — one Orion runtime with a resizable local Web Workbench, a Session-scoped
-> Composer Control Center and the existing TUI/terminal surfaces. Candidate source is not an npm
-> publication or Git tag.
+> Composer Control Center, the existing TUI/terminal surfaces and a managed ACP sidecar for Orion
+> Studio. Candidate source is not an npm publication or Git tag.
 
 [中文说明](README.zh-CN.md) ·
 [v0.3.2 Workbench plan](docs/plan/v0.3.2-web-workbench-layout-and-composer-plan.md) ·
@@ -105,6 +108,18 @@ npm install
 npm run build
 npm run start
 ```
+
+### Orion Studio / ACP sidecar
+
+Orion Studio and other ACP clients launch the dedicated `orion-code` executable. It speaks ACP v1
+as newline-delimited JSON-RPC over stdin/stdout; stdout is reserved for protocol frames. `orion acp`
+is the equivalent manual-debug alias and bypasses `.env` loading before the regular CLI starts.
+
+Hosts may set `ORION_CODE_DATA_DIR` to isolate mutable sessions, cache, logs, receipts, and leases
+from Orion Code's user-owned configuration in `ORION_CODE_CONFIG_DIR`. If the data override is
+unset, the existing single-root layout remains unchanged and no data is moved automatically. See
+[`docs/architecture/orion-code-acp-v1.md`](docs/architecture/orion-code-acp-v1.md) for the frozen
+Preview contract.
 
 ## Configure a model
 

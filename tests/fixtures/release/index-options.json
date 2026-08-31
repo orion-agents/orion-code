@@ -1,0 +1,13 @@
+{
+  "archive_base_url": "https://fixtures.invalid/orion-code/",
+  "channel": "beta",
+  "expires_at": "2026-09-07T00:00:00.000Z",
+  "generated_at": "2026-08-31T00:00:00.000Z",
+  "published_at": "2026-08-31T00:00:00.000Z",
+  "release_notes_url": "https://fixtures.invalid/orion-code/releases/0.3.2",
+  "rollout_basis_points": 500,
+  "rollout_salt": "fixture-v0.3.2-salt",
+  "sequence": 7,
+  "status": "active",
+  "studio_version_requirement": ">=0.1.0,<0.2.0"
+}

@@ -1,0 +1,155 @@
+name: ACP Sidecar Protected Release Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      sequence:
+        description: Monotonic signed update-index sequence
+        required: true
+        type: string
+      generated_at:
+        description: Exact RFC3339 UTC generation timestamp
+        required: true
+        type: string
+      expires_at:
+        description: Exact RFC3339 UTC expiry timestamp
+        required: true
+        type: string
+      published_at:
+        description: Immutable release publication timestamp
+        required: true
+        type: string
+      channel:
+        description: Update channel
+        required: true
+        default: stable
+        type: choice
+        options:
+          - stable
+          - beta
+      status:
+        description: Signed release state
+        required: true
+        default: active
+        type: choice
+        options:
+          - active
+          - paused
+          - revoked
+      rollout_basis_points:
+        description: Rollout in basis points, from 0 through 10000
+        required: true
+        default: '500'
+        type: string
+      rollout_salt:
+        description: Stable non-secret cohort salt identifier
+        required: true
+        type: string
+      studio_version_requirement:
+        description: Minimum compatible Orion Studio SemVer requirement
+        required: true
+        type: string
+      release_notes_url:
+        description: Immutable public HTTPS release notes URL
+        required: true
+        type: string
+      previous_index_url:
+        description: Immutable previous index URL; required after sequence 1
+        required: false
+        type: string
+      rollback_to:
+        description: Exact safe rollback version for paused or revoked releases
+        required: false
+        type: string
+      release_authorization:
+        description: Leave empty for dry-run; publishing requires publish:vVERSION:EXACT_SHA
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: acp-sidecar-protected-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  protected-release:
+    name: Build, sign, notarize, replay, and conditionally publish
+    runs-on: macos-14
+    timeout-minutes: 120
+    environment:
+      name: orion-code-sidecar-release
+    steps:
+      - name: Check out the exact dispatched SHA
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up the frozen embedded Node.js runtime
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ vars.ORION_CODE_EMBEDDED_NODE_VERSION }}
+          cache: npm
+
+      - name: Require the production target architecture
+        run: >-
+          node -e "if (process.platform !== 'darwin' || process.arch !== 'arm64')
+          throw new Error('protected darwin-aarch64 release requires an Apple Silicon runner')"
+
+      - name: Install exact locked dependencies
+        run: npm ci
+
+      - name: Build and smoke-test the unsigned production candidate
+        env:
+          ORION_RELEASE_EVENT_NAME: ${{ github.event_name }}
+          ORION_RELEASE_REF_TYPE: ${{ github.ref_type }}
+          ORION_RELEASE_REF_NAME: ${{ github.ref_name }}
+          ORION_RELEASE_REF_PROTECTED: ${{ github.ref_protected }}
+          ORION_RELEASE_ENVIRONMENT_NAME: orion-code-sidecar-release
+          ORION_RELEASE_SHA: ${{ github.sha }}
+          ORION_RELEASE_UNSIGNED_OUTPUT_DIRECTORY: ${{ runner.temp }}/orion-code-unsigned-candidate
+          ORION_CODE_SIDECAR_BUNDLE_ID: ${{ vars.ORION_CODE_SIDECAR_BUNDLE_ID }}
+          ORION_CODE_STUDIO_VERSION_REQUIREMENT: ${{ inputs.studio_version_requirement }}
+        run: npm run release:acp-sidecar-protected-build
+
+      - name: Sign, notarize, replay, and conditionally publish
+        env:
+          ORION_RELEASE_EVENT_NAME: ${{ github.event_name }}
+          ORION_RELEASE_REF_TYPE: ${{ github.ref_type }}
+          ORION_RELEASE_REF_NAME: ${{ github.ref_name }}
+          ORION_RELEASE_REF_PROTECTED: ${{ github.ref_protected }}
+          ORION_RELEASE_ENVIRONMENT_NAME: orion-code-sidecar-release
+          ORION_RELEASE_SHA: ${{ github.sha }}
+          ORION_RELEASE_UNSIGNED_OUTPUT_DIRECTORY: ${{ runner.temp }}/orion-code-unsigned-candidate
+          ORION_RELEASE_OUTPUT_DIRECTORY: ${{ runner.temp }}/orion-code-protected-release
+          ORION_RELEASE_SEQUENCE: ${{ inputs.sequence }}
+          ORION_RELEASE_GENERATED_AT: ${{ inputs.generated_at }}
+          ORION_RELEASE_EXPIRES_AT: ${{ inputs.expires_at }}
+          ORION_RELEASE_PUBLISHED_AT: ${{ inputs.published_at }}
+          ORION_RELEASE_CHANNEL: ${{ inputs.channel }}
+          ORION_RELEASE_STATUS: ${{ inputs.status }}
+          ORION_RELEASE_ROLLOUT_BASIS_POINTS: ${{ inputs.rollout_basis_points }}
+          ORION_RELEASE_ROLLOUT_SALT: ${{ inputs.rollout_salt }}
+          ORION_CODE_STUDIO_VERSION_REQUIREMENT: ${{ inputs.studio_version_requirement }}
+          ORION_RELEASE_NOTES_URL: ${{ inputs.release_notes_url }}
+          ORION_RELEASE_PREVIOUS_INDEX_URL: ${{ inputs.previous_index_url }}
+          ORION_RELEASE_ROLLBACK_TO: ${{ inputs.rollback_to }}
+          ORION_RELEASE_AUTHORIZATION: ${{ inputs.release_authorization }}
+          ORION_APPLE_DEVELOPER_ID_CERTIFICATE_P12_BASE64: ${{ secrets.ORION_APPLE_DEVELOPER_ID_CERTIFICATE_P12_BASE64 }}
+          ORION_APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.ORION_APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+          ORION_APPLE_DEVELOPER_ID_APPLICATION: ${{ vars.ORION_APPLE_DEVELOPER_ID_APPLICATION }}
+          ORION_APPLE_TEAM_ID: ${{ vars.ORION_APPLE_TEAM_ID }}
+          ORION_APPLE_NOTARY_KEY_P8_BASE64: ${{ secrets.ORION_APPLE_NOTARY_KEY_P8_BASE64 }}
+          ORION_APPLE_NOTARY_KEY_ID: ${{ vars.ORION_APPLE_NOTARY_KEY_ID }}
+          ORION_APPLE_NOTARY_ISSUER_ID: ${{ vars.ORION_APPLE_NOTARY_ISSUER_ID }}
+          ORION_UPDATE_INDEX_PRIVATE_KEY_PEM_BASE64: ${{ secrets.ORION_UPDATE_INDEX_PRIVATE_KEY_PEM_BASE64 }}
+          ORION_UPDATE_INDEX_KEY_ID: ${{ vars.ORION_UPDATE_INDEX_KEY_ID }}
+          ORION_CODE_SIDECAR_BUNDLE_ID: ${{ vars.ORION_CODE_SIDECAR_BUNDLE_ID }}
+          ORION_RELEASE_ASSET_UPLOAD_BASE_URL: ${{ vars.ORION_RELEASE_ASSET_UPLOAD_BASE_URL }}
+          ORION_RELEASE_PUBLIC_BASE_URL: ${{ vars.ORION_RELEASE_PUBLIC_BASE_URL }}
+          ORION_RELEASE_PUBLICATION_URL: ${{ vars.ORION_RELEASE_PUBLICATION_URL }}
+          ORION_RELEASE_UPLOAD_TOKEN: ${{ secrets.ORION_RELEASE_UPLOAD_TOKEN }}
+        run: npm run release:acp-sidecar-protected

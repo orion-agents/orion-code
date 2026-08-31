@@ -109,6 +109,7 @@ describe('first-party ToolGateway services', () => {
 
     await expect(
       new FirstPartyToolApprovalServiceV1().decide({
+        invocationId: 'invocation-1',
         snapshot: ask,
         descriptor,
         args: {},
@@ -117,6 +118,7 @@ describe('first-party ToolGateway services', () => {
     ).resolves.toMatchObject({ approved: false, source: 'unavailable' });
     await expect(
       new FirstPartyToolApprovalServiceV1().decide({
+        invocationId: 'invocation-2',
         snapshot: allow,
         descriptor: allow.toolRouter.descriptors[0],
         args: {},

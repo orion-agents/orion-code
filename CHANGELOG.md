@@ -40,6 +40,12 @@ which is **not** a pass.
 - Add revisioned queue edit/move/remove and Session-scoped tab-local draft recovery.
 - Add the v0.3.2 OpenAPI, mode/permission contract, migration guide and exact-artifact
   WEB32-P0-01..12 qualification contract.
+- Add the `orion-code` ACP v1 stdio launcher and equivalent `orion acp` alias, with newline-delimited
+  JSON-RPC on protocol-only stdout and diagnostics isolated to stderr.
+- Add ACP session new, load, prompt, cancel and close handling with ordered transcript/tool updates,
+  fail-closed one-shot permissions, text/resource-link prompts and session-scoped stdio MCP servers.
+- Add `ORION_CODE_DATA_DIR` isolation, canonical cwd validation, durable history replay and
+  cross-process session ownership leases with stale-owner recovery.
 
 ### Changed
 
@@ -64,6 +70,8 @@ which is **not** a pass.
   fail stale operations with zero provider, ToolGateway, file or queue side effects.
 - Revalidate every structured Context reference at prompt assembly and keep sensitive/raw content
   out of the DOM, SSE, screenshots and release evidence.
+- Disable ambient `.env` loading for ACP startup, reject unsupported content, transports and
+  additional directories explicitly, and close owned runtimes, MCP children and leases on shutdown.
 
 ## [0.3.1] — CANDIDATE
 

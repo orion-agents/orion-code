@@ -463,6 +463,53 @@ describe('LLMService', () => {
       expect(response.finishReason).toBe('tool_calls');
       expect(response.rawFinishReason).toBe('tool_use');
     });
+
+    test('keeps tool debug chunks off stdout', async () => {
+      const originalDebugTools = process.env.ORION_CODE_DEBUG_TOOLS;
+      const stdout = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
+      const stderr = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      const consoleLog = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+      process.env.ORION_CODE_DEBUG_TOOLS = 'true';
+
+      try {
+        const llm = new LLMService({ apiKey: 'test-key', model: 'gpt-4o' });
+        const create = jest.fn(async function* () {
+          yield {
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: 'call-debug',
+                      type: 'function',
+                      function: { name: 'read_file', arguments: '{"path":"a.ts"}' },
+                    },
+                  ],
+                },
+                finish_reason: 'tool_calls',
+              },
+            ],
+            model: 'gpt-4o',
+          };
+        });
+        (llm as any).client = { chat: { completions: { create } } };
+
+        await llm.chatStream([{ role: 'user', content: 'Inspect' }]);
+
+        expect(stdout).not.toHaveBeenCalled();
+        expect(consoleLog).not.toHaveBeenCalled();
+        expect(stderr).toHaveBeenCalledTimes(1);
+        expect(String(stderr.mock.calls[0][0])).toContain('[DEBUG] Raw chunk:');
+        expect(String(stderr.mock.calls[0][0])).toContain('call-debug');
+      } finally {
+        if (originalDebugTools === undefined) delete process.env.ORION_CODE_DEBUG_TOOLS;
+        else process.env.ORION_CODE_DEBUG_TOOLS = originalDebugTools;
+        stdout.mockRestore();
+        stderr.mockRestore();
+        consoleLog.mockRestore();
+      }
+    });
   });
 
   describe('provider transient errors', () => {

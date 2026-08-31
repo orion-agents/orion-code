@@ -504,6 +504,13 @@ interface WireStreamChunk {
   }>;
 }
 
+function writeToolDebugChunk(chunk: WireStreamChunk): void {
+  if (process.env.ORION_CODE_DEBUG_TOOLS !== 'true') return;
+  const choice = chunk.choices?.[0];
+  if (!choice?.delta?.tool_calls && !choice?.message?.tool_calls) return;
+  process.stderr.write(`[DEBUG] Raw chunk: ${JSON.stringify(chunk, null, 2)}\n`);
+}
+
 /** A non-streaming completion, same caveat as {@link WireStreamChunk}. */
 interface WireChatCompletion {
   id?: string;
@@ -892,14 +899,7 @@ export class LLMService {
 
             for await (const chunk of stream) {
               throwIfAborted(signal);
-
-              // Debug: log raw chunk when tool_calls present
-              if (process.env.ORION_CODE_DEBUG_TOOLS === 'true') {
-                const delta = chunk.choices?.[0]?.delta;
-                if (delta?.tool_calls || chunk.choices?.[0]?.message?.tool_calls) {
-                  console.log('[DEBUG] Raw chunk:', JSON.stringify(chunk, null, 2));
-                }
-              }
+              writeToolDebugChunk(chunk);
 
               const choice = chunk.choices?.[0];
               const delta = choice?.delta;
@@ -1075,14 +1075,7 @@ export class LLMService {
 
           for await (const chunk of stream) {
             throwIfAborted(options?.abortSignal);
-
-            // Debug: log raw chunk when tool_calls present (for diagnosing API compatibility)
-            if (process.env.ORION_CODE_DEBUG_TOOLS === 'true') {
-              const delta = chunk.choices?.[0]?.delta;
-              if (delta?.tool_calls || chunk.choices?.[0]?.message?.tool_calls) {
-                console.log('[DEBUG] Raw chunk:', JSON.stringify(chunk, null, 2));
-              }
-            }
+            writeToolDebugChunk(chunk);
 
             const choice = chunk.choices?.[0];
             const delta = choice?.delta;

@@ -53,6 +53,11 @@ export interface CommandContext {
   ensureSession?: () => SessionMeta;
   /** Switch the active session after /resume. */
   setSession?: (session: SessionMeta) => void;
+  /** Acquire ownership and switch the active runtime as one asynchronous transaction. */
+  activateSession?: (
+    session: SessionMeta,
+    activation?: ThreadSessionRuntimeActivationV1
+  ) => Promise<void>;
   /** Rebind the product runtime and replay the selected durable Thread after /resume. */
   restoreSessionRuntime?: (activation?: ThreadSessionRuntimeActivationV1) => Promise<void>;
   /** Notify renderer-independent runtime protocol consumers after /resume. */

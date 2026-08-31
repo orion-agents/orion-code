@@ -30,7 +30,11 @@ import {
 import { appendUsageRecord } from '../services/usage-state';
 import { PACKAGE_VERSION } from '../product/version';
 import { createProductionFirstPartyToolUniverseV1 } from './first-party-tool-universe';
-import { createFirstPartyMcpAdapterV1, loadFirstPartyMcpConfigurationV1 } from './mcp';
+import {
+  createFirstPartyMcpAdapterV1,
+  loadFirstPartyMcpConfigurationV1,
+  type FirstPartyMcpConfigurationV1,
+} from './mcp';
 import { ModelCoordinator } from './model-coordinator';
 import { SessionComposerControlServiceV1 } from './session-composer-control';
 import { OrionSessionRunnerV1 } from './orion-session-runner';
@@ -39,10 +43,13 @@ import type { ThreadSessionRuntimeActivationV1 } from './thread-session-view';
 import { createProductOrionRuntimeV1 } from './product-orion-runtime';
 import { createProductionFilesystemSkillProviderV1 } from './skills';
 import type { OrionCodeUiRuntime } from './ui-events';
+import { SessionOwnershipCoordinator } from './session-ownership';
 
 export interface ProductUiRuntimeBootstrapOptions {
   readonly cwd: string;
   readonly uiRenderer?: UIRenderer;
+  /** Session-scoped MCP configuration supplied by an embedding host. */
+  readonly mcpConfiguration?: FirstPartyMcpConfigurationV1;
   /** Renderer-specific shutdown label used in durable diagnostics. */
   readonly shutdownReason?: string;
   readonly onActiveSessionRuntime?: (
@@ -79,7 +86,7 @@ export async function createProductUiRuntime(
     configuredPaths: config.skills?.paths,
   });
   const mcpAdapter = createFirstPartyMcpAdapterV1({
-    config: loadFirstPartyMcpConfigurationV1(),
+    config: options.mcpConfiguration ?? loadFirstPartyMcpConfigurationV1(),
     baseDirectory: cwd,
   });
 
@@ -158,9 +165,10 @@ export async function createProductUiRuntime(
 
   let currentSession: SessionMeta | null = null;
   let sessionRunner: OrionSessionRunnerV1 | undefined;
+  const sessionOwnership = new SessionOwnershipCoordinator();
   let settingsRuntimeIdleProbe = (): boolean => true;
-  let shuttingDown = false;
   let projectToolConfirmation = config.toolConfirmation;
+  let shutdownExecution: Promise<void> | undefined;
 
   const applySessionState = (
     session: SessionMeta | null,
@@ -222,6 +230,30 @@ export async function createProductUiRuntime(
     return currentSession;
   };
   const getSession = (): SessionMeta | null => currentSession;
+  const activateSession: NonNullable<OrionCodeUiRuntime['activateSession']> = async (
+    session,
+    activation
+  ) => {
+    const previous = currentSession;
+    setSession(session);
+    try {
+      if (sessionRunner) {
+        await sessionRunner.activateSession(session.id, activation);
+      } else {
+        await sessionOwnership.activate(session.id, async () => undefined);
+      }
+    } catch (error) {
+      setSession(previous);
+      throw error;
+    }
+  };
+  const releaseSession: NonNullable<OrionCodeUiRuntime['releaseSession']> = async () => {
+    await sessionOwnership.release(async () => {
+      await sessionRunner?.close('session released');
+      sessionRunner = undefined;
+    });
+    setSession(null);
+  };
 
   const prepareSettingsRuntime = (context: Omit<SettingsUpdateContextV1, 'document'>): void => {
     const defaultModelOperation = context.operations.find(
@@ -378,17 +410,22 @@ export async function createProductUiRuntime(
     costTracker.record(event.usage, { model: event.model, requestKind: event.operation });
   });
 
-  const shutdown = async (): Promise<void> => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    settingsCoordinator?.close();
-    await sessionRunner?.close(options.shutdownReason ?? 'Orion product runtime shutdown');
-    if (currentSession) {
-      const messages = readSessionMessages(currentSession.id);
-      if (messages.length > 0) updateSessionSummary(currentSession.id, messages);
-      endSession(currentSession.id);
+  const shutdown = (): Promise<void> => {
+    if (!shutdownExecution) {
+      shutdownExecution = (async () => {
+        settingsCoordinator?.close();
+        await sessionOwnership.close(async () => {
+          await sessionRunner?.close(options.shutdownReason ?? 'Orion product runtime shutdown');
+        });
+        if (currentSession) {
+          const messages = readSessionMessages(currentSession.id);
+          if (messages.length > 0) updateSessionSummary(currentSession.id, messages);
+          endSession(currentSession.id);
+        }
+        unsubscribeLlmUsage?.();
+      })();
     }
-    unsubscribeLlmUsage?.();
+    return shutdownExecution;
   };
 
   const createAgentRunner: OrionCodeUiRuntime['createAgentRunner'] = llm
@@ -420,6 +457,7 @@ export async function createProductUiRuntime(
           },
           onActiveRuntime: options.onActiveSessionRuntime,
           replayHistoryOnRestore: runnerOptions.replayHistoryOnRestore,
+          ownership: sessionOwnership,
         });
         return sessionRunner;
       }
@@ -475,6 +513,8 @@ export async function createProductUiRuntime(
     ensureSession,
     setSession,
     getSession,
+    activateSession,
+    releaseSession,
     shutdown,
   };
 }

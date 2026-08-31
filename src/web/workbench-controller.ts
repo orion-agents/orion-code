@@ -946,8 +946,7 @@ export class WebWorkbenchController {
       );
       incrementSessionCount();
       const named = name?.trim() ? (renameSession(session.id, name.trim()) ?? session) : session;
-      this.runtimeValue.setSession(named);
-      await this.runtimeValue.rebindSessionRuntime?.();
+      await requireSessionActivation(this.runtimeValue)(named);
       this.eventHub.emitRuntime({ type: 'transcript_clear' });
       this.emitState();
       return projectSessionSummary(named);
@@ -1047,23 +1046,38 @@ export class WebWorkbenchController {
     const previousRuntime = this.runtimeValue;
     const previousController = this.controllerValue;
     const transition = (async () => {
+      let candidateRuntime: OrionCodeUiRuntime | undefined;
+      let previousShutdownAttempted = false;
       this.suppressContextEdges += 1;
       try {
         await previousController.stopActiveTurn();
         await previousController.waitForIdle();
         if (targetWorkspace !== previousWorkspace) {
+          candidateRuntime = await this.createRuntime(targetWorkspace);
+          if (targetSession) {
+            await requireSessionActivation(candidateRuntime)(targetSession);
+          }
+          previousShutdownAttempted = true;
           await previousRuntime.shutdown();
-          await this.installRuntime(targetWorkspace, false);
+          await this.installRuntime(targetWorkspace, false, candidateRuntime);
+          candidateRuntime = undefined;
         }
         await this.restoreContextSession(targetSession?.id ?? null);
         this.workspaceRegistry.register(targetWorkspace, { activated: true });
       } catch (activationError) {
         try {
+          await candidateRuntime?.shutdown();
           if (targetWorkspace !== previousWorkspace) {
-            if (this.runtimeValue !== previousRuntime) await this.runtimeValue.shutdown();
-            await this.installRuntime(previousWorkspace, false);
+            if (this.runtimeValue !== previousRuntime) {
+              await this.runtimeValue.shutdown();
+              await this.installRuntime(previousWorkspace, false);
+            } else if (previousShutdownAttempted) {
+              await this.installRuntime(previousWorkspace, false);
+            }
           }
-          await this.restoreContextSession(previousSessionId);
+          if (this.runtimeValue !== previousRuntime || previousShutdownAttempted) {
+            await this.restoreContextSession(previousSessionId);
+          }
         } catch {
           throw new WebWorkbenchError(
             503,
@@ -1437,9 +1451,13 @@ export class WebWorkbenchController {
     this.eventHub.close();
   }
 
-  private async installRuntime(workspace: string, publishState = true): Promise<void> {
+  private async installRuntime(
+    workspace: string,
+    publishState = true,
+    preparedRuntime?: OrionCodeUiRuntime
+  ): Promise<void> {
     this.closeComposerObserver();
-    const runtime = await this.createRuntime(workspace);
+    const runtime = preparedRuntime ?? (await this.createRuntime(workspace));
     this.closeWorkspaceWatchers();
     this.activeOrionRuntime = undefined;
     this.sessionViews.clear();
@@ -1633,8 +1651,7 @@ export class WebWorkbenchController {
 
   private async restoreContextSession(sessionId: string | null): Promise<void> {
     if (!sessionId) {
-      this.runtimeValue.setSession(null);
-      await this.runtimeValue.rebindSessionRuntime?.();
+      await requireSessionRelease(this.runtimeValue)();
       if (this.suppressContextEdges === 0) {
         this.eventHub.emitRuntime({ type: 'transcript_clear' });
       }
@@ -2157,6 +2174,32 @@ function requireSession(sessionId: string): SessionMeta {
   const session = loadSessionMeta(sessionId);
   if (!session) throw new WebWorkbenchError(404, 'Session was not found.');
   return session;
+}
+
+function requireSessionActivation(
+  runtime: OrionCodeUiRuntime
+): NonNullable<OrionCodeUiRuntime['activateSession']> {
+  if (!runtime.activateSession) {
+    throw new WebWorkbenchError(
+      503,
+      'The runtime does not provide transactional Session ownership.',
+      'session_ownership_unavailable'
+    );
+  }
+  return runtime.activateSession;
+}
+
+function requireSessionRelease(
+  runtime: OrionCodeUiRuntime
+): NonNullable<OrionCodeUiRuntime['releaseSession']> {
+  if (!runtime.releaseSession) {
+    throw new WebWorkbenchError(
+      503,
+      'The runtime does not provide transactional Session ownership.',
+      'session_ownership_unavailable'
+    );
+  }
+  return runtime.releaseSession;
 }
 
 function mcpServerIds(config: ReturnType<typeof loadFirstPartyMcpConfigurationV1>): string[] {

@@ -13,6 +13,7 @@ import { debugError } from '../utils/debug-log';
 
 export {
   getConfigHome,
+  getDataHome,
   getConfigDir,
   getGlobalConfigPath,
   getSettingsPath,
@@ -22,6 +23,10 @@ export {
   getHistoryPath,
   getMcpConfigPath,
   getProjectsDir,
+  getSessionCatalogPath,
+  getSessionLeasesDir,
+  getLogsDir,
+  getReceiptsDir,
   getGlobalEnvPath,
   encodeProjectPath,
   resolveProjectStoragePath,

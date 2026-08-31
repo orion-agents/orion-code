@@ -52,6 +52,7 @@ export interface ToolPolicyServiceV1 {
 
 export interface ToolApprovalServiceV1 {
   decide(input: {
+    readonly invocationId: string;
     readonly snapshot: StepSnapshotV1;
     readonly descriptor: ToolBindingDescriptorV1;
     readonly args: Readonly<Record<string, unknown>>;
@@ -253,6 +254,7 @@ export class ToolGateway {
       try {
         approval = validateApprovalDecision(
           await this.services.approval.decide({
+            invocationId: invocation.invocationId,
             snapshot: invocation.snapshot,
             descriptor,
             args: invocation.args,

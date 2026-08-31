@@ -1,0 +1,159 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:orion-code:install-receipt:v2",
+  "title": "Orion Code Install Receipt V2",
+  "description": "Durable evidence for a current or previous Orion Code installation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "source",
+    "legacy_imported",
+    "target",
+    "archive_sha256",
+    "command",
+    "installed_at",
+    "index_sequence"
+  ],
+  "properties": {
+    "version": {
+      "$ref": "#/definitions/semver"
+    },
+    "source": {
+      "enum": ["npx", "archive"]
+    },
+    "legacy_imported": {
+      "type": "boolean"
+    },
+    "target": {
+      "oneOf": [
+        {
+          "$ref": "#/definitions/targetName"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "archive_sha256": {
+      "oneOf": [
+        {
+          "$ref": "#/definitions/sha256"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "command": {
+      "oneOf": [
+        {
+          "$ref": "#/definitions/relativeArtifactPath"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "installed_at": {
+      "oneOf": [
+        {
+          "type": "string",
+          "format": "date-time"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "index_sequence": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["legacy_imported"],
+        "properties": {
+          "legacy_imported": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "target": {
+            "type": "null"
+          },
+          "archive_sha256": {
+            "type": "null"
+          },
+          "command": {
+            "type": "null"
+          },
+          "installed_at": {
+            "type": "null"
+          },
+          "index_sequence": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["legacy_imported", "source"],
+        "properties": {
+          "legacy_imported": {
+            "const": false
+          },
+          "source": {
+            "const": "archive"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "target": {
+            "$ref": "#/definitions/targetName"
+          },
+          "archive_sha256": {
+            "$ref": "#/definitions/sha256"
+          },
+          "command": {
+            "$ref": "#/definitions/relativeArtifactPath"
+          }
+        }
+      }
+    }
+  ],
+  "definitions": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9A-Fa-f]{64}$"
+    },
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$"
+    },
+    "targetName": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]{1,64}$"
+    },
+    "relativeArtifactPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?!/)(?!.*(?:^|/)(?:\\.{1,2})(?:/|$))(?!.*[\\\\:\\u0000])(?!.*//)[^/]+(?:/[^/]+)*$"
+    }
+  }
+}

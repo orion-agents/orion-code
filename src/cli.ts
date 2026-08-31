@@ -46,6 +46,7 @@ function showCliHelp(): void {
   console.log('  orion commit      Create a read-only commit plan and suggested message');
   console.log('  orion migrate openhorse  Preview OpenHorse migration; add --yes to execute');
   console.log('  orion web         Start the local Web Workbench');
+  console.log('  orion acp         Start the ACP stdio sidecar for host integrations');
   console.log('  orion -p "task"   Run an experimental non-interactive task');
   console.log('  orion --help      Show this help message');
   console.log('  orion --version   Show version');

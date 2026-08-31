@@ -94,6 +94,13 @@ export function createFakeWebRuntime(cwd: string): OrionCodeUiRuntime {
       applySessionState(value);
     },
     getSession: () => session,
+    activateSession: async value => {
+      session = value;
+      store.setState({ currentModel: value.model });
+    },
+    releaseSession: async () => {
+      session = null;
+    },
     settingsCoordinator: coordinator,
     describeSettings,
     updateSettings: input =>

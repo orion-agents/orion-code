@@ -52,6 +52,10 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: ACP v1 contract smoke
+        if: ${{ matrix.node-version == '22' }}
+        run: npm run test:acp
+
       - name: Web browser workflow and axe audit
         if: ${{ matrix.node-version == '22' }}
         run: npm run test:web-browser
@@ -97,6 +101,29 @@ jobs:
 
       - name: tsc --noEmit
         run: npx tsc --noEmit
+
+  acp-sidecar-unsigned-gate:
+    name: ACP sidecar fixture gate (NOT RELEASABLE)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test release tooling with minimal fixtures
+        run: npm run test:release-tooling
+
+      - name: Build, replay, and index disposable unsigned fixture
+        run: npm run ci:acp-sidecar-unsigned
 
   harness-gates:
     name: Lean Harness benchmark and confluence
@@ -464,6 +491,7 @@ jobs:
     needs:
       - verify
       - typecheck
+      - acp-sidecar-unsigned-gate
       - harness-gates
       - security-audit
       - release-gate

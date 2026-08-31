@@ -1,0 +1,9 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientInfo":{"name":"Orion Studio","version":"test"}}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true,"promptCapabilities":{},"sessionCapabilities":{"close":{}}},"authMethods":[],"agentInfo":{"name":"orion-code","title":"Orion Code","version":"<version>"}}}
+{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"<cwd>","mcpServers":[]}}
+{"jsonrpc":"2.0","id":2,"result":{"sessionId":"<session-id>"}}
+{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"<session-id>","prompt":[{"type":"text","text":"hello"}]}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"<session-id>","update":{"sessionUpdate":"agent_message_chunk","messageId":"<message-id>","content":{"type":"text","text":"hello"}}}}
+{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}
+{"jsonrpc":"2.0","id":4,"method":"session/close","params":{"sessionId":"<session-id>"}}
+{"jsonrpc":"2.0","id":4,"result":{}}

@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "algorithm": "ed25519",
+  "key_id": "schema-fixture-not-a-real-key",
+  "signature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+}

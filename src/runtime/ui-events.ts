@@ -363,6 +363,13 @@ export interface RuntimeSessionAccessors {
   ensureSession: () => SessionMeta;
   setSession: (session: SessionMeta | null) => void;
   getSession: () => SessionMeta | null;
+  /** Transactionally acquire ownership and switch the active Session runtime. */
+  activateSession?: (
+    session: SessionMeta,
+    activation?: import('./thread-session-view').ThreadSessionRuntimeActivationV1
+  ) => Promise<void>;
+  /** Close the active Session runtime before releasing its ownership lease. */
+  releaseSession?: () => Promise<void>;
 }
 
 /** Renderer-neutral durable Settings mutation accepted by the product composition root. */

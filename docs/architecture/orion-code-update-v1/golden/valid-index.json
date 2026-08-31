@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "sequence": 42,
+  "generated_at": "2026-08-31T00:00:00Z",
+  "expires_at": "2026-09-07T00:00:00Z",
+  "releases": [
+    {
+      "version": "0.4.0",
+      "channel": "stable",
+      "status": "active",
+      "published_at": "2026-08-31T00:00:00Z",
+      "studio_version_requirement": ">=1.0.0,<2.0.0",
+      "acp_protocol": 1,
+      "rollout_basis_points": 2500,
+      "rollout_salt": "immutable-public-release-salt",
+      "rollback_to": null,
+      "release_notes_url": "https://github.com/orion-agents/orion-code/releases/tag/v0.4.0",
+      "targets": {
+        "darwin-aarch64": {
+          "archive_url": "https://updates.example.invalid/orion-code/0.4.0/darwin-aarch64.zip",
+          "archive_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "archive_bytes": 12345678,
+          "format": "zip",
+          "command": "OrionCodeSidecar.app/Contents/MacOS/orion-code-acp",
+          "manifest_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "sbom_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "signing_requirement": "developer_id_and_notarized"
+        }
+      }
+    }
+  ]
+}
