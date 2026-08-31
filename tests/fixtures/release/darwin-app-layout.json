@@ -1,0 +1,8 @@
+{
+  "application_root": "OrionCodeSidecar.app/Contents/Resources/app",
+  "bundle_id": "invalid.example.orion-code-sidecar.fixture",
+  "command": "OrionCodeSidecar.app/Contents/MacOS/orion-code-acp",
+  "info_plist": "OrionCodeSidecar.app/Contents/Info.plist",
+  "node_license": "OrionCodeSidecar.app/Contents/Resources/NODE_LICENSE",
+  "node_runtime": "OrionCodeSidecar.app/Contents/Resources/runtime/node"
+}

@@ -1,0 +1,134 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:orion-code:artifact-manifest:v1",
+  "title": "Orion Code Sidecar Artifact Manifest V1",
+  "description": "File-level evidence embedded in an Orion Code sidecar archive.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "version",
+    "git_sha",
+    "target",
+    "built_at",
+    "acp_protocol",
+    "studio_version_requirement",
+    "node_version",
+    "node_abi",
+    "native_modules",
+    "command",
+    "sbom_path",
+    "sbom_sha256",
+    "notices_path",
+    "notices_sha256",
+    "files"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "version": {
+      "$ref": "#/definitions/semver"
+    },
+    "git_sha": {
+      "type": "string",
+      "pattern": "^[0-9A-Fa-f]{40,64}$"
+    },
+    "target": {
+      "$ref": "#/definitions/targetName"
+    },
+    "built_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "acp_protocol": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4294967295
+    },
+    "studio_version_requirement": {
+      "type": "string",
+      "minLength": 1
+    },
+    "node_version": {
+      "$ref": "#/definitions/semver"
+    },
+    "node_abi": {
+      "type": "string",
+      "pattern": "^[0-9]+$"
+    },
+    "native_modules": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "command": {
+      "$ref": "#/definitions/relativeArtifactPath"
+    },
+    "sbom_path": {
+      "$ref": "#/definitions/relativeArtifactPath"
+    },
+    "sbom_sha256": {
+      "$ref": "#/definitions/sha256"
+    },
+    "notices_path": {
+      "$ref": "#/definitions/relativeArtifactPath"
+    },
+    "notices_sha256": {
+      "$ref": "#/definitions/sha256"
+    },
+    "files": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/definitions/file"
+      }
+    }
+  },
+  "definitions": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9A-Fa-f]{64}$"
+    },
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$"
+    },
+    "targetName": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]{1,64}$"
+    },
+    "relativeArtifactPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?!/)(?!.*(?:^|/)(?:\\.{1,2})(?:/|$))(?!.*[\\\\:\\u0000])(?!.*//)[^/]+(?:/[^/]+)*$"
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "mode", "bytes", "sha256"],
+      "properties": {
+        "path": {
+          "$ref": "#/definitions/relativeArtifactPath"
+        },
+        "mode": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "sha256": {
+          "$ref": "#/definitions/sha256"
+        }
+      }
+    }
+  }
+}

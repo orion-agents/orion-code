@@ -35,6 +35,7 @@ const MAX_PACKAGE_ENTRIES = 1500;
 const REQUIRED_PACKAGE_ENTRIES = [
   'assets/orion-tui-icon.png',
   'bin/orion',
+  'bin/orion-code-acp',
   'CHANGELOG.md',
   'docs/orion.example.json',
   'docs/readme.md',
@@ -47,6 +48,7 @@ const REQUIRED_PACKAGE_ENTRIES = [
   'docs/architecture/v0.3.1-web-api.yaml',
   'docs/architecture/v0.3.2-web-api.yaml',
   'docs/architecture/agent-mode-permission-contract.md',
+  'docs/architecture/orion-code-acp-v1.md',
   'docs/plan/v0.2.0-dsh-harness-redesign-plan.md',
   'docs/plan/v0.2.0-release-checklist.md',
   'docs/plan/v0.3.0-web-workbench-plan.md',

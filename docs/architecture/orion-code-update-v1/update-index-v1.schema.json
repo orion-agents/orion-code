@@ -1,0 +1,296 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:orion-code:update-index:v1",
+  "title": "Orion Code Update Index V1",
+  "description": "Signed first-party release policy consumed by Orion Studio.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "sequence", "generated_at", "expires_at", "releases"],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 18446744073709551615
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "releases": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/definitions/release"
+      }
+    }
+  },
+  "definitions": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9A-Fa-f]{64}$"
+    },
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$"
+    },
+    "stableSemver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "httpsImmutableUrl": {
+      "type": "string",
+      "format": "uri",
+      "maxLength": 2048,
+      "pattern": "^https://[^/?#@\\s]+(?:/[^?#\\s]*)?$"
+    },
+    "relativeArtifactPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?!/)(?!.*(?:^|/)(?:\\.{1,2})(?:/|$))(?!.*[\\\\:\\u0000])(?!.*//)[^/]+(?:/[^/]+)*$"
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "archive_url",
+        "archive_sha256",
+        "archive_bytes",
+        "format",
+        "command",
+        "manifest_sha256",
+        "sbom_sha256",
+        "signing_requirement"
+      ],
+      "properties": {
+        "archive_url": {
+          "$ref": "#/definitions/httpsImmutableUrl"
+        },
+        "archive_sha256": {
+          "$ref": "#/definitions/sha256"
+        },
+        "archive_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483648
+        },
+        "format": {
+          "const": "zip"
+        },
+        "command": {
+          "$ref": "#/definitions/relativeArtifactPath"
+        },
+        "manifest_sha256": {
+          "$ref": "#/definitions/sha256"
+        },
+        "sbom_sha256": {
+          "$ref": "#/definitions/sha256"
+        },
+        "signing_requirement": {
+          "enum": ["developer_id_and_notarized", "authenticode", "digest_only"]
+        }
+      }
+    },
+    "targets": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[a-z0-9-]{1,64}$"
+      },
+      "patternProperties": {
+        "^[a-z0-9-]{1,64}$": {
+          "$ref": "#/definitions/target"
+        }
+      },
+      "additionalProperties": false
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "channel",
+        "status",
+        "published_at",
+        "studio_version_requirement",
+        "acp_protocol",
+        "rollout_basis_points",
+        "rollout_salt",
+        "rollback_to",
+        "release_notes_url",
+        "targets"
+      ],
+      "properties": {
+        "version": {
+          "$ref": "#/definitions/semver"
+        },
+        "channel": {
+          "enum": ["stable", "beta"]
+        },
+        "status": {
+          "enum": ["active", "paused", "revoked"]
+        },
+        "published_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "studio_version_requirement": {
+          "type": "string",
+          "minLength": 1
+        },
+        "acp_protocol": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "rollout_basis_points": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "rollout_salt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "rollback_to": {
+          "oneOf": [
+            {
+              "$ref": "#/definitions/semver"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "release_notes_url": {
+          "$ref": "#/definitions/httpsImmutableUrl"
+        },
+        "targets": {
+          "$ref": "#/definitions/targets"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["channel"],
+            "properties": {
+              "channel": {
+                "const": "stable"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "version": {
+                "$ref": "#/definitions/stableSemver"
+              },
+              "targets": {
+                "type": "object",
+                "properties": {
+                  "darwin-aarch64": {
+                    "allOf": [
+                      {
+                        "$ref": "#/definitions/target"
+                      },
+                      {
+                        "properties": {
+                          "signing_requirement": {
+                            "const": "developer_id_and_notarized"
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "windows-x86_64": {
+                    "allOf": [
+                      {
+                        "$ref": "#/definitions/target"
+                      },
+                      {
+                        "properties": {
+                          "signing_requirement": {
+                            "const": "authenticode"
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "linux-x86_64": {
+                    "allOf": [
+                      {
+                        "$ref": "#/definitions/target"
+                      },
+                      {
+                        "properties": {
+                          "signing_requirement": {
+                            "const": "digest_only"
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "linux-aarch64": {
+                    "allOf": [
+                      {
+                        "$ref": "#/definitions/target"
+                      },
+                      {
+                        "properties": {
+                          "signing_requirement": {
+                            "const": "digest_only"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["status"],
+            "properties": {
+              "status": {
+                "const": "active"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "targets": {
+                "minProperties": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["rollback_to"],
+            "properties": {
+              "rollback_to": {
+                "type": "string"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "status": {
+                "enum": ["paused", "revoked"]
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
