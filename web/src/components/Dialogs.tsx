@@ -190,9 +190,12 @@ export interface RenameDialogProps {
 
 export function RenameDialog({ open, onClose, session, pending, onRename }: RenameDialogProps) {
   const [name, setName] = useState('');
+  const sessionId = session?.id;
   useEffect(() => {
     if (open && session) setName(sessionTitle(session));
-  }, [open, session]);
+    // Reinitialize when the dialog opens or targets a different Session. Live
+    // Session summary refreshes must not overwrite text the user is editing.
+  }, [open, sessionId]);
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (!session || !name.trim()) return;

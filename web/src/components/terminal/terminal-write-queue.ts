@@ -1,7 +1,7 @@
-// Split a 3KiB frame budget into three parser entries so xterm can yield between entries
-// without paying twelve write-buffer callbacks on every animation frame.
-// One bounded batch per animation frame drains 10MiB without monopolizing the main thread.
-const DEFAULT_RENDER_CHUNK_CHARACTERS = 1024;
+// Feed xterm one bounded 3KiB parser entry per animation frame. The frame boundary
+// preserves paint opportunities while avoiding repeated write-buffer callbacks for
+// the same budget. A single entry is small enough to parse within the frame budget.
+const DEFAULT_RENDER_CHUNK_CHARACTERS = 3 * 1024;
 const DEFAULT_IN_FLIGHT_CHARACTERS = 3 * 1024;
 
 export interface TerminalWriteTarget {
