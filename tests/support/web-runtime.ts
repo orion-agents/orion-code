@@ -1,6 +1,8 @@
 import { join } from 'path';
 
 import { Store } from '../../src/framework/store';
+import { CompactCoordinator } from '../../src/services/compact';
+import { SessionComposerControlServiceV1 } from '../../src/runtime/session-composer-control';
 import type { OrionCodeUiRuntime } from '../../src/runtime/ui-events';
 import { loadConfig } from '../../src/services/config';
 import { resolveProfileEffort } from '../../src/services/effort';
@@ -11,6 +13,7 @@ import type { SessionMeta } from '../../src/services/session-storage';
 export function createFakeWebRuntime(cwd: string): OrionCodeUiRuntime {
   const config = loadConfig({ apiKey: 'test-key', model: 'test-model' });
   const store = new Store({ config, tools: [], currentModel: config.model });
+  const compactCoordinator = new CompactCoordinator({ modelId: config.model });
   let session: SessionMeta | null = null;
   const coordinator = SettingsCoordinatorV1.create({
     workspace: cwd,
@@ -48,20 +51,47 @@ export function createFakeWebRuntime(cwd: string): OrionCodeUiRuntime {
         : {}),
       runtime: { busy: false },
     });
-
-  return {
+  const applySessionState = (value: SessionMeta | null): void => {
+    if (!value) return;
+    store.setState({ currentModel: value.model });
+    store.setEffort(
+      value.effortPreference ?? 'auto',
+      resolveProfileEffort(undefined, { session: value.effortPreference })
+    );
+    config.toolConfirmation = value.toolConfirmationOverride ?? 'ask';
+  };
+  const sessionComposerControls = new SessionComposerControlServiceV1({
     cwd,
-    version: '0.3.1-test',
     config,
     store,
     llm: null,
+    compactCoordinator,
+    getSession: () => session,
+    ensureSession: () => {
+      if (!session) throw new Error('No active test Session.');
+      return session;
+    },
+    projectToolConfirmation: () => 'ask',
+    applySessionState,
+    rebindSessionRuntime: async () => undefined,
+    runtimeIdle: () => true,
+  });
+
+  return {
+    cwd,
+    version: '0.3.2-test',
+    config,
+    store,
+    llm: null,
+    compactCoordinator,
+    sessionComposerControls,
     isConfigured: true,
     ensureSession: jest.fn(() => {
       throw new Error('not used');
     }),
     setSession: value => {
       session = value;
-      if (value) store.setState({ currentModel: value.model });
+      applySessionState(value);
     },
     getSession: () => session,
     settingsCoordinator: coordinator,

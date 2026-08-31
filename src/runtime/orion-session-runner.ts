@@ -10,6 +10,8 @@ import type { OrionRuntimeDiagnosticsV1, OrionRuntimeV1 } from './orion-runtime-
 import { ThreadUiAdapterV1, type ThreadUiModeResolverV1 } from './thread-ui-adapter';
 import type { UiEventSink } from './ui-events';
 import type { ThreadSessionRuntimeActivationV1 } from './thread-session-view';
+import { resolvePlanReviewV1 } from './plan-review';
+import type { PlanReviewProjectionV1 } from './thread-projection';
 
 export interface OrionSessionRunnerOptionsV1 {
   readonly eventSink: UiEventSink;
@@ -122,6 +124,23 @@ export class OrionSessionRunnerV1 implements AgentRuntimeRunnerV1 {
   async diagnostics(): Promise<OrionRuntimeDiagnosticsV1> {
     const active = await this.ensureActive();
     return active.runtime.diagnostics();
+  }
+
+  async planReviewState(): Promise<PlanReviewProjectionV1 | undefined> {
+    const active = await this.ensureActive();
+    return active.runtime.thread.getProjection().planReview;
+  }
+
+  async reviewPlan(
+    input: Parameters<typeof resolvePlanReviewV1>[1]
+  ): Promise<ReturnType<typeof resolvePlanReviewV1>> {
+    const active = await this.ensureActive();
+    const receipt = resolvePlanReviewV1(active.runtime, input);
+    if (receipt.admission.status === 'started' || receipt.admission.status === 'queued') {
+      this.startBackgroundDrain(active);
+    }
+    if (this.active === active) active.adapter.flush();
+    return receipt;
   }
 
   interrupt(reason = 'user interrupted'): void {

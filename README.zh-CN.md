@@ -2,14 +2,15 @@
 
 面向终端与浏览器、本地优先的目标驱动 Coding Agent。
 
-> v0.3.1 候选版本：一套 Orion Runtime，同时提供本地 Web Workbench 与既有 TUI/terminal。
-> Candidate 源码不代表已经创建 npm 发布或 Git tag。
+> v0.3.2 候选版本：一套 Orion Runtime，同时提供可调宽本地 Web Workbench、Session 级
+> Composer Control Center 与既有 TUI/terminal。Candidate 源码不代表已创建 npm 发布或 Git tag。
 
 [English](README.md) ·
-[v0.3.1 专业工作台方案](docs/plan/v0.3.1-web-workbench-professional-shell-plan.md) ·
-[v0.3.1 Web API](docs/architecture/v0.3.1-web-api.yaml) ·
-[v0.3.1 E2E 方案](docs/test/v0.3.1-web-workbench-e2e-plan.md) ·
-[v0.3.1 迁移](docs/migration/v0.3.0-to-v0.3.1.md) ·
+[v0.3.2 Workbench 方案](docs/plan/v0.3.2-web-workbench-layout-and-composer-plan.md) ·
+[v0.3.2 Web API](docs/architecture/v0.3.2-web-api.yaml) ·
+[模式/权限合同](docs/architecture/agent-mode-permission-contract.md) ·
+[v0.3.2 E2E 方案](docs/test/v0.3.2-web-workbench-e2e-plan.md) ·
+[v0.3.2 迁移](docs/migration/v0.3.1-to-v0.3.2.md) ·
 [v0.3.0 Web 方案](docs/plan/v0.3.0-web-workbench-plan.md) ·
 [Settings 方案](docs/plan/v0.3.0-settings-integration-plan.md) ·
 [Node 兼容方案](docs/plan/v0.3.0-node-runtime-compatibility-plan.md) ·
@@ -18,7 +19,7 @@
 [Settings 迁移](docs/migration/v0.2.2-to-v0.3.0-settings.md) ·
 [真实状态图册](docs/assets/screenshots/v0.3.0-web/README.md)
 
-## v0.3.1 包含什么
+## v0.3.2 包含什么
 
 - **一个 Runtime、两个交互界面。** `orion web` 与终端产品共用 product bootstrap、
   AgentRuntimeController、Session/Thread、ToolGateway、审批、Goal、Plan、Skills 和 MCP；浏览器不另起
@@ -27,8 +28,12 @@
   interrupt、审批、Goal/Plan、模型/effort、Skills/MCP 和诊断。快照与 cursor replay 负责刷新和 SSE
   重连恢复。
 - **专业项目工作台。** 左侧展示已注册项目并懒加载 Session，中间仍是唯一 Agent 会话。右侧可变宽面板
-  提供 Agent、审阅、终端、文件和 Git；文件/Git/审阅是有界只读投影，终端是显式启动、与 Session
-  history 和 SSE 隔离的临时真实 PTY。
+  提供 Agent、审阅、终端、文件和 Git；左栏可在 240–480px 鼠标调宽或折叠为 48px rail，窄屏使用互斥
+  drawer 且不覆盖桌面偏好。
+- **Composer Control Center。** 模式、Session 权限、模型、Effort 与 Context 都在输入框旁的可访问菜单中；
+  Runtime 明确投影 current/last-good/pending/error，active turn 模型切换会安全延迟，切小上下文前先 Compact。
+- **可审核 Plan 与有界 Context。** PLAN 写入 durable review 后等待 exact-digest 批准；结构化文件/目录/
+  Review/Session/Skill 引用、带 revision 的队列编辑与 Session 草稿恢复让输入意图可见且可恢复。
 - **本地安全边界。** Host 只绑定 `127.0.0.1`；写请求必须携带精确 Origin、进程 nonce、JSON body 和
   幂等键。响应设置严格 CSP，浏览器 payload 经过脱敏，大型工具结果按字节分页读取。
 - **Host 管理的 Settings。** 外观、默认模型、工作区 Effort 与全局工具确认策略统一进入严格、带
@@ -71,10 +76,10 @@ MCP 仍是用户可见的扩展边界。
 支持 Node.js 22.12+、24 和 26。生产环境建议使用 Node 24 LTS，当前开发环境也支持 Node 26
 Current。Node 20 已结束上游维护，不再属于 v0.3 Runtime 合同。
 
-当 npm 已存在不可变的 `0.3.1` 发布凭据后：
+当 npm 已存在不可变的 `0.3.2` 发布凭据后：
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.1
+npm install -g @orion-agents/orion-code@0.3.2
 orion --version
 orion doctor
 ```
@@ -144,18 +149,19 @@ orion commit
 
 ### 本地 Web Workbench
 
-`orion web` 在同一个 loopback origin 提供打包后的客户端与 `/api/v1/*`，v0.3.1 不提供 LAN bind。
+`orion web` 在同一个 loopback origin 提供打包后的客户端与 `/api/v1/*`，不提供 LAN bind。
 Provider 凭据仍通过 Orion 配置/环境变量管理；浏览器负责选择工作区和会话、执行或 steer 任务、回答
 审批并查看运行态。关闭或刷新 tab 不会替用户批准/拒绝，pending approval 仍由 Runtime 持有；停止
 Host 时会 abort 并 fail-closed。
 
-浏览器只展示已提交 Plan receipt 的 `body`、`returnMode`、`digest`，不会额外插入 review gate。
-PLAN 提交后仍由既有 Runtime 恢复 BUILD/AUTO，并在新的 logical turn 中启动实现。
+浏览器展示已提交 Plan receipt，并进入 durable `awaiting_review`。批准会创建独立 BUILD request；继续规划
+携带反馈创建独立 PLAN request；取消不产生执行副作用。三种操作均绑定 exact digest，刷新或 Host restart
+后可恢复，stale review fail-closed。
 
 多项目导航不会创建多个 Runtime；跨项目 Session 选择是一次带 revision guard 的原子 Context 切换。
-桌面右栏可用 IDE 式鼠标拖动在 320–720px 间调整，不提供键盘精细调宽；窄屏自动使用 drawer，且不覆盖
-桌面宽度偏好。文件、Git 和审阅保持只读；创建终端需要显式 user gesture，短期 ticket 与输出均不进入
-Workbench SSE。
+桌面左栏可在 240–480px 调整或折叠为 48px rail，右栏为 320–720px；均采用 IDE 式鼠标拖动且不提供
+键盘精细调宽。窄屏自动使用 drawer，且不覆盖桌面宽度偏好。文件、Git 和审阅保持只读；创建终端需要
+显式 user gesture，短期 ticket 与输出均不进入 Workbench SSE。
 
 #### Host 管理的 Settings
 
@@ -171,12 +177,13 @@ Web API，页面只显示 readiness，打开本地配置文件的动作也不接
 
 ### BUILD、PLAN、AUTO
 
-按 `Shift+Tab` 循环 `BUILD → PLAN → AUTO`。状态栏和输入框边框会显示当前模式。Mode 决定工作流，
-Authority、approval、路径边界和 sandbox policy 是独立状态轴。
+使用 Composer 模式菜单选择 `BUILD`、`PLAN` 或 `AUTO`；旁边的权限菜单选择 Project default、Ask、
+Allow 或 Deny。Mode 决定工作流，Authority、approval、路径边界和 sandbox policy 是独立状态轴；Allow
+与 AUTO 不会覆盖 hard policy 或显式 Deny。
 
 - **BUILD**：正常协作开发。
-- **PLAN**：使用同一套可用工具完成探索；将 decision-complete plan 写入 durable PlanReceipt；自动退出
-  Plan、恢复 BUILD/AUTO，并在新的 logical turn 中执行。
+- **PLAN**：使用同一套可用工具完成探索；将 decision-complete plan 写入 durable PlanReceipt；等待
+  批准、继续规划或取消。
 - **AUTO**：在已配置 Authority 内取消交互确认；hard policy 与 sandbox 边界仍然 fail closed。
 
 任务式进入：
@@ -185,7 +192,7 @@ Authority、approval、路径边界和 sandbox policy 是独立状态轴。
 /plan 重构 storage boundary 并验证 crash recovery
 ```
 
-不存在 `exit_plan_mode` 工具，也没有 `/mode` 命令。
+不存在 `exit_plan_mode` 工具。Web 通过 Composer 选择模式；终端界面保留原有模式控制。
 
 ### Durable Goal
 
@@ -244,9 +251,9 @@ npm run test:web-e2e -- --grep @settings
 
 正式准出还会只构建一次 exact tarball，并在 Node 22/24/26 安装同一个 hash，验证 package identity、
 native SQLite、TUI、terminal、print、Web、Goal、subagent、Skill、MCP、Compact 与 resume；
-WEB31-P0-01..12 还会验证多项目工作台、只读工程面板、真实 PTY、响应式与无障碍合同。详见
-[`v0.3.1 Web Workbench 方案`](docs/plan/v0.3.1-web-workbench-professional-shell-plan.md)与
-[`v0.3.1 E2E 资格计划`](docs/test/v0.3.1-web-workbench-e2e-plan.md)。
+WEB32-P0-01..12 还会验证可调项目栏、Composer 控制、Context、durable Plan review、队列/草稿、恢复与
+无障碍合同。详见 [`v0.3.2 Workbench 方案`](docs/plan/v0.3.2-web-workbench-layout-and-composer-plan.md)与
+[`v0.3.2 E2E 资格计划`](docs/test/v0.3.2-web-workbench-e2e-plan.md)。
 
 ## 安全
 

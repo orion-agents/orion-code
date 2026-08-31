@@ -2,6 +2,14 @@ import type { AgentRuntimeEvent } from '../runtime/agent-runtime-protocol';
 import type { AgentRuntimeControllerInput } from '../runtime/agent-runtime-controller';
 import type { GoalRuntimeControlV2 } from '../runtime/goal-runtime-coordinator';
 import type { RuntimeEventEnvelopeV1 } from '../runtime/protocol/runtime-protocol-v1';
+import type { PlanReviewResolutionReceiptV1 } from '../runtime/plan-review';
+import { digestRuntimeValue } from '../runtime/protocol/canonical';
+import type {
+  SessionComposerRuntimeStateV1,
+  SessionModelCatalogEntryV1,
+  SessionModelSwitchReceiptV1,
+  SessionPermissionReceiptV1,
+} from '../runtime/session-composer-control';
 import type { ToolDetailPage, ToolDetailSummary } from '../runtime/tool-detail-repository';
 import type { SessionMeta } from '../services/session-storage';
 import type { ToolConfirmationPolicy } from '../services/global-config';
@@ -171,6 +179,140 @@ export interface WebPlanViewV1 {
   readonly digest: string;
 }
 
+export type WebContextReferenceV1 =
+  | {
+      readonly kind: 'file';
+      readonly id: string;
+      readonly label: string;
+      readonly revision: string;
+    }
+  | {
+      readonly kind: 'folder';
+      readonly id: string;
+      readonly label: string;
+      readonly revision: string;
+    }
+  | {
+      readonly kind: 'review';
+      readonly id: string;
+      readonly label: string;
+      readonly gitRevision: string;
+    }
+  | {
+      readonly kind: 'session';
+      readonly id: string;
+      readonly label: string;
+      readonly digest: string;
+    }
+  | {
+      readonly kind: 'skill';
+      readonly id: string;
+      readonly label: string;
+      readonly digest: string;
+    };
+
+export interface WebPlanReviewViewV1 {
+  readonly planDigest: string;
+  readonly revision: string;
+  readonly status: 'awaiting_review' | 'approved' | 'continued' | 'cancelled';
+  readonly createdAt: number;
+  readonly createdModel: string;
+  readonly returnMode: 'build' | 'auto';
+  readonly resolvedAt?: number;
+}
+
+export interface WebComposerControlStateV1 {
+  readonly apiVersion: 1;
+  readonly workspaceId: string;
+  readonly sessionId: string;
+  readonly contextRevision: string;
+  readonly controlRevision: string;
+  readonly processing: boolean;
+  readonly mode: {
+    readonly baseMode: 'interactive' | 'plan' | 'auto';
+    readonly pendingBaseMode: 'interactive' | 'plan' | 'auto' | null;
+  };
+  readonly model: SessionComposerRuntimeStateV1['model'];
+  readonly permission: SessionComposerRuntimeStateV1['permission'];
+  readonly contextUsage: SessionComposerRuntimeStateV1['contextUsage'];
+  readonly compactAvailable: boolean;
+  readonly pending: SessionComposerRuntimeStateV1['pending'];
+  readonly lastError: SessionComposerRuntimeStateV1['lastError'];
+  readonly planReview: WebPlanReviewViewV1 | null;
+  readonly queue: {
+    readonly items: readonly {
+      readonly id: string;
+      readonly text: string;
+      readonly queuedAt: number;
+      readonly revision: number;
+    }[];
+    readonly limit: number;
+  };
+}
+
+export interface WebModelCatalogPageV1 extends WebPageV1<SessionModelCatalogEntryV1> {
+  readonly revision: string;
+  readonly unavailableProviders: readonly { readonly id: string; readonly reason: string }[];
+}
+
+interface WebComposerActionBaseV1 {
+  readonly requestId: string;
+  readonly workspaceId: string;
+  readonly expectedContextRevision: string;
+  readonly expectedSessionId: string;
+  readonly expectedControlRevision: string;
+}
+
+export type WebComposerActionV1 = WebComposerActionBaseV1 &
+  (
+    | { readonly type: 'set_agent_mode'; readonly mode: 'interactive' | 'plan' | 'auto' }
+    | {
+        readonly type: 'set_permission_override';
+        readonly value: ToolConfirmationPolicy;
+      }
+    | { readonly type: 'clear_permission_override' }
+    | {
+        readonly type: 'select_model';
+        readonly modelId: string;
+        readonly effort?: WebEffortPreferenceV1;
+      }
+    | { readonly type: 'compact_context' }
+    | {
+        readonly type: 'review_plan';
+        readonly planDigest: string;
+        readonly action: 'approve' | 'continue' | 'cancel';
+        readonly feedback?: string;
+      }
+    | {
+        readonly type: 'edit_queue_item';
+        readonly itemId: string;
+        readonly expectedItemRevision: number;
+        readonly text: string;
+      }
+    | {
+        readonly type: 'move_queue_item';
+        readonly itemId: string;
+        readonly expectedItemRevision: number;
+        readonly targetIndex: number;
+      }
+    | {
+        readonly type: 'remove_queue_item';
+        readonly itemId: string;
+        readonly expectedItemRevision: number;
+      }
+  );
+
+export interface WebComposerActionResultV1 {
+  readonly requestId: string;
+  readonly outcome: 'applied' | 'deferred';
+  readonly controlRevision: string;
+  readonly state: WebComposerControlStateV1;
+  readonly modelReceipt?: SessionModelSwitchReceiptV1;
+  readonly permissionReceipt?: SessionPermissionReceiptV1;
+  readonly planReviewReceipt?: PlanReviewResolutionReceiptV1;
+  readonly detail?: string;
+}
+
 export interface WebSessionSnapshotV1 {
   readonly apiVersion: 1;
   readonly session: WebSessionSummaryV1;
@@ -199,6 +341,7 @@ export interface WebSessionSnapshotV1 {
   readonly pendingApprovals: readonly WebPendingPermissionV1[];
   readonly goal: WebGoalViewV1 | null;
   readonly plan: WebPlanViewV1 | null;
+  readonly composer: WebComposerControlStateV1;
   readonly recoveryDiagnostics: readonly unknown[];
 }
 
@@ -328,6 +471,7 @@ export interface WebSessionSummaryV1 {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly messageCount: number;
+  readonly contextDigest: string;
   readonly taskSummary?: string;
   readonly activeGoalId?: string;
   readonly activeGoalObjective?: string;
@@ -358,12 +502,18 @@ export interface WebCommandV1 {
   readonly objective?: string;
   readonly toolConfirmation?: ToolConfirmationPolicy;
   readonly agentMode?: 'interactive' | 'plan' | 'auto';
+  readonly contextReferences?: readonly WebContextReferenceV1[];
 }
 
 export interface WebCommandResultV1 {
   readonly requestId: string;
   readonly result: string;
   readonly detail?: string;
+  readonly contextReceipt?: {
+    readonly manifestDigest: string;
+    readonly referenceCount: number;
+    readonly totalBytes: number;
+  };
 }
 
 export interface WebSessionMutationResultV1 {
@@ -400,6 +550,7 @@ export type WebWorkbenchEventV1 =
       readonly resources: readonly WebWorkspaceResourceV1[];
       readonly reason: WebWorkspaceInvalidationReasonV1;
     }
+  | { readonly type: 'composer_state_changed'; readonly state: WebComposerControlStateV1 }
   | { readonly type: 'replay_reset'; readonly reason: string };
 
 interface WebEventEnvelopeBaseV1 {
@@ -458,6 +609,12 @@ export type WebEventEnvelopeV1 = WebEventEnvelopeBaseV1 &
           readonly resources: readonly WebWorkspaceResourceV1[];
           readonly reason: WebWorkspaceInvalidationReasonV1;
         };
+      }
+    | {
+        readonly type: 'composer_state_changed';
+        readonly sessionId: string;
+        readonly durable: true;
+        readonly payload: { readonly state: WebComposerControlStateV1 };
       }
     | {
         readonly type: 'replay_reset';
@@ -524,6 +681,148 @@ export function parseWebContextActivate(value: unknown): WebContextActivateReque
   const sessionId =
     row.sessionId === null ? null : requireBoundedString(row.sessionId, 'sessionId', 256);
   return Object.freeze({ requestId, expectedContextRevision, workspaceId, sessionId });
+}
+
+export function parseWebComposerAction(value: unknown): WebComposerActionV1 {
+  const row = requireRecord(value, 'Composer action request');
+  const type = requireEnum(row.type, 'type', [
+    'set_agent_mode',
+    'set_permission_override',
+    'clear_permission_override',
+    'select_model',
+    'compact_context',
+    'review_plan',
+    'edit_queue_item',
+    'move_queue_item',
+    'remove_queue_item',
+  ] as const);
+  const baseKeys = [
+    'requestId',
+    'workspaceId',
+    'expectedContextRevision',
+    'expectedSessionId',
+    'expectedControlRevision',
+    'type',
+  ] as const;
+  const keysByType: Record<typeof type, readonly string[]> = {
+    set_agent_mode: ['mode'],
+    set_permission_override: ['value'],
+    clear_permission_override: [],
+    select_model: ['modelId', 'effort'],
+    compact_context: [],
+    review_plan: ['planDigest', 'action', 'feedback'],
+    edit_queue_item: ['itemId', 'expectedItemRevision', 'text'],
+    move_queue_item: ['itemId', 'expectedItemRevision', 'targetIndex'],
+    remove_queue_item: ['itemId', 'expectedItemRevision'],
+  };
+  assertOnlyKeys(row, [...baseKeys, ...keysByType[type]], 'Composer action');
+  const requestId = requireUuidString(row.requestId, 'requestId');
+  const workspaceId = requireUuidString(row.workspaceId, 'workspaceId');
+  const expectedContextRevision = requireUuidString(
+    row.expectedContextRevision,
+    'expectedContextRevision'
+  );
+  const expectedSessionId = requireUuidString(row.expectedSessionId, 'expectedSessionId');
+  const expectedControlRevision = requireUuidString(
+    row.expectedControlRevision,
+    'expectedControlRevision'
+  );
+  const base = {
+    requestId,
+    workspaceId,
+    expectedContextRevision,
+    expectedSessionId,
+    expectedControlRevision,
+  } as const;
+  switch (type) {
+    case 'set_agent_mode':
+      return Object.freeze({
+        ...base,
+        type,
+        mode: requireEnum(row.mode, 'mode', ['interactive', 'plan', 'auto'] as const),
+      });
+    case 'set_permission_override':
+      return Object.freeze({
+        ...base,
+        type,
+        value: requireEnum(row.value, 'value', ['ask', 'allow', 'deny'] as const),
+      });
+    case 'clear_permission_override':
+    case 'compact_context':
+      return Object.freeze({ ...base, type });
+    case 'select_model':
+      return Object.freeze({
+        ...base,
+        type,
+        modelId: requireBoundedString(row.modelId, 'modelId', 256),
+        ...(row.effort === undefined
+          ? {}
+          : {
+              effort: requireEnum(row.effort, 'effort', [
+                'auto',
+                'none',
+                'minimal',
+                'low',
+                'medium',
+                'high',
+                'xhigh',
+                'max',
+              ] as const),
+            }),
+      });
+    case 'review_plan': {
+      const action = requireEnum(row.action, 'action', ['approve', 'continue', 'cancel'] as const);
+      const feedback =
+        row.feedback === undefined
+          ? undefined
+          : requireBoundedString(row.feedback, 'feedback', WEB_MAX_BODY_BYTES);
+      if (action === 'continue' && !feedback) {
+        throw new WebProtocolError('continue plan review requires feedback');
+      }
+      if (action !== 'continue' && feedback) {
+        throw new WebProtocolError('feedback is accepted only when continuing plan review');
+      }
+      return Object.freeze({
+        ...base,
+        type,
+        planDigest: requireBoundedString(row.planDigest, 'planDigest', 128),
+        action,
+        ...(feedback ? { feedback } : {}),
+      });
+    }
+    case 'edit_queue_item':
+      return Object.freeze({
+        ...base,
+        type,
+        itemId: requireBoundedString(row.itemId, 'itemId', 256),
+        expectedItemRevision: requirePositiveInteger(
+          row.expectedItemRevision,
+          'expectedItemRevision'
+        ),
+        text: requireBoundedString(row.text, 'text', WEB_MAX_BODY_BYTES),
+      });
+    case 'move_queue_item':
+      return Object.freeze({
+        ...base,
+        type,
+        itemId: requireBoundedString(row.itemId, 'itemId', 256),
+        expectedItemRevision: requirePositiveInteger(
+          row.expectedItemRevision,
+          'expectedItemRevision'
+        ),
+        targetIndex: requireNonNegativeInteger(row.targetIndex, 'targetIndex'),
+      });
+    case 'remove_queue_item':
+      return Object.freeze({
+        ...base,
+        type,
+        itemId: requireBoundedString(row.itemId, 'itemId', 256),
+        expectedItemRevision: requirePositiveInteger(
+          row.expectedItemRevision,
+          'expectedItemRevision'
+        ),
+      });
+  }
 }
 
 function parseWebSettingsUpdateValue(value: unknown): WebSettingsUpdateRequestV1 {
@@ -640,6 +939,7 @@ export function parseWebCommand(value: unknown): WebCommandV1 {
     'objective',
     'toolConfirmation',
     'agentMode',
+    'contextReferences',
   ]);
   const requestId = requireBoundedString(row.requestId, 'requestId', 128);
   const expectedSessionId = requireBoundedString(row.expectedSessionId, 'expectedSessionId', 256);
@@ -710,6 +1010,9 @@ export function parseWebCommand(value: unknown): WebCommandV1 {
             'auto',
           ] as const),
         }),
+    ...(row.contextReferences === undefined
+      ? {}
+      : { contextReferences: parseContextReferences(row.contextReferences) }),
   };
   validateCommandFields(command);
   return Object.freeze(command);
@@ -771,6 +1074,13 @@ export function projectSessionSummary(session: SessionMeta): WebSessionSummaryV1
     createdAt,
     updatedAt,
     messageCount: session.messageCount ?? 0,
+    contextDigest:
+      session.threadReadModel?.projectionDigest ??
+      digestRuntimeValue({
+        sessionId: session.id,
+        updatedAt,
+        messageCount: session.messageCount ?? 0,
+      }),
     ...(session.taskSummary ? { taskSummary: session.taskSummary } : {}),
     ...(session.activeGoalId ? { activeGoalId: session.activeGoalId } : {}),
     ...(session.activeGoalObjective ? { activeGoalObjective: session.activeGoalObjective } : {}),
@@ -791,6 +1101,13 @@ function goalControlInput(command: WebCommandV1): AgentRuntimeControllerInput {
 }
 
 function validateCommandFields(command: WebCommandV1): void {
+  if (
+    command.contextReferences?.length &&
+    command.type !== 'submit' &&
+    command.type !== 'queue_followup'
+  ) {
+    throw new WebProtocolError('contextReferences are only valid for submit or queue_followup');
+  }
   if ((command.type === 'submit' || command.type === 'queue_followup') && !command.text?.trim()) {
     throw new WebProtocolError(`${command.type} requires non-empty text`);
   }
@@ -817,6 +1134,60 @@ function validateCommandFields(command: WebCommandV1): void {
   }
 }
 
+function parseContextReferences(value: unknown): readonly WebContextReferenceV1[] {
+  if (!Array.isArray(value) || value.length > 20) {
+    throw new WebProtocolError('contextReferences must contain at most 20 entries');
+  }
+  const seen = new Set<string>();
+  return Object.freeze(
+    value.map((entry, index) => {
+      const row = requireRecord(entry, `contextReferences[${index}]`);
+      const kind = requireEnum(row.kind, `contextReferences[${index}].kind`, [
+        'file',
+        'folder',
+        'review',
+        'session',
+        'skill',
+      ] as const);
+      const id = requireBoundedString(row.id, `contextReferences[${index}].id`, 256);
+      if (seen.has(`${kind}:${id}`)) {
+        throw new WebProtocolError(`Duplicate Context reference: ${kind}:${id}`);
+      }
+      seen.add(`${kind}:${id}`);
+      const label = requireBoundedString(row.label, `contextReferences[${index}].label`, 200);
+      if (kind === 'file' || kind === 'folder') {
+        assertOnlyKeys(row, ['kind', 'id', 'label', 'revision'], 'Context reference');
+        return Object.freeze({
+          kind,
+          id,
+          label,
+          revision: requireBoundedString(row.revision, `contextReferences[${index}].revision`, 256),
+        });
+      }
+      if (kind === 'review') {
+        assertOnlyKeys(row, ['kind', 'id', 'label', 'gitRevision'], 'Context reference');
+        return Object.freeze({
+          kind,
+          id,
+          label,
+          gitRevision: requireBoundedString(
+            row.gitRevision,
+            `contextReferences[${index}].gitRevision`,
+            256
+          ),
+        });
+      }
+      assertOnlyKeys(row, ['kind', 'id', 'label', 'digest'], 'Context reference');
+      return Object.freeze({
+        kind,
+        id,
+        label,
+        digest: requireBoundedString(row.digest, `contextReferences[${index}].digest`, 128),
+      });
+    })
+  );
+}
+
 function requireRecord(value: unknown, name: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new WebProtocolError(`${name} must be an object`);
@@ -840,6 +1211,26 @@ function requireBoundedString(value: unknown, name: string, maxLength: number): 
   }
   if (value.length > maxLength) throw new WebProtocolError(`${name} exceeds ${maxLength} bytes`);
   return value;
+}
+
+function requireUuidString(value: unknown, name: string): string {
+  const result = requireBoundedString(value, name, 128);
+  if (!UUID_PATTERN.test(result)) throw new WebProtocolError(`${name} must be a UUID`);
+  return result;
+}
+
+function requireNonNegativeInteger(value: unknown, name: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new WebProtocolError(`${name} must be a non-negative safe integer`);
+  }
+  return value as number;
+}
+
+function requirePositiveInteger(value: unknown, name: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) <= 0) {
+    throw new WebProtocolError(`${name} must be a positive safe integer`);
+  }
+  return value as number;
 }
 
 function requireBoolean(value: unknown, name: string): boolean {

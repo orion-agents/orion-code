@@ -48,8 +48,8 @@ async function main(): Promise<void> {
   }
   const observedSha = sha256(options.tarball);
   if (observedSha !== expectedSha) throw new Error('Tarball SHA-256 differs from its receipt.');
-  if (receipt.package?.name !== '@orion-agents/orion-code' || receipt.package.version !== '0.3.1') {
-    throw new Error('Matrix requires @orion-agents/orion-code@0.3.1.');
+  if (receipt.package?.name !== '@orion-agents/orion-code' || receipt.package.version !== '0.3.2') {
+    throw new Error('Matrix requires @orion-agents/orion-code@0.3.2.');
   }
 
   const matrixRoot = join(

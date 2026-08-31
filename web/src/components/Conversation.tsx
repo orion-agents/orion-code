@@ -1,13 +1,4 @@
-import {
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  type FormEvent,
-  type KeyboardEvent,
-  type ReactNode,
-} from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import type { WorkbenchActions } from '../useWorkbench';
 import type {
@@ -21,6 +12,7 @@ import type {
 import { Icon } from './Icon';
 import { Markdown, safeJson, sanitizeDisplayText } from './Markdown';
 import { sessionTitle } from './WorkspaceRail';
+import { ComposerControlCenter } from './composer/ComposerControlCenter';
 
 const INITIAL_TIMELINE_WINDOW = 320;
 const TIMELINE_PAGE = 300;
@@ -160,14 +152,6 @@ export function Conversation({
           </p>
         </div>
         <div className="header-actions">
-          <StatusChip tone={state.processing ? 'active' : 'neutral'}>
-            {modeLabel(state.mode.baseMode)}
-            {state.mode.pendingBaseMode ? ` → ${modeLabel(state.mode.pendingBaseMode)}` : ''}
-          </StatusChip>
-          <StatusChip>
-            {state.settings?.sections.permissions.toolConfirmation.effectiveValue.toUpperCase() ??
-              'ASK'}
-          </StatusChip>
           <button
             type="button"
             className="icon-button"
@@ -215,6 +199,9 @@ export function Conversation({
       <div
         className="transcript-viewport"
         ref={scrollRef}
+        role="region"
+        aria-label="会话记录"
+        tabIndex={0}
         onScroll={updatePinned}
         aria-busy={state.processing}
       >
@@ -280,7 +267,7 @@ export function Conversation({
             {state.queue.items.length > 0 ? <QueueDock state={state} actions={actions} /> : null}
           </div>
         ) : null}
-        <Composer state={state} actions={actions} insertion={composerInsertion} />
+        <ComposerControlCenter state={state} actions={actions} insertion={composerInsertion} />
       </div>
     </main>
   );
@@ -601,7 +588,7 @@ function ApprovalCard({
         <button
           type="button"
           className="danger-ghost-button"
-          onClick={() => void actions.answerPermission(false)}
+          onClick={() => consumeHandledAction(actions.answerPermission(false))}
           disabled={disabled}
         >
           拒绝
@@ -609,7 +596,7 @@ function ApprovalCard({
         <button
           type="button"
           className="secondary-button"
-          onClick={() => void actions.answerPermission(true, 'once')}
+          onClick={() => consumeHandledAction(actions.answerPermission(true, 'once'))}
           disabled={disabled}
         >
           仅本次
@@ -617,7 +604,7 @@ function ApprovalCard({
         <button
           type="button"
           className="secondary-button"
-          onClick={() => void actions.answerPermission(true, 'project')}
+          onClick={() => consumeHandledAction(actions.answerPermission(true, 'project'))}
           disabled={disabled}
         >
           允许此项目
@@ -625,7 +612,7 @@ function ApprovalCard({
         <button
           type="button"
           className="primary-button"
-          onClick={() => void actions.answerPermission(true, 'global')}
+          onClick={() => consumeHandledAction(actions.answerPermission(true, 'global'))}
           disabled={disabled}
         >
           始终允许
@@ -648,28 +635,23 @@ function QueueDock({
     <details className="queue-dock">
       <summary>
         <span>{state.queue.items.length} 条排队消息</span>
-        <span>当前请求完成后执行</span>
+        <span>执行时采用最新 Composer 控制</span>
       </summary>
       <div className="queue-list">
         {state.queue.items.map((item, index) => (
-          <div className="queue-row" key={item.id}>
-            <span className="queue-index">{index + 1}</span>
-            <p>{item.text}</p>
-            <button
-              type="button"
-              className="icon-button"
-              aria-label={`移除排队消息 ${index + 1}`}
-              onClick={() => void actions.removeQueued(item.id)}
-              disabled={disabled}
-            >
-              <Icon name="trash" size={14} />
-            </button>
-          </div>
+          <QueueRow
+            key={item.id}
+            item={item}
+            index={index}
+            count={state.queue.items.length}
+            disabled={disabled}
+            actions={actions}
+          />
         ))}
         <button
           type="button"
           className="text-button queue-clear"
-          onClick={() => void actions.clearQueue()}
+          onClick={() => consumeHandledAction(actions.clearQueue())}
           disabled={disabled}
         >
           清空队列
@@ -679,148 +661,96 @@ function QueueDock({
   );
 }
 
-function Composer({
-  state,
+function QueueRow({
+  item,
+  index,
+  count,
+  disabled,
   actions,
-  insertion,
 }: {
-  readonly state: WorkbenchState;
+  readonly item: WorkbenchState['queue']['items'][number];
+  readonly index: number;
+  readonly count: number;
+  readonly disabled: boolean;
   readonly actions: WorkbenchActions;
-  readonly insertion: { readonly id: number; readonly text: string } | null;
 }) {
-  const [draft, setDraft] = useState('');
-  const drafts = useRef(new Map<string, string>());
-  const activeSessionRef = useRef(state.activeSessionId);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const disabled =
-    !state.activeSessionId || !state.bootstrap?.configured || state.connection !== 'live';
-  const pending = Boolean(state.pendingAction);
-  const composerReady = !disabled && !pending;
-  activeSessionRef.current = state.activeSessionId;
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(item.text);
+  useEffect(() => setValue(item.text), [item.text]);
 
-  useEffect(() => {
-    const sessionId = state.activeSessionId;
-    setDraft(sessionId ? (drafts.current.get(sessionId) ?? '') : '');
-  }, [state.activeSessionId]);
-
-  useEffect(() => {
-    if (!insertion || !state.activeSessionId) return;
-    setDraft(current => {
-      const next = current.trim() ? `${current.trimEnd()}\n\n${insertion.text}` : insertion.text;
-      drafts.current.set(state.activeSessionId as string, next);
-      return next;
-    });
-    requestAnimationFrame(() => textareaRef.current?.focus());
-  }, [insertion, state.activeSessionId]);
-
-  const deliver = async (mode: 'submit' | 'queue') => {
-    const text = draft.trim();
-    if (!text || !composerReady) return;
-    const sessionId = state.activeSessionId;
-    try {
-      if (mode === 'queue') await actions.queue(text);
-      else await actions.submit(text);
-      if (sessionId) drafts.current.delete(sessionId);
-      if (activeSessionRef.current === sessionId) setDraft('');
-      textareaRef.current?.focus();
-    } catch {
-      textareaRef.current?.focus();
-    }
-  };
-
-  const onSubmit = (event: FormEvent) => {
-    event.preventDefault();
-    void deliver(state.processing ? 'queue' : 'submit');
-  };
-
-  const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
-    event.preventDefault();
-    if (state.processing && (event.metaKey || event.ctrlKey)) void deliver('submit');
-    else void deliver(state.processing ? 'queue' : 'submit');
+  const save = async () => {
+    const next = value.trim();
+    if (!next) return;
+    await actions.editQueued(item.id, item.revision, next);
+    setEditing(false);
   };
 
   return (
-    <form className="composer" onSubmit={onSubmit}>
-      <label htmlFor="orion-composer" className="sr-only">
-        发送给 Orion
-      </label>
-      <textarea
-        ref={textareaRef}
-        id="orion-composer"
-        rows={3}
-        maxLength={1_000_000}
-        value={draft}
-        onChange={event => {
-          const next = event.target.value;
-          setDraft(next);
-          if (state.activeSessionId) drafts.current.set(state.activeSessionId, next);
-        }}
-        onKeyDown={onKeyDown}
-        placeholder={
-          pending
-            ? '正在完成会话切换…'
-            : disabled
-              ? '选择会话并配置模型后开始'
-              : state.processing
-                ? '输入后续消息；Enter 排队，⌘/Ctrl+Enter Steer'
-                : '描述任务，或输入 / 查看命令…'
-        }
-        disabled={!composerReady}
-      />
-      <div className="composer-toolbar">
-        <div className="composer-controls">
-          <fieldset className="mode-selector" disabled={!composerReady}>
-            <legend className="sr-only">Agent 模式</legend>
-            {(['interactive', 'plan', 'auto'] as const).map(mode => (
-              <button
-                key={mode}
-                type="button"
-                className={state.mode.baseMode === mode ? 'active' : ''}
-                aria-pressed={state.mode.baseMode === mode}
-                onClick={() => void actions.setMode(mode)}
-              >
-                <span className={`mode-dot mode-${mode}`} aria-hidden="true" />
-                {modeLabel(mode)}
-              </button>
-            ))}
-          </fieldset>
-          <span className="composer-hint">Shift+Enter 换行</span>
-        </div>
-        <div className="composer-actions">
-          {state.processing ? (
-            <>
-              <button
-                type="button"
-                className="icon-text-button stop-button"
-                onClick={() => void actions.interrupt()}
-                disabled={!composerReady}
-              >
-                <Icon name="stop" size={14} />
-                停止
-              </button>
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={() => void deliver('submit')}
-                disabled={!draft.trim() || !composerReady}
-              >
-                Steer
-              </button>
-            </>
-          ) : null}
+    <div className="queue-row">
+      <span className="queue-index">{index + 1}</span>
+      {editing ? (
+        <textarea
+          rows={2}
+          value={value}
+          aria-label={`编辑排队消息 ${index + 1}`}
+          onChange={event => setValue(event.target.value)}
+        />
+      ) : (
+        <p>{item.text}</p>
+      )}
+      <div className="queue-row-actions">
+        <button
+          type="button"
+          className="icon-button"
+          aria-label={`上移排队消息 ${index + 1}`}
+          onClick={() =>
+            consumeHandledAction(actions.moveQueued(item.id, item.revision, index - 1))
+          }
+          disabled={disabled || index === 0}
+        >
+          <Icon name="arrow-up" size={13} />
+        </button>
+        <button
+          type="button"
+          className="icon-button queue-move-down"
+          aria-label={`下移排队消息 ${index + 1}`}
+          onClick={() =>
+            consumeHandledAction(actions.moveQueued(item.id, item.revision, index + 1))
+          }
+          disabled={disabled || index === count - 1}
+        >
+          <Icon name="arrow-up" size={13} />
+        </button>
+        {editing ? (
           <button
-            type="submit"
-            className="send-button"
-            aria-label={state.processing ? '加入消息队列' : '发送消息'}
-            disabled={!composerReady || !draft.trim()}
+            type="button"
+            className="text-button"
+            onClick={() => consumeHandledAction(save())}
+            disabled={disabled || !value.trim()}
           >
-            <span>{state.processing ? '排队' : '发送'}</span>
-            <Icon name="arrow-up" size={16} />
+            保存
           </button>
-        </div>
+        ) : (
+          <button
+            type="button"
+            className="text-button"
+            onClick={() => setEditing(true)}
+            disabled={disabled}
+          >
+            编辑
+          </button>
+        )}
+        <button
+          type="button"
+          className="icon-button"
+          aria-label={`移除排队消息 ${index + 1}`}
+          onClick={() => consumeHandledAction(actions.removeQueued(item.id, item.revision))}
+          disabled={disabled}
+        >
+          <Icon name="trash" size={14} />
+        </button>
       </div>
-    </form>
+    </div>
   );
 }
 
@@ -851,16 +781,6 @@ function EmptyConversation({
       ) : null}
     </section>
   );
-}
-
-function StatusChip({
-  children,
-  tone = 'neutral',
-}: {
-  readonly children: ReactNode;
-  readonly tone?: 'neutral' | 'active';
-}) {
-  return <span className={`status-chip ${tone}`}>{children}</span>;
 }
 
 function isReasoning(entry: WebTranscriptEntry): boolean {
@@ -896,6 +816,11 @@ export function modeLabel(mode: string): string {
   if (mode === 'plan') return 'PLAN';
   if (mode === 'auto') return 'AUTO';
   return 'BUILD';
+}
+
+/** Workbench actions already surface rejected operations through shared notices. */
+function consumeHandledAction(action: Promise<unknown>): void {
+  void action.catch(() => undefined);
 }
 
 function formatDuration(ms: number): string {

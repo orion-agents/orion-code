@@ -2,7 +2,10 @@ import { randomUUID } from 'crypto';
 import { existsSync, realpathSync, statSync, watch, type FSWatcher } from 'fs';
 import { basename, resolve } from 'path';
 
-import { AgentRuntimeController } from '../runtime/agent-runtime-controller';
+import {
+  AgentRuntimeController,
+  FollowupQueueConflictError,
+} from '../runtime/agent-runtime-controller';
 import type { AgentRuntimeEvent } from '../runtime/agent-runtime-protocol';
 import {
   DurableToolReceiptReaderError,
@@ -12,6 +15,7 @@ import { loadFirstPartyMcpConfigurationV1 } from '../runtime/mcp';
 import { createProductUiRuntime } from '../runtime/product-bootstrap';
 import type { OrionRuntimeV1 } from '../runtime/orion-runtime-v1';
 import { digestRuntimeValue } from '../runtime/protocol/canonical';
+import { PlanReviewControlError } from '../runtime/plan-review';
 import type { RuntimeEventEnvelopeV1 } from '../runtime/protocol/runtime-protocol-v1';
 import { ThreadSessionIndexError } from '../runtime/thread-session-index';
 import {
@@ -23,8 +27,10 @@ import {
 import type { ThreadProjectionV1 } from '../runtime/thread-projection';
 import { FileToolDetailRepository } from '../runtime/tool-detail-repository';
 import { parsePlanReceiptV1, parseTurnCommitV1 } from '../runtime/turn-commit';
+import { SessionComposerControlError } from '../runtime/session-composer-control';
 import type { OrionCodeUiRuntime } from '../runtime/ui-events';
 import { incrementSessionCount } from '../services/global-config';
+import { redactTraceText } from '../services/redaction';
 import { SettingsCoordinatorError } from '../services/settings-coordinator';
 import {
   countSessionsByProject,
@@ -44,12 +50,17 @@ import { GitReadModelServiceV1 } from './git-read-model-service';
 import {
   WEB_API_VERSION,
   parseWebCommand,
+  type WebComposerActionResultV1,
+  type WebComposerActionV1,
+  type WebComposerControlStateV1,
   projectSessionSummary,
   toAgentRuntimeInput,
   type WebBootstrapV1,
   type WebCommandResultV1,
+  type WebCommandV1,
   type WebContextActivateRequestV1,
   type WebContextGuardV1,
+  type WebContextReferenceV1,
   type WebMcpServerSummaryV1,
   type WebPageV1,
   type WebSessionSnapshotV1,
@@ -83,6 +94,8 @@ interface CachedSessionView {
 
 const SESSION_VIEW_CACHE_BYTES = 16 * 1024 * 1024;
 const MAX_MUTATION_RESULTS = 4_096;
+const MAX_CONTEXT_REFERENCE_BYTES = 64 * 1024;
+const MAX_CONTEXT_MANIFEST_BYTES = 256 * 1024;
 
 export interface WebWorkbenchControllerOptions {
   readonly cwd: string;
@@ -110,6 +123,12 @@ export class WebWorkbenchController {
   private gitService!: GitReadModelServiceV1;
   private reviewService!: ReviewServiceV1;
   private contextRevisionValue = randomUUID();
+  private composerRevisionValue = randomUUID();
+  private composerAuthorityDigest: string | undefined;
+  private composerStoreUnsubscribe?: () => void;
+  private composerControlsUnsubscribe?: () => void;
+  private composerChangeTimer?: NodeJS.Timeout;
+  private suppressComposerEdges = 0;
   private suppressContextEdges = 0;
   private latestStatus = 'Ready';
   private transition: Promise<void> | undefined;
@@ -527,10 +546,207 @@ export class WebWorkbenchController {
       pendingApprovals: Object.freeze(pendingPermissions),
       goal,
       plan,
+      composer: this.projectComposerState(session, active),
       recoveryDiagnostics: indexedPage ? [] : (view?.diagnostics ?? []),
     });
     if (context) this.assertContextGuard(context);
     return snapshot;
+  }
+
+  composerState(sessionId: string, context?: WebContextGuardV1): WebComposerControlStateV1 {
+    if (context) this.assertContextGuard(context);
+    this.assertCommandSession(sessionId);
+    const session = requireSession(sessionId);
+    const state = this.projectComposerState(session, true);
+    if (context) this.assertContextGuard(context);
+    return state;
+  }
+
+  private projectComposerState(session: SessionMeta, active: boolean): WebComposerControlStateV1 {
+    const controls = this.runtimeValue.sessionComposerControls;
+    if (!controls) {
+      throw new WebWorkbenchError(
+        503,
+        'Session Composer controls are unavailable.',
+        'composer_controls_unavailable'
+      );
+    }
+    const runtime = controls.describeSession(session);
+    const queue = active
+      ? this.controllerValue.getFollowupQueueSnapshot()
+      : { items: [] as const, limit: 16 };
+    const projection =
+      active && this.activeOrionRuntime?.sessionId === session.id
+        ? this.activeOrionRuntime.runtime.thread.getProjection()
+        : undefined;
+    const review = projection?.planReview;
+    const workspace = this.activeWorkspaceEntry();
+    return Object.freeze({
+      apiVersion: WEB_API_VERSION,
+      workspaceId: workspace.id,
+      sessionId: session.id,
+      contextRevision: this.contextRevisionValue,
+      controlRevision: this.composerRevisionValue,
+      processing:
+        active &&
+        (this.runtimeValue.store.getSnapshot().isProcessing || Boolean(projection?.activeTurnId)),
+      mode: active
+        ? Object.freeze({ ...this.controllerValue.getAgentModeSnapshot() })
+        : Object.freeze({ baseMode: 'interactive' as const, pendingBaseMode: null }),
+      model: runtime.model,
+      permission: runtime.permission,
+      contextUsage: runtime.contextUsage,
+      compactAvailable: active && this.controllerValue.canCompactContext(),
+      pending: runtime.pending,
+      lastError: runtime.lastError,
+      planReview: review
+        ? Object.freeze({
+            planDigest: review.planDigest,
+            revision: review.revision,
+            status: review.status,
+            createdAt: review.createdAt,
+            createdModel: review.createdModel,
+            returnMode: review.returnMode,
+            ...(review.resolvedAt === undefined ? {} : { resolvedAt: review.resolvedAt }),
+          })
+        : null,
+      queue: Object.freeze({
+        items: Object.freeze(queue.items.map(item => Object.freeze({ ...item }))),
+        limit: queue.limit,
+      }),
+    });
+  }
+
+  modelCatalog(sessionId: string, context?: WebContextGuardV1) {
+    if (context) this.assertContextGuard(context);
+    this.assertCommandSession(sessionId);
+    const controls = this.runtimeValue.sessionComposerControls;
+    if (!controls) {
+      throw new WebWorkbenchError(
+        503,
+        'Session model catalog is unavailable.',
+        'composer_controls_unavailable'
+      );
+    }
+    const catalog = controls.catalog();
+    if (context) this.assertContextGuard(context);
+    return catalog;
+  }
+
+  async applyComposerAction(input: WebComposerActionV1): Promise<WebComposerActionResultV1> {
+    this.assertContextGuard(input);
+    this.assertCommandSession(input.expectedSessionId);
+    if (input.expectedControlRevision !== this.composerRevisionValue) {
+      throw new WebWorkbenchError(
+        409,
+        'Composer controls changed before the action was admitted.',
+        'composer_control_conflict'
+      );
+    }
+    const controls = this.runtimeValue.sessionComposerControls;
+    if (!controls) {
+      throw new WebWorkbenchError(
+        503,
+        'Session Composer controls are unavailable.',
+        'composer_controls_unavailable'
+      );
+    }
+    let outcome: WebComposerActionResultV1['outcome'] = 'applied';
+    let detail: string | undefined;
+    let modelReceipt: WebComposerActionResultV1['modelReceipt'];
+    let permissionReceipt: WebComposerActionResultV1['permissionReceipt'];
+    let planReviewReceipt: WebComposerActionResultV1['planReviewReceipt'];
+    this.suppressComposerEdges += 1;
+    try {
+      switch (input.type) {
+        case 'set_agent_mode': {
+          const result = this.controllerValue.setAgentMode(input.mode);
+          outcome =
+            result.type === 'agent_mode_changed' && result.appliesFrom === 'next-logical-request'
+              ? 'deferred'
+              : 'applied';
+          detail = JSON.stringify(result);
+          break;
+        }
+        case 'set_permission_override':
+          permissionReceipt = await controls.setPermissionOverride(input.value);
+          outcome = permissionReceipt.appliesFrom === 'immediate' ? 'applied' : 'deferred';
+          break;
+        case 'clear_permission_override':
+          permissionReceipt = await controls.setPermissionOverride(null);
+          outcome = permissionReceipt.appliesFrom === 'immediate' ? 'applied' : 'deferred';
+          break;
+        case 'select_model':
+          modelReceipt = await controls.selectModel({
+            modelId: input.modelId,
+            ...(input.effort ? { effort: input.effort } : {}),
+          });
+          outcome = modelReceipt.appliesFrom === 'next-logical-request' ? 'deferred' : 'applied';
+          break;
+        case 'compact_context': {
+          const result = await this.controllerValue.compactContext();
+          if (result.status === 'rejected') {
+            throw new WebWorkbenchError(409, 'Context compact was rejected.', 'runtime_busy');
+          }
+          detail = JSON.stringify(result);
+          break;
+        }
+        case 'edit_queue_item':
+          detail = JSON.stringify(
+            this.controllerValue.editFollowupQueueItem(
+              input.itemId,
+              input.expectedItemRevision,
+              input.text
+            )
+          );
+          break;
+        case 'move_queue_item':
+          detail = JSON.stringify(
+            this.controllerValue.moveFollowupQueueItem(
+              input.itemId,
+              input.expectedItemRevision,
+              input.targetIndex
+            )
+          );
+          break;
+        case 'remove_queue_item':
+          detail = JSON.stringify(
+            this.controllerValue.removeFollowupQueueItem(input.itemId, input.expectedItemRevision)
+          );
+          break;
+        case 'review_plan': {
+          planReviewReceipt = await this.controllerValue.reviewPlan({
+            planDigest: input.planDigest,
+            action: input.action,
+            ...(input.feedback ? { feedback: input.feedback } : {}),
+          });
+          if (input.action === 'approve') this.controllerValue.setAgentMode('interactive');
+          else if (input.action === 'continue') this.controllerValue.setAgentMode('plan');
+          detail = JSON.stringify(planReviewReceipt.admission);
+          break;
+        }
+      }
+    } catch (error) {
+      throw mapComposerControlError(error);
+    } finally {
+      this.suppressComposerEdges -= 1;
+    }
+    this.bumpComposerRevision();
+    const state = this.composerState(input.expectedSessionId);
+    this.composerAuthorityDigest = composerAuthorityDigest(state);
+    this.eventHub.emit({ type: 'composer_state_changed', state }, true, {
+      sessionId: input.expectedSessionId,
+    });
+    return Object.freeze({
+      requestId: input.requestId,
+      outcome,
+      controlRevision: this.composerRevisionValue,
+      state,
+      ...(modelReceipt ? { modelReceipt } : {}),
+      ...(permissionReceipt ? { permissionReceipt } : {}),
+      ...(planReviewReceipt ? { planReviewReceipt } : {}),
+      ...(detail ? { detail } : {}),
+    });
   }
 
   async skills(context?: WebContextGuardV1): Promise<readonly WebSkillSummaryV1[]> {
@@ -848,15 +1064,220 @@ export class WebWorkbenchController {
 
   dispatch(raw: unknown): Promise<WebCommandResultV1> {
     const command = parseWebCommand(raw);
-    return this.executeMutation(command.requestId, 'command', command, () => {
+    return this.executeMutation(command.requestId, 'command', command, async () => {
       this.assertCommandSession(command.expectedSessionId);
-      const runtimeResult = this.controllerValue.handle(toAgentRuntimeInput(command));
+      const resolved = await this.resolveCommandContext(command);
+      this.assertCommandSession(command.expectedSessionId);
+      const runtimeInput =
+        resolved && command.type === 'queue_followup'
+          ? ({
+              type: 'queue_followup',
+              text: command.text as string,
+              resolvedText: resolved.text,
+              source: 'programmatic',
+            } as const)
+          : toAgentRuntimeInput({ ...command, ...(resolved ? { text: resolved.text } : {}) });
+      const runtimeResult = this.controllerValue.handle(runtimeInput);
       return Object.freeze({
         requestId: command.requestId,
         result: runtimeResult.type,
         detail: JSON.stringify(runtimeResult),
+        ...(resolved ? { contextReceipt: resolved.receipt } : {}),
       });
     });
+  }
+
+  private async resolveCommandContext(command: WebCommandV1): Promise<
+    | {
+        readonly text: string;
+        readonly receipt: NonNullable<WebCommandResultV1['contextReceipt']>;
+      }
+    | undefined
+  > {
+    const references = command.contextReferences ?? [];
+    if (references.length === 0) return undefined;
+    if (command.type !== 'submit' && command.type !== 'queue_followup') {
+      throw new WebWorkbenchError(
+        400,
+        'Context references are valid only for submitted or queued messages.',
+        'context_reference_invalid'
+      );
+    }
+    const resolved: Array<Record<string, unknown>> = [];
+    let totalBytes = 0;
+    for (const reference of references) {
+      let entry: Record<string, unknown>;
+      try {
+        entry = await this.resolveContextReference(reference);
+      } catch (error) {
+        throw mapContextReferenceError(error);
+      }
+      const bytes = Buffer.byteLength(JSON.stringify(entry), 'utf8');
+      if (bytes > MAX_CONTEXT_REFERENCE_BYTES) {
+        throw new WebWorkbenchError(
+          413,
+          'A Context reference exceeds the per-reference byte budget.',
+          'context_reference_too_large'
+        );
+      }
+      totalBytes += bytes;
+      if (totalBytes > MAX_CONTEXT_MANIFEST_BYTES) {
+        throw new WebWorkbenchError(
+          413,
+          'Context references exceed the request byte budget.',
+          'context_reference_too_large'
+        );
+      }
+      resolved.push(Object.freeze(entry));
+    }
+    const manifestContent = Object.freeze({
+      version: 1 as const,
+      references: Object.freeze(resolved),
+    });
+    const manifestDigest = digestRuntimeValue(manifestContent);
+    const manifest = Object.freeze({ ...manifestContent, manifestDigest });
+    return Object.freeze({
+      text: [
+        command.text!.trim(),
+        '',
+        '[Orion Context Manifest V1]',
+        JSON.stringify(manifest),
+      ].join('\n'),
+      receipt: Object.freeze({
+        manifestDigest,
+        referenceCount: resolved.length,
+        totalBytes,
+      }),
+    });
+  }
+
+  private async resolveContextReference(
+    reference: WebContextReferenceV1
+  ): Promise<Record<string, unknown>> {
+    switch (reference.kind) {
+      case 'file': {
+        const page = this.fileService.readContent({
+          fileId: reference.id,
+          limitBytes: MAX_CONTEXT_REFERENCE_BYTES,
+        });
+        if (page.revision !== reference.revision) {
+          throw new WebWorkbenchError(409, 'Referenced file changed.', 'context_reference_stale');
+        }
+        if (page.binary || page.content === undefined) {
+          throw new WebWorkbenchError(
+            403,
+            'Binary files cannot be added to model Context.',
+            'context_reference_forbidden'
+          );
+        }
+        return {
+          kind: 'file',
+          id: reference.id,
+          label: this.sanitizeContextText(page.name),
+          revision: page.revision,
+          content: this.sanitizeContextText(page.content),
+          truncated: page.nextCursor !== null,
+        };
+      }
+      case 'folder': {
+        const page = this.fileService.list({ parentId: reference.id, pageSize: 100 });
+        if (page.revision !== reference.revision) {
+          throw new WebWorkbenchError(409, 'Referenced folder changed.', 'context_reference_stale');
+        }
+        return {
+          kind: 'folder',
+          id: reference.id,
+          label: this.sanitizeContextText(reference.label),
+          revision: page.revision,
+          entries: page.items
+            .filter(item => !item.sensitive)
+            .map(item => ({
+              name: this.sanitizeContextText(item.name),
+              kind: item.kind,
+              sizeBytes: item.sizeBytes ?? null,
+            })),
+          truncated: page.nextCursor !== null,
+        };
+      }
+      case 'review': {
+        const snapshot = await this.reviewService.snapshot();
+        if (snapshot.repositoryRevision !== reference.gitRevision) {
+          throw new WebWorkbenchError(409, 'Referenced Review changed.', 'context_reference_stale');
+        }
+        return {
+          kind: 'review',
+          id: reference.id,
+          revision: snapshot.repositoryRevision,
+          clean: snapshot.clean,
+          files: snapshot.changedFiles.slice(0, 100).map(file => ({
+            id: file.fileId,
+            path: this.sanitizeContextText(file.path),
+            indexStatus: file.indexStatus,
+            worktreeStatus: file.worktreeStatus,
+          })),
+          truncated: snapshot.truncated || snapshot.changedFiles.length > 100,
+        };
+      }
+      case 'session': {
+        const session = requireSession(reference.id);
+        if (canonicalDirectory(session.projectPath) !== this.workspaceValue) {
+          throw new WebWorkbenchError(
+            403,
+            'Referenced Session belongs to another Workspace.',
+            'context_reference_forbidden'
+          );
+        }
+        const summary = projectSessionSummary(session);
+        if (summary.contextDigest !== reference.digest) {
+          throw new WebWorkbenchError(
+            409,
+            'Referenced Session changed.',
+            'context_reference_stale'
+          );
+        }
+        const page = loadThreadSessionSnapshotPageV1(this.workspaceValue, session.id, undefined, 8);
+        return {
+          kind: 'session',
+          id: session.id,
+          label: this.sanitizeContextText(
+            session.name?.trim() || `Session ${session.id.slice(0, 8)}`
+          ),
+          digest: summary.contextDigest,
+          messages: (page?.transcript.items ?? []).map(message => ({
+            role: message.role,
+            content: this.sanitizeContextText(message.content),
+          })),
+          truncated: Boolean(page?.transcript.nextCursor),
+        };
+      }
+      case 'skill': {
+        const descriptor = ((await this.runtimeValue.inspectSkills?.()) ?? []).find(
+          skill => skill.id === reference.id
+        );
+        if (!descriptor || descriptor.digest !== reference.digest) {
+          throw new WebWorkbenchError(409, 'Referenced Skill changed.', 'context_reference_stale');
+        }
+        if (!descriptor.userInvocable) {
+          throw new WebWorkbenchError(
+            403,
+            'Referenced Skill is not user-invocable.',
+            'context_reference_forbidden'
+          );
+        }
+        return {
+          kind: 'skill',
+          id: descriptor.id,
+          label: this.sanitizeContextText(descriptor.name),
+          digest: descriptor.digest,
+          invocation: `$${descriptor.id}`,
+          description: this.sanitizeContextText(descriptor.description),
+        };
+      }
+    }
+  }
+
+  private sanitizeContextText(value: string): string {
+    return redactTraceText(value).split(this.workspaceValue).join('<workspace>');
   }
 
   async updateSettings(
@@ -987,12 +1408,14 @@ export class WebWorkbenchController {
     await this.controllerValue.stopActiveTurn();
     await this.controllerValue.waitForIdle();
     this.closeWorkspaceWatchers();
+    this.closeComposerObserver();
     await this.terminalManager.shutdown();
     await this.runtimeValue.shutdown();
     this.eventHub.close();
   }
 
   private async installRuntime(workspace: string, publishState = true): Promise<void> {
+    this.closeComposerObserver();
     const runtime = await this.createRuntime(workspace);
     this.closeWorkspaceWatchers();
     this.activeOrionRuntime = undefined;
@@ -1042,6 +1465,14 @@ export class WebWorkbenchController {
         suppressAbortNotice: true,
       },
     });
+    this.composerRevisionValue = randomUUID();
+    this.composerAuthorityDigest = undefined;
+    this.composerStoreUnsubscribe = runtime.store.subscribe(() =>
+      this.scheduleComposerStateChanged()
+    );
+    this.composerControlsUnsubscribe = runtime.sessionComposerControls?.subscribe(() =>
+      this.scheduleComposerStateChanged()
+    );
     this.installWorkspaceWatchers();
     if (publishState) this.emitState(false);
   }
@@ -1049,13 +1480,26 @@ export class WebWorkbenchController {
   private emitState(advanceRevision = true): void {
     if (this.suppressContextEdges > 0) return;
     if (advanceRevision) this.contextRevisionValue = randomUUID();
+    if (advanceRevision) this.composerRevisionValue = randomUUID();
     const workspace = this.activeWorkspaceEntry();
+    const sessionId = this.runtimeValue.getSession()?.id ?? null;
+    if (sessionId) {
+      try {
+        this.composerAuthorityDigest = composerAuthorityDigest(
+          this.projectComposerState(requireSession(sessionId), true)
+        );
+      } catch {
+        this.composerAuthorityDigest = undefined;
+      }
+    } else {
+      this.composerAuthorityDigest = undefined;
+    }
     this.eventHub.emit({
       type: 'workbench_state',
       contextRevision: this.contextRevisionValue,
       workspaceId: workspace.id,
       workspace: this.workspaceValue,
-      activeSessionId: this.runtimeValue.getSession()?.id ?? null,
+      activeSessionId: sessionId,
     });
   }
 
@@ -1083,6 +1527,49 @@ export class WebWorkbenchController {
       }
     }, 120);
     this.resourceInvalidationTimer.unref();
+  }
+
+  private bumpComposerRevision(): void {
+    this.composerRevisionValue = randomUUID();
+  }
+
+  private scheduleComposerStateChanged(): void {
+    if (
+      this.closed ||
+      this.suppressComposerEdges > 0 ||
+      this.suppressContextEdges > 0 ||
+      !this.runtimeValue.getSession()
+    ) {
+      return;
+    }
+    if (this.composerChangeTimer) clearTimeout(this.composerChangeTimer);
+    this.composerChangeTimer = setTimeout(() => {
+      this.composerChangeTimer = undefined;
+      const sessionId = this.runtimeValue.getSession()?.id;
+      if (!sessionId || this.closed || this.suppressComposerEdges > 0) return;
+      try {
+        let state = this.composerState(sessionId);
+        const authorityDigest = composerAuthorityDigest(state);
+        if (authorityDigest !== this.composerAuthorityDigest) {
+          this.bumpComposerRevision();
+          state = this.composerState(sessionId);
+          this.composerAuthorityDigest = authorityDigest;
+        }
+        this.eventHub.emit({ type: 'composer_state_changed', state }, true, { sessionId });
+      } catch {
+        // A concurrent Context transition publishes a fresh baseline instead.
+      }
+    }, 100);
+    this.composerChangeTimer.unref();
+  }
+
+  private closeComposerObserver(): void {
+    this.composerStoreUnsubscribe?.();
+    this.composerStoreUnsubscribe = undefined;
+    this.composerControlsUnsubscribe?.();
+    this.composerControlsUnsubscribe = undefined;
+    if (this.composerChangeTimer) clearTimeout(this.composerChangeTimer);
+    this.composerChangeTimer = undefined;
   }
 
   private installWorkspaceWatchers(): void {
@@ -1344,6 +1831,73 @@ function mapSettingsError(error: unknown): WebWorkbenchError {
     'The product Settings coordinator is unavailable.',
     'settings_document_unavailable'
   );
+}
+
+function mapComposerControlError(error: unknown): WebWorkbenchError {
+  if (error instanceof WebWorkbenchError) return error;
+  if (error instanceof FollowupQueueConflictError) {
+    return new WebWorkbenchError(409, error.message, error.code);
+  }
+  if (error instanceof SessionComposerControlError) {
+    const status =
+      error.code === 'composer_recovery_required'
+        ? 503
+        : ['runtime_busy', 'composer_control_conflict'].includes(error.code)
+          ? 409
+          : 422;
+    return new WebWorkbenchError(status, error.message, error.code);
+  }
+  if (error instanceof PlanReviewControlError) {
+    const status = error.code === 'plan_review_invalid' ? 422 : 409;
+    return new WebWorkbenchError(status, error.message, error.code);
+  }
+  return new WebWorkbenchError(
+    503,
+    'The Session Composer control action failed.',
+    'composer_control_failed'
+  );
+}
+
+function mapContextReferenceError(error: unknown): WebWorkbenchError {
+  if (error instanceof WebWorkbenchError) {
+    if (error.code.startsWith('context_reference_')) return error;
+    if (
+      error.status === 403 ||
+      ['sensitive_file_blocked', 'file_binary', 'file_not_regular'].includes(error.code)
+    ) {
+      return new WebWorkbenchError(
+        403,
+        'The Context reference is not available to the model.',
+        'context_reference_forbidden'
+      );
+    }
+    if (error.status === 404 || error.status === 409) {
+      return new WebWorkbenchError(
+        409,
+        'The Context reference changed or is no longer available.',
+        'context_reference_stale'
+      );
+    }
+  }
+  return new WebWorkbenchError(
+    422,
+    'The Context reference could not be resolved.',
+    'context_reference_invalid'
+  );
+}
+
+function composerAuthorityDigest(state: WebComposerControlStateV1): string {
+  return digestRuntimeValue({
+    workspaceId: state.workspaceId,
+    sessionId: state.sessionId,
+    mode: state.mode,
+    model: state.model,
+    permission: state.permission,
+    pending: state.pending,
+    lastError: state.lastError,
+    planReview: state.planReview,
+    queue: state.queue,
+  });
 }
 
 function pickPlanReceipt(receipt: ReturnType<typeof parsePlanReceiptV1>) {

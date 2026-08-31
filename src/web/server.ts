@@ -10,6 +10,7 @@ import {
   WEB_NONCE_HEADER,
   WEB_USER_GESTURE_HEADER,
   WebProtocolError,
+  parseWebComposerAction,
   parseWebContextActivate,
   parseWebOpenSettingsDocument,
   parseWebSettingsUpdate,
@@ -340,6 +341,52 @@ async function handleRequest(context: RequestContext): Promise<void> {
         contextGuard
       )
     );
+    return;
+  }
+  const composerStateMatch = path.match(/^\/sessions\/([^/]+)\/composer-state$/);
+  if (method === 'GET' && composerStateMatch) {
+    const contextGuard = requireContextGuardQuery(url);
+    sendJson(
+      response,
+      200,
+      context.workbench.composerState(safeDecodePathSegment(composerStateMatch[1]), contextGuard)
+    );
+    return;
+  }
+  const modelCatalogMatch = path.match(/^\/sessions\/([^/]+)\/model-catalog$/);
+  if (method === 'GET' && modelCatalogMatch) {
+    const contextGuard = requireContextGuardQuery(url);
+    const sessionId = safeDecodePathSegment(modelCatalogMatch[1]);
+    const catalog = context.workbench.modelCatalog(sessionId, contextGuard);
+    const page = pageCollectionItems(
+      'composer_models',
+      catalog.models,
+      url.searchParams.get('cursor') ?? undefined,
+      pageSize(url),
+      model => model.id
+    );
+    sendJson(response, 200, {
+      revision: catalog.revision,
+      unavailableProviders: catalog.unavailableProviders,
+      ...page,
+    });
+    return;
+  }
+  const composerActionMatch = path.match(/^\/sessions\/([^/]+)\/composer-actions$/);
+  if (method === 'POST' && composerActionMatch) {
+    assertMutation(request, context.nonce, context.origin);
+    const sessionId = safeDecodePathSegment(composerActionMatch[1]);
+    const body = parseWebComposerAction(await readJson(request));
+    if (body.expectedSessionId !== sessionId) {
+      throw new WebProtocolError('expectedSessionId must match the Composer action route');
+    }
+    const result = await context.workbench.executeMutation(
+      body.requestId,
+      'composer.action',
+      body,
+      () => context.workbench.applyComposerAction(body)
+    );
+    sendJson(response, 200, result);
     return;
   }
   const sessionMatch = path.match(/^\/sessions\/([^/]+)$/);

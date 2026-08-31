@@ -9,6 +9,12 @@ import {
 } from 'react';
 
 import type { WebSessionSummaryV1, WebWorkspaceSummaryV1, WorkbenchState } from '../../types';
+import { PanelResizeHandle } from '../../layout/PanelResizeHandle';
+import {
+  PROJECT_NAVIGATION_DEFAULT_WIDTH,
+  PROJECT_NAVIGATION_MAX_WIDTH,
+  PROJECT_NAVIGATION_MIN_WIDTH,
+} from '../../state/layout-preferences';
 import { Icon } from '../Icon';
 
 const PROJECT_WINDOW_SIZE = 40;
@@ -17,8 +23,13 @@ export interface ProjectNavigatorProps {
   readonly state: WorkbenchState;
   readonly drawerOpen: boolean;
   readonly dockVisible: boolean;
+  readonly collapsed: boolean;
+  readonly resizable: boolean;
   readonly onCloseDrawer: () => void;
+  readonly onExpand: () => void;
+  readonly onCollapse: () => void;
   readonly onOpenWorkspaceDialog: () => void;
+  readonly onOpenSettings: () => void;
   readonly onLoadMoreWorkspaces: () => void;
   readonly onCreateSession: () => void;
   readonly onLoadWorkspaceSessions: (workspaceId: string, append?: boolean) => void;
@@ -27,14 +38,21 @@ export interface ProjectNavigatorProps {
   readonly onRemoveWorkspace: (workspaceId: string) => void;
   readonly onRefreshSummary: (workspaceId: string) => void;
   readonly onRenameSession: (session: WebSessionSummaryV1) => void;
+  readonly onWidthPreview: (width: number) => void;
+  readonly onWidthCommit: (width: number) => void;
 }
 
 export function ProjectNavigator({
   state,
   drawerOpen,
   dockVisible,
+  collapsed,
+  resizable,
   onCloseDrawer,
+  onExpand,
+  onCollapse,
   onOpenWorkspaceDialog,
+  onOpenSettings,
   onLoadMoreWorkspaces,
   onCreateSession,
   onLoadWorkspaceSessions,
@@ -43,6 +61,8 @@ export function ProjectNavigator({
   onRemoveWorkspace,
   onRefreshSummary,
   onRenameSession,
+  onWidthPreview,
+  onWidthCommit,
 }: ProjectNavigatorProps) {
   const [query, setQuery] = useState('');
   const [projectWindowStart, setProjectWindowStart] = useState(0);
@@ -108,6 +128,67 @@ export function ProjectNavigator({
     setExpanded(next);
   };
 
+  if (collapsed && !drawerOpen) {
+    const activeProject = state.workspaces.find(project => project.id === state.workspaceId);
+    return (
+      <aside
+        id="workspace-rail"
+        className="workspace-rail project-navigator project-navigator-collapsed"
+        aria-label="项目与会话"
+        hidden={!dockVisible}
+      >
+        <div className="project-rail-brand" aria-hidden="true">
+          <span />
+          <span />
+          <span />
+        </div>
+        <button
+          type="button"
+          className="icon-button project-rail-action"
+          aria-label="展开项目导航"
+          title="展开项目导航（⌘/Ctrl+B）"
+          onClick={onExpand}
+        >
+          <Icon name="sidebar" size={17} />
+        </button>
+        <button
+          type="button"
+          className="icon-button project-rail-action"
+          aria-label="新建会话"
+          title="新建会话"
+          onClick={onCreateSession}
+          disabled={transitionLocked || !state.workspaceId}
+        >
+          <Icon name="add" size={18} />
+        </button>
+        <button
+          type="button"
+          className="icon-button project-rail-action project-rail-workspace"
+          aria-label={activeProject ? `打开项目 ${activeProject.label}` : '打开项目导航'}
+          title={activeProject?.label ?? '打开项目导航'}
+          onClick={onExpand}
+        >
+          <Icon name="workspace" size={17} />
+        </button>
+        <span className="project-rail-spacer" />
+        <button
+          type="button"
+          className="icon-button project-rail-action"
+          aria-label="打开设置"
+          title="设置"
+          onClick={onOpenSettings}
+        >
+          <Icon name="settings" size={17} />
+        </button>
+        <span
+          className={`connection-dot project-rail-connection ${state.connection}`}
+          aria-label={connectionLabel(state.connection)}
+          title={connectionLabel(state.connection)}
+        />
+      </aside>
+    );
+  }
+
   return (
     <aside
       id="workspace-rail"
@@ -133,6 +214,15 @@ export function ProjectNavigator({
           onClick={onCloseDrawer}
         >
           <Icon name="close" />
+        </button>
+        <button
+          type="button"
+          className="icon-button project-navigation-collapse"
+          aria-label="折叠项目导航"
+          title="折叠项目导航（⌘/Ctrl+B）"
+          onClick={onCollapse}
+        >
+          <Icon name="sidebar" />
         </button>
       </div>
 
@@ -422,8 +512,27 @@ export function ProjectNavigator({
       <footer className="rail-footer">
         <span className={`connection-dot ${state.connection}`} aria-hidden="true" />
         <span>{connectionLabel(state.connection)}</span>
-        <span className="version">v{state.bootstrap?.productVersion ?? '0.3.1'}</span>
+        <button
+          type="button"
+          className="icon-button rail-settings"
+          aria-label="打开设置"
+          onClick={onOpenSettings}
+        >
+          <Icon name="settings" size={14} />
+        </button>
+        <span className="version">v{state.bootstrap?.productVersion ?? '0.3.2'}</span>
       </footer>
+      {resizable ? (
+        <PanelResizeHandle
+          side="left"
+          minWidth={PROJECT_NAVIGATION_MIN_WIDTH}
+          maxWidth={PROJECT_NAVIGATION_MAX_WIDTH}
+          defaultWidth={PROJECT_NAVIGATION_DEFAULT_WIDTH}
+          label="拖动调整项目导航宽度"
+          onPreview={onWidthPreview}
+          onCommit={onWidthCommit}
+        />
+      ) : null}
     </aside>
   );
 }

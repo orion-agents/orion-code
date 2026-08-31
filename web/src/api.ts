@@ -1,6 +1,9 @@
 import type {
   WebCommandResultV1,
   WebCommandV1,
+  WebComposerActionResultV1,
+  WebComposerActionV1,
+  WebComposerControlStateV1,
   WebContextGuardV1,
   WebContextMutationResultV1,
   WebFileContentPageV1,
@@ -9,6 +12,7 @@ import type {
   WebGitLogPageV1,
   WebGitStatusV1,
   WebMcpServerSummaryV1,
+  WebModelCatalogPageV1,
   WebPageV1,
   WebReviewSnapshotV1,
   WebSessionMutationResultV1,
@@ -45,6 +49,12 @@ const NONCE_HEADER = 'x-orion-web-nonce';
 const COLLECTION_PAGE_SIZE = 100;
 const TRANSCRIPT_PAGE_SIZE = 50;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+type ComposerActionRequestV1 = WebComposerActionV1 extends infer Action
+  ? Action extends WebComposerActionV1
+    ? Omit<Action, 'requestId'>
+    : never
+  : never;
 
 export class WebApiError extends Error {
   constructor(
@@ -171,6 +181,37 @@ export class OrionWebApi {
     return this.query<WebSessionSnapshotV1>(
       withPage(withContext(path, context), cursor ?? null, true, TRANSCRIPT_PAGE_SIZE)
     );
+  }
+
+  composerState(sessionId: string, context: WebContextGuardV1): Promise<WebComposerControlStateV1> {
+    return this.query(
+      withContext(`/sessions/${encodeURIComponent(sessionId)}/composer-state`, context)
+    );
+  }
+
+  modelCatalog(
+    sessionId: string,
+    context: WebContextGuardV1,
+    cursor?: string
+  ): Promise<WebModelCatalogPageV1> {
+    return this.query(
+      withPage(
+        withContext(`/sessions/${encodeURIComponent(sessionId)}/model-catalog`, context),
+        cursor ?? null,
+        false,
+        COLLECTION_PAGE_SIZE
+      )
+    );
+  }
+
+  composerAction(
+    sessionId: string,
+    action: ComposerActionRequestV1
+  ): Promise<WebComposerActionResultV1> {
+    return this.mutate(`/sessions/${encodeURIComponent(sessionId)}/composer-actions`, 'POST', {
+      ...action,
+      requestId: requestId(),
+    });
   }
 
   async skills(
@@ -607,6 +648,7 @@ function parseEnvelope(raw: string): WebEventEnvelopeV1 {
       'replay_reset',
       'settings_invalidated',
       'workspace_resource_invalidated',
+      'composer_state_changed',
     ].includes(String(value.type)) ||
     !isRecord(value.payload)
   ) {
@@ -669,6 +711,20 @@ function parseEnvelope(raw: string): WebEventEnvelopeV1 {
       ))
   ) {
     throw new Error('Workspace resource invalidation 事件无效。');
+  }
+  if (
+    value.type === 'composer_state_changed' &&
+    (typeof value.sessionId !== 'string' ||
+      value.durable !== true ||
+      !isRecord(value.payload.state) ||
+      value.payload.state.apiVersion !== 1 ||
+      value.payload.state.sessionId !== value.sessionId ||
+      typeof value.payload.state.controlRevision !== 'string' ||
+      !UUID_PATTERN.test(value.payload.state.controlRevision) ||
+      typeof value.payload.state.contextRevision !== 'string' ||
+      !UUID_PATTERN.test(value.payload.state.contextRevision))
+  ) {
+    throw new Error('Composer state 事件身份无效。');
   }
   if (
     value.type === 'replay_reset' &&

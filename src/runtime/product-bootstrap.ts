@@ -32,6 +32,7 @@ import { PACKAGE_VERSION } from '../product/version';
 import { createProductionFirstPartyToolUniverseV1 } from './first-party-tool-universe';
 import { createFirstPartyMcpAdapterV1, loadFirstPartyMcpConfigurationV1 } from './mcp';
 import { ModelCoordinator } from './model-coordinator';
+import { SessionComposerControlServiceV1 } from './session-composer-control';
 import { OrionSessionRunnerV1 } from './orion-session-runner';
 import type { OrionRuntimeV1 } from './orion-runtime-v1';
 import type { ThreadSessionRuntimeActivationV1 } from './thread-session-view';
@@ -159,6 +160,7 @@ export async function createProductUiRuntime(
   let sessionRunner: OrionSessionRunnerV1 | undefined;
   let settingsRuntimeIdleProbe = (): boolean => true;
   let shuttingDown = false;
+  let projectToolConfirmation = config.toolConfirmation;
 
   const applySessionState = (
     session: SessionMeta | null,
@@ -168,6 +170,7 @@ export async function createProductUiRuntime(
     const profile = profileFor(selector);
     const provider = profile ? config.modelRegistry?.providers.get(profile.provider) : undefined;
     const effort = resolvedEffortOverride ?? resolveRuntimeEffort(session);
+    config.toolConfirmation = session?.toolConfirmationOverride ?? projectToolConfirmation;
 
     if (profile) {
       modelCoordinator?.initModel(profile.id);
@@ -263,6 +266,7 @@ export async function createProductUiRuntime(
     const previousConfigModel = config.model;
     const previousGlobalEffort = config.defaultEffort;
     const previousToolConfirmation = config.toolConfirmation;
+    const previousProjectToolConfirmation = projectToolConfirmation;
     const changesDefaultModel = context.operations.some(
       operation => operation.key === 'defaults.model'
     );
@@ -286,10 +290,12 @@ export async function createProductUiRuntime(
           globalEffortOperation.op === 'set' ? globalEffortOperation.value : undefined;
       }
       if (changesToolConfirmation) {
-        config.toolConfirmation =
+        projectToolConfirmation =
           context.document.sections.permissions.toolConfirmation.effectiveValue;
       }
-      if (changesDefaultModel || changesEffort) applySessionState(currentSession);
+      if (changesDefaultModel || changesEffort || changesToolConfirmation) {
+        applySessionState(currentSession);
+      }
       if (changesToolConfirmation && sessionRunner && currentSession) {
         await sessionRunner.restoreSession();
       }
@@ -309,6 +315,7 @@ export async function createProductUiRuntime(
       defaultModelSelector = previousDefaultModel;
       config.model = previousConfigModel;
       config.defaultEffort = previousGlobalEffort;
+      projectToolConfirmation = previousProjectToolConfirmation;
       config.toolConfirmation = previousToolConfirmation;
       // Coordinator rolls durable bytes back only after this callback rejects.
       // Restore the live effort from the pre-write view instead of rereading
@@ -427,6 +434,24 @@ export async function createProductUiRuntime(
     return observation.descriptors;
   };
 
+  const rebindSessionRuntime = async (): Promise<void> => {
+    if (sessionRunner && currentSession) await sessionRunner.restoreSession();
+  };
+  const sessionComposerControls = new SessionComposerControlServiceV1({
+    cwd,
+    config,
+    store,
+    llm,
+    compactCoordinator,
+    modelCoordinator,
+    getSession,
+    ensureSession,
+    projectToolConfirmation: () => projectToolConfirmation,
+    applySessionState,
+    rebindSessionRuntime,
+    runtimeIdle: () => settingsRuntimeIdleProbe(),
+  });
+
   return {
     cwd,
     version: PACKAGE_VERSION,
@@ -435,13 +460,12 @@ export async function createProductUiRuntime(
     llm,
     compactCoordinator,
     modelCoordinator,
+    sessionComposerControls,
     createAgentRunner,
     getHarnessDiagnostics: async () => sessionRunner?.diagnostics(),
     inspectSkills,
     inspectMcp: () => mcpAdapter.descriptors,
-    rebindSessionRuntime: async () => {
-      if (sessionRunner && currentSession) await sessionRunner.restoreSession();
-    },
+    rebindSessionRuntime,
     settingsCoordinator,
     describeSettings,
     updateSettings,

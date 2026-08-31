@@ -271,6 +271,15 @@ function toEnvelope(
           reason: event.reason,
         },
       };
+    case 'composer_state_changed':
+      if (!base.sessionId) throw new Error('Composer state events require Session identity');
+      return {
+        ...base,
+        sessionId: base.sessionId,
+        durable: true,
+        type: event.type,
+        payload: { state: event.state },
+      };
     case 'replay_reset':
       return {
         ...base,

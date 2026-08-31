@@ -1,5 +1,7 @@
 import type {
   WebBootstrapV1 as ProtocolWebBootstrapV1,
+  WebComposerControlStateV1,
+  WebModelCatalogPageV1,
   WebEventEnvelopeV1 as ProtocolWebEventEnvelopeV1,
   WebMcpServerSummaryV1,
   WebFileContentPageV1,
@@ -50,6 +52,8 @@ export type {
   WebToolDetailSummaryV1,
   WebWorkspaceSummaryV1,
   WebWorkspaceProjectSummaryV1,
+  WebComposerControlStateV1,
+  WebModelCatalogPageV1,
 };
 
 export type RuntimeEvent = Extract<
@@ -307,6 +311,8 @@ export interface WorkbenchState {
   readonly settings: WebSettingsDocumentV1 | null;
   readonly settingsMirror: SettingsMirrorSnapshot;
   readonly sessionSnapshot: WebSessionSnapshotV1 | null;
+  readonly composer: WebComposerControlStateV1 | null;
+  readonly modelCatalog: WebModelCatalogPageV1 | null;
   readonly plan: WebSessionSnapshotV1['plan'] | null;
   readonly skills: readonly WebSkillSummaryV1[];
   readonly mcpServers: readonly WebMcpServerSummaryV1[];
@@ -364,6 +370,8 @@ export const initialWorkbenchState: WorkbenchState = {
     generation: 0,
   },
   sessionSnapshot: null,
+  composer: null,
+  modelCatalog: null,
   plan: null,
   skills: [],
   mcpServers: [],

@@ -50,7 +50,10 @@ export function workbenchUi(page: Page) {
     navigationButton: main.getByRole('button', { name: '打开会话导航', exact: true }),
     inspectorButton: main.getByRole('button', { name: /^(打开|关闭)工作面板$/u }),
     settingsButton: main.getByRole('button', { name: '打开设置', exact: true }),
-    modeSelector: main.getByRole('group', { name: 'Agent 模式' }),
+    modeButton: main.getByRole('button', { name: '工作模式', exact: true }),
+    permissionButton: main.getByRole('button', { name: '会话权限', exact: true }),
+    modelButton: main.getByRole('button', { name: '会话模型', exact: true }),
+    contextButton: main.getByRole('button', { name: /Context (?:用量不可用|.+tokens)/u }),
     transcript: main.getByRole('list', { name: '会话记录' }),
     settingsDialog: page.getByRole('dialog', { name: '设置' }),
     renameDialog: page.getByRole('dialog', { name: '重命名会话' }),
@@ -253,13 +256,16 @@ export async function setAgentMode(
   mode: AgentMode,
   options: UiOperationOptions = {}
 ): Promise<Locator> {
-  const button = workbenchUi(page).modeSelector.getByRole('button', {
-    name: mode,
-    exact: true,
-  });
-  await button.click();
-  await expect(button).toHaveAttribute('aria-pressed', 'true', { timeout: options.timeout });
-  return button;
+  const trigger = workbenchUi(page).modeButton;
+  await expect(trigger).toBeEnabled({ timeout: options.timeout });
+  await trigger.click();
+  const menu = page.getByRole('menu', { name: '工作模式' });
+  const option = menu.getByRole('menuitemradio', { name: new RegExp(`^${mode}\\b`, 'u') });
+  await expect(option).toBeVisible({ timeout: options.timeout });
+  if ((await option.getAttribute('aria-checked')) !== 'true') await option.click();
+  else await page.keyboard.press('Escape');
+  await expect(trigger).toContainText(mode, { timeout: options.timeout });
+  return trigger;
 }
 
 export async function createSession(
@@ -328,9 +334,7 @@ export async function createSession(
     activeRow = await activeSessionRow(page, options);
     active = activeRow.locator('.project-session-main');
   }
-  await expect(ui.modeSelector.getByRole('button', { name: 'BUILD', exact: true })).toBeEnabled({
-    timeout: options.timeout,
-  });
+  await expect(ui.modeButton).toBeEnabled({ timeout: options.timeout });
   return active;
 }
 

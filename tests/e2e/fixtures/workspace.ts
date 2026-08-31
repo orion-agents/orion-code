@@ -111,8 +111,10 @@ export function createWorkspaceFixture(options: WorkspaceFixtureOptions): Worksp
         id: OPENAI_FIXTURE_ALTERNATE_MODEL,
         provider: PROVIDER_ID,
         model: OPENAI_FIXTURE_ALTERNATE_MODEL,
-        contextWindow: 256_000,
-        maxOutputTokens: 16_384,
+        // Deliberately smaller so WEB32 can prove the production semantic
+        // compact preflight before a Session model switch.
+        contextWindow: 8_000,
+        maxOutputTokens: 1_000,
         reasoningCapability: reasoningCapability(),
       },
     ],

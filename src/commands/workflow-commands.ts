@@ -26,9 +26,8 @@ export const WORKFLOW_COMMANDS: SlashCommand[] = [
   },
   {
     name: 'plan',
-    description:
-      'Plan with normal tool access, save a decision-complete plan, then exit automatically',
-    argumentHint: '[task description]',
+    description: 'Plan with normal tool access, then review the durable result before execution',
+    argumentHint: '[task | status | approve | continue <feedback> | cancel]',
     category: 'workflow',
     priority: 4,
     type: 'builtin',

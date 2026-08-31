@@ -2,14 +2,16 @@
 
 Local-first, goal-driven coding agent for the terminal and browser.
 
-> v0.3.1 candidate — one Orion runtime with a local Web Workbench, replayable browser state and
-> the existing TUI/terminal surfaces. Candidate source is not an npm publication or Git tag.
+> v0.3.2 candidate — one Orion runtime with a resizable local Web Workbench, a Session-scoped
+> Composer Control Center and the existing TUI/terminal surfaces. Candidate source is not an npm
+> publication or Git tag.
 
 [中文说明](README.zh-CN.md) ·
-[v0.3.1 professional shell plan](docs/plan/v0.3.1-web-workbench-professional-shell-plan.md) ·
-[v0.3.1 Web API](docs/architecture/v0.3.1-web-api.yaml) ·
-[v0.3.1 E2E plan](docs/test/v0.3.1-web-workbench-e2e-plan.md) ·
-[v0.3.1 migration](docs/migration/v0.3.0-to-v0.3.1.md) ·
+[v0.3.2 Workbench plan](docs/plan/v0.3.2-web-workbench-layout-and-composer-plan.md) ·
+[v0.3.2 Web API](docs/architecture/v0.3.2-web-api.yaml) ·
+[mode/permission contract](docs/architecture/agent-mode-permission-contract.md) ·
+[v0.3.2 E2E plan](docs/test/v0.3.2-web-workbench-e2e-plan.md) ·
+[v0.3.2 migration](docs/migration/v0.3.1-to-v0.3.2.md) ·
 [v0.3.0 Web plan](docs/plan/v0.3.0-web-workbench-plan.md) ·
 [Settings plan](docs/plan/v0.3.0-settings-integration-plan.md) ·
 [Node compatibility](docs/plan/v0.3.0-node-runtime-compatibility-plan.md) ·
@@ -18,7 +20,7 @@ Local-first, goal-driven coding agent for the terminal and browser.
 [Settings migration](docs/migration/v0.2.2-to-v0.3.0-settings.md) ·
 [real-state gallery](docs/assets/screenshots/v0.3.0-web/README.md)
 
-## What v0.3.1 includes
+## What v0.3.2 includes
 
 - **One runtime, two interactive surfaces.** `orion web` uses the same product bootstrap,
   AgentRuntimeController, Session/Thread stores, ToolGateway, approvals, Goals, Plans, Skills and
@@ -28,9 +30,15 @@ Local-first, goal-driven coding agent for the terminal and browser.
   model/effort settings, Skills/MCP and diagnostics. Snapshots plus cursor replay repair refreshes
   and SSE reconnects.
 - **Professional project shell.** The left navigator shows registered projects with lazy Session
-  pages while the center remains the only Agent conversation. A resizable right dock provides
-  Agent, Review, Terminal, Files and Git surfaces; files/Git/review are bounded read models and the
-  terminal is an explicit, ephemeral real PTY isolated from Session history and SSE.
+  pages, resizes from 240–480px and collapses to a 48px rail while the center remains the only Agent
+  conversation. A resizable right dock provides Agent, Review, Terminal, Files and Git surfaces;
+  narrow screens use mutually exclusive drawers without overwriting desktop preferences.
+- **Composer Control Center.** Mode, Session permission, model, Effort and Context are accessible
+  menus beside the textarea. Runtime current/last-good/pending/error state is explicit; active-turn
+  model changes defer safely and smaller-context switches run verified Compact first.
+- **Reviewable plans and bounded context.** PLAN commits a durable review state and never starts
+  implementation before exact-digest approval. Structured file/folder/review/session/Skill refs,
+  revisioned queue editing and Session-scoped drafts keep prompt intent visible and recoverable.
 - **Local security boundary.** The host binds only `127.0.0.1`; writes require an exact Origin,
   process nonce, JSON body and idempotency key. Responses use a restrictive CSP, browser payloads
   are redacted, and large tool results are byte-paged instead of placed on the event stream.
@@ -80,10 +88,10 @@ user extension boundaries.
 Node.js 22.12+, 24, and 26 are supported. Use Node 24 LTS for production or Node 26 Current for
 current development environments. Node 20 is upstream EOL and is no longer a v0.3 runtime.
 
-After the immutable `0.3.1` npm receipt exists:
+After the immutable `0.3.2` npm receipt exists:
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.1
+npm install -g @orion-agents/orion-code@0.3.2
 orion --version
 orion doctor
 ```
@@ -160,15 +168,16 @@ the browser to select a workspace and session, run or steer work, answer approva
 runtime state. Closing or refreshing a tab leaves pending approvals owned by the runtime; stopping
 the host aborts them fail-closed.
 
-The browser exposes Plan receipts exactly as committed (`body`, `returnMode`, `digest`). It does not
-insert an extra review gate: after PLAN commits, the existing runtime restores BUILD/AUTO and starts
-implementation in a separate logical turn.
+The browser exposes Plan receipts exactly as committed and enters a durable `awaiting_review`
+state. Approve starts a separate BUILD logical request, Continue Planning starts a separate PLAN
+request with feedback, and Cancel performs no execution. Each operation binds the exact plan digest
+and survives refresh or Host restart; stale review actions fail with no side effects.
 
 The project navigator does not create multiple runtimes. Cross-project Session selection is one
-atomic, revision-guarded Context transition. The right dock is 320–720px on desktop and is adjusted
-with an IDE-style mouse drag; there is no keyboard fine-resize control. Narrow layouts use drawers
-without overwriting the saved desktop width. Files, Git and Review are read-only; terminal creation
-requires an explicit gesture and its short-lived ticket and output never enter the Workbench SSE.
+atomic, revision-guarded Context transition. The left dock is 240–480px or a 48px rail; the right is
+320–720px. Both use IDE-style mouse drag where applicable and there is no keyboard fine resize.
+Narrow layouts use drawers without overwriting desktop widths. Files, Git and Review are read-only;
+terminal creation requires an explicit gesture and its ticket/output never enter Workbench SSE.
 
 #### Host-managed Settings
 
@@ -189,13 +198,14 @@ legacy appearance import and rollback details.
 
 ### BUILD, PLAN, AUTO
 
-Press `Shift+Tab` to cycle `BUILD → PLAN → AUTO`. The status bar and input border show the current
-mode. Mode controls workflow behavior; Authority, approval, containment, and sandbox policy remain
-independent.
+Use the Composer mode menu to select `BUILD`, `PLAN` or `AUTO`; the adjacent permission menu selects
+Project default, Ask, Allow or Deny. Mode controls workflow behavior while Authority, approval,
+containment and sandbox policy remain independent. Allow and AUTO require explicit risk handling and
+never override hard policy or explicit Deny.
 
 - **BUILD** is normal collaborative implementation.
 - **PLAN** explores with the same available tool universe, commits a decision-complete PlanReceipt,
-  exits automatically, restores BUILD/AUTO, and starts implementation in a separate logical turn.
+  and waits for durable approve / continue-planning / cancel review.
 - **AUTO** removes interactive approval prompts within the configured Authority; hard policy and
   sandbox boundaries still fail closed.
 
@@ -205,7 +215,8 @@ Start a task-scoped plan with:
 /plan refactor the storage boundary and verify crash recovery
 ```
 
-There is no `exit_plan_mode` tool and no `/mode` command.
+There is no `exit_plan_mode` tool. Web users select mode from the Composer; terminal surfaces retain
+their existing mode controls.
 
 ### Durable Goal mode
 
@@ -267,10 +278,10 @@ npm run test:web-e2e -- --grep @settings
 
 Release qualification additionally builds one exact tarball and installs that unchanged hash on
 Node 22/24/26 for package identity, native SQLite, TUI, terminal, print, Web, Goal, subagent, Skill,
-MCP, Compact, and resume journeys. WEB31-P0-01..12 additionally qualify the multi-project shell,
-read-only engineering panels, real PTY and responsive/accessibility contract. See the
-[`v0.3.1 Web Workbench plan`](docs/plan/v0.3.1-web-workbench-professional-shell-plan.md) and
-[`v0.3.1 E2E qualification plan`](docs/test/v0.3.1-web-workbench-e2e-plan.md).
+MCP, Compact, and resume journeys. WEB32-P0-01..12 additionally qualify the resizable project rail,
+Composer controls, Context, durable Plan review, queue/drafts and recovery/accessibility contract.
+See the [`v0.3.2 Workbench plan`](docs/plan/v0.3.2-web-workbench-layout-and-composer-plan.md) and
+[`v0.3.2 E2E qualification plan`](docs/test/v0.3.2-web-workbench-e2e-plan.md).
 
 ## Security
 

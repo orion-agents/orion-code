@@ -10,6 +10,7 @@ const session = (id: string, name: string): WebSessionSummaryV1 => ({
   updatedAt: '2026-08-29T00:00:00.000Z',
   messageCount: 0,
   model: 'test-model',
+  contextDigest: 'sha256:test-context',
 });
 
 describe('Session summary collection', () => {

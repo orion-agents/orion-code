@@ -8,6 +8,8 @@ import {
   WEB_E2E_SETTINGS_SCENARIOS_V1,
   WEB_E2E_WEB31_CRITICAL_SCENARIOS_V1,
   WEB_E2E_WEB31_SCENARIOS_V1,
+  WEB_E2E_WEB32_CRITICAL_SCENARIOS_V1,
+  WEB_E2E_WEB32_SCENARIOS_V1,
 } from '../../src/runtime/release-receipts';
 
 export const WEB_E2E_FULL_SCENARIOS = WEB_E2E_FULL_SCENARIOS_V1;
@@ -15,6 +17,8 @@ export const WEB_E2E_CRITICAL_SCENARIOS = WEB_E2E_CRITICAL_SCENARIOS_V1;
 export const WEB_E2E_SETTINGS_SCENARIOS = WEB_E2E_SETTINGS_SCENARIOS_V1;
 export const WEB_E2E_WEB31_SCENARIOS = WEB_E2E_WEB31_SCENARIOS_V1;
 export const WEB_E2E_WEB31_CRITICAL_SCENARIOS = WEB_E2E_WEB31_CRITICAL_SCENARIOS_V1;
+export const WEB_E2E_WEB32_SCENARIOS = WEB_E2E_WEB32_SCENARIOS_V1;
+export const WEB_E2E_WEB32_CRITICAL_SCENARIOS = WEB_E2E_WEB32_CRITICAL_SCENARIOS_V1;
 export const WEB_E2E_SETTINGS_TAG = '@settings' as const;
 export const WEB_E2E_CRITICAL_GREP = webE2EGrepPattern(WEB_E2E_CRITICAL_SCENARIOS);
 
@@ -106,6 +110,94 @@ export const WEB31_REQUIRED_EVIDENCE_FACTS_V1: Readonly<
   ]),
 });
 
+export const WEB32_REQUIRED_EVIDENCE_FACTS_V1: Readonly<
+  Record<string, readonly WebE2ERequiredFactV1[]>
+> = Object.freeze({
+  'WEB32-P0-01': Object.freeze([
+    { key: 'web32.left_resize_input', equals: 'mouse-pointer' },
+    { key: 'web32.left_resize_min_px', equals: 240 },
+    { key: 'web32.left_resize_default_px', equals: 280 },
+    { key: 'web32.left_resize_max_px', equals: 480 },
+    { key: 'web32.left_resize_reset_px', equals: 280 },
+    { key: 'web32.left_rail_px', equals: 48 },
+    { key: 'web32.left_width_persisted', equals: true },
+  ]),
+  'WEB32-P0-02': Object.freeze([
+    { key: 'web32.center_min_px', equals: 560 },
+    { key: 'web32.right_concession_verified', equals: true },
+    { key: 'web32.desktop_widths_restored', equals: true },
+  ]),
+  'WEB32-P0-03': Object.freeze([
+    { key: 'web32.viewport_matrix', equals: '320,390,760,1024,1180,1440' },
+    { key: 'web32.drawers_mutually_exclusive', equals: true },
+    { key: 'web32.drawer_focus_verified', equals: true },
+    { key: 'web32.desktop_preferences_preserved', equals: true },
+    { key: 'web32.horizontal_overflow', equals: 0 },
+  ]),
+  'WEB32-P0-04': Object.freeze([
+    { key: 'web32.mode_options', equals: 'build,plan,auto' },
+    { key: 'web32.mode_immediate_and_deferred', equals: true },
+    { key: 'web32.auto_risk_confirmation', equals: true },
+    { key: 'web32.mode_permission_independent', equals: true },
+  ]),
+  'WEB32-P0-05': Object.freeze([
+    { key: 'web32.permission_options', equals: 'default,ask,allow,deny' },
+    { key: 'web32.allow_risk_confirmation', equals: true },
+    { key: 'web32.tool_gateway_verified', equals: true },
+    { key: 'web32.explicit_deny_verified', equals: true },
+    { key: 'web32.authorization_provenance_verified', equals: true },
+  ]),
+  'WEB32-P0-06': Object.freeze([
+    { key: 'web32.model_catalog_entries', minimum: 2 },
+    { key: 'web32.model_effort_verified', equals: true },
+    { key: 'web32.real_compact_before_switch', equals: true },
+    { key: 'web32.model_switch_rollback_verified', equals: true },
+    { key: 'web32.model_metadata_verified', equals: true },
+  ]),
+  'WEB32-P0-07': Object.freeze([
+    { key: 'web32.context_sources', equals: 'provider,estimated' },
+    { key: 'web32.context_thresholds_verified', equals: true },
+    { key: 'web32.model_capacity_reset', equals: true },
+    { key: 'web32.manual_compact_verified', equals: true },
+  ]),
+  'WEB32-P0-08': Object.freeze([
+    { key: 'web32.context_reference_types', equals: 'file,folder,review,session,skill' },
+    { key: 'web32.context_stale_blocked', equals: true },
+    { key: 'web32.context_forbidden_blocked', equals: true },
+    { key: 'web32.prompt_manifest_digest_verified', equals: true },
+    { key: 'web32.context_secret_findings', equals: 0 },
+  ]),
+  'WEB32-P0-09': Object.freeze([
+    { key: 'web32.plan_awaiting_review', equals: true },
+    { key: 'web32.plan_preapproval_side_effects', equals: 0 },
+    { key: 'web32.plan_decisions_verified', equals: 'approve,continue,cancel' },
+    { key: 'web32.plan_restart_recovery', equals: true },
+    { key: 'web32.plan_stale_digest_status', equals: 409 },
+  ]),
+  'WEB32-P0-10': Object.freeze([
+    { key: 'web32.queue_actions', equals: 'edit,move,remove,steer' },
+    { key: 'web32.queue_item_cas_verified', equals: true },
+    { key: 'web32.draft_switch_refresh_verified', equals: true },
+    { key: 'web32.cross_session_draft_leaks', equals: 0 },
+  ]),
+  'WEB32-P0-11': Object.freeze([
+    { key: 'web32.control_cas_two_tabs', equals: true },
+    { key: 'web32.host_restart_recovered', equals: true },
+    { key: 'web32.replay_reset_recovered', equals: true },
+    { key: 'web32.composer_snapshot_barrier', equals: true },
+  ]),
+  'WEB32-P0-12': Object.freeze([
+    { key: 'web32.axe_blocking_violations', equals: 0 },
+    { key: 'web32.console_errors', equals: 0 },
+    { key: 'web32.page_errors', equals: 0 },
+    { key: 'web32.http_5xx', equals: 0 },
+    { key: 'web32.secret_findings', equals: 0 },
+    { key: 'web32.dropped_events', equals: 0 },
+    { key: 'web32.zoom_200_verified', equals: true },
+    { key: 'web32.theme_motion_verified', equals: true },
+  ]),
+});
+
 export interface WebE2ERunnerIdentityV1 {
   readonly name: string;
   readonly image: string;
@@ -131,10 +223,10 @@ export function expectedWebE2EScenarios(
 }
 
 export function webE2EScenarioIdFromTitle(title: string): string {
-  const matches = title.match(/\b(?:E2E|SET|WEB31)-P0-\d{2}\b/gu) ?? [];
+  const matches = title.match(/\b(?:E2E|SET|WEB31|WEB32)-P0-\d{2}\b/gu) ?? [];
   if (matches.length !== 1) {
     throw new Error(
-      'Every Web E2E test title must include exactly one E2E-P0-XX, SET-P0-XX, or WEB31-P0-XX ID.'
+      'Every Web E2E test title must include exactly one E2E-P0-XX, SET-P0-XX, WEB31-P0-XX, or WEB32-P0-XX ID.'
     );
   }
   if (matches[0].startsWith('SET-P0-') && !title.includes(WEB_E2E_SETTINGS_TAG)) {

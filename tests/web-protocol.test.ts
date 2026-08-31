@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 
 import {
   parseWebCommand,
+  parseWebComposerAction,
   parseWebContextActivate,
   parseWebOpenSettingsDocument,
   parseWebSettingsUpdate,
@@ -76,6 +77,32 @@ describe('Web protocol v1', () => {
       mode: 'plan',
       source: 'programmatic',
     });
+  });
+
+  test('requires an item-local revision for every queue mutation', () => {
+    const base = {
+      requestId: randomUUID(),
+      workspaceId: randomUUID(),
+      expectedContextRevision: randomUUID(),
+      expectedSessionId: randomUUID(),
+      expectedControlRevision: randomUUID(),
+    };
+    expect(
+      parseWebComposerAction({
+        ...base,
+        type: 'edit_queue_item',
+        itemId: 'followup-1',
+        expectedItemRevision: 2,
+        text: 'updated',
+      })
+    ).toMatchObject({ type: 'edit_queue_item', expectedItemRevision: 2 });
+    expect(() =>
+      parseWebComposerAction({
+        ...base,
+        type: 'remove_queue_item',
+        itemId: 'followup-1',
+      })
+    ).toThrow('expectedItemRevision must be a positive safe integer');
   });
 
   test('uses the production permission scopes and rejects ambiguous bodies', () => {

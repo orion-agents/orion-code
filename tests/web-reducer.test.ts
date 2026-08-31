@@ -167,6 +167,14 @@ describe('Web Workbench reducer', () => {
       type: 'session_snapshot_loaded',
       snapshot: snapshot([{ id: 'session-1:message:1', content: 'live transcript' }], null),
     });
+    const current = {
+      ...restored,
+      composer: {
+        ...restored.composer!,
+        controlRevision: 'control-new',
+        mode: { baseMode: 'plan' as const, pendingBaseMode: null },
+      },
+    };
     const durableSnapshot: WebSessionSnapshotV1 = {
       ...snapshot([{ id: 'session-1:message:1', content: 'must not replace live' }], null),
       session: { ...snapshot([], null).session, name: 'Updated Session' },
@@ -178,7 +186,7 @@ describe('Web Workbench reducer', () => {
       },
     };
 
-    const merged = workbenchReducer(restored, {
+    const merged = workbenchReducer(current, {
       type: 'durable_session_metadata_loaded',
       snapshot: durableSnapshot,
       contextRevision: 'context-1',
@@ -188,6 +196,10 @@ describe('Web Workbench reducer', () => {
     expect(merged.transcript.map(entry => entry.content)).toEqual(['live transcript']);
     expect(merged.lastCursor).toBe(restored.lastCursor);
     expect(merged.plan?.body).toBe('# Durable Plan');
+    expect(merged.composer).toMatchObject({
+      controlRevision: 'control-new',
+      mode: { baseMode: 'plan' },
+    });
     expect(merged.sessionSnapshot?.plan?.digest).toBe('a'.repeat(64));
     expect(merged.sessions.find(session => session.id === 'session-1')?.name).toBe(
       'Updated Session'
@@ -392,6 +404,7 @@ function snapshot(
       createdAt: new Date(1).toISOString(),
       updatedAt: new Date(1).toISOString(),
       messageCount: 4,
+      contextDigest: 'session-context-digest',
     },
     threadId: 'thread-1',
     threadCursor: 8,
@@ -420,6 +433,41 @@ function snapshot(
     pendingApprovals: [],
     goal: null,
     plan: null,
+    composer: {
+      apiVersion: 1,
+      workspaceId: 'workspace-1',
+      sessionId: 'session-1',
+      contextRevision: 'context-1',
+      controlRevision: 'control-1',
+      processing: false,
+      compactAvailable: true,
+      mode: { baseMode: 'interactive', pendingBaseMode: null },
+      model: {
+        modelId: 'test-model',
+        providerId: 'test-provider',
+        providerLabel: 'Test provider',
+        contextWindow: 128_000,
+        maxOutputTokens: 8_192,
+        effort: {
+          requested: 'auto',
+          effective: null,
+          source: 'model-default',
+          supported: true,
+          supportedLevels: [],
+        },
+      },
+      permission: {
+        effective: 'ask',
+        override: null,
+        projectDefault: 'ask',
+        source: 'project',
+      },
+      contextUsage: null,
+      planReview: null,
+      pending: { model: null, permission: null },
+      lastError: null,
+      queue: { items: [], limit: 16 },
+    },
     recoveryDiagnostics: [],
   };
 }
@@ -433,6 +481,7 @@ function sessionSummary(id: string, name: string): WebSessionSnapshotV1['session
     createdAt: new Date(1).toISOString(),
     updatedAt: new Date(1).toISOString(),
     messageCount: 1,
+    contextDigest: `context-${id}`,
   };
 }
 

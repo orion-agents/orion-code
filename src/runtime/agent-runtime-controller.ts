@@ -24,6 +24,7 @@ import type { AgentRuntimeRunnerV1, AgentRuntimeRunInputOptionsV1 } from './agen
 import type {
   OrionCodeUiRuntime,
   FollowupQueueItem,
+  FollowupQueueSnapshot,
   ToolPermissionRequest,
   TranscriptAppendEntry,
   UiEventSink,
@@ -71,6 +72,23 @@ export interface AgentRuntimePendingPermissionSnapshot {
   readonly name: string;
   readonly reason?: string;
   readonly args: Readonly<Record<string, unknown>>;
+}
+
+interface QueuedFollowupItem extends FollowupQueueItem {
+  /** Prompt text after bounded Host Context resolution; never exposed to renderers. */
+  resolvedText: string;
+  /** Stable suffix reapplied when a user edits only the visible queue text. */
+  contextSuffix: string;
+}
+
+/** Item-local queue CAS failure used by Web and renderer adapters. */
+export class FollowupQueueConflictError extends Error {
+  readonly code = 'queue_item_conflict';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'FollowupQueueConflictError';
+  }
 }
 
 /** Exact agent-mode input used by renderers with a three-state selector. */
@@ -164,7 +182,7 @@ export class AgentRuntimeController {
   private stopping = false;
   private nextPermissionRequestId = 1;
   private readonly queuedCommands: string[] = [];
-  private readonly followupQueue: FollowupQueueItem[] = [];
+  private readonly followupQueue: QueuedFollowupItem[] = [];
   private readonly followupQueueLimit = 16;
   private nextFollowupId = 1;
   constructor(private readonly options: AgentRuntimeControllerOptions) {
@@ -218,7 +236,70 @@ export class AgentRuntimeController {
   }
 
   getFollowupQueue(): readonly FollowupQueueItem[] {
-    return this.followupQueue;
+    return Object.freeze(this.followupQueue.map(item => projectFollowupQueueItem(item)));
+  }
+
+  getAgentModeSnapshot(): AgentModeSnapshot {
+    return this.agentModeSnapshot();
+  }
+
+  getFollowupQueueSnapshot(): FollowupQueueSnapshot {
+    return Object.freeze({
+      items: Object.freeze(this.followupQueue.map(item => projectFollowupQueueItem(item))),
+      limit: this.followupQueueLimit,
+    });
+  }
+
+  editFollowupQueueItem(
+    itemId: string,
+    expectedRevision: number,
+    text: string
+  ): AgentRuntimeInputResult {
+    const next = text.trim();
+    if (!next) return { type: 'empty' };
+    const index = this.followupQueue.findIndex(item => item.id === itemId);
+    if (index < 0 || this.followupQueue[index].revision !== expectedRevision) {
+      throw new FollowupQueueConflictError('The queued message changed before it was edited.');
+    }
+    const current = this.followupQueue[index];
+    this.followupQueue[index] = {
+      ...current,
+      text: next,
+      resolvedText: `${next}${current.contextSuffix}`,
+      revision: current.revision + 1,
+    };
+    this.emitFollowupQueue();
+    return { type: 'followup_queue_changed' };
+  }
+
+  moveFollowupQueueItem(
+    itemId: string,
+    expectedRevision: number,
+    targetIndex: number
+  ): AgentRuntimeInputResult {
+    const index = this.followupQueue.findIndex(item => item.id === itemId);
+    if (
+      index < 0 ||
+      this.followupQueue[index].revision !== expectedRevision ||
+      !Number.isSafeInteger(targetIndex)
+    ) {
+      throw new FollowupQueueConflictError('The queued message changed before it was moved.');
+    }
+    const bounded = Math.max(0, Math.min(this.followupQueue.length - 1, targetIndex));
+    const [item] = this.followupQueue.splice(index, 1);
+    this.followupQueue.splice(bounded, 0, { ...item, revision: item.revision + 1 });
+    this.emitFollowupQueue();
+    return { type: 'followup_queue_changed' };
+  }
+
+  removeFollowupQueueItem(itemId: string, expectedRevision: number): AgentRuntimeInputResult {
+    const index = this.followupQueue.findIndex(item => item.id === itemId);
+    if (index < 0 || this.followupQueue[index].revision !== expectedRevision) {
+      throw new FollowupQueueConflictError('The queued message changed before it was removed.');
+    }
+    this.followupQueue.splice(index, 1);
+    this.emitFollowupQueue();
+    return { type: 'followup_queue_changed' };
   }
 
   /**
@@ -292,7 +373,7 @@ export class AgentRuntimeController {
       case 'submit':
         return this.submit(input.text);
       case 'queue_followup':
-        return this.queueFollowup(input.text);
+        return this.queueFollowup(input.text, input.resolvedText);
       case 'manage_followup_queue':
         return this.manageFollowupQueue(input.action, input.itemId);
       case 'select_session':
@@ -338,7 +419,7 @@ export class AgentRuntimeController {
     };
   }
 
-  private queueFollowup(input: string): AgentRuntimeInputResult {
+  private queueFollowup(input: string, resolvedInput?: string): AgentRuntimeInputResult {
     const text = input.trim();
     if (!text) return { type: 'empty' };
     if (!this.turnController.hasActiveTurn()) {
@@ -349,10 +430,15 @@ export class AgentRuntimeController {
       this.emitStatus(`Follow-up queue is full (${this.followupQueueLimit}).`);
       return { type: 'followup_queue_full' };
     }
-    const item: FollowupQueueItem = {
+    const resolvedText = resolvedInput?.trim() || text;
+    const contextSuffix = resolvedText.startsWith(text) ? resolvedText.slice(text.length) : '';
+    const item: QueuedFollowupItem = {
       id: `followup-${this.nextFollowupId++}`,
       text,
+      resolvedText,
+      contextSuffix,
       queuedAt: Date.now(),
+      revision: 1,
     };
     this.followupQueue.push(item);
     this.emitFollowupQueue();
@@ -581,6 +667,7 @@ export class AgentRuntimeController {
       llm: this.options.runtime.llm,
       compactCoordinator: this.options.runtime.compactCoordinator,
       modelCoordinator: this.options.runtime.modelCoordinator,
+      sessionComposerControls: this.options.runtime.sessionComposerControls,
       sessionId: this.options.runtime.getSession()?.id,
       ensureSession: this.options.runtime.ensureSession,
       setSession: session => this.options.runtime.setSession(session),
@@ -609,6 +696,10 @@ export class AgentRuntimeController {
       describeSettings: this.options.runtime.describeSettings,
       updateSettings: this.options.runtime.updateSettings,
       compact: this.runner.compact ? input => this.runner.compact!(input) : undefined,
+      reviewPlan: this.runner.reviewPlan ? input => this.runner.reviewPlan!(input) : undefined,
+      getPlanReviewState: this.runner.planReviewState
+        ? () => this.runner.planReviewState!()
+        : undefined,
     };
   }
 
@@ -653,6 +744,32 @@ export class AgentRuntimeController {
 
   async waitForIdle(): Promise<void> {
     await Promise.all([this.activeRun ?? Promise.resolve(), ...this.goalControlRuns]);
+  }
+
+  async compactContext(): Promise<import('./agent-runtime-runner').AgentRuntimeCompactResultV1> {
+    if (this.turnController.hasActiveTurn() || !this.runner.compact) {
+      return { status: 'rejected', reason: 'runtime_busy' };
+    }
+    return this.runner.compact({});
+  }
+
+  canCompactContext(): boolean {
+    return Boolean(this.runner.compact);
+  }
+
+  async planReviewState(): Promise<
+    import('./thread-projection').PlanReviewProjectionV1 | undefined
+  > {
+    return this.runner.planReviewState?.();
+  }
+
+  async reviewPlan(
+    input: Parameters<
+      NonNullable<import('./agent-runtime-runner').AgentRuntimeRunnerV1['reviewPlan']>
+    >[0]
+  ): Promise<import('./plan-review').PlanReviewResolutionReceiptV1> {
+    if (!this.runner.reviewPlan) throw new Error('Plan review is unavailable for this Runtime.');
+    return this.runner.reviewPlan(input);
   }
 
   private async runTurn(firstRequest: AgentTurnRequest): Promise<void> {
@@ -710,6 +827,18 @@ export class AgentRuntimeController {
           ? undefined
           : (this.agentModeLifecycle.completedPlanSince(planCompletionBeforeRequest) ?? undefined);
         this.applyPendingAgentMode(Boolean(completedPlan));
+        try {
+          await this.options.runtime.sessionComposerControls?.applyPendingAtLogicalBoundary();
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          this.emitAppend({
+            role: 'error',
+            title: 'composer controls',
+            content: `Deferred Composer control failed: ${message}`,
+            errorLayer: 'runtime',
+          });
+          this.emitStatus(`Composer control rollback: ${message}`);
+        }
 
         if (revision?.trim()) {
           this.emitStatus(this.options.restartingStatus ?? '根据补充调整方向中…');
@@ -736,7 +865,7 @@ export class AgentRuntimeController {
           const queuedCommand = this.queuedCommands.shift();
           const queuedFollowup = queuedCommand ? undefined : this.followupQueue.shift();
           if (queuedFollowup) this.emitFollowupQueue();
-          const queuedInput = queuedCommand ?? queuedFollowup?.text;
+          const queuedInput = queuedCommand ?? queuedFollowup?.resolvedText;
           nextRequest = queuedInput
             ? {
                 inputKind: 'user',
@@ -812,7 +941,10 @@ export class AgentRuntimeController {
   private emitFollowupQueue(): void {
     this.eventSink.emit({
       type: 'followup_queue_changed',
-      snapshot: { items: [...this.followupQueue], limit: this.followupQueueLimit },
+      snapshot: {
+        items: this.followupQueue.map(item => projectFollowupQueueItem(item)),
+        limit: this.followupQueueLimit,
+      },
     });
   }
 
@@ -1196,6 +1328,15 @@ async function captureCommandOutput(
     console.error = originalError;
     console.warn = originalWarn;
   }
+}
+
+function projectFollowupQueueItem(item: QueuedFollowupItem): FollowupQueueItem {
+  return Object.freeze({
+    id: item.id,
+    text: item.text,
+    queuedAt: item.queuedAt,
+    revision: item.revision,
+  });
 }
 
 function createUnavailableRunner(): AgentRuntimeRunnerV1 {

@@ -19,6 +19,7 @@ export const OPENAI_FIXTURE_PROMPTS = Object.freeze({
   autoEscape: 'fixture:auto-escape',
   mcpEcho: 'fixture:mcp-echo use the web_e2e MCP server fixture_echo tool',
   settingsProbe: 'fixture:settings-probe',
+  estimatedUsage: 'fixture:estimated-usage',
 });
 
 export const OPENAI_FIXTURE_MARKERS = Object.freeze({
@@ -35,6 +36,7 @@ export const OPENAI_FIXTURE_MARKERS = Object.freeze({
   autoEscapeBlocked: 'WEB_E2E_AUTO_ESCAPE_BLOCKED',
   mcpEchoDone: 'WEB_E2E_MCP_ECHO_DONE',
   settingsProbeDone: 'WEB_E2E_SETTINGS_PROBE_DONE',
+  estimatedUsageDone: 'WEB_E2E_ESTIMATED_USAGE_DONE',
   unknownScenario: 'WEB_E2E_UNKNOWN_SCENARIO',
 });
 
@@ -59,6 +61,7 @@ export type OpenAiFixtureScenario =
   | 'auto-escape'
   | 'mcp-echo'
   | 'settings-probe'
+  | 'estimated-usage'
   | 'unknown';
 
 export interface OpenAiFixtureRequest {
@@ -461,6 +464,9 @@ function respondToScenario(
     case 'settings-probe':
       finishText(state, response, request, OPENAI_FIXTURE_MARKERS.settingsProbeDone);
       return;
+    case 'estimated-usage':
+      finishTextWithoutUsage(state, response, request, OPENAI_FIXTURE_MARKERS.estimatedUsageDone);
+      return;
     case 'unknown':
       finishText(state, response, request, OPENAI_FIXTURE_MARKERS.unknownScenario);
   }
@@ -482,7 +488,7 @@ function finishToolCall(
       },
     ],
   });
-  writeChunk(state, response, request, {}, 'tool_calls', usage());
+  writeChunk(state, response, request, {}, 'tool_calls', usage(request));
   finishSse(response);
 }
 
@@ -496,7 +502,21 @@ function finishText(
   for (const chunk of [text.slice(0, boundary), text.slice(boundary)].filter(Boolean)) {
     writeChunk(state, response, request, { content: chunk });
   }
-  writeChunk(state, response, request, {}, 'stop', usage());
+  writeChunk(state, response, request, {}, 'stop', usage(request));
+  finishSse(response);
+}
+
+function finishTextWithoutUsage(
+  state: ProviderState,
+  response: ServerResponse,
+  request: OpenAiFixtureRequest,
+  text: string
+): void {
+  const boundary = Math.max(1, Math.floor(text.length / 2));
+  for (const chunk of [text.slice(0, boundary), text.slice(boundary)].filter(Boolean)) {
+    writeChunk(state, response, request, { content: chunk });
+  }
+  writeChunk(state, response, request, {}, 'stop');
   finishSse(response);
 }
 
@@ -527,7 +547,7 @@ function releaseHeldResponses(state: ProviderState, scenario?: OpenAiFixtureScen
           lastUserText: '',
           messages: [],
         };
-        writeChunk(state, response, syntheticRequest, {}, 'stop', usage());
+        writeChunk(state, response, syntheticRequest, {}, 'stop', usage(syntheticRequest));
         finishSse(response);
       }
     }
@@ -559,8 +579,19 @@ function finishSse(response: ServerResponse): void {
   response.end('data: [DONE]\n\n');
 }
 
-function usage(): Readonly<Record<string, number>> {
-  return Object.freeze({ prompt_tokens: 32, completion_tokens: 8, total_tokens: 40 });
+function usage(request: OpenAiFixtureRequest): Readonly<Record<string, number>> {
+  const promptTokens = Math.max(
+    32,
+    Math.ceil(
+      request.messages.reduce((total, message) => total + messageText(message).length, 0) / 4
+    )
+  );
+  const completionTokens = 8;
+  return Object.freeze({
+    prompt_tokens: promptTokens,
+    completion_tokens: completionTokens,
+    total_tokens: promptTokens + completionTokens,
+  });
 }
 
 function detectScenario(lastUserText: string, systemText = ''): OpenAiFixtureScenario {
@@ -577,7 +608,10 @@ function detectScenario(lastUserText: string, systemText = ''): OpenAiFixtureSce
   if (lastUserText.includes(OPENAI_FIXTURE_PROMPTS.plan) || lastUserText.includes('WEB_E2E_PLAN')) {
     return 'plan';
   }
-  if (systemText.includes('[Durable PlanReceipt V1]') && systemText.includes('WEB_E2E_PLAN')) {
+  if (
+    (lastUserText.includes('[Orion Plan Review V1]') && lastUserText.includes('action=approve')) ||
+    (systemText.includes('[Durable PlanReceipt V1]') && systemText.includes('WEB_E2E_PLAN'))
+  ) {
     return 'plan';
   }
   if (lastUserText.includes(OPENAI_FIXTURE_PROMPTS.goal)) return 'goal';
@@ -586,6 +620,7 @@ function detectScenario(lastUserText: string, systemText = ''): OpenAiFixtureSce
   if (lastUserText.includes(OPENAI_FIXTURE_PROMPTS.autoEscape)) return 'auto-escape';
   if (lastUserText.includes('fixture:mcp-echo')) return 'mcp-echo';
   if (lastUserText.includes('fixture:settings-probe')) return 'settings-probe';
+  if (lastUserText.includes('fixture:estimated-usage')) return 'estimated-usage';
   return 'unknown';
 }
 

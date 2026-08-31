@@ -11,6 +11,7 @@ import type { OrionCodeCLIConfig, UIRenderer } from '../services/config';
 import type { SessionMeta } from '../services/session-storage';
 import type { CompactCoordinator } from '../services/compact';
 import type { ModelCoordinator } from '../runtime/model-coordinator';
+import type { SessionComposerControlServiceV1 } from '../runtime/session-composer-control';
 import type { SessionGoalV1 } from '../runtime/goals/types';
 import type { OrionRuntimeDiagnosticsV1 } from '../runtime/orion-runtime-v1';
 import type { ThreadSessionRuntimeActivationV1 } from '../runtime/thread-session-view';
@@ -44,6 +45,8 @@ export interface CommandContext {
   compactCoordinator?: CompactCoordinator;
   /** Transactional model/profile switch owner. */
   modelCoordinator?: ModelCoordinator;
+  /** Shared Session-scoped model/effort/permission authority used by Web and slash commands. */
+  sessionComposerControls?: SessionComposerControlServiceV1;
   /** 当前会话 ID（用于记录消息） */
   sessionId?: string;
   /** Lazily create or return the active session. */
@@ -90,6 +93,13 @@ export interface CommandContext {
   compact?: (
     input: import('../runtime/agent-runtime-runner').AgentRuntimeCompactInputV1
   ) => Promise<import('../runtime/agent-runtime-runner').AgentRuntimeCompactResultV1>;
+  /** Resolve the latest durable Plan review through the active Session runtime. */
+  reviewPlan?: NonNullable<
+    import('../runtime/agent-runtime-runner').AgentRuntimeRunnerV1['reviewPlan']
+  >;
+  getPlanReviewState?: NonNullable<
+    import('../runtime/agent-runtime-runner').AgentRuntimeRunnerV1['planReviewState']
+  >;
 }
 
 /** 命令执行结果 */

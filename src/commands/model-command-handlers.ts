@@ -469,6 +469,27 @@ async function handleModel(ctx: CommandContext, args: string): Promise<CommandRe
     return { success: false, error: 'LLM not initialized. Configure a provider first.' };
   }
 
+  if (ctx.sessionComposerControls) {
+    try {
+      const receipt = await ctx.sessionComposerControls.selectModel({ modelId: args.trim() });
+      const selected = ctx.sessionComposerControls.describe().model;
+      write(SUCCESS(`✔ Model changed to ${BRAND(selected.modelId)}`));
+      write(
+        DIM(
+          `  Context window ${formatTokenCount(selected.contextWindow)} tokens (${selected.providerLabel ?? 'configured provider'})`
+        )
+      );
+      if (receipt.compacted) write(DIM('  Context compacted before switching models.'));
+      write();
+      return result(true);
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
   // 解析别名
   const registryProfile = resolveModelFromRegistry(ctx.config, args);
   const resolvedModel = registryProfile ? registryProfile.model : resolveModelAlias(args);
@@ -632,14 +653,34 @@ async function handlePermissions(ctx: CommandContext, args: string): Promise<Com
     return { success: true, output: 'Tool edit policy changed to allow-edits.' };
   }
 
-  if (!['allow', 'ask', 'deny'].includes(value)) {
+  if (!['allow', 'ask', 'deny', 'inherit', 'default'].includes(value)) {
     return {
       success: false,
-      error: `Unknown tool policy: ${value}. Use one of: show, ask, allow, deny, allow-edits, audit.`,
+      error: `Unknown tool policy: ${value}. Use one of: show, ask, allow, deny, inherit, allow-edits, audit.`,
     };
   }
 
-  const toolConfirmation = value as 'allow' | 'ask' | 'deny';
+  const toolConfirmation = ['inherit', 'default'].includes(value)
+    ? null
+    : (value as 'allow' | 'ask' | 'deny');
+  if (ctx.sessionComposerControls) {
+    try {
+      const receipt = await ctx.sessionComposerControls.setPermissionOverride(toolConfirmation);
+      if (snapshot.permissionMode === 'acceptEdits') ctx.store.setPermissionMode('default');
+      return {
+        success: true,
+        output: `Session tool confirmation changed to ${receipt.current.effective} (${receipt.current.source}).`,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: `Tool confirmation was not changed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+  if (toolConfirmation === null) {
+    return { success: false, error: 'Session permission inheritance is unavailable.' };
+  }
   try {
     await updateDurableSettings(ctx, 'permissions', [
       { op: 'set', key: 'permissions.toolConfirmation', value: toolConfirmation },
@@ -739,16 +780,20 @@ async function handleEffort(ctx: CommandContext, args: string): Promise<CommandR
 
   try {
     if (parsed.scope === 'session') {
-      const activeSession = session ?? ctx.ensureSession?.();
-      if (!activeSession) {
-        return { success: false, error: 'Cannot persist effort without an active session.' };
+      if (ctx.sessionComposerControls) {
+        await ctx.sessionComposerControls.setEffort(parsed.preference);
+      } else {
+        const activeSession = session ?? ctx.ensureSession?.();
+        if (!activeSession) {
+          return { success: false, error: 'Cannot persist effort without an active session.' };
+        }
+        const persisted = updateSessionEffort(activeSession.id, parsed.preference);
+        if (!persisted) {
+          return { success: false, error: `Session ${activeSession.id} is no longer available.` };
+        }
+        if (persisted.effortPreference === undefined) delete activeSession.effortPreference;
+        else activeSession.effortPreference = persisted.effortPreference;
       }
-      const persisted = updateSessionEffort(activeSession.id, parsed.preference);
-      if (!persisted) {
-        return { success: false, error: `Session ${activeSession.id} is no longer available.` };
-      }
-      if (persisted.effortPreference === undefined) delete activeSession.effortPreference;
-      else activeSession.effortPreference = persisted.effortPreference;
     } else {
       const key =
         parsed.scope === 'project'
@@ -771,7 +816,7 @@ async function handleEffort(ctx: CommandContext, args: string): Promise<CommandR
   }
 
   let effective = ctx.store.getSnapshot().resolvedEffort ?? current;
-  if (parsed.scope === 'session') {
+  if (parsed.scope === 'session' && !ctx.sessionComposerControls) {
     effective = resolveProfileEffort(profile, {
       session: parsed.preference,
       project: projectConfig.defaultEffort,

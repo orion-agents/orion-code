@@ -3,6 +3,7 @@ import type { LoopContinuationAction, LoopStats } from '../framework/query';
 import type { LLMService } from '../services/llm';
 import type { CompactCoordinator } from '../services/compact';
 import type { ModelCoordinator } from './model-coordinator';
+import type { SessionComposerControlServiceV1 } from './session-composer-control';
 import type { OrionCodeCLIConfig } from '../services/config';
 import type { SessionMeta, SessionTraceEvent } from '../services/session-storage';
 import type { RuntimeSubtaskEvent } from './subagents/types';
@@ -327,10 +328,12 @@ export interface FollowupQueueItem {
   id: string;
   text: string;
   queuedAt: number;
+  /** Monotonic item-local CAS token for edit, move, and remove mutations. */
+  revision: number;
 }
 
 export interface FollowupQueueSnapshot {
-  items: FollowupQueueItem[];
+  items: readonly FollowupQueueItem[];
   limit: number;
 }
 
@@ -377,6 +380,8 @@ export interface OrionCodeUiRuntime extends RuntimeSessionAccessors {
   llm: LLMService | null;
   compactCoordinator?: CompactCoordinator;
   modelCoordinator?: ModelCoordinator;
+  /** Sole Session-scoped mode/model/effort/permission control authority. */
+  sessionComposerControls?: SessionComposerControlServiceV1;
   /** Creates the sole product runner after a renderer-neutral event sink exists. */
   createAgentRunner?: (
     events: UiEventSink,

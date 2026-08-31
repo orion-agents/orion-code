@@ -50,6 +50,7 @@ import type { ContextUsageSnapshot } from './model-context';
 import { canonicalMessagesFingerprint } from './compact/fingerprint';
 import { estimateMessagesTokens } from '../utils/token-estimate';
 import type { EffortPreference } from './effort';
+import type { ToolConfirmationPolicy } from './global-config';
 import {
   loadThreadSessionSummaryV1,
   loadThreadSessionViewV1,
@@ -163,6 +164,8 @@ export interface SessionMeta {
   activeGoalObjective?: string;
   /** Session-level reasoning effort preference; absent means inherit project/global/model. */
   effortPreference?: EffortPreference;
+  /** Session-level tool confirmation override; absent means inherit the Project default. */
+  toolConfirmationOverride?: ToolConfirmationPolicy;
 }
 
 export interface CompactCheckpointV1 {
@@ -1645,6 +1648,90 @@ export function updateSessionEffort(
       session.effortPreference = effortPreference;
     }
   });
+}
+
+export interface SessionComposerPreferencesV1 {
+  readonly model: string;
+  readonly effortPreference?: EffortPreference;
+  readonly toolConfirmationOverride?: ToolConfirmationPolicy;
+}
+
+export interface SessionComposerPreferencesPatchV1 {
+  readonly expected?: SessionComposerPreferencesV1;
+  readonly model?: string;
+  readonly effort?: { readonly value: EffortPreference | undefined };
+  readonly permission?: { readonly value: ToolConfirmationPolicy | undefined };
+}
+
+export class SessionComposerPreferencesConflictError extends Error {
+  readonly code = 'ORION_SESSION_COMPOSER_CONFLICT';
+
+  constructor(message = 'Session Composer preferences changed before the mutation was committed.') {
+    super(message);
+    this.name = 'SessionComposerPreferencesConflictError';
+  }
+}
+
+/**
+ * Atomically update all Session-scoped Composer preferences under the metadata lock.
+ *
+ * The optional expected projection prevents Web and slash-command writers from
+ * replacing a newer model, effort, or permission override with a stale snapshot.
+ */
+export function updateSessionComposerPreferences(
+  sessionId: string,
+  patch: SessionComposerPreferencesPatchV1
+): SessionMeta | null {
+  const normalizedModel = patch.model?.trim();
+  if (patch.model !== undefined && !normalizedModel) {
+    throw new Error('Session model must not be empty.');
+  }
+  return withLockedSession(sessionId, session => {
+    if (patch.expected && !sameComposerPreferences(session, patch.expected)) {
+      throw new SessionComposerPreferencesConflictError();
+    }
+    if (normalizedModel !== undefined) session.model = normalizedModel;
+    if (patch.effort) {
+      if (patch.effort.value === undefined || patch.effort.value === 'auto') {
+        delete session.effortPreference;
+      } else {
+        session.effortPreference = patch.effort.value;
+      }
+    }
+    if (patch.permission) {
+      if (patch.permission.value === undefined) delete session.toolConfirmationOverride;
+      else session.toolConfirmationOverride = patch.permission.value;
+    }
+    session.updatedAt = Date.now();
+    session.updatedAtIso = new Date(session.updatedAt).toISOString();
+    writeSessionMetaUnlocked(session);
+    return session;
+  });
+}
+
+export function projectSessionComposerPreferences(
+  session: SessionMeta
+): SessionComposerPreferencesV1 {
+  return Object.freeze({
+    model: session.model,
+    ...(session.effortPreference === undefined
+      ? {}
+      : { effortPreference: session.effortPreference }),
+    ...(session.toolConfirmationOverride === undefined
+      ? {}
+      : { toolConfirmationOverride: session.toolConfirmationOverride }),
+  });
+}
+
+function sameComposerPreferences(
+  session: SessionMeta,
+  expected: SessionComposerPreferencesV1
+): boolean {
+  return (
+    session.model === expected.model &&
+    session.effortPreference === expected.effortPreference &&
+    session.toolConfirmationOverride === expected.toolConfirmationOverride
+  );
 }
 
 /** Persist the model selected for one Session without replacing unrelated metadata. */

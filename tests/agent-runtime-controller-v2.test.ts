@@ -117,7 +117,7 @@ describe('AgentRuntimeController v0.2 boundary', () => {
     await controller.waitForIdle();
   });
 
-  test('queues follow-up work in FIFO order without aborting the active turn', async () => {
+  test('queues only visible text, enforces item CAS, and preserves resolved Context on edit', async () => {
     const runner = deferredRunner();
     const controller = new AgentRuntimeController({
       runtime: createRuntime(),
@@ -126,13 +126,29 @@ describe('AgentRuntimeController v0.2 boundary', () => {
     });
 
     expect(controller.submit('active')).toEqual({ type: 'started' });
-    expect(controller.handle({ type: 'queue_followup', text: 'next' })).toMatchObject({
-      type: 'followup_queued',
+    expect(
+      controller.handle({
+        type: 'queue_followup',
+        text: 'next',
+        resolvedText: 'next\n\n[Orion Context Manifest V1]\n{"opaque":"bound"}',
+      })
+    ).toMatchObject({ type: 'followup_queued' });
+    expect(controller.getFollowupQueueSnapshot()).toEqual({
+      items: [{ id: 'followup-1', text: 'next', queuedAt: expect.any(Number), revision: 1 }],
+      limit: 16,
     });
+    expect(controller.editFollowupQueueItem('followup-1', 1, 'edited next')).toEqual({
+      type: 'followup_queue_changed',
+    });
+    expect(() => controller.moveFollowupQueueItem('followup-1', 1, 0)).toThrow(
+      'changed before it was moved'
+    );
     expect(runner.calls[0].signal?.aborted).toBe(false);
     runner.calls[0].resolve();
     await new Promise<void>(resolve => setImmediate(resolve));
-    expect(runner.calls[1].input).toBe('next');
+    expect(runner.calls[1].input).toBe(
+      'edited next\n\n[Orion Context Manifest V1]\n{"opaque":"bound"}'
+    );
     runner.calls[1].resolve();
     await controller.waitForIdle();
   });

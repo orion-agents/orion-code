@@ -29,7 +29,7 @@ test('E2E-P0-06 PLAN receipt, durable Goal completion and AUTO authority remain 
   await createSession(page);
   await setAgentMode(page, 'PLAN');
   await submitPrompt(page, OPENAI_FIXTURE_PROMPTS.plan);
-  await expect(orionMessage(page, OPENAI_FIXTURE_MARKERS.planExecutionDone)).toBeVisible({
+  await expect(orionMessage(page, OPENAI_FIXTURE_MARKERS.planReady)).toBeVisible({
     timeout: 45_000,
   });
   await waitForIdle(page);
@@ -40,19 +40,30 @@ test('E2E-P0-06 PLAN receipt, durable Goal completion and AUTO authority remain 
   expect(planned.plan).toMatchObject({ returnMode: 'build' });
   expect(planned.plan!.body).toContain('# WEB_E2E_PLAN');
   expect(planned.plan!.digest).toMatch(/^[a-f0-9]{64}$/u);
-  await expect(
-    page.getByRole('group', { name: 'Agent 模式' }).getByRole('button', { name: 'BUILD' })
-  ).toHaveAttribute('aria-pressed', 'true');
+  expect(planned.composer.planReview).toMatchObject({
+    planDigest: planned.plan!.digest,
+    status: 'awaiting_review',
+  });
+  await expect(page.getByRole('heading', { name: '计划已保存，尚未执行' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '工作模式' })).toContainText('PLAN');
+
+  const planningRequests = provider.requests.filter(request => request.scenario === 'plan');
+  expect(planningRequests).toHaveLength(2);
+  expect(planningRequests.every(request => isPlanPrompt(request.systemText))).toBe(true);
+  evidence.recordFact('plan.preapproval_provider_requests', planningRequests.length);
+
+  await page.getByRole('button', { name: '批准并进入 BUILD' }).click();
+  await expect(orionMessage(page, OPENAI_FIXTURE_MARKERS.planExecutionDone)).toBeVisible({
+    timeout: 45_000,
+  });
+  await waitForIdle(page);
+  await expect(page.getByRole('button', { name: '工作模式' })).toContainText('BUILD');
 
   const planRequests = provider.requests.filter(request => request.scenario === 'plan');
-  expect(planRequests).toHaveLength(4);
+  expect(planRequests).toHaveLength(3);
   expect(planRequests.slice(0, 2).every(request => isPlanPrompt(request.systemText))).toBe(true);
-  expect(planRequests.slice(2).every(request => !isPlanPrompt(request.systemText))).toBe(true);
-  expect(
-    planRequests
-      .slice(2)
-      .some(request => request.lastUserText.includes('Execute durable PlanReceipt'))
-  ).toBe(true);
+  expect(isPlanPrompt(planRequests[2].systemText)).toBe(false);
+  expect(planRequests[2].lastUserText).toContain('action=approve');
   const planCommits = (await capturedSseEvents(page))
     .filter(isWebEventEnvelope)
     .filter(event => event.type === 'thread_event' && event.payload.eventType === 'turn.committed');

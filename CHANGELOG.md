@@ -22,6 +22,49 @@ which is **not** a pass.
 
 ## [Unreleased]
 
+## [0.3.2] — CANDIDATE
+
+> **Status: candidate.** Source, API and browser qualification are being frozen together. This is
+> not a Git tag, GitHub Release or npm publication until the exact-artifact receipts exist.
+
+### Added
+
+- Add an IDE-style left project navigator that expands, collapses to a 48px rail and mouse-resizes
+  from 240–480px while preserving a 560px conversation floor and responsive drawer preferences.
+- Add a Composer Control Center for BUILD/PLAN/AUTO, Session permission, model, Effort and
+  Runtime-projected Context usage, including pending/last-good/error/retry states.
+- Add structured file/folder/review/session/Skill Context references with Host-side containment,
+  sensitive-data, revision, digest and prompt-budget validation.
+- Add durable Plan review with exact-digest approve, continue-planning and cancel operations that
+  survive refresh, replay and Host restart without auto-executing an unreviewed Plan.
+- Add revisioned queue edit/move/remove and Session-scoped tab-local draft recovery.
+- Add the v0.3.2 OpenAPI, mode/permission contract, migration guide and exact-artifact
+  WEB32-P0-01..12 qualification contract.
+
+### Changed
+
+- Replace the three Composer mode buttons with accessible menus and keep workflow mode independent
+  from tool authorization; explicit Deny and hard Policy remain stronger than AUTO or Allow.
+- Make active-turn model changes deferred to the next logical request and require verified compact
+  before switching to a smaller safe context window, with complete rollback on failure.
+- Project provider or explicitly estimated Context usage from Runtime instead of reconstructing
+  token capacity in the browser.
+
+### Fixed
+
+- Keep the left/right desktop widths stable across narrow-screen drawers, reloads and 200% zoom;
+  bound controls and Context chips without covering the textarea or send action.
+- Consume expected UI mutation rejections after the shared operation layer has projected the error,
+  preventing a deliberate 409 CAS conflict from becoming an unhandled browser page error.
+- Require a matching active-session snapshot after replay reset before re-enabling the Composer.
+
+### Security
+
+- Bind Composer, queue and Plan mutations to exact Workspace/Session/Context/control revisions and
+  fail stale operations with zero provider, ToolGateway, file or queue side effects.
+- Revalidate every structured Context reference at prompt assembly and keep sensitive/raw content
+  out of the DOM, SSE, screenshots and release evidence.
+
 ## [0.3.1] — CANDIDATE
 
 > **Status: candidate.** This branch carries the v0.3 Web quality and long-session recovery fixes.

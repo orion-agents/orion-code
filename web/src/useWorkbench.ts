@@ -11,6 +11,8 @@ import {
 import type {
   WebCommandResultV1,
   WebCommandV1,
+  WebComposerActionV1,
+  WebContextReferenceV1,
   WebContextGuardV1,
   WebFileContentPageV1,
   WebFileTreePageV1,
@@ -37,8 +39,22 @@ import type {
 } from './settings/types';
 import { initialWorkbenchState, type DiagnosticsSnapshot, type WorkbenchState } from './types';
 import { upsertSessionSummary } from './state/session-collection';
+import { removeComposerDraftsForWorkspace } from './state/composer-drafts';
 
 export type WorkbenchAgentMode = 'interactive' | 'plan' | 'auto';
+
+type ComposerActionInputV1 = WebComposerActionV1 extends infer Action
+  ? Action extends WebComposerActionV1
+    ? Omit<
+        Action,
+        | 'requestId'
+        | 'workspaceId'
+        | 'expectedContextRevision'
+        | 'expectedSessionId'
+        | 'expectedControlRevision'
+      >
+    : never
+  : never;
 
 export interface WorkbenchActions {
   retryBoot(): Promise<void>;
@@ -59,12 +75,32 @@ export interface WorkbenchActions {
   activateSession(sessionId: string): Promise<void>;
   loadOlderTranscript(): Promise<void>;
   renameSession(sessionId: string, name: string): Promise<void>;
-  submit(text: string): Promise<WebCommandResultV1>;
-  queue(text: string): Promise<WebCommandResultV1>;
-  removeQueued(itemId: string): Promise<void>;
+  submit(
+    text: string,
+    contextReferences?: readonly WebContextReferenceV1[]
+  ): Promise<WebCommandResultV1>;
+  queue(
+    text: string,
+    contextReferences?: readonly WebContextReferenceV1[]
+  ): Promise<WebCommandResultV1>;
+  removeQueued(itemId: string, expectedItemRevision: number): Promise<void>;
+  editQueued(itemId: string, expectedItemRevision: number, text: string): Promise<void>;
+  moveQueued(itemId: string, expectedItemRevision: number, targetIndex: number): Promise<void>;
   clearQueue(): Promise<void>;
   interrupt(): Promise<void>;
   setMode(mode: WorkbenchAgentMode): Promise<void>;
+  setPermissionOverride(value: 'ask' | 'allow' | 'deny' | null): Promise<void>;
+  loadModelCatalog(): Promise<void>;
+  selectModel(
+    modelId: string,
+    effort?: import('../../src/web/protocol').WebEffortPreferenceV1
+  ): Promise<void>;
+  compactContext(): Promise<void>;
+  reviewPlan(
+    planDigest: string,
+    action: 'approve' | 'continue' | 'cancel',
+    feedback?: string
+  ): Promise<void>;
   answerPermission(approved: boolean, scope?: 'once' | 'project' | 'global'): Promise<void>;
   controlGoal(
     action: 'create' | 'status' | 'pause' | 'resume' | 'clear',
@@ -471,6 +507,50 @@ export function useWorkbench(): UseWorkbenchResult {
     [api, runOperation]
   );
 
+  const sendComposerAction = useCallback(
+    async (label: string, action: ComposerActionInputV1) =>
+      runOperation(label, async () => {
+        const current = stateRef.current;
+        const composer = current.composer;
+        if (
+          current.connection !== 'live' ||
+          !current.activeSessionId ||
+          !composer ||
+          composer.sessionId !== current.activeSessionId
+        ) {
+          throw new WebApiError(
+            'Composer 控制状态尚未与活动会话同步。',
+            409,
+            'composer_control_conflict'
+          );
+        }
+        try {
+          const result = await api.composerAction(current.activeSessionId, {
+            ...action,
+            workspaceId: current.workspaceId,
+            expectedContextRevision: current.contextRevision,
+            expectedSessionId: current.activeSessionId,
+            expectedControlRevision: composer.controlRevision,
+          } as Parameters<OrionWebApi['composerAction']>[1]);
+          dispatch({ type: 'composer_loaded', composer: result.state });
+          return result;
+        } catch (error) {
+          if (
+            error instanceof WebApiError &&
+            [
+              'composer_control_conflict',
+              'context_revision_conflict',
+              'active_session_changed',
+            ].includes(error.code ?? '')
+          ) {
+            dispatch({ type: 'snapshot_failed', detail: error.message });
+          }
+          throw error;
+        }
+      }),
+    [api, runOperation]
+  );
+
   const retryBoot = useCallback(
     () => runOperation('重新连接', loadBaseline),
     [loadBaseline, runOperation]
@@ -739,6 +819,7 @@ export function useWorkbench(): UseWorkbenchResult {
           throw new WebApiError('工作区上下文尚未完成同步。', 409, 'context_revision_conflict');
         }
         await api.removeWorkspace(workspaceId, requireContextGuard(current));
+        removeComposerDraftsForWorkspace(workspaceId);
         dispatch({
           type: 'workspaces_loaded',
           value: await api.listWorkspaces(requireContextGuard(stateRef.current)),
@@ -829,18 +910,46 @@ export function useWorkbench(): UseWorkbenchResult {
   );
 
   const submit = useCallback(
-    (text: string) => sendCommand('提交任务', { type: 'submit', text }),
+    (text: string, contextReferences?: readonly WebContextReferenceV1[]) =>
+      sendCommand('提交任务', { type: 'submit', text, contextReferences }),
     [sendCommand]
   );
   const queue = useCallback(
-    (text: string) => sendCommand('加入队列', { type: 'queue_followup', text }),
+    (text: string, contextReferences?: readonly WebContextReferenceV1[]) =>
+      sendCommand('加入队列', { type: 'queue_followup', text, contextReferences }),
     [sendCommand]
   );
   const removeQueued = useCallback(
-    async (itemId: string) => {
-      await sendCommand('移除排队消息', { type: 'remove_followup', itemId });
+    async (itemId: string, expectedItemRevision: number) => {
+      await sendComposerAction('移除排队消息', {
+        type: 'remove_queue_item',
+        itemId,
+        expectedItemRevision,
+      });
     },
-    [sendCommand]
+    [sendComposerAction]
+  );
+  const editQueued = useCallback(
+    async (itemId: string, expectedItemRevision: number, text: string) => {
+      await sendComposerAction('编辑排队消息', {
+        type: 'edit_queue_item',
+        itemId,
+        expectedItemRevision,
+        text,
+      });
+    },
+    [sendComposerAction]
+  );
+  const moveQueued = useCallback(
+    async (itemId: string, expectedItemRevision: number, targetIndex: number) => {
+      await sendComposerAction('移动排队消息', {
+        type: 'move_queue_item',
+        itemId,
+        expectedItemRevision,
+        targetIndex,
+      });
+    },
+    [sendComposerAction]
   );
   const clearQueue = useCallback(async () => {
     await sendCommand('清空队列', { type: 'clear_followups' });
@@ -853,9 +962,62 @@ export function useWorkbench(): UseWorkbenchResult {
       if (stateRef.current.mode.baseMode === agentMode && !stateRef.current.mode.pendingBaseMode) {
         return;
       }
-      await sendCommand('切换模式', { type: 'set_agent_mode', agentMode });
+      await sendComposerAction('切换模式', { type: 'set_agent_mode', mode: agentMode });
     },
-    [sendCommand]
+    [sendComposerAction]
+  );
+
+  const setPermissionOverride = useCallback(
+    async (value: 'ask' | 'allow' | 'deny' | null) => {
+      await sendComposerAction(
+        value === null ? '继承项目权限' : '切换会话权限',
+        value === null
+          ? { type: 'clear_permission_override' }
+          : { type: 'set_permission_override', value }
+      );
+    },
+    [sendComposerAction]
+  );
+
+  const loadModelCatalog = useCallback(
+    () =>
+      runOperation('加载模型目录', async () => {
+        const current = stateRef.current;
+        if (!current.activeSessionId) return;
+        const catalog = await api.modelCatalog(
+          current.activeSessionId,
+          requireContextGuard(current)
+        );
+        dispatch({ type: 'model_catalog_loaded', catalog });
+      }),
+    [api, runOperation]
+  );
+
+  const selectModel = useCallback(
+    async (modelId: string, effort?: import('../../src/web/protocol').WebEffortPreferenceV1) => {
+      await sendComposerAction('切换会话模型', {
+        type: 'select_model',
+        modelId,
+        ...(effort ? { effort } : {}),
+      });
+    },
+    [sendComposerAction]
+  );
+
+  const compactContext = useCallback(async () => {
+    await sendComposerAction('压缩上下文', { type: 'compact_context' });
+  }, [sendComposerAction]);
+
+  const reviewPlan = useCallback(
+    async (planDigest: string, action: 'approve' | 'continue' | 'cancel', feedback?: string) => {
+      await sendComposerAction('审核计划', {
+        type: 'review_plan',
+        planDigest,
+        action,
+        ...(feedback ? { feedback } : {}),
+      });
+    },
+    [sendComposerAction]
   );
 
   const answerPermission = useCallback(
@@ -1027,9 +1189,16 @@ export function useWorkbench(): UseWorkbenchResult {
       submit,
       queue,
       removeQueued,
+      editQueued,
+      moveQueued,
       clearQueue,
       interrupt,
       setMode,
+      setPermissionOverride,
+      loadModelCatalog,
+      selectModel,
+      compactContext,
+      reviewPlan,
       answerPermission,
       controlGoal,
       refreshSettings,
@@ -1063,12 +1232,16 @@ export function useWorkbench(): UseWorkbenchResult {
       loadMoreSessions,
       loadMoreToolDetails,
       loadMoreWorkspaces,
+      loadModelCatalog,
       loadWorkspaceSessions,
       answerPermission,
       clearQueue,
+      compactContext,
+      reviewPlan,
       controlGoal,
       createSession,
       dismissNotice,
+      editQueued,
       interrupt,
       queue,
       readFileContent,
@@ -1084,9 +1257,12 @@ export function useWorkbench(): UseWorkbenchResult {
       renameSession,
       retryBoot,
       setMode,
+      setPermissionOverride,
+      selectModel,
       setWorkspacePinned,
       submit,
       switchWorkspace,
+      moveQueued,
       terminalAttachTicket,
       terminalSocket,
       terminals,

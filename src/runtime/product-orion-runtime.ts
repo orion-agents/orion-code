@@ -66,6 +66,7 @@ import type {
 } from './skills';
 import type { FirstPartyApprovalHandlerV1 } from './first-party-tool-services';
 import type { ThreadSessionRuntimeActivationV1 } from './thread-session-view';
+import { ensurePlanReviewRequestedV1, recoverResolvedPlanReviewV1 } from './plan-review';
 import { normalizeSessionModelHistoryV1 } from './session-history-recovery';
 import {
   createAuthoritySnapshotV1,
@@ -128,7 +129,6 @@ export function createProductOrionRuntimeV1(
         readonly explicitSkillIds: readonly string[];
       }
     | undefined;
-  const scheduledPlanReceipts = new Set<string>();
   let openedStorage = activation
     ? openedStorageFromActivation(options.cwd, sessionId, activation)
     : openSessionStorageV1(options.cwd, sessionId);
@@ -272,19 +272,26 @@ export function createProductOrionRuntimeV1(
         synchronizeSessionThreadReadModel(sessionId, storage.generation, runtime.graph.eventStore);
         const planReceipt = planReceiptFromCommit(durableCommit);
         if (planReceipt) {
-          projectPlanReceipt(options.store, planReceipt);
-          schedulePlanExecution(runtime, planReceipt, scheduledPlanReceipts);
+          const review = ensurePlanReviewRequestedV1(
+            runtime.graph.eventStore,
+            planReceipt,
+            options.store.getSnapshot().currentModel
+          );
+          projectPlanReceipt(options.store, planReceipt, review.status);
         }
       },
-      onRuntimeStarted: ({ restoredCommit, thread, eventStore }) => {
+      onRuntimeStarted: ({ restoredCommit, eventStore }) => {
         synchronizeSessionThreadReadModel(sessionId, storage.generation, eventStore);
         if (restoredCommit) projectRestoredTurnCommit(options.store, restoredCommit);
-        const planReceipt = restoredCommit ? planReceiptFromCommit(restoredCommit) : undefined;
+        const planReceipt = latestDurablePlanReceipt(eventStore);
         if (!planReceipt) return;
-        projectPlanReceipt(options.store, planReceipt);
-        if (thread.getProjection().queue.length === 0) {
-          schedulePlanExecution(runtime, planReceipt, scheduledPlanReceipts);
-        }
+        const review = ensurePlanReviewRequestedV1(
+          eventStore,
+          planReceipt,
+          options.store.getSnapshot().currentModel
+        );
+        projectPlanReceipt(options.store, planReceipt, review.status);
+        recoverResolvedPlanReviewV1(runtime);
       },
     },
   });
@@ -1102,39 +1109,19 @@ function productPlanReturnMode(store: Store): PlanExecutionModeV1 {
   return snapshot.agentMode === 'auto' || snapshot.planReturnMode === 'auto' ? 'auto' : 'build';
 }
 
-function projectPlanReceipt(store: Store, receipt: PlanReceiptV1): void {
-  const agentMode = receipt.returnMode === 'auto' ? 'auto' : 'interactive';
+function projectPlanReceipt(
+  store: Store,
+  receipt: PlanReceiptV1,
+  reviewStatus: 'awaiting_review' | 'approved' | 'continued' | 'cancelled'
+): void {
+  const agentMode =
+    reviewStatus === 'awaiting_review' || reviewStatus === 'continued' ? 'plan' : 'interactive';
   store.setState({
     agentMode,
-    planMode: false,
-    planReturnMode: agentMode,
+    planMode: agentMode === 'plan',
+    planReturnMode: receipt.returnMode === 'auto' ? 'auto' : 'interactive',
     currentPlan: receipt.plan,
   });
-}
-
-function schedulePlanExecution(
-  runtime: OrionRuntimeV1,
-  receipt: PlanReceiptV1,
-  scheduled: Set<string>
-): void {
-  if (scheduled.has(receipt.digest)) return;
-  const admission = runtime.thread.dispatch({
-    type: 'turn.start',
-    data: {
-      input: [
-        `Execute durable PlanReceipt ${receipt.digest}.`,
-        'Continue autonomously from the saved plan and verify the implementation before finishing.',
-      ].join(' '),
-      mode: receipt.returnMode,
-    },
-  });
-  if (admission.status === 'rejected') {
-    throw new Error(`Saved plan execution was not admitted: ${admission.reason}.`);
-  }
-  if (admission.status !== 'started' && admission.status !== 'queued') {
-    throw new Error(`Saved plan execution returned unexpected admission: ${admission.status}.`);
-  }
-  scheduled.add(receipt.digest);
 }
 
 function legacyHistory(sessionId: string): Message[] {
@@ -1165,7 +1152,9 @@ function createProductAuthority(
   // AUTO is an explicit full-action consent mode. It bypasses interactive
   // approval only; capability, containment, hard policy and sandbox checks
   // remain unchanged and still precede execution.
-  const confirmation = mode === 'auto' ? 'allow' : options.config.toolConfirmation;
+  const configuredConfirmation = options.config.toolConfirmation;
+  const confirmation =
+    mode === 'auto' && configuredConfirmation !== 'deny' ? 'allow' : configuredConfirmation;
   return createAuthoritySnapshotV1({
     authorityId: `project:${digestRuntimeValue(options.cwd).slice(0, 16)}:${mode ?? 'base'}`,
     projectRoot: options.cwd,

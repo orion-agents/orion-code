@@ -219,7 +219,7 @@ class AgentModesMockHandler(BaseHTTPRequestHandler):
                 last_user = message_text(candidate).strip()
 
         scenario = next((name for name in SCENARIOS if name in last_user), "")
-        if last_user.startswith("Execute durable PlanReceipt "):
+        if last_user.startswith("[Orion Plan Review V1]") and "action=approve" in last_user:
             scenario = "plan complete fixture"
         later_messages = messages[last_user_index + 1 :] if last_user_index >= 0 else []
         tool_messages = [
@@ -935,7 +935,9 @@ def main() -> int:
                 raise AssertionError("BUILD reused exec grant did not remove its fixture")
 
             # PLAN exposes the complete tool set, reuses independent project
-            # grants, commits one PlanReceipt and automatically restores BUILD.
+            # grants and commits one PlanReceipt. The durable review gate must
+            # prevent the separate BUILD request until the user explicitly
+            # approves the exact saved plan.
             os.write(master, b"\x1b[Z")
             wait_for(master, output, "MODE PLAN", timeout=6)
             plan_complete_start = submit_scenario(master, output, "plan complete fixture")
@@ -945,6 +947,38 @@ def main() -> int:
                 "PLAN_TURN_DONE",
                 timeout=20,
                 start_offset=plan_complete_start,
+            )
+            plan_receipt = wait_for_plan_receipt(
+                config_dir, timeout=15, fd=master, output=output
+            )
+            if "Read the repository evidence" not in str(plan_receipt.get("plan", "")):
+                raise AssertionError(f"PLAN persisted the wrong plan: {plan_receipt}")
+            preapproval_requests = [
+                request
+                for request in getattr(mock_server, "observed_requests")
+                if request.get("scenario") == "plan complete fixture"
+            ]
+            if any(request.get("buildMode") for request in preapproval_requests):
+                raise AssertionError("PLAN started BUILD before explicit durable approval")
+
+            output.append(read_available(master))
+            approval_start = len(b"".join(output))
+            os.write(master, b"/plan approve")
+            wait_for(
+                master,
+                output,
+                "/plan approve",
+                timeout=5,
+                start_offset=approval_start,
+            )
+            time.sleep(0.15)
+            os.write(master, b"\r")
+            wait_for(
+                master,
+                output,
+                "Plan review approved; follow-on started.",
+                timeout=15,
+                start_offset=approval_start,
             )
             plan_complete_segment = wait_for(
                 master,
@@ -960,11 +994,6 @@ def main() -> int:
                 timeout=10,
                 start_offset=plan_complete_start,
             )
-            plan_receipt = wait_for_plan_receipt(
-                config_dir, timeout=15, fd=master, output=output
-            )
-            if "Read the repository evidence" not in str(plan_receipt.get("plan", "")):
-                raise AssertionError(f"PLAN persisted the wrong plan: {plan_receipt}")
             assert_no_permission_prompt(plan_complete_segment, "PLAN completion")
 
             for call_id in ("call-plan-read", "call-plan-write", "call-plan-exec"):

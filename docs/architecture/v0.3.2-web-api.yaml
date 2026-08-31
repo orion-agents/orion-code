@@ -1,0 +1,3029 @@
+openapi: 3.1.0
+info:
+  title: Orion Code Local Web API
+  version: 0.3.2
+  description: >-
+    Same-origin loopback API for the Orion Code v0.3.2 Web Workbench. It extends the v0.3.1
+    engineering shell with revision-bound Session Composer controls, a Host model catalog,
+    structured Context references and durable Plan review. Unary resources use bounded JSON HTTP;
+    commands use POST; runtime invalidations use one replayable Server-Sent Events downlink.
+    Terminal bytes remain isolated on a ticket-authenticated, same-origin WebSocket and never enter
+    SSE, snapshots, diagnostics, evidence logs, or durable transcripts.
+servers:
+  - url: /api/v1
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      responses:
+        '200':
+          description: Process health without secret or workspace data.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /bootstrap:
+    get:
+      operationId: getBootstrap
+      responses:
+        '200':
+          description: Secret-free workbench bootstrap state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BootstrapResponse'
+  /workspaces:
+    get:
+      operationId: listWorkspaces
+      description: Cursor-paged canonical workspaces known to the local Orion installation.
+      parameters:
+        - $ref: '#/components/parameters/ContextWorkspaceId'
+        - $ref: '#/components/parameters/ExpectedContextRevision'
+        - $ref: '#/components/parameters/CollectionCursor'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: One bounded workspace page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspacePage'
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /workspaces/{workspaceId}/sessions:
+    get:
+      operationId: listWorkspaceSessions
+      description: >-
+        Read one revision-bound Session page for a registered project, including an inactive
+        project, without activating or constructing its Runtime.
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+        - $ref: '#/components/parameters/ContextWorkspaceId'
+        - $ref: '#/components/parameters/ExpectedContextRevision'
+        - $ref: '#/components/parameters/CollectionCursor'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: One bounded Session page for the named workspace.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SessionPage' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /workspaces/{workspaceId}/summary:
+    get:
+      operationId: getWorkspaceSummary
+      description: Return a bounded Git/project summary without activating the workspace Runtime.
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+        - $ref: '#/components/parameters/ContextWorkspaceId'
+        - $ref: '#/components/parameters/ExpectedContextRevision'
+      responses:
+        '200':
+          description: Repository facts for one registered workspace.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceProjectSummary' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/ContextConflict' }
+  /workspaces/{workspaceId}/pin:
+    post:
+      operationId: setWorkspacePinned
+      description: Pin or unpin a registered workspace through the process idempotency ledger.
+      security: [{ webNonce: [] }]
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WorkspacePinRequest' }
+      responses:
+        '200':
+          description: Updated workspace summary, or an exact requestId replay.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspacePinResult' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /workspaces/{workspaceId}:
+    delete:
+      operationId: removeWorkspace
+      description: >-
+        Remove an inactive registry entry. Session/Thread data and files are not deleted; the
+        active workspace cannot be removed.
+      security: [{ webNonce: [] }]
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WorkspaceRemoveRequest' }
+      responses:
+        '200':
+          description: Registry entry removed, or an exact requestId replay.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceRemoveResult' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /context/activate:
+    post:
+      operationId: activateContext
+      description: >-
+        Atomically switch workspace and optional Session under expectedContextRevision. Failure
+        leaves the previous context authoritative; success returns a complete bootstrap.
+      security: [{ webNonce: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ContextActivateRequest' }
+      responses:
+        '200':
+          description: New atomic context, or an exact requestId replay.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContextMutationResult' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /workspaces/activate:
+    post:
+      operationId: activateWorkspace
+      description: Select a canonical workspace after draining the previous runtime owner.
+      security: [{ webNonce: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ActivateWorkspaceRequest'
+      responses:
+        '200':
+          description: Workspace selected, or an exact requestId retry replayed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceMutationResult'
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /sessions:
+    get:
+      operationId: listSessions
+      description: Cursor-paged sessions whose canonical project is the active workspace.
+      parameters:
+        - $ref: '#/components/parameters/ContextWorkspaceId'
+        - $ref: '#/components/parameters/ExpectedContextRevision'
+        - $ref: '#/components/parameters/CollectionCursor'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: One bounded session page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionPage'
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+    post:
+      operationId: createSession
+      security: [{ webNonce: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSessionRequest'
+      responses:
+        '201':
+          description: New active session, or an exact requestId retry replayed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionMutationResult'
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /sessions/{sessionId}:
+    patch:
+      operationId: renameSession
+      security: [{ webNonce: [] }]
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RenameSessionRequest'
+      responses:
+        '200':
+          description: Updated session, or an exact requestId retry replayed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionMutationResult'
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /sessions/{sessionId}/activate:
+    post:
+      operationId: activateSession
+      description: Select and restore a session after draining the previous runtime owner.
+      security: [{ webNonce: [] }]
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContextGuardRequest'
+      responses:
+        '200':
+          description: Session selected, or an exact requestId retry replayed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandResult'
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /sessions/{sessionId}/snapshot:
+    get:
+      operationId: getSessionSnapshot
+      description: >-
+        Recovery snapshot for one session. Transcript items are cursor-paged; `threadCursor`
+        identifies the durable Thread projection edge and the independent `eventCursor` resumes
+        `/events`. Pending approvals are projected here and remain pending across refresh, network
+        loss and tab closure.
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/ContextWorkspaceId'
+        - $ref: '#/components/parameters/ExpectedContextRevision'
+        - $ref: '#/components/parameters/TranscriptCursor'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Sanitized recovery state from durable runtime sources.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionSnapshot'
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /sessions/{sessionId}/composer-state:
+    get:
+      operationId: getSessionComposerState
+      description: >-
+        Return the complete revision-bound Composer baseline for the active Session. The state is
+        independent of transcript length and includes current, pending, last-good/error, Context,
+        durable Plan review and queue projections.
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/ContextWorkspaceId'
+        - $ref: '#/components/parameters/ExpectedContextRevision'
+      responses:
+        '200':
+          description: Matching active Session Composer state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ComposerControlState' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/ContextConflict' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /sessions/{sessionId}/model-catalog:
+    get:
+      operationId: getSessionModelCatalog
+      description: >-
+        Return one cursor-bounded Host model page. Unavailable providers remain explicit and never
+        expose credential values or raw provider errors; healthy provider groups remain usable.
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/ContextWorkspaceId'
+        - $ref: '#/components/parameters/ExpectedContextRevision'
+        - $ref: '#/components/parameters/CollectionCursor'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: One revision-bound model catalog page.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModelCatalogPage' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/ContextConflict' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /sessions/{sessionId}/composer-actions:
+    post:
+      operationId: applySessionComposerAction
+      description: >-
+        Apply exactly one idempotent Composer control mutation after workspace, Context, Session,
+        control and item/Plan revision admission. Any stale guard fails before side effects; the
+        client must recover and must not automatically replay a high-risk action.
+      security: [{ webNonce: [] }]
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ComposerAction' }
+      responses:
+        '200':
+          description: Applied/deferred receipt and matching Composer state, or exact replay.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ComposerActionResult' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /files:
+    get:
+      operationId: listFiles
+      description: >-
+        Lazily list one active-workspace directory by opaque node id. The cursor binds the parent
+        id and file revision; paths outside the canonical workspace and symlink escapes fail closed.
+      parameters:
+        - $ref: '#/components/parameters/ContextWorkspaceId'
+        - $ref: '#/components/parameters/ExpectedContextRevision'
+        - $ref: '#/components/parameters/ParentFileId'
+        - $ref: '#/components/parameters/ResourceCursor'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: One bounded directory page with no absolute filesystem paths.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FileTreePage' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /files/{fileId}/content:
+    get:
+      operationId: getFileContent
+      description: >-
+        Read one bounded UTF-8 page from a non-sensitive regular file. Binary files return metadata
+        only. The continuation is bound to the file revision and byte boundary.
+      parameters:
+        - $ref: '#/components/parameters/FileId'
+        - $ref: '#/components/parameters/ContextWorkspaceId'
+        - $ref: '#/components/parameters/ExpectedContextRevision'
+        - $ref: '#/components/parameters/ResourceCursor'
+        - $ref: '#/components/parameters/FileLimitBytes'
+      responses:
+        '200':
+          description: One redacted text page or binary metadata.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FileContentPage' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '415': { $ref: '#/components/responses/Problem' }
+  /git/status:
+    get:
+      operationId: getGitStatus
+      description: >-
+        Return bounded, argv-only Git facts for the active workspace. The opaque cursor binds the
+        repository revision and record offset; it never carries credentials or raw .git content.
+      parameters:
+        - $ref: '#/components/parameters/ContextWorkspaceId'
+        - $ref: '#/components/parameters/ExpectedContextRevision'
+        - $ref: '#/components/parameters/ResourceCursor'
+        - $ref: '#/components/parameters/GitStatusPageSize'
+      responses:
+        '200':
+          description: Grouped clean/staged/unstaged/untracked/conflicted repository state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GitStatus' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /git/log:
+    get:
+      operationId: getGitLog
+      description: Return one sanitized commit page bound to the current repository revision.
+      parameters:
+        - $ref: '#/components/parameters/ContextWorkspaceId'
+        - $ref: '#/components/parameters/ExpectedContextRevision'
+        - $ref: '#/components/parameters/ResourceCursor'
+        - $ref: '#/components/parameters/GitLogPageSize'
+      responses:
+        '200':
+          description: One bounded Git history page.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GitLogPage' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /git/diff/{fileId}:
+    get:
+      operationId: getGitDiff
+      description: >-
+        Return bounded redacted diff lines for an opaque file id. Continuations bind file identity,
+        repository revision and page boundary; binary data is never emitted.
+      parameters:
+        - $ref: '#/components/parameters/FileId'
+        - $ref: '#/components/parameters/ContextWorkspaceId'
+        - $ref: '#/components/parameters/ExpectedContextRevision'
+        - $ref: '#/components/parameters/ResourceCursor'
+        - $ref: '#/components/parameters/DiffLineLimit'
+        - $ref: '#/components/parameters/DiffByteLimit'
+      responses:
+        '200':
+          description: One revision-bound diff page.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GitDiffPage' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /review:
+    get:
+      operationId: getReview
+      description: >-
+        Compose a read-only review summary from Git facts and durable tool-detail metadata. Sending
+        selected diff text to Composer is a client action; this endpoint never edits files.
+      parameters:
+        - $ref: '#/components/parameters/ContextWorkspaceId'
+        - $ref: '#/components/parameters/ExpectedContextRevision'
+      responses:
+        '200':
+          description: Revisioned change-set and verification metadata.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReviewSnapshot' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /terminals:
+    get:
+      operationId: listTerminals
+      description: List only ephemeral terminals owned by the active workspace.
+      parameters:
+        - $ref: '#/components/parameters/ContextWorkspaceId'
+        - $ref: '#/components/parameters/ExpectedContextRevision'
+        - $ref: '#/components/parameters/CollectionCursor'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: One bounded terminal metadata page; no terminal output is included.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TerminalPage' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+    post:
+      operationId: createTerminal
+      description: >-
+        Create a real PTY only after an explicit user gesture. The single-use attach ticket is
+        short-lived and must never be logged, persisted, placed in a URL, or sent on SSE.
+      security: [{ webNonce: [], terminalUserGesture: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TerminalCreateRequest' }
+      responses:
+        '201':
+          description: Terminal metadata plus one short-lived single-use ticket.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TerminalCreateMutationResult' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /terminals/{terminalId}/attach-ticket:
+    post:
+      operationId: issueTerminalAttachTicket
+      description: Replace any unused ticket with a new single-use, short-lived attach ticket.
+      security: [{ webNonce: [] }]
+      parameters:
+        - $ref: '#/components/parameters/TerminalId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ContextGuardRequest' }
+      responses:
+        '200':
+          description: Fresh attach ticket, or an exact requestId replay.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TerminalTicketMutationResult' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /terminals/{terminalId}:
+    delete:
+      operationId: closeTerminal
+      description: Terminate the PTY process tree and invalidate outstanding attach tickets.
+      security: [{ webNonce: [] }]
+      parameters:
+        - $ref: '#/components/parameters/TerminalId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ContextGuardRequest' }
+      responses:
+        '200':
+          description: Closed terminal metadata, or an exact requestId replay.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TerminalCloseMutationResult' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /terminals/{terminalId}/stream:
+    get:
+      operationId: streamTerminal
+      description: >-
+        WebSocket upgrade only; HTTP success bodies are not used. The client offers subprotocol
+        `orion-terminal-v1`, then sends Authenticate as its first JSON message within five seconds.
+        The ticket stays in the message body, never in the URL. Terminal output is non-durable and
+        isolated from the Workbench SSE cursor.
+      parameters:
+        - $ref: '#/components/parameters/TerminalId'
+      x-orion-websocket:
+        subprotocol: orion-terminal-v1
+        firstClientMessage: '#/components/schemas/TerminalAuthenticateMessage'
+        clientMessages: '#/components/schemas/TerminalClientMessage'
+        serverMessages: '#/components/schemas/TerminalServerMessage'
+        closeCodes: [1000, 1001, 4400, 4401, 4403, 4409, 4413]
+      responses:
+        '101':
+          description: Switching Protocols to the terminal WebSocket.
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+  /tool-details:
+    get:
+      operationId: listToolDetails
+      description: >-
+        Cursor-paged safe summaries from the active workspace's project artifact repository.
+        Current artifact metadata has no session identity, so this route is deliberately
+        workspace/project-scoped and must not be presented as proof that an artifact belongs to a
+        particular session.
+      parameters:
+        - $ref: '#/components/parameters/ContextWorkspaceId'
+        - $ref: '#/components/parameters/ExpectedContextRevision'
+        - $ref: '#/components/parameters/CollectionCursor'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: One bounded tool-detail summary page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolDetailSummaryPage'
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /tool-details/{callId}:
+    get:
+      operationId: getToolDetail
+      description: >-
+        Byte-paged output from a pre-sanitized derivative resolved only from the active workspace's
+        artifact list. `offsetBytes` addresses derivative bytes, never raw tool-output bytes, so a
+        caller cannot bypass redaction by choosing a sensitive-field boundary. The current artifact
+        metadata cannot prove session ownership; the host returns no artifact filesystem path and
+        makes no session-attribution claim.
+      parameters:
+        - $ref: '#/components/parameters/CallId'
+        - $ref: '#/components/parameters/ContextWorkspaceId'
+        - $ref: '#/components/parameters/ExpectedContextRevision'
+        - $ref: '#/components/parameters/OffsetBytes'
+        - $ref: '#/components/parameters/LimitBytes'
+      responses:
+        '200':
+          description: One UTF-8-safe redacted output page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolDetailPage'
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/ContextConflict' }
+  /skills:
+    get:
+      operationId: listSkills
+      description: >-
+        Cursor-paged safe Skill descriptors. Bodies, resource paths and trigger implementations are
+        excluded.
+      parameters:
+        - $ref: '#/components/parameters/ContextWorkspaceId'
+        - $ref: '#/components/parameters/ExpectedContextRevision'
+        - $ref: '#/components/parameters/CollectionCursor'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: One bounded Skill descriptor page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillPage'
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /mcp:
+    get:
+      operationId: listMcpServers
+      description: >-
+        Cursor-paged safe MCP catalog/runtime summaries. Commands, endpoints, headers and
+        credentials are excluded and this read never activates a dormant server.
+      parameters:
+        - $ref: '#/components/parameters/ContextWorkspaceId'
+        - $ref: '#/components/parameters/ExpectedContextRevision'
+        - $ref: '#/components/parameters/CollectionCursor'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: One bounded MCP summary page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpPage'
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /commands:
+    post:
+      operationId: dispatchCommand
+      description: >-
+        Dispatch a renderer-neutral runtime mutation. Approval decisions allow only once, project
+        or global scope. Interrupt and shutdown paths deny affected unresolved approvals and fail
+        their waiting tool calls closed.
+      security: [{ webNonce: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebCommand'
+      responses:
+        '202':
+          description: Accepted command, or an exact requestId retry replayed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandResult'
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /events:
+    get:
+      operationId: streamEvents
+      description: >-
+        One Server-Sent Events downlink. `cursor` or `Last-Event-ID` is the last delivered durable
+        sequence; the query value wins when both are present. Each SSE `id` is the decimal cursor,
+        while the JSON envelope also carries a UUID `eventId`. Disconnecting this stream does not
+        resolve or deny pending approvals.
+      parameters:
+        - $ref: '#/components/parameters/EventCursor'
+        - $ref: '#/components/parameters/LastEventId'
+      responses:
+        '200':
+          description: text/event-stream of discriminated WebEventEnvelope values.
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/WebEventEnvelope'
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /diagnostics:
+    get:
+      operationId: getDiagnostics
+      parameters:
+        - $ref: '#/components/parameters/ContextWorkspaceId'
+        - $ref: '#/components/parameters/ExpectedContextRevision'
+      responses:
+        '200':
+          description: Sanitized runtime and harness diagnostics.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  performance: { $ref: '#/components/schemas/WebPerformanceCounters' }
+                additionalProperties: true
+        '409': { $ref: '#/components/responses/ContextConflict' }
+  /settings:
+    get:
+      operationId: getSettings
+      responses:
+        '200':
+          description: Current secret-free, source-aware Settings document and durable revision.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettingsDocument'
+    patch:
+      operationId: updateSettings
+      description: >-
+        Atomically apply one bounded batch only when `expectedRevision` equals the keyed revision of
+        the exact current orion.json bytes. Duplicate keys and partial commits are rejected.
+      security: [{ webNonce: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSettingsRequest'
+      responses:
+        '200':
+          description: Updated settings, or an exact requestId retry replayed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettingsMutationResult'
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409':
+          description: requestId/body conflict, stale expectedRevision, or busy Runtime; no field was applied.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /settings/open-document:
+    post:
+      operationId: openSettingsDocument
+      description: >-
+        Open the Host-resolved orion.json in the native text editor. This loopback-only action accepts
+        no path and never returns the resolved filesystem path.
+      security: [{ webNonce: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [requestId]
+              properties:
+                requestId: { $ref: '#/components/schemas/RequestId' }
+      responses:
+        '200':
+          description: The pathless open request was accepted or replayed idempotently.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [requestId, opened]
+                properties:
+                  requestId: { $ref: '#/components/schemas/RequestId' }
+                  opened: { type: boolean, const: true }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+components:
+  securitySchemes:
+    webNonce:
+      type: apiKey
+      in: header
+      name: X-Orion-Web-Nonce
+      description: Per-process secret returned only by same-origin bootstrap and required on mutations.
+    terminalUserGesture:
+      type: apiKey
+      in: header
+      name: X-Orion-User-Gesture
+      description: Terminal creation requires the exact value terminal-create-v1 from a user gesture.
+  parameters:
+    ContextWorkspaceId:
+      in: query
+      name: workspaceId
+      required: true
+      description: >-
+        UUID of the active workspace observed with expectedContextRevision. A mismatch returns 409
+        context_revision_conflict and the Host performs no activation, read, spawn, or mutation.
+      schema: { type: string, format: uuid }
+    ExpectedContextRevision:
+      in: query
+      name: expectedContextRevision
+      required: true
+      description: >-
+        ContextRevision from bootstrap or the last successful atomic activation. A stale value
+        returns 409 context_revision_conflict with zero side effects.
+      schema: { $ref: '#/components/schemas/ContextRevision' }
+    WorkspaceId:
+      in: path
+      name: workspaceId
+      required: true
+      schema: { type: string, format: uuid }
+    SessionId:
+      in: path
+      name: sessionId
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 256 }
+    FileId:
+      in: path
+      name: fileId
+      required: true
+      description: Opaque active-workspace file identity; never a client-supplied path.
+      schema: { type: string, minLength: 1, maxLength: 256 }
+    ParentFileId:
+      in: query
+      name: parentId
+      required: false
+      description: Opaque directory identity; omission selects the active-workspace root.
+      schema: { type: string, minLength: 1, maxLength: 256 }
+    TerminalId:
+      in: path
+      name: terminalId
+      required: true
+      schema: { type: string, format: uuid }
+    CallId:
+      in: path
+      name: callId
+      required: true
+      description: >-
+        Opaque identifier returned by the active workspace's tool-detail summary. The current file
+        repository aliases callId to its project artifact identifier.
+      schema: { type: string, minLength: 1, maxLength: 256 }
+    CollectionCursor:
+      in: query
+      name: cursor
+      required: false
+      description: >-
+        Opaque continuation returned by the preceding page. It binds the route scope, the complete
+        ordered collection revision and the last stable item key. Any insertion, deletion or
+        reorder makes it stale; the Host returns 409 collection_cursor_stale and the client restarts
+        from the first page.
+      schema: { type: string, minLength: 1, maxLength: 512 }
+    TranscriptCursor:
+      in: query
+      name: cursor
+      required: false
+      description: >-
+        Opaque backward-page continuation bound to the Session's Thread identity, immutable
+        transcript-manifest revision and page boundary. A newer Thread revision returns 409
+        transcript_cursor_stale; the client must recover a fresh tail snapshot before paging again.
+      schema: { type: string, minLength: 1, maxLength: 512 }
+    ResourceCursor:
+      in: query
+      name: cursor
+      required: false
+      description: >-
+        Opaque continuation bound to the active workspace, resource identity, resource revision and
+        page boundary. A stale or cross-resource value returns 409 and must be restarted from the
+        first page; the value is not an encoded filesystem path.
+      schema: { type: string, minLength: 1, maxLength: 4096 }
+    PageSize:
+      in: query
+      name: pageSize
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+    OffsetBytes:
+      in: query
+      name: offsetBytes
+      required: false
+      schema: { type: integer, minimum: 0, default: 0 }
+    LimitBytes:
+      in: query
+      name: limitBytes
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 1048576, default: 65536 }
+    FileLimitBytes:
+      in: query
+      name: limitBytes
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 262144, default: 65536 }
+    GitStatusPageSize:
+      in: query
+      name: pageSize
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 2000, default: 200 }
+    GitLogPageSize:
+      in: query
+      name: pageSize
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 100, default: 30 }
+    DiffLineLimit:
+      in: query
+      name: lineLimit
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 500, default: 240 }
+    DiffByteLimit:
+      in: query
+      name: byteLimit
+      required: false
+      schema: { type: integer, minimum: 1024, maximum: 1048576, default: 262144 }
+    EventCursor:
+      in: query
+      name: cursor
+      required: false
+      description: Last durable Web event cursor accepted by the client.
+      schema: { type: integer, minimum: 0, default: 0 }
+    LastEventId:
+      in: header
+      name: Last-Event-ID
+      required: false
+      description: Browser-provided fallback for the last durable Web event cursor.
+      schema: { type: string, pattern: '^[0-9]+$' }
+  responses:
+    Problem:
+      description: Safe structured error with no secret-bearing data.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    ContextConflict:
+      description: >-
+        workspaceId or expectedContextRevision is stale. The Host returns
+        context_revision_conflict and performs zero reads from another workspace and zero side
+        effects.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example:
+            type: https://orioncode.dev/problems/context_revision_conflict
+            title: State conflict
+            status: 409
+            code: context_revision_conflict
+            detail: The active Context changed before the request was admitted.
+  schemas:
+    WebPerformanceCounters:
+      type: object
+      additionalProperties: false
+      required: [files, git]
+      properties:
+        files:
+          type: object
+          additionalProperties: false
+          required: [readOperations, bytesRead, itemsParsed]
+          properties:
+            readOperations: { type: integer, minimum: 0 }
+            bytesRead: { type: integer, minimum: 0 }
+            itemsParsed: { type: integer, minimum: 0 }
+        git:
+          type: object
+          additionalProperties: false
+          required: [processCount, bytesRead, itemsParsed]
+          properties:
+            processCount: { type: integer, minimum: 0 }
+            bytesRead: { type: integer, minimum: 0 }
+            itemsParsed: { type: integer, minimum: 0 }
+    HealthResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, version]
+      properties:
+        ok: { type: boolean, const: true }
+        version: { type: string }
+    BootstrapResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - apiVersion
+        - productVersion
+        - nonce
+        - contextRevision
+        - workspaceId
+        - workspace
+        - configured
+        - activeSessionId
+        - settings
+        - capabilities
+      properties:
+        apiVersion: { type: integer, const: 1 }
+        productVersion: { type: string }
+        nonce: { type: string, minLength: 32 }
+        contextRevision: { type: string, format: uuid }
+        workspaceId: { type: string, format: uuid }
+        workspace: { type: string }
+        configured: { type: boolean }
+        activeSessionId: { type: [string, 'null'] }
+        settings: { $ref: '#/components/schemas/SettingsDocument' }
+        capabilities:
+          type: object
+          additionalProperties: false
+          required: [goal, plan, skills, mcp, diagnostics, review, files, git, terminal]
+          properties:
+            goal: { type: boolean }
+            plan: { type: boolean }
+            skills: { type: boolean }
+            mcp: { type: boolean }
+            diagnostics: { type: boolean }
+            review: { type: boolean, const: true }
+            files: { type: boolean, const: true }
+            git: { type: boolean, const: true }
+            terminal: { type: boolean }
+    MutationRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId]
+      properties:
+        requestId: { $ref: '#/components/schemas/RequestId' }
+    RequestId:
+      type: string
+      format: uuid
+      description: >-
+        Client-generated idempotency key. Reuse is valid only for a byte-equivalent normalized
+        mutation body.
+    ContextRevision:
+      type: string
+      format: uuid
+      description: Compare-and-swap identity for the single active Workspace/Session context.
+    ContextActivateRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId, expectedContextRevision, workspaceId, sessionId]
+      properties:
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        expectedContextRevision: { $ref: '#/components/schemas/ContextRevision' }
+        workspaceId: { type: string, format: uuid }
+        sessionId: { type: [string, 'null'] }
+    ContextMutationResult:
+      type: object
+      additionalProperties: false
+      required: [requestId, contextRevision, bootstrap]
+      properties:
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        contextRevision: { $ref: '#/components/schemas/ContextRevision' }
+        bootstrap: { $ref: '#/components/schemas/BootstrapResponse' }
+    ActivateWorkspaceRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId, expectedContextRevision, path]
+      properties:
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        expectedContextRevision: { $ref: '#/components/schemas/ContextRevision' }
+        path: { type: string, minLength: 1, maxLength: 4096 }
+    CreateSessionRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId, expectedContextRevision, workspaceId]
+      properties:
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        expectedContextRevision: { $ref: '#/components/schemas/ContextRevision' }
+        workspaceId: { type: string, format: uuid }
+        name: { type: string, minLength: 1, maxLength: 120 }
+    RenameSessionRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId, expectedContextRevision, workspaceId, name]
+      properties:
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        expectedContextRevision: { $ref: '#/components/schemas/ContextRevision' }
+        workspaceId: { type: string, format: uuid }
+        name: { type: string, minLength: 1, maxLength: 120 }
+    WorkspaceSummary:
+      type: object
+      additionalProperties: false
+      required: [id, path, label, active, available, sessionCount, lastActivatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        path: { type: string }
+        label: { type: string }
+        active: { type: boolean }
+        available: { type: boolean }
+        sessionCount: { type: integer, minimum: 0 }
+        lastActivatedAt: { type: string, format: date-time }
+        pinnedOrder: { type: integer, minimum: 0 }
+    WorkspacePage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/WorkspaceSummary' }
+        nextCursor: { type: [string, 'null'] }
+    WorkspaceMutationResult:
+      type: object
+      additionalProperties: false
+      required: [requestId, active, page]
+      properties:
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        active: { type: string }
+        page: { $ref: '#/components/schemas/WorkspacePage' }
+    WorkspaceProjectSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - workspaceId
+        - repositoryRevision
+        - isRepository
+        - branch
+        - detached
+        - head
+        - dirtyCount
+        - conflictCount
+      properties:
+        workspaceId: { type: string, format: uuid }
+        repositoryRevision: { type: string, minLength: 1 }
+        isRepository: { type: boolean }
+        branch: { type: [string, 'null'] }
+        detached: { type: boolean }
+        head: { type: [string, 'null'] }
+        dirtyCount: { type: integer, minimum: 0 }
+        conflictCount: { type: integer, minimum: 0 }
+    WorkspacePinRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId, expectedContextRevision, pinned]
+      properties:
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        expectedContextRevision: { $ref: '#/components/schemas/ContextRevision' }
+        pinned: { type: boolean }
+    WorkspacePinResult:
+      type: object
+      additionalProperties: false
+      required: [requestId, workspace]
+      properties:
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        workspace: { $ref: '#/components/schemas/WorkspaceSummary' }
+    WorkspaceRemoveRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId, expectedContextRevision]
+      properties:
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        expectedContextRevision: { $ref: '#/components/schemas/ContextRevision' }
+    WorkspaceRemoveResult:
+      type: object
+      additionalProperties: false
+      required: [requestId, removed]
+      properties:
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        removed: { type: boolean, const: true }
+    SessionSummary:
+      type: object
+      additionalProperties: false
+      required: [id, projectPath, model, createdAt, updatedAt, messageCount]
+      properties:
+        id: { type: string }
+        projectPath: { type: string }
+        name: { type: string }
+        model: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        messageCount: { type: integer, minimum: 0 }
+        taskSummary: { type: string }
+        activeGoalId: { type: string }
+        activeGoalObjective: { type: string }
+    SessionPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/SessionSummary' }
+        nextCursor: { type: [string, 'null'] }
+    SessionMutationResult:
+      type: object
+      additionalProperties: false
+      required: [requestId, session]
+      properties:
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        session: { $ref: '#/components/schemas/SessionSummary' }
+    FileNode:
+      type: object
+      additionalProperties: false
+      required: [id, name, displayPath, kind, modifiedAt, sensitive, readable]
+      properties:
+        id: { type: string, minLength: 1 }
+        name: { type: string, minLength: 1 }
+        displayPath:
+          type: string
+          minLength: 1
+          description: Sanitized workspace-relative display metadata; requests still use opaque id.
+        kind: { type: string, enum: [file, directory, symlink] }
+        sizeBytes: { type: integer, minimum: 0 }
+        modifiedAt: { type: string, format: date-time }
+        sensitive: { type: boolean }
+        readable: { type: boolean }
+    FileTreePage:
+      type: object
+      additionalProperties: false
+      required: [parentId, revision, items, nextCursor]
+      properties:
+        parentId: { type: string, minLength: 1 }
+        revision: { type: string, minLength: 1 }
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/FileNode' }
+        nextCursor: { type: [string, 'null'] }
+    FileContentPage:
+      type: object
+      additionalProperties: false
+      required:
+        - fileId
+        - name
+        - revision
+        - sizeBytes
+        - binary
+        - sensitive
+        - mediaType
+        - offsetBytes
+        - nextCursor
+      properties:
+        fileId: { type: string, minLength: 1 }
+        name: { type: string, minLength: 1 }
+        revision: { type: string, minLength: 1 }
+        sizeBytes: { type: integer, minimum: 0 }
+        binary: { type: boolean }
+        sensitive: { type: boolean, const: false }
+        mediaType: { type: string, enum: [text/plain, application/octet-stream] }
+        offsetBytes: { type: integer, minimum: 0 }
+        content:
+          type: string
+          description: Present only for redacted UTF-8 text; omitted for binary metadata.
+        nextCursor: { type: [string, 'null'] }
+    GitFile:
+      type: object
+      additionalProperties: false
+      required: [fileId, path, indexStatus, worktreeStatus]
+      properties:
+        fileId: { type: string, minLength: 1 }
+        path:
+          type: string
+          description: Sanitized workspace-relative display path; requests still use fileId.
+        indexStatus: { type: string, minLength: 1, maxLength: 1 }
+        worktreeStatus: { type: string, minLength: 1, maxLength: 1 }
+        renamedFrom: { type: string }
+    GitFileList:
+      type: array
+      maxItems: 2000
+      items: { $ref: '#/components/schemas/GitFile' }
+    GitStatus:
+      type: object
+      additionalProperties: false
+      required:
+        - isRepository
+        - repositoryRevision
+        - branch
+        - detached
+        - head
+        - upstream
+        - ahead
+        - behind
+        - clean
+        - staged
+        - unstaged
+        - untracked
+        - conflicted
+        - totalFiles
+        - truncated
+        - nextCursor
+      properties:
+        isRepository: { type: boolean }
+        repositoryRevision: { type: string, minLength: 1 }
+        rootLabel: { type: string }
+        branch: { type: [string, 'null'] }
+        detached: { type: boolean }
+        head: { type: [string, 'null'] }
+        upstream: { type: [string, 'null'] }
+        ahead: { type: integer, minimum: 0 }
+        behind: { type: integer, minimum: 0 }
+        clean: { type: boolean }
+        staged: { $ref: '#/components/schemas/GitFileList' }
+        unstaged: { $ref: '#/components/schemas/GitFileList' }
+        untracked: { $ref: '#/components/schemas/GitFileList' }
+        conflicted: { $ref: '#/components/schemas/GitFileList' }
+        totalFiles: { type: integer, minimum: 0 }
+        truncated: { type: boolean }
+        nextCursor: { type: [string, 'null'] }
+    GitCommit:
+      type: object
+      additionalProperties: false
+      required: [id, shortId, authoredAt, authorName, subject]
+      properties:
+        id: { type: string, pattern: '^[a-f0-9]{40,64}$' }
+        shortId: { type: string, pattern: '^[a-f0-9]{7,16}$' }
+        authoredAt: { type: string, format: date-time }
+        authorName: { type: string }
+        subject: { type: string }
+    GitLogPage:
+      type: object
+      additionalProperties: false
+      required: [repositoryRevision, items, nextCursor]
+      properties:
+        repositoryRevision: { type: string, minLength: 1 }
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/GitCommit' }
+        nextCursor: { type: [string, 'null'] }
+    GitDiffPage:
+      type: object
+      additionalProperties: false
+      required:
+        - fileId
+        - path
+        - repositoryRevision
+        - binary
+        - lines
+        - nextCursor
+        - truncated
+      properties:
+        fileId: { type: string, minLength: 1 }
+        path: { type: string }
+        repositoryRevision: { type: string, minLength: 1 }
+        binary: { type: boolean }
+        lines:
+          type: array
+          maxItems: 500
+          items: { type: string }
+        nextCursor: { type: [string, 'null'] }
+        truncated: { type: boolean }
+    ReviewVerification:
+      type: object
+      additionalProperties: false
+      required:
+        - callId
+        - sessionId
+        - threadId
+        - sequence
+        - toolName
+        - state
+        - terminal
+        - success
+        - outputBytes
+        - hasArtifact
+        - executionPolicyDigest
+        - receiptDigest
+      properties:
+        callId: { type: string, minLength: 1 }
+        sessionId: { type: string, minLength: 1 }
+        threadId: { type: string, minLength: 1 }
+        sequence: { type: integer, minimum: 1 }
+        toolName: { type: string, minLength: 1 }
+        state: { type: string, enum: [success, error, skipped] }
+        terminal: { type: string, enum: [completed, failed, interrupted, indeterminate] }
+        success: { type: boolean }
+        outputBytes: { type: integer, minimum: 0 }
+        hasArtifact: { type: boolean }
+        executionPolicyDigest: { type: string, pattern: '^[a-f0-9]{64}$' }
+        receiptDigest: { type: string, pattern: '^[a-f0-9]{64}$' }
+    ReviewSnapshot:
+      type: object
+      additionalProperties: false
+      required:
+        - revision
+        - repositoryRevision
+        - isRepository
+        - clean
+        - changedFiles
+        - stagedCount
+        - unstagedCount
+        - untrackedCount
+        - conflictCount
+        - truncated
+        - verification
+      properties:
+        revision: { type: string, minLength: 1 }
+        repositoryRevision: { type: string, minLength: 1 }
+        isRepository: { type: boolean }
+        clean: { type: boolean }
+        changedFiles: { $ref: '#/components/schemas/GitFileList' }
+        stagedCount: { type: integer, minimum: 0 }
+        unstagedCount: { type: integer, minimum: 0 }
+        untrackedCount: { type: integer, minimum: 0 }
+        conflictCount: { type: integer, minimum: 0 }
+        truncated: { type: boolean }
+        verification:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/ReviewVerification' }
+    ContextGuardRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId, expectedContextRevision, workspaceId]
+      properties:
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        expectedContextRevision: { $ref: '#/components/schemas/ContextRevision' }
+        workspaceId: { type: string, format: uuid }
+    TerminalCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId, expectedContextRevision, workspaceId]
+      properties:
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        expectedContextRevision: { $ref: '#/components/schemas/ContextRevision' }
+        workspaceId: { type: string, format: uuid }
+        cols: { type: integer, minimum: 2, maximum: 400, default: 100 }
+        rows: { type: integer, minimum: 1, maximum: 200, default: 30 }
+    TerminalMetadata:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - workspaceId
+        - title
+        - shell
+        - state
+        - cols
+        - rows
+        - connected
+        - createdAt
+        - lastActiveAt
+        - earliestSequence
+        - lastSequence
+      properties:
+        id: { type: string, format: uuid }
+        workspaceId: { type: string, format: uuid }
+        title: { type: string }
+        shell: { type: string, description: Display basename only; no shell argv or environment. }
+        state: { type: string, enum: [running, exited, closing] }
+        cols: { type: integer, minimum: 2, maximum: 400 }
+        rows: { type: integer, minimum: 1, maximum: 200 }
+        connected: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        lastActiveAt: { type: string, format: date-time }
+        earliestSequence: { type: integer, minimum: 1 }
+        lastSequence: { type: integer, minimum: 0 }
+        exitCode: { type: integer }
+        signal: { type: integer }
+    TerminalPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/TerminalMetadata' }
+        nextCursor: { type: [string, 'null'] }
+    TerminalTicket:
+      type: object
+      additionalProperties: false
+      required: [ticket, ticketExpiresAt]
+      properties:
+        ticket:
+          type: string
+          minLength: 32
+          maxLength: 128
+          writeOnly: true
+          description: Single-use bearer delivered only in this JSON body and first WS message.
+        ticketExpiresAt: { type: string, format: date-time }
+    TerminalCreateMutationResult:
+      type: object
+      additionalProperties: false
+      required: [requestId, terminal, ticket, ticketExpiresAt]
+      properties:
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        terminal: { $ref: '#/components/schemas/TerminalMetadata' }
+        ticket: { type: string, minLength: 32, maxLength: 128, writeOnly: true }
+        ticketExpiresAt: { type: string, format: date-time }
+    TerminalTicketMutationResult:
+      type: object
+      additionalProperties: false
+      required: [requestId, ticket, ticketExpiresAt]
+      properties:
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        ticket: { type: string, minLength: 32, maxLength: 128, writeOnly: true }
+        ticketExpiresAt: { type: string, format: date-time }
+    TerminalCloseMutationResult:
+      type: object
+      additionalProperties: false
+      required: [requestId, terminal]
+      properties:
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        terminal: { $ref: '#/components/schemas/TerminalMetadata' }
+    TerminalAuthenticateMessage:
+      type: object
+      additionalProperties: false
+      required: [type, ticket, afterSequence]
+      properties:
+        type: { type: string, const: authenticate }
+        ticket: { type: string, minLength: 32, maxLength: 128, writeOnly: true }
+        afterSequence: { type: integer, minimum: 0 }
+    TerminalInputMessage:
+      type: object
+      additionalProperties: false
+      required: [type, data]
+      properties:
+        type: { type: string, const: input }
+        data: { type: string, maxLength: 65536 }
+    TerminalResizeMessage:
+      type: object
+      additionalProperties: false
+      required: [type, cols, rows]
+      properties:
+        type: { type: string, const: resize }
+        cols: { type: integer, minimum: 2, maximum: 400 }
+        rows: { type: integer, minimum: 1, maximum: 200 }
+    TerminalPingMessage:
+      type: object
+      additionalProperties: false
+      required: [type, timestamp]
+      properties:
+        type: { type: string, const: ping }
+        timestamp: { type: number }
+    TerminalClientMessage:
+      oneOf:
+        - $ref: '#/components/schemas/TerminalInputMessage'
+        - $ref: '#/components/schemas/TerminalResizeMessage'
+        - $ref: '#/components/schemas/TerminalPingMessage'
+      discriminator: { propertyName: type }
+    TerminalReadyMessage:
+      type: object
+      additionalProperties: false
+      required: [type, terminal]
+      properties:
+        type: { type: string, const: ready }
+        terminal: { $ref: '#/components/schemas/TerminalMetadata' }
+    TerminalOutputMessage:
+      type: object
+      additionalProperties: false
+      required: [type, sequence, data]
+      properties:
+        type: { type: string, const: output }
+        sequence: { type: integer, minimum: 1 }
+        data: { type: string, maxLength: 8000 }
+    TerminalGapMessage:
+      type: object
+      additionalProperties: false
+      required: [type, earliestSequence, latestSequence]
+      properties:
+        type: { type: string, const: gap }
+        earliestSequence: { type: integer, minimum: 1 }
+        latestSequence: { type: integer, minimum: 0 }
+    TerminalExitMessage:
+      type: object
+      additionalProperties: false
+      required: [type, exitCode]
+      properties:
+        type: { type: string, const: exit }
+        exitCode: { type: integer }
+        signal: { type: integer }
+    TerminalPongMessage:
+      type: object
+      additionalProperties: false
+      required: [type, timestamp]
+      properties:
+        type: { type: string, const: pong }
+        timestamp: { type: number }
+    TerminalErrorMessage:
+      type: object
+      additionalProperties: false
+      required: [type, code]
+      properties:
+        type: { type: string, const: error }
+        code: { type: string, minLength: 1 }
+    TerminalServerMessage:
+      oneOf:
+        - $ref: '#/components/schemas/TerminalReadyMessage'
+        - $ref: '#/components/schemas/TerminalOutputMessage'
+        - $ref: '#/components/schemas/TerminalGapMessage'
+        - $ref: '#/components/schemas/TerminalExitMessage'
+        - $ref: '#/components/schemas/TerminalPongMessage'
+        - $ref: '#/components/schemas/TerminalErrorMessage'
+      discriminator: { propertyName: type }
+    TranscriptMessage:
+      type: object
+      additionalProperties: false
+      required: [id, role, content, timestamp]
+      properties:
+        id: { type: string }
+        role:
+          type: string
+          enum: [system, user, assistant, tool]
+        content: { type: string }
+        timestamp: { type: number, minimum: 0 }
+        modelVisibleContent: { type: string }
+        toolCallId: { type: string }
+        tool_calls:
+          type: array
+          items: {}
+        appliedSkills:
+          type: array
+          items: { type: string }
+    TranscriptPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/TranscriptMessage' }
+        nextCursor: { type: [string, 'null'] }
+    GoalView:
+      type: object
+      additionalProperties: false
+      description: >-
+        Goal projection from the latest valid TurnCommitV1. A legacy Goal sidecar is eligible only
+        as a one-time migration seed and is never a competing read authority.
+      required: [authority, digest, state]
+      properties:
+        authority: { type: string, const: turn_commit }
+        digest: { type: string, minLength: 1 }
+        state:
+          description: >-
+            Opaque JSON value parsed from TurnCommitV1.goalState. The v0.3.0 wire type is unknown;
+            this contract does not invent required Goal fields or status/revision enums.
+    PlanView:
+      type: object
+      additionalProperties: false
+      description: >-
+        Exact safe projection of the PlanReceipt bound into TurnCommitV1. A valid planning commit
+        enters durable Plan review; it never schedules execution until the exact digest is approved.
+      required: [body, returnMode, digest]
+      properties:
+        body: { type: string, minLength: 1 }
+        returnMode: { type: string, enum: [build, auto] }
+        digest: { type: string, minLength: 1 }
+    PendingApproval:
+      type: object
+      additionalProperties: false
+      description: Runtime-owned approval that survives browser disconnect and tab closure.
+      required: [id, toolName, sanitizedArguments, allowedScopes]
+      properties:
+        id: { type: string }
+        toolName: { type: string }
+        reason: { type: string }
+        sanitizedArguments: { type: object, additionalProperties: true }
+        allowedScopes:
+          type: array
+          const: [once, project, global]
+          items: { type: string, enum: [once, project, global] }
+    FollowupItem:
+      type: object
+      additionalProperties: false
+      required: [id, text, queuedAt]
+      properties:
+        id: { type: string }
+        text: { type: string }
+        queuedAt: { type: number, minimum: 0 }
+    ControlRevision:
+      type: string
+      format: uuid
+      description: Compare-and-swap identity for the active Session Composer authority.
+    ContextUsageView:
+      type: object
+      additionalProperties: false
+      required:
+        - modelId
+        - usedTokens
+        - contextWindow
+        - percent
+        - source
+        - warningThresholdPercent
+        - autoCompactThresholdPercent
+        - autoCompactEnabled
+      properties:
+        modelId: { type: string, minLength: 1 }
+        usedTokens: { type: integer, minimum: 0 }
+        contextWindow: { type: integer, minimum: 1 }
+        percent: { type: number, minimum: 0 }
+        rawPercent: { type: number, minimum: 0 }
+        safeInputBudget: { type: integer, minimum: 0 }
+        reservedOutputTokens: { type: integer, minimum: 0 }
+        safetyMarginTokens: { type: integer, minimum: 0 }
+        source: { type: string, enum: [estimated, provider, provider_adjusted] }
+        warningThresholdPercent: { type: number, minimum: 0 }
+        autoCompactThresholdPercent: { type: number, minimum: 0 }
+        autoCompactEnabled: { type: boolean }
+    ComposerEffortSelection:
+      type: object
+      additionalProperties: false
+      required: [requested, effective, source, supported, supportedLevels]
+      properties:
+        requested: { $ref: '#/components/schemas/EffortPreference' }
+        effective:
+          oneOf:
+            - type: string
+              enum: [none, minimal, low, medium, high, xhigh, max]
+            - type: 'null'
+        source:
+          type: string
+          enum: [request, session, project, global, model-default, provider-default]
+        supported: { type: boolean }
+        supportedLevels:
+          type: array
+          uniqueItems: true
+          items: { type: string, enum: [none, minimal, low, medium, high, xhigh, max] }
+        warning: { type: string }
+    ComposerModelSelection:
+      type: object
+      additionalProperties: false
+      required:
+        - modelId
+        - providerId
+        - providerLabel
+        - contextWindow
+        - maxOutputTokens
+        - effort
+      properties:
+        modelId: { type: string, minLength: 1, maxLength: 256 }
+        providerId: { type: [string, 'null'] }
+        providerLabel: { type: [string, 'null'] }
+        contextWindow: { type: integer, minimum: 1 }
+        maxOutputTokens: { type: integer, minimum: 0 }
+        effort: { $ref: '#/components/schemas/ComposerEffortSelection' }
+    ComposerPermissionSelection:
+      type: object
+      additionalProperties: false
+      required: [effective, override, projectDefault, source]
+      properties:
+        effective: { type: string, enum: [ask, allow, deny] }
+        override:
+          oneOf:
+            - type: string
+              enum: [ask, allow, deny]
+            - type: 'null'
+        projectDefault: { type: string, enum: [ask, allow, deny] }
+        source: { type: string, enum: [session, project] }
+    ComposerPendingState:
+      type: object
+      additionalProperties: false
+      required: [model, permission]
+      properties:
+        model:
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [modelId, effort]
+              properties:
+                modelId: { type: string, minLength: 1, maxLength: 256 }
+                effort: { $ref: '#/components/schemas/EffortPreference' }
+            - type: 'null'
+        permission:
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [override]
+              properties:
+                override:
+                  oneOf:
+                    - type: string
+                      enum: [ask, allow, deny]
+                    - type: 'null'
+            - type: 'null'
+    ComposerLastError:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum:
+            - runtime_busy
+            - model_unavailable
+            - model_effort_unsupported
+            - model_switch_rolled_back
+            - permission_override_rejected
+            - composer_control_conflict
+            - composer_recovery_required
+            - session_unavailable
+        message: { type: string, minLength: 1 }
+    PlanReviewView:
+      type: object
+      additionalProperties: false
+      required: [planDigest, revision, status, createdAt, createdModel, returnMode]
+      properties:
+        planDigest: { type: string, pattern: '^[a-f0-9]{64}$' }
+        revision: { type: string, format: uuid }
+        status: { type: string, enum: [awaiting_review, approved, continued, cancelled] }
+        createdAt: { type: number, minimum: 0 }
+        createdModel: { type: string, minLength: 1 }
+        returnMode: { type: string, enum: [build, auto] }
+        resolvedAt: { type: number, minimum: 0 }
+    ComposerQueueItem:
+      type: object
+      additionalProperties: false
+      required: [id, text, queuedAt, revision]
+      properties:
+        id: { type: string, minLength: 1 }
+        text: { type: string, minLength: 1, maxLength: 1048576 }
+        queuedAt: { type: number, minimum: 0 }
+        revision: { type: integer, minimum: 1 }
+    ComposerQueue:
+      type: object
+      additionalProperties: false
+      required: [items, limit]
+      properties:
+        items:
+          type: array
+          maxItems: 16
+          items: { $ref: '#/components/schemas/ComposerQueueItem' }
+        limit: { type: integer, minimum: 0, maximum: 16 }
+    ComposerControlState:
+      type: object
+      additionalProperties: false
+      required:
+        - apiVersion
+        - workspaceId
+        - sessionId
+        - contextRevision
+        - controlRevision
+        - processing
+        - mode
+        - model
+        - permission
+        - contextUsage
+        - compactAvailable
+        - pending
+        - lastError
+        - planReview
+        - queue
+      properties:
+        apiVersion: { type: integer, const: 1 }
+        workspaceId: { type: string, format: uuid }
+        sessionId: { type: string, minLength: 1, maxLength: 256 }
+        contextRevision: { $ref: '#/components/schemas/ContextRevision' }
+        controlRevision: { $ref: '#/components/schemas/ControlRevision' }
+        processing: { type: boolean }
+        compactAvailable: { type: boolean }
+        mode:
+          type: object
+          additionalProperties: false
+          required: [baseMode, pendingBaseMode]
+          properties:
+            baseMode: { type: string, enum: [interactive, plan, auto] }
+            pendingBaseMode:
+              oneOf:
+                - type: string
+                  enum: [interactive, plan, auto]
+                - type: 'null'
+        model: { $ref: '#/components/schemas/ComposerModelSelection' }
+        permission: { $ref: '#/components/schemas/ComposerPermissionSelection' }
+        contextUsage:
+          oneOf:
+            - $ref: '#/components/schemas/ContextUsageView'
+            - type: 'null'
+        pending: { $ref: '#/components/schemas/ComposerPendingState' }
+        lastError:
+          oneOf:
+            - $ref: '#/components/schemas/ComposerLastError'
+            - type: 'null'
+        planReview:
+          oneOf:
+            - $ref: '#/components/schemas/PlanReviewView'
+            - type: 'null'
+        queue: { $ref: '#/components/schemas/ComposerQueue' }
+    ModelCatalogEntry:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - label
+        - providerId
+        - providerLabel
+        - contextWindow
+        - maxOutputTokens
+        - reasoning
+        - effortLevels
+        - aliases
+        - fingerprint
+      properties:
+        id: { type: string, minLength: 1, maxLength: 256 }
+        label: { type: string, minLength: 1 }
+        providerId: { type: string, minLength: 1 }
+        providerLabel: { type: string, minLength: 1 }
+        contextWindow: { type: integer, minimum: 1 }
+        maxOutputTokens: { type: integer, minimum: 0 }
+        reasoning: { type: boolean }
+        effortLevels:
+          type: array
+          uniqueItems: true
+          items: { type: string, enum: [none, minimal, low, medium, high, xhigh, max] }
+        defaultEffort: { type: string, enum: [none, minimal, low, medium, high, xhigh, max] }
+        aliases:
+          type: array
+          items: { type: string }
+        fingerprint: { type: string, pattern: '^[a-f0-9]{64}$' }
+    ModelCatalogPage:
+      type: object
+      additionalProperties: false
+      required: [revision, unavailableProviders, items, nextCursor]
+      properties:
+        revision: { type: string, pattern: '^[a-f0-9]{64}$' }
+        unavailableProviders:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, reason]
+            properties:
+              id: { type: string, minLength: 1 }
+              reason: { type: string, minLength: 1 }
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/ModelCatalogEntry' }
+        nextCursor: { type: [string, 'null'] }
+    SessionRuntimeSnapshot:
+      type: object
+      additionalProperties: false
+      required:
+        - active
+        - processing
+        - agentMode
+        - permissionMode
+        - status
+        - followups
+        - followupLimit
+        - contextUsage
+        - tokenUsage
+      properties:
+        active: { type: boolean }
+        processing: { type: boolean }
+        agentMode: { type: string }
+        permissionMode: { type: string }
+        status: { type: string }
+        followups:
+          type: array
+          items: { $ref: '#/components/schemas/FollowupItem' }
+        followupLimit: { type: integer, minimum: 0 }
+        contextUsage:
+          description: Runtime context-usage projection or null; the wire type is currently unknown.
+        tokenUsage:
+          description: Runtime token-usage projection or null; the wire type is currently unknown.
+    SessionSnapshot:
+      type: object
+      additionalProperties: false
+      required:
+        - apiVersion
+        - session
+        - threadId
+        - threadCursor
+        - eventCursor
+        - threadStatus
+        - transcript
+        - runtime
+        - pendingApprovals
+        - goal
+        - plan
+        - composer
+        - recoveryDiagnostics
+      properties:
+        apiVersion: { type: integer, const: 1 }
+        session: { $ref: '#/components/schemas/SessionSummary' }
+        threadId:
+          type: [string, 'null']
+          description: Null for a legacy session that has no materialized Thread identity.
+        threadCursor:
+          type: integer
+          minimum: 0
+          description: Latest projected durable Thread sequence; independent of eventCursor.
+        eventCursor: { type: integer, minimum: 0 }
+        projectionDigest: { type: string }
+        threadStatus: { type: string, enum: [new, active, idle, legacy] }
+        activeTurnId: { type: string }
+        transcript: { $ref: '#/components/schemas/TranscriptPage' }
+        runtime: { $ref: '#/components/schemas/SessionRuntimeSnapshot' }
+        pendingApprovals:
+          type: array
+          items: { $ref: '#/components/schemas/PendingApproval' }
+        goal:
+          oneOf:
+            - $ref: '#/components/schemas/GoalView'
+            - type: 'null'
+        plan:
+          oneOf:
+            - $ref: '#/components/schemas/PlanView'
+            - type: 'null'
+        composer: { $ref: '#/components/schemas/ComposerControlState' }
+        recoveryDiagnostics:
+          type: array
+          items: {}
+    SkillSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - name
+        - description
+        - providerId
+        - sourceScope
+        - modelInvocable
+        - userInvocable
+        - requestedCapabilities
+        - digest
+      properties:
+        id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        providerId: { type: string }
+        sourceScope: { type: string, enum: [builtin, user, configured, project, remote] }
+        modelInvocable: { type: boolean }
+        userInvocable: { type: boolean }
+        requestedCapabilities:
+          type: array
+          items: { type: string }
+        digest: { type: string }
+    SkillPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/SkillSummary' }
+        nextCursor: { type: [string, 'null'] }
+    McpServerSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - name
+        - transport
+        - tags
+        - disabled
+        - state
+        - generation
+        - toolCount
+        - activeCallCount
+      properties:
+        id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        transport:
+          type: string
+          enum: [stdio, sse, http, streamable-http, websocket]
+        tags:
+          type: array
+          items: { type: string }
+        disabled: { type: boolean }
+        state:
+          type: string
+          enum: [dormant, activating, connected, idle, draining, failed]
+        generation: { type: integer, minimum: 0 }
+        toolCount: { type: integer, minimum: 0 }
+        activeCallCount: { type: integer, minimum: 0 }
+        failure: { type: string }
+    McpPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/McpServerSummary' }
+        nextCursor: { type: [string, 'null'] }
+    ToolDetailSummary:
+      type: object
+      additionalProperties: false
+      required: [callId, sequence, toolName, state, outputBytes, hasArtifact]
+      properties:
+        callId: { type: string }
+        sequence: { type: integer, minimum: 0 }
+        turnId: { type: string }
+        toolName: { type: string }
+        state: { type: string, enum: [success, error, skipped] }
+        outputBytes: { type: integer, minimum: 0 }
+        artifactId:
+          type: string
+          description: Opaque project artifact identifier; it is not a filesystem path.
+        hasArtifact: { type: boolean }
+    ToolDetailSummaryPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/ToolDetailSummary' }
+        nextCursor: { type: [string, 'null'] }
+    ToolDetailPage:
+      type: object
+      additionalProperties: false
+      required: [content, offsetBytes, totalBytes, redacted]
+      properties:
+        content: { type: string }
+        offsetBytes: { type: integer, minimum: 0 }
+        nextOffsetBytes:
+          type: [integer, 'null']
+          minimum: 0
+          description: Omitted or null when the page reaches the end of the artifact.
+        totalBytes: { type: integer, minimum: 0 }
+        redacted:
+          type: boolean
+          description: >-
+            True when content is served from the browser-safe, pre-sanitized derivative. It does
+            not imply that this particular page contained a secret replacement.
+    SettingsRevision:
+      type: string
+      pattern: '^hmac-sha256:[a-f0-9]{64}$'
+      description: >-
+        Opaque HMAC over the exact current config bytes. The local HMAC key is never exposed.
+    SettingsFieldCommon:
+      type: object
+      required: [source, scope, applies, overridden, writable]
+      properties:
+        source: { type: string, enum: [internal, model, global, project, session] }
+        scope: { type: string, enum: [global, project, session] }
+        applies:
+          type: string
+          enum: [live, next-logical-request, new-session, restart]
+        overridden: { type: boolean }
+        writable: { type: boolean }
+        blockedReason:
+          type: string
+          enum: [runtime_busy, read_only, invalid_document]
+    ThemeSettingsField:
+      allOf:
+        - $ref: '#/components/schemas/SettingsFieldCommon'
+        - type: object
+          required: [effectiveValue]
+          properties:
+            effectiveValue: { type: string, enum: [system, light, dark] }
+            explicitValue: { type: string, enum: [system, light, dark] }
+            inheritedValue: { type: string, enum: [system, light, dark] }
+    MotionSettingsField:
+      allOf:
+        - $ref: '#/components/schemas/SettingsFieldCommon'
+        - type: object
+          required: [effectiveValue]
+          properties:
+            effectiveValue: { type: string, enum: [system, reduced] }
+            explicitValue: { type: string, enum: [system, reduced] }
+            inheritedValue: { type: string, enum: [system, reduced] }
+    ModelSettingsField:
+      allOf:
+        - $ref: '#/components/schemas/SettingsFieldCommon'
+        - type: object
+          required: [effectiveValue]
+          properties:
+            effectiveValue: { type: string, minLength: 1 }
+            explicitValue: { type: string, minLength: 1 }
+            inheritedValue: { type: string, minLength: 1 }
+    EffortSettingsField:
+      allOf:
+        - $ref: '#/components/schemas/SettingsFieldCommon'
+        - type: object
+          required: [effectiveValue]
+          properties:
+            effectiveValue: { $ref: '#/components/schemas/EffortPreference' }
+            explicitValue: { $ref: '#/components/schemas/EffortPreference' }
+            inheritedValue: { $ref: '#/components/schemas/EffortPreference' }
+    ToolConfirmationSettingsField:
+      allOf:
+        - $ref: '#/components/schemas/SettingsFieldCommon'
+        - type: object
+          required: [effectiveValue]
+          properties:
+            effectiveValue: { type: string, enum: [allow, ask, deny] }
+            explicitValue: { type: string, enum: [allow, ask, deny] }
+            inheritedValue: { type: string, enum: [allow, ask, deny] }
+    EffortPreference:
+      type: string
+      enum: [auto, none, minimal, low, medium, high, xhigh, max]
+    ModelSummary:
+      type: object
+      additionalProperties: false
+      required: [id, label]
+      properties:
+        id: { type: string, minLength: 1 }
+        label: { type: string, minLength: 1 }
+        provider: { type: string }
+    CredentialSlot:
+      type: object
+      additionalProperties: false
+      required: [providerId, state, source, writable]
+      properties:
+        providerId: { type: string, minLength: 1 }
+        state: { type: string, enum: [ready, missing, unavailable] }
+        source: { type: string, enum: [environment, legacy, none] }
+        writable: { type: boolean, const: false }
+    SettingsDocument:
+      type: object
+      additionalProperties: false
+      required:
+        - schemaVersion
+        - revision
+        - state
+        - writable
+        - hasDocument
+        - workspace
+        - sections
+        - models
+        - credentials
+      properties:
+        schemaVersion: { type: integer, const: 1 }
+        revision: { $ref: '#/components/schemas/SettingsRevision' }
+        state: { type: string, enum: [ready, invalid, read-only, unavailable] }
+        writable: { type: boolean }
+        hasDocument: { type: boolean }
+        workspace: { type: string }
+        sections:
+          type: object
+          additionalProperties: false
+          required: [appearance, defaults, permissions]
+          properties:
+            appearance:
+              type: object
+              additionalProperties: false
+              required: [theme, motion]
+              properties:
+                theme: { $ref: '#/components/schemas/ThemeSettingsField' }
+                motion: { $ref: '#/components/schemas/MotionSettingsField' }
+            defaults:
+              type: object
+              additionalProperties: false
+              required: [model, effort]
+              properties:
+                model: { $ref: '#/components/schemas/ModelSettingsField' }
+                effort: { $ref: '#/components/schemas/EffortSettingsField' }
+            permissions:
+              type: object
+              additionalProperties: false
+              required: [toolConfirmation]
+              properties:
+                toolConfirmation:
+                  $ref: '#/components/schemas/ToolConfirmationSettingsField'
+        models:
+          type: array
+          items: { $ref: '#/components/schemas/ModelSummary' }
+        credentials:
+          type: array
+          items: { $ref: '#/components/schemas/CredentialSlot' }
+        currentSession:
+          type: object
+          additionalProperties: false
+          required: [model, effort, overridesProjectEffort]
+          properties:
+            model: { type: string }
+            effort: { $ref: '#/components/schemas/EffortPreference' }
+            overridesProjectEffort: { type: boolean }
+        diagnostic:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+    SettingsOperation:
+      oneOf:
+        - $ref: '#/components/schemas/SetThemeSetting'
+        - $ref: '#/components/schemas/UnsetThemeSetting'
+        - $ref: '#/components/schemas/SetMotionSetting'
+        - $ref: '#/components/schemas/UnsetMotionSetting'
+        - $ref: '#/components/schemas/SetModelSetting'
+        - $ref: '#/components/schemas/UnsetModelSetting'
+        - $ref: '#/components/schemas/SetEffortSetting'
+        - $ref: '#/components/schemas/UnsetEffortSetting'
+        - $ref: '#/components/schemas/SetToolConfirmationSetting'
+        - $ref: '#/components/schemas/UnsetToolConfirmationSetting'
+    SetThemeSetting:
+      type: object
+      additionalProperties: false
+      required: [op, key, value]
+      properties:
+        op: { type: string, const: set }
+        key: { type: string, const: appearance.theme }
+        value: { type: string, enum: [system, light, dark] }
+    UnsetThemeSetting:
+      type: object
+      additionalProperties: false
+      required: [op, key]
+      properties:
+        op: { type: string, const: unset }
+        key: { type: string, const: appearance.theme }
+    SetMotionSetting:
+      type: object
+      additionalProperties: false
+      required: [op, key, value]
+      properties:
+        op: { type: string, const: set }
+        key: { type: string, const: appearance.motion }
+        value: { type: string, enum: [system, reduced] }
+    UnsetMotionSetting:
+      type: object
+      additionalProperties: false
+      required: [op, key]
+      properties:
+        op: { type: string, const: unset }
+        key: { type: string, const: appearance.motion }
+    SetModelSetting:
+      type: object
+      additionalProperties: false
+      required: [op, key, value]
+      properties:
+        op: { type: string, const: set }
+        key: { type: string, const: defaults.model }
+        value: { type: string, minLength: 1, maxLength: 200 }
+    UnsetModelSetting:
+      type: object
+      additionalProperties: false
+      required: [op, key]
+      properties:
+        op: { type: string, const: unset }
+        key: { type: string, const: defaults.model }
+    SetEffortSetting:
+      type: object
+      additionalProperties: false
+      required: [op, key, value]
+      properties:
+        op: { type: string, const: set }
+        key: { type: string, const: defaults.effort }
+        value: { $ref: '#/components/schemas/EffortPreference' }
+    UnsetEffortSetting:
+      type: object
+      additionalProperties: false
+      required: [op, key]
+      properties:
+        op: { type: string, const: unset }
+        key: { type: string, const: defaults.effort }
+    SetToolConfirmationSetting:
+      type: object
+      additionalProperties: false
+      required: [op, key, value]
+      properties:
+        op: { type: string, const: set }
+        key: { type: string, const: permissions.toolConfirmation }
+        value: { type: string, enum: [allow, ask, deny] }
+    UnsetToolConfirmationSetting:
+      type: object
+      additionalProperties: false
+      required: [op, key]
+      properties:
+        op: { type: string, const: unset }
+        key: { type: string, const: permissions.toolConfirmation }
+    UpdateSettingsRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId, expectedRevision, operations]
+      properties:
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        expectedRevision: { $ref: '#/components/schemas/SettingsRevision' }
+        operations:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items: { $ref: '#/components/schemas/SettingsOperation' }
+    SettingsMutationResult:
+      type: object
+      additionalProperties: false
+      required: [requestId, revision, appliedKeys, settings]
+      properties:
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        revision: { $ref: '#/components/schemas/SettingsRevision' }
+        appliedKeys:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            type: string
+            enum:
+              - appearance.theme
+              - appearance.motion
+              - defaults.model
+              - defaults.effort
+              - permissions.toolConfirmation
+        settings: { $ref: '#/components/schemas/SettingsDocument' }
+    ContextReference:
+      oneOf:
+        - $ref: '#/components/schemas/FileContextReference'
+        - $ref: '#/components/schemas/FolderContextReference'
+        - $ref: '#/components/schemas/ReviewContextReference'
+        - $ref: '#/components/schemas/SessionContextReference'
+        - $ref: '#/components/schemas/SkillContextReference'
+      discriminator:
+        propertyName: kind
+        mapping:
+          file: '#/components/schemas/FileContextReference'
+          folder: '#/components/schemas/FolderContextReference'
+          review: '#/components/schemas/ReviewContextReference'
+          session: '#/components/schemas/SessionContextReference'
+          skill: '#/components/schemas/SkillContextReference'
+    FileContextReference:
+      type: object
+      additionalProperties: false
+      required: [kind, id, label, revision]
+      properties:
+        kind: { type: string, const: file }
+        id: { type: string, minLength: 1, maxLength: 1024 }
+        label: { type: string, minLength: 1, maxLength: 256 }
+        revision: { type: string, minLength: 1, maxLength: 256 }
+    FolderContextReference:
+      type: object
+      additionalProperties: false
+      required: [kind, id, label, revision]
+      properties:
+        kind: { type: string, const: folder }
+        id: { type: string, minLength: 1, maxLength: 1024 }
+        label: { type: string, minLength: 1, maxLength: 256 }
+        revision: { type: string, minLength: 1, maxLength: 256 }
+    ReviewContextReference:
+      type: object
+      additionalProperties: false
+      required: [kind, id, label, gitRevision]
+      properties:
+        kind: { type: string, const: review }
+        id: { type: string, minLength: 1, maxLength: 1024 }
+        label: { type: string, minLength: 1, maxLength: 256 }
+        gitRevision: { type: string, minLength: 1, maxLength: 256 }
+    SessionContextReference:
+      type: object
+      additionalProperties: false
+      required: [kind, id, label, digest]
+      properties:
+        kind: { type: string, const: session }
+        id: { type: string, minLength: 1, maxLength: 256 }
+        label: { type: string, minLength: 1, maxLength: 256 }
+        digest: { type: string, pattern: '^[a-f0-9]{64}$' }
+    SkillContextReference:
+      type: object
+      additionalProperties: false
+      required: [kind, id, label, digest]
+      properties:
+        kind: { type: string, const: skill }
+        id: { type: string, minLength: 1, maxLength: 256 }
+        label: { type: string, minLength: 1, maxLength: 256 }
+        digest: { type: string, pattern: '^[a-f0-9]{64}$' }
+    ComposerActionBase:
+      type: object
+      required:
+        - requestId
+        - workspaceId
+        - expectedContextRevision
+        - expectedSessionId
+        - expectedControlRevision
+        - type
+      properties:
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        workspaceId: { type: string, format: uuid }
+        expectedContextRevision: { $ref: '#/components/schemas/ContextRevision' }
+        expectedSessionId: { type: string, format: uuid }
+        expectedControlRevision: { $ref: '#/components/schemas/ControlRevision' }
+        type:
+          type: string
+          enum:
+            - set_agent_mode
+            - set_permission_override
+            - clear_permission_override
+            - select_model
+            - compact_context
+            - review_plan
+            - edit_queue_item
+            - move_queue_item
+            - remove_queue_item
+    ComposerSetModeAction:
+      allOf:
+        - $ref: '#/components/schemas/ComposerActionBase'
+        - type: object
+          required: [mode]
+          properties:
+            type: { type: string, const: set_agent_mode }
+            mode: { type: string, enum: [interactive, plan, auto] }
+      unevaluatedProperties: false
+    ComposerSetPermissionAction:
+      allOf:
+        - $ref: '#/components/schemas/ComposerActionBase'
+        - type: object
+          required: [value]
+          properties:
+            type: { type: string, const: set_permission_override }
+            value: { type: string, enum: [ask, allow, deny] }
+      unevaluatedProperties: false
+    ComposerClearPermissionAction:
+      allOf:
+        - $ref: '#/components/schemas/ComposerActionBase'
+        - type: object
+          properties:
+            type: { type: string, const: clear_permission_override }
+      unevaluatedProperties: false
+    ComposerSelectModelAction:
+      allOf:
+        - $ref: '#/components/schemas/ComposerActionBase'
+        - type: object
+          required: [modelId]
+          properties:
+            type: { type: string, const: select_model }
+            modelId: { type: string, minLength: 1, maxLength: 256 }
+            effort: { $ref: '#/components/schemas/EffortPreference' }
+      unevaluatedProperties: false
+    ComposerCompactAction:
+      allOf:
+        - $ref: '#/components/schemas/ComposerActionBase'
+        - type: object
+          properties:
+            type: { type: string, const: compact_context }
+      unevaluatedProperties: false
+    ComposerReviewPlanAction:
+      allOf:
+        - $ref: '#/components/schemas/ComposerActionBase'
+        - type: object
+          required: [planDigest, action]
+          properties:
+            type: { type: string, const: review_plan }
+            planDigest: { type: string, pattern: '^[a-f0-9]{64}$' }
+            action: { type: string, enum: [approve, continue, cancel] }
+            feedback: { type: string, minLength: 1, maxLength: 1048576 }
+      unevaluatedProperties: false
+    ComposerEditQueueAction:
+      allOf:
+        - $ref: '#/components/schemas/ComposerActionBase'
+        - type: object
+          required: [itemId, expectedItemRevision, text]
+          properties:
+            type: { type: string, const: edit_queue_item }
+            itemId: { type: string, minLength: 1, maxLength: 256 }
+            expectedItemRevision: { type: integer, minimum: 1 }
+            text: { type: string, minLength: 1, maxLength: 1048576 }
+      unevaluatedProperties: false
+    ComposerMoveQueueAction:
+      allOf:
+        - $ref: '#/components/schemas/ComposerActionBase'
+        - type: object
+          required: [itemId, expectedItemRevision, targetIndex]
+          properties:
+            type: { type: string, const: move_queue_item }
+            itemId: { type: string, minLength: 1, maxLength: 256 }
+            expectedItemRevision: { type: integer, minimum: 1 }
+            targetIndex: { type: integer, minimum: 0, maximum: 15 }
+      unevaluatedProperties: false
+    ComposerRemoveQueueAction:
+      allOf:
+        - $ref: '#/components/schemas/ComposerActionBase'
+        - type: object
+          required: [itemId, expectedItemRevision]
+          properties:
+            type: { type: string, const: remove_queue_item }
+            itemId: { type: string, minLength: 1, maxLength: 256 }
+            expectedItemRevision: { type: integer, minimum: 1 }
+      unevaluatedProperties: false
+    ComposerAction:
+      oneOf:
+        - $ref: '#/components/schemas/ComposerSetModeAction'
+        - $ref: '#/components/schemas/ComposerSetPermissionAction'
+        - $ref: '#/components/schemas/ComposerClearPermissionAction'
+        - $ref: '#/components/schemas/ComposerSelectModelAction'
+        - $ref: '#/components/schemas/ComposerCompactAction'
+        - $ref: '#/components/schemas/ComposerReviewPlanAction'
+        - $ref: '#/components/schemas/ComposerEditQueueAction'
+        - $ref: '#/components/schemas/ComposerMoveQueueAction'
+        - $ref: '#/components/schemas/ComposerRemoveQueueAction'
+      discriminator:
+        propertyName: type
+        mapping:
+          set_agent_mode: '#/components/schemas/ComposerSetModeAction'
+          set_permission_override: '#/components/schemas/ComposerSetPermissionAction'
+          clear_permission_override: '#/components/schemas/ComposerClearPermissionAction'
+          select_model: '#/components/schemas/ComposerSelectModelAction'
+          compact_context: '#/components/schemas/ComposerCompactAction'
+          review_plan: '#/components/schemas/ComposerReviewPlanAction'
+          edit_queue_item: '#/components/schemas/ComposerEditQueueAction'
+          move_queue_item: '#/components/schemas/ComposerMoveQueueAction'
+          remove_queue_item: '#/components/schemas/ComposerRemoveQueueAction'
+    SessionModelSwitchReceipt:
+      type: object
+      additionalProperties: false
+      required:
+        - receiptId
+        - fromModelId
+        - toModelId
+        - requestedEffort
+        - compacted
+        - compactRequired
+        - compactPreflight
+        - appliesFrom
+        - sessionPreferencesDigest
+      properties:
+        receiptId: { type: string, format: uuid }
+        fromModelId: { type: string, minLength: 1 }
+        toModelId: { type: string, minLength: 1 }
+        requestedEffort: { $ref: '#/components/schemas/EffortPreference' }
+        compacted: { type: boolean }
+        compactRequired: { type: boolean }
+        compactPreflight:
+          type: string
+          enum: [not_required, unavailable, not_needed, committed, deferred]
+        appliesFrom: { type: string, enum: [immediate, next-logical-request] }
+        sessionPreferencesDigest: { type: string, pattern: '^[a-f0-9]{64}$' }
+    SessionPermissionReceipt:
+      type: object
+      additionalProperties: false
+      required: [receiptId, previous, current, appliesFrom, sessionPreferencesDigest]
+      properties:
+        receiptId: { type: string, format: uuid }
+        previous: { $ref: '#/components/schemas/ComposerPermissionSelection' }
+        current: { $ref: '#/components/schemas/ComposerPermissionSelection' }
+        appliesFrom: { type: string, enum: [immediate, next-tool-admission] }
+        sessionPreferencesDigest: { type: string, pattern: '^[a-f0-9]{64}$' }
+    PlanReviewProjection:
+      type: object
+      additionalProperties: false
+      required:
+        - reviewId
+        - revision
+        - planDigest
+        - planReceiptDigest
+        - status
+        - createdAt
+        - createdModel
+        - returnMode
+        - requestedSeq
+      properties:
+        reviewId: { type: string, format: uuid }
+        revision: { type: string, format: uuid }
+        planDigest: { type: string, pattern: '^[a-f0-9]{64}$' }
+        planReceiptDigest: { type: string, pattern: '^[a-f0-9]{64}$' }
+        status: { type: string, enum: [awaiting_review, approved, continued, cancelled] }
+        createdAt: { type: number, minimum: 0 }
+        createdModel: { type: string, minLength: 1 }
+        returnMode: { type: string, enum: [build, auto] }
+        requestedSeq: { type: integer, minimum: 1 }
+        resolvedAt: { type: number, minimum: 0 }
+        resolvedSeq: { type: integer, minimum: 1 }
+        feedback: { type: string }
+        feedbackDigest: { type: string, pattern: '^[a-f0-9]{64}$' }
+    PlanReviewAdmission:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [status, turnId]
+          properties:
+            status: { type: string, const: started }
+            turnId: { type: string, minLength: 1 }
+        - type: object
+          additionalProperties: false
+          required: [status, queueId]
+          properties:
+            status: { type: string, const: queued }
+            queueId: { type: string, minLength: 1 }
+        - type: object
+          additionalProperties: false
+          required: [status]
+          properties:
+            status: { type: string, enum: [already_admitted, cancelled] }
+        - type: object
+          additionalProperties: false
+          required: [status, reason]
+          properties:
+            status: { type: string, const: pending }
+            reason: { type: string, minLength: 1 }
+      discriminator: { propertyName: status }
+    PlanReviewResolutionReceipt:
+      type: object
+      additionalProperties: false
+      required: [receiptId, state, admission, digest]
+      properties:
+        receiptId: { type: string, format: uuid }
+        state: { $ref: '#/components/schemas/PlanReviewProjection' }
+        admission: { $ref: '#/components/schemas/PlanReviewAdmission' }
+        digest: { type: string, pattern: '^[a-f0-9]{64}$' }
+    ComposerActionResult:
+      type: object
+      additionalProperties: false
+      required: [requestId, outcome, controlRevision, state]
+      properties:
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        outcome: { type: string, enum: [applied, deferred] }
+        controlRevision: { $ref: '#/components/schemas/ControlRevision' }
+        state: { $ref: '#/components/schemas/ComposerControlState' }
+        modelReceipt: { $ref: '#/components/schemas/SessionModelSwitchReceipt' }
+        permissionReceipt: { $ref: '#/components/schemas/SessionPermissionReceipt' }
+        planReviewReceipt: { $ref: '#/components/schemas/PlanReviewResolutionReceipt' }
+        detail: { type: string }
+    WebCommand:
+      type: object
+      additionalProperties: false
+      required: [requestId, expectedContextRevision, workspaceId, expectedSessionId, type]
+      allOf:
+        - if:
+            properties:
+              type: { const: set_agent_mode }
+            required: [type]
+          then:
+            required: [agentMode]
+      properties:
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        expectedContextRevision: { $ref: '#/components/schemas/ContextRevision' }
+        workspaceId: { type: string, format: uuid }
+        expectedSessionId:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: >-
+            Compare-and-swap guard for the active Session. The Host returns 409
+            active_session_changed without dispatching when the selection no longer matches.
+        type:
+          type: string
+          enum:
+            - submit
+            - queue_followup
+            - remove_followup
+            - clear_followups
+            - interrupt
+            - permission_decision
+            - goal_control
+            - permission_mode_change
+            - cycle_agent_mode
+            - set_agent_mode
+        text: { type: string, maxLength: 1048576 }
+        itemId: { type: string }
+        requestPermissionId: { type: string }
+        approved: { type: boolean }
+        scope: { type: string, enum: [once, project, global] }
+        goalAction: { type: string, enum: [create, status, pause, resume, clear] }
+        objective: { type: string }
+        toolConfirmation: { type: string, enum: [allow, ask, deny] }
+        agentMode: { type: string, enum: [interactive, plan, auto] }
+        contextReferences:
+          type: array
+          maxItems: 20
+          items: { $ref: '#/components/schemas/ContextReference' }
+    CommandResult:
+      type: object
+      additionalProperties: false
+      required: [requestId, result]
+      properties:
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        result: { type: string }
+        detail: { type: string }
+    WebEventEnvelope:
+      description: >-
+        Versioned, cursor-ordered event union. `type` is the discriminator; every branch carries
+        explicit `sessionId` and `threadId` keys. Runtime events allow null identities before a
+        session or Thread exists; committed Thread events require both values to be non-null.
+      oneOf:
+        - $ref: '#/components/schemas/RuntimeEventEnvelope'
+        - $ref: '#/components/schemas/ThreadEventEnvelope'
+        - $ref: '#/components/schemas/WorkbenchStateEnvelope'
+        - $ref: '#/components/schemas/SettingsInvalidatedEnvelope'
+        - $ref: '#/components/schemas/WorkspaceResourceInvalidatedEnvelope'
+        - $ref: '#/components/schemas/ComposerStateChangedEnvelope'
+        - $ref: '#/components/schemas/ReplayResetEnvelope'
+      discriminator:
+        propertyName: type
+        mapping:
+          runtime_event: '#/components/schemas/RuntimeEventEnvelope'
+          thread_event: '#/components/schemas/ThreadEventEnvelope'
+          workbench_state: '#/components/schemas/WorkbenchStateEnvelope'
+          settings_invalidated: '#/components/schemas/SettingsInvalidatedEnvelope'
+          workspace_resource_invalidated: '#/components/schemas/WorkspaceResourceInvalidatedEnvelope'
+          composer_state_changed: '#/components/schemas/ComposerStateChangedEnvelope'
+          replay_reset: '#/components/schemas/ReplayResetEnvelope'
+    RuntimeEventEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - apiVersion
+        - eventId
+        - cursor
+        - sessionId
+        - threadId
+        - type
+        - durable
+        - timestamp
+        - payload
+      properties:
+        apiVersion: { type: integer, const: 1 }
+        eventId: { type: string, format: uuid }
+        cursor: { type: integer, minimum: 1 }
+        sessionId: { type: [string, 'null'] }
+        threadId: { type: [string, 'null'] }
+        type: { type: string, const: runtime_event }
+        durable: { type: boolean }
+        timestamp: { type: string, format: date-time }
+        payload:
+          type: object
+          additionalProperties: false
+          required: [eventType, value]
+          properties:
+            eventType: { type: string, minLength: 1 }
+            value: { type: object, additionalProperties: true }
+    ThreadEventEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - apiVersion
+        - eventId
+        - cursor
+        - sessionId
+        - threadId
+        - type
+        - durable
+        - timestamp
+        - payload
+      properties:
+        apiVersion: { type: integer, const: 1 }
+        eventId: { type: string, format: uuid }
+        cursor: { type: integer, minimum: 1 }
+        sessionId: { type: string, minLength: 1 }
+        threadId: { type: string, minLength: 1 }
+        type: { type: string, const: thread_event }
+        durable: { type: boolean, const: true }
+        timestamp: { type: string, format: date-time }
+        payload:
+          type: object
+          additionalProperties: false
+          required: [sequence, eventType, value]
+          properties:
+            sequence: { type: integer, minimum: 1 }
+            eventType: { type: string, minLength: 1 }
+            value: { type: object, additionalProperties: true }
+    WorkbenchStateEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - apiVersion
+        - eventId
+        - cursor
+        - sessionId
+        - threadId
+        - type
+        - durable
+        - timestamp
+        - payload
+      properties:
+        apiVersion: { type: integer, const: 1 }
+        eventId: { type: string, format: uuid }
+        cursor: { type: integer, minimum: 1 }
+        sessionId: { type: [string, 'null'] }
+        threadId: { type: [string, 'null'] }
+        type: { type: string, const: workbench_state }
+        durable: { type: boolean }
+        timestamp: { type: string, format: date-time }
+        payload:
+          type: object
+          additionalProperties: false
+          required: [contextRevision, workspaceId, workspace, activeSessionId]
+          properties:
+            contextRevision: { $ref: '#/components/schemas/ContextRevision' }
+            workspaceId: { type: string, format: uuid }
+            workspace: { type: string }
+            activeSessionId: { type: [string, 'null'] }
+    SettingsInvalidatedEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - apiVersion
+        - eventId
+        - cursor
+        - sessionId
+        - threadId
+        - type
+        - durable
+        - timestamp
+        - payload
+      properties:
+        apiVersion: { type: integer, const: 1 }
+        eventId: { type: string, format: uuid }
+        cursor: { type: integer, minimum: 1 }
+        sessionId: { type: [string, 'null'] }
+        threadId: { type: [string, 'null'] }
+        type: { type: string, const: settings_invalidated }
+        durable: { type: boolean, const: false }
+        timestamp: { type: string, format: date-time }
+        payload:
+          type: object
+          additionalProperties: false
+          required: [revision, reason, state]
+          properties:
+            revision: { $ref: '#/components/schemas/SettingsRevision' }
+            reason: { type: string, enum: [local-write, external-edit, workspace-change] }
+            state: { type: string, enum: [ready, invalid] }
+    WorkspaceResourceInvalidatedEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - apiVersion
+        - eventId
+        - cursor
+        - sessionId
+        - threadId
+        - type
+        - durable
+        - timestamp
+        - payload
+      properties:
+        apiVersion: { type: integer, const: 1 }
+        eventId: { type: string, format: uuid }
+        cursor: { type: integer, minimum: 1 }
+        sessionId: { type: [string, 'null'] }
+        threadId: { type: [string, 'null'] }
+        type: { type: string, const: workspace_resource_invalidated }
+        durable: { type: boolean, const: false }
+        timestamp: { type: string, format: date-time }
+        payload:
+          type: object
+          additionalProperties: false
+          required: [workspaceId, resources, reason]
+          properties:
+            workspaceId: { type: string, format: uuid }
+            resources:
+              type: array
+              minItems: 1
+              uniqueItems: true
+              items: { type: string, enum: [files, git, review] }
+            reason:
+              type: string
+              enum: [context-change, filesystem-change, terminal-command, tool-finished]
+    ComposerStateChangedEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - apiVersion
+        - eventId
+        - cursor
+        - sessionId
+        - threadId
+        - type
+        - durable
+        - timestamp
+        - payload
+      properties:
+        apiVersion: { type: integer, const: 1 }
+        eventId: { type: string, format: uuid }
+        cursor: { type: integer, minimum: 1 }
+        sessionId: { type: string, minLength: 1 }
+        threadId: { type: [string, 'null'] }
+        type: { type: string, const: composer_state_changed }
+        durable: { type: boolean, const: true }
+        timestamp: { type: string, format: date-time }
+        payload:
+          type: object
+          additionalProperties: false
+          required: [state]
+          properties:
+            state: { $ref: '#/components/schemas/ComposerControlState' }
+    ReplayResetEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - apiVersion
+        - eventId
+        - cursor
+        - sessionId
+        - threadId
+        - type
+        - durable
+        - timestamp
+        - payload
+      properties:
+        apiVersion: { type: integer, const: 1 }
+        eventId: { type: string, format: uuid }
+        cursor: { type: integer, minimum: 1 }
+        sessionId: { type: [string, 'null'] }
+        threadId: { type: [string, 'null'] }
+        type: { type: string, const: replay_reset }
+        durable: { type: boolean, const: true }
+        timestamp: { type: string, format: date-time }
+        payload:
+          type: object
+          additionalProperties: false
+          required: [reason, snapshotRequired]
+          properties:
+            reason: { type: string }
+            snapshotRequired: { type: boolean, const: true }
+    ComposerProblemCode:
+      type: string
+      description: Stable RFC 9457 code family for v0.3.2 Composer and Context operations.
+      enum:
+        - context_revision_conflict
+        - active_session_changed
+        - composer_control_conflict
+        - composer_recovery_required
+        - composer_control_failed
+        - runtime_busy
+        - model_unavailable
+        - model_effort_unsupported
+        - model_compaction_required
+        - model_switch_rolled_back
+        - permission_override_rejected
+        - plan_review_stale
+        - plan_review_invalid
+        - context_reference_stale
+        - context_reference_forbidden
+        - context_reference_invalid
+        - queue_item_conflict
+    Problem:
+      type: object
+      additionalProperties: false
+      required: [type, title, status, code]
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        code: { type: string, minLength: 1 }
+        detail: { type: string }

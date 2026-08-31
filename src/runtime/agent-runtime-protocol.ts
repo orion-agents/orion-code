@@ -31,7 +31,10 @@ export type AgentRuntimeInput =
     }
   | {
       type: 'queue_followup';
+      /** User-visible text retained by queue editors and renderer snapshots. */
       text: string;
+      /** Optional Host-resolved execution text; never projected back to renderers. */
+      resolvedText?: string;
       source?: 'composer' | 'programmatic';
     }
   | {

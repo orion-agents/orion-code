@@ -5,7 +5,7 @@ import { load } from 'js-yaml';
 
 type JsonObject = Record<string, unknown>;
 
-const contractPath = resolve(__dirname, '../docs/architecture/v0.3.1-web-api.yaml');
+const contractPath = resolve(__dirname, '../docs/architecture/v0.3.2-web-api.yaml');
 
 describe('Orion Web OpenAPI contract', () => {
   const document = load(readFileSync(contractPath, 'utf8')) as JsonObject;
@@ -25,9 +25,12 @@ describe('Orion Web OpenAPI contract', () => {
 
   test('requires requestId on every mutation and an atomic Settings batch CAS', () => {
     const mutations = collectOperations(document).filter(operation => operation.method !== 'get');
-    expect(mutations).toHaveLength(13);
+    expect(mutations).toHaveLength(14);
     for (const operation of mutations) {
-      const schema = requestSchema(document, operation.value);
+      const schema =
+        operation.operationId === 'applySessionComposerAction'
+          ? (resolveReference(document, '#/components/schemas/ComposerActionBase') as JsonObject)
+          : requestSchema(document, operation.value);
       expect(schema.required).toEqual(expect.arrayContaining(['requestId']));
       expect(operation.value.security).toEqual(
         expect.arrayContaining([expect.objectContaining({ webNonce: [] })])
@@ -91,11 +94,12 @@ describe('Orion Web OpenAPI contract', () => {
         'pendingApprovals',
         'goal',
         'plan',
+        'composer',
       ])
     );
 
     const event = resolveReference(document, '#/components/schemas/WebEventEnvelope') as JsonObject;
-    expect(event.oneOf).toHaveLength(6);
+    expect(event.oneOf).toHaveLength(7);
     for (const branch of event.oneOf as JsonObject[]) {
       const schema = resolveReference(document, branch.$ref as string) as JsonObject;
       expect(schema.required).toEqual(
@@ -187,6 +191,8 @@ describe('Orion Web OpenAPI contract', () => {
       '/workspaces',
       '/sessions',
       '/sessions/{sessionId}/snapshot',
+      '/sessions/{sessionId}/composer-state',
+      '/sessions/{sessionId}/model-catalog',
       '/files',
       '/files/{fileId}/content',
       '/git/status',
@@ -234,6 +240,7 @@ describe('Orion Web OpenAPI contract', () => {
       '#/components/schemas/ContextGuardRequest',
       '#/components/schemas/TerminalCreateRequest',
       '#/components/schemas/WebCommand',
+      '#/components/schemas/ComposerActionBase',
     ];
     for (const reference of guardedMutationSchemas) {
       const schema = resolveReference(document, reference) as JsonObject;
@@ -258,7 +265,14 @@ describe('Orion Web OpenAPI contract', () => {
 
   test('separates revision-bound collection and transcript cursor contracts', () => {
     const paths = document.paths as JsonObject;
-    for (const path of ['/workspaces', '/sessions', '/skills', '/mcp', '/tool-details']) {
+    for (const path of [
+      '/workspaces',
+      '/sessions',
+      '/skills',
+      '/mcp',
+      '/tool-details',
+      '/sessions/{sessionId}/model-catalog',
+    ]) {
       const operation = (paths[path] as JsonObject).get as JsonObject;
       expect(operation.parameters).toEqual(
         expect.arrayContaining([
@@ -305,6 +319,119 @@ describe('Orion Web OpenAPI contract', () => {
     expect(
       ((paths['/tool-details/{callId}'] as JsonObject).get as JsonObject).description as string
     ).toContain('pre-sanitized derivative');
+  });
+
+  test('freezes the v0.3.2 Composer union, Context references and durable control event', () => {
+    const paths = document.paths as JsonObject;
+    for (const path of [
+      '/sessions/{sessionId}/composer-state',
+      '/sessions/{sessionId}/model-catalog',
+      '/sessions/{sessionId}/composer-actions',
+    ]) {
+      expect(paths).toHaveProperty(path);
+    }
+
+    const action = resolveReference(document, '#/components/schemas/ComposerAction') as JsonObject;
+    expect(action.oneOf).toHaveLength(9);
+    const discriminator = action.discriminator as JsonObject;
+    expect(discriminator.propertyName).toBe('type');
+    expect(Object.keys(discriminator.mapping as JsonObject)).toEqual([
+      'set_agent_mode',
+      'set_permission_override',
+      'clear_permission_override',
+      'select_model',
+      'compact_context',
+      'review_plan',
+      'edit_queue_item',
+      'move_queue_item',
+      'remove_queue_item',
+    ]);
+    for (const branch of action.oneOf as JsonObject[]) {
+      const schema = resolveReference(document, branch.$ref as string) as JsonObject;
+      expect(schema.unevaluatedProperties).toBe(false);
+    }
+
+    const base = resolveReference(
+      document,
+      '#/components/schemas/ComposerActionBase'
+    ) as JsonObject;
+    expect(base.required).toEqual([
+      'requestId',
+      'workspaceId',
+      'expectedContextRevision',
+      'expectedSessionId',
+      'expectedControlRevision',
+      'type',
+    ]);
+    const baseProperties = base.properties as JsonObject;
+    expect(baseProperties.requestId).toEqual({ $ref: '#/components/schemas/RequestId' });
+    expect(baseProperties.expectedControlRevision).toEqual({
+      $ref: '#/components/schemas/ControlRevision',
+    });
+
+    const references = resolveReference(
+      document,
+      '#/components/schemas/ContextReference'
+    ) as JsonObject;
+    expect(references.oneOf).toHaveLength(5);
+    expect((references.discriminator as JsonObject).propertyName).toBe('kind');
+
+    const state = resolveReference(
+      document,
+      '#/components/schemas/ComposerControlState'
+    ) as JsonObject;
+    expect(state.required).toEqual(
+      expect.arrayContaining([
+        'workspaceId',
+        'sessionId',
+        'contextRevision',
+        'controlRevision',
+        'compactAvailable',
+        'pending',
+        'lastError',
+        'planReview',
+        'queue',
+      ])
+    );
+    const queue = resolveReference(
+      document,
+      '#/components/schemas/ComposerQueueItem'
+    ) as JsonObject;
+    expect(queue.required).toEqual(['id', 'text', 'queuedAt', 'revision']);
+
+    const events = resolveReference(
+      document,
+      '#/components/schemas/WebEventEnvelope'
+    ) as JsonObject;
+    expect((events.discriminator as JsonObject).mapping as JsonObject).toHaveProperty(
+      'composer_state_changed',
+      '#/components/schemas/ComposerStateChangedEnvelope'
+    );
+    const envelope = resolveReference(
+      document,
+      '#/components/schemas/ComposerStateChangedEnvelope'
+    ) as JsonObject;
+    expect(envelope.required).toEqual(
+      expect.arrayContaining(['eventId', 'cursor', 'sessionId', 'threadId', 'type', 'durable'])
+    );
+    expect((envelope.properties as JsonObject).durable).toEqual({
+      type: 'boolean',
+      const: true,
+    });
+
+    const problemCodes = resolveReference(
+      document,
+      '#/components/schemas/ComposerProblemCode'
+    ) as JsonObject;
+    expect(problemCodes.enum).toEqual(
+      expect.arrayContaining([
+        'composer_control_conflict',
+        'model_switch_rolled_back',
+        'plan_review_stale',
+        'context_reference_forbidden',
+        'queue_item_conflict',
+      ])
+    );
   });
 });
 

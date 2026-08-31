@@ -63,6 +63,22 @@ export interface QueuedTurnProjectionV1 {
   readonly queuedSeq: number;
 }
 
+export interface PlanReviewProjectionV1 {
+  readonly reviewId: string;
+  readonly revision: string;
+  readonly planDigest: string;
+  readonly planReceiptDigest: string;
+  readonly status: 'awaiting_review' | 'approved' | 'continued' | 'cancelled';
+  readonly createdAt: number;
+  readonly createdModel: string;
+  readonly returnMode: 'build' | 'auto';
+  readonly requestedSeq: number;
+  readonly resolvedAt?: number;
+  readonly resolvedSeq?: number;
+  readonly feedback?: string;
+  readonly feedbackDigest?: string;
+}
+
 export interface ThreadProjectionV1 {
   readonly version: 1;
   readonly threadId: string;
@@ -72,6 +88,7 @@ export interface ThreadProjectionV1 {
   readonly turns: Readonly<Record<string, TurnProjectionV1>>;
   readonly items: Readonly<Record<string, ItemProjectionV1>>;
   readonly queue: readonly QueuedTurnProjectionV1[];
+  readonly planReview?: PlanReviewProjectionV1;
   readonly stepSnapshotDigests: readonly string[];
   readonly capabilityReceiptDigests: readonly string[];
   readonly toolInvocationIds: readonly string[];
@@ -87,6 +104,7 @@ interface MutableThreadProjectionV1 {
   turns: Record<string, TurnProjectionV1>;
   items: Record<string, ItemProjectionV1>;
   queue: QueuedTurnProjectionV1[];
+  planReview?: PlanReviewProjectionV1;
   stepSnapshotDigests: string[];
   capabilityReceiptDigests: string[];
   toolInvocationIds: string[];
@@ -165,6 +183,7 @@ export function advanceThreadProjection(
       Object.entries(projection.items).map(([id, item]) => [id, { ...item }])
     ),
     queue: projection.queue.map(item => ({ ...item })),
+    ...(projection.planReview ? { planReview: { ...projection.planReview } } : {}),
     stepSnapshotDigests: [...projection.stepSnapshotDigests],
     capabilityReceiptDigests: [...projection.capabilityReceiptDigests],
     toolInvocationIds: [...projection.toolInvocationIds],
@@ -212,6 +231,12 @@ export function applyThreadEvent(
       break;
     case 'turn.committed':
       commitTurn(state, event);
+      break;
+    case 'plan.review_requested':
+      requestPlanReview(state, event);
+      break;
+    case 'plan.review_resolved':
+      resolvePlanReview(state, event);
       break;
     case 'turn.completed':
       finishTurn(state, event, 'completed');
@@ -432,6 +457,93 @@ function commitTurn(state: MutableThreadProjectionV1, event: RuntimeEventEnvelop
       reason: event.payload.data.reason,
       seq: event.seq,
     },
+  };
+}
+
+function requestPlanReview(state: MutableThreadProjectionV1, event: RuntimeEventEnvelopeV1): void {
+  if (event.payload.type !== 'plan.review_requested') {
+    throw invariant('invalid plan review request payload', event);
+  }
+  const turnId = requiredIdentity(event.turnId, 'turnId', event);
+  const turn = state.turns[turnId];
+  if (!turn?.commit) throw invariant('plan review requires a committed planning turn', event);
+  if (state.planReview?.status === 'awaiting_review') {
+    throw invariant('another plan is already awaiting review', event);
+  }
+
+  let commit: Record<string, unknown>;
+  let receipt: Record<string, unknown>;
+  try {
+    commit = JSON.parse(turn.commit.receipt) as Record<string, unknown>;
+    receipt = JSON.parse(String(commit.planReceipt ?? '')) as Record<string, unknown>;
+  } catch {
+    throw invariant('plan review is not bound to a valid PlanReceipt', event);
+  }
+  const { digest, ...content } = receipt;
+  const data = event.payload.data;
+  if (
+    commit.planReceiptDigest !== data.planReceiptDigest ||
+    digest !== data.planReceiptDigest ||
+    digestRuntimeValue(content) !== data.planReceiptDigest ||
+    receipt.planDigest !== data.planDigest ||
+    receipt.threadId !== state.threadId ||
+    receipt.turnId !== turnId
+  ) {
+    throw invariant('plan review failed PlanReceipt integrity validation', event);
+  }
+
+  state.planReview = {
+    reviewId: data.reviewId,
+    revision: data.revision,
+    planDigest: data.planDigest,
+    planReceiptDigest: data.planReceiptDigest,
+    status: 'awaiting_review',
+    createdAt: data.createdAt,
+    createdModel: data.createdModel,
+    returnMode: data.returnMode,
+    requestedSeq: event.seq,
+  };
+}
+
+function resolvePlanReview(state: MutableThreadProjectionV1, event: RuntimeEventEnvelopeV1): void {
+  if (event.payload.type !== 'plan.review_resolved') {
+    throw invariant('invalid plan review resolution payload', event);
+  }
+  const current = state.planReview;
+  const data = event.payload.data;
+  if (!current || current.status !== 'awaiting_review') {
+    throw invariant('no plan is awaiting review', event);
+  }
+  if (
+    current.reviewId !== data.reviewId ||
+    current.revision !== data.previousRevision ||
+    current.planDigest !== data.planDigest
+  ) {
+    throw invariant('plan review resolution is stale', event);
+  }
+  if (data.action === 'continue' && (!data.feedback || !data.feedbackDigest)) {
+    throw invariant('continue plan review requires a feedback digest', event);
+  }
+  const feedback = data.feedback?.trim();
+  if (data.action === 'continue' && digestRuntimeValue(feedback) !== data.feedbackDigest) {
+    throw invariant('plan review feedback digest is invalid', event);
+  }
+  if (data.action !== 'continue' && (data.feedback || data.feedbackDigest)) {
+    throw invariant('only continue plan review may bind feedback', event);
+  }
+  state.planReview = {
+    ...current,
+    revision: data.revision,
+    status:
+      data.action === 'approve'
+        ? 'approved'
+        : data.action === 'continue'
+          ? 'continued'
+          : 'cancelled',
+    resolvedAt: data.resolvedAt,
+    resolvedSeq: event.seq,
+    ...(feedback ? { feedback } : {}),
+    ...(data.feedbackDigest ? { feedbackDigest: data.feedbackDigest } : {}),
   };
 }
 

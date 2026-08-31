@@ -49,9 +49,24 @@ export const WEB_E2E_WEB31_SCENARIOS_V1 = Object.freeze([
   'WEB31-P0-11',
   'WEB31-P0-12',
 ] as const);
+export const WEB_E2E_WEB32_SCENARIOS_V1 = Object.freeze([
+  'WEB32-P0-01',
+  'WEB32-P0-02',
+  'WEB32-P0-03',
+  'WEB32-P0-04',
+  'WEB32-P0-05',
+  'WEB32-P0-06',
+  'WEB32-P0-07',
+  'WEB32-P0-08',
+  'WEB32-P0-09',
+  'WEB32-P0-10',
+  'WEB32-P0-11',
+  'WEB32-P0-12',
+] as const);
 export const WEB_E2E_FULL_SCENARIOS_V1 = Object.freeze([
   ...WEB_E2E_LEGACY_SCENARIOS_V1,
   ...WEB_E2E_WEB31_SCENARIOS_V1,
+  ...WEB_E2E_WEB32_SCENARIOS_V1,
 ]);
 export const WEB_E2E_SETTINGS_SCENARIOS_V1 = Object.freeze(
   WEB_E2E_FULL_SCENARIOS_V1.filter(id => id.startsWith('SET-P0-'))
@@ -64,10 +79,20 @@ export const WEB_E2E_WEB31_CRITICAL_SCENARIOS_V1 = Object.freeze([
   'WEB31-P0-10',
   'WEB31-P0-12',
 ] as const);
+export const WEB_E2E_WEB32_CRITICAL_SCENARIOS_V1 = Object.freeze([
+  'WEB32-P0-01',
+  'WEB32-P0-04',
+  'WEB32-P0-05',
+  'WEB32-P0-06',
+  'WEB32-P0-09',
+  'WEB32-P0-11',
+  'WEB32-P0-12',
+] as const);
 export const WEB_E2E_CRITICAL_SCENARIOS_V1 = Object.freeze([
   ...WEB_E2E_LEGACY_SCENARIOS_V1.slice(0, 4),
   ...WEB_E2E_SETTINGS_SCENARIOS_V1,
   ...WEB_E2E_WEB31_CRITICAL_SCENARIOS_V1,
+  ...WEB_E2E_WEB32_CRITICAL_SCENARIOS_V1,
 ]);
 
 export type ReleaseGateDecisionV1 = 'GO' | 'NO_GO';
@@ -523,6 +548,31 @@ export function createWebE2EReleaseReceiptV1(
       web31PrimaryComplete && web31MatrixComplete
         ? `all WEB31 journeys passed in three primary runs; critical Web/PTY journeys passed on Node ${runtimeMajors.join(',')} using one tgz`
         : 'WEB31 full or critical exact-tarball coverage is missing, skipped, failed, or dirty',
+  });
+  const web32PrimaryComplete =
+    primaryRuns.length === 3 &&
+    primaryRuns.every(
+      run =>
+        run.decision === 'GO' &&
+        run.cleanEvidence &&
+        WEB_E2E_WEB32_SCENARIOS_V1.every(id => run.scenarioIds.includes(id))
+    );
+  const web32MatrixComplete =
+    runtimeRuns.length === SUPPORTED_RELEASE_NODE_MAJORS_V1.length &&
+    runtimeRuns.every(
+      run =>
+        run.decision === 'GO' &&
+        run.cleanEvidence &&
+        run.tarballSha256 === input.tarballSha256 &&
+        WEB_E2E_WEB32_CRITICAL_SCENARIOS_V1.every(id => run.scenarioIds.includes(id))
+    );
+  checks.push({
+    id: 'WEB32-P0-12',
+    status: web32PrimaryComplete && web32MatrixComplete ? 'pass' : 'fail',
+    detail:
+      web32PrimaryComplete && web32MatrixComplete
+        ? `all WEB32 journeys passed in three primary runs; critical Composer/Layout journeys passed on Node ${runtimeMajors.join(',')} using one tgz`
+        : 'WEB32 full or critical exact-tarball coverage is missing, skipped, failed, or dirty',
   });
   const decision: ReleaseGateDecisionV1 = checks.every(check => check.status === 'pass')
     ? 'GO'

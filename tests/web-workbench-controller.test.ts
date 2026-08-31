@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { existsSync, mkdtempSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -12,6 +12,7 @@ import { getProjectThreadsV2Dir } from '../src/product/paths';
 import { materializeLegacyThreadV1 } from '../src/runtime/legacy-thread-materializer';
 import { ThreadEventStore } from '../src/runtime/thread-event-store';
 import { loadThreadSessionViewV1 } from '../src/runtime/thread-session-view';
+import { createContextUsageSnapshot } from '../src/services/model-context';
 import {
   pageCollectionItems,
   pageItems,
@@ -181,6 +182,163 @@ describe('WebWorkbenchController', () => {
     const second = await controller.createSession('second');
     expect(loadSessionMeta(second.id)?.model).toBe('next-model');
     expect(controller.runtime.store.getSnapshot().currentModel).toBe('next-model');
+    await controller.shutdown();
+  });
+
+  test('coalesces Context telemetry without invalidating control CAS, but revisions authority changes', async () => {
+    const controller = await WebWorkbenchController.create({
+      cwd: workspace,
+      createRuntime: async cwd => createFakeWebRuntime(cwd),
+    });
+    const session = await controller.createSession('composer revision');
+    const baseline = controller.bootstrap('nonce');
+    const guard = {
+      workspaceId: baseline.workspaceId,
+      expectedContextRevision: baseline.contextRevision,
+    };
+    const before = controller.composerState(session.id, guard);
+
+    controller.runtime.store.setContextUsage(
+      createContextUsageSnapshot({ modelId: 'test-model', usedTokens: 2_048 })
+    );
+    await new Promise(resolve => setTimeout(resolve, 140));
+    const telemetry = controller.composerState(session.id, guard);
+    expect(telemetry.contextUsage).toMatchObject({ modelId: 'test-model', usedTokens: 2_048 });
+    expect(telemetry.controlRevision).toBe(before.controlRevision);
+
+    controller.controller.setAgentMode('plan');
+    await new Promise(resolve => setTimeout(resolve, 140));
+    const authority = controller.composerState(session.id, guard);
+    expect(authority.mode.baseMode).toBe('plan');
+    expect(authority.controlRevision).not.toBe(before.controlRevision);
+    await controller.shutdown();
+  });
+
+  test('resolves exact structured file and Skill Context into one redacted manifest', async () => {
+    const marker = 'OPAQUE_WEB32_CONTEXT_SECRET';
+    writeFileSync(join(workspace, 'source.ts'), `export const token = '${marker}';\n`);
+    const runtime = createFakeWebRuntime(workspace);
+    runtime.inspectSkills = async () => [
+      {
+        id: 'review-safely',
+        name: 'Review safely',
+        description: `Inspect without token=${marker}`,
+        providerId: 'fixture',
+        sourceScope: 'project',
+        modelInvocable: true,
+        userInvocable: true,
+        requestedCapabilities: [],
+        digest: 'skill-digest-v1',
+      },
+    ];
+    const controller = await WebWorkbenchController.create({
+      cwd: workspace,
+      createRuntime: async () => runtime,
+    });
+    const session = await controller.createSession('context manifest');
+    const baseline = controller.bootstrap('nonce');
+    const guard = {
+      workspaceId: baseline.workspaceId,
+      expectedContextRevision: baseline.contextRevision,
+    };
+    const files = controller.listFiles(guard, { pageSize: 100 });
+    const source = files.items.find(item => item.name === 'source.ts')!;
+    const sourcePage = controller.readFileContent(guard, { fileId: source.id });
+    const handle = jest.spyOn(controller.controller, 'handle').mockReturnValue({ type: 'started' });
+
+    const result = await controller.dispatch({
+      requestId: randomUUID(),
+      expectedSessionId: session.id,
+      type: 'submit',
+      text: 'Review the selected Context',
+      contextReferences: [
+        {
+          kind: 'file',
+          id: source.id,
+          label: source.name,
+          revision: sourcePage.revision,
+        },
+        {
+          kind: 'skill',
+          id: 'review-safely',
+          label: 'Review safely',
+          digest: 'skill-digest-v1',
+        },
+      ],
+    });
+
+    expect(result.contextReceipt).toMatchObject({
+      manifestDigest: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      referenceCount: 2,
+      totalBytes: expect.any(Number),
+    });
+    const input = handle.mock.calls[0]?.[0];
+    expect(input).toMatchObject({ type: 'submit', source: 'programmatic' });
+    const resolvedText = input?.type === 'submit' ? input.text : '';
+    expect(resolvedText).toContain('[Orion Context Manifest V1]');
+    expect(resolvedText).toContain('source.ts');
+    expect(resolvedText).toContain('$review-safely');
+    expect(resolvedText).toContain('[REDACTED_SECRET]');
+    expect(resolvedText).not.toContain(marker);
+    expect(resolvedText).not.toContain(workspace);
+    await controller.shutdown();
+  });
+
+  test('blocks stale and sensitive Context references before runtime admission', async () => {
+    writeFileSync(join(workspace, 'notes.txt'), 'first revision\n');
+    writeFileSync(join(workspace, '.env'), 'TOKEN=OPAQUE_CONTEXT_ENV_SECRET\n');
+    const controller = await WebWorkbenchController.create({
+      cwd: workspace,
+      createRuntime: async cwd => createFakeWebRuntime(cwd),
+    });
+    const session = await controller.createSession('context validation');
+    const baseline = controller.bootstrap('nonce');
+    const guard = {
+      workspaceId: baseline.workspaceId,
+      expectedContextRevision: baseline.contextRevision,
+    };
+    const files = controller.listFiles(guard, { pageSize: 100 });
+    const notes = files.items.find(item => item.name === 'notes.txt')!;
+    const sensitive = files.items.find(item => item.name === '.env')!;
+    const notesPage = controller.readFileContent(guard, { fileId: notes.id });
+    const handle = jest.spyOn(controller.controller, 'handle').mockReturnValue({ type: 'started' });
+
+    writeFileSync(join(workspace, 'notes.txt'), 'a newer and longer revision\n');
+    await expect(
+      controller.dispatch({
+        requestId: randomUUID(),
+        expectedSessionId: session.id,
+        type: 'submit',
+        text: 'Do not admit stale Context',
+        contextReferences: [
+          {
+            kind: 'file',
+            id: notes.id,
+            label: notes.name,
+            revision: notesPage.revision,
+          },
+        ],
+      })
+    ).rejects.toMatchObject({ status: 409, code: 'context_reference_stale' });
+
+    await expect(
+      controller.dispatch({
+        requestId: randomUUID(),
+        expectedSessionId: session.id,
+        type: 'submit',
+        text: 'Do not admit sensitive Context',
+        contextReferences: [
+          {
+            kind: 'file',
+            id: sensitive.id,
+            label: sensitive.name,
+            revision: files.revision,
+          },
+        ],
+      })
+    ).rejects.toMatchObject({ status: 403, code: 'context_reference_forbidden' });
+
+    expect(handle).not.toHaveBeenCalled();
     await controller.shutdown();
   });
 

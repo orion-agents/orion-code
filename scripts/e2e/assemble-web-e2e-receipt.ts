@@ -12,7 +12,11 @@ import {
   type ReleaseGateDecisionV1,
   type WebE2ERunEvidenceV1,
 } from '../../src/runtime/release-receipts';
-import { WEB31_REQUIRED_EVIDENCE_FACTS_V1, webE2ERunnerDigest } from '../../tests/e2e/scenarios';
+import {
+  WEB31_REQUIRED_EVIDENCE_FACTS_V1,
+  WEB32_REQUIRED_EVIDENCE_FACTS_V1,
+  webE2ERunnerDigest,
+} from '../../tests/e2e/scenarios';
 
 export interface WebE2EScenarioManifest {
   readonly scenarioId?: string;
@@ -143,7 +147,7 @@ function toRunEvidence(
     if (!scenario.facts || Object.keys(scenario.facts).length === 0) {
       throw new Error(`Scenario ${scenario.scenarioId ?? 'unknown'} has no structured facts.`);
     }
-    assertWeb31EvidenceFacts(scenario, path);
+    assertVersionedEvidenceFacts(scenario, path);
   }
   if (browserIdentities.size !== 1) {
     throw new Error(`Web E2E run used inconsistent browser identities: ${path}.`);
@@ -246,7 +250,7 @@ export function verifyEvidenceBundle(
     }
     observedDigests.add(digest);
     assertNoSensitiveEvidence(scenario, scenarioManifestPath);
-    assertWeb31EvidenceFacts(scenario, scenarioManifestPath);
+    assertVersionedEvidenceFacts(scenario, scenarioManifestPath);
     addEvidenceFile(files, runRoot, scenarioManifestPath);
     for (const key of ['stdout', 'stderr'] as const) {
       const filename = scenario.logs?.[key];
@@ -269,9 +273,10 @@ export function verifyEvidenceBundle(
   });
 }
 
-function assertWeb31EvidenceFacts(scenario: WebE2EScenarioManifest, path: string): void {
+function assertVersionedEvidenceFacts(scenario: WebE2EScenarioManifest, path: string): void {
   const scenarioId = scenario.scenarioId ?? '';
-  const requirements = WEB31_REQUIRED_EVIDENCE_FACTS_V1[scenarioId];
+  const requirements =
+    WEB31_REQUIRED_EVIDENCE_FACTS_V1[scenarioId] ?? WEB32_REQUIRED_EVIDENCE_FACTS_V1[scenarioId];
   if (!requirements) return;
   const facts = scenario.facts ?? {};
   for (const requirement of requirements) {
@@ -284,7 +289,7 @@ function assertWeb31EvidenceFacts(scenario: WebE2EScenarioManifest, path: string
         observed >= requirement.minimum);
     if (!exactOk || !minimumOk) {
       throw new Error(
-        `WEB31 evidence fact ${requirement.key} is missing or invalid for ${scenarioId}: ${path}.`
+        `Versioned Web evidence fact ${requirement.key} is missing or invalid for ${scenarioId}: ${path}.`
       );
     }
   }
@@ -305,7 +310,7 @@ function addScreenshotEvidence(
   const screenshotFacts = Object.entries(scenario.facts ?? {}).filter(([key]) =>
     key.startsWith('screenshot.')
   );
-  const requiresScreenshot = /^(?:SET|WEB31)-P0-\d{2}$/u.test(scenario.scenarioId ?? '');
+  const requiresScreenshot = /^(?:SET|WEB31|WEB32)-P0-\d{2}$/u.test(scenario.scenarioId ?? '');
   if (requiresScreenshot && screenshotFacts.length === 0) {
     throw new Error(`Release scenario screenshot evidence is missing: ${manifestPath}.`);
   }

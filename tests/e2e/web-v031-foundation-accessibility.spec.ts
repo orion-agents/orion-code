@@ -243,7 +243,7 @@ test('WEB31-P0-04 Agent panel preserves Plan, activity, capabilities, diagnostic
 
   await setAgentMode(page, 'PLAN');
   await submitPrompt(page, OPENAI_FIXTURE_PROMPTS.plan);
-  await expect(orionMessage(page, OPENAI_FIXTURE_MARKERS.planExecutionDone)).toBeVisible({
+  await expect(orionMessage(page, OPENAI_FIXTURE_MARKERS.planReady)).toBeVisible({
     timeout: 60_000,
   });
   await expect
@@ -254,10 +254,20 @@ test('WEB31-P0-04 Agent panel preserves Plan, activity, capabilities, diagnostic
   const snapshot = await activeSessionSnapshot(page);
   expect(snapshot.plan?.body).toContain('# WEB_E2E_PLAN');
   expect(snapshot.plan?.digest).toMatch(/^[a-f0-9]{64}$/u);
-  expect(provider.requests.filter(request => request.scenario === 'plan')).toHaveLength(4);
-  await expect(
-    workbenchUi(page).modeSelector.getByRole('button', { name: 'BUILD', exact: true })
-  ).toHaveAttribute('aria-pressed', 'true');
+  expect(snapshot.composer.planReview?.status).toBe('awaiting_review');
+  expect(provider.requests.filter(request => request.scenario === 'plan')).toHaveLength(2);
+  await expect(workbenchUi(page).modeButton).toContainText('PLAN');
+  await page.getByRole('button', { name: '批准并进入 BUILD' }).click();
+  await expect(orionMessage(page, OPENAI_FIXTURE_MARKERS.planExecutionDone)).toBeVisible({
+    timeout: 60_000,
+  });
+  await expect
+    .poll(async () => (await activeSessionSnapshot(page)).runtime.processing, {
+      timeout: 60_000,
+    })
+    .toBe(false);
+  expect(provider.requests.filter(request => request.scenario === 'plan')).toHaveLength(3);
+  await expect(workbenchUi(page).modeButton).toContainText('BUILD');
 
   const inspector = await openInspector(page, { timeout: 30_000 });
   await expect(inspector.getByRole('tab', { name: /^Agent，/u })).toHaveAttribute(

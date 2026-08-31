@@ -1,5 +1,7 @@
 import type {
   WebEventEnvelopeV1,
+  WebComposerControlStateV1,
+  WebModelCatalogPageV1,
   WebMcpServerSummaryV1,
   WebSessionSnapshotV1,
   WebSessionSummaryV1,
@@ -61,6 +63,8 @@ export type WorkbenchAction =
     }
   | { readonly type: 'event_received'; readonly envelope: WebEventEnvelopeV1 }
   | { readonly type: 'session_snapshot_loaded'; readonly snapshot: WebSessionSnapshotV1 }
+  | { readonly type: 'composer_loaded'; readonly composer: WebComposerControlStateV1 }
+  | { readonly type: 'model_catalog_loaded'; readonly catalog: WebModelCatalogPageV1 }
   | {
       readonly type: 'durable_session_metadata_loaded';
       readonly snapshot: WebSessionSnapshotV1;
@@ -194,6 +198,17 @@ export function workbenchReducer(
         return state;
       }
       return applySessionSnapshot(state, action.snapshot);
+    case 'composer_loaded':
+      if (
+        action.composer.sessionId !== state.activeSessionId ||
+        action.composer.workspaceId !== state.workspaceId ||
+        action.composer.contextRevision !== state.contextRevision
+      ) {
+        return state;
+      }
+      return applyComposerState(state, action.composer);
+    case 'model_catalog_loaded':
+      return { ...state, modelCatalog: action.catalog };
     case 'durable_session_metadata_loaded':
       if (
         state.contextRevision !== action.contextRevision ||
@@ -461,6 +476,18 @@ function reduceEnvelope(state: WorkbenchState, envelope: WebEventEnvelopeV1): Wo
     };
   }
 
+  if (envelope.type === 'composer_state_changed') {
+    const composer = envelope.payload.state;
+    if (
+      composer.sessionId !== received.activeSessionId ||
+      composer.workspaceId !== received.workspaceId ||
+      composer.contextRevision !== received.contextRevision
+    ) {
+      return received;
+    }
+    return applyComposerState(received, composer);
+  }
+
   if (envelope.sessionId !== null && envelope.sessionId !== received.activeSessionId) {
     return received;
   }
@@ -514,6 +541,23 @@ function reduceThreadEvent(
       return { ...state, statusMessage: '正在中断当前回合…' };
     case 'turn.committed':
       return { ...state, statusMessage: '回合结果已持久化' };
+    case 'plan.review_requested':
+      return {
+        ...state,
+        processing: false,
+        statusMessage: '计划已保存，等待审核',
+        announcement: '计划已准备好，请审核后再执行',
+      };
+    case 'plan.review_resolved':
+      return {
+        ...state,
+        statusMessage:
+          event.data.action === 'approve'
+            ? '计划已批准，正在进入 BUILD'
+            : event.data.action === 'continue'
+              ? '已提交继续规划反馈'
+              : '计划已取消',
+      };
     case 'turn.completed':
       return {
         ...state,
@@ -840,13 +884,14 @@ function applySessionSnapshot(
       : null,
     processing: snapshot.runtime.processing,
     statusMessage: snapshot.runtime.status,
-    mode: { baseMode: agentMode, pendingBaseMode: null },
+    mode: snapshot.composer.mode ?? { baseMode: agentMode, pendingBaseMode: null },
     queue: {
-      items: snapshot.runtime.followups.map(item => ({ ...item })),
-      limit: snapshot.runtime.followupLimit,
+      items: snapshot.composer.queue.items.map(item => ({ ...item })),
+      limit: snapshot.composer.queue.limit,
     },
     goal,
     plan: snapshot.plan ?? null,
+    composer: snapshot.composer,
     sessionSnapshot: snapshot,
     diagnostics: {
       ...(state.diagnostics ?? {}),
@@ -865,12 +910,37 @@ function applySessionSnapshot(
   };
 }
 
+function applyComposerState(
+  state: WorkbenchState,
+  composer: WebComposerControlStateV1
+): WorkbenchState {
+  return {
+    ...state,
+    composer,
+    processing: composer.processing,
+    mode: composer.mode,
+    queue: {
+      items: composer.queue.items.map(item => ({ ...item })),
+      limit: composer.queue.limit,
+    },
+    diagnostics: {
+      ...(state.diagnostics ?? {}),
+      contextUsage: composer.contextUsage,
+      agentMode: composer.mode.baseMode,
+    },
+  };
+}
+
 function applyDurableSessionMetadata(
   state: WorkbenchState,
   snapshot: WebSessionSnapshotV1
 ): WorkbenchState {
   const sessions = upsertSessionSummary(state.sessions, snapshot.session);
   const currentWorkspaceSessions = state.workspaceSessions[state.workspaceId];
+  const composer =
+    !state.composer || state.composer.controlRevision === snapshot.composer.controlRevision
+      ? snapshot.composer
+      : state.composer;
   return {
     ...state,
     sessions,
@@ -887,6 +957,7 @@ function applyDurableSessionMetadata(
     },
     goal: goalFromPersistentSnapshot(snapshot.goal),
     plan: snapshot.plan,
+    composer,
     sessionSnapshot:
       state.sessionSnapshot?.session.id === snapshot.session.id
         ? {
@@ -894,6 +965,7 @@ function applyDurableSessionMetadata(
             session: snapshot.session,
             goal: snapshot.goal,
             plan: snapshot.plan,
+            composer,
             recoveryDiagnostics: snapshot.recoveryDiagnostics,
           }
         : state.sessionSnapshot,
@@ -1160,6 +1232,8 @@ function clearSessionProjection(state: WorkbenchState): WorkbenchState {
     goalEvidence: [],
     goalActivity: [],
     sessionSnapshot: null,
+    composer: null,
+    modelCatalog: null,
     plan: null,
     loopStats: null,
     traces: [],

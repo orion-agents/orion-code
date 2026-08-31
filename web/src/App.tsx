@@ -7,23 +7,20 @@ import { SettingsDialog } from './components/SettingsDialog';
 import { ProjectNavigator } from './components/projects/ProjectNavigator';
 import { WorkPanelDock } from './layout/WorkPanelDock';
 import {
-  loadWorkPanelPreference,
-  saveWorkPanelPreference,
+  computeWorkbenchColumns,
+  loadWorkbenchLayoutPreference,
+  saveWorkbenchLayoutPreference,
   type AgentPanelId,
+  type WorkbenchLayoutPreferenceV2,
   type WorkPanelId,
-  type WorkPanelPreferenceV1,
 } from './state/layout-preferences';
 import type { WebSessionSummaryV1 } from './types';
 import { useWorkbench } from './useWorkbench';
 
-const INSPECTOR_OVERLAY_QUERY = '(max-width: 1180px)';
-const NAVIGATION_OVERLAY_QUERY = '(max-width: 760px)';
-
 export function App() {
   const { state, actions } = useWorkbench();
   const [navigationOpen, setNavigationOpen] = useState(false);
-  const [navigationDockExpanded, setNavigationDockExpanded] = useState(true);
-  const [panelPreference, setPanelPreference] = useState(loadWorkPanelPreference);
+  const [layoutPreference, setLayoutPreference] = useState(loadWorkbenchLayoutPreference);
   const [panelOverlayOpen, setPanelOverlayOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
@@ -34,17 +31,51 @@ export function App() {
   } | null>(null);
   const drawerTrigger = useRef<HTMLElement | null>(null);
   const shellRef = useRef<HTMLDivElement>(null);
-  const panelOverlay = useMediaQuery(INSPECTOR_OVERLAY_QUERY);
-  const navigationOverlay = useMediaQuery(NAVIGATION_OVERLAY_QUERY);
-  const panelExpanded = panelOverlay ? panelOverlayOpen : panelPreference.expanded;
-  const panelModalOpen = panelOverlay && panelOverlayOpen;
-  const drawersOpen = navigationOpen || panelModalOpen;
+  const shellWidth = useElementWidth(shellRef);
+  const columns = computeWorkbenchColumns(shellWidth, layoutPreference);
+  const navigationOverlay = columns.projectNavigation.mode === 'drawer';
+  const panelOverlay = columns.workPanel.mode === 'drawer';
+  const panelDerivedRail = columns.workPanel.mode === 'rail' && layoutPreference.workPanel.expanded;
+  const panelSurfaceOverlay = panelOverlay || (panelDerivedRail && panelOverlayOpen);
+  const panelExpanded =
+    panelOverlay || panelDerivedRail ? panelOverlayOpen : columns.workPanel.mode === 'dock';
+  const panelModalOpen = panelSurfaceOverlay && panelOverlayOpen;
+  const navigationModalOpen = navigationOverlay && navigationOpen;
+  const drawersOpen = navigationModalOpen || panelModalOpen;
   const appearance =
     state.settings?.state === 'ready'
       ? state.settings
       : (state.settingsMirror.lastGood ?? state.settings);
   const theme = appearance?.sections.appearance.theme.effectiveValue;
   const motion = appearance?.sections.appearance.motion.effectiveValue;
+
+  const updateProjectNavigationPreference = useCallback(
+    (patch: Partial<WorkbenchLayoutPreferenceV2['projectNavigation']>) => {
+      setLayoutPreference(current => {
+        const next: WorkbenchLayoutPreferenceV2 = {
+          ...current,
+          projectNavigation: { ...current.projectNavigation, ...patch },
+        };
+        saveWorkbenchLayoutPreference(next);
+        return next;
+      });
+    },
+    []
+  );
+
+  const updatePanelPreference = useCallback(
+    (patch: Partial<WorkbenchLayoutPreferenceV2['workPanel']>) => {
+      setLayoutPreference(current => {
+        const next: WorkbenchLayoutPreferenceV2 = {
+          ...current,
+          workPanel: { ...current.workPanel, ...patch },
+        };
+        saveWorkbenchLayoutPreference(next);
+        return next;
+      });
+    },
+    []
+  );
 
   const rememberDrawerTrigger = useCallback(() => {
     drawerTrigger.current =
@@ -83,7 +114,7 @@ export function App() {
     setNavigationOpen(false);
     setPanelOverlayOpen(false);
     drawerTrigger.current = null;
-  }, [navigationOverlay, panelOverlay]);
+  }, [columns.projectNavigation.mode, columns.workPanel.mode, navigationOverlay, panelOverlay]);
 
   useEffect(() => {
     const onShortcut = (event: KeyboardEvent) => {
@@ -100,11 +131,11 @@ export function App() {
         setNavigationOpen(true);
         return;
       }
-      const next = !navigationDockExpanded;
+      const next = !layoutPreference.projectNavigation.expanded;
       const restoreToggleFocus = Boolean(
         !next && document.activeElement?.closest('.workspace-rail')
       );
-      setNavigationDockExpanded(next);
+      updateProjectNavigationPreference({ expanded: next });
       if (next) focusProjectSearch();
       else if (restoreToggleFocus) {
         requestAnimationFrame(() =>
@@ -118,9 +149,10 @@ export function App() {
     closeDrawers,
     focusProjectSearch,
     navigationOpen,
-    navigationDockExpanded,
     navigationOverlay,
+    layoutPreference.projectNavigation.expanded,
     rememberDrawerTrigger,
+    updateProjectNavigationPreference,
   ]);
 
   useEffect(() => {
@@ -161,17 +193,6 @@ export function App() {
     };
   }, [closeDrawers, drawersOpen, navigationOpen, panelModalOpen, state.notice]);
 
-  const updatePanelPreference = useCallback(
-    (patch: Partial<Omit<WorkPanelPreferenceV1, 'schemaVersion'>>) => {
-      setPanelPreference(current => {
-        const next = { ...current, ...patch };
-        saveWorkPanelPreference(next);
-        return next;
-      });
-    },
-    []
-  );
-
   const focusConversationContext = useCallback(() => {
     requestAnimationFrame(() => document.querySelector<HTMLElement>('#main-content h1')?.focus());
   }, []);
@@ -193,16 +214,40 @@ export function App() {
       </a>
       <div
         ref={shellRef}
-        className={`workbench-shell work-panel-${panelPreference.expanded ? 'expanded' : 'collapsed'} ${!navigationOverlay && !navigationDockExpanded ? 'project-navigation-collapsed' : ''}`}
-        style={{ '--work-panel-width': `${panelPreference.widthPx}px` } as CSSProperties}
+        className={`workbench-shell project-navigation-${columns.projectNavigation.mode} work-panel-${columns.workPanel.mode} ${panelDerivedRail && panelOverlayOpen ? 'work-panel-transient-overlay' : ''}`}
+        style={
+          {
+            '--project-navigation-width': `${columns.projectNavigation.widthPx}px`,
+            '--project-navigation-preferred-width': `${layoutPreference.projectNavigation.widthPx}px`,
+            '--work-panel-width': `${columns.workPanel.widthPx}px`,
+            '--work-panel-preferred-width': `${layoutPreference.workPanel.widthPx}px`,
+          } as CSSProperties
+        }
         aria-busy={state.boot === 'loading'}
       >
         <ProjectNavigator
           state={state}
-          drawerOpen={navigationOpen}
-          dockVisible={navigationOverlay || navigationDockExpanded || navigationOpen}
+          drawerOpen={navigationModalOpen}
+          dockVisible
+          collapsed={columns.projectNavigation.mode === 'rail'}
+          resizable={columns.projectNavigation.mode === 'dock'}
           onCloseDrawer={closeDrawers}
+          onExpand={() => {
+            if (navigationOverlay) {
+              rememberDrawerTrigger();
+              setPanelOverlayOpen(false);
+              setNavigationOpen(true);
+            } else {
+              updateProjectNavigationPreference({ expanded: true });
+              focusProjectSearch();
+            }
+          }}
+          onCollapse={() => {
+            if (navigationOverlay) closeDrawers();
+            else updateProjectNavigationPreference({ expanded: false });
+          }}
           onOpenWorkspaceDialog={() => setWorkspaceOpen(true)}
+          onOpenSettings={() => setSettingsOpen(true)}
           onLoadMoreWorkspaces={() => void actions.loadMoreWorkspaces()}
           onCreateSession={createSession}
           onLoadWorkspaceSessions={(workspaceId, append) =>
@@ -220,17 +265,30 @@ export function App() {
           onRemoveWorkspace={workspaceId => void actions.removeWorkspace(workspaceId)}
           onRefreshSummary={workspaceId => void actions.refreshWorkspaceProjectSummary(workspaceId)}
           onRenameSession={setRenameTarget}
+          onWidthPreview={width => {
+            const preview = computeWorkbenchColumns(shellWidth, {
+              ...layoutPreference,
+              projectNavigation: { ...layoutPreference.projectNavigation, widthPx: width },
+            });
+            shellRef.current?.style.setProperty(
+              '--project-navigation-width',
+              `${preview.projectNavigation.widthPx}px`
+            );
+          }}
+          onWidthCommit={width => updateProjectNavigationPreference({ widthPx: width })}
         />
 
         <Conversation
           state={state}
           actions={actions}
-          navigationOpen={navigationOverlay ? navigationOpen : navigationDockExpanded}
+          navigationOpen={
+            navigationOverlay ? navigationModalOpen : columns.projectNavigation.mode === 'dock'
+          }
           inspectorExpanded={panelExpanded}
           settingsOpen={settingsOpen}
           onOpenNavigation={() => {
             if (!navigationOverlay) {
-              setNavigationDockExpanded(true);
+              updateProjectNavigationPreference({ expanded: true });
               focusProjectSearch();
               return;
             }
@@ -239,7 +297,7 @@ export function App() {
             setNavigationOpen(true);
           }}
           onToggleInspector={() => {
-            if (panelOverlay) {
+            if (panelOverlay || panelDerivedRail) {
               if (panelOverlayOpen) {
                 closeDrawers();
                 return;
@@ -249,7 +307,7 @@ export function App() {
               setPanelOverlayOpen(true);
               return;
             }
-            updatePanelPreference({ expanded: !panelPreference.expanded });
+            updatePanelPreference({ expanded: !layoutPreference.workPanel.expanded });
           }}
           onOpenSettings={() => setSettingsOpen(true)}
           onCreateSession={createSession}
@@ -259,25 +317,32 @@ export function App() {
         <WorkPanelDock
           state={state}
           actions={actions}
-          mode={panelOverlay ? 'overlay' : 'dock'}
+          mode={panelSurfaceOverlay ? 'overlay' : 'dock'}
           expanded={panelExpanded}
-          activePanel={panelPreference.activePanel}
-          agentPanel={panelPreference.agentPanel}
+          activePanel={layoutPreference.workPanel.activePanel}
+          agentPanel={layoutPreference.workPanel.agentPanel}
           settingsOpen={settingsOpen}
           onExpand={() => {
-            if (panelOverlay) setPanelOverlayOpen(true);
+            if (panelOverlay || panelDerivedRail) setPanelOverlayOpen(true);
             else updatePanelPreference({ expanded: true });
           }}
           onCollapse={() => {
-            if (panelOverlay) closeDrawers();
+            if (panelSurfaceOverlay) closeDrawers();
             else updatePanelPreference({ expanded: false });
           }}
           onPanelChange={(activePanel: WorkPanelId) => updatePanelPreference({ activePanel })}
           onAgentPanelChange={(agentPanel: AgentPanelId) => updatePanelPreference({ agentPanel })}
           onOpenSettings={() => setSettingsOpen(true)}
-          onWidthPreview={width =>
-            shellRef.current?.style.setProperty('--work-panel-width', `${width}px`)
-          }
+          onWidthPreview={width => {
+            const preview = computeWorkbenchColumns(shellWidth, {
+              ...layoutPreference,
+              workPanel: { ...layoutPreference.workPanel, widthPx: width },
+            });
+            shellRef.current?.style.setProperty(
+              '--work-panel-width',
+              `${preview.workPanel.widthPx}px`
+            );
+          }}
           onWidthCommit={width => updatePanelPreference({ widthPx: width })}
           onSendToComposer={text => {
             setComposerInsertion({ id: Date.now(), text });
@@ -404,18 +469,25 @@ export function App() {
   );
 }
 
-function useMediaQuery(query: string): boolean {
-  const [matches, setMatches] = useState(() =>
-    typeof window === 'undefined' ? false : window.matchMedia(query).matches
+function useElementWidth(ref: { readonly current: HTMLElement | null }): number {
+  const [width, setWidth] = useState(() =>
+    typeof window === 'undefined' ? 1440 : Math.max(320, Math.round(window.innerWidth))
   );
-
   useEffect(() => {
-    const media = window.matchMedia(query);
-    const update = () => setMatches(media.matches);
+    const element = ref.current;
+    if (!element) return undefined;
+    const update = () => {
+      const next = Math.max(320, Math.round(element.getBoundingClientRect().width));
+      setWidth(current => (current === next ? current : next));
+    };
     update();
-    media.addEventListener('change', update);
-    return () => media.removeEventListener('change', update);
-  }, [query]);
-
-  return matches;
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(update);
+      observer.observe(element);
+      return () => observer.disconnect();
+    }
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, [ref]);
+  return width;
 }
