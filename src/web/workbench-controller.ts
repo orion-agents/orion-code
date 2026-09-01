@@ -1229,6 +1229,30 @@ export class WebWorkbenchController {
           : toAgentRuntimeInput({ ...command, ...(resolved ? { text: resolved.text } : {}) });
       try {
         if (command.type === 'submit') {
+          const currentRuntime = this.sessionRegistry.summary(key);
+          if (['running', 'waiting_approval'].includes(currentRuntime.phase)) {
+            const routed = await this.sessionRegistry.withActor(
+              key,
+              command.expectedSessionRuntimeRevision,
+              actor => {
+                if (!actor.controller.hasActiveTurn()) {
+                  throw new WebSessionRuntimeRegistryError(
+                    409,
+                    'session_runtime_revision_conflict',
+                    'The Session turn ended before steering was admitted.'
+                  );
+                }
+                return actor.controller.handle(runtimeInput);
+              }
+            );
+            return Object.freeze({
+              requestId: command.requestId,
+              result: routed.result.type,
+              detail: JSON.stringify(routed.result),
+              sessionRuntime: routed.runtime,
+              ...(resolved ? { contextReceipt: resolved.receipt } : {}),
+            });
+          }
           const admission = await this.sessionRegistry.admitTurn({
             key,
             expectedRuntimeRevision: command.expectedSessionRuntimeRevision,

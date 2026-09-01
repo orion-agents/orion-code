@@ -312,6 +312,48 @@ describe('WebWorkbenchController', () => {
     await controller.shutdown();
   });
 
+  test('routes a running Session submit to steering without admitting another turn', async () => {
+    let releaseTurn!: () => void;
+    const activeTurn = new Promise<void>(resolve => {
+      releaseTurn = resolve;
+    });
+    const runInput = jest.fn(() => activeTurn);
+    const actorRuntime = createFakeWebRuntime(workspace);
+    actorRuntime.createAgentRunner = () => ({ runInput });
+    const controller = await WebWorkbenchController.create({
+      cwd: workspace,
+      createRuntime: async () => createFakeWebRuntime(workspace),
+      createSessionRuntime: async () => actorRuntime,
+    });
+    const session = await controller.createSession('steering target');
+
+    const started = await controller.dispatch({
+      requestId: randomUUID(),
+      ...sessionCommandTarget(controller, session.id),
+      type: 'submit',
+      text: 'hold the active turn',
+    });
+    expect(started).toMatchObject({ result: 'started', sessionRuntime: { phase: 'running' } });
+
+    const steered = await controller.dispatch({
+      requestId: randomUUID(),
+      ...sessionCommandTarget(controller, session.id),
+      type: 'submit',
+      text: 'revise the active turn',
+    });
+
+    expect(steered).toMatchObject({
+      result: 'revision_requested',
+      sessionRuntime: { phase: 'running' },
+    });
+    expect(runInput).toHaveBeenCalledTimes(1);
+    expect(controller.sessionRuntimeSummary(session.id).phase).toBe('running');
+
+    releaseTurn();
+    await controller.waitForSessionIdle(session.id);
+    await controller.shutdown();
+  });
+
   test('exposes the fourth Session turn as a cancellable FIFO admission', async () => {
     const releases: Array<() => void> = [];
     const actorRuntimes = Array.from({ length: 4 }, () => {

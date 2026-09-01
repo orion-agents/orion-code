@@ -406,8 +406,12 @@ test('WEB32-P0-10 queued follow-ups support exact edits and Steer while drafts r
   await ui.composer.fill('fixture:steer revise the active request now');
   await page.getByRole('button', { name: 'Steer', exact: true }).click();
   const steerHttpResponse = await steerResponse;
-  expect(steerHttpResponse.status()).toBe(200);
-  const steer = (await steerHttpResponse.json()) as WebCommandResultV1;
+  const steerBody = await steerHttpResponse.json();
+  expect({ status: steerHttpResponse.status(), code: problemCode(steerBody) }).toEqual({
+    status: 200,
+    code: undefined,
+  });
+  const steer = steerBody as WebCommandResultV1;
   expect(steer.result).toBe('revision_requested');
   const queueAfterSteer = (await activeSessionSnapshot(page)).composer.queue.items;
   const admittedWhileSteering = queueBeforeSteer.length - queueAfterSteer.length;
