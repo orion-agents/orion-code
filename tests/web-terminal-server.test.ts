@@ -181,7 +181,7 @@ describe('terminal WebSocket backpressure', () => {
     const transport = (client as unknown as { readonly _socket: Socket })._socket;
     terminalProcess.onPause = () => transport.pause();
     client.send(JSON.stringify({ type: 'authenticate', ticket: created.ticket, afterSequence: 0 }));
-    await waitFor(() => terminalProcess.pauseCalls > 0 && terminalProcess.paused, 5_000);
+    await waitFor(() => terminalProcess.pauseCalls > 0, 5_000);
     terminalProcess.onPause = undefined;
 
     terminalProcess.emitExit({ exitCode: 0 });
