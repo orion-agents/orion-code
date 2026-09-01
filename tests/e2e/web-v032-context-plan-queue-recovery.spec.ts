@@ -148,6 +148,7 @@ test('WEB32-P0-08 structured Context references are exact, removable, stale-safe
 
   const current = await webBootstrap(page);
   const currentSessionId = await foregroundSessionId(page, current.workspaceId);
+  const currentSnapshot = await sessionSnapshot(page, currentSessionId);
   const rootFiles = await hostGuardedGet<WebFileTreePageV1>(host.url, '/api/v1/files', current, {
     pageSize: '100',
   });
@@ -155,7 +156,10 @@ test('WEB32-P0-08 structured Context references are exact, removable, stale-safe
   expect(sensitive).toBeDefined();
   const forbidden = await hostCommand(host.url, current, {
     requestId: randomUUID(),
+    workspaceId: current.workspaceId,
+    expectedContextRevision: current.contextRevision,
     expectedSessionId: currentSessionId,
+    expectedSessionRuntimeRevision: currentSnapshot.sessionRuntime.runtimeRevision,
     type: 'submit',
     text: 'fixture:forbidden-context must not reach the provider',
     contextReferences: [
@@ -381,6 +385,7 @@ test('WEB32-P0-10 queued follow-ups support exact edits and Steer while drafts r
     text: 'queue beta host edit',
     revision: casItem.revision + 1,
   });
+  await expect(rows.nth(0)).toContainText('queue beta host edit');
   const staleEdit = await hostComposerAction(host.url, active, queueSessionId, afterCas, {
     type: 'edit_queue_item',
     itemId: casItem.id,
@@ -400,7 +405,9 @@ test('WEB32-P0-10 queued follow-ups support exact edits and Steer while drafts r
   });
   await ui.composer.fill('fixture:steer revise the active request now');
   await page.getByRole('button', { name: 'Steer', exact: true }).click();
-  const steer = (await (await steerResponse).json()) as WebCommandResultV1;
+  const steerHttpResponse = await steerResponse;
+  expect(steerHttpResponse.status()).toBe(200);
+  const steer = (await steerHttpResponse.json()) as WebCommandResultV1;
   expect(steer.result).toBe('revision_requested');
   const queueAfterSteer = (await activeSessionSnapshot(page)).composer.queue.items;
   const admittedWhileSteering = queueBeforeSteer.length - queueAfterSteer.length;

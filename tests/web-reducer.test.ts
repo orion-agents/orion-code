@@ -330,6 +330,51 @@ describe('Web Workbench reducer', () => {
     expect(stale).toBe(merged);
   });
 
+  test('advances the active snapshot Runtime revision with Composer state', () => {
+    const selected = {
+      ...workbenchReducer(initialWorkbenchState, {
+        type: 'reset_session_view' as const,
+        activeSessionId: 'session-1',
+      }),
+      contextRevision: 'context-1',
+      workspaceId: 'workspace-1',
+    };
+    const restored = workbenchReducer(selected, {
+      type: 'session_snapshot_loaded',
+      snapshot: snapshot([], null),
+    });
+    const sessionRuntime = {
+      ...restored.sessionSnapshot!.sessionRuntime,
+      runtimeRevision: 'runtime-2',
+    };
+    const composer = {
+      ...restored.composer!,
+      controlRevision: 'control-2',
+      sessionRuntime,
+    };
+    const envelope: WebEventEnvelopeV1 = {
+      apiVersion: 1,
+      eventId: '60000000-0000-4000-8000-000000000002',
+      cursor: 2,
+      sessionId: 'session-1',
+      threadId: null,
+      durable: true,
+      timestamp: new Date(2).toISOString(),
+      type: 'composer_state_changed',
+      payload: { state: composer },
+    };
+
+    const advanced = workbenchReducer(restored, { type: 'event_received', envelope });
+
+    expect(advanced.composer?.sessionRuntime.runtimeRevision).toBe('runtime-2');
+    expect(advanced.sessionSnapshot?.sessionRuntime.runtimeRevision).toBe('runtime-2');
+    expect(advanced.sessionSnapshot?.composer.controlRevision).toBe('control-2');
+    expect(advanced.sessionRuntimeById['session-1']?.runtimeRevision).toBe('runtime-2');
+    expect(advanced.sessionProjectionById['session-1']?.sessionRuntime.runtimeRevision).toBe(
+      'runtime-2'
+    );
+  });
+
   test('caches a completed background Session snapshot without replacing the foreground view', () => {
     const selected = {
       ...workbenchReducer(initialWorkbenchState, {
