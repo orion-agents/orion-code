@@ -109,7 +109,7 @@
     "dotenv": "^16.6.1",
     "eventemitter3": "^5.0.1",
     "figlet": "^1.11.0",
-    "js-yaml": "^4.3.0",
+    "js-yaml": "^5.4.1",
     "marked": "^11.2.0",
     "marked-terminal": "^6.2.0",
     "node-pty": "1.2.0-beta.15",
