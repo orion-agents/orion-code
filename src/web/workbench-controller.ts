@@ -775,8 +775,16 @@ export class WebWorkbenchController {
     } catch (error) {
       throw mapSessionRuntimeError(error);
     }
+    const actorSession = actor.runtime.getSession();
+    if (!actorSession || actorSession.id !== input.expectedSessionId) {
+      throw new WebWorkbenchError(
+        503,
+        'Session actor is not bound to the expected Session.',
+        'session_unavailable'
+      );
+    }
     if (!wasResident) actor.composerRevision = input.expectedControlRevision;
-    const admittedState = this.projectActorComposerState(actor, session);
+    const admittedState = this.projectActorComposerState(actor, actorSession);
     if (input.expectedControlRevision !== admittedState.controlRevision) {
       throw new WebWorkbenchError(
         409,
@@ -873,7 +881,7 @@ export class WebWorkbenchController {
       actor.suppressComposerEdges -= 1;
     }
     actor.composerRevision = randomUUID();
-    const state = this.projectComposerStateValue(session, actor);
+    const state = this.projectComposerStateValue(actorSession, actor);
     actor.composerAuthorityDigest = composerAuthorityDigest(state);
     this.eventHub.emit({ type: 'composer_state_changed', state }, true, {
       sessionId: input.expectedSessionId,
@@ -1087,8 +1095,10 @@ export class WebWorkbenchController {
     if (canonicalDirectory(session.projectPath) !== this.workspaceValue) {
       throw new WebWorkbenchError(409, 'Session belongs to another workspace.');
     }
-    if (name.length > 120) throw new WebWorkbenchError(400, 'Session name is too long.');
-    const updated = renameSession(session.id, name);
+    const normalizedName = name.trim();
+    if (!normalizedName) throw new WebWorkbenchError(400, 'Session name is required.');
+    if (normalizedName.length > 120) throw new WebWorkbenchError(400, 'Session name is too long.');
+    const updated = renameSession(session.id, normalizedName);
     if (!updated) throw new WebWorkbenchError(404, 'Session no longer exists.');
     return projectSessionSummary(updated);
   }
@@ -1471,6 +1481,7 @@ export class WebWorkbenchController {
   async updateSettings(
     input: WebSettingsUpdateRequestV1
   ): Promise<Omit<WebSettingsMutationResultV1, 'requestId'>> {
+    this.assertContextGuard(input);
     this.assertSettingsAvailable();
     const update = this.runtimeValue.updateSettings;
     if (!update) {

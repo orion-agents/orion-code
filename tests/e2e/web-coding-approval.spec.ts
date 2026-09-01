@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import { existsSync, readFileSync } from 'fs';
 
-import type { WebBootstrapV1, WebSessionSnapshotV1 } from '../../src/web/protocol';
+import { activeSessionSnapshot } from './fixtures/api';
 import {
   OPENAI_FIXTURE_FILES,
   OPENAI_FIXTURE_MARKERS,
@@ -33,7 +33,7 @@ test('E2E-P0-02 denial has no effect and allow-once performs one real write and 
 
   await submitPrompt(page, OPENAI_FIXTURE_PROMPTS.denyWrite);
   await waitForApproval(page, 'write_file', { timeout: 30_000 });
-  const deniedPending = await activeSnapshot(page);
+  const deniedPending = await activeSessionSnapshot(page);
   expect(deniedPending.pendingApprovals).toHaveLength(1);
   expect(deniedPending.pendingApprovals[0]).toMatchObject({
     toolName: 'write_file',
@@ -96,9 +96,9 @@ test('E2E-P0-02 denial has no effect and allow-once performs one real write and 
     { timeout: 45_000 }
   );
   await expect
-    .poll(async () => (await activeSnapshot(page)).runtime.processing, { timeout: 45_000 })
+    .poll(async () => (await activeSessionSnapshot(page)).runtime.processing, { timeout: 45_000 })
     .toBe(false);
-  const deniedFinal = await activeSnapshot(page);
+  const deniedFinal = await activeSessionSnapshot(page);
   expect(deniedFinal.pendingApprovals).toEqual([]);
   expect(provider.requests.filter(request => request.scenario === 'deny-write')).toHaveLength(1);
   expect(fileSha256(deniedPath)).toBeNull();
@@ -125,7 +125,7 @@ test('E2E-P0-02 denial has no effect and allow-once performs one real write and 
   expect(fileSha256(approvedPath)).toBe(approvedSha256);
   expect(fileSha256(execProofPath)).toBe(execSha256);
 
-  const finalSnapshot = await activeSnapshot(page);
+  const finalSnapshot = await activeSessionSnapshot(page);
   expect(finalSnapshot.pendingApprovals).toEqual([]);
   expect(finalSnapshot.runtime.processing).toBe(false);
   expect(
@@ -140,27 +140,6 @@ test('E2E-P0-02 denial has no effect and allow-once performs one real write and 
 
 function orionMessage(page: import('@playwright/test').Page, marker: string) {
   return page.getByRole('article', { name: 'Orion' }).filter({ hasText: marker }).last();
-}
-
-async function activeSnapshot(
-  page: import('@playwright/test').Page
-): Promise<WebSessionSnapshotV1> {
-  return page.evaluate(async () => {
-    const bootstrapResponse = await fetch('/api/v1/bootstrap', { cache: 'no-store' });
-    const bootstrap = (await bootstrapResponse.json()) as WebBootstrapV1;
-    if (!bootstrap.activeSessionId) throw new Error('No active session for Web E2E snapshot.');
-    const query = new URLSearchParams({
-      pageSize: '100',
-      expectedContextRevision: bootstrap.contextRevision,
-      workspaceId: bootstrap.workspaceId,
-    });
-    const snapshotResponse = await fetch(
-      `/api/v1/sessions/${encodeURIComponent(bootstrap.activeSessionId)}/snapshot?${query.toString()}`,
-      { cache: 'no-store' }
-    );
-    if (!snapshotResponse.ok) throw new Error(`Snapshot failed with ${snapshotResponse.status}.`);
-    return snapshotResponse.json() as Promise<WebSessionSnapshotV1>;
-  });
 }
 
 function fileSha256(path: string): string | null {

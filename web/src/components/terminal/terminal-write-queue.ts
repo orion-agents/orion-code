@@ -41,6 +41,7 @@ export class TerminalWriteQueue {
   private scheduledTask: number | null = null;
   private inFlightCharacters = 0;
   private flushing = false;
+  private waitingForCapacity = false;
   private disposed = false;
 
   constructor(options: TerminalWriteQueueOptions) {
@@ -85,6 +86,7 @@ export class TerminalWriteQueue {
       this.flushing ||
       this.pending.length === 0 ||
       this.inFlightCharacters >= this.maxInFlightCharacters ||
+      this.waitingForCapacity ||
       this.scheduledTask !== null
     ) {
       return;
@@ -127,7 +129,14 @@ export class TerminalWriteQueue {
           this.maxInFlightCharacters - submittedCharacters
         );
         const end = safeTerminalChunkEnd(current.data, current.offset, capacity);
-        if (end <= current.offset) break;
+        if (end <= current.offset) {
+          // The only non-progressing boundary is a surrogate pair that needs
+          // more capacity than remains in the current xterm pipeline. Waiting
+          // for an acknowledgement avoids reposting an animation frame that
+          // cannot submit any new work.
+          this.waitingForCapacity = true;
+          break;
+        }
         const data = current.data.slice(current.offset, end);
         current.offset = end;
         current.pendingChunks += 1;
@@ -157,6 +166,7 @@ export class TerminalWriteQueue {
     entry.pendingChunks = Math.max(0, entry.pendingChunks - 1);
     this.inFlightCharacters = Math.max(0, this.inFlightCharacters - characters);
     if (this.disposed) return;
+    this.waitingForCapacity = false;
     this.commitReady();
     this.requestFlush();
   }

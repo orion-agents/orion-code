@@ -473,6 +473,8 @@ export function createWebE2EReleaseReceiptV1(
       `consecutive=${primaryTimelineIsConsecutive}`,
   });
   const runtimeMajors = runtimeRuns.map(run => run.environment.nodeMajor);
+  const runtimeRunIds = new Set(runtimeRuns.map(run => run.runId));
+  const runtimeManifestDigests = new Set(runtimeRuns.map(run => run.manifestDigest));
   checks.push({
     id: 'node_matrix_complete',
     status:
@@ -481,6 +483,23 @@ export function createWebE2EReleaseReceiptV1(
         ? 'pass'
         : 'fail',
     detail: `expected=${SUPPORTED_RELEASE_NODE_MAJORS_V1.join(',')} observed=${runtimeMajors.join(',') || 'none'}`,
+  });
+  checks.push({
+    id: 'node_matrix_runs_unique',
+    status:
+      runtimeRuns.length === SUPPORTED_RELEASE_NODE_MAJORS_V1.length &&
+      runtimeRunIds.size === SUPPORTED_RELEASE_NODE_MAJORS_V1.length &&
+      runtimeManifestDigests.size === SUPPORTED_RELEASE_NODE_MAJORS_V1.length
+        ? 'pass'
+        : 'fail',
+    detail:
+      `runs=${runtimeRuns.length} uniqueRunIds=${runtimeRunIds.size} ` +
+      `uniqueManifests=${runtimeManifestDigests.size}`,
+  });
+  checks.push({
+    id: 'live_canary',
+    status: input.liveCanary === 'FAIL' ? 'fail' : 'pass',
+    detail: `observed=${input.liveCanary}`,
   });
   const primaryCoverage =
     primaryRuns.length === 3 &&

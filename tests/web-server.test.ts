@@ -129,6 +129,50 @@ describe('Orion local Web host', () => {
     expect((sessions as { items: unknown[] }).items).toHaveLength(1);
   });
 
+  test('rejects missing, non-string and blank Session names without changing the durable name', async () => {
+    const context = await activeContext(handle);
+    const created = await fetch(`${handle.url}/api/v1/sessions`, {
+      method: 'POST',
+      headers: mutationHeaders(handle),
+      body: JSON.stringify({ requestId: randomUUID(), name: 'Original name', ...context }),
+    });
+    const createdBody = (await created.json()) as { session: { id: string; name?: string } };
+    expect(created.status).toBe(201);
+    expect(createdBody.session.name).toBe('Original name');
+
+    for (const name of [undefined, null, 7, '', '   ']) {
+      const response = await fetch(
+        `${handle.url}/api/v1/sessions/${encodeURIComponent(createdBody.session.id)}`,
+        {
+          method: 'PATCH',
+          headers: mutationHeaders(handle),
+          body: JSON.stringify({ requestId: randomUUID(), name, ...context }),
+        }
+      );
+      expect(response.status).toBe(400);
+    }
+
+    const unchanged = (await (
+      await fetch(guardedUrl(handle, '/api/v1/sessions', context))
+    ).json()) as { items: Array<{ id: string; name?: string }> };
+    expect(unchanged.items).toContainEqual(
+      expect.objectContaining({ id: createdBody.session.id, name: 'Original name' })
+    );
+
+    const renamed = await fetch(
+      `${handle.url}/api/v1/sessions/${encodeURIComponent(createdBody.session.id)}`,
+      {
+        method: 'PATCH',
+        headers: mutationHeaders(handle),
+        body: JSON.stringify({ requestId: randomUUID(), name: '  Normalized name  ', ...context }),
+      }
+    );
+    expect(renamed.status).toBe(200);
+    await expect(renamed.json()).resolves.toMatchObject({
+      session: { id: createdBody.session.id, name: 'Normalized name' },
+    });
+  });
+
   test('serves an omitted-tail recovery snapshot through the bounded latest-page path', async () => {
     const context = await activeContext(handle);
     const created = await fetch(`${handle.url}/api/v1/sessions`, {
@@ -338,6 +382,9 @@ describe('Orion local Web host', () => {
 
   test('rejects a stale tab Session create with zero cross-Workspace side effects', async () => {
     const staleContext = await activeContext(handle);
+    const staleSettings = (await (await fetch(`${handle.url}/api/v1/settings`)).json()) as {
+      revision: string;
+    };
     const secondWorkspace = join(root, 'second-workspace');
     mkdirSync(secondWorkspace);
     const switched = await fetch(`${handle.url}/api/v1/workspaces/activate`, {
@@ -363,6 +410,25 @@ describe('Orion local Web host', () => {
       code: 'context_revision_conflict',
     });
 
+    const staleSettingsWrite = await fetch(`${handle.url}/api/v1/settings`, {
+      method: 'PATCH',
+      headers: mutationHeaders(handle),
+      body: JSON.stringify({
+        requestId: randomUUID(),
+        ...staleContext,
+        expectedRevision: staleSettings.revision,
+        operations: [{ op: 'set', key: 'defaults.effort', value: 'high' }],
+      }),
+    });
+    expect(staleSettingsWrite.status).toBe(409);
+    await expect(staleSettingsWrite.json()).resolves.toMatchObject({
+      code: 'context_revision_conflict',
+    });
+    const currentSettings = (await (await fetch(`${handle.url}/api/v1/settings`)).json()) as {
+      sections: { defaults: { effort: { explicitValue?: string } } };
+    };
+    expect(currentSettings.sections.defaults.effort).not.toHaveProperty('explicitValue');
+
     const sessions = await fetch(guardedUrl(handle, '/api/v1/sessions', active));
     expect(sessions.status).toBe(200);
     await expect(sessions.json()).resolves.toMatchObject({ items: [] });
@@ -387,6 +453,7 @@ describe('Orion local Web host', () => {
   });
 
   test('applies one atomic Settings batch, replays it exactly and rejects stale CAS', async () => {
+    const context = await activeContext(handle);
     const beforeResponse = await fetch(`${handle.url}/api/v1/settings`);
     const before = (await beforeResponse.json()) as {
       revision: string;
@@ -397,6 +464,7 @@ describe('Orion local Web host', () => {
     const requestId = randomUUID();
     const body = JSON.stringify({
       requestId,
+      ...context,
       expectedRevision: before.revision,
       operations: [
         { op: 'set', key: 'appearance.theme', value: 'dark' },
@@ -444,6 +512,7 @@ describe('Orion local Web host', () => {
       headers: mutationHeaders(handle),
       body: JSON.stringify({
         requestId,
+        ...context,
         expectedRevision: before.revision,
         operations: [{ op: 'set', key: 'appearance.theme', value: 'light' }],
       }),
@@ -459,6 +528,7 @@ describe('Orion local Web host', () => {
       headers: mutationHeaders(handle),
       body: JSON.stringify({
         requestId: randomUUID(),
+        ...context,
         expectedRevision: before.revision,
         operations: [{ op: 'set', key: 'appearance.theme', value: 'light' }],
       }),

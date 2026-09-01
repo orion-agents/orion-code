@@ -168,6 +168,7 @@ export async function openSessionNavigation(
   options: UiOperationOptions = {}
 ): Promise<Locator> {
   const ui = workbenchUi(page);
+  const railSurface = page.locator('#workspace-rail');
   // Let the ResizeObserver-driven column solver commit after a viewport change.
   // Otherwise a stale desktop rail can appear visible for one frame while the
   // shell is already transitioning to the modal drawer contract.
@@ -182,22 +183,20 @@ export async function openSessionNavigation(
     element.classList.contains('project-navigation-drawer')
   );
   if (drawerMode) {
-    if (!(await ui.workspaceRail.evaluate(element => element.classList.contains('drawer-open')))) {
+    if (!(await railSurface.evaluate(element => element.classList.contains('drawer-open')))) {
       await ui.navigationButton.click();
       await expect(ui.navigationButton).toHaveAttribute('aria-expanded', 'true', {
         timeout: options.timeout,
       });
     }
   } else if (
-    await ui.workspaceRail.evaluate(element =>
-      element.classList.contains('project-navigator-collapsed')
-    )
+    await railSurface.evaluate(element => element.classList.contains('project-navigator-collapsed'))
   ) {
-    await ui.workspaceRail.getByRole('button', { name: '展开项目导航', exact: true }).click();
-    await expect(ui.workspaceRail).not.toHaveClass(/project-navigator-collapsed/u, {
+    await railSurface.getByRole('button', { name: '展开项目导航', exact: true }).click();
+    await expect(railSurface).not.toHaveClass(/project-navigator-collapsed/u, {
       timeout: options.timeout,
     });
-  } else if (!(await ui.workspaceRail.isVisible())) {
+  } else if (!(await railSurface.isVisible())) {
     await ui.navigationButton.click();
     await expect(ui.navigationButton).toHaveAttribute('aria-expanded', 'true', {
       timeout: options.timeout,

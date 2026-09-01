@@ -667,10 +667,10 @@ function ContextLauncher({
     setLoading(true);
     setError('');
     try {
-      if (node.kind === 'directory') {
+      if (isDirectoryLike(node)) {
         const page = await actions.listFiles(node.id);
         add({ kind: 'folder', id: node.id, label: node.name, revision: page.revision });
-      } else if (node.kind === 'file') {
+      } else if (isFileLike(node)) {
         const page = await actions.readFileContent(node.id);
         if (page.binary || page.sensitive) throw new Error('该文件不能加入模型 Context。');
         add({ kind: 'file', id: node.id, label: node.name, revision: page.revision });
@@ -688,7 +688,9 @@ function ContextLauncher({
       add({
         kind: 'review',
         id: 'working-tree',
-        label: `Review · ${review.changedFiles.length} files`,
+        label: review.truncated
+          ? `Review · ${review.totalChangedFiles} files · ${review.changedFiles.length} visible`
+          : `Review · ${review.totalChangedFiles} files`,
         gitRevision: review.repositoryRevision,
       });
     } catch (reason) {
@@ -775,7 +777,7 @@ function ContextLauncher({
                 <MenuAction
                   key={file.id}
                   label={file.name}
-                  detail={file.kind === 'directory' ? '目录' : `${file.sizeBytes ?? 0} bytes`}
+                  detail={isDirectoryLike(file) ? '目录' : `${file.sizeBytes ?? 0} bytes`}
                   onClick={() => void addFile(file)}
                 />
               ))
@@ -1222,6 +1224,12 @@ function permissionControlLabel(state: WorkbenchState): string {
 }
 function effortLabel(value: string): string {
   return value === 'auto' ? 'Effort 自动' : `Effort ${value}`;
+}
+function isDirectoryLike(node: WebFileNodeV1): boolean {
+  return node.kind === 'directory' || (node.kind === 'symlink' && node.targetKind === 'directory');
+}
+function isFileLike(node: WebFileNodeV1): boolean {
+  return node.kind === 'file' || (node.kind === 'symlink' && node.targetKind === 'file');
 }
 function contextKindLabel(kind: WebContextReferenceV1['kind']): string {
   return kind === 'file'

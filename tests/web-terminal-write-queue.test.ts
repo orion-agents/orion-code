@@ -129,6 +129,30 @@ describe('TerminalWriteQueue', () => {
     expect(writes[2].data).toBe('b');
   });
 
+  it('waits for xterm acknowledgement instead of spinning frames at a surrogate boundary', () => {
+    const scheduler = new TaskScheduler();
+    const writes: Array<{ data: string; callback: () => void }> = [];
+    const queue = new TerminalWriteQueue({
+      target: { write: (data, callback) => writes.push({ data, callback }) },
+      onSequenceCommitted: () => undefined,
+      scheduleTask: scheduler.schedule,
+      cancelTask: scheduler.cancel,
+      maxChunkCharacters: 2,
+      maxInFlightCharacters: 3,
+    });
+
+    queue.enqueue('ab😀');
+    scheduler.runNext();
+    expect(writes.map(write => write.data)).toEqual(['ab']);
+    expect(scheduler.size()).toBe(0);
+
+    writes[0].callback();
+    expect(scheduler.size()).toBe(1);
+    scheduler.runNext();
+    expect(writes.map(write => write.data)).toEqual(['ab', '😀']);
+    expect(scheduler.size()).toBe(0);
+  });
+
   it('cancels pending work and suppresses late callbacks after disposal', () => {
     const scheduler = new TaskScheduler();
     const writes: Array<{ data: string; callback: () => void }> = [];

@@ -81,6 +81,8 @@ function ownTerminalSocket(
   let connection: TerminalConnectionV1 | undefined;
   let backpressurePaused = false;
   let replayPaused = false;
+  const replayTail: unknown[] = [];
+  let replayExit: unknown | undefined;
   let drainTimer: NodeJS.Timeout | undefined;
   let replayTimer: NodeJS.Timeout | undefined;
   const timer = setTimeout(() => webSocket.close(4401, 'Authentication timeout'), AUTH_TIMEOUT_MS);
@@ -143,11 +145,31 @@ function ownTerminalSocket(
     checkBackpressure();
     return true;
   };
+  const sendExit = (event: unknown): void => {
+    if (!send(event, () => webSocket.close(1000, 'Terminal exited'))) {
+      webSocket.close(1000, 'Terminal exited');
+    }
+  };
+  const drainReplayTail = (): void => {
+    if (webSocket.readyState !== WebSocket.OPEN) return;
+    const next = replayTail.shift();
+    if (next !== undefined) {
+      send(next, drainReplayTail);
+      return;
+    }
+    if (replayExit !== undefined) {
+      const exit = replayExit;
+      replayExit = undefined;
+      sendExit(exit);
+      return;
+    }
+    replayPaused = false;
+    applyFlowControl();
+  };
   const sendReplay = (values: readonly unknown[], index = 0): void => {
     if (webSocket.readyState !== WebSocket.OPEN) return;
     if (index >= values.length) {
-      replayPaused = false;
-      applyFlowControl();
+      drainReplayTail();
       return;
     }
     if (webSocket.bufferedAmount >= PAUSE_WS_BUFFERED_BYTES) {
@@ -188,11 +210,13 @@ function ownTerminalSocket(
           terminalId,
           ticket: auth.ticket,
           afterSequence: auth.afterSequence,
-          onFrame: frame => send(frame),
+          onFrame: frame => {
+            if (replayPaused) replayTail.push(frame);
+            else send(frame);
+          },
           onExit: event => {
-            if (!send(event, () => webSocket.close(1000, 'Terminal exited'))) {
-              webSocket.close(1000, 'Terminal exited');
-            }
+            if (replayPaused) replayExit = event;
+            else sendExit(event);
           },
           onReplaced: () => webSocket.close(4409, 'Terminal connection replaced'),
         });

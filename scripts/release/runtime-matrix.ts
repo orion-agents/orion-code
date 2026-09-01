@@ -125,6 +125,38 @@ export function parseRuntimeMatrixArgumentsV1(argv: readonly string[]): Argument
   };
 }
 
+export function installExactTgzWithoutLifecycleScriptsV1(
+  installDirectory: string,
+  tarball: string
+): CommandOutcomeV1 {
+  return run('npm', [
+    'install',
+    '--prefix',
+    installDirectory,
+    '--no-audit',
+    '--no-fund',
+    '--package-lock=false',
+    '--ignore-scripts',
+    tarball,
+  ]);
+}
+
+export function installExactTgzWithConsumerLifecycleScriptsV1(
+  installDirectory: string,
+  tarball: string
+): CommandOutcomeV1 {
+  return run('npm', [
+    'install',
+    '--prefix',
+    installDirectory,
+    '--no-audit',
+    '--no-fund',
+    '--package-lock=false',
+    '--ignore-scripts=false',
+    tarball,
+  ]);
+}
+
 function main(): void {
   const args = parseRuntimeMatrixArgumentsV1(process.argv.slice(2));
   const artifact = verifyTarballArtifactReceiptV1(
@@ -136,24 +168,57 @@ function main(): void {
   const npmVersion = run('npm', ['--version']).stdout.trim() || 'unavailable';
   const matrixRunnerDigest = digestText(readFileSync(__filename, 'utf8'));
   const temporaryRoot = mkdtempSync(join(tmpdir(), `orion-runtime-node${nodeMajor}-`));
-  const installDirectory = join(temporaryRoot, 'install');
+  const safeInstallDirectory = join(temporaryRoot, 'safe-install');
+  const installDirectory = join(temporaryRoot, 'consumer-install');
   const probes: RuntimeMatrixProbeV1[] = [];
 
   try {
-    const install = run('npm', [
-      'install',
-      '--prefix',
-      installDirectory,
-      '--no-audit',
-      '--no-fund',
-      '--package-lock=false',
-      args.tarball,
-    ]);
+    if (actualTarballSha256 !== artifact.tarball.sha256) {
+      throw new Error(
+        `Exact tgz SHA-256 mismatch before lifecycle authorization: expected ${artifact.tarball.sha256}, observed ${actualTarballSha256}.`
+      );
+    }
+
+    // Phase 1 extracts/installs the exact tgz without package or dependency lifecycle scripts.
+    // Only a matching safe identity may advance to the separate consumer-realism phase.
+    const safeInstall = installExactTgzWithoutLifecycleScriptsV1(
+      safeInstallDirectory,
+      args.tarball
+    );
+    if (safeInstall.status !== 0) {
+      throw new Error(
+        `Safe exact-tgz install with lifecycle scripts disabled failed: ${sanitize(
+          safeInstall.stderr || safeInstall.stdout
+        )}`
+      );
+    }
+    const safelyInstalledPackagePath = join(
+      safeInstallDirectory,
+      'node_modules',
+      '@orion-agents',
+      'orion-code',
+      'package.json'
+    );
+    const safeManifest = JSON.parse(readFileSync(safelyInstalledPackagePath, 'utf8')) as {
+      readonly name?: string;
+      readonly version?: string;
+    };
+    if (
+      safeManifest.name !== artifact.package.name ||
+      safeManifest.version !== artifact.package.version
+    ) {
+      throw new Error('Safe exact-tgz identity mismatch before lifecycle authorization.');
+    }
+    const safelyInstalledPackageDigest = digestFile(safelyInstalledPackagePath);
+
+    // Phase 2 intentionally enables lifecycle scripts in a different prefix. All native/runtime
+    // probes below bind to this consumer install; the safe phase never claims native readiness.
+    const install = installExactTgzWithConsumerLifecycleScriptsV1(installDirectory, args.tarball);
     probes.push(
       probe(
         'clean_install',
         install,
-        'npm installed the exact tgz into an empty prefix',
+        'safe exact tgz installed with lifecycle disabled; separate consumer lifecycle install completed',
         true,
         matrixRunnerDigest,
         actualTarballSha256
@@ -172,14 +237,14 @@ function main(): void {
       `const p=require(${JSON.stringify(installedPackagePath)});` +
         `if(p.name!==${JSON.stringify(artifact.package.name)}||p.version!==${JSON.stringify(artifact.package.version)})process.exit(2);`,
     ]);
-    const hashMatches = actualTarballSha256 === artifact.tarball.sha256;
+    const installedIdentityMatches = safelyInstalledPackageDigest === installedPackageDigest;
     probes.push({
       id: 'package_identity',
-      status: identity.status === 0 && hashMatches ? 'pass' : 'fail',
+      status: identity.status === 0 && installedIdentityMatches ? 'pass' : 'fail',
       detail:
-        identity.status === 0 && hashMatches
-          ? `package identity and sha256 ${actualTarballSha256} match`
-          : `identityExit=${identity.status} hashMatches=${hashMatches}`,
+        identity.status === 0 && installedIdentityMatches
+          ? `safe and consumer package identity match sha256 ${actualTarballSha256}`
+          : `identityExit=${identity.status} safeConsumerIdentityMatches=${installedIdentityMatches}`,
       durationMs: identity.durationMs,
       runnerDigest: matrixRunnerDigest,
       targetDigest: installedPackageDigest,

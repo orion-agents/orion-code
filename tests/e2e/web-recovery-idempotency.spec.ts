@@ -2,7 +2,12 @@ import { createHash, randomUUID } from 'crypto';
 import { existsSync, readFileSync, rmSync } from 'fs';
 
 import type { WebEventEnvelopeV1, WebSessionSnapshotV1 } from '../../src/web/protocol';
-import { activeSessionSnapshot, settingsSnapshot } from './fixtures/api';
+import {
+  activeSessionSnapshot,
+  foregroundSessionId,
+  sessionSnapshot,
+  settingsSnapshot,
+} from './fixtures/api';
 import {
   OPENAI_FIXTURE_FILES,
   OPENAI_FIXTURE_MARKERS,
@@ -59,8 +64,17 @@ test('E2E-P0-03 pending approval survives browser replacement and Host shutdown 
   const detachReplacement = evidence.attachPage(replacement);
   await replacement.goto(host.url, { waitUntil: 'domcontentloaded' });
   await waitForWorkbenchReady(replacement, { timeout: 30_000 });
+  const replacementTarget = workbenchUi(replacement)
+    .sessionList.getByRole('button')
+    .filter({ hasText: initial.session.id.slice(0, 8) })
+    .first();
+  await expect(replacementTarget).toBeVisible();
+  await replacementTarget.click();
+  await expect.poll(() => foregroundSessionId(replacement)).toBe(initial.session.id);
   await waitForApproval(replacement, 'write_file', { timeout: 30_000 });
-  expect((await activeSessionSnapshot(replacement)).pendingApprovals[0].id).toBe(requestId);
+  expect((await sessionSnapshot(replacement, initial.session.id)).pendingApprovals[0].id).toBe(
+    requestId
+  );
   expect(existsSync(pendingPath)).toBe(false);
   evidence.recordFact('approval.same_after_tab', true);
 
@@ -70,9 +84,9 @@ test('E2E-P0-03 pending approval survives browser replacement and Host shutdown 
   });
   expect(readFileSync(pendingPath, 'utf8')).toBe('PENDING_APPROVED\n');
   evidence.recordFact('approval.explicit_effect_sha256', fileSha256(pendingPath));
-  expect((await activeSessionSnapshot(replacement)).pendingApprovals).toEqual([]);
+  expect((await sessionSnapshot(replacement, initial.session.id)).pendingApprovals).toEqual([]);
   await expect
-    .poll(async () => (await activeSessionSnapshot(replacement)).runtime.processing, {
+    .poll(async () => (await sessionSnapshot(replacement, initial.session.id)).runtime.processing, {
       timeout: 45_000,
     })
     .toBe(false);
@@ -117,11 +131,9 @@ test('E2E-P0-03 pending approval survives browser replacement and Host shutdown 
       await expect(targetSession).toBeVisible();
       await targetSession.click();
       await expect
-        .poll(async () => (await hostBootstrap(restarted.url)).activeSessionId, {
-          timeout: 30_000,
-        })
+        .poll(() => foregroundSessionId(recovered), { timeout: 30_000 })
         .toBe(shutdownSnapshot.session.id);
-      const snapshot = await activeSessionSnapshot(recovered);
+      const snapshot = await sessionSnapshot(recovered, shutdownSnapshot.session.id);
       expect(snapshot.session.id).toBe(shutdownSnapshot.session.id);
       expect(snapshot.pendingApprovals).toEqual([]);
       expect(snapshot.runtime.processing).toBe(false);
@@ -281,6 +293,7 @@ test('E2E-P0-05 exact mutation retry is idempotent and stale settings CAS is rej
     }>(host.url, nonce, '/api/v1/settings', 'PATCH', {
       requestId: randomUUID(),
       expectedRevision: left.revision,
+      ...contextGuard,
       operations: [{ op: 'set', key: 'permissions.toolConfirmation', value: 'allow' }],
     });
     expect(committed.status).toBe(200);
@@ -292,6 +305,7 @@ test('E2E-P0-05 exact mutation retry is idempotent and stale settings CAS is rej
     const stale = await hostJson(host.url, nonce, '/api/v1/settings', 'PATCH', {
       requestId: randomUUID(),
       expectedRevision: right.revision,
+      ...contextGuard,
       operations: [{ op: 'set', key: 'permissions.toolConfirmation', value: 'deny' }],
     });
     expect(stale.status).toBe(409);
@@ -323,7 +337,6 @@ function isWebEventEnvelope(value: unknown): value is WebEventEnvelopeV1 {
 
 async function hostBootstrap(hostUrl: string): Promise<{
   readonly nonce: string;
-  readonly activeSessionId?: string | null;
   readonly contextRevision: string;
   readonly workspaceId: string;
 }> {
@@ -333,7 +346,6 @@ async function hostBootstrap(hostUrl: string): Promise<{
   if (!response.ok) throw new Error(`Host bootstrap failed with HTTP ${response.status}.`);
   return response.json() as Promise<{
     readonly nonce: string;
-    readonly activeSessionId?: string | null;
     readonly contextRevision: string;
     readonly workspaceId: string;
   }>;

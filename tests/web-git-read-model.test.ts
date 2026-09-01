@@ -112,6 +112,51 @@ describe('GitReadModelServiceV1', () => {
     ).rejects.toMatchObject({ status: 409, code: 'git_revision_conflict' });
   });
 
+  test('blocks tracked and untracked sensitive Diff content before it can be returned', async () => {
+    const trackedMarker = 'SYNTHETIC_TRACKED_GIT_MARKER_41c9b7';
+    const untrackedMarker = 'SYNTHETIC_UNTRACKED_GIT_MARKER_8a2f6d';
+    writeFileSync(join(workspace, '.env'), 'committed-safe-value');
+    git(['add', '.env']);
+    git(['commit', '-m', 'add sensitive fixture']);
+    writeFileSync(join(workspace, '.env'), trackedMarker);
+    writeFileSync(join(workspace, 'credentials.json'), untrackedMarker);
+    const service = new GitReadModelServiceV1(workspace);
+
+    const status = await service.status();
+    const tracked = status.unstaged.find(file => file.path === '.env')!;
+    const untracked = status.untracked.find(file => file.path === 'credentials.json')!;
+
+    expect(JSON.stringify(status)).not.toContain(trackedMarker);
+    expect(JSON.stringify(status)).not.toContain(untrackedMarker);
+    await expect(service.diff({ fileId: tracked.fileId })).rejects.toMatchObject({
+      status: 403,
+      code: 'sensitive_file_blocked',
+    });
+    await expect(service.diff({ fileId: untracked.fileId })).rejects.toMatchObject({
+      status: 403,
+      code: 'sensitive_file_blocked',
+    });
+  });
+
+  test('blocks Diff when a safe current path was renamed from a sensitive path', async () => {
+    const marker = 'SYNTHETIC_RENAMED_GIT_MARKER_96d3e1';
+    writeFileSync(join(workspace, '.env'), marker);
+    git(['add', '.env']);
+    git(['commit', '-m', 'add sensitive rename fixture']);
+    git(['mv', '.env', 'notes.txt']);
+    const service = new GitReadModelServiceV1(workspace);
+
+    const status = await service.status();
+    const renamed = status.staged.find(file => file.path === 'notes.txt')!;
+
+    expect(renamed.renamedFrom).toBe('.env');
+    expect(JSON.stringify(status)).not.toContain(marker);
+    await expect(service.diff({ fileId: renamed.fileId })).rejects.toMatchObject({
+      status: 403,
+      code: 'sensitive_file_blocked',
+    });
+  });
+
   test('advances every truncated Diff cursor monotonically', async () => {
     writeFileSync(
       join(workspace, 'tracked.txt'),

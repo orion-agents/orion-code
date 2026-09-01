@@ -2,10 +2,14 @@
 
 面向终端与浏览器、本地优先的目标驱动 Coding Agent。
 
-> v0.3.3 候选版本：有界多 Session Web Workbench、内置方块工坊主题，以及保持单活动 Session
-> 合同的既有 TUI/terminal。Candidate 源码不代表已创建 npm 发布、Git tag 或达到可合并状态。
+> v0.3.4 候选版本：对 v0.3.3 多 Session Web Workbench 进行兼容的安全、终端顺序与发布证据
+> 稳定化。Candidate 源码不代表已创建 npm 发布、Git tag 或达到可合并状态。
 
 [English](README.md) ·
+[v0.3.4 稳定化方案](docs/plan/v0.3.4-stabilization-plan.md) ·
+[v0.3.4 合同](docs/architecture/v0.3.4-stabilization-contract.md) ·
+[v0.3.4 E2E 方案](docs/test/v0.3.4-stabilization-e2e-plan.md) ·
+[v0.3.4 迁移](docs/migration/v0.3.3-to-v0.3.4.md) ·
 [v0.3.3 方案](docs/plan/v0.3.3-plan.md) ·
 [v0.3.3 Web API](docs/architecture/v0.3.3-web-api.yaml) ·
 [模式/权限合同](docs/architecture/agent-mode-permission-contract.md) ·
@@ -18,6 +22,19 @@
 [迁移指南](docs/migration/v0.2.2-to-v0.3.0.md) ·
 [Settings 迁移](docs/migration/v0.2.2-to-v0.3.0-settings.md) ·
 [真实状态图册](docs/assets/screenshots/v0.3.0-web/README.md)
+
+## v0.3.4 稳定了什么
+
+- **Context 绑定写入。** Settings mutation 现在同时携带活动 Workspace 与 Context revision；陈旧页面
+  不会写入或应用到另一个 Runtime。空 Session 名称和 busy slash command 也会保持持久态与活动回合不变。
+- **统一敏感数据边界。** 结构化凭据、URL userinfo、canonical 文件目标、Git diff 路径、tool artifact
+  和并发命令输出在进入浏览器或证据前统一检查与脱敏。
+- **确定的 Terminal 传输。** PTY 代理对分片、浏览器写入背压与重连竞态都保持完整 Unicode，以及
+  replay、live tail、exit、close 的严格顺序。
+- **诚实的 durable/read 投影。** Tool receipt 与 journal fact 必须成对校验；symlink 在保留 lexical
+  类型的同时投影有效目标类型；Review 将仓库真实总数与有界可见页分开显示。
+- **Fail-closed 发布证据。** live canary 失败、重复 Runtime 证据，或混入“安全安装阶段”的生命周期
+  script 都会阻止发布。
 
 ## v0.3.3 包含什么
 
@@ -78,10 +95,10 @@ MCP 仍是用户可见的扩展边界。
 支持 Node.js 22.12+、24 和 26。生产环境建议使用 Node 24 LTS，当前开发环境也支持 Node 26
 Current。Node 20 已结束上游维护，不再属于 v0.3 Runtime 合同。
 
-当 npm 已存在不可变的 `0.3.3` 发布凭据后：
+当 npm 已存在不可变的 `0.3.4` 发布凭据后：
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.3
+npm install -g @orion-agents/orion-code@0.3.4
 orion --version
 orion doctor
 ```
@@ -255,7 +272,8 @@ npm run test:web-e2e -- --grep @settings
 native SQLite、TUI、terminal、print、Web、Goal、subagent、Skill、MCP、Compact 与 resume；
 WEB33-P0-01..12 验证内置外观合同，WEB33-P0-16..24 验证并行 Session actors、标签页本地前台切换、
 有界队列、右侧 rail 与唯一 Settings 入口。详见 [`v0.3.3 方案`](docs/plan/v0.3.3-plan.md)与
-[`v0.3.3 E2E 资格计划`](docs/test/v0.3.3-web-workbench-e2e-plan.md)。
+[`v0.3.3 E2E 资格计划`](docs/test/v0.3.3-web-workbench-e2e-plan.md)。v0.3.4 的安全与稳定化增量见
+[`v0.3.4 测试计划`](docs/test/v0.3.4-stabilization-e2e-plan.md)；它不会把 source gate 当成发布凭据。
 
 ## 安全
 

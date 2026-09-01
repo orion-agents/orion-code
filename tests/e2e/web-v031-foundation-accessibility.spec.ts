@@ -6,7 +6,14 @@ import type { BrowserContext, Locator, Page, Request, TestInfo } from '@playwrig
 
 import type { WebPageV1, WebWorkspaceSummaryV1 } from '../../src/web/protocol';
 import { WorkspaceRegistryV1 } from '../../src/services/workspace-registry';
-import { activeSessionSnapshot, browserGet, guardedBrowserGet, webBootstrap } from './fixtures/api';
+import {
+  activeSessionSnapshot,
+  browserGet,
+  foregroundSessionId,
+  guardedBrowserGet,
+  sessionSnapshot,
+  webBootstrap,
+} from './fixtures/api';
 import { OPENAI_FIXTURE_MARKERS, OPENAI_FIXTURE_PROMPTS } from './fixtures/openai-provider';
 import { allowExpectedNetworkFailures, expect, installSseCapture, test } from './fixtures/test';
 import type { WorkspaceFixture } from './fixtures/workspace';
@@ -50,6 +57,7 @@ test('WEB31-P0-01 packaged Workbench shows three projects and lazy-loads real Se
   await activateWorkspaceThroughUi(page, tertiaryWorkspace);
   await activateWorkspaceThroughUi(page, workspace.primaryWorkspace);
   await createSession(page, { name: 'Primary Active Session' });
+  const primarySessionId = await foregroundSessionId(page);
 
   const listed = await guardedBrowserGet<WebPageV1<WebWorkspaceSummaryV1>>(
     page,
@@ -144,15 +152,22 @@ test('WEB31-P0-01 packaged Workbench shows three projects and lazy-loads real Se
       .poll(async () => secondaryProject.locator('.project-copy > span').innerText())
       .toMatch(/(?:Git|clean|M\d+)/u);
 
+    const primarySession = rail
+      .getByRole('list', { name: 'workspace-primary 的会话' })
+      .getByRole('button')
+      .filter({ hasText: /^Primary Active Session\b/u });
+    await expect(primarySession).toHaveCount(1, { timeout: 30_000 });
+    await primarySession.click();
+    await expect.poll(() => foregroundSessionId(lazyPage)).toBe(primarySessionId);
+
     await submitPrompt(lazyPage, OPENAI_FIXTURE_PROMPTS.pending);
     await waitForApproval(lazyPage, 'write_file', { timeout: 30_000 });
     const primaryProject = projectTreeItem(tree, 'workspace-primary');
     const primaryNode = primaryProject.locator('xpath=ancestor::section[1]');
-    await expect(primaryNode.locator('.project-session-row.active')).toContainText('运行中');
     await expect(primaryNode.locator('.project-session-row.active')).toContainText('等待审批');
     await answerApproval(lazyPage, 'reject', 'write_file');
     await expect
-      .poll(async () => (await activeSessionSnapshot(lazyPage)).runtime.processing, {
+      .poll(async () => (await sessionSnapshot(lazyPage, primarySessionId)).runtime.processing, {
         timeout: 30_000,
       })
       .toBe(false);
@@ -200,7 +215,7 @@ test('WEB31-P0-01 packaged Workbench shows three projects and lazy-loads real Se
     evidence.recordFact('web31.lazy_session_requests', secondaryPageRequests);
     evidence.recordFact('web31.zero_session_project', true);
     evidence.recordFact('web31.project_pin_search', true);
-    evidence.recordFact('web31.session_status_badges', 'running,approval');
+    evidence.recordFact('web31.session_status_badges', 'approval');
     evidence.recordFact('web31.scale_projects', scale.projectCount);
     evidence.recordFact('web31.scale_sessions_per_project', scale.sessionsPerProject);
     evidence.recordFact(

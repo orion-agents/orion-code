@@ -24,6 +24,8 @@ export interface BrowserMutationOptions {
   readonly contentType?: string;
 }
 
+const WEB_FOREGROUND_SESSION_PREFIX = 'orion.web.foreground-session.v1:';
+
 export async function webBootstrap(page: Page): Promise<WebBootstrapV1> {
   const result = await browserGet<WebBootstrapV1>(page, '/api/v1/bootstrap');
   if (result.status !== 200) throw new Error(`Bootstrap failed with HTTP ${result.status}.`);
@@ -31,9 +33,37 @@ export async function webBootstrap(page: Page): Promise<WebBootstrapV1> {
 }
 
 export async function activeSessionSnapshot(page: Page): Promise<WebSessionSnapshotV1> {
-  const bootstrap = await webBootstrap(page);
-  if (!bootstrap.activeSessionId) throw new Error('No active Web E2E session.');
-  return sessionSnapshot(page, bootstrap.activeSessionId);
+  return sessionSnapshot(page, await foregroundSessionId(page));
+}
+
+export async function foregroundSessionId(page: Page, workspaceId?: string): Promise<string> {
+  const sessionId = await storedForegroundSessionId(page, workspaceId);
+  if (!sessionId) throw new Error('No foreground Web E2E session for this Page.');
+  return sessionId;
+}
+
+export async function storedForegroundSessionId(
+  page: Page,
+  workspaceId?: string
+): Promise<string | null> {
+  const activeWorkspaceId = workspaceId ?? (await webBootstrap(page)).workspaceId;
+  return page.evaluate(({ prefix, id }) => sessionStorage.getItem(`${prefix}${id}`), {
+    prefix: WEB_FOREGROUND_SESSION_PREFIX,
+    id: activeWorkspaceId,
+  });
+}
+
+export async function rememberForegroundSession(
+  page: Page,
+  sessionId: string,
+  workspaceId?: string
+): Promise<void> {
+  const activeWorkspaceId = workspaceId ?? (await webBootstrap(page)).workspaceId;
+  await page.evaluate(({ prefix, id, value }) => sessionStorage.setItem(`${prefix}${id}`, value), {
+    prefix: WEB_FOREGROUND_SESSION_PREFIX,
+    id: activeWorkspaceId,
+    value: sessionId,
+  });
 }
 
 export async function sessionSnapshot(
@@ -66,9 +96,16 @@ export async function updateSettings(
   operations: readonly WebSettingsOperationV1[],
   requestId = randomUUID()
 ): Promise<BrowserApiResult<WebSettingsMutationResultV1>> {
+  const bootstrap = await webBootstrap(page);
   return browserMutation<WebSettingsMutationResultV1>(page, '/api/v1/settings', {
     method: 'PATCH',
-    body: { requestId, expectedRevision, operations },
+    body: {
+      requestId,
+      workspaceId: bootstrap.workspaceId,
+      expectedContextRevision: bootstrap.contextRevision,
+      expectedRevision,
+      operations,
+    },
   });
 }
 

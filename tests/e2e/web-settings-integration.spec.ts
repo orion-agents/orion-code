@@ -12,6 +12,7 @@ import {
   activeSessionSnapshot,
   sessionSnapshot,
   settingsSnapshot,
+  storedForegroundSessionId,
   updateSettings,
   webBootstrap,
 } from './fixtures/api';
@@ -231,7 +232,7 @@ test('SET-P0-03 project Effort wins over global and model defaults across worksp
   try {
     await page.goto(replacement.url, { waitUntil: 'domcontentloaded' });
     await waitForWorkbenchReady(page, { timeout: 30_000 });
-    if (!(await webBootstrap(page)).activeSessionId) {
+    if (!(await storedForegroundSessionId(page))) {
       await createSession(page);
     } else {
       await expect(workbenchUi(page).composer).toBeEnabled({ timeout: 30_000 });
@@ -425,14 +426,17 @@ test('SET-P0-05 one UI draft emits one atomic three-field PATCH and rejects all 
   expect(after.sections.defaults.effort.effectiveValue).toBe('high');
 
   const committedBytes = workspace.readConfigBytes();
+  const activeContext = await hostBootstrap(host.url);
   const rejected = await hostJson<unknown>(
     host.url,
-    (await hostBootstrap(host.url)).nonce,
+    activeContext.nonce,
     '/api/v1/settings',
     'PATCH',
     {
       requestId: randomUUID(),
       expectedRevision: after.revision,
+      workspaceId: activeContext.workspaceId,
+      expectedContextRevision: activeContext.contextRevision,
       operations: [
         { op: 'set', key: 'appearance.theme', value: 'light' },
         { op: 'set', key: 'defaults.model', value: 'fixture-model-does-not-exist' },
@@ -624,6 +628,7 @@ test('SET-P0-08 invalid external JSON keeps Runtime last-good and cannot be over
   page.on('requestfailed', onNetworkFailure);
   await createSession(page, { name: 'Last-good runtime session' });
   const before = await settingsSnapshot(page);
+  const activeContext = await hostBootstrap(host.url);
   const originalBytes = workspace.readConfigBytes();
   const leakMarker = 'settings-invalid-secret-marker-93c417';
   const invalidBytes = Buffer.from(`{"apiKey":"${leakMarker}"`, 'utf8');
@@ -648,12 +653,14 @@ test('SET-P0-08 invalid external JSON keeps Runtime last-good and cannot be over
 
     const rejected = await hostJson<WebSettingsMutationResultV1>(
       host.url,
-      (await hostBootstrap(host.url)).nonce,
+      activeContext.nonce,
       '/api/v1/settings',
       'PATCH',
       {
         requestId: randomUUID(),
         expectedRevision: before.revision,
+        workspaceId: activeContext.workspaceId,
+        expectedContextRevision: activeContext.contextRevision,
         operations: [{ op: 'set', key: 'appearance.theme', value: 'dark' }],
       }
     );
@@ -689,11 +696,14 @@ test('SET-P0-09 disconnect after commit and exact requestId retry replays one se
   workspace,
 }) => {
   const before = await settingsSnapshot(page);
-  const nonce = (await hostBootstrap(host.url)).nonce;
+  const bootstrap = await hostBootstrap(host.url);
+  const nonce = bootstrap.nonce;
   const requestId = randomUUID();
   const body = {
     requestId,
     expectedRevision: before.revision,
+    workspaceId: bootstrap.workspaceId,
+    expectedContextRevision: bootstrap.contextRevision,
     operations: [{ op: 'set', key: 'appearance.theme', value: 'dark' }],
   } as const;
 
@@ -797,6 +807,8 @@ test('SET-P0-10 an old page recovers a same-origin Host restart before saving wi
       body: JSON.stringify({
         requestId: randomUUID(),
         expectedRevision: restartedBootstrap.settings.revision,
+        workspaceId: restartedBootstrap.workspaceId,
+        expectedContextRevision: restartedBootstrap.contextRevision,
         operations: [{ op: 'set', key: 'appearance.theme', value: 'light' }],
       }),
     });
@@ -832,6 +844,8 @@ test('SET-P0-11 settings mutations and open-document fail closed except the lega
   const body = JSON.stringify({
     requestId: randomUUID(),
     expectedRevision: bootstrap.settings.revision,
+    workspaceId: bootstrap.workspaceId,
+    expectedContextRevision: bootstrap.contextRevision,
     operations: [{ op: 'set', key: 'appearance.theme', value: 'dark' }],
   });
   const hostile = await rawRequest(host.url, {
@@ -907,16 +921,21 @@ test('SET-P0-12 persisted Settings evidence is free of secrets, headers, env nam
   await setSettingsSelect(page, '主题', 'dark');
   await applySettings(page, 1);
   const after = await settingsSnapshot(page);
+  const captureContext = await hostBootstrap(host.url);
   const problem = await rawRequest(host.url, {
     method: 'PATCH',
     path: '/api/v1/settings',
     origin: host.url,
-    nonce: (await hostBootstrap(host.url)).nonce,
-    body: JSON.stringify({ requestId: randomUUID(), expectedRevision: after.revision }),
+    nonce: captureContext.nonce,
+    body: JSON.stringify({
+      requestId: randomUUID(),
+      expectedRevision: after.revision,
+      workspaceId: captureContext.workspaceId,
+      expectedContextRevision: captureContext.contextRevision,
+    }),
   });
   expect(problem.status).toBe(400);
 
-  const captureContext = await hostBootstrap(host.url);
   const diagnosticsQuery = new URLSearchParams({
     workspaceId: captureContext.workspaceId,
     expectedContextRevision: captureContext.contextRevision,

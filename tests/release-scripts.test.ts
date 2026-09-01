@@ -1,6 +1,7 @@
 import {
   chmodSync,
   cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -13,6 +14,10 @@ import { dirname, join, resolve } from 'path';
 import { spawnSync } from 'child_process';
 
 import { captureReleaseArtifactSourceV1 } from '../scripts/release/build-release-artifact';
+import {
+  installExactTgzWithConsumerLifecycleScriptsV1,
+  installExactTgzWithoutLifecycleScriptsV1,
+} from '../scripts/release/runtime-matrix';
 import {
   parseAssembleWebE2EArgumentsV1,
   verifyEvidenceBundle,
@@ -41,6 +46,16 @@ type ReleaseReport = {
 const projectRoot = resolve(__dirname, '..');
 const releaseScript = join(projectRoot, 'scripts', 'release', 'release-check.js');
 const depHealthScript = join(projectRoot, 'scripts', 'release', 'dep-health-check.sh');
+const releaseInstallContract = require(releaseScript) as {
+  readonly installExactTgzWithoutLifecycleScripts: (
+    installDirectory: string,
+    tarball: string
+  ) => { readonly code: number; readonly stdout: string; readonly stderr: string };
+  readonly installExactTgzWithConsumerLifecycleScripts: (
+    installDirectory: string,
+    tarball: string
+  ) => { readonly code: number; readonly stdout: string; readonly stderr: string };
+};
 const fixtures: string[] = [];
 const ONE_PIXEL_PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
@@ -163,6 +178,45 @@ function createFixture(version: string, changelog: string): string {
   return cwd;
 }
 
+function createLifecycleTarballFixture(): {
+  readonly root: string;
+  readonly tarball: string;
+  readonly sentinel: string;
+} {
+  const root = mkdtempSync(join(tmpdir(), 'orion-lifecycle-tgz-'));
+  fixtures.push(root);
+  const packageRoot = join(root, 'package');
+  const sentinel = join(root, 'postinstall-sentinel');
+  mkdirSync(packageRoot);
+  writeFileSync(
+    join(packageRoot, 'package.json'),
+    `${JSON.stringify(
+      {
+        name: 'orion-lifecycle-fixture',
+        version: '1.0.0',
+        scripts: { postinstall: 'node postinstall.js' },
+      },
+      null,
+      2
+    )}\n`
+  );
+  writeFileSync(
+    join(packageRoot, 'postinstall.js'),
+    `require('fs').writeFileSync(${JSON.stringify(sentinel)}, 'executed');\n`
+  );
+  const packed = spawnSync(
+    'npm',
+    ['pack', '--ignore-scripts', '--json', '--pack-destination', root],
+    { cwd: packageRoot, encoding: 'utf8' }
+  );
+  if (packed.status !== 0) {
+    throw new Error(`failed to pack lifecycle fixture: ${packed.stderr || packed.stdout}`);
+  }
+  const metadata = (JSON.parse(packed.stdout) as readonly { readonly filename: string }[])[0];
+  if (!metadata?.filename) throw new Error('lifecycle fixture pack metadata is missing');
+  return { root, tarball: join(root, metadata.filename), sentinel };
+}
+
 function runReleaseCheck(cwd: string): { status: number | null; report: ReleaseReport } {
   const result = spawnSync(
     process.execPath,
@@ -209,6 +263,61 @@ afterEach(() => {
 });
 
 describe('release-check script contract', () => {
+  it('extracts exact tgz files without lifecycle scripts before a separate consumer install', () => {
+    const fixture = createLifecycleTarballFixture();
+    const contracts = [
+      {
+        name: 'release-check',
+        safe: (prefix: string) =>
+          releaseInstallContract.installExactTgzWithoutLifecycleScripts(prefix, fixture.tarball)
+            .code,
+        consumer: (prefix: string) =>
+          releaseInstallContract.installExactTgzWithConsumerLifecycleScripts(
+            prefix,
+            fixture.tarball
+          ).code,
+      },
+      {
+        name: 'runtime-matrix',
+        safe: (prefix: string) =>
+          installExactTgzWithoutLifecycleScriptsV1(prefix, fixture.tarball).status,
+        consumer: (prefix: string) =>
+          installExactTgzWithConsumerLifecycleScriptsV1(prefix, fixture.tarball).status,
+      },
+    ] as const;
+
+    for (const contract of contracts) {
+      const safePrefix = join(fixture.root, `${contract.name}-safe`);
+      expect(contract.safe(safePrefix)).toBe(0);
+      expect(
+        existsSync(join(safePrefix, 'node_modules', 'orion-lifecycle-fixture', 'package.json'))
+      ).toBe(true);
+      expect(existsSync(fixture.sentinel)).toBe(false);
+
+      expect(contract.consumer(join(fixture.root, `${contract.name}-consumer`))).toBe(0);
+      expect(existsSync(fixture.sentinel)).toBe(true);
+      rmSync(fixture.sentinel, { force: true });
+    }
+
+    const releaseSource = readFileSync(releaseScript, 'utf8');
+    const runtimeSource = readFileSync(
+      join(projectRoot, 'scripts', 'release', 'runtime-matrix.ts'),
+      'utf8'
+    );
+    expect(releaseSource).toContain(
+      'const safeInstall = installExactTgzWithoutLifecycleScripts(safeInstallDir, tarballPath)'
+    );
+    expect(releaseSource).toContain(
+      'const install = installExactTgzWithConsumerLifecycleScripts(installDir, tarballPath)'
+    );
+    expect(runtimeSource).toContain(
+      'const safeInstall = installExactTgzWithoutLifecycleScriptsV1('
+    );
+    expect(runtimeSource).toContain(
+      'const install = installExactTgzWithConsumerLifecycleScriptsV1('
+    );
+  });
+
   it('freezes clean source identity before creating an in-repository artifact directory', () => {
     const cwd = createFixture('1.2.3', '## [1.2.3] - 2026-08-15\n\nStatus: candidate');
 
@@ -250,10 +359,12 @@ describe('release-check script contract', () => {
     expect(pkg.files).toContain('docs/migration/v0.3.0-to-v0.3.1.md');
     expect(pkg.files).toContain('docs/migration/v0.3.1-to-v0.3.2.md');
     expect(pkg.files).toContain('docs/migration/v0.3.2-to-v0.3.3.md');
+    expect(pkg.files).toContain('docs/migration/v0.3.3-to-v0.3.4.md');
     expect(pkg.files).toContain('docs/architecture/v0.3.0-web-api.yaml');
     expect(pkg.files).toContain('docs/architecture/v0.3.1-web-api.yaml');
     expect(pkg.files).toContain('docs/architecture/v0.3.2-web-api.yaml');
     expect(pkg.files).toContain('docs/architecture/v0.3.3-web-api.yaml');
+    expect(pkg.files).toContain('docs/architecture/v0.3.4-stabilization-contract.md');
     expect(pkg.files).toContain('docs/architecture/agent-mode-permission-contract.md');
     expect(pkg.files).toContain('docs/plan/v0.2.0-dsh-harness-redesign-plan.md');
     expect(pkg.files).toContain('docs/plan/v0.2.0-release-checklist.md');
@@ -263,9 +374,11 @@ describe('release-check script contract', () => {
     expect(pkg.files).toContain('docs/plan/v0.3.1-web-workbench-professional-shell-plan.md');
     expect(pkg.files).toContain('docs/plan/v0.3.2-web-workbench-layout-and-composer-plan.md');
     expect(pkg.files).toContain('docs/plan/v0.3.3-plan.md');
+    expect(pkg.files).toContain('docs/plan/v0.3.4-stabilization-plan.md');
     expect(pkg.files).toContain('docs/test/v0.3.1-web-workbench-e2e-plan.md');
     expect(pkg.files).toContain('docs/test/v0.3.2-web-workbench-e2e-plan.md');
     expect(pkg.files).toContain('docs/test/v0.3.3-web-workbench-e2e-plan.md');
+    expect(pkg.files).toContain('docs/test/v0.3.4-stabilization-e2e-plan.md');
     expect(pkg.files).not.toContain('assets/');
   });
 
@@ -307,10 +420,12 @@ describe('release-check script contract', () => {
     expect(script).toContain("'docs/migration/v0.3.0-to-v0.3.1.md'");
     expect(script).toContain("'docs/migration/v0.3.1-to-v0.3.2.md'");
     expect(script).toContain("'docs/migration/v0.3.2-to-v0.3.3.md'");
+    expect(script).toContain("'docs/migration/v0.3.3-to-v0.3.4.md'");
     expect(script).toContain("'docs/architecture/v0.3.0-web-api.yaml'");
     expect(script).toContain("'docs/architecture/v0.3.1-web-api.yaml'");
     expect(script).toContain("'docs/architecture/v0.3.2-web-api.yaml'");
     expect(script).toContain("'docs/architecture/v0.3.3-web-api.yaml'");
+    expect(script).toContain("'docs/architecture/v0.3.4-stabilization-contract.md'");
     expect(script).toContain("'docs/architecture/agent-mode-permission-contract.md'");
     expect(script).toContain("'docs/plan/v0.2.0-dsh-harness-redesign-plan.md'");
     expect(script).toContain("'docs/plan/v0.2.0-release-checklist.md'");
@@ -320,9 +435,11 @@ describe('release-check script contract', () => {
     expect(script).toContain("'docs/plan/v0.3.1-web-workbench-professional-shell-plan.md'");
     expect(script).toContain("'docs/plan/v0.3.2-web-workbench-layout-and-composer-plan.md'");
     expect(script).toContain("'docs/plan/v0.3.3-plan.md'");
+    expect(script).toContain("'docs/plan/v0.3.4-stabilization-plan.md'");
     expect(script).toContain("'docs/test/v0.3.1-web-workbench-e2e-plan.md'");
     expect(script).toContain("'docs/test/v0.3.2-web-workbench-e2e-plan.md'");
     expect(script).toContain("'docs/test/v0.3.3-web-workbench-e2e-plan.md'");
+    expect(script).toContain("'docs/test/v0.3.4-stabilization-e2e-plan.md'");
     expect(script).toContain("['Web Workbench', webProbe]");
     expect(script).toContain('unexpected tarball entries');
   });

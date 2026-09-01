@@ -274,9 +274,7 @@ describe('TerminalManagerV1', () => {
 
     expect(frames).toEqual([]);
     await waitFor(() => frames.length > 0);
-    expect(frames).toEqual([
-      { type: 'output', sequence: 1, data: '0123456789'.repeat(100) },
-    ]);
+    expect(frames).toEqual([{ type: 'output', sequence: 1, data: '0123456789'.repeat(100) }]);
   });
 
   test('never splits a Unicode surrogate pair across terminal output frames', () => {
@@ -301,6 +299,39 @@ describe('TerminalManagerV1', () => {
     expect(frames).toHaveLength(2);
     expect(frames[0].charCodeAt(frames[0].length - 1)).not.toBeGreaterThanOrEqual(0xd800);
     expect(frames[1].charCodeAt(0)).not.toBeGreaterThanOrEqual(0xdc00);
+  });
+
+  test('buffers a delayed surrogate pair and replaces an orphan only on final exit', async () => {
+    const created = manager.create({
+      workspaceId: 'workspace-a',
+      expectedContextRevision: 'revision-a',
+    });
+    const frames: string[] = [];
+    const exits: number[] = [];
+    manager.attach({
+      terminalId: created.terminal.id,
+      ticket: created.ticket,
+      afterSequence: 0,
+      onFrame: frame => frames.push(frame.data),
+      onExit: event => exits.push(event.exitCode),
+      onReplaced: jest.fn(),
+    });
+
+    processes[0].emitData('\ud83d');
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(frames).toEqual([]);
+
+    processes[0].emitData('\ude00');
+    await waitFor(() => frames.length === 1);
+    expect(frames).toEqual(['😀']);
+
+    processes[0].emitData('\ud83d');
+    processes[0].emitExit({ exitCode: 0 });
+    expect(frames).toEqual(['😀', '\ufffd']);
+    expect(exits).toEqual([0]);
+    expect(frames.join('')).not.toMatch(
+      /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u
+    );
   });
 
   test('pauses and resumes the PTY exactly once for connection backpressure', () => {

@@ -168,24 +168,40 @@ async function scanAxe(page: Page, stage: string): Promise<AxeViolation[]> {
 async function expectColorScheme(page: Page, expected: 'light' | 'dark'): Promise<void> {
   await expect
     .poll(() =>
-      page.evaluate(() => ({
-        preference: matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark',
-        rendered: getComputedStyle(document.documentElement).colorScheme,
-        textSecondary: getComputedStyle(document.documentElement)
+      page.evaluate(target => {
+        const root = document.documentElement;
+        const uiStyle = root.getAttribute('data-ui-style');
+        const textSecondary = getComputedStyle(root)
           .getPropertyValue('--text-2')
           .trim()
-          .toLowerCase(),
-        modeColor: (() => {
-          const modeLabel = document.querySelector<HTMLElement>('[aria-label="工作模式"] > span');
-          return modeLabel ? getComputedStyle(modeLabel).color : null;
-        })(),
-      }))
+          .toLowerCase();
+        const modeLabel = document.querySelector<HTMLElement>('[aria-label="工作模式"] > span');
+        const modeColor = modeLabel ? getComputedStyle(modeLabel).color : null;
+        const expectedTokens =
+          uiStyle === 'orion-blocksmith'
+            ? target === 'light'
+              ? { textSecondary: '#454a40', modeColor: 'rgb(69, 74, 64)' }
+              : { textSecondary: '#d1c8b8', modeColor: 'rgb(209, 200, 184)' }
+            : uiStyle === 'classic'
+              ? target === 'light'
+                ? { textSecondary: '#454b5a', modeColor: 'rgb(69, 75, 90)' }
+                : { textSecondary: '#b1b8c8', modeColor: 'rgb(177, 184, 200)' }
+              : null;
+        return {
+          preference: matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark',
+          rendered: getComputedStyle(root).colorScheme,
+          uiStyle,
+          tokensMatch:
+            expectedTokens !== null &&
+            textSecondary === expectedTokens.textSecondary &&
+            modeColor === expectedTokens.modeColor,
+        };
+      }, expected)
     )
-    .toEqual({
+    .toMatchObject({
       preference: expected,
       rendered: expected,
-      textSecondary: expected === 'light' ? '#454b5a' : '#b1b8c8',
-      modeColor: expected === 'light' ? 'rgb(69, 75, 90)' : 'rgb(177, 184, 200)',
+      tokensMatch: true,
     });
 }
 

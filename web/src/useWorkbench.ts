@@ -216,7 +216,8 @@ export function useWorkbench(): UseWorkbenchResult {
       const settings = await migrateLegacyAppearance(
         api,
         settingsMirror,
-        mirrorSnapshot.document ?? mirrorSnapshot.lastGood ?? bootstrap.settings
+        mirrorSnapshot.document ?? mirrorSnapshot.lastGood ?? bootstrap.settings,
+        context
       );
       if (generation !== resourceGeneration.current) return;
       dispatch({
@@ -1135,7 +1136,12 @@ export function useWorkbench(): UseWorkbenchResult {
           'settings_invalid_operation'
         );
       }
-      const result = await api.updateSettings(expectedRevision, operations, stableRequestId);
+      const result = await api.updateSettings(
+        expectedRevision,
+        operations,
+        requireContextGuard(stateRef.current),
+        stableRequestId
+      );
       settingsMirror.accept(result.settings);
       return result;
     },
@@ -1338,7 +1344,8 @@ export function useWorkbench(): UseWorkbenchResult {
 async function migrateLegacyAppearance(
   api: OrionWebApi,
   mirror: SettingsMirror,
-  initialDocument: WebSettingsDocumentV1
+  initialDocument: WebSettingsDocumentV1,
+  context: WebContextGuardV1
 ): Promise<WebSettingsDocumentV1> {
   let document = initialDocument;
 
@@ -1354,7 +1361,12 @@ async function migrateLegacyAppearance(
     }
 
     try {
-      const result = await api.updateSettings(document.revision, migration.operations, requestId());
+      const result = await api.updateSettings(
+        document.revision,
+        migration.operations,
+        context,
+        requestId()
+      );
       mirror.accept(result.settings);
       clearLegacyAppearance(migration.keysToClear);
       return result.settings;

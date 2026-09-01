@@ -417,7 +417,7 @@ async function handleRequest(context: RequestContext): Promise<void> {
     assertOnlyKeys(body, ['requestId', 'name', 'expectedContextRevision', 'workspaceId']);
     const requestId = requireUuid(body.requestId, 'requestId');
     const contextGuard = requireContextGuardRecord(body);
-    const name = typeof body.name === 'string' ? body.name : '';
+    const name = requireText(body.name, 'name', 120);
     const sessionId = safeDecodePathSegment(sessionMatch[1]);
     const result = await context.workbench.executeMutation(
       requestId,
@@ -446,7 +446,12 @@ async function handleRequest(context: RequestContext): Promise<void> {
     const result = await context.workbench.executeMutation(
       body.requestId,
       'settings.update',
-      { expectedRevision: body.expectedRevision, operations: body.operations },
+      {
+        workspaceId: body.workspaceId,
+        expectedContextRevision: body.expectedContextRevision,
+        expectedRevision: body.expectedRevision,
+        operations: body.operations,
+      },
       async () => ({ requestId: body.requestId, ...(await context.workbench.updateSettings(body)) })
     );
     sendJson(response, 200, result);

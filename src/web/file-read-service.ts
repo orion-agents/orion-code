@@ -45,6 +45,8 @@ export interface WebFileNodeV1 {
   /** Sanitized Workspace-relative display path. Requests must continue to use the opaque id. */
   readonly displayPath: string;
   readonly kind: WebFileKindV1;
+  /** Effective target kind for a readable symbolic link. */
+  readonly targetKind?: 'file' | 'directory';
   readonly sizeBytes?: number;
   readonly modifiedAt: string;
   readonly sensitive: boolean;
@@ -200,7 +202,7 @@ export class FileReadServiceV1 {
     if (!node.stat.isFile()) {
       throw new WebWorkbenchError(409, 'File node is not a regular file.', 'file_not_regular');
     }
-    const sensitive = isSensitiveFilePath(node.relativePath);
+    const sensitive = isSensitiveResolvedPath(this.root, node.relativePath, node.canonicalPath);
     if (sensitive) {
       throw new WebWorkbenchError(
         403,
@@ -246,6 +248,19 @@ export class FileReadServiceV1 {
       const remaining = Math.max(0, Number(before.size) - offset);
       const page = readLineSafePage(descriptor, offset, remaining, limitBytes);
       this.performance.bytesRead += page.bytesRead;
+      if (isBinary(page.content)) {
+        return Object.freeze({
+          fileId: input.fileId,
+          name: basename(node.relativePath),
+          revision,
+          sizeBytes: Number(before.size),
+          binary: true,
+          sensitive: false,
+          mediaType: 'application/octet-stream',
+          offsetBytes: offset,
+          nextCursor: null,
+        });
+      }
       const contentBuffer = validUtf8Prefix(page.content);
       if (page.consumedBytes > 0 && contentBuffer.length === 0) {
         throw new WebWorkbenchError(415, 'File is not valid UTF-8 text.', 'file_binary');
@@ -291,23 +306,30 @@ export class FileReadServiceV1 {
     const symlink = lexicalStat.isSymbolicLink();
     let readable = true;
     let effectiveStat = lexicalStat;
-    if (symlink) {
-      try {
-        const canonicalPath = realpathSync(lexicalPath);
-        readable = isWithinRoot(canonicalPath, this.root);
-        if (readable) effectiveStat = statSync(canonicalPath, { bigint: true });
-      } catch {
-        readable = false;
-      }
+    let canonicalPath: string | undefined;
+    try {
+      canonicalPath = realpathSync(lexicalPath);
+      readable = isWithinRoot(canonicalPath, this.root);
+      if (readable) effectiveStat = statSync(canonicalPath, { bigint: true });
+    } catch {
+      readable = false;
     }
+    const targetKind = readable
+      ? effectiveStat.isDirectory()
+        ? 'directory'
+        : effectiveStat.isFile()
+          ? 'file'
+          : undefined
+      : undefined;
     return Object.freeze({
       id: this.remember(relativePath),
       name: basename(relativePath),
       displayPath: normalizeRelativePath(relativePath),
       kind: symlink ? 'symlink' : effectiveStat.isDirectory() ? 'directory' : 'file',
+      ...(symlink && targetKind ? { targetKind } : {}),
       ...(effectiveStat.isFile() ? { sizeBytes: Number(effectiveStat.size) } : {}),
       modifiedAt: new Date(Number(effectiveStat.mtimeMs)).toISOString(),
-      sensitive: isSensitiveFilePath(relativePath),
+      sensitive: isSensitiveResolvedPath(this.root, relativePath, canonicalPath),
       readable,
     });
   }
@@ -481,6 +503,16 @@ function normalizeRelativePath(path: string): string {
 function isWithinRoot(candidate: string, root: string): boolean {
   const rel = relative(root, candidate);
   return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel));
+}
+
+function isSensitiveResolvedPath(
+  root: string,
+  aliasRelativePath: string,
+  canonicalPath?: string
+): boolean {
+  if (isSensitiveFilePath(aliasRelativePath)) return true;
+  if (!canonicalPath || !isWithinRoot(canonicalPath, root)) return false;
+  return isSensitiveFilePath(relative(root, canonicalPath));
 }
 
 function fingerprintStat(stat: BigIntStats): string {

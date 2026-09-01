@@ -461,11 +461,13 @@ export class OrionWebApi {
   async updateSettings(
     expectedRevision: string,
     operations: readonly SettingsOperationV1[],
+    context: WebContextGuardV1,
     stableRequestId = requestId()
   ): Promise<WebSettingsMutationResultV1> {
     const result = await this.mutate<unknown>('/settings', 'PATCH', {
       operations,
       expectedRevision,
+      ...context,
       requestId: stableRequestId,
     });
     const parsed = parseSettingsMutationResult(result);

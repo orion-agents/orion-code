@@ -38,6 +38,14 @@ function deferredRunner(): AgentRuntimeRunner & {
   };
 }
 
+function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>(done => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 describe('AgentRuntimeController v0.2 boundary', () => {
   test.each(['terminal', 'tui', 'print', 'web'] as const)(
     'restores %s from a bounded surface projection instead of replaying Thread history',
@@ -367,6 +375,226 @@ describe('AgentRuntimeController v0.2 boundary', () => {
 
     expect(order).toEqual(['control:pause', 'sync:true']);
     expect(idleProbe?.()).toBe(true);
+  });
+
+  test('rejects a busy state-write command without clearing the active turn processing state', async () => {
+    const events: AgentRuntimeEvent[] = [];
+    const synchronizeSettings = jest.fn(async () => {
+      if (synchronizeSettings.mock.calls.length > 1) throw new Error('runtime_busy');
+      return {} as never;
+    });
+    const runtime = createRuntime({ synchronizeSettings });
+    const runner = deferredRunner();
+    const compact = jest.fn(async () => ({
+      status: 'completed' as const,
+      turnId: 'compact-should-not-run',
+    }));
+    runner.compact = compact;
+    const controller = new AgentRuntimeController({
+      runtime,
+      eventSink: { emit: event => void events.push(event) },
+      runner,
+    });
+
+    expect(controller.submit('keep running')).toEqual({ type: 'started' });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(runner.calls).toHaveLength(1);
+    expect(runtime.store.getSnapshot().isProcessing).toBe(true);
+
+    expect(controller.submit('/compact')).toEqual({
+      type: 'command_rejected_busy',
+      commandId: 'builtin.context.compact',
+    });
+    expect(synchronizeSettings).toHaveBeenCalledTimes(1);
+    expect(compact).not.toHaveBeenCalled();
+    expect(runtime.store.getSnapshot().isProcessing).toBe(true);
+    expect(
+      events.some(
+        event =>
+          event.type === 'transcript_append' && event.entry.content.includes('[RUNTIME] Error')
+      )
+    ).toBe(false);
+
+    runner.calls[0].resolve();
+    await controller.waitForIdle();
+    expect(runtime.store.getSnapshot().isProcessing).toBe(false);
+  });
+
+  test('keeps unrelated process console output outside an asynchronous command transcript', async () => {
+    const events: AgentRuntimeEvent[] = [];
+    const entered = deferred();
+    const release = deferred();
+    const runner: AgentRuntimeRunner = {
+      runInput: jest.fn(async () => undefined),
+      compact: jest.fn(async () => {
+        entered.resolve();
+        await release.promise;
+        return { status: 'completed' as const, turnId: 'isolated-console' };
+      }),
+    };
+    const controller = new AgentRuntimeController({
+      runtime: createRuntime(),
+      eventSink: { emit: event => void events.push(event) },
+      runner,
+    });
+    const processLog = jest.fn();
+    const originalLog = console.log;
+    console.log = processLog;
+
+    try {
+      expect(controller.submit('/compact')).toEqual({ type: 'command_handled' });
+      await entered.promise;
+
+      const unrelated = 'UNRELATED_PROCESS_LOG_235';
+      console.log(unrelated);
+      expect(processLog).toHaveBeenCalledWith(unrelated);
+
+      release.resolve();
+      await controller.waitForIdle();
+      expect(console.log).toBe(processLog);
+      expect(
+        events.some(
+          event => event.type === 'transcript_append' && event.entry.content.includes(unrelated)
+        )
+      ).toBe(false);
+    } finally {
+      release.resolve();
+      await controller.waitForIdle();
+      console.log = originalLog;
+    }
+  });
+
+  test('isolates concurrent command consoles across interleaving and reverse completion', async () => {
+    const firstEvents: AgentRuntimeEvent[] = [];
+    const secondEvents: AgentRuntimeEvent[] = [];
+    const firstEntered = deferred();
+    const firstMayInterleave = deferred();
+    const firstInterleaved = deferred();
+    const firstMayFinish = deferred();
+    const secondEntered = deferred();
+    const secondMayFinish = deferred();
+    const firstRunner: AgentRuntimeRunner = {
+      runInput: jest.fn(async () => undefined),
+      compact: jest.fn(async () => {
+        console.log('first:start');
+        firstEntered.resolve();
+        await firstMayInterleave.promise;
+        console.warn('first:interleaved');
+        firstInterleaved.resolve();
+        await firstMayFinish.promise;
+        console.error('first:end');
+        return { status: 'completed' as const, turnId: 'first-command' };
+      }),
+    };
+    const secondRunner: AgentRuntimeRunner = {
+      runInput: jest.fn(async () => undefined),
+      compact: jest.fn(async () => {
+        console.log('second:start');
+        secondEntered.resolve();
+        await secondMayFinish.promise;
+        console.warn('second:end');
+        return { status: 'completed' as const, turnId: 'second-command' };
+      }),
+    };
+    const first = new AgentRuntimeController({
+      runtime: createRuntime(),
+      eventSink: { emit: event => void firstEvents.push(event) },
+      runner: firstRunner,
+    });
+    const second = new AgentRuntimeController({
+      runtime: createRuntime(),
+      eventSink: { emit: event => void secondEvents.push(event) },
+      runner: secondRunner,
+    });
+    const processLog = jest.fn();
+    const processWarn = jest.fn();
+    const processError = jest.fn();
+    const originalConsole = {
+      log: console.log,
+      warn: console.warn,
+      error: console.error,
+    };
+    console.log = processLog;
+    console.warn = processWarn;
+    console.error = processError;
+
+    try {
+      expect(first.submit('/compact')).toEqual({ type: 'command_handled' });
+      await firstEntered.promise;
+      const sharedLogBridge = console.log;
+      const sharedWarnBridge = console.warn;
+      const sharedErrorBridge = console.error;
+
+      expect(second.submit('/compact')).toEqual({ type: 'command_handled' });
+      await secondEntered.promise;
+      expect(console.log).toBe(sharedLogBridge);
+      expect(console.warn).toBe(sharedWarnBridge);
+      expect(console.error).toBe(sharedErrorBridge);
+
+      firstMayInterleave.resolve();
+      await firstInterleaved.promise;
+      secondMayFinish.resolve();
+      await second.waitForIdle();
+      expect(console.log).toBe(sharedLogBridge);
+
+      firstMayFinish.resolve();
+      await first.waitForIdle();
+      expect(console.log).toBe(processLog);
+      expect(console.warn).toBe(processWarn);
+      expect(console.error).toBe(processError);
+
+      const firstTranscript = firstEvents
+        .filter(event => event.type === 'transcript_append')
+        .map(event => (event.type === 'transcript_append' ? event.entry.content : ''))
+        .join('\n');
+      const secondTranscript = secondEvents
+        .filter(event => event.type === 'transcript_append')
+        .map(event => (event.type === 'transcript_append' ? event.entry.content : ''))
+        .join('\n');
+      expect(firstTranscript).toContain('first:start');
+      expect(firstTranscript).toContain('first:interleaved');
+      expect(firstTranscript).toContain('first:end');
+      expect(firstTranscript).not.toContain('second:');
+      expect(secondTranscript).toContain('second:start');
+      expect(secondTranscript).toContain('second:end');
+      expect(secondTranscript).not.toContain('first:');
+    } finally {
+      firstMayInterleave.resolve();
+      firstMayFinish.resolve();
+      secondMayFinish.resolve();
+      await Promise.all([first.waitForIdle(), second.waitForIdle()]);
+      console.log = originalConsole.log;
+      console.warn = originalConsole.warn;
+      console.error = originalConsole.error;
+    }
+  });
+
+  test('redacts captured command secrets before sanitizing terminal control bytes', async () => {
+    const events: AgentRuntimeEvent[] = [];
+    const marker = 'SYNTHETIC_CAPTURE_SECRET_235';
+    const runner: AgentRuntimeRunner = {
+      runInput: jest.fn(async () => undefined),
+      compact: jest.fn(async () => {
+        console.error(`\u001b[31m password: ${marker}\u001b[0m`);
+        return { status: 'completed' as const, turnId: 'redacted-console' };
+      }),
+    };
+    const controller = new AgentRuntimeController({
+      runtime: createRuntime(),
+      eventSink: { emit: event => void events.push(event) },
+      runner,
+    });
+
+    expect(controller.submit('/compact')).toEqual({ type: 'command_handled' });
+    await controller.waitForIdle();
+
+    const transcript = events
+      .filter(event => event.type === 'transcript_append')
+      .map(event => (event.type === 'transcript_append' ? event.entry.content : ''))
+      .join('\n');
+    expect(transcript).toContain('password: [REDACTED_SECRET]');
+    expect(transcript).not.toContain(marker);
+    expect(transcript).not.toContain('\u001b');
   });
 
   test('fails closed for missing approvals and clears pending requests on shutdown', async () => {
