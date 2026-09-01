@@ -466,6 +466,14 @@ describe('release-check script contract', () => {
       join(projectRoot, 'scripts', 'e2e', 'run-web-e2e-critical.ts'),
       'utf8'
     );
+    const primaryRunner = readFileSync(
+      join(projectRoot, 'scripts', 'e2e', 'run-web-e2e-primary.ts'),
+      'utf8'
+    );
+    const matrixRunner = readFileSync(
+      join(projectRoot, 'scripts', 'e2e', 'run-web-e2e-matrix.ts'),
+      'utf8'
+    );
     const browserFixture = readFileSync(
       join(projectRoot, 'tests', 'e2e', 'fixtures', 'test.ts'),
       'utf8'
@@ -488,6 +496,10 @@ describe('release-check script contract', () => {
     );
     expect(criticalRunner).toContain('WEB_E2E_CRITICAL_GREP');
     expect(criticalRunner).toContain("manifest?.decision === 'GO'");
+    for (const runner of [primaryRunner, matrixRunner]) {
+      expect(runner).toContain("readJson(join(repositoryRoot, 'package.json'))");
+      expect(runner).not.toContain("version !== '0.3.3'");
+    }
     expect(browserFixture).toContain(
       "testInfo.status === 'passed' && testInfo.expectedStatus === 'passed'"
     );

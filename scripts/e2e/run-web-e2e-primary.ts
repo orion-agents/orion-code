@@ -34,6 +34,10 @@ async function main(): Promise<void> {
     package?: { name?: string; version?: string };
     tarball?: { sha256?: string };
   };
+  const packageIdentity = readJson(join(repositoryRoot, 'package.json')) as {
+    name?: string;
+    version?: string;
+  };
   const expectedSha = receipt.tarball?.sha256;
   if (!/^[a-f0-9]{64}$/u.test(expectedSha ?? '')) {
     throw new Error('Artifact receipt is missing a valid tarball SHA-256.');
@@ -41,8 +45,15 @@ async function main(): Promise<void> {
   if (sha256File(options.tarball) !== expectedSha) {
     throw new Error('Tarball SHA-256 differs from its receipt.');
   }
-  if (receipt.package?.name !== '@orion-agents/orion-code' || receipt.package.version !== '0.3.3') {
-    throw new Error('Primary runner requires @orion-agents/orion-code@0.3.3.');
+  if (
+    packageIdentity.name !== '@orion-agents/orion-code' ||
+    !packageIdentity.version ||
+    receipt.package?.name !== packageIdentity.name ||
+    receipt.package.version !== packageIdentity.version
+  ) {
+    throw new Error(
+      `Primary runner requires ${packageIdentity.name ?? '@orion-agents/orion-code'}@${packageIdentity.version ?? 'UNKNOWN'}.`
+    );
   }
 
   const primaryRoot = join(
