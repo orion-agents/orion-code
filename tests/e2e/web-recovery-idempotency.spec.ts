@@ -69,7 +69,9 @@ test('E2E-P0-03 pending approval survives browser replacement and Host shutdown 
     .filter({ hasText: initial.session.id.slice(0, 8) })
     .first();
   await expect(replacementTarget).toBeVisible();
-  await replacementTarget.click();
+  if ((await replacementTarget.getAttribute('aria-current')) !== 'page') {
+    await replacementTarget.click();
+  }
   await expect.poll(() => foregroundSessionId(replacement)).toBe(initial.session.id);
   await waitForApproval(replacement, 'write_file', { timeout: 30_000 });
   expect((await sessionSnapshot(replacement, initial.session.id)).pendingApprovals[0].id).toBe(
@@ -105,10 +107,10 @@ test('E2E-P0-03 pending approval survives browser replacement and Host shutdown 
   const requestsBeforeShutdown = provider.requests.length;
   evidence.recordFact('shutdown.provider_requests_before', requestsBeforeShutdown);
 
-  await host.stop();
-  expect(existsSync(pendingPath)).toBe(false);
   detachReplacement();
   await replacement.close();
+  await host.stop();
+  expect(existsSync(pendingPath)).toBe(false);
 
   const restarted = await startOrionHost({
     state: artifactState,
@@ -129,7 +131,9 @@ test('E2E-P0-03 pending approval survives browser replacement and Host shutdown 
         .filter({ hasText: shutdownSnapshot.session.id.slice(0, 8) })
         .first();
       await expect(targetSession).toBeVisible();
-      await targetSession.click();
+      if ((await targetSession.getAttribute('aria-current')) !== 'page') {
+        await targetSession.click();
+      }
       await expect
         .poll(() => foregroundSessionId(recovered), { timeout: 30_000 })
         .toBe(shutdownSnapshot.session.id);
@@ -172,9 +176,13 @@ test('E2E-P0-04 SSE reconnect replays a completed real-tool turn without duplica
   const baselineCursor = pending.eventCursor;
 
   await context.setOffline(true);
-  const approval = await hostMutation(host.url, (await hostBootstrap(host.url)).nonce, {
+  const bootstrap = await hostBootstrap(host.url);
+  const approval = await hostMutation(host.url, bootstrap.nonce, {
     requestId: randomUUID(),
+    workspaceId: bootstrap.workspaceId,
+    expectedContextRevision: bootstrap.contextRevision,
     expectedSessionId: pending.session.id,
+    expectedSessionRuntimeRevision: pending.sessionRuntime.runtimeRevision,
     type: 'permission_decision',
     requestPermissionId: pending.pendingApprovals[0].id,
     approved: true,

@@ -157,7 +157,9 @@ test('WEB31-P0-01 packaged Workbench shows three projects and lazy-loads real Se
       .getByRole('button')
       .filter({ hasText: /^Primary Active Session\b/u });
     await expect(primarySession).toHaveCount(1, { timeout: 30_000 });
-    await primarySession.click();
+    if ((await primarySession.getAttribute('aria-current')) !== 'page') {
+      await primarySession.click();
+    }
     await expect.poll(() => foregroundSessionId(lazyPage)).toBe(primarySessionId);
 
     await submitPrompt(lazyPage, OPENAI_FIXTURE_PROMPTS.pending);

@@ -40,6 +40,7 @@ import type {
 import { initialWorkbenchState, type DiagnosticsSnapshot, type WorkbenchState } from './types';
 import { upsertSessionSummary } from './state/session-collection';
 import { removeComposerDraftsForWorkspace } from './state/composer-drafts';
+import { selectPreferredForegroundSession } from './state/foreground-session';
 
 export type WorkbenchAgentMode = 'interactive' | 'plan' | 'auto';
 
@@ -1411,11 +1412,8 @@ function preferredForegroundSession(
   sessions: readonly import('./types').WebSessionSummaryV1[],
   hostDefault: string | null
 ): string | null {
-  const available = new Set(sessions.map(session => session.id));
   const stored = readSessionStorage(`${WEB_FOREGROUND_PREFIX}${workspaceId}`);
-  if (stored && available.has(stored)) return stored;
-  if (hostDefault && available.has(hostDefault)) return hostDefault;
-  return sessions[0]?.id ?? null;
+  return selectPreferredForegroundSession(stored, sessions, hostDefault);
 }
 
 function rememberForegroundSession(workspaceId: string, sessionId: string | null): void {

@@ -144,8 +144,7 @@ test('SET-P0-02 default model affects only newly created Sessions and the real p
   await selectSettingsSection(page, 'Models & Reasoning');
   await setSettingsSelect(page, '默认模型', OPENAI_FIXTURE_ALTERNATE_MODEL);
   await applySettings(page, 1);
-  const currentCard = workbenchUi(page).settingsDialog.getByLabel('当前会话设置');
-  await expect(currentCard).toContainText(OPENAI_FIXTURE_MODEL);
+  await expect(workbenchUi(page).modelButton).toContainText(OPENAI_FIXTURE_MODEL);
   await closeSettings(page);
 
   await createSession(page, { name: 'Model after default change' });
