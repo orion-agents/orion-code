@@ -1,5 +1,5 @@
 /**
- * Orion Code v0.2 public API.
+ * Orion Code v0.3 public API.
  *
  * The package root intentionally exposes one product runtime factory, the
  * versioned wire protocol, and the supported Model/Skill/MCP configuration

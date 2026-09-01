@@ -3,21 +3,23 @@
 import chalk from 'chalk';
 import { type CommandContext, type CommandResult } from './types';
 import { createStatusSnapshot } from '../runtime/ui-view-model';
+import { materializeLegacyThreadV1 } from '../runtime/legacy-thread-materializer';
+import { openThreadSessionRuntimeActivationV1 } from '../runtime/thread-session-view';
+import type { TranscriptEntry } from '../runtime/ui-events';
 import { formatBytes } from '../services/format';
 import type { Message } from '../services/llm';
 import {
   listSessions,
   listProjectSessions,
+  filterSessionsWithRestorableHistory,
   lookupSessionRef,
-  loadSessionHistoryWithDiagnostics,
-  loadSessionCompactCheckpoint,
-  loadSessionTranscriptMessages,
-  loadSessionHarnessState,
+  lookupSessionRefInSessions,
+  loadSessionRestoreBundle,
   resumeSession,
   renameSession,
   resolveProjectPath,
-  readSessionMessages,
   redactTraceText,
+  type SessionMessage,
   type SessionMeta,
 } from '../services/session-storage';
 import { loadSessionIndex, searchSessions } from '../services/session-index';
@@ -39,6 +41,82 @@ const WARN = chalk.yellow;
 const SUCCESS = chalk.green;
 
 const HEADER = chalk.cyan.bold;
+
+const RESUME_TRANSCRIPT_WINDOW_MESSAGES = 50;
+
+const RESUME_TRANSCRIPT_WINDOW_BYTES = 256 * 1024;
+
+const RESUME_TRANSCRIPT_ENTRY_BYTES = 64 * 1024;
+
+const RESUME_TRANSCRIPT_ENTRY_OVERHEAD_BYTES = 128;
+
+interface ResumeTranscriptWindow {
+  readonly entries: readonly TranscriptEntry[];
+  readonly truncated: boolean;
+}
+
+/**
+ * Project a bounded renderer window from the durable transcript. Provider
+ * history is restored independently and remains complete. The byte ceiling is
+ * intentional: one very large tool result must not turn /resume back into an
+ * unbounded terminal or JSON operation.
+ */
+function createResumeTranscriptWindow(
+  sessionId: string,
+  messages: readonly SessionMessage[]
+): ResumeTranscriptWindow {
+  const entries: TranscriptEntry[] = [];
+  let bytes = 0;
+  let contentTruncated = false;
+
+  for (
+    let index = messages.length - 1;
+    index >= 0 && entries.length < RESUME_TRANSCRIPT_WINDOW_MESSAGES;
+    index -= 1
+  ) {
+    const remaining =
+      RESUME_TRANSCRIPT_WINDOW_BYTES - bytes - RESUME_TRANSCRIPT_ENTRY_OVERHEAD_BYTES;
+    if (remaining < 256) break;
+    const message = messages[index];
+    const projected = truncateUtf8ForResume(
+      message.content,
+      Math.min(remaining, RESUME_TRANSCRIPT_ENTRY_BYTES)
+    );
+    contentTruncated ||= projected.truncated;
+    const entry: TranscriptEntry = {
+      id: `resume:${sessionId}:${index + 1}`,
+      role: message.role,
+      content: projected.value,
+      ...(message.role === 'user' ? { title: 'you' } : {}),
+    };
+    entries.unshift(entry);
+    bytes += Buffer.byteLength(projected.value, 'utf8') + RESUME_TRANSCRIPT_ENTRY_OVERHEAD_BYTES;
+  }
+
+  return Object.freeze({
+    entries: Object.freeze(entries),
+    truncated: contentTruncated || entries.length < messages.length,
+  });
+}
+
+function truncateUtf8ForResume(
+  value: string,
+  maxBytes: number
+): { readonly value: string; readonly truncated: boolean } {
+  if (Buffer.byteLength(value, 'utf8') <= maxBytes) return { value, truncated: false };
+  const suffix = '\n… [display truncated; full content remains durable]';
+  const prefixBudget = Math.max(0, maxBytes - Buffer.byteLength(suffix, 'utf8'));
+  let low = 0;
+  let high = value.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (Buffer.byteLength(value.slice(0, middle), 'utf8') <= prefixBudget) low = middle;
+    else high = middle - 1;
+  }
+  let prefix = value.slice(0, low);
+  if (/[\uD800-\uDBFF]$/u.test(prefix)) prefix = prefix.slice(0, -1);
+  return { value: `${prefix}${suffix}`, truncated: true };
+}
 
 function commandUICapabilities(ctx: CommandContext) {
   return createStatusSnapshot({
@@ -379,9 +457,10 @@ async function handleResume(ctx: CommandContext, args: string): Promise<CommandR
   const ui = commandUICapabilities(ctx);
   const scope = parseSessionScopeArgs(args, ctx.cwd);
   const sessionRef = scope.query;
-  const scopedSessions = (
-    scope.allProjects ? listSessions() : listProjectSessions(scope.projectPath)
-  ).filter(session => (session.messageCount ?? 0) > 0);
+  const allScopedSessions = scope.allProjects
+    ? listSessions()
+    : listProjectSessions(scope.projectPath);
+  const scopedSessions = filterSessionsWithRestorableHistory(allScopedSessions);
 
   if (!sessionRef) {
     const lastSession = scopedSessions[0];
@@ -431,9 +510,7 @@ async function handleResume(ctx: CommandContext, args: string): Promise<CommandR
   }
 
   // Resume specific session
-  const result = lookupSessionRef(sessionRef, scope.projectPath, {
-    allProjects: scope.allProjects,
-  });
+  const result = lookupSessionRefInSessions(sessionRef, allScopedSessions);
 
   if (result.status === 'ambiguous') {
     printSessionConflict(sessionRef, result.matches, write);
@@ -460,12 +537,38 @@ async function restoreSession(
   // Validate and normalize every read-side projection before switching the
   // active runtime. A damaged target must never tear down the healthy session
   // the user is currently using.
-  const historyResult = loadSessionHistoryWithDiagnostics(session.id);
+  const restoredView = loadSessionRestoreBundle(session.id);
+  const historyResult = restoredView.history;
   const history = historyResult.messages.map(message => structuredClone(message));
   const recoveryWarnings = historyResult.diagnostics.map(diagnostic => diagnostic.message);
-  const transcriptMessages = loadSessionTranscriptMessages(session.id);
-  const rawMessages = readSessionMessages(session.id);
-  const checkpoint = loadSessionCompactCheckpoint(session.id);
+  const transcriptMessages = restoredView.transcriptMessages;
+  const transcriptWindow = createResumeTranscriptWindow(session.id, transcriptMessages);
+  const visibleTranscriptMessages =
+    ctx.uiRenderer === 'web'
+      ? Math.min(RESUME_TRANSCRIPT_WINDOW_MESSAGES, transcriptMessages.length)
+      : ctx.replaceTranscript
+        ? transcriptWindow.entries.length
+        : 0;
+  const transcriptTruncated =
+    ctx.uiRenderer === 'web'
+      ? transcriptMessages.length > RESUME_TRANSCRIPT_WINDOW_MESSAGES
+      : ctx.replaceTranscript
+        ? transcriptWindow.truncated
+        : transcriptMessages.length > 0;
+  const checkpoint = restoredView.checkpoint;
+  const restoredHarnessState = restoredView.harnessState;
+  let runtimeActivation = restoredView.runtimeActivation;
+  if (ctx.restoreSessionRuntime && !runtimeActivation) {
+    // A legacy target is cut over and verified while the healthy current
+    // Runtime still owns the foreground. The same verified Store is then
+    // handed to the replacement Runtime, so failure cannot tear down the
+    // current Session and success cannot rescan the imported Thread.
+    materializeLegacyThreadV1({ projectPath: session.projectPath, sessionId: session.id });
+    runtimeActivation = openThreadSessionRuntimeActivationV1(session.projectPath, session.id);
+    if (!runtimeActivation) {
+      throw new Error(`Session ${session.id} did not produce a verified Thread activation.`);
+    }
+  }
   const resumed = resumeSession(session.id) ?? session;
 
   // Swap in the resumed session's transcript BEFORE emitting any command output,
@@ -480,15 +583,15 @@ async function restoreSession(
   const summaryGeneratedAt = checkpoint?.summary.generatedAt ?? resumeGeneratedAt;
   const summarySource = checkpoint?.summary.source ?? 'resume_heuristic';
   const summaryCoveredMessages =
-    checkpoint?.summary.sourceMessageCount ??
-    Math.max(rawMessages.length, transcriptMessages.length);
+    checkpoint?.summary.sourceMessageCount ?? restoredView.sourceMessageCount;
+  if (restoredHarnessState) {
+    ctx.store.setState({ harnessState: restoredHarnessState });
+  }
   if (history.length > 0) {
     const eventSummary = checkpoint?.summary.text ?? generateRestoredSessionEventSummary(history);
     ctx.store.setState({ conversationHistory: history });
-    ctx.store.setState({
-      harnessState: loadSessionHarnessState(resumed.id) ?? resumed.harnessState,
-    });
-    await ctx.restoreSessionRuntime?.();
+    await ctx.restoreSessionRuntime?.(runtimeActivation);
+    ctx.replaceTranscript?.(transcriptWindow.entries);
     ctx.sessionRestored?.({
       sessionId: resumed.id,
       projectPath: resumed.projectPath,
@@ -501,10 +604,13 @@ async function restoreSession(
       summaryCoveredMessages,
       checkpointId: checkpoint?.checkpointId,
       transcriptMessages: transcriptMessages.length,
+      visibleTranscriptMessages,
+      transcriptTruncated,
       ...(recoveryWarnings.length > 0 ? { warnings: recoveryWarnings } : {}),
     });
   } else {
-    await ctx.restoreSessionRuntime?.();
+    await ctx.restoreSessionRuntime?.(runtimeActivation);
+    ctx.replaceTranscript?.(transcriptWindow.entries);
     ctx.sessionRestored?.({
       sessionId: resumed.id,
       projectPath: resumed.projectPath,
@@ -516,6 +622,8 @@ async function restoreSession(
       summaryCoveredMessages,
       checkpointId: checkpoint?.checkpointId,
       transcriptMessages: transcriptMessages.length,
+      visibleTranscriptMessages,
+      transcriptTruncated,
       ...(recoveryWarnings.length > 0 ? { warnings: recoveryWarnings } : {}),
     });
   }
@@ -541,6 +649,13 @@ async function restoreSession(
     bannerLines.push(
       `✔ Restored ${history.length} model-context messages / ${transcriptMessages.length} transcript messages`
     );
+    if (transcriptTruncated) {
+      bannerLines.push(
+        visibleTranscriptMessages > 0
+          ? `  Display: showing recent ${visibleTranscriptMessages}; older transcript remains durable`
+          : '  Display: transcript omitted from non-interactive output; history remains durable'
+      );
+    }
   } else {
     bannerLines.push('  No messages in session');
   }

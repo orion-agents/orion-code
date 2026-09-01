@@ -5,7 +5,7 @@ import { dirname, join } from 'path';
 import { load as loadYaml } from 'js-yaml';
 
 const root = join(__dirname, '..');
-const supportedMajors = new Set([20, 22, 24]);
+const supportedMajors = new Set([22, 24, 26]);
 
 function compareNodeVersionDescending(left: string, right: string): number {
   const parse = (value: string): number[] => value.replace(/^v/u, '').split('.').map(Number);
@@ -25,13 +25,13 @@ function supportedNodeExecutable(): string {
   const versionsRoot = join(process.env.NVM_DIR ?? join(homedir(), '.nvm'), 'versions', 'node');
   if (existsSync(versionsRoot)) {
     const candidate = readdirSync(versionsRoot)
-      .filter(version => /^v(?:20|22|24)\./u.test(version))
+      .filter(version => /^v(?:22|24|26)\./u.test(version))
       .sort(compareNodeVersionDescending)
       .map(version => join(versionsRoot, version, 'bin', 'node'))
       .find(existsSync);
     if (candidate) return candidate;
   }
-  throw new Error('A supported Node 20, 22, or 24 runtime is required for dependency policy tests');
+  throw new Error('A supported Node 22, 24, or 26 runtime is required for dependency policy tests');
 }
 
 function policyResult(nodeExecutable = process.execPath) {
@@ -59,10 +59,10 @@ describe('dependency governance contract', () => {
 
     expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: '' });
     expect(result.stdout).toContain(
-      'DEPENDENCY_POLICY_OK node=20|22|24 openai=6 cjs=ok chat-completions=ok sqlite-vec='
+      'DEPENDENCY_POLICY_OK node=22|24|26 openai=6 cjs=ok chat-completions=ok sqlite-vec='
     );
     expect(result.stdout).toContain(
-      'DEPENDENCY_REMOVAL ink=absent react=absent @types/react=absent'
+      'DEPENDENCY_REMOVAL ink=absent runtime-react=absent web-react=18'
     );
   });
 
@@ -85,13 +85,16 @@ describe('dependency governance contract', () => {
 
     expect(script).toContain("new Database(':memory:')");
     expect(script).toContain('process.versions.modules');
-    expect(script).toContain('supportedNodeMajors.has(runtimeNodeMajor)');
+    expect(script).toContain('supportedNodeFloors.has(runtimeNodeMajor)');
+    expect(script).toContain('[22, [22, 12, 0]]');
+    expect(script).toContain('compareNodeVersions(runtimeNodeVersion, runtimeNodeFloor) >= 0');
     expect(script).toContain('NATIVE_DEPENDENCY_FAILED better-sqlite3');
     expect(script).toContain('npm rebuild better-sqlite3');
     expect(script).toContain("require('sqlite-vec')");
     expect(script).toContain('SELECT vec_version() AS version');
     expect(script).toContain('CREATE VIRTUAL TABLE vec_health USING vec0');
-    expect(script).toContain('npm rebuild sqlite-vec');
+    expect(script).toContain('sqlite-vec platform extension is missing');
+    expect(script).not.toContain('npm rebuild sqlite-vec');
     expect(script).not.toContain('!/>=\\s*22/.test(installed.engines.node)');
   });
 
@@ -101,15 +104,24 @@ describe('dependency governance contract', () => {
       devDependencies: Record<string, string>;
       engines: { node: string };
     };
+    const shrinkwrap = JSON.parse(readFileSync(join(root, 'npm-shrinkwrap.json'), 'utf8')) as {
+      packages: { '': { engines?: { node?: string } } };
+    };
 
-    expect(manifest.engines.node).toBe('^20.0.0 || ^22.0.0 || ^24.0.0');
+    expect(manifest.engines.node).toBe('^22.12.0 || ^24.0.0 || ^26.0.0');
+    expect(shrinkwrap.packages[''].engines?.node).toBe(manifest.engines.node);
     expect(manifest.dependencies.openai).toMatch(/^\^6\./);
     expect(manifest.dependencies).not.toHaveProperty('lodash-es');
     expect(manifest.dependencies).not.toHaveProperty('type-fest');
     expect(manifest.dependencies).not.toHaveProperty('ink');
     expect(manifest.dependencies).not.toHaveProperty('react');
+    expect(manifest.dependencies).not.toHaveProperty('react-dom');
     expect(manifest.dependencies).not.toHaveProperty('@types/better-sqlite3');
     expect(manifest.devDependencies).toHaveProperty('@types/better-sqlite3');
+    expect(manifest.devDependencies.react).toBe('18.3.1');
+    expect(manifest.devDependencies['react-dom']).toBe('18.3.1');
+    expect(manifest.devDependencies['@types/react']).toBe('18.3.24');
+    expect(manifest.devDependencies['@types/react-dom']).toBe('18.3.7');
     const major = (value: string): number => Number(value.match(/\d+/)?.[0]);
     expect(major(manifest.devDependencies['@types/jest'])).toBe(
       major(manifest.devDependencies.jest)

@@ -1,4 +1,9 @@
 import type { ToolContext, ToolInputJSONSchema, ToolResult } from '../framework/tool';
+import {
+  ARTIFACT_THRESHOLD,
+  storeArtifact,
+  truncateForContext,
+} from '../core/tool-artifacts';
 import { digestRuntimeValue } from './protocol/canonical';
 import { isRuntimeId } from './protocol/runtime-protocol-v1';
 
@@ -310,13 +315,14 @@ export class ExecutionService {
         structuredClone(request.args),
         { ...request.context, abortSignal: timeoutController.signal }
       );
+      const presented = persistLargeToolOutput(request.context.cwd, request.toolName, result);
       return {
         terminal: timeoutController.signal.aborted
           ? 'interrupted'
-          : result.success
+          : presented.success
             ? 'completed'
             : 'failed',
-        result,
+        result: presented,
         durationMs: Date.now() - startedAt,
       };
     } catch (error) {
@@ -334,6 +340,29 @@ export class ExecutionService {
       request.abortSignal?.removeEventListener('abort', forwardAbort);
     }
   }
+}
+
+/** Preserve full tool output out-of-band while keeping runtime receipts and events bounded. */
+function persistLargeToolOutput(
+  projectPath: string,
+  toolName: string,
+  result: ToolResult
+): ToolResult {
+  const rawOutput = result.output || '';
+  const rawBytes = Buffer.byteLength(rawOutput, 'utf8');
+  const outputBytes = result.outputBytes ?? rawBytes;
+  if (rawBytes <= ARTIFACT_THRESHOLD || result.artifactRef) {
+    return { ...result, output: rawOutput, outputBytes };
+  }
+
+  const artifact = storeArtifact(projectPath, toolName, rawOutput, rawBytes);
+  if (!artifact) return { ...result, output: rawOutput, outputBytes };
+  return {
+    ...result,
+    output: truncateForContext(rawOutput),
+    outputBytes: rawBytes,
+    artifactRef: { id: artifact.id, outputBytes: rawBytes },
+  };
 }
 
 export interface StepSnapshotV1 {

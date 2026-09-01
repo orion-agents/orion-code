@@ -22,6 +22,131 @@ which is **not** a pass.
 
 ## [Unreleased]
 
+## [0.3.2] — CANDIDATE
+
+> **Status: candidate.** Source, API and browser qualification are being frozen together. This is
+> not a Git tag, GitHub Release or npm publication until the exact-artifact receipts exist.
+
+### Added
+
+- Add an IDE-style left project navigator that expands, collapses to a 48px rail and mouse-resizes
+  from 240–480px while preserving a 560px conversation floor and responsive drawer preferences.
+- Add a Composer Control Center for BUILD/PLAN/AUTO, Session permission, model, Effort and
+  Runtime-projected Context usage, including pending/last-good/error/retry states.
+- Add structured file/folder/review/session/Skill Context references with Host-side containment,
+  sensitive-data, revision, digest and prompt-budget validation.
+- Add durable Plan review with exact-digest approve, continue-planning and cancel operations that
+  survive refresh, replay and Host restart without auto-executing an unreviewed Plan.
+- Add revisioned queue edit/move/remove and Session-scoped tab-local draft recovery.
+- Add the v0.3.2 OpenAPI, mode/permission contract, migration guide and exact-artifact
+  WEB32-P0-01..12 qualification contract.
+
+### Changed
+
+- Replace the three Composer mode buttons with accessible menus and keep workflow mode independent
+  from tool authorization; explicit Deny and hard Policy remain stronger than AUTO or Allow.
+- Make active-turn model changes deferred to the next logical request and require verified compact
+  before switching to a smaller safe context window, with complete rollback on failure.
+- Project provider or explicitly estimated Context usage from Runtime instead of reconstructing
+  token capacity in the browser.
+
+### Fixed
+
+- Keep the left/right desktop widths stable across narrow-screen drawers, reloads and 200% zoom;
+  bound controls and Context chips without covering the textarea or send action.
+- Consume expected UI mutation rejections after the shared operation layer has projected the error,
+  preventing a deliberate 409 CAS conflict from becoming an unhandled browser page error.
+- Require a matching active-session snapshot after replay reset before re-enabling the Composer.
+
+### Security
+
+- Bind Composer, queue and Plan mutations to exact Workspace/Session/Context/control revisions and
+  fail stale operations with zero provider, ToolGateway, file or queue side effects.
+- Revalidate every structured Context reference at prompt assembly and keep sensitive/raw content
+  out of the DOM, SSE, screenshots and release evidence.
+
+## [0.3.1] — CANDIDATE
+
+> **Status: candidate.** This branch carries the v0.3 Web quality and long-session recovery fixes.
+> It is not a Git tag, GitHub Release or npm publication until those receipts exist.
+
+### Added
+
+- Add a registered multi-project navigator with lazy inactive-project Session pages and one atomic,
+  revision-guarded active Workspace/Session transition.
+- Add a professional right work dock for Agent, Review, Terminal, Files and Git, with an IDE-style
+  mouse-resized 320–720px desktop panel and responsive drawers that preserve desktop width.
+- Add bounded, revisioned read models for workspace-contained files, Git status/log/diff and review
+  metadata, plus an explicit real-PTY terminal with short-lived WebSocket attach tickets.
+- Add the v0.3.1 OpenAPI, migration guide and exact-artifact WEB31-P0-01..12 qualification contract.
+
+### Changed
+
+- Extend full browser qualification to 34 scenarios and the Node 22.12/24/26 critical matrix to 24
+  scenarios, all bound to one source-clean tgz, installed-target identity and real Chrome runner.
+- Raise the packed-package ceiling from 2.00 to 2.25 MiB for the bundled xterm client while keeping
+  the 10 MiB unpacked and 1,500-entry limits unchanged.
+- Keep terminal output off the Workbench SSE and durable Session history; Host restart reports the
+  terminal as lost instead of fabricating recovery.
+
+### Fixed
+
+- Keep the conversation composer in a bounded bottom dock while transcript history and pending
+  approval or follow-up content scroll independently.
+- Bind Web commands and recovery snapshots to the active Session, make replay reset a terminal
+  barrier, and preserve Session-scoped drafts across navigation.
+- Serve large tool output only from a browser-safe derivative so arbitrary byte offsets cannot
+  bypass redaction.
+- Persist verified Thread heads and immutable transcript pages, use revision-bound collection
+  cursors, and load additional browser history explicitly instead of draining every page at boot.
+
+### Security
+
+- Require UUID idempotency keys and current Workspace/Context guards for v0.3.1 resource operations;
+  stale guards return `context_revision_conflict` with zero side effects.
+- Bind every WEB31 screenshot and high-risk structured fact into the Web E2E receipt, including
+  context targeting, PTY orphan count, SSE/WS isolation, axe and secret gates.
+
+## [0.3.0] — CANDIDATE
+
+> **Status: candidate.** This source version is not a Git tag, GitHub Release or npm publication
+> until those external receipts are created and read back separately.
+
+### Added
+
+- Add `orion web`, a loopback-only React workbench for workspace/session navigation, streaming
+  conversation and tools, follow-up/interrupt, approvals, Goal/Plan, model/effort settings,
+  Skills/MCP metadata, large-output inspection and diagnostics.
+- Add a versioned same-origin Web API with bounded cursor pagination, process-lifetime idempotency
+  keys, settings compare-and-swap, session recovery snapshots and a replayable SSE event stream.
+- Add a Host-owned Settings subsystem with strict typed reads, keyed exact-byte revisions,
+  raw-preserving atomic batch updates, lock-inside CAS, external-edit convergence, last-good
+  recovery and browser conflict handling.
+- Add the source-audited v0.3.0 product plan, OpenAPI contract and v0.2.2 migration/rollback guide.
+
+### Changed
+
+- Set the release-qualification contract to maintained Node 22.12+, 24 and 26; publication now
+  requires exact-tarball native SQLite, CLI, TUI, Web and fail-closed evidence on every line.
+- Extract the CLI composition into one shared product bootstrap so Web, TUI, terminal and print
+  retain the same AgentRuntimeController, OrionSessionRunner, OrionRuntime and durable stores.
+- Resolve new root/child runtimes from the selected model profile and support exact
+  BUILD/PLAN/AUTO selection at the next logical-request boundary.
+- Align durable approval scopes with the product permission store as `once`, `project`, `global`.
+- Route Web, TUI and slash-command changes for default model, project/global effort and tool
+  confirmation through one Settings coordinator; keep the current-session model distinct from the
+  default for newly created sessions.
+
+### Security
+
+- Bind Web only to `127.0.0.1`; require exact Origin, per-process nonce and JSON for mutations; cap
+  bodies and pages; reject Host/path-boundary violations; and send restrictive browser headers.
+- Keep pending approvals runtime-owned across browser disconnects, redact browser-safe projections,
+  expose no provider credentials, and disconnect slow SSE clients so they recover by cursor rather
+  than growing an unbounded response buffer.
+- Expose credential readiness only, keep the configuration-file action pathless, preserve invalid
+  external bytes, and require Runtime-idle mutation for settings that alter execution policy.
+
 ## [0.2.2] — 2026-08-27
 
 > **Status: published.** The `v0.2.2` tag and npm `latest` package identify this release tree.

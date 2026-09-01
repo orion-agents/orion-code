@@ -31,7 +31,10 @@ export type AgentRuntimeInput =
     }
   | {
       type: 'queue_followup';
+      /** User-visible text retained by queue editors and renderer snapshots. */
       text: string;
+      /** Optional Host-resolved execution text; never projected back to renderers. */
+      resolvedText?: string;
       source?: 'composer' | 'programmatic';
     }
   | {
@@ -114,7 +117,15 @@ export type AgentRuntimeInputResult =
 
 export type AgentRuntimeEvent =
   | { type: 'transcript_append'; entry: TranscriptAppendEntry }
-  | { type: 'transcript_update'; id: string; patch: Partial<Omit<TranscriptEntry, 'id'>> }
+  | {
+      type: 'transcript_update';
+      id: string;
+      patch: Partial<Omit<TranscriptEntry, 'id'>>;
+      /** Web carrier optimization; append after sanitization instead of replacing full content. */
+      contentDelta?: string;
+      /** UTF-16 length of the content that contentDelta must extend. */
+      contentStart?: number;
+    }
   | { type: 'transcript_finalize'; id: string; patch?: Partial<Omit<TranscriptEntry, 'id'>> }
   | { type: 'transcript_remove'; id: string }
   | { type: 'transcript_replace'; entries: TranscriptEntry[] }

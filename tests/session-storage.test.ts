@@ -21,6 +21,7 @@ import {
   deleteSession,
   updateSessionSummary,
   truncateSessionToLastComplete,
+  countSessionsByProject,
   listSessions,
   listProjectSessions,
   findSession,
@@ -1395,6 +1396,16 @@ describe('session-storage', () => {
   });
 
   describe('project session lookup', () => {
+    test('counts catalogued sessions by canonical project without hydrating history', () => {
+      createSession('/tmp/project-count-A', 'gpt-4o');
+      createSession('/tmp/project-count-A', 'gpt-4o');
+      createSession('/tmp/project-count-B', 'gpt-4o');
+
+      const counts = countSessionsByProject();
+      expect(counts.get(resolveProjectPath('/tmp/project-count-A'))).toBe(2);
+      expect(counts.get(resolveProjectPath('/tmp/project-count-B'))).toBe(1);
+    });
+
     test('listProjectSessions filters by canonical project path', () => {
       const sessionA = createSession('/tmp/project-filter-A', 'gpt-4o');
       const sessionB = createSession('/tmp/project-filter-B', 'gpt-4o');

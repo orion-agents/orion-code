@@ -6,7 +6,7 @@ Orion Code is a TypeScript CLI and agent harness. Source lives in `src/`, with t
 
 ## Build, Test, and Development Commands
 
-- `npm install`: install dependencies; Node.js 20+ is required.
+- `npm install`: install dependencies; Node.js 22.12+, 24, or 26 is required.
 - `npm run start` or `npm run cli`: run the CLI through `ts-node src/cli.ts`.
 - `npm run dev`: run the CLI with `nodemon` for local iteration.
 - `npm run build`: compile TypeScript into `dist/` and emit declarations.

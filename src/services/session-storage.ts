@@ -34,7 +34,7 @@ import {
 } from './config-dir';
 import { atomicWriteFileSync } from './atomic-write';
 import { withFileLockSync } from './file-lock';
-import { deleteSessionIndex, updateSessionIndex } from './session-index';
+import { deleteSessionIndex, updateSessionIndex, updateSessionIndexBatch } from './session-index';
 import { assertToolCallGroups, sealToolCallGroups } from './compact/tool-call-groups';
 import { redactTraceText } from './redaction';
 import { debugError } from '../utils/debug-log';
@@ -50,14 +50,24 @@ import type { ContextUsageSnapshot } from './model-context';
 import { canonicalMessagesFingerprint } from './compact/fingerprint';
 import { estimateMessagesTokens } from '../utils/token-estimate';
 import type { EffortPreference } from './effort';
+import type { ToolConfirmationPolicy } from './global-config';
 import {
   loadThreadSessionSummaryV1,
   loadThreadSessionViewV1,
+  openThreadSessionViewV1,
+  type ThreadSessionRuntimeActivationV1,
+  type ThreadSessionTranscriptMessageV1,
 } from '../runtime/thread-session-view';
+import {
+  loadThreadCutoverIndexV1,
+  type ThreadCutoverIndexEntryV1,
+} from '../runtime/legacy-thread-materializer';
+import { getProjectThreadsV2Dir } from '../product/paths';
 import type {
   SessionHistoryRecoveryDiagnosticV1,
   SessionHistoryResolvedSourceV1,
 } from '../runtime/session-history-recovery';
+import { parseTurnCommitV1 } from '../runtime/turn-commit';
 import {
   summarizeHarnessStateForMeta,
   upgradeHarnessState,
@@ -110,6 +120,19 @@ export interface SessionMeta {
   messageCount?: number;
   /** Size of the session transcript history file in bytes */
   historySizeBytes?: number;
+  /** Rebuildable v2 Thread head that produced the list/picker metadata. */
+  threadReadModel?: {
+    readonly version: 1;
+    readonly threadId: string;
+    readonly cursor: number;
+    readonly projectionDigest: string;
+    readonly cutoverGeneration: number;
+    readonly lastRecordHash: string | null;
+    readonly logDevice: string;
+    readonly logInode: string;
+    readonly logMtimeNs: string;
+    readonly logCtimeNs: string;
+  };
   /** UI transcript should resume from this timestamp; compacted earlier messages may stay hidden. */
   transcriptDisplayStartTime?: number;
   /** Active durable compact checkpoint stored in the compact sidecar. */
@@ -141,6 +164,8 @@ export interface SessionMeta {
   activeGoalObjective?: string;
   /** Session-level reasoning effort preference; absent means inherit project/global/model. */
   effortPreference?: EffortPreference;
+  /** Session-level tool confirmation override; absent means inherit the Project default. */
+  toolConfirmationOverride?: ToolConfirmationPolicy;
 }
 
 export interface CompactCheckpointV1 {
@@ -757,7 +782,8 @@ function normalizeSessionMeta(session: SessionMeta): SessionMeta {
     updatedAt,
     updatedAtIso: session.updatedAtIso ?? new Date(updatedAt).toISOString(),
     messageCount: session.messageCount ?? 0,
-    historySizeBytes: computeSessionHistorySizeBytes({ id: session.id, projectPath }),
+    historySizeBytes:
+      session.historySizeBytes ?? computeSessionHistorySizeBytes({ id: session.id, projectPath }),
     tokenCount: session.tokenCount ?? 0,
     cost: session.cost ?? 0,
     gitBranch: session.gitBranch ?? getGitBranch(projectPath),
@@ -1579,27 +1605,6 @@ function loadRawSessionMeta(sessionId: string): SessionMeta | null {
   return path ? readSessionMetaAtPath(path) : null;
 }
 
-function projectSessionMetaWithThread(session: SessionMeta): SessionMeta {
-  try {
-    const threadSummary = loadThreadSessionSummaryV1(session.projectPath, session.id);
-    if (!threadSummary) return session;
-    const updatedAt = Math.max(session.updatedAt ?? session.startTime, threadSummary.updatedAt);
-    return {
-      ...session,
-      updatedAt,
-      updatedAtIso: new Date(updatedAt).toISOString(),
-      messageCount: threadSummary.messageCount,
-      historySizeBytes: threadSummary.historySizeBytes,
-    };
-  } catch (error) {
-    // A damaged historical Thread must not make every healthy Session in the
-    // project undiscoverable. Its raw metadata remains selectable for an
-    // explicit, isolated recovery attempt.
-    debugError('session-storage.projectThreadMeta', error, session.id);
-    return session;
-  }
-}
-
 /**
  * Serialize a session read-modify-write transaction across Orion processes.
  * The metadata path is rediscovered before each transaction and re-read only
@@ -1645,12 +1650,202 @@ export function updateSessionEffort(
   });
 }
 
+export interface SessionComposerPreferencesV1 {
+  readonly model: string;
+  readonly effortPreference?: EffortPreference;
+  readonly toolConfirmationOverride?: ToolConfirmationPolicy;
+}
+
+export interface SessionComposerPreferencesPatchV1 {
+  readonly expected?: SessionComposerPreferencesV1;
+  readonly model?: string;
+  readonly effort?: { readonly value: EffortPreference | undefined };
+  readonly permission?: { readonly value: ToolConfirmationPolicy | undefined };
+}
+
+export class SessionComposerPreferencesConflictError extends Error {
+  readonly code = 'ORION_SESSION_COMPOSER_CONFLICT';
+
+  constructor(message = 'Session Composer preferences changed before the mutation was committed.') {
+    super(message);
+    this.name = 'SessionComposerPreferencesConflictError';
+  }
+}
+
+/**
+ * Atomically update all Session-scoped Composer preferences under the metadata lock.
+ *
+ * The optional expected projection prevents Web and slash-command writers from
+ * replacing a newer model, effort, or permission override with a stale snapshot.
+ */
+export function updateSessionComposerPreferences(
+  sessionId: string,
+  patch: SessionComposerPreferencesPatchV1
+): SessionMeta | null {
+  const normalizedModel = patch.model?.trim();
+  if (patch.model !== undefined && !normalizedModel) {
+    throw new Error('Session model must not be empty.');
+  }
+  return withLockedSession(sessionId, session => {
+    if (patch.expected && !sameComposerPreferences(session, patch.expected)) {
+      throw new SessionComposerPreferencesConflictError();
+    }
+    if (normalizedModel !== undefined) session.model = normalizedModel;
+    if (patch.effort) {
+      if (patch.effort.value === undefined || patch.effort.value === 'auto') {
+        delete session.effortPreference;
+      } else {
+        session.effortPreference = patch.effort.value;
+      }
+    }
+    if (patch.permission) {
+      if (patch.permission.value === undefined) delete session.toolConfirmationOverride;
+      else session.toolConfirmationOverride = patch.permission.value;
+    }
+    session.updatedAt = Date.now();
+    session.updatedAtIso = new Date(session.updatedAt).toISOString();
+    writeSessionMetaUnlocked(session);
+    return session;
+  });
+}
+
+export function projectSessionComposerPreferences(
+  session: SessionMeta
+): SessionComposerPreferencesV1 {
+  return Object.freeze({
+    model: session.model,
+    ...(session.effortPreference === undefined
+      ? {}
+      : { effortPreference: session.effortPreference }),
+    ...(session.toolConfirmationOverride === undefined
+      ? {}
+      : { toolConfirmationOverride: session.toolConfirmationOverride }),
+  });
+}
+
+function sameComposerPreferences(
+  session: SessionMeta,
+  expected: SessionComposerPreferencesV1
+): boolean {
+  return (
+    session.model === expected.model &&
+    session.effortPreference === expected.effortPreference &&
+    session.toolConfirmationOverride === expected.toolConfirmationOverride
+  );
+}
+
+/** Persist the model selected for one Session without replacing unrelated metadata. */
+export function updateSessionModel(sessionId: string, model: string): SessionMeta | null {
+  const normalizedModel = model.trim();
+  if (!normalizedModel) throw new Error('Session model must not be empty.');
+  return mutateSessionMeta(sessionId, session => {
+    session.model = normalizedModel;
+    session.updatedAt = Date.now();
+    session.updatedAtIso = new Date(session.updatedAt).toISOString();
+  });
+}
+
+export interface SessionThreadReadModelV1 {
+  readonly threadId: string;
+  readonly cursor: number;
+  readonly projectionDigest: string;
+  readonly cutoverGeneration: number;
+  readonly lastRecordHash: string | null;
+  readonly logDevice: string;
+  readonly logInode: string;
+  readonly logMtimeNs: string;
+  readonly logCtimeNs: string;
+  readonly messageCount: number;
+  readonly historySizeBytes: number;
+  readonly updatedAt: number;
+}
+
+/**
+ * Persist the bounded Session-list projection derived from an authoritative
+ * v2 Thread. List and picker paths consume this catalog projection directly;
+ * they must never replay every Thread merely to render metadata.
+ */
+export function updateSessionThreadReadModel(
+  sessionId: string,
+  input: SessionThreadReadModelV1
+): SessionMeta | null {
+  if (!input.threadId.trim()) throw new Error('Session Thread id must not be empty.');
+  if (!Number.isSafeInteger(input.cursor) || input.cursor < 0) {
+    throw new Error('Session Thread cursor must be a non-negative safe integer.');
+  }
+  if (!input.projectionDigest.trim()) {
+    throw new Error('Session Thread projection digest must not be empty.');
+  }
+  if (!Number.isSafeInteger(input.cutoverGeneration) || input.cutoverGeneration < 1) {
+    throw new Error('Session Thread cutover generation must be a positive safe integer.');
+  }
+  if (input.lastRecordHash !== null && !/^[a-f0-9]{64}$/i.test(input.lastRecordHash)) {
+    throw new Error('Session Thread last record hash must be a SHA-256 digest or null.');
+  }
+  for (const [name, value] of [
+    ['logDevice', input.logDevice],
+    ['logInode', input.logInode],
+    ['logMtimeNs', input.logMtimeNs],
+    ['logCtimeNs', input.logCtimeNs],
+  ] as const) {
+    if (!/^\d+$/.test(value)) throw new Error(`Session Thread ${name} must be an integer string.`);
+  }
+  if (!Number.isSafeInteger(input.messageCount) || input.messageCount < 0) {
+    throw new Error('Session Thread messageCount must be a non-negative safe integer.');
+  }
+  if (!Number.isSafeInteger(input.historySizeBytes) || input.historySizeBytes < 0) {
+    throw new Error('Session Thread historySizeBytes must be a non-negative safe integer.');
+  }
+  if (!Number.isFinite(input.updatedAt) || input.updatedAt < 0) {
+    throw new Error('Session Thread updatedAt must be a non-negative finite timestamp.');
+  }
+  return withLockedSession(sessionId, session => {
+    const nextUpdatedAt = Math.max(session.updatedAt ?? session.startTime, input.updatedAt);
+    const current = session.threadReadModel;
+    const unchanged =
+      session.messageCount === input.messageCount &&
+      session.historySizeBytes === input.historySizeBytes &&
+      session.updatedAt === nextUpdatedAt &&
+      current?.version === 1 &&
+      current.threadId === input.threadId &&
+      current.cursor === input.cursor &&
+      current.projectionDigest === input.projectionDigest &&
+      current.cutoverGeneration === input.cutoverGeneration &&
+      current.lastRecordHash === input.lastRecordHash &&
+      current.logDevice === input.logDevice &&
+      current.logInode === input.logInode &&
+      current.logMtimeNs === input.logMtimeNs &&
+      current.logCtimeNs === input.logCtimeNs;
+    if (unchanged) return session;
+
+    session.messageCount = input.messageCount;
+    session.historySizeBytes = input.historySizeBytes;
+    session.threadReadModel = {
+      version: 1,
+      threadId: input.threadId,
+      cursor: input.cursor,
+      projectionDigest: input.projectionDigest,
+      cutoverGeneration: input.cutoverGeneration,
+      lastRecordHash: input.lastRecordHash,
+      logDevice: input.logDevice,
+      logInode: input.logInode,
+      logMtimeNs: input.logMtimeNs,
+      logCtimeNs: input.logCtimeNs,
+    };
+    // Selecting a Session is itself recent activity. A background projection
+    // refresh must not reorder it backwards to the timestamp of its last fact.
+    session.updatedAt = nextUpdatedAt;
+    session.updatedAtIso = new Date(session.updatedAt).toISOString();
+    writeSessionMetaUnlocked(session);
+    return session;
+  });
+}
+
 /**
  * 加载会话元数据
  */
 export function loadSessionMeta(sessionId: string): SessionMeta | null {
-  const session = loadRawSessionMeta(sessionId);
-  return session ? projectSessionMetaWithThread(session) : null;
+  return loadRawSessionMeta(sessionId);
 }
 
 /**
@@ -1669,13 +1864,19 @@ export function updateSessionStats(sessionId: string, tokens: number, cost: numb
  * Mark a saved session as active again and refresh project metadata.
  */
 export function resumeSession(sessionId: string): SessionMeta | null {
-  const session = mutateSessionMeta(sessionId, current => {
+  return withLockedSession(sessionId, current => {
+    // Session selection is not new conversation activity. Once a Session is
+    // already open, do not rewrite its metadata/catalog merely because the UI
+    // selected it again. This keeps /resume off the fsync path while preserving
+    // the one durable ended -> active transition.
+    if (current.endTime === undefined) return current;
     current.endTime = undefined;
-    current.gitBranch = getGitBranch(current.projectPath);
+    current.gitBranch ??= getGitBranch(current.projectPath);
     current.updatedAt = Date.now();
     current.updatedAtIso = new Date(current.updatedAt).toISOString();
+    writeSessionMetaUnlocked(current);
+    return current;
   });
-  return session ? projectSessionMetaWithThread(session) : null;
 }
 
 /** Keep the session metadata's additive Goal binding in sync with its sidecar. */
@@ -1776,34 +1977,7 @@ export function updateSessionHarnessState(sessionId: string, harnessState: Harne
 export function loadSessionHarnessState(sessionId: string): HarnessState | null {
   const session = loadSessionMeta(sessionId);
   if (!session) return null;
-
-  const sidecarPath = getProjectSessionHarnessPath(session.projectPath, sessionId);
-  if (existsSync(sidecarPath)) {
-    const sidecar = parseHarnessSidecarFile(sidecarPath);
-    if (sidecar?.state) {
-      return upgradeHarnessState(sidecar.state, {
-        cwd: session.cwd ?? session.projectPath,
-        messages: readSessionMessages(sessionId),
-      });
-    }
-  }
-
-  if (session.harnessState) {
-    return upgradeHarnessState(session.harnessState, {
-      cwd: session.cwd ?? session.projectPath,
-      messages: readSessionMessages(sessionId),
-    });
-  }
-
-  const messages = readSessionMessages(sessionId);
-  if (messages.length > 0) {
-    return upgradeHarnessState(null, {
-      cwd: session.cwd ?? session.projectPath,
-      messages,
-    });
-  }
-
-  return null;
+  return restoreLegacyHarnessState(session, readSessionMessages(sessionId));
 }
 
 export function updateSessionSkills(sessionId: string, skills: string[]): void {
@@ -2198,17 +2372,7 @@ export function loadSessionTranscriptMessages(sessionId: string): SessionMessage
   if (rawSession) {
     const threadSummary = loadThreadSessionSummaryV1(rawSession.projectPath, rawSession.id);
     if (threadSummary) {
-      return threadSummary.transcriptMessages.map(message => ({
-        role: message.role,
-        content: message.content,
-        timestamp: message.timestamp,
-        ...(message.modelVisibleContent
-          ? { modelVisibleContent: message.modelVisibleContent }
-          : {}),
-        ...(message.toolCallId ? { toolCallId: message.toolCallId } : {}),
-        ...(message.tool_calls ? { tool_calls: structuredClone(message.tool_calls) } : {}),
-        ...(message.appliedSkills ? { appliedSkills: [...message.appliedSkills] } : {}),
-      }));
+      return threadSummary.transcriptMessages.map(threadTranscriptMessageToSessionMessage);
     }
   }
   return (
@@ -2226,6 +2390,20 @@ export function loadSessionTranscriptMessages(sessionId: string): SessionMessage
         : messages;
     }) ?? []
   );
+}
+
+function threadTranscriptMessageToSessionMessage(
+  message: ThreadSessionTranscriptMessageV1
+): SessionMessage {
+  return {
+    role: message.role,
+    content: message.content,
+    timestamp: message.timestamp,
+    ...(message.modelVisibleContent ? { modelVisibleContent: message.modelVisibleContent } : {}),
+    ...(message.toolCallId ? { toolCallId: message.toolCallId } : {}),
+    ...(message.tool_calls ? { tool_calls: structuredClone(message.tool_calls) } : {}),
+    ...(message.appliedSkills ? { appliedSkills: [...message.appliedSkills] } : {}),
+  };
 }
 
 function hasPersistedCompactContext(messages: SessionMessage[]): boolean {
@@ -2326,6 +2504,7 @@ export function updateSessionSummary(sessionId: string, _messages: SessionMessag
     session.filesModified = summary.filesModified;
     session.taskSummary = summary.taskSummary;
     session.messageCount = summary.messageCount;
+    session.historySizeBytes = computeSessionHistorySizeBytes(session);
     session.updatedAt = Date.now();
     session.updatedAtIso = new Date(session.updatedAt).toISOString();
     writeSessionMetaUnlocked(session);
@@ -2336,10 +2515,61 @@ export function updateSessionSummary(sessionId: string, _messages: SessionMessag
  * 获取项目最近的会话
  */
 export function getLastSession(projectPath: string): SessionMeta | null {
-  const sessions = listProjectSessions(projectPath).filter(
-    session => (session.messageCount ?? 0) > 0
-  );
+  const sessions = filterSessionsWithRestorableHistory(listProjectSessions(projectPath));
   return sessions[0] ?? null;
+}
+
+/**
+ * Keep pre-read-model v2 Sessions discoverable without replaying their logs.
+ * An indexed Thread with no bound read model is "unknown", not "empty"; its
+ * metadata is repaired lazily when that target is actually opened.
+ */
+export function filterSessionsWithRestorableHistory(
+  sessions: readonly SessionMeta[]
+): SessionMeta[] {
+  const threadSessionsByProject = new Map<
+    string,
+    Readonly<Record<string, ThreadCutoverIndexEntryV1>>
+  >();
+  const threadSessions = (
+    projectPath: string
+  ): Readonly<Record<string, ThreadCutoverIndexEntryV1>> => {
+    const cached = threadSessionsByProject.get(projectPath);
+    if (cached) return cached;
+    let entries: Readonly<Record<string, ThreadCutoverIndexEntryV1>> = {};
+    try {
+      entries = loadThreadCutoverIndexV1(projectPath).sessions;
+    } catch (error) {
+      debugError('session-storage.restorableThreadIndex', error, projectPath);
+    }
+    threadSessionsByProject.set(projectPath, entries);
+    return entries;
+  };
+
+  return sessions.filter(session => {
+    if ((session.messageCount ?? 0) > 0) return true;
+    const entry = threadSessions(session.projectPath)[session.id];
+    if (!entry) return false;
+    const readModel = session.threadReadModel;
+    if (!readModel || readModel.threadId !== entry.threadId) return true;
+    try {
+      const stats = statSync(
+        join(getProjectThreadsV2Dir(session.projectPath), `${readModel.threadId}.events.v1.jsonl`),
+        { bigint: true }
+      );
+      const headStillCurrent =
+        stats.size === BigInt(session.historySizeBytes ?? -1) &&
+        stats.dev.toString() === readModel.logDevice &&
+        stats.ino.toString() === readModel.logInode &&
+        stats.mtimeNs.toString() === readModel.logMtimeNs &&
+        stats.ctimeNs.toString() === readModel.logCtimeNs;
+      return !headStillCurrent;
+    } catch {
+      // Missing or unreadable authoritative facts must remain discoverable so
+      // an explicit restore can surface the isolated corruption diagnostic.
+      return true;
+    }
+  });
 }
 
 // ============================================================================
@@ -2424,6 +2654,7 @@ export function appendSessionMessage(sessionId: string, message: SessionMessage)
     session.updatedAt = Date.now();
     session.updatedAtIso = new Date(session.updatedAt).toISOString();
     session.messageCount = (session.messageCount ?? 0) + 1;
+    session.historySizeBytes = computeSessionHistorySizeBytes(session);
     writeSessionMetaUnlocked(session);
   });
 }
@@ -2442,13 +2673,12 @@ export function appendSessionMessages(sessionId: string, messages: SessionMessag
       mode: 0o600,
     });
 
-    for (const message of messages) {
-      updateSessionIndex(sessionId, session.projectPath, message);
-      mergeMessageSummary(session, message);
-    }
+    updateSessionIndexBatch(sessionId, session.projectPath, messages);
+    for (const message of messages) mergeMessageSummary(session, message);
     session.updatedAt = Date.now();
     session.updatedAtIso = new Date(session.updatedAt).toISOString();
     session.messageCount = (session.messageCount ?? 0) + messages.length;
+    session.historySizeBytes = computeSessionHistorySizeBytes(session);
     writeSessionMetaUnlocked(session);
   });
 }
@@ -2485,10 +2715,9 @@ function overwriteSessionMessagesUnlocked(session: SessionMeta, messages: Sessio
   });
 
   deleteSessionIndex(session.id, session.projectPath);
-  for (const message of messages) {
-    updateSessionIndex(session.id, session.projectPath, message);
-  }
+  updateSessionIndexBatch(session.id, session.projectPath, messages);
   session.messageCount = messages.length;
+  session.historySizeBytes = computeSessionHistorySizeBytes(session);
   const summary = summarizeSessionMessages(messages);
   session.toolsUsed = summary.toolsUsed;
   session.filesModified = summary.filesModified;
@@ -2667,55 +2896,180 @@ export interface SessionHistoryLoadResult {
   readonly diagnostics: readonly SessionHistoryRecoveryDiagnosticV1[];
 }
 
+export interface SessionRestoreBundleV1 {
+  readonly history: SessionHistoryLoadResult;
+  readonly transcriptMessages: readonly SessionMessage[];
+  readonly sourceMessageCount: number;
+  readonly checkpoint: CompactCheckpoint | null;
+  readonly harnessState?: HarnessState;
+  /** Process-local verified Thread hand-off consumed exactly once by Session Runtime activation. */
+  readonly runtimeActivation?: ThreadSessionRuntimeActivationV1;
+}
+
 /** Load provider-safe history together with any explicit recovery provenance. */
 export function loadSessionHistoryWithDiagnostics(sessionId: string): SessionHistoryLoadResult {
+  return loadSessionRestoreBundleInternal(sessionId, false).history;
+}
+
+/**
+ * Capture every projection needed by /resume from one stable storage view.
+ * A v2 target opens and verifies one ThreadEventStore; a legacy target reads
+ * messages and its compact checkpoint under one Session lock.
+ */
+export function loadSessionRestoreBundle(sessionId: string): SessionRestoreBundleV1 {
+  return loadSessionRestoreBundleInternal(sessionId, true);
+}
+
+function loadSessionRestoreBundleInternal(
+  sessionId: string,
+  includeRuntimeActivation: boolean
+): SessionRestoreBundleV1 {
   const rawSession = loadRawSessionMeta(sessionId);
   if (rawSession) {
-    const threadView = loadThreadSessionViewV1(rawSession.projectPath, rawSession.id);
+    const openedThread = includeRuntimeActivation
+      ? openThreadSessionViewV1(rawSession.projectPath, rawSession.id)
+      : undefined;
+    const threadView =
+      openedThread?.view ?? loadThreadSessionViewV1(rawSession.projectPath, rawSession.id);
     if (threadView) {
+      const harnessState = restoreThreadHarnessState(rawSession, threadView);
+      try {
+        updateSessionThreadReadModel(sessionId, {
+          threadId: threadView.threadId,
+          cursor: threadView.cursor,
+          projectionDigest: threadView.projectionDigest,
+          cutoverGeneration: threadView.readModel.cutoverGeneration,
+          lastRecordHash: threadView.readModel.lastRecordHash,
+          logDevice: threadView.readModel.log.device,
+          logInode: threadView.readModel.log.inode,
+          logMtimeNs: threadView.readModel.log.mtimeNs,
+          logCtimeNs: threadView.readModel.log.ctimeNs,
+          messageCount: threadView.messageCount,
+          historySizeBytes: threadView.historySizeBytes,
+          updatedAt: threadView.updatedAt,
+        });
+      } catch (error) {
+        debugError('session-storage.repairThreadReadModel', error, sessionId);
+      }
       return {
-        messages: threadView.modelHistory.map(message => structuredClone(message)),
-        source: threadView.modelHistorySource,
-        diagnostics: threadView.diagnostics,
+        history: {
+          messages: threadView.modelHistory.map(message => structuredClone(message)),
+          source: threadView.modelHistorySource,
+          diagnostics: threadView.diagnostics,
+        },
+        transcriptMessages: threadView.transcriptMessages.map(
+          threadTranscriptMessageToSessionMessage
+        ),
+        sourceMessageCount: threadView.transcriptMessages.length,
+        checkpoint: null,
+        ...(harnessState ? { harnessState } : {}),
+        ...(openedThread ? { runtimeActivation: openedThread.runtimeActivation } : {}),
       };
     }
   }
-  const messages =
+  return (
     withLockedSession(sessionId, session => {
       const messages = readSessionMessagesForSession(session);
+      const harnessState = restoreLegacyHarnessState(session, messages);
       const checkpoint = loadCompactCheckpointForSession(session, messages);
-      if (checkpoint) {
-        const restored = [
-          ...checkpoint.modelHistory.map(message => ({ ...message })),
-          ...messages.slice(checkpoint.sourceMessageCount).map(sessionMessageToModelMessage),
-        ];
-        if (checkpoint.version === 2) {
-          try {
-            assertToolCallGroups(restored);
-            return restored;
-          } catch (error) {
-            // Never mutate or synthesize data inside a validated V2
-            // replacement. Fall back to the append-only transcript instead.
-            debugError('session-storage.restoreCompactCheckpoint.toolGroups', error, sessionId);
-            return sealToolCallGroups(messages.map(sessionMessageToModelMessage));
-          }
-        }
-        return sealToolCallGroups(restored);
-      }
-
-      let modelVisibleMessages = messages;
-      if (typeof session.transcriptDisplayStartTime === 'number') {
-        const afterDisplayStart = messages.filter(
-          message => (message.timestamp ?? 0) >= (session.transcriptDisplayStartTime ?? 0)
-        );
-        modelVisibleMessages = hasPersistedCompactContext(afterDisplayStart)
-          ? afterDisplayStart
+      const transcriptMessages = checkpoint
+        ? messages.slice(checkpoint.transcriptStartMessageIndex)
+        : typeof session.transcriptDisplayStartTime === 'number'
+          ? messages.filter(
+              message => (message.timestamp ?? 0) >= (session.transcriptDisplayStartTime ?? 0)
+            )
           : messages;
-      }
+      return {
+        history: {
+          messages: restoreLegacyModelHistory(sessionId, session, messages, checkpoint),
+          source: 'legacy' as const,
+          diagnostics: [],
+        },
+        transcriptMessages,
+        sourceMessageCount: messages.length,
+        checkpoint,
+        ...(harnessState ? { harnessState } : {}),
+      };
+    }) ?? {
+      history: { messages: [], source: 'legacy', diagnostics: [] },
+      transcriptMessages: [],
+      sourceMessageCount: 0,
+      checkpoint: null,
+    }
+  );
+}
 
-      return sealToolCallGroups(modelVisibleMessages.map(sessionMessageToModelMessage));
-    }) ?? [];
-  return { messages, source: 'legacy', diagnostics: [] };
+function restoreThreadHarnessState(
+  session: SessionMeta,
+  view: NonNullable<ReturnType<typeof loadThreadSessionViewV1>>
+): HarnessState | null {
+  if (!view.latestTurnCommit) {
+    return restoreLegacyHarnessState(
+      session,
+      view.transcriptMessages.map(threadTranscriptMessageToSessionMessage)
+    );
+  }
+  const commit = parseTurnCommitV1(view.latestTurnCommit.receipt);
+  let state: HarnessState;
+  try {
+    state = JSON.parse(commit.taskContext) as HarnessState;
+  } catch {
+    throw new Error(`Session ${session.id} TurnCommit TaskContext is not valid JSON.`);
+  }
+  return upgradeHarnessState(state, {
+    cwd: session.cwd ?? session.projectPath,
+    messages: view.modelHistory.map(message => structuredClone(message)),
+  });
+}
+
+function restoreLegacyHarnessState(
+  session: SessionMeta,
+  messages: readonly Message[]
+): HarnessState | null {
+  const sidecarPath = getProjectSessionHarnessPath(session.projectPath, session.id);
+  const sidecar = existsSync(sidecarPath) ? parseHarnessSidecarFile(sidecarPath) : null;
+  const state = sidecar?.state ?? session.harnessState ?? null;
+  if (!state && messages.length === 0) return null;
+  return upgradeHarnessState(state, {
+    cwd: session.cwd ?? session.projectPath,
+    messages: messages.map(message => structuredClone(message)),
+  });
+}
+
+function restoreLegacyModelHistory(
+  sessionId: string,
+  session: SessionMeta,
+  messages: SessionMessage[],
+  checkpoint: CompactCheckpoint | null
+): Message[] {
+  if (checkpoint) {
+    const restored = [
+      ...checkpoint.modelHistory.map(message => ({ ...message })),
+      ...messages.slice(checkpoint.sourceMessageCount).map(sessionMessageToModelMessage),
+    ];
+    if (checkpoint.version === 2) {
+      try {
+        assertToolCallGroups(restored);
+        return restored;
+      } catch (error) {
+        // Never mutate or synthesize data inside a validated V2 replacement.
+        debugError('session-storage.restoreCompactCheckpoint.toolGroups', error, sessionId);
+        return sealToolCallGroups(messages.map(sessionMessageToModelMessage));
+      }
+    }
+    return sealToolCallGroups(restored);
+  }
+
+  let modelVisibleMessages = messages;
+  if (typeof session.transcriptDisplayStartTime === 'number') {
+    const afterDisplayStart = messages.filter(
+      message => (message.timestamp ?? 0) >= (session.transcriptDisplayStartTime ?? 0)
+    );
+    modelVisibleMessages = hasPersistedCompactContext(afterDisplayStart)
+      ? afterDisplayStart
+      : messages;
+  }
+  return sealToolCallGroups(modelVisibleMessages.map(sessionMessageToModelMessage));
 }
 
 function sessionMessageToModelMessage(message: SessionMessage): Message {
@@ -2736,10 +3090,21 @@ function sessionMessageToModelMessage(message: SessionMessage): Message {
  * 列出所有会话
  */
 export function listSessions(limit?: number): SessionMeta[] {
-  const sessions = sortSessionsNewestFirst(
-    Object.values(loadOrRebuildSessionCatalog().sessions).map(projectSessionMetaWithThread)
-  );
+  const sessions = sortSessionsNewestFirst(Object.values(loadOrRebuildSessionCatalog().sessions));
   return limit ? sessions.slice(0, limit) : sessions;
+}
+
+/**
+ * Count catalogued Sessions by their canonical project identity without
+ * sorting or touching every project directory. This is the lightweight read
+ * model used by project pickers and other collection summaries.
+ */
+export function countSessionsByProject(): ReadonlyMap<string, number> {
+  const counts = new Map<string, number>();
+  for (const session of Object.values(loadOrRebuildSessionCatalog().sessions)) {
+    counts.set(session.projectPath, (counts.get(session.projectPath) ?? 0) + 1);
+  }
+  return counts;
 }
 
 /**
@@ -2748,9 +3113,9 @@ export function listSessions(limit?: number): SessionMeta[] {
 export function listProjectSessions(projectPath: string, limit?: number): SessionMeta[] {
   const canonicalProjectPath = resolveProjectPath(projectPath);
   const sessions = sortSessionsNewestFirst(
-    Object.values(loadOrRebuildSessionCatalog().sessions)
-      .filter(session => session.projectPath === canonicalProjectPath)
-      .map(projectSessionMetaWithThread)
+    Object.values(loadOrRebuildSessionCatalog().sessions).filter(
+      session => session.projectPath === canonicalProjectPath
+    )
   );
   return limit ? sessions.slice(0, limit) : sessions;
 }
@@ -2777,11 +3142,18 @@ export function lookupSessionRef(
   projectPath?: string,
   options: { allProjects?: boolean } = {}
 ): SessionLookupResult {
-  const query = ref.trim();
-  if (!query) return { status: 'not_found' };
-
   const candidates =
     options.allProjects || !projectPath ? listSessions() : listProjectSessions(projectPath);
+  return lookupSessionRefInSessions(ref, candidates);
+}
+
+/** Resolve a reference against an already-loaded picker snapshot. */
+export function lookupSessionRefInSessions(
+  ref: string,
+  candidates: readonly SessionMeta[]
+): SessionLookupResult {
+  const query = ref.trim();
+  if (!query) return { status: 'not_found' };
 
   const exactId = candidates.find(session => session.id === query);
   if (exactId) return { status: 'found', session: exactId };

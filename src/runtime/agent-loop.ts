@@ -360,7 +360,12 @@ function projectPermissionDecision(
     behavior: policy.behavior,
     approved:
       policy.behavior === 'allow' || (policy.behavior === 'ask' && approval?.approved === true),
-    source: normalizePermissionSource(policy.behavior, policy.source, approval?.source),
+    source: normalizePermissionSource(
+      policy.behavior,
+      policy.source,
+      approval?.source,
+      approval?.approved
+    ),
     reason: approval?.reason ?? policy.reason,
   };
 }
@@ -368,10 +373,11 @@ function projectPermissionDecision(
 function normalizePermissionSource(
   behavior: NonNullable<ToolPermissionDecision['behavior']>,
   policySource: string,
-  approvalSource?: string
+  approvalSource?: string,
+  approvalApproved?: boolean
 ): ToolPermissionDecision['source'] {
   if (approvalSource === 'user') return 'user';
-  if (approvalSource === 'authority') return behavior === 'deny' ? 'config_deny' : 'config_allow';
+  if (approvalSource === 'authority') return approvalApproved ? 'config_allow' : 'config_deny';
   if (approvalSource === 'unavailable') return 'missing_confirmation';
   if (policySource.startsWith('allowlist:')) {
     return behavior === 'allow'

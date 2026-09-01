@@ -11,21 +11,30 @@ import type { OrionCodeCLIConfig, UIRenderer } from '../services/config';
 import type { SessionMeta } from '../services/session-storage';
 import type { CompactCoordinator } from '../services/compact';
 import type { ModelCoordinator } from '../runtime/model-coordinator';
+import type { SessionComposerControlServiceV1 } from '../runtime/session-composer-control';
 import type { SessionGoalV1 } from '../runtime/goals/types';
 import type { OrionRuntimeDiagnosticsV1 } from '../runtime/orion-runtime-v1';
+import type { ThreadSessionRuntimeActivationV1 } from '../runtime/thread-session-view';
 import type {
   EditPreviewRequest,
   ModelPickerRequest,
   RuntimeSessionRestoredEvent,
+  RuntimeSettingsMutationV1,
   SessionPickerRequest,
+  TranscriptEntry,
   UiRendererCapabilities,
 } from '../runtime/ui-events';
+import type {
+  SettingsCoordinatorV1,
+  SettingsDocumentViewV1,
+  SettingsUpdateResultV1,
+} from '../services/settings-coordinator';
 
 // ============================================================================
 // 类型定义 (continued)
 // ============================================================================
 
-export type CommandUiRenderer = UIRenderer | 'print';
+export type CommandUiRenderer = UIRenderer | 'print' | 'web';
 
 /** 命令执行上下文 */
 export interface CommandContext {
@@ -36,6 +45,8 @@ export interface CommandContext {
   compactCoordinator?: CompactCoordinator;
   /** Transactional model/profile switch owner. */
   modelCoordinator?: ModelCoordinator;
+  /** Shared Session-scoped model/effort/permission authority used by Web and slash commands. */
+  sessionComposerControls?: SessionComposerControlServiceV1;
   /** 当前会话 ID（用于记录消息） */
   sessionId?: string;
   /** Lazily create or return the active session. */
@@ -43,9 +54,11 @@ export interface CommandContext {
   /** Switch the active session after /resume. */
   setSession?: (session: SessionMeta) => void;
   /** Rebind the product runtime and replay the selected durable Thread after /resume. */
-  restoreSessionRuntime?: () => Promise<void>;
+  restoreSessionRuntime?: (activation?: ThreadSessionRuntimeActivationV1) => Promise<void>;
   /** Notify renderer-independent runtime protocol consumers after /resume. */
   sessionRestored?: (event: RuntimeSessionRestoredEvent) => void;
+  /** Replace only the renderer's bounded transcript window; model context remains authoritative. */
+  replaceTranscript?: (entries: readonly TranscriptEntry[]) => void;
   /** Return the active session if one exists. */
   getSession?: () => SessionMeta | null;
   /** Current durable Goal state for compact checkpoint binding. */
@@ -70,10 +83,23 @@ export interface CommandContext {
   agentModeLifecycle?: import('../framework/agent-mode').AgentModeLifecycleController;
   /** Read-only v0.2 runtime diagnostics; does not activate lazy Skill or MCP providers. */
   getHarnessDiagnostics?: () => Promise<OrionRuntimeDiagnosticsV1 | undefined>;
+  /** Product-owned durable Settings authority; commands must never construct their own. */
+  settingsCoordinator?: SettingsCoordinatorV1;
+  /** Describe effective Settings with current Session overrides. */
+  describeSettings?: () => SettingsDocumentViewV1;
+  /** Commit a durable Settings mutation through the product runtime hooks. */
+  updateSettings?: (input: RuntimeSettingsMutationV1) => Promise<SettingsUpdateResultV1>;
   /** Execute explicit compaction through the v0.2 maintenance transaction. */
   compact?: (
     input: import('../runtime/agent-runtime-runner').AgentRuntimeCompactInputV1
   ) => Promise<import('../runtime/agent-runtime-runner').AgentRuntimeCompactResultV1>;
+  /** Resolve the latest durable Plan review through the active Session runtime. */
+  reviewPlan?: NonNullable<
+    import('../runtime/agent-runtime-runner').AgentRuntimeRunnerV1['reviewPlan']
+  >;
+  getPlanReviewState?: NonNullable<
+    import('../runtime/agent-runtime-runner').AgentRuntimeRunnerV1['planReviewState']
+  >;
 }
 
 /** 命令执行结果 */
@@ -260,7 +286,7 @@ export interface RegisteredSlashCommand extends SlashCommand {
 }
 
 /** List of renderers that a command scope can apply to. */
-export const ALL_RENDERER_SCOPES: CommandUiRenderer[] = ['tui', 'terminal', 'print'];
+export const ALL_RENDERER_SCOPES: CommandUiRenderer[] = ['tui', 'terminal', 'print', 'web'];
 
 /** Default risk when no explicit metadata is present on a command. */
 export const DEFAULT_COMMAND_RISK: CommandRisk = 'state-write';

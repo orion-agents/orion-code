@@ -5,6 +5,7 @@ import { randomUUID } from 'crypto';
 import { spawn } from 'child_process';
 
 import { ThreadEventStore, ThreadEventStoreError } from '../src/runtime/thread-event-store';
+import { digestRuntimeValue } from '../src/runtime/protocol/canonical';
 import { ThreadProjectionInvariantError } from '../src/runtime/thread-projection';
 
 describe('ThreadEventStore', () => {
@@ -88,6 +89,147 @@ describe('ThreadEventStore', () => {
     expect(store.getCursor()).toBe(5);
   });
 
+  test('keeps streaming cursor reads and local appends independent of historical log size', () => {
+    let logScans = 0;
+    const store = createStore({
+      onLogScan: () => {
+        logScans += 1;
+      },
+    });
+    const turnId = randomUUID();
+    const stepId = randomUUID();
+    const itemId = randomUUID();
+
+    store.appendDurable({ payload: { type: 'thread.started', data: {} } });
+    expect(logScans).toBe(1);
+
+    for (let index = 0; index < 100; index += 1) {
+      expect(
+        store.createEphemeral({
+          turnId,
+          stepId,
+          itemId,
+          payload: { type: 'item.delta', data: { delta: `chunk-${index}`, channel: 'content' } },
+        }).seq
+      ).toBe(1);
+    }
+    expect(store.getCursor()).toBe(1);
+
+    store.appendDurable({
+      turnId,
+      payload: { type: 'turn.started', data: { input: 'continue', mode: 'build' } },
+    });
+    expect(store.getCursor()).toBe(2);
+    expect(logScans).toBe(1);
+  });
+
+  test('adopts a newly persisted verified head when another Store commits', () => {
+    let logScans = 0;
+    const store = createStore({
+      onLogScan: () => {
+        logScans += 1;
+      },
+    });
+    store.appendDurable({ payload: { type: 'thread.started', data: {} } });
+    expect(logScans).toBe(1);
+
+    const other = new ThreadEventStore(store.rootDir, store.threadId);
+    other.appendDurable({
+      turnId: randomUUID(),
+      payload: { type: 'turn.started', data: { input: 'external', mode: 'build' } },
+    });
+
+    expect(store.getCursor()).toBe(2);
+    expect(logScans).toBe(1);
+  });
+
+  test('reuses a persisted verified head across fresh Store instances', () => {
+    const store = createStore();
+    const turnId = randomUUID();
+    const first = store.appendDurable({
+      payload: { type: 'thread.started', data: { projectPath: '/workspace' } },
+    });
+    store.appendDurable({
+      turnId,
+      payload: { type: 'turn.started', data: { input: 'persisted head', mode: 'build' } },
+    });
+
+    let logScans = 0;
+    const resumed = new ThreadEventStore(store.rootDir, store.threadId, {
+      onLogScan: () => {
+        logScans += 1;
+      },
+    });
+
+    expect(resumed.loadProjection()).toMatchObject({ cursor: 2, status: 'active' });
+    expect(resumed.captureReadModelHead()).toMatchObject({
+      projection: { cursor: 2 },
+      lastRecordHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    expect(logScans).toBe(0);
+
+    const committed = resumed.appendDurable({
+      turnId,
+      payload: { type: 'turn.completed', data: { outcome: 'done' } },
+    });
+    expect(committed.seq).toBe(3);
+    expect(first.seq).toBe(1);
+    expect(logScans).toBe(0);
+  });
+
+  test('keeps historical event identity checks when a fresh Store uses the persisted head', () => {
+    const store = createStore();
+    const first = store.appendDurable({
+      payload: { type: 'thread.started', data: { projectPath: '/workspace' } },
+    });
+
+    let logScans = 0;
+    const resumed = new ThreadEventStore(store.rootDir, store.threadId, {
+      idFactory: () => first.eventId,
+      onLogScan: () => {
+        logScans += 1;
+      },
+    });
+
+    expect(() =>
+      resumed.appendDurable({
+        turnId: randomUUID(),
+        payload: { type: 'turn.started', data: { input: 'duplicate', mode: 'build' } },
+      })
+    ).toThrow(/duplicate UUID/);
+    expect(logScans).toBe(0);
+  });
+
+  test('captures projection and exact log identity from one verified head', () => {
+    let logScans = 0;
+    const store = createStore({
+      onLogScan: () => {
+        logScans += 1;
+      },
+    });
+    const committed = store.appendDurable({
+      payload: { type: 'thread.started', data: { projectPath: '/workspace' } },
+    });
+
+    const first = store.captureReadModelHead();
+    const second = store.captureReadModelHead();
+
+    expect(first).toMatchObject({
+      projection: { cursor: committed.seq },
+      lastEventTimestamp: committed.timestamp,
+      lastRecordHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      log: {
+        bytes: expect.any(Number),
+        device: expect.stringMatching(/^\d+$/),
+        inode: expect.stringMatching(/^\d+$/),
+        mtimeNs: expect.stringMatching(/^\d+$/),
+        ctimeNs: expect.stringMatching(/^\d+$/),
+      },
+    });
+    expect(second).toEqual(first);
+    expect(logScans).toBe(1);
+  });
+
   test('recovers a flushed event when projection publication crashes', () => {
     let crash = true;
     const store = createStore({
@@ -124,7 +266,12 @@ describe('ThreadEventStore', () => {
   });
 
   test('rejects interior corruption and a modified hash chain', () => {
-    const store = createStore();
+    let logScans = 0;
+    const store = createStore({
+      onLogScan: () => {
+        logScans += 1;
+      },
+    });
     store.appendDurable({ payload: { type: 'thread.started', data: {} } });
     const record = JSON.parse(readFileSync(store.logPath, 'utf8').trim()) as {
       event: { timestamp: number };
@@ -133,6 +280,69 @@ describe('ThreadEventStore', () => {
     writeFileSync(store.logPath, `${JSON.stringify(record)}\n`);
 
     expect(() => store.getCursor()).toThrow(/hash mismatch/);
+    // onLogScan reports completed scans; the corrupt verification attempt
+    // fails before a second completed scan can be published.
+    expect(logScans).toBe(1);
+  });
+
+  test('falls back to the authoritative log and repairs a corrupt persisted head', () => {
+    const store = createStore();
+    store.appendDurable({ payload: { type: 'thread.started', data: {} } });
+    writeFileSync(store.headPath, '{"version":1,"digest":"forged"}\n');
+
+    let recoveryScans = 0;
+    const recovered = new ThreadEventStore(store.rootDir, store.threadId, {
+      onLogScan: () => {
+        recoveryScans += 1;
+      },
+    });
+    expect(recovered.loadProjection()).toMatchObject({ cursor: 1, status: 'idle' });
+    expect(recoveryScans).toBe(1);
+
+    let verificationScans = 0;
+    const verified = new ThreadEventStore(store.rootDir, store.threadId, {
+      onLogScan: () => {
+        verificationScans += 1;
+      },
+    });
+    expect(verified.loadProjection()).toMatchObject({ cursor: 1, status: 'idle' });
+    expect(verificationScans).toBe(0);
+  });
+
+  test('seals an imported prefix once and reuses it after append in fresh processes', () => {
+    const store = createStore();
+    store.appendDurable({ payload: { type: 'thread.started', data: {} } });
+    const replay = store.replay(0, 1);
+    const projection = store.loadProjection();
+    const eventDigest = digestRuntimeValue(replay.events);
+
+    expect(store.verifyDurablePrefix(1, eventDigest, projection.digest)).toBe(true);
+
+    let firstResumeScans = 0;
+    const resumed = new ThreadEventStore(store.rootDir, store.threadId, {
+      onLogScan: () => {
+        firstResumeScans += 1;
+      },
+    });
+    expect(resumed.verifyDurablePrefix(1, eventDigest, projection.digest)).toBe(true);
+    expect(firstResumeScans).toBe(0);
+
+    const turnId = randomUUID();
+    resumed.appendDurable({
+      turnId,
+      payload: { type: 'turn.started', data: { input: 'after cutover', mode: 'build' } },
+    });
+    expect(firstResumeScans).toBe(0);
+
+    let secondResumeScans = 0;
+    const reopened = new ThreadEventStore(store.rootDir, store.threadId, {
+      onLogScan: () => {
+        secondResumeScans += 1;
+      },
+    });
+    expect(reopened.verifyDurablePrefix(1, eventDigest, projection.digest)).toBe(true);
+    expect(reopened.loadProjection()).toMatchObject({ cursor: 2, status: 'active' });
+    expect(secondResumeScans).toBe(0);
   });
 
   test('marks orphaned items indeterminate and interrupts the active turn', () => {

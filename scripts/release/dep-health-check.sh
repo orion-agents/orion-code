@@ -28,16 +28,37 @@ const failUnless = (condition, message) => {
   if (!condition) errors.push(message);
 };
 const major = value => Number(String(value ?? '').match(/\d+/)?.[0] ?? NaN);
-const supportedNodeMajors = new Set([20, 22, 24]);
-const runtimeNodeMajor = Number(process.versions.node.split('.')[0]);
+const supportedNodeFloors = new Map([
+  [22, [22, 12, 0]],
+  [24, [24, 0, 0]],
+  [26, [26, 0, 0]],
+]);
+const runtimeNodeVersion = process.versions.node.split('.').map(Number);
+const runtimeNodeMajor = runtimeNodeVersion[0];
+const compareNodeVersions = (left, right) => {
+  for (let index = 0; index < 3; index += 1) {
+    const difference = (left[index] ?? 0) - (right[index] ?? 0);
+    if (difference !== 0) return difference;
+  }
+  return 0;
+};
 
 failUnless(
-  manifest.engines?.node === '^20.0.0 || ^22.0.0 || ^24.0.0',
-  'package engines must explicitly support only the tested Node 20/22/24 majors',
+  manifest.engines?.node === '^22.12.0 || ^24.0.0 || ^26.0.0',
+  'package engines must match the tested Node 22.12+/24/26 build and runtime floor',
 );
 failUnless(
-  supportedNodeMajors.has(runtimeNodeMajor),
-  `current Node ${process.versions.node} is unsupported; use Node 20, 22, or 24`,
+  lockRoot.engines?.node === manifest.engines?.node,
+  `npm-shrinkwrap root engines must match package engines (package=${manifest.engines?.node ?? 'missing'}, shrinkwrap=${lockRoot.engines?.node ?? 'missing'})`,
+);
+failUnless(
+  supportedNodeFloors.has(runtimeNodeMajor),
+  `current Node ${process.versions.node} is unsupported; use Node 22, 24, or 26`,
+);
+const runtimeNodeFloor = supportedNodeFloors.get(runtimeNodeMajor);
+failUnless(
+  runtimeNodeFloor && compareNodeVersions(runtimeNodeVersion, runtimeNodeFloor) >= 0,
+  `current Node ${process.versions.node} is below the supported floor ${runtimeNodeFloor?.join('.') ?? 'unknown'}`,
 );
 failUnless(major(production.openai) === 6, 'openai must stay on the validated 6.x line');
 failUnless(!('lodash-es' in production), 'zero-reference lodash-es must not be a direct dependency');
@@ -65,8 +86,15 @@ failUnless(
 );
 
 failUnless(
-  !('ink' in production) && !('react' in production) && !('@types/react' in development),
-  'retired Ink/React renderer dependencies must not return',
+  !('ink' in production) && !('react' in production) && !('react-dom' in production),
+  'Ink and runtime React dependencies must not return',
+);
+failUnless(
+  major(development.react) === 18 &&
+    major(development['react-dom']) === 18 &&
+    major(development['@types/react']) === 18 &&
+    major(development['@types/react-dom']) === 18,
+  'the bundled Web client must keep React 18 and its types in devDependencies',
 );
 
 let OpenAI;
@@ -116,7 +144,7 @@ try {
 } catch (error) {
   errors.push(
     `semantic native dependencies failed to load: ${error.message}. ` +
-      'Run `npm rebuild better-sqlite3 && npm rebuild sqlite-vec` with the active Node.js version',
+      'Run `npm rebuild better-sqlite3` and reinstall dependencies with the active Node.js version if the sqlite-vec platform extension is missing',
   );
 } finally {
   try {
@@ -132,9 +160,9 @@ if (errors.length > 0) {
   process.exit(1);
 }
 console.log(
-  `DEPENDENCY_POLICY_OK node=20|22|24 openai=6 cjs=ok chat-completions=ok sqlite-vec=${semanticProbe}`,
+  `DEPENDENCY_POLICY_OK node=22|24|26 openai=6 cjs=ok chat-completions=ok sqlite-vec=${semanticProbe}`,
 );
-console.log('DEPENDENCY_REMOVAL ink=absent react=absent @types/react=absent');
+console.log('DEPENDENCY_REMOVAL ink=absent runtime-react=absent web-react=18');
 NODE
 
 if [[ "$mode" == "--policy-only" ]]; then

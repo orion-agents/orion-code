@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -10,12 +10,16 @@ import { createFirstPartyCoreToolProviderV1 } from '../src/runtime/first-party-c
 import { getProjectThreadsV2Dir } from '../src/product/paths';
 import { OrionSessionRunnerV1 } from '../src/runtime/orion-session-runner';
 import { createProductOrionRuntimeV1 } from '../src/runtime/product-orion-runtime';
+import { resolvePlanReviewV1 } from '../src/runtime/plan-review';
 import {
   createFilesystemSkillProviderV1,
   type FilesystemSkillProviderV1,
 } from '../src/runtime/skills';
 import type { McpConnectionV1, McpConnectorV1 } from '../src/runtime/mcp';
-import { resolveSessionStorageV1 } from '../src/runtime/legacy-thread-materializer';
+import {
+  materializeLegacyThreadV1,
+  resolveSessionStorageV1,
+} from '../src/runtime/legacy-thread-materializer';
 import { ThreadEventStore } from '../src/runtime/thread-event-store';
 import type { SubagentThreadReceiptV1 } from '../src/runtime/subagent-thread-runtime';
 import { parsePlanReceiptV1, parseTurnCommitV1 } from '../src/runtime/turn-commit';
@@ -29,6 +33,7 @@ import {
   appendSessionMessage,
   appendSessionMessages,
   createSession,
+  loadSessionRestoreBundle,
   type SessionMeta,
 } from '../src/services/session-storage';
 
@@ -98,6 +103,30 @@ describe('v0.2.0 product OrionRuntime cutover', () => {
 
     await runtime.close('integration complete');
     expect(runtime.state).toBe('closed');
+  });
+
+  test('starts from the exact Store verified by the typed Session activation bundle', async () => {
+    const session = createLegacySession('typed activation context');
+    materializeLegacyThreadV1({ projectPath, sessionId: session.id });
+    const activation = loadSessionRestoreBundle(session.id).runtimeActivation;
+    expect(activation).toBeDefined();
+    expect(activation?.view).toMatchObject({
+      sessionId: session.id,
+      threadId: activation?.threadId,
+      cursor: activation?.cursor,
+      projectionDigest: activation?.projectionDigest,
+    });
+    const runtime = createProductOrionRuntimeV1(
+      createProductFixture(createFakeLlm([])),
+      session.id,
+      activation
+    );
+
+    await runtime.start();
+
+    expect(runtime.graph.eventStore).toBe(activation?.store);
+    expect(runtime.graph.eventStore.getCursor()).toBeGreaterThanOrEqual(activation?.cursor ?? 0);
+    await runtime.close('typed activation verified');
   });
 
   test('repairs an interrupted imported tool group before the next provider request', async () => {
@@ -232,6 +261,34 @@ describe('v0.2.0 product OrionRuntime cutover', () => {
     await runner.close('resume replay complete');
   });
 
+  test('preserves the bounded surface during a same-session runtime rebind', async () => {
+    const session = createLegacySession('same-session rebind context');
+    const llm = createFakeLlm([{ content: 'visible answer', model: 'model-test' }]);
+    const fixture = createProductFixture(llm);
+    const events = createUiSink();
+    const runner = new OrionSessionRunnerV1({
+      eventSink: events.sink,
+      getSessionId: () => session.id,
+      createRuntime: id => createProductOrionRuntimeV1(fixture, id),
+      replayHistoryOnRestore: false,
+      mode: 'build',
+    });
+
+    await runner.runInput('visible request');
+    await runner.restoreSession();
+
+    expect(events.clears).toHaveLength(0);
+    expect(events.appended).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ content: 'visible request' }),
+        expect.objectContaining({ content: 'visible answer' }),
+      ])
+    );
+    expect(llm.chatStream).toHaveBeenCalledTimes(1);
+
+    await runner.close('bounded rebind complete');
+  });
+
   test('routes explicit compact through the active runtime maintenance turn', async () => {
     const session = createLegacySession('compact source');
     for (let index = 0; index < 8; index += 1) {
@@ -363,7 +420,89 @@ describe('v0.2.0 product OrionRuntime cutover', () => {
     await runtime.close('approval integration complete');
   });
 
-  test('commits PLAN with full tools, restores AUTO, then executes only in a new logical turn', async () => {
+  test('keeps an explicit deny above AUTO and records a zero-side-effect receipt', async () => {
+    const session = createLegacySession('auto deny context');
+    const execute = jest.fn(async () => ({ success: true, output: 'must not execute' }));
+    const tool: OrionCodeTool = {
+      ...readFileTool(),
+      name: 'write_file',
+      description: 'Write a workspace file',
+      execute,
+      checkPermissions: () => ({ behavior: 'ask', reason: 'writes workspace state' }),
+      isReadOnly: () => false,
+      isFileEdit: () => true,
+    };
+    const llm = createFakeLlm([
+      {
+        content: '',
+        model: 'model-test',
+        toolCalls: [
+          {
+            id: 'auto-deny-write-1',
+            type: 'function',
+            function: {
+              name: 'write_file',
+              arguments: JSON.stringify({ path: 'denied.txt', content: 'must not exist' }),
+            },
+          },
+        ],
+      },
+      { content: 'write was denied', model: 'model-test' },
+    ]);
+    const config: OrionCodeCLIConfig = {
+      apiKey: 'test-only',
+      model: 'model-test',
+      toolConfirmation: 'deny',
+      name: 'orion-product-test',
+      mode: 'development',
+      logLevel: 'error',
+    };
+    const store = new Store({ config, tools: [tool], currentModel: 'model-test' });
+    const runtime = createProductOrionRuntimeV1(
+      {
+        cwd: projectPath,
+        config,
+        store,
+        llm,
+        toolCatalog: createBuiltinToolCatalogV1([tool], {
+          context: { cwd: projectPath, config: { name: config.name, mode: config.mode } },
+        }),
+      },
+      session.id
+    );
+
+    await runtime.start();
+    runtime.thread.dispatch({
+      type: 'turn.start',
+      data: { input: 'Try to write while AUTO is explicitly denied', mode: 'auto' },
+    });
+    await runtime.thread.waitForIdle();
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(existsSync(join(projectPath, 'denied.txt'))).toBe(false);
+    const item = Object.values(runtime.thread.getProjection().items).find(
+      value => value.kind === 'command' && value.name === 'write_file'
+    );
+    expect(JSON.parse(item!.receipt!)).toMatchObject({
+      terminal: 'failed',
+      terminalPhase: 'capability',
+      success: false,
+    });
+    const capabilityEvent = runtime.graph.eventStore
+      .replay(0)
+      .events.find(event => event.payload.type === 'capability.receipt');
+    const capability =
+      capabilityEvent?.payload.type === 'capability.receipt'
+        ? JSON.parse(capabilityEvent.payload.data.receipt)
+        : undefined;
+    expect(capability?.hiddenToolReasons).toMatchObject({
+      write_file: 'Authority denies mutating capabilities.',
+    });
+
+    await runtime.close('auto deny complete');
+  });
+
+  test('commits PLAN with full tools and executes only after exact durable review approval', async () => {
     const session = createLegacySession('plan lifecycle context');
     const config: OrionCodeCLIConfig = {
       apiKey: 'test-only',
@@ -435,12 +574,13 @@ describe('v0.2.0 product OrionRuntime cutover', () => {
     await runtime.thread.waitForIdle();
 
     expect(readFileSync(join(projectPath, 'plan-prepared.txt'), 'utf8')).toBe('prepared');
-    const turns = Object.values(runtime.thread.getProjection().turns)
-      .sort((left, right) => left.startedSeq - right.startedSeq)
-      .slice(-2);
-    expect(turns.map(turn => turn.mode)).toEqual(['plan', 'auto']);
-    expect(turns.map(turn => turn.status)).toEqual(['completed', 'completed']);
-    const planCommit = parseTurnCommitV1(turns[0].commit!.receipt);
+    let turns = Object.values(runtime.thread.getProjection().turns).sort(
+      (left, right) => left.startedSeq - right.startedSeq
+    );
+    const planningTurn = turns.at(-1)!;
+    expect(planningTurn).toMatchObject({ mode: 'plan', status: 'completed' });
+    expect(turns.filter(turn => turn.startedSeq > planningTurn.startedSeq)).toEqual([]);
+    const planCommit = parseTurnCommitV1(planningTurn.commit!.receipt);
     const planReceipt = parsePlanReceiptV1(planCommit.planReceipt!);
     expect(planReceipt).toMatchObject({
       plan,
@@ -456,10 +596,33 @@ describe('v0.2.0 product OrionRuntime cutover', () => {
       reason: { code: 'plan_ready' },
     });
     expect(store.getSnapshot()).toMatchObject({
-      agentMode: 'auto',
-      planMode: false,
+      agentMode: 'plan',
+      planMode: true,
       currentPlan: plan,
     });
+    expect(runtime.thread.getProjection().planReview).toMatchObject({
+      planDigest: planReceipt.planDigest,
+      planReceiptDigest: planReceipt.digest,
+      status: 'awaiting_review',
+      returnMode: 'auto',
+    });
+    expect(llm.chatStream).toHaveBeenCalledTimes(2);
+
+    const resolution = resolvePlanReviewV1(runtime, {
+      planDigest: planReceipt.planDigest,
+      action: 'approve',
+    });
+    expect(resolution).toMatchObject({
+      state: { status: 'approved', planDigest: planReceipt.planDigest },
+      admission: { status: 'started' },
+    });
+    await runtime.thread.waitForIdle();
+
+    turns = Object.values(runtime.thread.getProjection().turns)
+      .sort((left, right) => left.startedSeq - right.startedSeq)
+      .slice(-2);
+    expect(turns.map(turn => turn.mode)).toEqual(['plan', 'build']);
+    expect(turns.map(turn => turn.status)).toEqual(['completed', 'completed']);
 
     const visibleToolSets = llm.chatStream.mock.calls.map(call =>
       (call[2] as Array<{ function: { name: string } }>).map(tool => tool.function.name).sort()
@@ -478,7 +641,7 @@ describe('v0.2.0 product OrionRuntime cutover', () => {
     ]);
     expect(visibleToolSets.flat()).not.toContain('exit_plan_mode');
     const executionRequest = llm.chatStream.mock.calls[2]?.[0] as Message[];
-    expect(executionRequest.some(message => message.content.includes(planReceipt.digest))).toBe(
+    expect(executionRequest.some(message => message.content.includes(planReceipt.planDigest))).toBe(
       true
     );
     expect(
@@ -486,6 +649,80 @@ describe('v0.2.0 product OrionRuntime cutover', () => {
     ).toBe(true);
 
     await runtime.close('plan execution lifecycle complete');
+  });
+
+  test('recovers an awaiting plan across restart, rejects stale review, continues, then cancels', async () => {
+    const session = createLegacySession('durable plan review recovery');
+    const firstPlan = '# First durable plan\n\n1. Inspect\n2. Implement\n3. Verify';
+    const firstRuntime = createProductOrionRuntimeV1(
+      createProductFixture(createFakeLlm([{ content: firstPlan, model: 'model-test' }])),
+      session.id
+    );
+
+    await firstRuntime.start();
+    firstRuntime.thread.dispatch({
+      type: 'turn.start',
+      data: { input: 'Create a plan that must be reviewed', mode: 'plan' },
+    });
+    await firstRuntime.thread.waitForIdle();
+    const awaitingBeforeRestart = firstRuntime.thread.getProjection().planReview;
+    expect(awaitingBeforeRestart).toMatchObject({ status: 'awaiting_review' });
+    await firstRuntime.close('restart at plan review boundary');
+
+    const revisedPlan = '# Revised durable plan\n\n1. Inspect safely\n2. Implement\n3. Verify';
+    const restartedLlm = createFakeLlm([{ content: revisedPlan, model: 'model-test' }]);
+    const restarted = createProductOrionRuntimeV1(createProductFixture(restartedLlm), session.id);
+    await restarted.start();
+
+    expect(restarted.thread.getProjection().planReview).toMatchObject({
+      reviewId: awaitingBeforeRestart?.reviewId,
+      planDigest: awaitingBeforeRestart?.planDigest,
+      status: 'awaiting_review',
+    });
+    expect(restartedLlm.chatStream).not.toHaveBeenCalled();
+    expect(() =>
+      resolvePlanReviewV1(restarted, {
+        planDigest: `${awaitingBeforeRestart?.planDigest}-stale`,
+        action: 'approve',
+      })
+    ).toThrow(expect.objectContaining({ code: 'plan_review_stale' }));
+
+    const continued = resolvePlanReviewV1(restarted, {
+      planDigest: awaitingBeforeRestart!.planDigest,
+      action: 'continue',
+      feedback: 'Add an explicit safety verification step.',
+    });
+    expect(continued).toMatchObject({
+      state: {
+        status: 'continued',
+        feedback: 'Add an explicit safety verification step.',
+      },
+      admission: { status: 'started' },
+    });
+    await restarted.thread.waitForIdle();
+
+    const revisedReview = restarted.thread.getProjection().planReview;
+    expect(revisedReview).toMatchObject({
+      status: 'awaiting_review',
+      planDigest: expect.not.stringMatching(awaitingBeforeRestart!.planDigest),
+    });
+    expect(restartedLlm.chatStream).toHaveBeenCalledTimes(1);
+    expect((restartedLlm.chatStream.mock.calls[0]?.[0] as Message[]).at(-1)?.content).toContain(
+      'Add an explicit safety verification step.'
+    );
+
+    const turnsBeforeCancel = Object.keys(restarted.thread.getProjection().turns).length;
+    const cancelled = resolvePlanReviewV1(restarted, {
+      planDigest: revisedReview!.planDigest,
+      action: 'cancel',
+    });
+    expect(cancelled).toMatchObject({
+      state: { status: 'cancelled' },
+      admission: { status: 'cancelled' },
+    });
+    expect(Object.keys(restarted.thread.getProjection().turns)).toHaveLength(turnsBeforeCancel);
+
+    await restarted.close('plan review recovery integration complete');
   });
 
   test('seeds the v2 Goal owner from a legacy sidecar without starting ghost work', async () => {

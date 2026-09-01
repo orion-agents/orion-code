@@ -1,6 +1,11 @@
 import { randomUUID } from 'crypto';
+import { existsSync, mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 import type { ToolInputJSONSchema, ToolResult } from '../src/framework/tool';
+import { retrieveArtifact } from '../src/core/tool-artifacts';
+import { getProjectArtifactsDir } from '../src/services/config-dir';
 import {
   StepSnapshotValidationError,
   ExecutionService,
@@ -179,5 +184,46 @@ describe('StepSnapshotV1', () => {
         hidden: [{ id: 'web', reason: 'network denied' }],
       })
     ).toThrow(/exactly one lane/);
+  });
+
+  test('stores large bound-tool output as a durable artifact and returns a bounded result', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'orion-step-artifact-'));
+    const workspace = join(root, 'workspace');
+    const previousConfigDir = process.env.ORION_CODE_CONFIG_DIR;
+    process.env.ORION_CODE_CONFIG_DIR = join(root, 'config');
+    const output = '大'.repeat(12_000);
+    try {
+      const snapshot = createSnapshot([
+        createBinding('exec_command', async () => ({ success: true, output })),
+      ]);
+      const execution = await new ExecutionService().run({
+        snapshot,
+        toolName: 'exec_command',
+        args: { command: 'fixture' },
+        context: { cwd: workspace, config: { name: 'test', mode: 'build' } },
+        enforcement: 'full',
+      });
+
+      expect(execution.terminal).toBe('completed');
+      expect(execution.result.outputBytes).toBe(Buffer.byteLength(output, 'utf8'));
+      expect(execution.result.output).toContain('truncated');
+      expect(Buffer.byteLength(execution.result.output, 'utf8')).toBeLessThan(
+        execution.result.outputBytes!
+      );
+      expect(execution.result.artifactRef).toEqual({
+        id: expect.any(String),
+        outputBytes: Buffer.byteLength(output, 'utf8'),
+      });
+      const artifactPath = join(
+        getProjectArtifactsDir(workspace),
+        `${execution.result.artifactRef!.id}.txt`
+      );
+      expect(existsSync(artifactPath)).toBe(true);
+      expect(retrieveArtifact(artifactPath)).toBe(output);
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.ORION_CODE_CONFIG_DIR;
+      else process.env.ORION_CODE_CONFIG_DIR = previousConfigDir;
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

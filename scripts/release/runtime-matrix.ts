@@ -7,6 +7,7 @@ import { tmpdir } from 'os';
 import { dirname, join, resolve } from 'path';
 
 import {
+  assertSupportedReleaseNodeVersionV1,
   createRuntimeMatrixReceiptV1,
   verifyTarballArtifactReceiptV1,
   type RuntimeMatrixProbeV1,
@@ -89,6 +90,25 @@ const mcp=require(join(packageRoot,'dist','runtime','mcp'));
 })().catch(error=>{console.error(error);process.exit(1)});
 `;
 
+const WEB_JOURNEY_SOURCE = String.raw`
+const {join}=require('path');
+const packageRoot=process.argv[1];
+const web=require(join(packageRoot,'dist','web'));
+(async()=>{
+  const handle=await web.startOrionWebServer({cwd:process.cwd(),port:0});
+  try{
+    if(handle.host!=='127.0.0.1')throw new Error('Web host escaped loopback');
+    const health=await fetch(handle.url+'/api/v1/health');
+    const page=await fetch(handle.url+'/');
+    if(!health.ok||!page.ok||(await page.text()).indexOf('Orion Code')<0){
+      throw new Error('packaged Web health/static probe failed');
+    }
+  }finally{
+    await handle.close();
+  }
+})().catch(error=>{console.error(error);process.exit(1)});
+`;
+
 export function parseRuntimeMatrixArgumentsV1(argv: readonly string[]): ArgumentsV1 {
   const tarball = optionValue(argv, '--tarball');
   const artifactReceipt = optionValue(argv, '--artifact-receipt');
@@ -112,6 +132,7 @@ function main(): void {
   );
   const actualTarballSha256 = createHash('sha256').update(readFileSync(args.tarball)).digest('hex');
   const nodeMajor = Number(process.versions.node.split('.')[0]);
+  assertSupportedReleaseNodeVersionV1(process.versions.node, nodeMajor, 'Runtime matrix');
   const npmVersion = run('npm', ['--version']).stdout.trim() || 'unavailable';
   const matrixRunnerDigest = digestText(readFileSync(__filename, 'utf8'));
   const temporaryRoot = mkdtempSync(join(tmpdir(), `orion-runtime-node${nodeMajor}-`));
@@ -298,6 +319,20 @@ function main(): void {
         true,
         digestFile(join(smokeRoot, 'print-mode-smoke.py')),
         distCliDigest
+      )
+    );
+    const web = run(process.execPath, ['-e', WEB_JOURNEY_SOURCE, packageRoot], installDirectory);
+    probes.push(
+      probe(
+        'web_journey',
+        web,
+        'installed Web Workbench served loopback health and packaged browser assets',
+        true,
+        digestText(WEB_JOURNEY_SOURCE),
+        digestDirectoryFiles([
+          join(packageRoot, 'dist', 'web', 'server.js'),
+          join(packageRoot, 'dist', 'web-client', 'index.html'),
+        ])
       )
     );
     const goal = smoke('goal-lifecycle-pty-smoke.py');

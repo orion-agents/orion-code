@@ -17,7 +17,10 @@ describe('npm package lifecycle', () => {
 
     expect(manifest.scripts).toMatchObject({
       clean: 'node scripts/maintenance/clean-dist.js',
-      build: 'npm run clean && tsc && node scripts/maintenance/copy-runtime-assets.js',
+      build:
+        'npm run clean && npm run build:server && npm run build:web && node scripts/maintenance/copy-runtime-assets.js',
+      'build:server': 'tsc',
+      'build:web': 'tsc -p web/tsconfig.json --noEmit && vite build --config web/vite.config.ts',
       prepack: 'npm run build',
     });
   });
@@ -29,6 +32,20 @@ describe('npm package lifecycle', () => {
     expect(cleanScript).toContain("const distDir = resolve(projectRoot, 'dist');");
     expect(cleanScript).toContain("relative(projectRoot, distDir) !== 'dist'");
     expect(cleanScript).toContain('rmSync(distDir, { recursive: true, force: true });');
+  });
+
+  it('lets isolated packaged-runtime gates disable ambient env-file loading', () => {
+    const binSource = readFileSync(resolve(rootDir, 'bin/orion'), 'utf8');
+
+    expect(binSource).toContain('(nodeMajor === 22 && nodeMinor >= 12)');
+    expect(binSource).toContain('nodeMajor === 24 || nodeMajor === 26');
+    expect(binSource).toContain('Orion Code requires Node.js 22.12+, 24, or 26');
+    expect(binSource).toContain(
+      "const loadConfiguredEnvFiles = process.env.ORION_CODE_DISABLE_ENV_FILES !== '1';"
+    );
+    expect(binSource).toContain('loadConfiguredEnvFiles && loadEnvFile(globalEnv)');
+    expect(binSource).toContain('loadConfiguredEnvFiles && loadEnvFile(localEnv)');
+    expect(binSource).toContain('loadConfiguredEnvFiles && loadEnvFile(packageEnv)');
   });
 
   it('keeps unsupported renderer warnings in the current tense', () => {

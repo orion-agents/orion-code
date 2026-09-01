@@ -501,6 +501,8 @@ export interface SessionRestoredView {
   summaryCoveredMessages?: number;
   checkpointId?: string;
   transcriptMessages?: number;
+  visibleTranscriptMessages?: number;
+  transcriptTruncated?: boolean;
   warnings?: readonly string[];
   headline: string;
 }
@@ -763,6 +765,12 @@ export function createSessionRestoredView(event: RuntimeSessionRestoredEvent): S
   }
   if (event.checkpointId !== undefined) view.checkpointId = event.checkpointId;
   if (event.transcriptMessages !== undefined) view.transcriptMessages = event.transcriptMessages;
+  if (event.visibleTranscriptMessages !== undefined) {
+    view.visibleTranscriptMessages = event.visibleTranscriptMessages;
+  }
+  if (event.transcriptTruncated !== undefined) {
+    view.transcriptTruncated = event.transcriptTruncated;
+  }
   if (event.warnings?.length) {
     view.warnings = event.warnings.map(normalizeSingleLineText).filter(Boolean);
   }
@@ -931,9 +939,7 @@ export function createCommandPickerState(input: {
   const getCategoryLabel = input.categoryLabel ?? commandCategoryLabel;
   const ranked = input.commands
     .filter(command =>
-      query
-        ? command.audience !== 'internal'
-        : (command.audience ?? 'primary') === 'primary'
+      query ? command.audience !== 'internal' : (command.audience ?? 'primary') === 'primary'
     )
     .map((command, index) => ({
       command,

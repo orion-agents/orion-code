@@ -3,7 +3,7 @@
  */
 
 import { randomUUID } from 'crypto';
-import { existsSync, mkdtempSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, realpathSync, rmSync, statSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { findCommand } from '../src/commands';
@@ -18,14 +18,16 @@ import {
   listProjectSessions,
   loadSessionHistoryWithDiagnostics,
   loadSessionMeta,
+  loadSessionRestoreBundle,
   renameSession,
   type SessionMeta,
 } from '../src/services/session-storage';
 import type { CommandContext } from '../src/commands/types';
-import type { RuntimeSessionRestoredEvent } from '../src/runtime/ui-events';
+import type { RuntimeSessionRestoredEvent, TranscriptEntry } from '../src/runtime/ui-events';
 import { createContextUsageSnapshot } from '../src/services/model-context';
 import { materializeLegacyThreadV1 } from '../src/runtime/legacy-thread-materializer';
-import { getProjectThreadsV2Dir } from '../src/product/paths';
+import type { ThreadSessionRuntimeActivationV1 } from '../src/runtime/thread-session-view';
+import { getProjectSessionMetaPath, getProjectThreadsV2Dir } from '../src/product/paths';
 import { ThreadEventStore } from '../src/runtime/thread-event-store';
 import { ThreadTurnCommitJournalV1 } from '../src/runtime/turn-commit';
 
@@ -73,6 +75,7 @@ describe('session commands', () => {
     });
     const restored: SessionMeta[] = [];
     const sessionRestored: RuntimeSessionRestoredEvent[] = [];
+    const transcriptReplacements: TranscriptEntry[][] = [];
     const ctx: CommandContext = {
       cwd: projectDir,
       config,
@@ -80,10 +83,11 @@ describe('session commands', () => {
       llm: null,
       setSession: session => restored.push(session),
       sessionRestored: event => sessionRestored.push(event),
+      replaceTranscript: entries => transcriptReplacements.push([...entries]),
       getSession: () => restored[restored.length - 1] ?? null,
     };
 
-    return { ctx, restored, sessionRestored, store };
+    return { ctx, restored, sessionRestored, transcriptReplacements, store };
   }
 
   function createRestorableSession(content: string, withTool = false): SessionMeta {
@@ -113,7 +117,7 @@ describe('session commands', () => {
   function createV2OnlySession(userContent: string, assistantContent: string): SessionMeta {
     const session = createSession(projectDir, 'gpt-4o');
     const materialized = materializeLegacyThreadV1({
-      projectPath: projectDir,
+      projectPath: realpathSync(projectDir),
       sessionId: session.id,
     });
     const store = new ThreadEventStore(
@@ -246,10 +250,12 @@ describe('session commands', () => {
       true
     );
     const { ctx, restored, sessionRestored, store } = makeContext('terminal');
+    const updatedAtBeforeResume = loadSessionMeta(session.id)?.updatedAt;
 
     const result = await findCommand('resume')!.execute(ctx, session.id);
 
     expect(result.success).toBe(true);
+    expect(loadSessionMeta(session.id)?.updatedAt).toBe(updatedAtBeforeResume);
     expect(restored[0]?.id).toBe(session.id);
     expect(sessionRestored).toHaveLength(1);
     expect(sessionRestored[0]).toMatchObject({
@@ -289,6 +295,85 @@ describe('session commands', () => {
       success: false,
       status: 'cancelled',
     });
+  });
+
+  test('/resume hands the verified legacy cutover Store to the replacement Runtime', async () => {
+    const session = createRestorableSession('activation hand-off context');
+    const { ctx, restored } = makeContext('terminal');
+    let activation: ThreadSessionRuntimeActivationV1 | undefined;
+    ctx.restoreSessionRuntime = async candidate => {
+      activation = candidate;
+    };
+
+    const result = await findCommand('resume')!.execute(ctx, session.id);
+
+    expect(result.success).toBe(true);
+    expect(restored.at(-1)?.id).toBe(session.id);
+    expect(activation).toMatchObject({
+      version: 1,
+      projectPath: realpathSync(projectDir),
+      sessionId: session.id,
+      threadId: expect.any(String),
+      cursor: expect.any(Number),
+      projectionDigest: expect.any(String),
+      cutoverGeneration: expect.any(Number),
+    });
+    expect(activation?.store.threadId).toBe(activation?.threadId);
+  });
+
+  test('/resume bounds renderer history while preserving complete model context', async () => {
+    const session = createSession(projectDir, 'gpt-4o');
+    const messages = Array.from({ length: 80 }, (_, index) => ({
+      role: (index % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
+      content: index === 79 ? 'x'.repeat(100 * 1024) : `history-${index}`,
+      timestamp: Date.now() + index,
+    }));
+    appendSessionMessages(session.id, messages);
+    const { ctx, sessionRestored, transcriptReplacements, store } = makeContext('terminal');
+
+    const result = await findCommand('resume')!.execute(ctx, session.id);
+
+    expect(result.success).toBe(true);
+    expect(store.getSnapshot().conversationHistory).toHaveLength(80);
+    expect(store.getSnapshot().conversationHistory.at(-1)?.content).toHaveLength(100 * 1024);
+    expect(transcriptReplacements).toHaveLength(1);
+    expect(transcriptReplacements[0]).toHaveLength(50);
+    expect(transcriptReplacements[0][0]).toMatchObject({
+      id: `resume:${session.id}:31`,
+      role: 'user',
+      content: 'history-30',
+    });
+    expect(transcriptReplacements[0].at(-1)?.content).toContain(
+      '[display truncated; full content remains durable]'
+    );
+    expect(
+      transcriptReplacements[0].reduce(
+        (bytes, entry) => bytes + Buffer.byteLength(entry.content, 'utf8') + 128,
+        0
+      )
+    ).toBeLessThanOrEqual(256 * 1024);
+    expect(sessionRestored[0]).toMatchObject({
+      restoredMessages: 80,
+      transcriptMessages: 80,
+      visibleTranscriptMessages: 50,
+      transcriptTruncated: true,
+    });
+    expect(result.output).toContain('Display: showing recent 50');
+  });
+
+  test('reopening an unchanged v2 restore bundle does not rewrite its catalog metadata', () => {
+    const session = createRestorableSession('idempotent restore bundle');
+    materializeLegacyThreadV1({ projectPath: projectDir, sessionId: session.id });
+    const first = loadSessionRestoreBundle(session.id);
+    expect(first.runtimeActivation).toBeDefined();
+    const metaPath = getProjectSessionMetaPath(projectDir, session.id);
+    const before = statSync(metaPath, { bigint: true }).mtimeNs;
+
+    const second = loadSessionRestoreBundle(session.id);
+    const after = statSync(metaPath, { bigint: true }).mtimeNs;
+
+    expect(second.runtimeActivation).toBeDefined();
+    expect(after).toBe(before);
   });
 
   test('/resume reports persisted compact summary provenance and restore counts', async () => {
@@ -353,13 +438,16 @@ describe('session commands', () => {
     const listed = listProjectSessions(projectDir).find(candidate => candidate.id === session.id);
     const result = await findCommand('resume')!.execute(ctx, '--last');
 
-    expect(listed).toMatchObject({
-      id: session.id,
+    // Listing consumes only the bounded catalog read model. This fixture writes
+    // a v2 Thread directly, so the pre-v0.3 metadata is repaired lazily by the
+    // selected restore rather than replaying every Thread in the picker.
+    expect(listed).toMatchObject({ id: session.id, messageCount: 0 });
+    expect(result.success).toBe(true);
+    expect(loadSessionMeta(session.id)).toMatchObject({
       messageCount: 2,
       historySizeBytes: expect.any(Number),
+      threadReadModel: { cursor: expect.any(Number), projectionDigest: expect.any(String) },
     });
-    expect(listed?.historySizeBytes).toBeGreaterThan(0);
-    expect(result.success).toBe(true);
     expect(restored.at(-1)?.id).toBe(session.id);
     expect(sessionRestored.at(-1)).toMatchObject({
       sessionId: session.id,
@@ -372,6 +460,95 @@ describe('session commands', () => {
       { role: 'assistant', content: 'v2-only durable answer' },
     ]);
     expect(result.output).not.toContain('No messages in session');
+  });
+
+  test('/resume --last repairs a stale empty read model after a durable Thread append', async () => {
+    const session = createSession(projectDir, 'gpt-4o');
+    const materialized = materializeLegacyThreadV1({
+      projectPath: projectDir,
+      sessionId: session.id,
+    });
+
+    expect(loadSessionHistoryWithDiagnostics(session.id).messages).toEqual([]);
+    const stale = loadSessionMeta(session.id);
+    expect(stale).toMatchObject({
+      messageCount: 0,
+      threadReadModel: { cursor: materialized.plan.events.length },
+    });
+
+    const store = new ThreadEventStore(
+      getProjectThreadsV2Dir(projectDir),
+      materialized.plan.receipt.threadId
+    );
+    const turnId = randomUUID();
+    const userItemId = randomUUID();
+    const assistantItemId = randomUUID();
+    const userStepId = randomUUID();
+    const assistantStepId = randomUUID();
+    store.appendDurableBatch([
+      {
+        turnId,
+        payload: { type: 'turn.started', data: { input: 'crash-gap input', mode: 'build' } },
+      },
+      {
+        turnId,
+        stepId: userStepId,
+        itemId: userItemId,
+        payload: { type: 'item.started', data: { kind: 'message', role: 'user' } },
+      },
+      {
+        turnId,
+        stepId: userStepId,
+        itemId: userItemId,
+        payload: { type: 'item.completed', data: { content: 'crash-gap input' } },
+      },
+      {
+        turnId,
+        stepId: assistantStepId,
+        itemId: assistantItemId,
+        payload: { type: 'item.started', data: { kind: 'message', role: 'assistant' } },
+      },
+      {
+        turnId,
+        stepId: assistantStepId,
+        itemId: assistantItemId,
+        payload: { type: 'item.completed', data: { content: 'crash-gap output' } },
+      },
+    ]);
+    new ThreadTurnCommitJournalV1(store).commit({
+      turnId,
+      history: [
+        { role: 'user', content: 'crash-gap input' },
+        { role: 'assistant', content: 'crash-gap output' },
+      ],
+      taskContextState: { ledger: [], updatedAt: Date.now() },
+      taskContextRevision: 0,
+      terminal: { status: 'completed', outcome: 'crash-gap fixture complete' },
+    });
+    store.appendDurable({
+      turnId,
+      payload: { type: 'turn.completed', data: { outcome: 'crash-gap fixture complete' } },
+    });
+
+    // Simulate a process crash after the Thread commit but before catalog refresh.
+    expect(loadSessionMeta(session.id)).toMatchObject({
+      messageCount: 0,
+      threadReadModel: { cursor: stale?.threadReadModel?.cursor },
+    });
+
+    const { ctx, restored, store: uiStore } = makeContext('terminal');
+    const result = await findCommand('resume')!.execute(ctx, '--last');
+
+    expect(result.success).toBe(true);
+    expect(restored.at(-1)?.id).toBe(session.id);
+    expect(uiStore.getSnapshot().conversationHistory).toEqual([
+      { role: 'user', content: 'crash-gap input' },
+      { role: 'assistant', content: 'crash-gap output' },
+    ]);
+    expect(loadSessionMeta(session.id)).toMatchObject({
+      messageCount: 2,
+      threadReadModel: { cursor: store.getCursor() },
+    });
   });
 
   test('/resume --last isolates an incomplete historical Thread and restores the healthy latest session', async () => {

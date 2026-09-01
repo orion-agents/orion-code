@@ -1,9 +1,28 @@
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import {
+  chmodSync,
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
-import { join, resolve } from 'path';
+import { dirname, join, resolve } from 'path';
 import { spawnSync } from 'child_process';
 
 import { captureReleaseArtifactSourceV1 } from '../scripts/release/build-release-artifact';
+import {
+  parseAssembleWebE2EArgumentsV1,
+  verifyEvidenceBundle,
+  type WebE2ERunManifest,
+  type WebE2EScenarioManifest,
+} from '../scripts/e2e/assemble-web-e2e-receipt';
+import {
+  WEB31_REQUIRED_EVIDENCE_FACTS_V1,
+  WEB32_REQUIRED_EVIDENCE_FACTS_V1,
+} from './e2e/scenarios';
 
 type ReleaseResult = {
   id: string;
@@ -22,6 +41,70 @@ const projectRoot = resolve(__dirname, '..');
 const releaseScript = join(projectRoot, 'scripts', 'release', 'release-check.js');
 const depHealthScript = join(projectRoot, 'scripts', 'release', 'dep-health-check.sh');
 const fixtures: string[] = [];
+const ONE_PIXEL_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+  'base64'
+);
+
+function createWebEvidenceBundle(
+  options: {
+    scenarioId?: string;
+    factOverrides?: Readonly<Record<string, string | number | boolean>>;
+    includeScreenshotFact?: boolean;
+    screenshotFact?: string;
+    screenshotBody?: Buffer;
+    writeScreenshot?: boolean;
+  } = {}
+) {
+  const root = mkdtempSync(join(tmpdir(), 'orion-web-evidence-'));
+  fixtures.push(root);
+  const scenarioId = options.scenarioId ?? 'SET-P0-01';
+  const scenarioRoot = join(root, 'scenarios', `${scenarioId}-fixture`);
+  mkdirSync(scenarioRoot, { recursive: true });
+  const screenshotFact = options.screenshotFact ?? 'settings-dialog.png';
+  const requiredFacts = Object.fromEntries(
+    (
+      WEB31_REQUIRED_EVIDENCE_FACTS_V1[scenarioId] ??
+      WEB32_REQUIRED_EVIDENCE_FACTS_V1[scenarioId] ??
+      []
+    ).map(requirement => [requirement.key, requirement.equals ?? requirement.minimum])
+  );
+  const scenario: WebE2EScenarioManifest = {
+    scenarioId,
+    startedAt: '2026-08-27T00:00:00.000Z',
+    completedAt: '2026-08-27T00:00:01.000Z',
+    durationMs: 1000,
+    status: 'pass',
+    browser: { name: 'chromium', version: '151.0.0.0' },
+    counters: { secretFindings: 0 },
+    facts: {
+      ...requiredFacts,
+      ...options.factOverrides,
+      ...(options.includeScreenshotFact === false ? {} : { 'screenshot.dialog': screenshotFact }),
+    },
+    logs: { stdout: 'stdout.log', stderr: 'stderr.log' },
+  };
+  const manifest: WebE2ERunManifest = {
+    version: 1,
+    kind: 'orion.web-e2e-manifest',
+    runId: 'settings-evidence-fixture',
+    scenarios: [scenario],
+  };
+  const manifestPath = join(root, 'manifest.json');
+  const screenshotPath = join(scenarioRoot, screenshotFact);
+  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  writeFileSync(join(scenarioRoot, 'manifest.json'), `${JSON.stringify(scenario, null, 2)}\n`);
+  writeFileSync(join(scenarioRoot, 'stdout.log'), 'bounded stdout\n');
+  writeFileSync(join(scenarioRoot, 'stderr.log'), '');
+  if (
+    options.includeScreenshotFact !== false &&
+    options.writeScreenshot !== false &&
+    !screenshotFact.includes('/')
+  ) {
+    writeFileSync(screenshotPath, options.screenshotBody ?? ONE_PIXEL_PNG);
+  }
+  return { manifest, manifestPath, scenario, screenshotPath };
+}
 
 function git(cwd: string, args: string[]): string {
   const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
@@ -142,6 +225,7 @@ describe('release-check script contract', () => {
     };
     const prepublishOnly = pkg.scripts?.prepublishOnly ?? '';
     const build = pkg.scripts?.build ?? '';
+    const criticalWebE2E = pkg.scripts?.['test:web-e2e:critical'] ?? '';
     const buildIndex = prepublishOnly.indexOf('npm run build');
     const dependencyPolicyIndex = prepublishOnly.indexOf('npm run deps:check -- --policy-only');
     const releaseCheckIndex = prepublishOnly.indexOf('npm run release:check');
@@ -151,14 +235,31 @@ describe('release-check script contract', () => {
     expect(buildIndex).toBeGreaterThan(dependencyPolicyIndex);
     expect(releaseCheckIndex).toBeGreaterThan(buildIndex);
     expect(prepublishOnly).toContain('npm run test:coverage -- --runInBand');
+    expect(prepublishOnly).toContain('npm run test:web-browser');
+    expect(criticalWebE2E).toBe('ts-node --transpile-only scripts/e2e/run-web-e2e-critical.ts');
     expect(build).toContain('node scripts/maintenance/copy-runtime-assets.js');
     expect(pkg.files).toContain('npm-shrinkwrap.json');
     expect(pkg.files).toContain('assets/orion-tui-icon.png');
     expect(pkg.files).toContain('CHANGELOG.md');
     expect(pkg.files).toContain('docs/orion.example.json');
     expect(pkg.files).toContain('docs/migration/v0.1.9-to-v0.2.0.md');
+    expect(pkg.files).toContain('docs/migration/v0.2.2-to-v0.3.0.md');
+    expect(pkg.files).toContain('docs/migration/v0.2.2-to-v0.3.0-settings.md');
+    expect(pkg.files).toContain('docs/migration/v0.3.0-to-v0.3.1.md');
+    expect(pkg.files).toContain('docs/migration/v0.3.1-to-v0.3.2.md');
+    expect(pkg.files).toContain('docs/architecture/v0.3.0-web-api.yaml');
+    expect(pkg.files).toContain('docs/architecture/v0.3.1-web-api.yaml');
+    expect(pkg.files).toContain('docs/architecture/v0.3.2-web-api.yaml');
+    expect(pkg.files).toContain('docs/architecture/agent-mode-permission-contract.md');
     expect(pkg.files).toContain('docs/plan/v0.2.0-dsh-harness-redesign-plan.md');
     expect(pkg.files).toContain('docs/plan/v0.2.0-release-checklist.md');
+    expect(pkg.files).toContain('docs/plan/v0.3.0-web-workbench-plan.md');
+    expect(pkg.files).toContain('docs/plan/v0.3.0-settings-integration-plan.md');
+    expect(pkg.files).toContain('docs/plan/v0.3.0-node-runtime-compatibility-plan.md');
+    expect(pkg.files).toContain('docs/plan/v0.3.1-web-workbench-professional-shell-plan.md');
+    expect(pkg.files).toContain('docs/plan/v0.3.2-web-workbench-layout-and-composer-plan.md');
+    expect(pkg.files).toContain('docs/test/v0.3.1-web-workbench-e2e-plan.md');
+    expect(pkg.files).toContain('docs/test/v0.3.2-web-workbench-e2e-plan.md');
     expect(pkg.files).not.toContain('assets/');
   });
 
@@ -188,15 +289,31 @@ describe('release-check script contract', () => {
   it('enforces exact package contents and hard package-size budgets', () => {
     const script = readFileSync(releaseScript, 'utf8');
 
-    expect(script).toContain('MAX_PACKED_PACKAGE_BYTES = 2 * 1024 * 1024');
+    expect(script).toContain('MAX_PACKED_PACKAGE_BYTES = 2304 * 1024');
     expect(script).toContain('MAX_UNPACKED_PACKAGE_BYTES = 10 * 1024 * 1024');
     expect(script).toContain('MAX_PACKAGE_ENTRIES = 1500');
     expect(script).toContain("'assets/orion-tui-icon.png'");
     expect(script).toContain("'docs/orion.example.json'");
     expect(script).toContain("'docs/readme.md'");
     expect(script).toContain("'docs/migration/v0.1.9-to-v0.2.0.md'");
+    expect(script).toContain("'docs/migration/v0.2.2-to-v0.3.0.md'");
+    expect(script).toContain("'docs/migration/v0.2.2-to-v0.3.0-settings.md'");
+    expect(script).toContain("'docs/migration/v0.3.0-to-v0.3.1.md'");
+    expect(script).toContain("'docs/migration/v0.3.1-to-v0.3.2.md'");
+    expect(script).toContain("'docs/architecture/v0.3.0-web-api.yaml'");
+    expect(script).toContain("'docs/architecture/v0.3.1-web-api.yaml'");
+    expect(script).toContain("'docs/architecture/v0.3.2-web-api.yaml'");
+    expect(script).toContain("'docs/architecture/agent-mode-permission-contract.md'");
     expect(script).toContain("'docs/plan/v0.2.0-dsh-harness-redesign-plan.md'");
     expect(script).toContain("'docs/plan/v0.2.0-release-checklist.md'");
+    expect(script).toContain("'docs/plan/v0.3.0-web-workbench-plan.md'");
+    expect(script).toContain("'docs/plan/v0.3.0-settings-integration-plan.md'");
+    expect(script).toContain("'docs/plan/v0.3.0-node-runtime-compatibility-plan.md'");
+    expect(script).toContain("'docs/plan/v0.3.1-web-workbench-professional-shell-plan.md'");
+    expect(script).toContain("'docs/plan/v0.3.2-web-workbench-layout-and-composer-plan.md'");
+    expect(script).toContain("'docs/test/v0.3.1-web-workbench-e2e-plan.md'");
+    expect(script).toContain("'docs/test/v0.3.2-web-workbench-e2e-plan.md'");
+    expect(script).toContain("['Web Workbench', webProbe]");
     expect(script).toContain('unexpected tarball entries');
   });
 
@@ -206,6 +323,180 @@ describe('release-check script contract', () => {
 
     expect(uses.length).toBeGreaterThan(0);
     expect(uses.filter(value => !/@[0-9a-f]{40}$/u.test(value))).toEqual([]);
+  });
+
+  it('keeps Settings browser evidence fail-closed across the exact-artifact release chain', () => {
+    const workflow = readFileSync(join(projectRoot, '.github', 'workflows', 'ci.yml'), 'utf8');
+    const releaseReceipt = readFileSync(
+      join(projectRoot, 'scripts', 'release', 'assemble-release-receipt.ts'),
+      'utf8'
+    );
+    const webReceipt = readFileSync(
+      join(projectRoot, 'scripts', 'e2e', 'assemble-web-e2e-receipt.ts'),
+      'utf8'
+    );
+    const criticalRunner = readFileSync(
+      join(projectRoot, 'scripts', 'e2e', 'run-web-e2e-critical.ts'),
+      'utf8'
+    );
+    const browserFixture = readFileSync(
+      join(projectRoot, 'tests', 'e2e', 'fixtures', 'test.ts'),
+      'utf8'
+    );
+
+    expect(workflow).toContain("node-version: ['22', '24', '26']");
+    expect(workflow).toContain("node-version: '22.12.0'");
+    expect(workflow).toContain("node-version: '24.0.0'");
+    expect(workflow).toContain("node-version: '26.0.0'");
+    expect(workflow).toContain('runtime-node${{ matrix.node-major }}');
+    expect(workflow).toContain('ci-runtime-node${{ matrix.node-major }}');
+    expect(workflow).toContain('npm run test:web-e2e:critical');
+    expect(workflow).toContain('ORION_WEB_E2E_RUNNER_IMAGE');
+    expect(workflow).toContain('--web-e2e .release/web-e2e/web-e2e-receipt.json');
+    expect(workflow).toContain(
+      "find .release/web-e2e/primary -path '*/run-*/manifest.json' -type f ! -path '*/scenarios/*'"
+    );
+    expect(workflow).toContain(
+      "find .release/web-e2e/runtime -name manifest.json -type f ! -path '*/scenarios/*'"
+    );
+    expect(criticalRunner).toContain('WEB_E2E_CRITICAL_GREP');
+    expect(criticalRunner).toContain("manifest?.decision === 'GO'");
+    expect(browserFixture).toContain(
+      "testInfo.status === 'passed' && testInfo.expectedStatus === 'passed'"
+    );
+    expect(browserFixture).not.toContain('testInfo.status === testInfo.expectedStatus');
+    expect(releaseReceipt).toContain('webE2E,');
+    expect(webReceipt).toContain("consistentFact(scenarios, 'release.runner_digest'");
+    expect(webReceipt).toContain('secretScanFindings');
+  });
+
+  it('requires one Web E2E runtime manifest for every supported Node line', () => {
+    const base = [
+      '--artifact=artifact.json',
+      '--primary=primary-1.json',
+      '--primary=primary-2.json',
+      '--primary=primary-3.json',
+      '--live-canary=NOT_RUN',
+      '--out=receipt.json',
+    ];
+    const runtimes = [22, 24, 26].map(major => `--runtime=node-${major}.json`);
+
+    expect(parseAssembleWebE2EArgumentsV1([...base, ...runtimes]).runtime).toHaveLength(3);
+    expect(() => parseAssembleWebE2EArgumentsV1([...base, ...runtimes.slice(0, -1)])).toThrow(
+      'Exactly 3 --runtime manifests are required.'
+    );
+  });
+
+  it('digest-binds Settings screenshots so replacement changes the evidence identity', () => {
+    const fixture = createWebEvidenceBundle();
+    const originalDigest = verifyEvidenceBundle(fixture.manifestPath, fixture.manifest, [
+      fixture.scenario,
+    ]);
+
+    writeFileSync(
+      fixture.screenshotPath,
+      Buffer.concat([ONE_PIXEL_PNG, Buffer.from('tampered screenshot bytes')])
+    );
+
+    expect(
+      verifyEvidenceBundle(fixture.manifestPath, fixture.manifest, [fixture.scenario])
+    ).not.toBe(originalDigest);
+  });
+
+  it('requires and digest-binds WEB31 screenshots', () => {
+    const fixture = createWebEvidenceBundle({ scenarioId: 'WEB31-P0-08' });
+    const originalDigest = verifyEvidenceBundle(fixture.manifestPath, fixture.manifest, [
+      fixture.scenario,
+    ]);
+    writeFileSync(
+      fixture.screenshotPath,
+      Buffer.concat([ONE_PIXEL_PNG, Buffer.from('replacement')])
+    );
+
+    expect(
+      verifyEvidenceBundle(fixture.manifestPath, fixture.manifest, [fixture.scenario])
+    ).not.toBe(originalDigest);
+
+    const missing = createWebEvidenceBundle({
+      scenarioId: 'WEB31-P0-12',
+      includeScreenshotFact: false,
+    });
+    expect(() =>
+      verifyEvidenceBundle(missing.manifestPath, missing.manifest, [missing.scenario])
+    ).toThrow('screenshot evidence is missing');
+  });
+
+  it('rejects a missing or failing WEB31 release fact', () => {
+    const failing = createWebEvidenceBundle({
+      scenarioId: 'WEB31-P0-09',
+      factOverrides: { 'web31.terminal_orphan_processes': 1 },
+    });
+    expect(() =>
+      verifyEvidenceBundle(failing.manifestPath, failing.manifest, [failing.scenario])
+    ).toThrow('web31.terminal_orphan_processes is missing or invalid');
+  });
+
+  it('requires, digest-binds, and validates WEB32 evidence', () => {
+    const fixture = createWebEvidenceBundle({ scenarioId: 'WEB32-P0-06' });
+    const originalDigest = verifyEvidenceBundle(fixture.manifestPath, fixture.manifest, [
+      fixture.scenario,
+    ]);
+    writeFileSync(
+      fixture.screenshotPath,
+      Buffer.concat([ONE_PIXEL_PNG, Buffer.from('replacement web32 screenshot')])
+    );
+    expect(
+      verifyEvidenceBundle(fixture.manifestPath, fixture.manifest, [fixture.scenario])
+    ).not.toBe(originalDigest);
+
+    const missing = createWebEvidenceBundle({
+      scenarioId: 'WEB32-P0-12',
+      includeScreenshotFact: false,
+    });
+    expect(() =>
+      verifyEvidenceBundle(missing.manifestPath, missing.manifest, [missing.scenario])
+    ).toThrow('screenshot evidence is missing');
+
+    const failing = createWebEvidenceBundle({
+      scenarioId: 'WEB32-P0-09',
+      factOverrides: { 'web32.plan_preapproval_side_effects': 1 },
+    });
+    expect(() =>
+      verifyEvidenceBundle(failing.manifestPath, failing.manifest, [failing.scenario])
+    ).toThrow('web32.plan_preapproval_side_effects is missing or invalid');
+  });
+
+  it('rejects missing, unsafe-path, symlinked, or malformed Settings screenshots', () => {
+    const missingFact = createWebEvidenceBundle({ includeScreenshotFact: false });
+    expect(() =>
+      verifyEvidenceBundle(missingFact.manifestPath, missingFact.manifest, [missingFact.scenario])
+    ).toThrow('screenshot evidence is missing');
+
+    const missing = createWebEvidenceBundle({ writeScreenshot: false });
+    expect(() =>
+      verifyEvidenceBundle(missing.manifestPath, missing.manifest, [missing.scenario])
+    ).toThrow('screenshot evidence is missing');
+
+    const unsafe = createWebEvidenceBundle({
+      screenshotFact: '../outside.png',
+      writeScreenshot: false,
+    });
+    expect(() =>
+      verifyEvidenceBundle(unsafe.manifestPath, unsafe.manifest, [unsafe.scenario])
+    ).toThrow('path is missing or unsafe');
+
+    const symlinked = createWebEvidenceBundle({ writeScreenshot: false });
+    const symlinkTarget = join(dirname(symlinked.screenshotPath), 'symlink-target.png');
+    writeFileSync(symlinkTarget, ONE_PIXEL_PNG);
+    symlinkSync(symlinkTarget, symlinked.screenshotPath);
+    expect(() =>
+      verifyEvidenceBundle(symlinked.manifestPath, symlinked.manifest, [symlinked.scenario])
+    ).toThrow('must be a regular file');
+
+    const malformed = createWebEvidenceBundle({ screenshotBody: Buffer.alloc(40) });
+    expect(() =>
+      verifyEvidenceBundle(malformed.manifestPath, malformed.manifest, [malformed.scenario])
+    ).toThrow('not a valid bounded PNG');
   });
 
   it('keeps the dependency policy as a blocking release-gate step', () => {
@@ -480,7 +771,7 @@ exit 0
     });
 
     const currentMajor = Number(process.versions.node.split('.')[0]);
-    if (![20, 22, 24].includes(currentMajor)) {
+    if (![22, 24, 26].includes(currentMajor)) {
       expect(result.status).toBe(1);
       expect(result.stderr).toContain(`current Node ${process.versions.node} is unsupported`);
       const script = readFileSync(depHealthScript, 'utf8');
@@ -499,7 +790,7 @@ exit 0
         `dep-health fixture failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`
       );
     }
-    expect(result.stdout).toContain('DEPENDENCY_POLICY_OK node=20|22|24 openai=6');
+    expect(result.stdout).toContain('DEPENDENCY_POLICY_OK node=22|24|26 openai=6');
     expect(result.stdout).toContain('== native dependency ABI ==');
     expect(result.stdout).toContain('better-sqlite3: ok node=');
     expect(result.stdout).toContain('== dependency tree consistency ==');
@@ -536,7 +827,7 @@ exit 0
       env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH ?? ''}` },
     });
 
-    if (![20, 22, 24].includes(Number(process.versions.node.split('.')[0]))) {
+    if (![22, 24, 26].includes(Number(process.versions.node.split('.')[0]))) {
       expect(result.status).toBe(1);
       return;
     }

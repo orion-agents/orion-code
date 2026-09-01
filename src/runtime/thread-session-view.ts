@@ -1,26 +1,37 @@
-import { statSync } from 'fs';
-
-import { getProjectThreadsV2Dir } from '../product/paths';
 import type { Message } from '../services/llm';
-import { resolveSessionStorageV1 } from './legacy-thread-materializer';
+import { realpathSync } from 'fs';
+import { resolve } from 'path';
+import {
+  openSessionCheckpointStorageV1,
+  openSessionStorageV1,
+} from './legacy-thread-materializer';
 import type { RuntimeEventEnvelopeV1 } from './protocol/runtime-protocol-v1';
 import {
   normalizeSessionModelHistoryV1,
   type SessionHistoryRecoveryDiagnosticV1,
   type SessionHistoryResolvedSourceV1,
 } from './session-history-recovery';
-import { ThreadEventStore } from './thread-event-store';
-import type { ItemProjectionV1 } from './thread-projection';
+import {
+  ThreadEventStore,
+  type ThreadCheckpointHeadV1,
+  type ThreadReadModelHeadV1,
+} from './thread-event-store';
+import {
+  buildThreadSessionIndexV1,
+  loadThreadSessionIndexedPageV1,
+  loadThreadSessionIndexManifestV1,
+  projectTranscriptMessages,
+  ThreadSessionIndexError,
+  type ThreadSessionIndexHeadV1,
+  type ThreadSessionIndexedPageV1,
+  type ThreadSessionTranscriptMessageV1,
+  type ThreadSessionTurnCommitV1,
+} from './thread-session-index';
 
-export interface ThreadSessionTranscriptMessageV1 {
-  readonly role: Message['role'];
-  readonly content: string;
-  readonly timestamp: number;
-  readonly modelVisibleContent?: string;
-  readonly toolCallId?: string;
-  readonly tool_calls?: NonNullable<Message['tool_calls']>;
-  readonly appliedSkills?: readonly string[];
-}
+export type {
+  ThreadSessionTranscriptMessageV1,
+  ThreadSessionTurnCommitV1,
+} from './thread-session-index';
 
 /** Metadata/transcript projection that never needs to decode model history. */
 export interface ThreadSessionSummaryV1 {
@@ -34,6 +45,11 @@ export interface ThreadSessionSummaryV1 {
   readonly historySizeBytes: number;
   readonly messageCount: number;
   readonly transcriptMessages: readonly ThreadSessionTranscriptMessageV1[];
+  readonly readModel: {
+    readonly cutoverGeneration: number;
+    readonly lastRecordHash: string | null;
+    readonly log: ThreadReadModelHeadV1['log'];
+  };
 }
 
 /** Read-only compatibility view over the authoritative v2 Thread facts. */
@@ -41,6 +57,57 @@ export interface ThreadSessionViewV1 extends ThreadSessionSummaryV1 {
   readonly modelHistory: readonly Message[];
   readonly modelHistorySource: SessionHistoryResolvedSourceV1;
   readonly diagnostics: readonly SessionHistoryRecoveryDiagnosticV1[];
+  readonly latestTurnCommit?: ThreadSessionTurnCommitV1;
+  readonly latestPlanTurnCommit?: ThreadSessionTurnCommitV1;
+}
+
+/**
+ * A verified, process-local hand-off from Session restore into the sole
+ * OrionRuntime owner. The mutable Store is intentionally not serialized or
+ * recursively frozen; the outer receipt binds it to the canonical project,
+ * Session, Thread and projection edge that were validated before the previous
+ * Runtime is torn down.
+ */
+export interface ThreadSessionRuntimeActivationV1 {
+  readonly version: 1;
+  readonly projectPath: string;
+  readonly sessionId: string;
+  readonly threadId: string;
+  readonly cursor: number;
+  readonly projectionDigest: string;
+  readonly cutoverGeneration: number;
+  readonly store: ThreadEventStore;
+  /** Cursor-bound view captured with the same Store; Web may reuse it once for baseline. */
+  readonly view?: ThreadSessionViewV1;
+}
+
+export interface OpenThreadSessionViewV1 {
+  readonly view: ThreadSessionViewV1;
+  readonly runtimeActivation: ThreadSessionRuntimeActivationV1;
+}
+
+export interface ThreadSessionSnapshotPageV1 {
+  readonly version: 1;
+  readonly sessionId: string;
+  readonly threadId: string;
+  readonly cursor: number;
+  readonly projectionDigest: string;
+  readonly startedAt: number;
+  readonly updatedAt: number;
+  readonly historySizeBytes: number;
+  readonly messageCount: number;
+  readonly transcript: {
+    readonly items: readonly ThreadSessionTranscriptMessageV1[];
+    readonly offset: number;
+    readonly nextCursor: string | null;
+  };
+  readonly readModel: {
+    readonly cutoverGeneration: number;
+    readonly lastRecordHash: string | null;
+    readonly log: ThreadReadModelHeadV1['log'];
+  };
+  readonly latestTurnCommit?: ThreadSessionTurnCommitV1;
+  readonly latestPlanTurnCommit?: ThreadSessionTurnCommitV1;
 }
 
 export class ThreadSessionViewError extends Error {
@@ -63,6 +130,14 @@ export function loadThreadSessionViewV1(
   projectPath: string,
   sessionId: string
 ): ThreadSessionViewV1 | undefined {
+  return openThreadSessionViewV1(projectPath, sessionId)?.view;
+}
+
+/** Capture the restore view and retain its already-verified Store for Runtime activation. */
+export function openThreadSessionViewV1(
+  projectPath: string,
+  sessionId: string
+): OpenThreadSessionViewV1 | undefined {
   const captured = captureThreadSessionV1(projectPath, sessionId, true);
   if (!captured) return undefined;
 
@@ -94,11 +169,43 @@ export function loadThreadSessionViewV1(
     recovery = normalizeSessionModelHistoryV1(transcriptHistory, 'transcript');
   }
 
-  return deepFreeze({
+  const view = deepFreeze({
     ...captured.summary,
     modelHistory: recovery.messages,
     modelHistorySource: recovery.source,
     diagnostics: recovery.diagnostics,
+    ...(captured.latestTurnCommit ? { latestTurnCommit: captured.latestTurnCommit } : {}),
+    ...(captured.latestPlanTurnCommit
+      ? { latestPlanTurnCommit: captured.latestPlanTurnCommit }
+      : {}),
+  });
+  return Object.freeze({
+    view,
+    runtimeActivation: createRuntimeActivation(projectPath, sessionId, captured, view),
+  });
+}
+
+/**
+ * Open only the verified Runtime hand-off. This is used after an atomic legacy
+ * cutover, where the provider history was already captured from the legacy
+ * source and rebuilding the complete transcript view would be duplicate work.
+ */
+export function openThreadSessionRuntimeActivationV1(
+  projectPath: string,
+  sessionId: string
+): ThreadSessionRuntimeActivationV1 | undefined {
+  const opened = openSessionStorageV1(projectPath, sessionId);
+  if (opened.resolution.kind === 'legacy' || !('store' in opened)) return undefined;
+  const projection = opened.store.loadProjection();
+  return Object.freeze({
+    version: 1,
+    projectPath: realpathSync(resolve(projectPath)),
+    sessionId,
+    threadId: opened.resolution.threadId,
+    cursor: projection.cursor,
+    projectionDigest: projection.digest,
+    cutoverGeneration: opened.resolution.generation,
+    store: opened.store,
   });
 }
 
@@ -110,6 +217,69 @@ export function loadThreadSessionSummaryV1(
   return captureThreadSessionV1(projectPath, sessionId, false)?.summary;
 }
 
+/**
+ * Load one revision-bound transcript page without materializing the complete
+ * projection/history. A missing or stale derived index is rebuilt once from
+ * the authoritative Thread and then reused by later processes.
+ */
+export function loadThreadSessionSnapshotPageV1(
+  projectPath: string,
+  sessionId: string,
+  cursor?: string,
+  pageSize = 50
+): ThreadSessionSnapshotPageV1 | undefined {
+  const checkpoint = openSessionCheckpointStorageV1(projectPath, sessionId);
+  if (checkpoint) {
+    const head = checkpointIndexHead(checkpoint.head);
+    try {
+      const page = loadThreadSessionIndexedPageV1({
+        rootDir: checkpoint.store.rootDir,
+        threadId: checkpoint.store.threadId,
+        head,
+        cursor,
+        pageSize,
+      });
+      if (page) {
+        return snapshotPageFromIndex(sessionId, checkpoint.resolution.generation, page);
+      }
+    } catch (error) {
+      if (!(error instanceof ThreadSessionIndexError) || error.code !== 'ORION_THREAD_SESSION_INDEX_CORRUPT') {
+        throw error;
+      }
+    }
+  }
+
+  const opened = openSessionStorageV1(projectPath, sessionId);
+  if (opened.resolution.kind === 'legacy' || !('store' in opened)) return undefined;
+  const captured = captureStableThreadView(
+    opened.store,
+    opened.resolution.cursor,
+    opened.resolution.projectionDigest,
+    false
+  );
+  const head = sessionIndexHead(captured.readModelHead);
+  buildThreadSessionIndexV1({
+    rootDir: opened.store.rootDir,
+    threadId: opened.store.threadId,
+    projection: captured.projection,
+    events: captured.events,
+    head,
+  });
+  const page = loadThreadSessionIndexedPageV1({
+    rootDir: opened.store.rootDir,
+    threadId: opened.store.threadId,
+    head,
+    cursor,
+    pageSize,
+  });
+  if (!page) {
+    throw new ThreadSessionViewError(
+      `Thread ${opened.store.threadId} transcript index was not published.`
+    );
+  }
+  return snapshotPageFromIndex(sessionId, opened.resolution.generation, page);
+}
+
 function captureThreadSessionV1(
   projectPath: string,
   sessionId: string,
@@ -118,15 +288,18 @@ function captureThreadSessionV1(
   | {
       readonly summary: ThreadSessionSummaryV1;
       readonly durableHistory: readonly unknown[] | undefined;
+      readonly latestTurnCommit?: ThreadSessionTurnCommitV1;
+      readonly latestPlanTurnCommit?: ThreadSessionTurnCommitV1;
+      readonly store: ThreadEventStore;
+      readonly cutoverGeneration: number;
     }
   | undefined {
-  const resolution = resolveSessionStorageV1(projectPath, sessionId);
-  if (resolution.kind === 'legacy') return undefined;
+  const opened = openSessionStorageV1(projectPath, sessionId);
+  const { resolution } = opened;
+  if (resolution.kind === 'legacy' || !('store' in opened)) return undefined;
 
-  const store = new ThreadEventStore(getProjectThreadsV2Dir(projectPath), resolution.threadId, {
-    maxReplayEvents: Math.max(10_000, resolution.cursor),
-  });
-  const { projection, events, durableHistory } = captureStableThreadView(
+  const { store } = opened;
+  const { projection, events, durableHistory, readModelHead } = captureStableThreadView(
     store,
     resolution.cursor,
     resolution.projectionDigest,
@@ -135,15 +308,28 @@ function captureThreadSessionV1(
   const transcriptMessages = projectTranscriptMessages(projection.items, events);
   const startedAt = events[0]?.timestamp ?? 0;
   const updatedAt = events.at(-1)?.timestamp ?? startedAt;
-  let historySizeBytes: number;
-  try {
-    historySizeBytes = statSync(store.logPath).size;
-  } catch (error) {
-    throw new ThreadSessionViewError(
-      `Thread ${resolution.threadId} event log size is unavailable: ${errorMessage(error)}`
-    );
+  const turnCommits = Object.values(projection.turns)
+    .flatMap(turn => (turn.commit ? [{ seq: turn.commit.seq, receipt: turn.commit.receipt }] : []))
+    .sort((left, right) => left.seq - right.seq);
+  const latestTurnCommit = turnCommits.at(-1);
+  const latestPlanTurnCommit = [...turnCommits]
+    .reverse()
+    .find(commit => turnCommitContainsPlan(commit.receipt));
+  const indexHead = sessionIndexHead(readModelHead);
+  if (!loadThreadSessionIndexManifestV1(store.rootDir, store.threadId, indexHead)) {
+    try {
+      buildThreadSessionIndexV1({
+        rootDir: store.rootDir,
+        threadId: store.threadId,
+        projection,
+        events,
+        head: indexHead,
+      });
+    } catch {
+      // The Session index is derived. Failing to publish it must not make an
+      // otherwise verified authoritative Thread unreadable.
+    }
   }
-
   return {
     summary: deepFreeze({
       version: 1,
@@ -153,12 +339,106 @@ function captureThreadSessionV1(
       projectionDigest: projection.digest,
       startedAt,
       updatedAt,
-      historySizeBytes,
+      historySizeBytes: readModelHead.log.bytes,
       messageCount: transcriptMessages.length,
       transcriptMessages,
+      readModel: {
+        cutoverGeneration: resolution.generation,
+        lastRecordHash: readModelHead.lastRecordHash,
+        log: readModelHead.log,
+      },
     }),
     durableHistory,
+    store,
+    cutoverGeneration: resolution.generation,
+    ...(latestTurnCommit ? { latestTurnCommit: Object.freeze(latestTurnCommit) } : {}),
+    ...(latestPlanTurnCommit ? { latestPlanTurnCommit: Object.freeze(latestPlanTurnCommit) } : {}),
   };
+}
+
+function createRuntimeActivation(
+  projectPath: string,
+  sessionId: string,
+  captured: {
+    readonly summary: ThreadSessionSummaryV1;
+    readonly store: ThreadEventStore;
+    readonly cutoverGeneration: number;
+  },
+  view: ThreadSessionViewV1
+): ThreadSessionRuntimeActivationV1 {
+  return Object.freeze({
+    version: 1,
+    projectPath: realpathSync(resolve(projectPath)),
+    sessionId,
+    threadId: captured.summary.threadId,
+    cursor: captured.summary.cursor,
+    projectionDigest: captured.summary.projectionDigest,
+    cutoverGeneration: captured.cutoverGeneration,
+    store: captured.store,
+    view,
+  });
+}
+
+function turnCommitContainsPlan(receipt: string): boolean {
+  try {
+    const parsed = JSON.parse(receipt) as Record<string, unknown>;
+    return typeof parsed.planReceipt === 'string' && parsed.planReceipt.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function sessionIndexHead(readModelHead: ThreadReadModelHeadV1): ThreadSessionIndexHeadV1 {
+  return {
+    cursor: readModelHead.projection.cursor,
+    projectionDigest: readModelHead.projection.digest,
+    lastEventTimestamp: readModelHead.lastEventTimestamp,
+    lastRecordHash: readModelHead.lastRecordHash,
+    log: readModelHead.log,
+  };
+}
+
+function checkpointIndexHead(head: ThreadCheckpointHeadV1): ThreadSessionIndexHeadV1 {
+  return {
+    cursor: head.cursor,
+    projectionDigest: head.projectionDigest,
+    lastEventTimestamp: head.lastEventTimestamp,
+    lastRecordHash: head.lastRecordHash,
+    log: head.log,
+  };
+}
+
+function snapshotPageFromIndex(
+  sessionId: string,
+  cutoverGeneration: number,
+  page: ThreadSessionIndexedPageV1
+): ThreadSessionSnapshotPageV1 {
+  const manifest = page.manifest;
+  return deepFreeze({
+    version: 1,
+    sessionId,
+    threadId: manifest.threadId,
+    cursor: manifest.cursor,
+    projectionDigest: manifest.projectionDigest,
+    startedAt: manifest.startedAt,
+    updatedAt: manifest.updatedAt,
+    historySizeBytes: manifest.log.bytes,
+    messageCount: manifest.messageCount,
+    transcript: {
+      items: page.items,
+      offset: page.offset,
+      nextCursor: page.nextCursor,
+    },
+    readModel: {
+      cutoverGeneration,
+      lastRecordHash: manifest.lastRecordHash,
+      log: manifest.log,
+    },
+    ...(manifest.latestTurnCommit ? { latestTurnCommit: manifest.latestTurnCommit } : {}),
+    ...(manifest.latestPlanTurnCommit
+      ? { latestPlanTurnCommit: manifest.latestPlanTurnCommit }
+      : {}),
+  });
 }
 
 function captureStableThreadView(
@@ -170,6 +450,7 @@ function captureStableThreadView(
   readonly projection: ReturnType<ThreadEventStore['loadProjection']>;
   readonly events: readonly RuntimeEventEnvelopeV1[];
   readonly durableHistory: readonly unknown[] | undefined;
+  readonly readModelHead: ThreadReadModelHeadV1;
 } {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const projection = store.loadProjection();
@@ -187,8 +468,12 @@ function captureStableThreadView(
     const durableHistory = includeDurableHistory
       ? store.loadAuthoritativeModelHistory()
       : undefined;
-    if (store.getCursor() === projection.cursor) {
-      return { projection, events, durableHistory };
+    const readModelHead = store.captureReadModelHead();
+    if (
+      readModelHead.projection.cursor === projection.cursor &&
+      readModelHead.projection.digest === projection.digest
+    ) {
+      return { projection, events, durableHistory, readModelHead };
     }
   }
   throw new ThreadSessionViewError(
@@ -217,64 +502,6 @@ function replayAll(store: ThreadEventStore, cursor: number): readonly RuntimeEve
     );
   }
   return events;
-}
-
-function projectTranscriptMessages(
-  items: Readonly<Record<string, ItemProjectionV1>>,
-  events: readonly RuntimeEventEnvelopeV1[]
-): readonly ThreadSessionTranscriptMessageV1[] {
-  const timestamps = new Map<string, number>();
-  for (const event of events) {
-    if (!event.itemId || !isItemTerminalEvent(event)) continue;
-    timestamps.set(event.itemId, event.timestamp);
-  }
-
-  return Object.values(items)
-    .filter(
-      item => item.kind === 'message' && item.status !== 'started' && isMessageRole(item.role)
-    )
-    .sort((left, right) => left.startedSeq - right.startedSeq)
-    .map(item => {
-      const legacy = parseLegacyTranscriptReceipt(item.receipt);
-      if (legacy) return legacy;
-      return {
-        role: item.role as Message['role'],
-        content: item.content ?? item.summary ?? item.error ?? '',
-        timestamp: timestamps.get(item.itemId) ?? 0,
-      };
-    });
-}
-
-function parseLegacyTranscriptReceipt(
-  receipt: string | undefined
-): ThreadSessionTranscriptMessageV1 | undefined {
-  if (!receipt) return undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(receipt);
-  } catch {
-    return undefined;
-  }
-  if (!isRecord(parsed) || !isRecord(parsed.legacyRecord)) return undefined;
-  const record = parsed.legacyRecord;
-  if (!isMessageRole(record.role) || typeof record.content !== 'string') return undefined;
-  if (!Number.isFinite(record.timestamp)) return undefined;
-
-  const toolCalls = parseToolCalls(record.tool_calls);
-  const appliedSkills = Array.isArray(record.appliedSkills)
-    ? record.appliedSkills.filter((value): value is string => typeof value === 'string')
-    : undefined;
-  return {
-    role: record.role,
-    content: record.content,
-    timestamp: record.timestamp as number,
-    ...(typeof record.modelVisibleContent === 'string'
-      ? { modelVisibleContent: record.modelVisibleContent }
-      : {}),
-    ...(typeof record.toolCallId === 'string' ? { toolCallId: record.toolCallId } : {}),
-    ...(toolCalls ? { tool_calls: toolCalls } : {}),
-    ...(appliedSkills ? { appliedSkills } : {}),
-  };
 }
 
 function parseModelHistory(history: readonly unknown[]): Message[] {
@@ -331,25 +558,12 @@ function parseToolCalls(value: unknown): NonNullable<Message['tool_calls']> | un
   return result;
 }
 
-function isItemTerminalEvent(event: RuntimeEventEnvelopeV1): boolean {
-  return (
-    event.payload.type === 'item.completed' ||
-    event.payload.type === 'item.failed' ||
-    event.payload.type === 'item.interrupted' ||
-    event.payload.type === 'item.indeterminate'
-  );
-}
-
 function isMessageRole(value: unknown): value is Message['role'] {
   return value === 'system' || value === 'user' || value === 'assistant' || value === 'tool';
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function deepFreeze<T>(value: T): T {

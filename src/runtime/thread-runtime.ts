@@ -402,6 +402,14 @@ export class ThreadRuntimeV1 {
     this.consumers.delete(consumerId);
   }
 
+  /** Observe committed durable facts without acquiring ownership of the Thread lifecycle. */
+  observeCommittedEvents(
+    listener: (events: readonly RuntimeEventEnvelopeV1[]) => void
+  ): () => void {
+    if (this.closed) throw new Error('Closed Thread runtime cannot be observed');
+    return this.store.subscribeCommitted(listener);
+  }
+
   replay(cursor = 0, limit?: number) {
     return this.store.replay(cursor, limit);
   }
@@ -419,9 +427,7 @@ export class ThreadRuntimeV1 {
     await new Promise<void>(resolve => this.idleWaiters.add(resolve));
   }
 
-  async waitForTurnTerminal(
-    turnId: string
-  ): Promise<'completed' | 'failed' | 'interrupted'> {
+  async waitForTurnTerminal(turnId: string): Promise<'completed' | 'failed' | 'interrupted'> {
     const current = terminalStatus(this.store.loadProjection().turns[turnId]?.status);
     if (current) return current;
     return new Promise(resolve => {
@@ -797,10 +803,7 @@ export class ThreadRuntimeV1 {
     this.goalControlTurns.set(turnId, request);
   }
 
-  private rejectQueuedGoalControl(
-    queueId: string,
-    reason: 'deadline_expired' | 'shutdown'
-  ): void {
+  private rejectQueuedGoalControl(queueId: string, reason: 'deadline_expired' | 'shutdown'): void {
     const request = this.queuedGoalControls.get(queueId);
     this.queuedGoalControls.delete(queueId);
     request?.onRejected?.(reason);

@@ -1,5 +1,8 @@
 import type { AgentInputKind, AgentTurnRequest } from './goals/types';
 import type { GoalRuntimeControlResultV2, GoalRuntimeControlV2 } from './goal-runtime-coordinator';
+import type { ThreadSessionRuntimeActivationV1 } from './thread-session-view';
+import type { PlanReviewActionV1, PlanReviewResolutionReceiptV1 } from './plan-review';
+import type { PlanReviewProjectionV1 } from './thread-projection';
 
 /** Renderer-neutral options for one admitted runtime request. */
 export interface AgentRuntimeRunInputOptionsV1 {
@@ -25,9 +28,15 @@ export interface AgentRuntimeRunnerV1 {
   runInput(input: string, options?: AgentRuntimeRunInputOptionsV1): Promise<void>;
   runRequest?(request: AgentTurnRequest, options?: AgentRuntimeRunInputOptionsV1): Promise<void>;
   /** Rebind the selected Session and replay its durable Thread facts without starting a turn. */
-  restoreSession?(): Promise<void>;
+  restoreSession?(activation?: ThreadSessionRuntimeActivationV1): Promise<void>;
   controlGoal?(control: GoalRuntimeControlV2): Promise<GoalRuntimeControlResultV2>;
   compact?(input?: AgentRuntimeCompactInputV1): Promise<AgentRuntimeCompactResultV1>;
+  planReviewState?(): Promise<PlanReviewProjectionV1 | undefined>;
+  reviewPlan?(input: {
+    readonly planDigest: string;
+    readonly action: PlanReviewActionV1;
+    readonly feedback?: string;
+  }): Promise<PlanReviewResolutionReceiptV1>;
   interrupt?(reason?: string): void;
   close?(reason?: string): void | Promise<void>;
 }

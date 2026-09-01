@@ -1,5 +1,6 @@
 /** Handler implementations for the model-command-handlers boundary. */
 
+import { randomUUID } from 'crypto';
 import chalk from 'chalk';
 import type { CommandContext, CommandResult } from './types';
 import {
@@ -18,8 +19,8 @@ import {
   resolveModelAlias,
 } from '../services/model-catalog';
 import { lookupProfile, type ResolvedModelProfile } from '../services/model-registry';
-import { updateGlobalConfig } from '../services/global-config';
-import { getProjectConfig, loadGlobalConfig, saveProjectConfig } from '../services/global-config';
+import { getProjectConfig, loadGlobalConfig } from '../services/global-config';
+import type { SettingsOperationV1 } from '../services/settings-coordinator';
 import {
   isEffortPreference,
   resolveProfileEffort,
@@ -30,6 +31,7 @@ import {
   commitSessionCompactCheckpoint,
   prepareSessionCompactSourceReceipt,
   appendSessionTraceEvent,
+  updateSessionModel,
   updateSessionEffort,
 } from '../services/session-storage';
 import { estimateMessagesTokens } from '../utils/token-estimate';
@@ -51,6 +53,22 @@ const DIM = chalk.dim;
 const ERROR = chalk.red;
 
 const WARN = chalk.yellow;
+
+async function updateDurableSettings(
+  ctx: CommandContext,
+  command: string,
+  operations: readonly SettingsOperationV1[]
+) {
+  if (!ctx.describeSettings || !ctx.updateSettings) {
+    throw new Error('The product Settings coordinator is unavailable.');
+  }
+  const before = ctx.describeSettings();
+  return ctx.updateSettings({
+    requestId: `slash:${command}:${randomUUID()}`,
+    expectedRevision: before.revision,
+    operations,
+  });
+}
 
 const SUCCESS = chalk.green;
 
@@ -358,6 +376,38 @@ async function handleModel(ctx: CommandContext, args: string): Promise<CommandRe
     ...(lines.length > 0 ? { output: lines.join('\n') } : {}),
   });
 
+  const modelTokens = args.trim().split(/\s+/u).filter(Boolean);
+  const defaultFlagIndex = modelTokens.findIndex(token => token.toLowerCase() === '--default');
+  if (defaultFlagIndex >= 0) {
+    const selectorTokens = modelTokens.filter((_, index) => index !== defaultFlagIndex);
+    if (selectorTokens.length > 1) {
+      return { success: false, error: 'Usage: /model [model] --default.' };
+    }
+    const selector = selectorTokens[0] ?? ctx.store.getSnapshot().currentModel;
+    const profile = resolveModelFromRegistry(ctx.config, selector);
+    if (ctx.config.modelRegistry && !profile) {
+      return {
+        success: false,
+        error: `Model ${selector} is not enabled in the configured registry.`,
+      };
+    }
+    const defaultModel = profile?.id ?? resolveModelAlias(selector);
+    try {
+      await updateDurableSettings(ctx, 'model-default', [
+        { op: 'set', key: 'defaults.model', value: defaultModel },
+      ]);
+    } catch (error) {
+      return {
+        success: false,
+        error: `Default model was not changed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+    return {
+      success: true,
+      output: `Default model changed to ${defaultModel}. Existing sessions keep their current model.`,
+    };
+  }
+
   // 显示当前模型
   if (trimmedArgs === '?' || trimmedArgs === 'info') {
     write();
@@ -419,10 +469,33 @@ async function handleModel(ctx: CommandContext, args: string): Promise<CommandRe
     return { success: false, error: 'LLM not initialized. Configure a provider first.' };
   }
 
+  if (ctx.sessionComposerControls) {
+    try {
+      const receipt = await ctx.sessionComposerControls.selectModel({ modelId: args.trim() });
+      const selected = ctx.sessionComposerControls.describe().model;
+      write(SUCCESS(`✔ Model changed to ${BRAND(selected.modelId)}`));
+      write(
+        DIM(
+          `  Context window ${formatTokenCount(selected.contextWindow)} tokens (${selected.providerLabel ?? 'configured provider'})`
+        )
+      );
+      if (receipt.compacted) write(DIM('  Context compacted before switching models.'));
+      write();
+      return result(true);
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
   // 解析别名
   const registryProfile = resolveModelFromRegistry(ctx.config, args);
   const resolvedModel = registryProfile ? registryProfile.model : resolveModelAlias(args);
   const resolvedProfileId = registryProfile ? registryProfile.id : resolvedModel;
+  const activeSession = ctx.getSession?.() ?? ctx.ensureSession?.();
+  const previousCoordinatorModel = ctx.modelCoordinator?.getCurrent()?.id;
 
   if (registryProfile && ctx.modelCoordinator) {
     const switchResult = await ctx.modelCoordinator.switchToWithCompactPreflight(
@@ -433,6 +506,34 @@ async function handleModel(ctx: CommandContext, args: string): Promise<CommandRe
       return { success: false, error: switchResult.error ?? 'Model switch failed.' };
     }
   }
+
+  if (activeSession) {
+    try {
+      const persisted = updateSessionModel(activeSession.id, resolvedProfileId);
+      if (!persisted) {
+        if (previousCoordinatorModel) ctx.modelCoordinator?.initModel(previousCoordinatorModel);
+        return {
+          success: false,
+          error: `Session ${activeSession.id} is no longer available; model was not changed.`,
+        };
+      }
+      activeSession.model = persisted.model;
+      activeSession.updatedAt = persisted.updatedAt;
+      activeSession.updatedAtIso = persisted.updatedAtIso;
+    } catch (error) {
+      if (previousCoordinatorModel) ctx.modelCoordinator?.initModel(previousCoordinatorModel);
+      return {
+        success: false,
+        error: `Session model was not changed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+
+  const effort = resolveProfileEffort(registryProfile, {
+    session: activeSession?.effortPreference,
+    project: getProjectConfig(ctx.cwd).defaultEffort,
+    global: loadGlobalConfig().defaultEffort ?? ctx.config.defaultEffort,
+  });
 
   if (registryProfile) {
     const provider = ctx.config.modelRegistry?.providers.get(registryProfile.provider);
@@ -445,7 +546,7 @@ async function handleModel(ctx: CommandContext, args: string): Promise<CommandRe
     const provider = ctx.config.modelRegistry?.providers.get(registryProfile.provider);
     if (provider && typeof ctx.llm.setEffortContext === 'function') {
       ctx.llm.setEffortContext({
-        preference: ctx.store.getSnapshot().effortPreference,
+        preference: effort.requested,
         protocol: provider.protocol,
         capability: registryProfile.reasoningCapability,
       });
@@ -453,6 +554,7 @@ async function handleModel(ctx: CommandContext, args: string): Promise<CommandRe
   }
   getCommandAutoCompact(ctx, resolvedModel);
   ctx.store.setState({ currentModel: resolvedProfileId });
+  ctx.store.setEffort(effort.requested, effort);
   write(SUCCESS(`✔ Model changed to ${BRAND(resolvedProfileId)}`));
   const contextInfo = registryProfile
     ? {
@@ -528,7 +630,7 @@ function handleModels(ctx: CommandContext, _args: string): CommandResult {
   return { success: true, output: lines.join('\n') };
 }
 
-function handlePermissions(ctx: CommandContext, args: string): CommandResult {
+async function handlePermissions(ctx: CommandContext, args: string): Promise<CommandResult> {
   const value = args.trim().toLowerCase();
   const snapshot = ctx.store.getSnapshot();
   if (!value || value === '?' || value === 'help' || value === 'show' || value === 'audit') {
@@ -551,16 +653,44 @@ function handlePermissions(ctx: CommandContext, args: string): CommandResult {
     return { success: true, output: 'Tool edit policy changed to allow-edits.' };
   }
 
-  if (!['allow', 'ask', 'deny'].includes(value)) {
+  if (!['allow', 'ask', 'deny', 'inherit', 'default'].includes(value)) {
     return {
       success: false,
-      error: `Unknown tool policy: ${value}. Use one of: show, ask, allow, deny, allow-edits, audit.`,
+      error: `Unknown tool policy: ${value}. Use one of: show, ask, allow, deny, inherit, allow-edits, audit.`,
     };
   }
 
-  const toolConfirmation = value as 'allow' | 'ask' | 'deny';
-  updateGlobalConfig({ toolConfirmation });
-  ctx.config.toolConfirmation = toolConfirmation;
+  const toolConfirmation = ['inherit', 'default'].includes(value)
+    ? null
+    : (value as 'allow' | 'ask' | 'deny');
+  if (ctx.sessionComposerControls) {
+    try {
+      const receipt = await ctx.sessionComposerControls.setPermissionOverride(toolConfirmation);
+      if (snapshot.permissionMode === 'acceptEdits') ctx.store.setPermissionMode('default');
+      return {
+        success: true,
+        output: `Session tool confirmation changed to ${receipt.current.effective} (${receipt.current.source}).`,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: `Tool confirmation was not changed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+  if (toolConfirmation === null) {
+    return { success: false, error: 'Session permission inheritance is unavailable.' };
+  }
+  try {
+    await updateDurableSettings(ctx, 'permissions', [
+      { op: 'set', key: 'permissions.toolConfirmation', value: toolConfirmation },
+    ]);
+  } catch (error) {
+    return {
+      success: false,
+      error: `Tool confirmation was not changed: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
   if (snapshot.permissionMode === 'acceptEdits') ctx.store.setPermissionMode('default');
   return { success: true, output: `Tool confirmation changed to ${toolConfirmation}.` };
 }
@@ -591,7 +721,7 @@ function parseEffortArgs(
   return { preference: value, scope };
 }
 
-function handleEffort(ctx: CommandContext, args: string): CommandResult {
+async function handleEffort(ctx: CommandContext, args: string): Promise<CommandResult> {
   const parsed = parseEffortArgs(args);
   if ('error' in parsed) return { success: false, error: parsed.error };
 
@@ -605,6 +735,7 @@ function handleEffort(ctx: CommandContext, args: string): CommandResult {
     project: projectConfig.defaultEffort,
     global: globalConfig.defaultEffort ?? ctx.config.defaultEffort,
   });
+  const previous = ctx.store.getSnapshot().effortPreference;
 
   if (parsed.preference === 'status') {
     return {
@@ -649,26 +780,32 @@ function handleEffort(ctx: CommandContext, args: string): CommandResult {
 
   try {
     if (parsed.scope === 'session') {
-      const activeSession = session ?? ctx.ensureSession?.();
-      if (!activeSession) {
-        return { success: false, error: 'Cannot persist effort without an active session.' };
+      if (ctx.sessionComposerControls) {
+        await ctx.sessionComposerControls.setEffort(parsed.preference);
+      } else {
+        const activeSession = session ?? ctx.ensureSession?.();
+        if (!activeSession) {
+          return { success: false, error: 'Cannot persist effort without an active session.' };
+        }
+        const persisted = updateSessionEffort(activeSession.id, parsed.preference);
+        if (!persisted) {
+          return { success: false, error: `Session ${activeSession.id} is no longer available.` };
+        }
+        if (persisted.effortPreference === undefined) delete activeSession.effortPreference;
+        else activeSession.effortPreference = persisted.effortPreference;
       }
-      const persisted = updateSessionEffort(activeSession.id, parsed.preference);
-      if (!persisted) {
-        return { success: false, error: `Session ${activeSession.id} is no longer available.` };
-      }
-      if (persisted.effortPreference === undefined) delete activeSession.effortPreference;
-      else activeSession.effortPreference = persisted.effortPreference;
-    } else if (parsed.scope === 'project') {
-      saveProjectConfig(ctx.cwd, {
-        ...projectConfig,
-        defaultEffort: parsed.preference === 'auto' ? undefined : parsed.preference,
-      });
     } else {
-      updateGlobalConfig({
-        defaultEffort: parsed.preference === 'auto' ? undefined : parsed.preference,
-      });
-      ctx.config.defaultEffort = parsed.preference === 'auto' ? undefined : parsed.preference;
+      const key =
+        parsed.scope === 'project'
+          ? ('defaults.effort' as const)
+          : ('defaults.globalEffort' as const);
+      await updateDurableSettings(
+        ctx,
+        `effort-${parsed.scope}`,
+        parsed.preference === 'auto'
+          ? [{ op: 'unset', key }]
+          : [{ op: 'set', key, value: parsed.preference }]
+      );
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -678,22 +815,21 @@ function handleEffort(ctx: CommandContext, args: string): CommandResult {
     };
   }
 
-  const effective = resolveProfileEffort(profile, {
-    session: parsed.scope === 'session' ? parsed.preference : session?.effortPreference,
-    project: parsed.scope === 'project' ? parsed.preference : projectConfig.defaultEffort,
-    global:
-      parsed.scope === 'global'
-        ? parsed.preference
-        : (globalConfig.defaultEffort ?? ctx.config.defaultEffort),
-  });
-  const previous = ctx.store.getSnapshot().effortPreference;
-  ctx.store.setEffort(parsed.preference, effective);
-  if (provider && typeof ctx.llm?.setEffortContext === 'function') {
-    ctx.llm?.setEffortContext({
-      preference: parsed.preference,
-      protocol: provider.protocol,
-      capability: profile?.reasoningCapability,
+  let effective = ctx.store.getSnapshot().resolvedEffort ?? current;
+  if (parsed.scope === 'session' && !ctx.sessionComposerControls) {
+    effective = resolveProfileEffort(profile, {
+      session: parsed.preference,
+      project: projectConfig.defaultEffort,
+      global: globalConfig.defaultEffort ?? ctx.config.defaultEffort,
     });
+    ctx.store.setEffort(effective.requested, effective);
+    if (provider && typeof ctx.llm?.setEffortContext === 'function') {
+      ctx.llm.setEffortContext({
+        preference: effective.requested,
+        protocol: provider.protocol,
+        capability: profile?.reasoningCapability,
+      });
+    }
   }
   return {
     success: true,

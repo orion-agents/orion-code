@@ -14,6 +14,7 @@ import {
   ARTIFACT_THRESHOLD,
   cleanupArtifacts,
   sanitizeArtifactToolName,
+  TOOL_ARTIFACT_WEB_SAFE_SUFFIX,
 } from '../src/core/tool-artifacts';
 import { getProjectArtifactsDir } from '../src/services/config-dir';
 
@@ -36,7 +37,8 @@ describe('tool-artifacts', () => {
   });
 
   test('storeArtifact creates a file and returns reference', () => {
-    const output = 'Hello, artifact!';
+    const marker = 'OPAQUE_ARTIFACT_SECRET';
+    const output = `Hello, token=${marker}`;
     const artifact = storeArtifact(testProject, 'read_file', output, Buffer.byteLength(output));
 
     expect(artifact).not.toBeNull();
@@ -44,6 +46,9 @@ describe('tool-artifacts', () => {
     expect(artifact!.outputBytes).toBe(Buffer.byteLength(output));
     expect(artifact!.truncated).toBe(false);
     expect(fs.existsSync(artifact!.path)).toBe(true);
+    const safePath = `${artifact!.path}${TOOL_ARTIFACT_WEB_SAFE_SUFFIX}`;
+    expect(fs.existsSync(safePath)).toBe(true);
+    expect(fs.readFileSync(safePath, 'utf8')).not.toContain(marker);
     expect(artifact!.path.startsWith(getProjectArtifactsDir(testProject))).toBe(true);
   });
 
@@ -154,6 +159,7 @@ describe('tool-artifacts', () => {
     cleanupArtifacts(testProject);
 
     expect(fs.existsSync(artifact!.path)).toBe(false);
+    expect(fs.existsSync(`${artifact!.path}${TOOL_ARTIFACT_WEB_SAFE_SUFFIX}`)).toBe(false);
   });
 
   test('cleanupArtifacts keeps recent files', () => {

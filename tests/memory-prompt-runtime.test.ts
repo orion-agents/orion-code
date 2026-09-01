@@ -44,16 +44,24 @@ describe('production memory prompt integration', () => {
   test('wires the bounded selector at startup and for each runtime turn', () => {
     const root = resolve(__dirname, '..');
     const cli = readFileSync(join(root, 'src', 'cli.ts'), 'utf8');
+    const productBootstrap = readFileSync(
+      join(root, 'src', 'runtime', 'product-bootstrap.ts'),
+      'utf8'
+    );
     const productRuntime = readFileSync(
       join(root, 'src', 'runtime', 'product-orion-runtime.ts'),
       'utf8'
     );
     const selector = readFileSync(join(root, 'src', 'memory', 'prompt-context.ts'), 'utf8');
 
-    expect(cli).toContain("buildMemoryPromptContext('', cwd).content");
+    expect(cli).toContain("import { createProductUiRuntime } from './runtime/product-bootstrap'");
     expect(cli).not.toContain('loadAllMemories(cwd)');
+    expect(productBootstrap).toContain("buildMemoryPromptContext('', cwd).content");
+    expect(productBootstrap).not.toContain('loadAllMemories(cwd)');
     expect(productRuntime).toContain('buildMemoryPromptContext(input, options.cwd)');
-    expect(productRuntime).toContain('const memory = buildMemoryPromptContext(input, options.cwd).content');
+    expect(productRuntime).toContain(
+      'const memory = buildMemoryPromptContext(input, options.cwd).content'
+    );
     expect(productRuntime).toContain('memory,');
     expect(selector).toContain('loadMemory(candidate.name, projectPath)');
     expect(selector).not.toContain('loadAllMemories');

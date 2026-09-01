@@ -22,7 +22,11 @@ import {
   type LegacySessionImportReceiptV1,
   type LegacySessionMaterializationSnapshotV1,
 } from './legacy-session-importer';
-import { ThreadEventStore, type AppendRuntimeEventV1 } from './thread-event-store';
+import {
+  ThreadEventStore,
+  type AppendRuntimeEventV1,
+  type ThreadCheckpointHeadV1,
+} from './thread-event-store';
 import {
   projectThreadEvents,
   verifyThreadProjectionDigest,
@@ -97,6 +101,21 @@ export type SessionStorageResolutionV1 =
       readonly projectionDigest: string;
       readonly generation: number;
     };
+
+export type OpenedSessionStorageV1 =
+  | {
+      readonly resolution: Extract<SessionStorageResolutionV1, { kind: 'legacy' }>;
+    }
+  | {
+      readonly resolution: Extract<SessionStorageResolutionV1, { kind: 'thread' }>;
+      readonly store: ThreadEventStore;
+    };
+
+export interface OpenedSessionCheckpointStorageV1 {
+  readonly resolution: Extract<SessionStorageResolutionV1, { kind: 'thread' }>;
+  readonly store: ThreadEventStore;
+  readonly head: ThreadCheckpointHeadV1;
+}
 
 export class LegacyThreadMaterializationError extends Error {
   constructor(
@@ -218,38 +237,101 @@ export function resolveSessionStorageV1(
   projectPathInput: string,
   sessionId: string
 ): SessionStorageResolutionV1 {
+  return openSessionStorageV1(projectPathInput, sessionId).resolution;
+}
+
+/**
+ * Open only the compact persisted Thread head used by bounded Web snapshots.
+ * Missing/stale receipts return undefined so the caller can run the normal
+ * authoritative open once and rebuild the derived checkpoint.
+ */
+export function openSessionCheckpointStorageV1(
+  projectPathInput: string,
+  sessionId: string
+): OpenedSessionCheckpointStorageV1 | undefined {
+  const projectPath = resolve(projectPathInput);
+  const indexPath = getProjectThreadsV2IndexPath(projectPath);
+  if (!existsSync(indexPath)) return undefined;
+  const index = readThreadCutoverIndex(indexPath);
+  const entry = index.sessions[sessionId];
+  if (!entry) return undefined;
+  const store = new ThreadEventStore(getProjectThreadsV2Dir(projectPath), entry.threadId, {
+    maxReplayEvents: Math.max(10_000, entry.cursor),
+  });
+  const head = store.capturePersistedCheckpointHead();
+  if (
+    !head ||
+    head.cursor < entry.cursor ||
+    !head.verifiedPrefixes.some(
+      prefix =>
+        prefix.cursor === entry.cursor &&
+        prefix.eventDigest === entry.eventDigest &&
+        prefix.projectionDigest === entry.projectionDigest
+    )
+  ) {
+    return undefined;
+  }
+  return Object.freeze({
+    resolution: deepFreeze({
+      kind: 'thread' as const,
+      sessionId,
+      threadId: entry.threadId,
+      cursor: head.cursor,
+      projectionDigest: head.projectionDigest,
+      generation: index.generation,
+    }),
+    store,
+    head,
+  });
+}
+
+/**
+ * Resolve and verify one storage generation while retaining the verified
+ * ThreadEventStore. Read-side projections can then capture transcript and
+ * model history without constructing a second cold store and rescanning the
+ * same append-only log.
+ */
+export function openSessionStorageV1(
+  projectPathInput: string,
+  sessionId: string
+): OpenedSessionStorageV1 {
   const projectPath = resolve(projectPathInput);
   const indexPath = getProjectThreadsV2IndexPath(projectPath);
   if (!existsSync(indexPath)) {
-    return {
-      kind: 'legacy',
-      sessionId,
-      metaPath: getProjectSessionMetaPath(projectPath, sessionId),
-    };
+    return Object.freeze({
+      resolution: Object.freeze({
+        kind: 'legacy' as const,
+        sessionId,
+        metaPath: getProjectSessionMetaPath(projectPath, sessionId),
+      }),
+    });
   }
   const index = readThreadCutoverIndex(indexPath);
   const entry = index.sessions[sessionId];
   if (!entry) {
-    return {
-      kind: 'legacy',
-      sessionId,
-      metaPath: getProjectSessionMetaPath(projectPath, sessionId),
-    };
+    return Object.freeze({
+      resolution: Object.freeze({
+        kind: 'legacy' as const,
+        sessionId,
+        metaPath: getProjectSessionMetaPath(projectPath, sessionId),
+      }),
+    });
   }
 
   const store = new ThreadEventStore(getProjectThreadsV2Dir(projectPath), entry.threadId, {
-    maxReplayEvents: Math.max(1, entry.cursor),
+    maxReplayEvents: Math.max(10_000, entry.cursor),
   });
-  const replay = store.replay(0, Math.max(1, entry.cursor));
-  const importedProjection = projectThreadEvents(entry.threadId, replay.events);
+  const prefixVerified = store.verifyDurablePrefix(
+    entry.cursor,
+    entry.eventDigest,
+    entry.projectionDigest
+  );
   // The cutover receipt seals the imported prefix, not the forever-changing
   // head of a live Thread. loadProjection() independently verifies/rebuilds the
   // current cache against the complete hash-chained log.
   const currentProjection = store.loadProjection();
   if (
-    replay.events.length !== entry.cursor ||
-    digestRuntimeValue(replay.events) !== entry.eventDigest ||
-    importedProjection.digest !== entry.projectionDigest ||
+    !prefixVerified ||
     currentProjection.threadId !== entry.threadId ||
     currentProjection.cursor < entry.cursor
   ) {
@@ -258,14 +340,15 @@ export function resolveSessionStorageV1(
       `Cutover index for ${sessionId} does not match its durable Thread facts`
     );
   }
-  return deepFreeze({
+  const resolution = deepFreeze({
     kind: 'thread',
     sessionId,
     threadId: entry.threadId,
     cursor: currentProjection.cursor,
     projectionDigest: currentProjection.digest,
     generation: index.generation,
-  });
+  } as const);
+  return Object.freeze({ resolution, store });
 }
 
 export function loadThreadCutoverIndexV1(projectPath: string): ThreadCutoverIndexV1 {
@@ -667,6 +750,15 @@ function verifyMaterializedStore(
     !verifyThreadProjectionDigest(projection)
   ) {
     throw diverged('Materialized projection does not match replay projection digest');
+  }
+  if (
+    !store.verifyDurablePrefix(
+      plan.events.length,
+      plan.eventDigest,
+      plan.projection.digest
+    )
+  ) {
+    throw diverged('Materialized Thread prefix could not be sealed');
   }
 }
 

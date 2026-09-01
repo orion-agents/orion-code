@@ -9,18 +9,33 @@ import type { GoalRuntimeControlResultV2, GoalRuntimeControlV2 } from './goal-ru
 import type { OrionRuntimeDiagnosticsV1, OrionRuntimeV1 } from './orion-runtime-v1';
 import { ThreadUiAdapterV1, type ThreadUiModeResolverV1 } from './thread-ui-adapter';
 import type { UiEventSink } from './ui-events';
+import type { ThreadSessionRuntimeActivationV1 } from './thread-session-view';
+import { resolvePlanReviewV1 } from './plan-review';
+import type { PlanReviewProjectionV1 } from './thread-projection';
 
 export interface OrionSessionRunnerOptionsV1 {
   readonly eventSink: UiEventSink;
   readonly getSessionId: () => string;
-  readonly createRuntime: (sessionId: string) => OrionRuntimeV1 | Promise<OrionRuntimeV1>;
+  readonly createRuntime: (
+    sessionId: string,
+    activation?: ThreadSessionRuntimeActivationV1
+  ) => OrionRuntimeV1 | Promise<OrionRuntimeV1>;
   readonly mode?: ThreadUiModeResolverV1;
+  /** Renderer-neutral observer installed after the sole session Runtime starts. */
+  readonly onActiveRuntime?: (
+    runtime: OrionRuntimeV1,
+    sessionId: string,
+    activation?: ThreadSessionRuntimeActivationV1
+  ) => void | (() => void);
+  /** Historical transcript may instead be restored from a cursor-bound surface snapshot. */
+  readonly replayHistoryOnRestore?: boolean;
 }
 
 interface ActiveSessionRuntimeV1 {
   readonly sessionId: string;
   readonly runtime: OrionRuntimeV1;
   readonly adapter: ThreadUiAdapterV1;
+  readonly disposeObserver?: () => void;
 }
 
 /**
@@ -48,13 +63,17 @@ export class OrionSessionRunnerV1 implements AgentRuntimeRunnerV1 {
     return active.adapter.runRequest(request, options);
   }
 
-  async restoreSession(): Promise<void> {
+  async restoreSession(activation?: ThreadSessionRuntimeActivationV1): Promise<void> {
     if (this.closed) throw new Error('Orion session runner is closed.');
     if (this.transition) await this.transition;
     const sessionId = this.options.getSessionId();
     if (!sessionId.trim()) throw new Error('Orion session identity is empty.');
 
-    const transition = this.switchTo(sessionId, 0);
+    const transition = this.switchTo(
+      sessionId,
+      this.options.replayHistoryOnRestore === false ? undefined : 0,
+      activation
+    );
     this.transition = transition;
     let active: ActiveSessionRuntimeV1;
     try {
@@ -62,7 +81,13 @@ export class OrionSessionRunnerV1 implements AgentRuntimeRunnerV1 {
     } finally {
       if (this.transition === transition) this.transition = undefined;
     }
-    this.options.eventSink.clearTranscript();
+    // A typed activation denotes an actual Session selection and is followed
+    // by a bounded transcript replacement from the command surface. A same-
+    // Session runtime rebind (for example after Settings changes) has no such
+    // replacement and must preserve the current renderer window.
+    if (activation || this.options.replayHistoryOnRestore !== false) {
+      this.options.eventSink.clearTranscript();
+    }
     active.adapter.flush();
   }
 
@@ -101,6 +126,23 @@ export class OrionSessionRunnerV1 implements AgentRuntimeRunnerV1 {
     return active.runtime.diagnostics();
   }
 
+  async planReviewState(): Promise<PlanReviewProjectionV1 | undefined> {
+    const active = await this.ensureActive();
+    return active.runtime.thread.getProjection().planReview;
+  }
+
+  async reviewPlan(
+    input: Parameters<typeof resolvePlanReviewV1>[1]
+  ): Promise<ReturnType<typeof resolvePlanReviewV1>> {
+    const active = await this.ensureActive();
+    const receipt = resolvePlanReviewV1(active.runtime, input);
+    if (receipt.admission.status === 'started' || receipt.admission.status === 'queued') {
+      this.startBackgroundDrain(active);
+    }
+    if (this.active === active) active.adapter.flush();
+    return receipt;
+  }
+
   interrupt(reason = 'user interrupted'): void {
     this.active?.adapter.interrupt(reason);
   }
@@ -132,22 +174,29 @@ export class OrionSessionRunnerV1 implements AgentRuntimeRunnerV1 {
     return this.transition;
   }
 
-  private async switchTo(sessionId: string, cursor?: number): Promise<ActiveSessionRuntimeV1> {
+  private async switchTo(
+    sessionId: string,
+    cursor?: number,
+    activation?: ThreadSessionRuntimeActivationV1
+  ): Promise<ActiveSessionRuntimeV1> {
     await this.closeActive('session switched');
     if (this.closed) throw new Error('Orion session runner closed during session switch.');
-    const runtime = await this.options.createRuntime(sessionId);
+    const runtime = await this.options.createRuntime(sessionId, activation);
+    let disposeObserver: (() => void) | undefined;
     try {
       await runtime.start();
+      disposeObserver = this.options.onActiveRuntime?.(runtime, sessionId, activation) ?? undefined;
       const adapter = new ThreadUiAdapterV1({
         runtime: runtime.thread,
         uiEventSink: this.options.eventSink,
         mode: this.options.mode,
         ...(cursor === undefined ? {} : { cursor }),
       });
-      const active = Object.freeze({ sessionId, runtime, adapter });
+      const active = Object.freeze({ sessionId, runtime, adapter, disposeObserver });
       this.active = active;
       return active;
     } catch (error) {
+      disposeObserver?.();
       await runtime.close('session runtime start failed');
       throw error;
     }
@@ -157,6 +206,7 @@ export class OrionSessionRunnerV1 implements AgentRuntimeRunnerV1 {
     const active = this.active;
     this.active = undefined;
     if (!active) return;
+    active.disposeObserver?.();
     active.adapter.close(reason);
     await active.runtime.close(reason);
   }

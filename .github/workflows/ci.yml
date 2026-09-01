@@ -25,8 +25,8 @@ jobs:
       fail-fast: false
       matrix:
         # Keep package.json engines and the native sqlite verification matrix in
-        # lockstep. npm ci must install a working binding on every supported LTS.
-        node-version: ['20', '22', '24']
+        # lockstep. npm ci must install a working binding on every supported release line.
+        node-version: ['22', '24', '26']
 
     steps:
       - name: Check out repository
@@ -46,24 +46,28 @@ jobs:
         run: npm ci
 
       - name: Lint
-        if: ${{ matrix.node-version == '20' }}
+        if: ${{ matrix.node-version == '22' }}
         run: npm run lint
 
       - name: Build
         run: npm run build
 
+      - name: Web browser workflow and axe audit
+        if: ${{ matrix.node-version == '22' }}
+        run: npm run test:web-browser
+
       - name: Test with machine-readable release evidence
-        if: ${{ matrix.node-version == '20' }}
+        if: ${{ matrix.node-version == '22' }}
         # --coverage turns on the coverageThreshold gate from jest.config.js so
         # the documented 70% guideline is actually enforced in CI. #42
         run: npm run release:gate-evidence -- --id full-tests --out .release/full-tests.json -- npm test -- --coverage --runInBand
 
       - name: Test supported runtime
-        if: ${{ matrix.node-version != '20' }}
+        if: ${{ matrix.node-version != '22' }}
         run: npm test -- --coverage --runInBand
 
       - name: Upload full-test receipt
-        if: ${{ always() && matrix.node-version == '20' }}
+        if: ${{ always() && matrix.node-version == '22' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: full-test-receipt
@@ -85,7 +89,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
 
       - name: Install dependencies
@@ -109,7 +113,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
 
       - name: Install dependencies
@@ -158,7 +162,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
 
       - name: Install dependencies
@@ -185,7 +189,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
 
       - name: Install dependencies
@@ -211,7 +215,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
 
       - name: Install dependencies
@@ -232,14 +236,20 @@ jobs:
           retention-days: 14
 
   runtime-matrix:
-    name: Exact tgz on Node ${{ matrix.node-version }}
+    name: Exact tgz on Node ${{ matrix.node-version }} floor
     needs: package-artifact
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        node-version: ['20', '22', '24']
+        include:
+          - node-major: '22'
+            node-version: '22.12.0'
+          - node-major: '24'
+            node-version: '24.0.0'
+          - node-major: '26'
+            node-version: '26.0.0'
     steps:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -262,19 +272,195 @@ jobs:
       - name: Clean-install and probe the downloaded tgz
         run: |
           TARBALL=".release/package/$(node -p "require('./.release/package/artifact.json').tarball.filename")"
-          npm run test:runtime-matrix -- --tarball "$TARBALL" --artifact-receipt .release/package/artifact.json --out ".release/runtime-node${{ matrix.node-version }}.json"
+          npm run test:runtime-matrix -- --tarball "$TARBALL" --artifact-receipt .release/package/artifact.json --out ".release/runtime-node${{ matrix.node-major }}.json"
 
       - name: Upload runtime receipt
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: runtime-node${{ matrix.node-version }}
-          path: .release/runtime-node${{ matrix.node-version }}.json
+          name: runtime-node${{ matrix.node-major }}
+          path: .release/runtime-node${{ matrix.node-major }}.json
           if-no-files-found: error
           retention-days: 14
 
+  web-e2e-primary:
+    name: Web E2E full suite three consecutive runs
+    needs: package-artifact
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install E2E runner dependencies
+        run: npm ci
+
+      - name: Locate real Chrome and install Playwright ffmpeg
+        run: |
+          CHROME_PATH="$(command -v google-chrome || command -v google-chrome-stable)"
+          test -n "$CHROME_PATH"
+          test -x "$CHROME_PATH"
+          "$CHROME_PATH" --version
+          echo "CHROME_PATH=$CHROME_PATH" >> "$GITHUB_ENV"
+          npx playwright install ffmpeg
+
+      - name: Download the exact release package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-package
+          path: .release/package
+
+      - name: Run full packaged browser suite three times
+        run: |
+          TARBALL=".release/package/$(node -p "require('./.release/package/artifact.json').tarball.filename")"
+          npm run test:web-e2e:primary -- \
+            --tarball "$TARBALL" \
+            --receipt .release/package/artifact.json \
+            --chrome "$CHROME_PATH"
+
+      - name: Upload primary Web E2E evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: web-e2e-primary
+          path: tests/tmp/web-e2e/primary-*
+          if-no-files-found: error
+          retention-days: 14
+
+  web-e2e-runtime:
+    name: Web E2E critical journey on Node ${{ matrix.node-version }} floor
+    needs: package-artifact
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - node-major: '22'
+            node-version: '22.12.0'
+          - node-major: '24'
+            node-version: '24.0.0'
+          - node-major: '26'
+            node-version: '26.0.0'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install E2E runner dependencies
+        run: npm ci
+
+      - name: Locate real Chrome and install Playwright ffmpeg
+        run: |
+          CHROME_PATH="$(command -v google-chrome || command -v google-chrome-stable)"
+          test -n "$CHROME_PATH"
+          test -x "$CHROME_PATH"
+          "$CHROME_PATH" --version
+          echo "CHROME_PATH=$CHROME_PATH" >> "$GITHUB_ENV"
+          npx playwright install ffmpeg
+
+      - name: Download the exact release package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-package
+          path: .release/package
+
+      - name: Run critical packaged browser journey
+        run: |
+          TARBALL=".release/package/$(node -p "require('./.release/package/artifact.json').tarball.filename")"
+          export ORION_WEB_E2E_RUNNER_NAME="github-actions"
+          export ORION_WEB_E2E_RUNNER_IMAGE="${ImageOS:-ubuntu-24.04}@${ImageVersion:-unknown}-${RUNNER_ARCH:-unknown}"
+          export ORION_WEB_E2E_CHROME_CHANNEL="system-google-chrome"
+          ORION_WEB_E2E_RUN_ROOT="tests/tmp/web-e2e/ci-runtime-node${{ matrix.node-major }}" \
+          ORION_WEB_E2E_PROFILE=critical \
+          ORION_WEB_E2E_TARBALL="$TARBALL" \
+          ORION_WEB_E2E_RECEIPT=.release/package/artifact.json \
+          npm run test:web-e2e:critical
+
+      - name: Upload runtime Web E2E evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: web-e2e-runtime-node${{ matrix.node-major }}
+          path: tests/tmp/web-e2e/ci-runtime-node${{ matrix.node-major }}
+          if-no-files-found: error
+          retention-days: 14
+
+  web-e2e-receipt:
+    name: Aggregate exact-artifact Web E2E receipt
+    needs:
+      - package-artifact
+      - web-e2e-primary
+      - web-e2e-runtime
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install receipt verifier dependencies
+        run: npm ci
+
+      - name: Download exact package artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-package
+          path: .release/package
+
+      - name: Download primary Web E2E evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: web-e2e-primary
+          path: .release/web-e2e/primary
+
+      - name: Download runtime Web E2E evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: web-e2e-runtime-node*
+          path: .release/web-e2e/runtime
+
+      - name: Verify and aggregate Web E2E evidence
+        shell: bash
+        run: |
+          mapfile -t PRIMARY < <(find .release/web-e2e/primary -path '*/run-*/manifest.json' -type f ! -path '*/scenarios/*' | sort)
+          mapfile -t RUNTIME < <(find .release/web-e2e/runtime -name manifest.json -type f ! -path '*/scenarios/*' | sort)
+          test "${#PRIMARY[@]}" -eq 3
+          test "${#RUNTIME[@]}" -eq 3
+          ARGS=(--artifact .release/package/artifact.json --live-canary NOT_RUN)
+          for MANIFEST in "${PRIMARY[@]}"; do ARGS+=(--primary "$MANIFEST"); done
+          for MANIFEST in "${RUNTIME[@]}"; do ARGS+=(--runtime "$MANIFEST"); done
+          npm run --silent release:web-e2e-receipt -- \
+            "${ARGS[@]}" \
+            --out .release/web-e2e-receipt.json
+
+      - name: Upload Web E2E receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: web-e2e-receipt
+          path: .release/web-e2e-receipt.json
+          if-no-files-found: error
+          retention-days: 30
+
   release-receipt:
-    name: Aggregate fail-closed v0.2.x release receipt
+    name: Aggregate fail-closed v0.3.x release receipt
     needs:
       - verify
       - typecheck
@@ -283,6 +469,7 @@ jobs:
       - release-gate
       - package-artifact
       - runtime-matrix
+      - web-e2e-receipt
       - dep-health
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -293,7 +480,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
 
       - name: Install receipt verifier dependencies
@@ -324,19 +511,26 @@ jobs:
           path: .release/runtime
           merge-multiple: true
 
+      - name: Download Web E2E receipt
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: web-e2e-receipt
+          path: .release/web-e2e
+
       - name: Verify and aggregate all receipts
         run: |
           npm run --silent release:receipt -- \
             --artifact .release/package/artifact.json \
-            --runtime .release/runtime/runtime-node20.json \
             --runtime .release/runtime/runtime-node22.json \
             --runtime .release/runtime/runtime-node24.json \
+            --runtime .release/runtime/runtime-node26.json \
             --benchmark-baseline .release/harness/baseline.json \
             --benchmark-candidate .release/harness/candidate.json \
             --benchmark-comparison .release/harness/comparison.json \
             --evaluation .release/harness/eval.json \
             --confluence .release/harness/confluence.json \
             --full-tests .release/tests/full-tests.json \
+            --web-e2e .release/web-e2e/web-e2e-receipt.json \
             --out .release/release-receipt.json
 
       - name: Upload final release receipt
@@ -362,7 +556,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
 
       - name: Install dependencies
