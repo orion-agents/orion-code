@@ -4,7 +4,11 @@ import { join } from 'path';
 import { randomUUID } from 'crypto';
 import { spawn } from 'child_process';
 
-import { ThreadEventStore, ThreadEventStoreError } from '../src/runtime/thread-event-store';
+import {
+  ThreadEventStore,
+  ThreadEventStoreError,
+  threadEventStorePerformanceCountersV1,
+} from '../src/runtime/thread-event-store';
 import { digestRuntimeValue } from '../src/runtime/protocol/canonical';
 import { ThreadProjectionInvariantError } from '../src/runtime/thread-projection';
 
@@ -24,6 +28,7 @@ describe('ThreadEventStore', () => {
   }
 
   test('assigns monotonic durable sequences and cursor-replays bounded pages', () => {
+    const countersBefore = threadEventStorePerformanceCountersV1();
     const store = createStore({ maxReplayEvents: 2 });
     const turnId = randomUUID();
     const first = store.appendDurable({
@@ -44,6 +49,10 @@ describe('ThreadEventStore', () => {
     expect(store.replay(1, 1).events[0]).toMatchObject({ seq: 2, turnId });
     expect(() => store.replay(0, 3)).toThrow(ThreadEventStoreError);
     expect(() => store.replay(3, 1)).toThrow(/ahead of durable cursor/);
+    const countersAfter = threadEventStorePerformanceCountersV1();
+    expect(countersAfter.logScans - countersBefore.logScans).toBe(1);
+    expect(countersAfter.bytesScanned).toBeGreaterThanOrEqual(countersBefore.bytesScanned);
+    expect(countersAfter.eventsScanned).toBeGreaterThanOrEqual(countersBefore.eventsScanned);
   });
 
   test('builds an immutable projection with exactly one item terminal event', () => {

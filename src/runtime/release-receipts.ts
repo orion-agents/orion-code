@@ -63,10 +63,40 @@ export const WEB_E2E_WEB32_SCENARIOS_V1 = Object.freeze([
   'WEB32-P0-11',
   'WEB32-P0-12',
 ] as const);
+export const WEB_E2E_WEB33_THEME_SCENARIOS_V1 = Object.freeze([
+  'WEB33-P0-01',
+  'WEB33-P0-02',
+  'WEB33-P0-03',
+  'WEB33-P0-04',
+  'WEB33-P0-05',
+  'WEB33-P0-06',
+  'WEB33-P0-07',
+  'WEB33-P0-08',
+  'WEB33-P0-09',
+  'WEB33-P0-10',
+  'WEB33-P0-11',
+  'WEB33-P0-12',
+] as const);
+export const WEB_E2E_WEB33_SESSION_SCENARIOS_V1 = Object.freeze([
+  'WEB33-P0-16',
+  'WEB33-P0-17',
+  'WEB33-P0-18',
+  'WEB33-P0-19',
+  'WEB33-P0-20',
+  'WEB33-P0-21',
+  'WEB33-P0-22',
+  'WEB33-P0-23',
+  'WEB33-P0-24',
+] as const);
+export const WEB_E2E_WEB33_SCENARIOS_V1 = Object.freeze([
+  ...WEB_E2E_WEB33_THEME_SCENARIOS_V1,
+  ...WEB_E2E_WEB33_SESSION_SCENARIOS_V1,
+]);
 export const WEB_E2E_FULL_SCENARIOS_V1 = Object.freeze([
   ...WEB_E2E_LEGACY_SCENARIOS_V1,
   ...WEB_E2E_WEB31_SCENARIOS_V1,
   ...WEB_E2E_WEB32_SCENARIOS_V1,
+  ...WEB_E2E_WEB33_SCENARIOS_V1,
 ]);
 export const WEB_E2E_SETTINGS_SCENARIOS_V1 = Object.freeze(
   WEB_E2E_FULL_SCENARIOS_V1.filter(id => id.startsWith('SET-P0-'))
@@ -88,11 +118,26 @@ export const WEB_E2E_WEB32_CRITICAL_SCENARIOS_V1 = Object.freeze([
   'WEB32-P0-11',
   'WEB32-P0-12',
 ] as const);
+export const WEB_E2E_WEB33_CRITICAL_SCENARIOS_V1 = Object.freeze([
+  'WEB33-P0-01',
+  'WEB33-P0-03',
+  'WEB33-P0-08',
+  'WEB33-P0-10',
+  'WEB33-P0-12',
+  'WEB33-P0-16',
+  'WEB33-P0-17',
+  'WEB33-P0-18',
+  'WEB33-P0-20',
+  'WEB33-P0-21',
+  'WEB33-P0-23',
+  'WEB33-P0-24',
+] as const);
 export const WEB_E2E_CRITICAL_SCENARIOS_V1 = Object.freeze([
   ...WEB_E2E_LEGACY_SCENARIOS_V1.slice(0, 4),
   ...WEB_E2E_SETTINGS_SCENARIOS_V1,
   ...WEB_E2E_WEB31_CRITICAL_SCENARIOS_V1,
   ...WEB_E2E_WEB32_CRITICAL_SCENARIOS_V1,
+  ...WEB_E2E_WEB33_CRITICAL_SCENARIOS_V1,
 ]);
 
 export type ReleaseGateDecisionV1 = 'GO' | 'NO_GO';
@@ -573,6 +618,31 @@ export function createWebE2EReleaseReceiptV1(
       web32PrimaryComplete && web32MatrixComplete
         ? `all WEB32 journeys passed in three primary runs; critical Composer/Layout journeys passed on Node ${runtimeMajors.join(',')} using one tgz`
         : 'WEB32 full or critical exact-tarball coverage is missing, skipped, failed, or dirty',
+  });
+  const web33PrimaryComplete =
+    primaryRuns.length === 3 &&
+    primaryRuns.every(
+      run =>
+        run.decision === 'GO' &&
+        run.cleanEvidence &&
+        WEB_E2E_WEB33_SCENARIOS_V1.every(id => run.scenarioIds.includes(id))
+    );
+  const web33MatrixComplete =
+    runtimeRuns.length === SUPPORTED_RELEASE_NODE_MAJORS_V1.length &&
+    runtimeRuns.every(
+      run =>
+        run.decision === 'GO' &&
+        run.cleanEvidence &&
+        run.tarballSha256 === input.tarballSha256 &&
+        WEB_E2E_WEB33_CRITICAL_SCENARIOS_V1.every(id => run.scenarioIds.includes(id))
+    );
+  checks.push({
+    id: 'WEB33-P0-24',
+    status: web33PrimaryComplete && web33MatrixComplete ? 'pass' : 'fail',
+    detail:
+      web33PrimaryComplete && web33MatrixComplete
+        ? `all WEB33 journeys passed in three primary runs; critical theme/session journeys passed on Node ${runtimeMajors.join(',')} using one tgz`
+        : 'WEB33 full or critical exact-tarball coverage is missing, skipped, failed, or dirty',
   });
   const decision: ReleaseGateDecisionV1 = checks.every(check => check.status === 'pass')
     ? 'GO'

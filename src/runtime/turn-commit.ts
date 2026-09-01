@@ -141,7 +141,7 @@ export class ThreadTurnCommitJournalV1 {
     const receiptEvents = [] as ReturnType<ThreadEventStore['replay']>['events'][number][];
     let cursor = 0;
     while (true) {
-      const page = this.store.replay(cursor);
+      const page = this.store.replay(cursor, undefined, 'turn_commit_journal');
       receiptEvents.push(...page.events.filter(event => event.turnId === input.turnId));
       if (!page.hasMore) break;
       cursor = page.nextCursor;

@@ -92,6 +92,91 @@ describe('OrionWebApi event stream', () => {
     handle.close();
     handle.close();
   });
+
+  test('accepts a tagged Session Runtime summary for background actor badges', () => {
+    const events: unknown[] = [];
+    const api = new OrionWebApi();
+    const handle = api.connectEvents({
+      cursor: 0,
+      onEvent: event => events.push(event),
+      onStatus: jest.fn(),
+    });
+    const source = FakeEventSource.instances[0];
+
+    source.emit('orion', JSON.stringify(sessionRuntimeEnvelope(1)));
+
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: 'session_runtime_changed',
+        sessionId: '20000000-0000-4000-8000-000000000002',
+        payload: {
+          runtime: expect.objectContaining({ phase: 'running', pendingApprovalCount: 0 }),
+        },
+      }),
+    ]);
+    handle.close();
+  });
+
+  test('requires queued Session Runtime summaries to carry an exact queue identity', () => {
+    const events: unknown[] = [];
+    const protocolErrors: string[] = [];
+    const api = new OrionWebApi();
+    const handle = api.connectEvents({
+      cursor: 0,
+      onEvent: event => events.push(event),
+      onStatus: jest.fn(),
+      onProtocolError: error => protocolErrors.push(error),
+    });
+    const source = FakeEventSource.instances[0];
+    const queued = sessionRuntimeEnvelope(1) as {
+      payload: { runtime: Record<string, unknown> };
+    };
+    queued.payload.runtime.phase = 'queued';
+    queued.payload.runtime.queueId = '40000000-0000-4000-8000-000000000004';
+    queued.payload.runtime.queuePosition = 1;
+    source.emit('orion', JSON.stringify(queued));
+    expect(events).toHaveLength(1);
+
+    const malformed = sessionRuntimeEnvelope(2) as {
+      payload: { runtime: Record<string, unknown> };
+    };
+    malformed.payload.runtime.phase = 'queued';
+    malformed.payload.runtime.queuePosition = 1;
+    source.emit('orion', JSON.stringify(malformed));
+    expect(protocolErrors).toEqual(['Session Runtime 状态事件无效。']);
+    expect(events).toHaveLength(1);
+    handle.close();
+  });
+
+  test('accepts only one-based queued Workspace mutation state for an identified Session', () => {
+    const events: unknown[] = [];
+    const protocolErrors: string[] = [];
+    const api = new OrionWebApi();
+    const handle = api.connectEvents({
+      cursor: 0,
+      onEvent: event => events.push(event),
+      onStatus: jest.fn(),
+      onProtocolError: error => protocolErrors.push(error),
+    });
+    const source = FakeEventSource.instances[0];
+    const valid = workspaceMutationEnvelope(1);
+    source.emit('orion', JSON.stringify(valid));
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: 'workspace_mutation_changed',
+        payload: { state: { callId: 'call-write', phase: 'queued', queuePosition: 1 } },
+      }),
+    ]);
+
+    const malformed = workspaceMutationEnvelope(2) as {
+      payload: { state: Record<string, unknown> };
+    };
+    malformed.payload.state.queuePosition = 0;
+    source.emit('orion', JSON.stringify(malformed));
+    expect(protocolErrors).toEqual(['Workspace mutation 状态事件无效。']);
+    expect(events).toHaveLength(1);
+    handle.close();
+  });
 });
 
 describe('OrionWebApi collection pagination', () => {
@@ -161,6 +246,48 @@ function runtimeEnvelope(cursor: number): object {
     payload: {
       eventType: 'status_changed',
       value: { type: 'status_changed', message: 'must be ignored' },
+    },
+  };
+}
+
+function sessionRuntimeEnvelope(cursor: number): object {
+  const sessionId = '20000000-0000-4000-8000-000000000002';
+  return {
+    apiVersion: 1,
+    eventId: `50000000-0000-4000-8000-${String(cursor).padStart(12, '0')}`,
+    cursor,
+    sessionId,
+    threadId: null,
+    durable: true,
+    timestamp: new Date(cursor).toISOString(),
+    type: 'session_runtime_changed',
+    payload: {
+      runtime: {
+        workspaceId: '10000000-0000-4000-8000-000000000001',
+        sessionId,
+        runtimeRevision: '30000000-0000-4000-8000-000000000003',
+        phase: 'running',
+        pendingApprovalCount: 0,
+        resident: true,
+        estimatedBytes: 1024,
+        updatedAt: new Date(cursor).toISOString(),
+      },
+    },
+  };
+}
+
+function workspaceMutationEnvelope(cursor: number): object {
+  return {
+    apiVersion: 1,
+    eventId: `60000000-0000-4000-8000-${String(cursor).padStart(12, '0')}`,
+    cursor,
+    sessionId: '20000000-0000-4000-8000-000000000002',
+    threadId: null,
+    durable: false,
+    timestamp: new Date(cursor).toISOString(),
+    type: 'workspace_mutation_changed',
+    payload: {
+      state: { callId: 'call-write', phase: 'queued', queuePosition: 1 },
     },
   };
 }

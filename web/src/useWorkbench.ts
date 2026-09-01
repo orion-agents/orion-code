@@ -51,6 +51,7 @@ type ComposerActionInputV1 = WebComposerActionV1 extends infer Action
         | 'workspaceId'
         | 'expectedContextRevision'
         | 'expectedSessionId'
+        | 'expectedSessionRuntimeRevision'
         | 'expectedControlRevision'
       >
     : never
@@ -87,6 +88,7 @@ export interface WorkbenchActions {
   editQueued(itemId: string, expectedItemRevision: number, text: string): Promise<void>;
   moveQueued(itemId: string, expectedItemRevision: number, targetIndex: number): Promise<void>;
   clearQueue(): Promise<void>;
+  cancelQueuedTurn(): Promise<void>;
   interrupt(): Promise<void>;
   setMode(mode: WorkbenchAgentMode): Promise<void>;
   setPermissionOverride(value: 'ask' | 'allow' | 'deny' | null): Promise<void>;
@@ -142,7 +144,8 @@ export function useWorkbench(): UseWorkbenchResult {
   const streamRef = useRef<EventStreamHandle | null>(null);
   const operationSequence = useRef(0);
   const resourceGeneration = useRef(0);
-  const metadataRefreshSequence = useRef(0);
+  const metadataRefreshSequence = useRef(new Map<string, number>());
+  const metadataRefreshOrdinal = useRef(0);
   const baselineStarted = useRef(false);
   stateRef.current = state;
 
@@ -161,17 +164,18 @@ export function useWorkbench(): UseWorkbenchResult {
         if (snapshot.session.id !== sessionId) {
           throw new WebApiError('Host 返回了其他会话的快照。', 502);
         }
-        if (snapshot.runtime.active !== true) {
-          throw new WebApiError(
-            '活动会话已在其他页面发生变化，请恢复当前会话。',
-            409,
-            'active_session_changed'
-          );
-        }
-        dispatch({ type: 'session_snapshot_loaded', snapshot });
+        dispatch({
+          type: 'session_snapshot_loaded',
+          snapshot,
+          // HTTP snapshots and the SSE stream share one Host-global cursor.
+          // While a stream is active, advancing from the snapshot could skip a
+          // control event that is already in flight. A paused stream, however,
+          // needs the snapshot cursor as its next replay baseline.
+          advanceEventCursor: streamRef.current === null,
+        });
         return snapshot;
       } catch (error) {
-        dispatch({ type: 'snapshot_failed', detail: errorMessage(error) });
+        dispatch({ type: 'snapshot_failed', sessionId, detail: errorMessage(error) });
         throw error;
       }
     },
@@ -188,18 +192,27 @@ export function useWorkbench(): UseWorkbenchResult {
       } satisfies WebContextGuardV1;
       settingsMirror.reset();
       settingsMirror.accept(bootstrap.settings);
-      const snapshotRequest = bootstrap.activeSessionId
-        ? api
-            .sessionSnapshot(bootstrap.activeSessionId, context)
-            .then(snapshot => ({ snapshot, error: undefined }))
-            .catch(error => ({ snapshot: null, error }))
-        : Promise.resolve({ snapshot: null, error: undefined });
-      const [workspaces, sessions, mirrorSnapshot, sessionResult] = await Promise.all([
+      const [workspaces, sessions, mirrorSnapshot] = await Promise.all([
         api.listWorkspaces(context),
         api.listSessions(context),
         settingsMirror.refresh(),
-        snapshotRequest,
       ]);
+      const foregroundSessionId = preferredForegroundSession(
+        bootstrap.workspaceId,
+        sessions.sessions,
+        bootstrap.activeSessionId
+      );
+      rememberForegroundSession(bootstrap.workspaceId, foregroundSessionId);
+      const effectiveBootstrap = Object.freeze({
+        ...bootstrap,
+        activeSessionId: foregroundSessionId,
+      });
+      const sessionResult = foregroundSessionId
+        ? await api
+            .sessionSnapshot(foregroundSessionId, context)
+            .then(snapshot => ({ snapshot, error: undefined }))
+            .catch(error => ({ snapshot: null, error }))
+        : { snapshot: null, error: undefined };
       const settings = await migrateLegacyAppearance(
         api,
         settingsMirror,
@@ -208,7 +221,7 @@ export function useWorkbench(): UseWorkbenchResult {
       if (generation !== resourceGeneration.current) return;
       dispatch({
         type: 'baseline_loaded',
-        bootstrap,
+        bootstrap: effectiveBootstrap,
         workspaces,
         sessions: sessions.sessions,
         sessionNextCursor: sessions.nextCursor,
@@ -222,14 +235,12 @@ export function useWorkbench(): UseWorkbenchResult {
         toolDetailNextCursor: null,
       });
       if (sessionResult.snapshot) {
-        if (
-          sessionResult.snapshot.session.id === bootstrap.activeSessionId &&
-          sessionResult.snapshot.runtime.active === true
-        ) {
+        if (sessionResult.snapshot.session.id === foregroundSessionId) {
           dispatch({ type: 'session_snapshot_loaded', snapshot: sessionResult.snapshot });
         } else {
           dispatch({
             type: 'snapshot_failed',
+            sessionId: foregroundSessionId,
             detail: '活动会话已在其他页面发生变化，请恢复当前会话。',
           });
         }
@@ -237,6 +248,7 @@ export function useWorkbench(): UseWorkbenchResult {
       if (sessionResult.error) {
         dispatch({
           type: 'snapshot_failed',
+          sessionId: foregroundSessionId,
           detail: errorMessage(sessionResult.error),
         });
         showError(dispatch, '会话快照加载失败', sessionResult.error, 'warning');
@@ -296,47 +308,6 @@ export function useWorkbench(): UseWorkbenchResult {
     throw lastError;
   }, [loadBaselineOnce]);
 
-  const refreshWorkspaceResources = useCallback(
-    async (sessionId: string | null = stateRef.current.activeSessionId) => {
-      const generation = ++resourceGeneration.current;
-      const context = requireContextGuard(stateRef.current);
-      const [workspaces, sessions] = await Promise.all([
-        api.listWorkspaces(context),
-        api.listSessions(context),
-      ]);
-      if (generation !== resourceGeneration.current) return;
-      dispatch({ type: 'workspaces_loaded', value: workspaces });
-      dispatch({
-        type: 'sessions_loaded',
-        sessions: sessions.sessions,
-        nextCursor: sessions.nextCursor,
-      });
-      if (sessionId) await loadSessionSnapshot(sessionId, context);
-      void Promise.all([
-        api.diagnostics(context).catch(() => ({}) as DiagnosticsSnapshot),
-        api.skills(context).catch(() => ({ skills: [], nextCursor: null })),
-        api.mcp(context).catch(() => ({ servers: [], nextCursor: null })),
-        api.toolDetails(context).catch(() => ({ details: [], nextCursor: null })),
-      ]).then(([diagnostics, skills, mcp, toolDetails]) => {
-        if (generation !== resourceGeneration.current) return;
-        dispatch({ type: 'diagnostics_loaded', diagnostics });
-        dispatch({
-          type: 'capabilities_loaded',
-          skills: skills.skills,
-          skillNextCursor: skills.nextCursor,
-          mcpServers: mcp.servers,
-          mcpNextCursor: mcp.nextCursor,
-        });
-        dispatch({
-          type: 'tool_details_loaded',
-          details: toolDetails.details,
-          nextCursor: toolDetails.nextCursor,
-        });
-      });
-    },
-    [api, loadSessionSnapshot]
-  );
-
   useEffect(() => {
     // React StrictMode replays effects in development; bootstrap may perform a one-time
     // appearance migration, so it must only be started once for this mounted App instance.
@@ -358,23 +329,21 @@ export function useWorkbench(): UseWorkbenchResult {
       cursor: stateRef.current.lastCursor,
       onEvent: envelope => {
         dispatch({ type: 'event_received', envelope });
-        if (isTurnCompletedEnvelope(envelope)) {
+        if (needsSessionSnapshotRefresh(envelope)) {
           const current = stateRef.current;
-          if (
-            envelope.sessionId === current.activeSessionId &&
-            current.contextRevision &&
-            current.workspaceId
-          ) {
-            const sequence = ++metadataRefreshSequence.current;
+          if (envelope.sessionId && current.contextRevision && current.workspaceId) {
+            const sessionId = envelope.sessionId;
+            const sequence = ++metadataRefreshOrdinal.current;
+            metadataRefreshSequence.current.set(sessionId, sequence);
             const contextRevision = current.contextRevision;
             const workspaceId = current.workspaceId;
             void api
-              .sessionSnapshot(envelope.sessionId, {
+              .sessionSnapshot(sessionId, {
                 expectedContextRevision: contextRevision,
                 workspaceId,
               })
               .then(snapshot => {
-                if (metadataRefreshSequence.current !== sequence) return;
+                if (metadataRefreshSequence.current.get(sessionId) !== sequence) return;
                 dispatch({
                   type: 'durable_session_metadata_loaded',
                   snapshot,
@@ -382,7 +351,12 @@ export function useWorkbench(): UseWorkbenchResult {
                   workspaceId,
                 });
               })
-              .catch(() => undefined);
+              .catch(() => undefined)
+              .finally(() => {
+                if (metadataRefreshSequence.current.get(sessionId) === sequence) {
+                  metadataRefreshSequence.current.delete(sessionId);
+                }
+              });
           }
         }
         if (envelope.type === 'settings_invalidated') {
@@ -439,20 +413,14 @@ export function useWorkbench(): UseWorkbenchResult {
     if (state.boot !== 'ready') return;
     if (state.pendingAction || !state.activeSessionId) return;
     if (state.bootstrap?.workspace !== state.workspace) return;
-    if (
-      state.sessionSnapshot?.session.id === state.activeSessionId &&
-      state.sessionSnapshot.runtime.active === true
-    ) {
+    if (state.sessionSnapshot?.session.id === state.activeSessionId) {
       return;
     }
-    pauseEventStream();
-    void refreshWorkspaceResources(state.activeSessionId)
-      .catch(error => showError(dispatch, '会话刷新失败', error))
-      .finally(resumeEventStream);
+    void loadSessionSnapshot(state.activeSessionId).catch(error =>
+      showError(dispatch, '会话刷新失败', error)
+    );
   }, [
-    pauseEventStream,
-    refreshWorkspaceResources,
-    resumeEventStream,
+    loadSessionSnapshot,
     state.activeSessionId,
     state.boot,
     state.bootstrap?.workspace,
@@ -480,7 +448,17 @@ export function useWorkbench(): UseWorkbenchResult {
   );
 
   const sendCommand = useCallback(
-    async (label: string, command: Omit<WebCommandV1, 'requestId' | 'expectedSessionId'>) =>
+    async (
+      label: string,
+      command: Omit<
+        WebCommandV1,
+        | 'requestId'
+        | 'workspaceId'
+        | 'expectedContextRevision'
+        | 'expectedSessionId'
+        | 'expectedSessionRuntimeRevision'
+      >
+    ) =>
       runOperation(label, async () => {
         if (stateRef.current.connection !== 'live') {
           throw new WebApiError(
@@ -493,13 +471,38 @@ export function useWorkbench(): UseWorkbenchResult {
         if (!expectedSessionId) {
           throw new WebApiError('当前没有可接收命令的活动会话。', 409, 'active_session_changed');
         }
+        const snapshot = stateRef.current.sessionSnapshot;
+        if (!snapshot || snapshot.session.id !== expectedSessionId) {
+          throw new WebApiError(
+            '会话 Runtime 状态尚未同步，请刷新后重试。',
+            409,
+            'session_runtime_revision_conflict'
+          );
+        }
         try {
-          const result = await api.command({ ...command, expectedSessionId });
+          const result = await api.command({
+            ...command,
+            workspaceId: stateRef.current.workspaceId,
+            expectedContextRevision: stateRef.current.contextRevision,
+            expectedSessionId,
+            expectedSessionRuntimeRevision: snapshot.sessionRuntime.runtimeRevision,
+          });
           assertCommandResult(result);
           return result;
         } catch (error) {
-          if (error instanceof WebApiError && error.code === 'active_session_changed') {
-            dispatch({ type: 'snapshot_failed', detail: error.message });
+          if (
+            error instanceof WebApiError &&
+            [
+              'context_revision_conflict',
+              'active_session_changed',
+              'session_runtime_revision_conflict',
+            ].includes(error.code ?? '')
+          ) {
+            dispatch({
+              type: 'snapshot_failed',
+              sessionId: expectedSessionId,
+              detail: error.message,
+            });
           }
           throw error;
         }
@@ -530,6 +533,7 @@ export function useWorkbench(): UseWorkbenchResult {
             workspaceId: current.workspaceId,
             expectedContextRevision: current.contextRevision,
             expectedSessionId: current.activeSessionId,
+            expectedSessionRuntimeRevision: composer.sessionRuntime.runtimeRevision,
             expectedControlRevision: composer.controlRevision,
           } as Parameters<OrionWebApi['composerAction']>[1]);
           dispatch({ type: 'composer_loaded', composer: result.state });
@@ -541,9 +545,14 @@ export function useWorkbench(): UseWorkbenchResult {
               'composer_control_conflict',
               'context_revision_conflict',
               'active_session_changed',
+              'session_runtime_revision_conflict',
             ].includes(error.code ?? '')
           ) {
-            dispatch({ type: 'snapshot_failed', detail: error.message });
+            dispatch({
+              type: 'snapshot_failed',
+              sessionId: current.activeSessionId,
+              detail: error.message,
+            });
           }
           throw error;
         }
@@ -760,13 +769,43 @@ export function useWorkbench(): UseWorkbenchResult {
     [api, loadBaseline, pauseEventStream, resumeEventStream, runOperation]
   );
 
+  const selectSession = useCallback(
+    (sessionId: string) => {
+      const current = stateRef.current;
+      if (current.activeSessionId === sessionId && current.sessionSnapshot) {
+        return Promise.resolve();
+      }
+      const context = requireContextGuard(current);
+      const select = async () => {
+        rememberForegroundSession(context.workspaceId, sessionId);
+        dispatch({ type: 'reset_session_view', activeSessionId: sessionId });
+        await loadSessionSnapshot(sessionId, context);
+      };
+      return current.sessionProjectionById[sessionId] ? select() : runOperation('切换会话', select);
+    },
+    [loadSessionSnapshot, runOperation]
+  );
+
   const activateContext = useCallback(
-    (workspaceId: string, sessionId: string | null) =>
-      runOperation('切换项目上下文', async () => {
-        const expectedContextRevision = stateRef.current.contextRevision;
+    (workspaceId: string, sessionId: string | null) => {
+      if (workspaceId === stateRef.current.workspaceId && sessionId) {
+        return selectSession(sessionId);
+      }
+      return runOperation('切换项目上下文', async () => {
+        const current = stateRef.current;
+        const expectedContextRevision = current.contextRevision;
         if (!expectedContextRevision) {
           throw new WebApiError('工作区上下文尚未完成同步。', 409, 'context_revision_conflict');
         }
+        if (workspaceId === current.workspaceId) {
+          rememberForegroundSession(workspaceId, sessionId);
+          dispatch({ type: 'reset_session_view', activeSessionId: sessionId });
+          if (sessionId) {
+            await loadSessionSnapshot(sessionId, requireContextGuard(current));
+          }
+          return;
+        }
+        rememberForegroundSession(workspaceId, sessionId);
         pauseEventStream();
         ++resourceGeneration.current;
         try {
@@ -777,8 +816,7 @@ export function useWorkbench(): UseWorkbenchResult {
           });
           if (
             result.contextRevision !== result.bootstrap.contextRevision ||
-            result.bootstrap.workspaceId !== workspaceId ||
-            result.bootstrap.activeSessionId !== sessionId
+            result.bootstrap.workspaceId !== workspaceId
           ) {
             throw new WebApiError('Host 返回的项目上下文不一致。', 502, 'context_response_invalid');
           }
@@ -789,14 +827,23 @@ export function useWorkbench(): UseWorkbenchResult {
             error instanceof WebApiError &&
             (error.code === 'context_revision_conflict' || error.code === 'active_session_changed')
           ) {
-            dispatch({ type: 'snapshot_failed', detail: error.message });
+            dispatch({ type: 'snapshot_failed', sessionId: null, detail: error.message });
           }
           throw error;
         } finally {
           resumeEventStream();
         }
-      }),
-    [api, loadBaseline, pauseEventStream, resumeEventStream, runOperation]
+      });
+    },
+    [
+      api,
+      loadBaseline,
+      loadSessionSnapshot,
+      pauseEventStream,
+      resumeEventStream,
+      runOperation,
+      selectSession,
+    ]
   );
 
   const setWorkspacePinned = useCallback(
@@ -831,23 +878,21 @@ export function useWorkbench(): UseWorkbenchResult {
   const createSession = useCallback(
     () =>
       runOperation('创建会话', async () => {
-        ++resourceGeneration.current;
-        pauseEventStream();
-        try {
-          const session = await api.createSession(requireContextGuard(stateRef.current));
-          dispatch({ type: 'reset_session_view', activeSessionId: session.id });
-          await loadBaseline();
-        } finally {
-          resumeEventStream();
-        }
+        const context = requireContextGuard(stateRef.current);
+        const session = await api.createSession(context);
+        rememberForegroundSession(context.workspaceId, session.id);
+        dispatch({
+          type: 'sessions_loaded',
+          sessions: upsertSessionSummary(stateRef.current.sessions, session),
+          nextCursor: stateRef.current.sessionNextCursor,
+        });
+        dispatch({ type: 'reset_session_view', activeSessionId: session.id });
+        await loadSessionSnapshot(session.id, context);
       }),
-    [api, loadBaseline, pauseEventStream, resumeEventStream, runOperation]
+    [api, loadSessionSnapshot, runOperation]
   );
 
-  const activateSession = useCallback(
-    (sessionId: string) => activateContext(stateRef.current.workspaceId, sessionId),
-    [activateContext]
-  );
+  const activateSession = selectSession;
 
   const loadOlderTranscript = useCallback(
     () =>
@@ -953,6 +998,20 @@ export function useWorkbench(): UseWorkbenchResult {
   );
   const clearQueue = useCallback(async () => {
     await sendCommand('清空队列', { type: 'clear_followups' });
+  }, [sendCommand]);
+  const cancelQueuedTurn = useCallback(async () => {
+    const runtime = stateRef.current.sessionSnapshot?.sessionRuntime;
+    if (!runtime || runtime.phase !== 'queued' || !runtime.queueId) {
+      throw new WebApiError(
+        '排队任务已变化，请等待状态同步后重试。',
+        409,
+        'session_queue_conflict'
+      );
+    }
+    await sendCommand('取消排队任务', {
+      type: 'cancel_queued_turn',
+      queueId: runtime.queueId,
+    });
   }, [sendCommand]);
   const interrupt = useCallback(async () => {
     await sendCommand('中断任务', { type: 'interrupt' });
@@ -1192,6 +1251,7 @@ export function useWorkbench(): UseWorkbenchResult {
       editQueued,
       moveQueued,
       clearQueue,
+      cancelQueuedTurn,
       interrupt,
       setMode,
       setPermissionOverride,
@@ -1236,6 +1296,7 @@ export function useWorkbench(): UseWorkbenchResult {
       loadWorkspaceSessions,
       answerPermission,
       clearQueue,
+      cancelQueuedTurn,
       compactContext,
       reviewPlan,
       controlGoal,
@@ -1330,6 +1391,52 @@ function requireContextGuard(
   };
 }
 
+const WEB_VIEW_ID_KEY = 'orion.web.view-id.v1';
+const WEB_FOREGROUND_PREFIX = 'orion.web.foreground-session.v1:';
+
+function preferredForegroundSession(
+  workspaceId: string,
+  sessions: readonly import('./types').WebSessionSummaryV1[],
+  hostDefault: string | null
+): string | null {
+  const available = new Set(sessions.map(session => session.id));
+  const stored = readSessionStorage(`${WEB_FOREGROUND_PREFIX}${workspaceId}`);
+  if (stored && available.has(stored)) return stored;
+  if (hostDefault && available.has(hostDefault)) return hostDefault;
+  return sessions[0]?.id ?? null;
+}
+
+function rememberForegroundSession(workspaceId: string, sessionId: string | null): void {
+  ensureWebViewId();
+  const key = `${WEB_FOREGROUND_PREFIX}${workspaceId}`;
+  try {
+    if (sessionId) globalThis.sessionStorage?.setItem(key, sessionId);
+    else globalThis.sessionStorage?.removeItem(key);
+  } catch {
+    // Private browsing/storage denial only disables foreground persistence.
+  }
+}
+
+function ensureWebViewId(): string {
+  const existing = readSessionStorage(WEB_VIEW_ID_KEY);
+  if (existing) return existing;
+  const created = globalThis.crypto?.randomUUID?.() ?? `view-${Date.now().toString(36)}`;
+  try {
+    globalThis.sessionStorage?.setItem(WEB_VIEW_ID_KEY, created);
+  } catch {
+    // The in-memory fallback remains sufficient for the current page.
+  }
+  return created;
+}
+
+function readSessionStorage(key: string): string | null {
+  try {
+    return globalThis.sessionStorage?.getItem(key) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function assertCommandResult(result: WebCommandResultV1): void {
   if (
     result.result.includes('failed') ||
@@ -1392,10 +1499,17 @@ function waitForBaselineRetry(delayMs: number): Promise<void> {
   });
 }
 
-function isTurnCompletedEnvelope(
-  envelope: import('./types').WebEventEnvelopeV1
-): envelope is Extract<import('./types').WebEventEnvelopeV1, { type: 'thread_event' }> {
-  return (
-    envelope.type === 'thread_event' && envelope.payload.value.payload.type === 'turn.completed'
-  );
+function needsSessionSnapshotRefresh(envelope: import('./types').WebEventEnvelopeV1): boolean {
+  if (!envelope.sessionId) return false;
+  if (envelope.type === 'runtime_event') {
+    return envelope.payload.value.type === 'permission_requested';
+  }
+  if (envelope.type !== 'thread_event') return false;
+  return [
+    'approval.requested',
+    'plan.review_requested',
+    'turn.completed',
+    'turn.failed',
+    'turn.interrupted',
+  ].includes(envelope.payload.value.payload.type);
 }

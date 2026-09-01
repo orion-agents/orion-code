@@ -2,15 +2,15 @@
 
 面向终端与浏览器、本地优先的目标驱动 Coding Agent。
 
-> v0.3.2 候选版本：一套 Orion Runtime，同时提供可调宽本地 Web Workbench、Session 级
-> Composer Control Center 与既有 TUI/terminal。Candidate 源码不代表已创建 npm 发布或 Git tag。
+> v0.3.3 候选版本：有界多 Session Web Workbench、内置方块工坊主题，以及保持单活动 Session
+> 合同的既有 TUI/terminal。Candidate 源码不代表已创建 npm 发布、Git tag 或达到可合并状态。
 
 [English](README.md) ·
-[v0.3.2 Workbench 方案](docs/plan/v0.3.2-web-workbench-layout-and-composer-plan.md) ·
-[v0.3.2 Web API](docs/architecture/v0.3.2-web-api.yaml) ·
+[v0.3.3 方案](docs/plan/v0.3.3-plan.md) ·
+[v0.3.3 Web API](docs/architecture/v0.3.3-web-api.yaml) ·
 [模式/权限合同](docs/architecture/agent-mode-permission-contract.md) ·
-[v0.3.2 E2E 方案](docs/test/v0.3.2-web-workbench-e2e-plan.md) ·
-[v0.3.2 迁移](docs/migration/v0.3.1-to-v0.3.2.md) ·
+[v0.3.3 E2E 方案](docs/test/v0.3.3-web-workbench-e2e-plan.md) ·
+[v0.3.3 迁移](docs/migration/v0.3.2-to-v0.3.3.md) ·
 [v0.3.0 Web 方案](docs/plan/v0.3.0-web-workbench-plan.md) ·
 [Settings 方案](docs/plan/v0.3.0-settings-integration-plan.md) ·
 [Node 兼容方案](docs/plan/v0.3.0-node-runtime-compatibility-plan.md) ·
@@ -19,11 +19,13 @@
 [Settings 迁移](docs/migration/v0.2.2-to-v0.3.0-settings.md) ·
 [真实状态图册](docs/assets/screenshots/v0.3.0-web/README.md)
 
-## v0.3.2 包含什么
+## v0.3.3 包含什么
 
-- **一个 Runtime、两个交互界面。** `orion web` 与终端产品共用 product bootstrap、
-  AgentRuntimeController、Session/Thread、ToolGateway、审批、Goal、Plan、Skills 和 MCP；浏览器不另起
-  一套 agent loop。
+- **一条执行主干、有界 Web Session actors。** Web Session 与终端产品共用 product bootstrap、
+  AgentRuntimeController、Session/Thread、ToolGateway、审批、Goal、Plan、Skills 和 MCP。Web 最多允许
+  3 个 Session turn 并行、4 个 actor 常驻；TUI/terminal 继续保持单活动 Session 合同。
+- **Orion 方块工坊。** 内置像素工坊风格可与 system/light/dark 组合，不加载远程资产、动态主题代码或
+  第二份 Settings 真相；classic 继续作为显式内置风格提供。
 - **可恢复的 Web 工作台。** React 界面覆盖工作区/会话、对话与工具活动、BUILD/PLAN/AUTO、follow-up、
   interrupt、审批、Goal/Plan、模型/effort、Skills/MCP 和诊断。快照与 cursor replay 负责刷新和 SSE
   重连恢复。
@@ -76,10 +78,10 @@ MCP 仍是用户可见的扩展边界。
 支持 Node.js 22.12+、24 和 26。生产环境建议使用 Node 24 LTS，当前开发环境也支持 Node 26
 Current。Node 20 已结束上游维护，不再属于 v0.3 Runtime 合同。
 
-当 npm 已存在不可变的 `0.3.2` 发布凭据后：
+当 npm 已存在不可变的 `0.3.3` 发布凭据后：
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.2
+npm install -g @orion-agents/orion-code@0.3.3
 orion --version
 orion doctor
 ```
@@ -251,9 +253,9 @@ npm run test:web-e2e -- --grep @settings
 
 正式准出还会只构建一次 exact tarball，并在 Node 22/24/26 安装同一个 hash，验证 package identity、
 native SQLite、TUI、terminal、print、Web、Goal、subagent、Skill、MCP、Compact 与 resume；
-WEB32-P0-01..12 还会验证可调项目栏、Composer 控制、Context、durable Plan review、队列/草稿、恢复与
-无障碍合同。详见 [`v0.3.2 Workbench 方案`](docs/plan/v0.3.2-web-workbench-layout-and-composer-plan.md)与
-[`v0.3.2 E2E 资格计划`](docs/test/v0.3.2-web-workbench-e2e-plan.md)。
+WEB33-P0-01..12 验证内置外观合同，WEB33-P0-16..24 验证并行 Session actors、标签页本地前台切换、
+有界队列、右侧 rail 与唯一 Settings 入口。详见 [`v0.3.3 方案`](docs/plan/v0.3.3-plan.md)与
+[`v0.3.3 E2E 资格计划`](docs/test/v0.3.3-web-workbench-e2e-plan.md)。
 
 ## 安全
 

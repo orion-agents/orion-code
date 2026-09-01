@@ -11,6 +11,7 @@ import type {
   SettingsSourceV1,
   ThemePreference,
   ToolConfirmationPreference,
+  UiStylePreference,
   WebModelSummaryV1,
   WebSettingsDocumentV1,
   WebSettingsMutationResultV1,
@@ -37,6 +38,7 @@ const BLOCKED_REASONS: readonly SettingsBlockedReasonV1[] = [
 ];
 const THEMES: readonly ThemePreference[] = ['system', 'light', 'dark'];
 const MOTIONS: readonly MotionPreference[] = ['system', 'reduced'];
+const UI_STYLES: readonly UiStylePreference[] = ['classic', 'orion-blocksmith'];
 const EFFORTS: readonly EffortPreference[] = [
   'auto',
   'none',
@@ -49,6 +51,7 @@ const EFFORTS: readonly EffortPreference[] = [
 ];
 const CONFIRMATIONS: readonly ToolConfirmationPreference[] = ['ask', 'allow', 'deny'];
 const SETTING_KEYS: readonly SettingsKeyV1[] = [
+  'appearance.style',
   'appearance.theme',
   'appearance.motion',
   'defaults.model',
@@ -72,14 +75,17 @@ export function parseSettingsDocument(value: unknown): WebSettingsDocumentV1 {
     'currentSession',
     'diagnostic',
   ]);
-  if (row.schemaVersion !== 1) throw new Error('Settings schemaVersion is not supported.');
+  if (row.schemaVersion !== 1 && row.schemaVersion !== 2) {
+    throw new Error('Settings schemaVersion is not supported.');
+  }
+  const schemaVersion = row.schemaVersion;
   const revision = string(row.revision, 'Settings revision');
   if (!REVISION_PATTERN.test(revision)) throw new Error('Settings revision is invalid.');
   const state = enumeration(row.state, 'Settings state', SETTINGS_STATES);
   const sections = record(row.sections, 'Settings sections');
   exactKeys(sections, ['appearance', 'defaults', 'permissions']);
   const appearance = record(sections.appearance, 'Appearance settings');
-  exactKeys(appearance, ['theme', 'motion']);
+  exactKeys(appearance, schemaVersion === 1 ? ['theme', 'motion'] : ['style', 'theme', 'motion']);
   const defaults = record(sections.defaults, 'Default settings');
   exactKeys(defaults, ['model', 'effort']);
   const permissions = record(sections.permissions, 'Permission settings');
@@ -92,7 +98,7 @@ export function parseSettingsDocument(value: unknown): WebSettingsDocumentV1 {
   const diagnostic = row.diagnostic === undefined ? undefined : parseDiagnostic(row.diagnostic);
 
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     revision,
     state,
     writable: boolean(row.writable, 'Settings writable'),
@@ -100,6 +106,10 @@ export function parseSettingsDocument(value: unknown): WebSettingsDocumentV1 {
     workspace: string(row.workspace, 'Settings workspace'),
     sections: {
       appearance: {
+        style:
+          schemaVersion === 1
+            ? legacyStyleField(state, boolean(row.writable, 'Settings writable'))
+            : parseField(appearance.style, 'Visual style', isUiStyle),
         theme: parseField(appearance.theme, 'Theme', isTheme),
         motion: parseField(appearance.motion, 'Motion', isMotion),
       },
@@ -352,6 +362,32 @@ function exactKeys(row: Record<string, unknown>, allowed: readonly string[]): vo
 
 function isTheme(value: unknown): value is ThemePreference {
   return typeof value === 'string' && THEMES.includes(value as ThemePreference);
+}
+
+function isUiStyle(value: unknown): value is UiStylePreference {
+  return typeof value === 'string' && UI_STYLES.includes(value as UiStylePreference);
+}
+
+function legacyStyleField(
+  state: WebSettingsDocumentV1['state'],
+  writable: boolean
+): SettingsFieldViewV1<UiStylePreference> {
+  const blockedReason =
+    state === 'invalid'
+      ? ('invalid_document' as const)
+      : state === 'ready' && writable
+        ? undefined
+        : ('read_only' as const);
+  return {
+    effectiveValue: 'orion-blocksmith',
+    inheritedValue: 'orion-blocksmith',
+    source: 'internal',
+    scope: 'global',
+    applies: 'live',
+    overridden: false,
+    writable: state === 'ready' && writable,
+    ...(blockedReason ? { blockedReason } : {}),
+  };
 }
 
 function isMotion(value: unknown): value is MotionPreference {

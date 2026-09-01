@@ -319,6 +319,7 @@ export class ToolGateway {
                 }),
             })
           : await this.services.execution.run({
+              invocationId: invocation.invocationId,
               snapshot: invocation.snapshot,
               toolName: invocation.toolName,
               args: structuredClone(invocation.args),

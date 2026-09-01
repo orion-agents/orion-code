@@ -4,7 +4,7 @@ export type AgentMode = 'BUILD' | 'PLAN' | 'AUTO';
 export type ApprovalDecision = 'reject' | 'once' | 'project' | 'global';
 export type InspectorTab = 'Goal' | '活动' | '能力' | '诊断';
 export type SettingsSection = 'General' | 'Models & Reasoning' | 'Permissions' | 'Advanced';
-export type SettingsSelectLabel = '主题' | '动效' | '默认模型' | '默认推理强度';
+export type SettingsSelectLabel = '视觉风格' | '主题' | '动效' | '默认模型' | '默认推理强度';
 export type SettingsPermission = 'Ask' | 'Allow' | 'Deny';
 
 export interface UiOperationOptions {
@@ -49,7 +49,7 @@ export function workbenchUi(page: Page) {
     sessionSearch: workspaceRail.getByRole('searchbox', { name: '搜索项目和会话' }),
     navigationButton: main.getByRole('button', { name: '打开会话导航', exact: true }),
     inspectorButton: main.getByRole('button', { name: /^(打开|关闭)工作面板$/u }),
-    settingsButton: main.getByRole('button', { name: '打开设置', exact: true }),
+    settingsButton: workspaceRail.getByRole('button', { name: '打开设置', exact: true }),
     modeButton: main.getByRole('button', { name: '工作模式', exact: true }),
     permissionButton: main.getByRole('button', { name: '会话权限', exact: true }),
     modelButton: main.getByRole('button', { name: '会话模型', exact: true }),
@@ -67,6 +67,8 @@ export type WorkbenchUi = ReturnType<typeof workbenchUi>;
 /** Open the real modal and wait until its Host-backed form is hydrated. */
 export async function openSettings(page: Page, options: UiOperationOptions = {}): Promise<Locator> {
   const ui = workbenchUi(page);
+  if (!(await ui.settingsButton.isVisible())) await openSessionNavigation(page, options);
+  await expect(ui.settingsButton).toBeVisible({ timeout: options.timeout });
   await ui.settingsButton.click();
   await expect(ui.settingsDialog).toBeVisible({ timeout: options.timeout });
   await expect(ui.settingsDialog.getByRole('combobox', { name: '主题' })).toBeVisible({
@@ -166,7 +168,36 @@ export async function openSessionNavigation(
   options: UiOperationOptions = {}
 ): Promise<Locator> {
   const ui = workbenchUi(page);
-  if (!(await ui.workspaceRail.isVisible())) {
+  // Let the ResizeObserver-driven column solver commit after a viewport change.
+  // Otherwise a stale desktop rail can appear visible for one frame while the
+  // shell is already transitioning to the modal drawer contract.
+  await page.evaluate(
+    () =>
+      new Promise<void>(resolve =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+      )
+  );
+  const shell = page.locator('.workbench-shell');
+  const drawerMode = await shell.evaluate(element =>
+    element.classList.contains('project-navigation-drawer')
+  );
+  if (drawerMode) {
+    if (!(await ui.workspaceRail.evaluate(element => element.classList.contains('drawer-open')))) {
+      await ui.navigationButton.click();
+      await expect(ui.navigationButton).toHaveAttribute('aria-expanded', 'true', {
+        timeout: options.timeout,
+      });
+    }
+  } else if (
+    await ui.workspaceRail.evaluate(element =>
+      element.classList.contains('project-navigator-collapsed')
+    )
+  ) {
+    await ui.workspaceRail.getByRole('button', { name: '展开项目导航', exact: true }).click();
+    await expect(ui.workspaceRail).not.toHaveClass(/project-navigator-collapsed/u, {
+      timeout: options.timeout,
+    });
+  } else if (!(await ui.workspaceRail.isVisible())) {
     await ui.navigationButton.click();
     await expect(ui.navigationButton).toHaveAttribute('aria-expanded', 'true', {
       timeout: options.timeout,

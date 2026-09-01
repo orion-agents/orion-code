@@ -1,5 +1,6 @@
 export type ThemePreference = 'system' | 'light' | 'dark';
 export type MotionPreference = 'system' | 'reduced';
+export type UiStylePreference = 'classic' | 'orion-blocksmith';
 export type ToolConfirmationPreference = 'ask' | 'allow' | 'deny';
 export type EffortPreference =
   | 'auto'
@@ -42,7 +43,7 @@ export interface CredentialSlotViewV1 {
 }
 
 export interface WebSettingsDocumentV1 {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly revision: string;
   readonly state: 'ready' | 'invalid' | 'read-only' | 'unavailable';
   readonly writable: boolean;
@@ -50,6 +51,7 @@ export interface WebSettingsDocumentV1 {
   readonly workspace: string;
   readonly sections: {
     readonly appearance: {
+      readonly style: SettingsFieldViewV1<UiStylePreference>;
       readonly theme: SettingsFieldViewV1<ThemePreference>;
       readonly motion: SettingsFieldViewV1<MotionPreference>;
     };
@@ -75,6 +77,7 @@ export interface WebSettingsDocumentV1 {
 }
 
 export type SettingsKeyV1 =
+  | 'appearance.style'
   | 'appearance.theme'
   | 'appearance.motion'
   | 'defaults.model'
@@ -82,6 +85,7 @@ export type SettingsKeyV1 =
   | 'permissions.toolConfirmation';
 
 export interface SettingsValueMapV1 {
+  readonly 'appearance.style': UiStylePreference;
   readonly 'appearance.theme': ThemePreference;
   readonly 'appearance.motion': MotionPreference;
   readonly 'defaults.model': string;
@@ -131,6 +135,7 @@ export interface SettingsInvalidatedEventV1 {
 }
 
 export const SETTINGS_KEYS: readonly SettingsKeyV1[] = [
+  'appearance.style',
   'appearance.theme',
   'appearance.motion',
   'defaults.model',
@@ -143,20 +148,23 @@ export function settingsField<K extends SettingsKeyV1>(
   key: K
 ): SettingsFieldViewV1<SettingsValueMapV1[K]> {
   const field =
-    key === 'appearance.theme'
-      ? document.sections.appearance.theme
-      : key === 'appearance.motion'
-        ? document.sections.appearance.motion
-        : key === 'defaults.model'
-          ? document.sections.defaults.model
-          : key === 'defaults.effort'
-            ? document.sections.defaults.effort
-            : document.sections.permissions.toolConfirmation;
+    key === 'appearance.style'
+      ? document.sections.appearance.style
+      : key === 'appearance.theme'
+        ? document.sections.appearance.theme
+        : key === 'appearance.motion'
+          ? document.sections.appearance.motion
+          : key === 'defaults.model'
+            ? document.sections.defaults.model
+            : key === 'defaults.effort'
+              ? document.sections.defaults.effort
+              : document.sections.permissions.toolConfirmation;
   return field as SettingsFieldViewV1<SettingsValueMapV1[K]>;
 }
 
 export function effectiveSettingsValues(document: WebSettingsDocumentV1): SettingsValuesV1 {
   return {
+    'appearance.style': document.sections.appearance.style.effectiveValue,
     'appearance.theme': document.sections.appearance.theme.effectiveValue,
     'appearance.motion': document.sections.appearance.motion.effectiveValue,
     'defaults.model': document.sections.defaults.model.effectiveValue,

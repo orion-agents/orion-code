@@ -58,6 +58,22 @@
   --terminal-foreground: #e8e9f0;
   --terminal-cursor: #9d8cff;
   --terminal-selection: #3b3566;
+  --terminal-black: #1a1c22;
+  --terminal-red: #d35f70;
+  --terminal-green: #57b786;
+  --terminal-yellow: #d6ad55;
+  --terminal-blue: #6798df;
+  --terminal-magenta: #a982d6;
+  --terminal-cyan: #4ebcb4;
+  --terminal-white: #d8dbe5;
+  --terminal-bright-black: #747b8c;
+  --terminal-bright-red: #ff8292;
+  --terminal-bright-green: #72d9a5;
+  --terminal-bright-yellow: #f4cf75;
+  --terminal-bright-blue: #86b4ff;
+  --terminal-bright-magenta: #c59aef;
+  --terminal-bright-cyan: #70ddd2;
+  --terminal-bright-white: #f5f6fa;
 }
 
 :root[data-theme='light'] {
@@ -87,6 +103,22 @@
   --terminal-foreground: #20212a;
   --terminal-cursor: #6d5ce8;
   --terminal-selection: #dcd7ff;
+  --terminal-black: #20212a;
+  --terminal-red: #a9334c;
+  --terminal-green: #08734f;
+  --terminal-yellow: #8b5700;
+  --terminal-blue: #1765a8;
+  --terminal-magenta: #7443a2;
+  --terminal-cyan: #06735f;
+  --terminal-white: #e8eaf0;
+  --terminal-bright-black: #5e6779;
+  --terminal-bright-red: #c94b62;
+  --terminal-bright-green: #168b64;
+  --terminal-bright-yellow: #a86d0d;
+  --terminal-bright-blue: #2d7abd;
+  --terminal-bright-magenta: #8e5db8;
+  --terminal-bright-cyan: #168d78;
+  --terminal-bright-white: #fff;
 }
 
 @media (prefers-color-scheme: light) {
@@ -117,7 +149,137 @@
     --terminal-foreground: #20212a;
     --terminal-cursor: #6d5ce8;
     --terminal-selection: #dcd7ff;
+    --terminal-black: #20212a;
+    --terminal-red: #a9334c;
+    --terminal-green: #08734f;
+    --terminal-yellow: #8b5700;
+    --terminal-blue: #1765a8;
+    --terminal-magenta: #7443a2;
+    --terminal-cyan: #06735f;
+    --terminal-white: #e8eaf0;
+    --terminal-bright-black: #5e6779;
+    --terminal-bright-red: #c94b62;
+    --terminal-bright-green: #168b64;
+    --terminal-bright-yellow: #a86d0d;
+    --terminal-bright-blue: #2d7abd;
+    --terminal-bright-magenta: #8e5db8;
+    --terminal-bright-cyan: #168d78;
+    --terminal-bright-white: #fff;
   }
+}
+
+.appearance-preview {
+  --preview-bg: #090b10;
+  --preview-surface: #131722;
+  --preview-raised: #1b202d;
+  --preview-border: #343e52;
+  --preview-accent: #8a7dff;
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.appearance-preview[data-preview-style='orion-blocksmith'] {
+  --preview-bg: #15191b;
+  --preview-surface: #202629;
+  --preview-raised: #292d2a;
+  --preview-border: #a99a82;
+  --preview-accent: #7ea4ed;
+}
+
+.appearance-preview[data-preview-theme='light'] {
+  --preview-bg: #f4f5f8;
+  --preview-surface: #f0f1f5;
+  --preview-raised: #fff;
+  --preview-border: #c9ced9;
+  --preview-accent: #6255d9;
+}
+
+.appearance-preview[data-preview-style='orion-blocksmith'][data-preview-theme='light'] {
+  --preview-bg: #d7d0c1;
+  --preview-surface: #e2dacb;
+  --preview-raised: #fffaf0;
+  --preview-border: #5e584d;
+  --preview-accent: #315fae;
+}
+
+@media (prefers-color-scheme: light) {
+  .appearance-preview[data-preview-theme='system'] {
+    --preview-bg: #f4f5f8;
+    --preview-surface: #f0f1f5;
+    --preview-raised: #fff;
+    --preview-border: #c9ced9;
+    --preview-accent: #6255d9;
+  }
+
+  .appearance-preview[data-preview-style='orion-blocksmith'][data-preview-theme='system'] {
+    --preview-bg: #d7d0c1;
+    --preview-surface: #e2dacb;
+    --preview-raised: #fffaf0;
+    --preview-border: #5e584d;
+    --preview-accent: #315fae;
+  }
+}
+
+.appearance-preview-frame {
+  display: grid;
+  grid-template-columns: 20% minmax(0, 1fr) 26%;
+  min-height: 88px;
+  overflow: hidden;
+  border: 2px solid var(--preview-border);
+  border-radius: inherit;
+  background: var(--preview-bg);
+}
+
+.appearance-preview[data-preview-style='orion-blocksmith'] .appearance-preview-frame {
+  border-radius: 2px;
+  box-shadow: 3px 3px 0 color-mix(in srgb, var(--preview-border) 45%, transparent);
+}
+
+.appearance-preview-rail,
+.appearance-preview-panel {
+  background: var(--preview-surface);
+}
+
+.appearance-preview-rail {
+  border-right: 1px solid var(--preview-border);
+}
+
+.appearance-preview-panel {
+  border-left: 1px solid var(--preview-border);
+}
+
+.appearance-preview-main {
+  display: grid;
+  align-content: end;
+  gap: 6px;
+  padding: 10px;
+}
+
+.appearance-preview-main i {
+  display: block;
+  height: 14px;
+  border: 1px solid var(--preview-border);
+  border-radius: 3px;
+  background: var(--preview-raised);
+}
+
+.appearance-preview-main i:last-child {
+  height: 22px;
+  border-color: var(--preview-accent);
+}
+
+.appearance-preview[data-preview-style='orion-blocksmith'] .appearance-preview-main i {
+  border-radius: 1px;
+}
+
+.appearance-preview figcaption {
+  color: var(--muted);
+  font-size: var(--font-meta);
 }
 
 *,
@@ -225,7 +387,9 @@ p {
   --inspector-column-width: var(--work-panel-column-width);
 
   display: grid;
+  grid-template-areas: 'project conversation work-panel';
   grid-template-columns: var(--rail-column-width) minmax(560px, 1fr) var(--work-panel-column-width);
+  grid-template-rows: minmax(0, 1fr);
   width: 100%;
   height: 100dvh;
   background:
@@ -245,8 +409,8 @@ p {
   display: none;
 }
 
-.workbench-shell.work-panel-rail,
-.workbench-shell.work-panel-drawer {
+.workbench-shell.work-panel-mode-rail,
+.workbench-shell.work-panel-mode-drawer {
   --work-panel-column-width: var(--work-panel-width);
   --inspector-column-width: var(--work-panel-column-width);
 }
@@ -262,6 +426,7 @@ p {
 .workspace-rail {
   position: relative;
   z-index: 20;
+  grid-area: project;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -600,6 +765,14 @@ p {
   background: var(--warning);
   box-shadow: 0 0 0 3px rgb(244 200 107 / 12%);
 }
+.session-state.queued {
+  background: var(--accent-2, var(--accent));
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.session-state.failed {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px rgb(255 100 120 / 12%);
+}
 .state-dot.state-error,
 .state-dot.state-failed,
 .connection-dot.offline,
@@ -688,6 +861,7 @@ p {
 .conversation-column {
   position: relative;
   display: grid;
+  grid-area: conversation;
   grid-template-areas:
     'header'
     'banner'
@@ -3869,6 +4043,7 @@ p {
   position: relative;
   z-index: 20;
   display: flex;
+  grid-area: work-panel;
   min-width: 0;
   min-height: 0;
   flex-direction: column;
@@ -4864,6 +5039,7 @@ html[data-panel-resizing] .workbench-shell {
     --work-panel-column-width: 0px;
     --inspector-column-width: 0px;
 
+    grid-template-areas: 'project conversation';
     grid-template-columns: var(--rail-column-width) minmax(0, 1fr);
   }
   .work-panel {
@@ -4927,7 +5103,10 @@ html[data-panel-resizing] .workbench-shell {
     --header-height: 60px;
   }
   .workbench-shell {
-    display: block;
+    display: grid;
+    grid-template-areas: 'conversation';
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
   }
   .workspace-rail {
     position: fixed;

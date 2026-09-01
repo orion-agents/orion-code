@@ -16,6 +16,7 @@ import type { EffortLevel, EffortPreference, EffortScope } from '../services/eff
 import type { AgentRuntimeRunnerV1 } from './agent-runtime-runner';
 import type { FirstPartyApprovalHandlerV1 } from './first-party-tool-services';
 import type { OrionRuntimeDiagnosticsV1 } from './orion-runtime-v1';
+import type { WorkspaceRuntimeKernelV1 } from './workspace-runtime-kernel';
 import type {
   SettingsCoordinatorV1,
   SettingsDocumentViewV1,
@@ -382,6 +383,8 @@ export interface OrionCodeUiRuntime extends RuntimeSessionAccessors {
   modelCoordinator?: ModelCoordinator;
   /** Sole Session-scoped mode/model/effort/permission control authority. */
   sessionComposerControls?: SessionComposerControlServiceV1;
+  /** Workspace-scoped services shared by Web Session actors. */
+  workspaceRuntimeKernel?: WorkspaceRuntimeKernelV1;
   /** Creates the sole product runner after a renderer-neutral event sink exists. */
   createAgentRunner?: (
     events: UiEventSink,

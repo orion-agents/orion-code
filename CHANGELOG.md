@@ -22,6 +22,52 @@ which is **not** a pass.
 
 ## [Unreleased]
 
+## [0.3.3] — CANDIDATE
+
+> **Status: candidate.** The implementation and local qualification remain isolated on the v0.3.3
+> worktree. It is not merged, tagged, published to npm or represented as a completed release receipt.
+
+### Added
+
+- Add the bundled `orion-blocksmith` pixel-workshop style as a closed built-in appearance option,
+  composed with system/light/dark themes and reduced motion without remote assets or executable
+  theme packages.
+- Add a bounded Web Session actor registry with three running slots, four resident actors, FIFO
+  overflow admission, cancellable queued turns, idle LRU eviction and explicit per-Session runtime
+  revisions.
+- Add the v0.3.3 OpenAPI, migration guide and exact-artifact WEB33-P0-01..12 plus
+  WEB33-P0-16..24 qualification contract.
+
+### Changed
+
+- Make foreground Session selection browser-tab-local so a running, approval-waiting or queued
+  Session continues while another Session is viewed or submitted.
+- Route Session commands and Composer mutations through exact Workspace, Context, Session runtime
+  and control revisions; stale operations fail closed instead of following a global active Session.
+- Keep a single Workbench SSE connection while projecting Session-tagged runtime state into bounded
+  per-Session browser caches.
+- Package runtime JavaScript and declarations without generated source-map files, preserving local
+  build maps while keeping the published artifact within the existing unpacked-size budget.
+
+### Fixed
+
+- Remove the global pending barrier from warm same-Workspace Session selection and restore cached
+  content immediately while a guarded snapshot refreshes in the background.
+- Keep the collapsed Work Panel as a right-side full-height 48px rail across desktop and drawer
+  breakpoints without moving it below the conversation or creating horizontal page overflow.
+- Keep the only persistent Settings entry at the lower-left project rail and restore focus after a
+  successful Settings save.
+- Raise Orion Blocksmith light-theme muted text contrast to WCAG AA for small labels and empty-state
+  copy.
+
+### Security
+
+- Serialize same-Workspace mutating Tool steps through a shared arbiter while preserving independent
+  actors for non-conflicting work; stale file baselines are rejected before side effects.
+- Bind queued-turn cancellation, approvals, Goal/Plan controls and structured Context references to
+  the intended Session actor, with zero cross-Session provider, Tool, journal or file effects on
+  revision conflict.
+
 ## [0.3.2] — CANDIDATE
 
 > **Status: candidate.** Source, API and browser qualification are being frozen together. This is

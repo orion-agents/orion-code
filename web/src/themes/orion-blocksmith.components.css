@@ -1,0 +1,145 @@
+:root[data-ui-style='orion-blocksmith'] body {
+  background-color: var(--bg);
+  background-image:
+    linear-gradient(90deg, rgb(255 255 255 / 2%) 1px, transparent 1px),
+    linear-gradient(rgb(255 255 255 / 2%) 1px, transparent 1px);
+  background-size: 8px 8px;
+}
+
+:root[data-ui-style='orion-blocksmith'] .workbench-shell {
+  background:
+    linear-gradient(135deg, rgb(255 255 255 / 2%) 25%, transparent 25%) 0 0 / 8px 8px,
+    var(--bg);
+}
+
+:root[data-ui-style='orion-blocksmith'] :focus-visible {
+  outline-width: 2px;
+  outline-style: solid;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 2px var(--pixel-shadow);
+}
+
+:root[data-ui-style='orion-blocksmith'] .workspace-rail,
+:root[data-ui-style='orion-blocksmith'] .conversation-column,
+:root[data-ui-style='orion-blocksmith'] .work-panel {
+  box-shadow: inset 0 2px rgb(255 255 255 / 5%);
+}
+
+:root[data-ui-style='orion-blocksmith'] .brand-row,
+:root[data-ui-style='orion-blocksmith'] .conversation-header,
+:root[data-ui-style='orion-blocksmith'] .work-panel-header,
+:root[data-ui-style='orion-blocksmith'] .rail-footer {
+  background: linear-gradient(180deg, rgb(255 255 255 / 4%), transparent 55%), var(--surface);
+  border-color: var(--border-strong);
+}
+
+:root[data-ui-style='orion-blocksmith'] .brand-mark,
+:root[data-ui-style='orion-blocksmith'] .boot-mark {
+  border: 2px solid var(--pixel-wood-dark);
+  border-radius: 2px;
+  background: var(--pixel-wood);
+  box-shadow:
+    inset 2px 2px var(--pixel-highlight),
+    inset -2px -2px var(--pixel-wood-dark);
+}
+
+:root[data-ui-style='orion-blocksmith'] .project-row,
+:root[data-ui-style='orion-blocksmith'] .project-session-main,
+:root[data-ui-style='orion-blocksmith'] .composer,
+:root[data-ui-style='orion-blocksmith'] .tool-card,
+:root[data-ui-style='orion-blocksmith'] .edit-card,
+:root[data-ui-style='orion-blocksmith'] .approval-card,
+:root[data-ui-style='orion-blocksmith'] .reasoning-card,
+:root[data-ui-style='orion-blocksmith'] .settings-field,
+:root[data-ui-style='orion-blocksmith'] .settings-readonly-card,
+:root[data-ui-style='orion-blocksmith'] .settings-capability-card,
+:root[data-ui-style='orion-blocksmith'] .plan-review-card {
+  border-radius: var(--radius-sm);
+  border-color: var(--border);
+  box-shadow:
+    inset 1px 1px rgb(255 255 255 / 6%),
+    inset -1px -1px rgb(0 0 0 / 12%);
+}
+
+:root[data-ui-style='orion-blocksmith'] .project-row.active,
+:root[data-ui-style='orion-blocksmith'] .project-session-main[aria-current='page'],
+:root[data-ui-style='orion-blocksmith'] .work-panel-tabs [aria-selected='true'] {
+  box-shadow:
+    inset 3px 0 var(--accent),
+    inset 0 1px var(--pixel-highlight),
+    inset 0 -1px var(--pixel-shadow);
+}
+
+:root[data-ui-style='orion-blocksmith'] .composer {
+  border: 2px solid var(--pixel-wood-dark);
+  background: var(--surface-raised);
+  box-shadow:
+    0 0 0 2px var(--pixel-wood),
+    4px 4px 0 rgb(0 0 0 / 22%);
+}
+
+:root[data-ui-style='orion-blocksmith'] .primary-button,
+:root[data-ui-style='orion-blocksmith'] .send-button,
+:root[data-ui-style='orion-blocksmith'] .composer-control-trigger,
+:root[data-ui-style='orion-blocksmith'] .context-add-button,
+:root[data-ui-style='orion-blocksmith'] .secondary-button,
+:root[data-ui-style='orion-blocksmith'] .icon-button {
+  border-radius: 2px;
+}
+
+:root[data-ui-style='orion-blocksmith'] .primary-button,
+:root[data-ui-style='orion-blocksmith'] .send-button {
+  border: 1px solid color-mix(in srgb, var(--accent-fill) 75%, black);
+  box-shadow:
+    inset 0 2px rgb(255 255 255 / 18%),
+    inset 0 -2px rgb(0 0 0 / 20%);
+}
+
+:root[data-ui-style='orion-blocksmith'] .eyebrow,
+:root[data-ui-style='orion-blocksmith'] .micro-label,
+:root[data-ui-style='orion-blocksmith'] .mode-badge,
+:root[data-ui-style='orion-blocksmith'] .project-session-status,
+:root[data-ui-style='orion-blocksmith'] .version {
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+:root[data-ui-style='orion-blocksmith'] .modal,
+:root[data-ui-style='orion-blocksmith'] .control-menu-popover,
+:root[data-ui-style='orion-blocksmith'] .context-popover,
+:root[data-ui-style='orion-blocksmith'] .risk-confirmation {
+  border: 2px solid var(--border-strong);
+  border-radius: 2px;
+  box-shadow:
+    0 0 0 2px var(--pixel-shadow),
+    6px 6px 0 rgb(0 0 0 / 30%);
+}
+
+:root[data-ui-style='orion-blocksmith'] .terminal-host,
+:root[data-ui-style='orion-blocksmith'] pre,
+:root[data-ui-style='orion-blocksmith'] code {
+  text-shadow: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-ui-style='orion-blocksmith'] *,
+  :root[data-ui-style='orion-blocksmith'] *::before,
+  :root[data-ui-style='orion-blocksmith'] *::after {
+    scroll-behavior: auto !important;
+  }
+}
+
+@media (forced-colors: active) {
+  :root[data-ui-style='orion-blocksmith'] body,
+  :root[data-ui-style='orion-blocksmith'] .workbench-shell {
+    background: Canvas;
+  }
+
+  :root[data-ui-style='orion-blocksmith'] .brand-mark,
+  :root[data-ui-style='orion-blocksmith'] .boot-mark,
+  :root[data-ui-style='orion-blocksmith'] .composer,
+  :root[data-ui-style='orion-blocksmith'] .modal {
+    border-color: CanvasText;
+    box-shadow: none;
+  }
+}

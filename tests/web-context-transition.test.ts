@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { randomUUID } from 'crypto';
 
 import { createSession } from '../src/services/session-storage';
 import { WorkspaceRegistryV1 } from '../src/services/workspace-registry';
@@ -56,7 +57,7 @@ describe('Web Context transition', () => {
     await controller.shutdown();
   });
 
-  test('atomically switches Workspace and Session behind one Context revision', async () => {
+  test('atomically switches Workspace while keeping foreground Session browser-local', async () => {
     const first = createSession(firstWorkspace, 'test-model');
     const second = createSession(secondWorkspace, 'test-model');
     const hub = new WebEventHub();
@@ -69,6 +70,7 @@ describe('Web Context transition', () => {
     });
     await controller.createSession('active first');
     const before = controller.bootstrap('nonce');
+    const firstRuntimeRevision = controller.sessionRuntimeSummary(first.id).runtimeRevision;
     const secondEntry = registry.list().find(entry => entry.canonicalPath === secondWorkspace)!;
     const emit = jest.spyOn(hub, 'emit');
 
@@ -82,7 +84,12 @@ describe('Web Context transition', () => {
     expect(after).toMatchObject({
       workspaceId: secondEntry.id,
       workspace: secondWorkspace,
-      activeSessionId: second.id,
+      activeSessionId: null,
+    });
+    expect(controller.sessionRuntimeSummary(second.id)).toMatchObject({
+      workspaceId: secondEntry.id,
+      sessionId: second.id,
+      phase: 'cold',
     });
     expect(after.contextRevision).not.toBe(before.contextRevision);
     expect(createRuntime.mock.calls.map(call => call[0])).toEqual([
@@ -97,7 +104,7 @@ describe('Web Context transition', () => {
         contextRevision: after.contextRevision,
         workspaceId: secondEntry.id,
         workspace: secondWorkspace,
-        activeSessionId: second.id,
+        activeSessionId: null,
       }),
     ]);
     expect(
@@ -105,12 +112,15 @@ describe('Web Context transition', () => {
     ).toEqual([]);
     await expect(
       controller.dispatch({
-        requestId: 'stale-first-command',
+        requestId: randomUUID(),
+        workspaceId: before.workspaceId,
+        expectedContextRevision: before.contextRevision,
         expectedSessionId: first.id,
+        expectedSessionRuntimeRevision: firstRuntimeRevision,
         type: 'submit',
         text: 'must not cross Contexts',
       })
-    ).rejects.toMatchObject({ status: 409, code: 'active_session_changed' });
+    ).rejects.toMatchObject({ status: 409, code: 'context_revision_conflict' });
     await controller.shutdown();
   });
 
@@ -145,7 +155,7 @@ describe('Web Context transition', () => {
   });
 
   test('restores the previous Context without advancing its revision when target startup fails', async () => {
-    const first = createSession(firstWorkspace, 'test-model');
+    createSession(firstWorkspace, 'test-model');
     const createRuntime = jest.fn(async (cwd: string) => {
       if (cwd === failingWorkspace) throw new Error('target runtime failed');
       return createFakeWebRuntime(cwd);
@@ -157,7 +167,6 @@ describe('Web Context transition', () => {
       workspaceRegistry: registry,
       createRuntime,
     });
-    await controller.activateSession(first.id);
     const before = controller.bootstrap('nonce');
     const failingEntry = registry.list().find(entry => entry.canonicalPath === failingWorkspace)!;
     const emit = jest.spyOn(hub, 'emit');
@@ -173,7 +182,7 @@ describe('Web Context transition', () => {
     expect(controller.bootstrap('nonce')).toMatchObject({
       contextRevision: before.contextRevision,
       workspace: firstWorkspace,
-      activeSessionId: first.id,
+      activeSessionId: null,
     });
     expect(
       emit.mock.calls.map(call => call[0]).filter(event => event.type === 'workbench_state')
@@ -243,4 +252,111 @@ describe('Web Context transition', () => {
     await transition;
     await controller.shutdown();
   });
+
+  test('does not admit a Context transition over an in-flight mutation', async () => {
+    const controller = await WebWorkbenchController.create({
+      cwd: firstWorkspace,
+      workspaceRegistry: registry,
+      createRuntime: async cwd => createFakeWebRuntime(cwd),
+    });
+    const secondEntry = registry.list().find(entry => entry.canonicalPath === secondWorkspace)!;
+    const mutationStarted = deferred<void>();
+    const mutationRelease = deferred<void>();
+    const mutation = controller.executeMutation(
+      'held-settings-mutation',
+      'settings.update',
+      { value: 'held' },
+      async () => {
+        mutationStarted.resolve();
+        await mutationRelease.promise;
+        return true;
+      }
+    );
+    await mutationStarted.promise;
+
+    await expect(
+      controller.activateContext({
+        expectedContextRevision: controller.contextRevision,
+        workspaceId: secondEntry.id,
+        sessionId: null,
+      })
+    ).rejects.toMatchObject({ status: 409, code: 'runtime_busy' });
+    const transitionAction = jest.fn();
+    await expect(
+      controller.executeMutation(
+        randomUUID(),
+        'context.activate',
+        { workspaceId: secondEntry.id },
+        transitionAction
+      )
+    ).rejects.toMatchObject({ status: 409, code: 'runtime_busy' });
+    expect(transitionAction).not.toHaveBeenCalled();
+    expect(controller.workspace).toBe(firstWorkspace);
+
+    mutationRelease.resolve();
+    await mutation;
+    await controller.activateContext({
+      expectedContextRevision: controller.contextRevision,
+      workspaceId: secondEntry.id,
+      sessionId: null,
+    });
+    expect(controller.workspace).toBe(secondWorkspace);
+    await controller.shutdown();
+  });
+
+  test('does not tear down background Session actors when switching Workspace', async () => {
+    const session = createSession(firstWorkspace, 'test-model');
+    const actorRuntime = createFakeWebRuntime(firstWorkspace);
+    const turn = deferred<void>();
+    actorRuntime.createAgentRunner = () => ({ runInput: jest.fn(() => turn.promise) });
+    const controller = await WebWorkbenchController.create({
+      cwd: firstWorkspace,
+      workspaceRegistry: registry,
+      createRuntime: async cwd => createFakeWebRuntime(cwd),
+      createSessionRuntime: async () => actorRuntime,
+    });
+    const bootstrap = controller.bootstrap('nonce');
+    const secondEntry = registry.list().find(entry => entry.canonicalPath === secondWorkspace)!;
+    await controller.dispatch({
+      requestId: randomUUID(),
+      workspaceId: bootstrap.workspaceId,
+      expectedContextRevision: bootstrap.contextRevision,
+      expectedSessionId: session.id,
+      expectedSessionRuntimeRevision: controller.sessionRuntimeSummary(session.id).runtimeRevision,
+      type: 'submit',
+      text: 'keep running in the first Workspace',
+    });
+    expect(controller.sessionRuntimeSummary(session.id).phase).toBe('running');
+
+    await expect(
+      controller.activateContext({
+        expectedContextRevision: controller.contextRevision,
+        workspaceId: secondEntry.id,
+        sessionId: null,
+      })
+    ).rejects.toMatchObject({ status: 409, code: 'runtime_busy' });
+    expect(controller.workspace).toBe(firstWorkspace);
+    expect(controller.sessionRuntimeSummary(session.id).phase).toBe('running');
+    expect(actorRuntime.shutdown).not.toHaveBeenCalled();
+
+    turn.resolve();
+    await controller.waitForSessionIdle(session.id);
+    await controller.activateContext({
+      expectedContextRevision: controller.contextRevision,
+      workspaceId: secondEntry.id,
+      sessionId: null,
+    });
+    expect(controller.workspace).toBe(secondWorkspace);
+    await controller.shutdown();
+  });
 });
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}

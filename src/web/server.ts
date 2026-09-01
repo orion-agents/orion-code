@@ -92,14 +92,31 @@ export async function startOrionWebServer(
     if (closing) return closing;
     closing = (async () => {
       clearInterval(heartbeat);
-      await terminalSockets.close();
-      await workbench.shutdown();
-      await closeServer(server);
+      const failures: unknown[] = [];
+      await captureCloseFailure(failures, () => terminalSockets.close());
+      await captureCloseFailure(failures, () => workbench.shutdown());
+      await captureCloseFailure(failures, () => closeServer(server));
+      if (failures.length > 0) {
+        const error = new Error('Orion Web Host shutdown was incomplete.');
+        Object.defineProperty(error, 'failures', { value: Object.freeze([...failures]) });
+        throw error;
+      }
     })();
     return closing;
   };
 
   return Object.freeze({ host: HOST, port, url: origin, nonce, workbench, server, close });
+}
+
+async function captureCloseFailure(
+  failures: unknown[],
+  operation: () => void | Promise<void>
+): Promise<void> {
+  try {
+    await operation();
+  } catch (error) {
+    failures.push(error);
+  }
 }
 
 interface RequestContext {
@@ -337,7 +354,11 @@ async function handleRequest(context: RequestContext): Promise<void> {
         safeDecodePathSegment(snapshotMatch[1]),
         url.searchParams.get('cursor') ?? undefined,
         pageSize(url),
-        url.searchParams.get('tail') === '1',
+        // A recovery snapshot starts at the latest bounded transcript page and
+        // pages backward. Older clients did not send the internal `tail=1`
+        // hint, so absence must still use the indexed tail path rather than
+        // reopening and replaying the complete Thread.
+        url.searchParams.get('tail') !== '0',
         contextGuard
       )
     );

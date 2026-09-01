@@ -23,6 +23,7 @@ export type SettingsAppliesV1 = 'live' | 'next-logical-request' | 'new-session' 
 export type SettingsStateV1 = 'ready' | 'invalid' | 'read-only' | 'unavailable';
 export type SettingsThemeV1 = 'system' | 'light' | 'dark';
 export type SettingsMotionV1 = 'system' | 'reduced';
+export type SettingsUiStyleV1 = 'classic' | 'orion-blocksmith';
 
 export interface SettingsFieldViewV1<T> {
   readonly effectiveValue: T;
@@ -57,7 +58,7 @@ export interface SettingsCurrentSessionV1 {
 
 /** Secret-free settings description suitable for direct Web protocol projection. */
 export interface SettingsDocumentViewV1 {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly revision: string;
   readonly state: SettingsStateV1;
   readonly writable: boolean;
@@ -65,6 +66,7 @@ export interface SettingsDocumentViewV1 {
   readonly workspace: string;
   readonly sections: {
     readonly appearance: {
+      readonly style: SettingsFieldViewV1<SettingsUiStyleV1>;
       readonly theme: SettingsFieldViewV1<SettingsThemeV1>;
       readonly motion: SettingsFieldViewV1<SettingsMotionV1>;
     };
@@ -149,6 +151,7 @@ interface IdempotencyEntry {
 }
 
 interface ControlledSettingsState {
+  readonly style?: SettingsUiStyleV1;
   readonly theme?: SettingsThemeV1;
   readonly motion?: SettingsMotionV1;
   readonly defaultModel?: string;
@@ -217,6 +220,9 @@ function controlledState(
   const appearance = getRecord(getRecord(document, 'web'), 'appearance');
   const project = getRecord(getRecord(document, 'projects'), workspace);
   return Object.freeze({
+    ...(getString(appearance, 'style')
+      ? { style: getString(appearance, 'style') as SettingsUiStyleV1 }
+      : {}),
     ...(getString(appearance, 'theme')
       ? { theme: getString(appearance, 'theme') as SettingsThemeV1 }
       : {}),
@@ -245,6 +251,13 @@ function controlledDiff(
   after: ControlledSettingsState
 ): readonly SettingsOperationV1[] {
   const operations: SettingsOperationV1[] = [];
+  if (before.style !== after.style) {
+    operations.push(
+      after.style
+        ? { op: 'set', key: 'appearance.style', value: after.style }
+        : { op: 'unset', key: 'appearance.style' }
+    );
+  }
   if (before.theme !== after.theme) {
     operations.push(
       after.theme
@@ -497,6 +510,7 @@ export class SettingsCoordinatorV1 {
     const appearance = getRecord(web, 'appearance');
     const projects = getRecord(document, 'projects');
     const project = getRecord(projects, this.workspace);
+    const explicitStyle = getString(appearance, 'style') as SettingsUiStyleV1 | undefined;
     const explicitTheme = getString(appearance, 'theme') as SettingsThemeV1 | undefined;
     const explicitMotion = getString(appearance, 'motion') as SettingsMotionV1 | undefined;
     const explicitModel = getString(document, 'defaultModel');
@@ -538,7 +552,7 @@ export class SettingsCoordinatorV1 {
       : snapshot.diagnostic;
 
     return deepFreeze({
-      schemaVersion: 1 as const,
+      schemaVersion: 2 as const,
       revision: snapshot.revision,
       state,
       writable: storageWritable,
@@ -546,6 +560,18 @@ export class SettingsCoordinatorV1 {
       workspace: this.workspace,
       sections: {
         appearance: {
+          style: {
+            effectiveValue: explicitStyle ?? 'orion-blocksmith',
+            ...(explicitStyle
+              ? { explicitValue: explicitStyle }
+              : { inheritedValue: 'orion-blocksmith' as const }),
+            source: explicitStyle ? ('global' as const) : ('internal' as const),
+            scope: 'global' as const,
+            applies: 'live' as const,
+            overridden: false,
+            writable: storageWritable,
+            ...(generalBlocked ? { blockedReason: generalBlocked } : {}),
+          },
           theme: {
             effectiveValue: explicitTheme ?? 'system',
             ...(explicitTheme
@@ -818,14 +844,10 @@ export class SettingsCoordinatorV1 {
       try {
         const apply = input.runtimeApply ?? this.runtimeApply;
         await apply?.({ before, document, operations: input.operations });
-      } catch {
+      } catch (applyError) {
+        let restored: SettingsRepositorySnapshotV1;
         try {
-          const restored = this.repository.rollback(persisted.rollbackToken);
-          this.emitInvalidation({
-            revision: restored.revision,
-            reason: 'local-write',
-            state: 'ready',
-          });
+          restored = this.repository.rollback(persisted.rollbackToken);
         } catch {
           this.recoveryRequired = true;
           throw new SettingsCoordinatorError(
@@ -834,6 +856,23 @@ export class SettingsCoordinatorV1 {
             'The durable settings write could not be reconciled with the runtime.'
           );
         }
+        if (
+          applyError instanceof SettingsCoordinatorError &&
+          applyError.code === 'settings_recovery_required'
+        ) {
+          this.recoveryRequired = true;
+          this.emitInvalidation({
+            revision: restored.revision,
+            reason: 'local-write',
+            state: 'invalid',
+          });
+          throw applyError;
+        }
+        this.emitInvalidation({
+          revision: restored.revision,
+          reason: 'local-write',
+          state: 'ready',
+        });
         throw new SettingsCoordinatorError(
           422,
           'settings_rejected',

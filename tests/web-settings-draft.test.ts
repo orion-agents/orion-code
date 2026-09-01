@@ -7,6 +7,7 @@ import {
   setDraftValue,
 } from '../web/src/settings/settings-draft';
 import { SettingsMirror } from '../web/src/settings/settings-mirror';
+import { parseSettingsDocument } from '../web/src/settings/contract';
 import {
   initialSettingsEditorState,
   settingsEditorReducer,
@@ -14,6 +15,35 @@ import {
 import type { SettingsFieldViewV1, WebSettingsDocumentV1 } from '../web/src/settings/types';
 
 describe('Web Settings draft and mirror', () => {
+  test('normalizes rolling schema v1 documents to the built-in Blocksmith style', () => {
+    const current = settingsDocument(`hmac-sha256:${'9'.repeat(64)}`);
+    const legacy = {
+      ...current,
+      schemaVersion: 1,
+      sections: {
+        ...current.sections,
+        appearance: {
+          theme: current.sections.appearance.theme,
+          motion: current.sections.appearance.motion,
+        },
+      },
+    };
+
+    expect(parseSettingsDocument(legacy)).toMatchObject({
+      schemaVersion: 2,
+      sections: {
+        appearance: {
+          style: {
+            effectiveValue: 'orion-blocksmith',
+            inheritedValue: 'orion-blocksmith',
+            source: 'internal',
+            applies: 'live',
+          },
+        },
+      },
+    });
+  });
+
   test('hydrates, edits and resets an explicit value with typed set/unset operations', () => {
     const base = settingsDocument('hmac-sha256:a'.padEnd(76, 'a'), {
       theme: explicitField('dark', 'system', 'global', 'global', 'live'),
@@ -123,6 +153,7 @@ describe('Web Settings draft and mirror', () => {
 
 interface DocumentOverrides {
   readonly theme?: SettingsFieldViewV1<'system' | 'light' | 'dark'>;
+  readonly style?: SettingsFieldViewV1<'classic' | 'orion-blocksmith'>;
   readonly permission?: SettingsFieldViewV1<'ask' | 'allow' | 'deny'>;
 }
 
@@ -131,7 +162,7 @@ function settingsDocument(
   overrides: DocumentOverrides = {}
 ): WebSettingsDocumentV1 {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     revision,
     state: 'ready',
     writable: true,
@@ -139,6 +170,7 @@ function settingsDocument(
     workspace: '/fixture/workspace',
     sections: {
       appearance: {
+        style: overrides.style ?? inheritedField('orion-blocksmith', 'internal', 'global', 'live'),
         theme: overrides.theme ?? inheritedField('system', 'internal', 'global', 'live'),
         motion: inheritedField('system', 'internal', 'global', 'live'),
       },

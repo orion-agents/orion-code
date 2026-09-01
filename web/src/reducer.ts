@@ -4,6 +4,7 @@ import type {
   WebModelCatalogPageV1,
   WebMcpServerSummaryV1,
   WebSessionSnapshotV1,
+  WebSessionRuntimeSummaryV1,
   WebSessionSummaryV1,
   WebSettingsSnapshotV1,
   WebSkillSummaryV1,
@@ -38,6 +39,9 @@ const MAX_RESEARCH = 128;
 const MAX_TRACES = 256;
 const MAX_GOAL_ACTIVITY = 128;
 const MAX_GOAL_EVIDENCE = 256;
+const MAX_SESSION_PROJECTIONS = 8;
+const MAX_SESSION_PROJECTION_BYTES = 8 * 1024 * 1024;
+const MAX_SESSION_RUNTIME_SUMMARIES = 64;
 
 export type WorkbenchAction =
   | {
@@ -62,7 +66,16 @@ export type WorkbenchAction =
       readonly attempt: number;
     }
   | { readonly type: 'event_received'; readonly envelope: WebEventEnvelopeV1 }
-  | { readonly type: 'session_snapshot_loaded'; readonly snapshot: WebSessionSnapshotV1 }
+  | {
+      readonly type: 'session_snapshot_loaded';
+      readonly snapshot: WebSessionSnapshotV1;
+      /**
+       * A snapshot cursor may establish a new SSE baseline only while the event
+       * stream is paused. Live Session switches leave the stream in charge of
+       * the global cursor so in-flight control events cannot be skipped.
+       */
+      readonly advanceEventCursor?: boolean;
+    }
   | { readonly type: 'composer_loaded'; readonly composer: WebComposerControlStateV1 }
   | { readonly type: 'model_catalog_loaded'; readonly catalog: WebModelCatalogPageV1 }
   | {
@@ -120,7 +133,11 @@ export type WorkbenchAction =
   | { readonly type: 'pending_action'; readonly label: string | null }
   | { readonly type: 'notice'; readonly notice: WorkbenchNotice | null }
   | { readonly type: 'approval_resolved'; readonly requestId: string; readonly approved: boolean }
-  | { readonly type: 'snapshot_failed'; readonly detail: string }
+  | {
+      readonly type: 'snapshot_failed';
+      readonly sessionId: string | null;
+      readonly detail: string;
+    }
   | { readonly type: 'reset_session_view'; readonly activeSessionId: string | null }
   | { readonly type: 'recovering' };
 
@@ -191,13 +208,10 @@ export function workbenchReducer(
     case 'event_received':
       return reduceEnvelope(state, action.envelope);
     case 'session_snapshot_loaded':
-      if (
-        state.activeSessionId !== action.snapshot.session.id ||
-        action.snapshot.runtime.active !== true
-      ) {
+      if (state.activeSessionId !== action.snapshot.session.id) {
         return state;
       }
-      return applySessionSnapshot(state, action.snapshot);
+      return applySessionSnapshot(state, action.snapshot, action.advanceEventCursor !== false);
     case 'composer_loaded':
       if (
         action.composer.sessionId !== state.activeSessionId ||
@@ -212,12 +226,14 @@ export function workbenchReducer(
     case 'durable_session_metadata_loaded':
       if (
         state.contextRevision !== action.contextRevision ||
-        state.workspaceId !== action.workspaceId ||
-        state.activeSessionId !== action.snapshot.session.id ||
-        action.snapshot.runtime.active !== true
+        state.workspaceId !== action.workspaceId
       ) {
         return state;
       }
+      if (state.activeSessionId !== action.snapshot.session.id) {
+        return cacheBackgroundSessionSnapshot(state, action.snapshot);
+      }
+      if (action.snapshot.runtime.active !== true) return state;
       return applyDurableSessionMetadata(state, action.snapshot);
     case 'older_transcript_loaded': {
       if (state.activeSessionId !== action.snapshot.session.id || !state.sessionSnapshot) {
@@ -376,6 +392,7 @@ export function workbenchReducer(
         announcement: action.approved ? '工具权限已授予' : '工具请求已拒绝',
       };
     case 'snapshot_failed':
+      if (action.sessionId && action.sessionId !== state.activeSessionId) return state;
       return {
         ...state,
         connection: 'replay-required',
@@ -389,6 +406,17 @@ export function workbenchReducer(
         announcement: '会话状态尚未同步，需要恢复后才能继续操作',
       };
     case 'reset_session_view':
+      if (action.activeSessionId && state.sessionProjectionById[action.activeSessionId]) {
+        return {
+          ...applySessionSnapshot(
+            { ...state, activeSessionId: action.activeSessionId },
+            state.sessionProjectionById[action.activeSessionId],
+            false
+          ),
+          statusMessage: '已显示最近会话状态，正在同步…',
+          announcement: '已切换到缓存会话，正在同步最新状态',
+        };
+      }
       return {
         ...clearSessionProjection(state),
         activeSessionId: action.activeSessionId,
@@ -463,16 +491,19 @@ function reduceEnvelope(state: WorkbenchState, envelope: WebEventEnvelopeV1): Wo
   }
 
   if (envelope.type === 'workbench_state') {
-    const projectionChanged =
-      (state.workspace !== '' && state.workspace !== envelope.payload.workspace) ||
-      state.activeSessionId !== envelope.payload.activeSessionId;
-    const next = projectionChanged ? clearSessionProjection(received) : received;
+    const workspaceChanged =
+      (state.workspaceId !== '' && state.workspaceId !== envelope.payload.workspaceId) ||
+      (state.workspace !== '' && state.workspace !== envelope.payload.workspace);
+    const next = workspaceChanged ? clearSessionProjection(received) : received;
     return {
       ...next,
       contextRevision: envelope.payload.contextRevision,
       workspaceId: envelope.payload.workspaceId,
       workspace: envelope.payload.workspace,
-      activeSessionId: envelope.payload.activeSessionId,
+      // Session foreground selection belongs to this browser tab. Host
+      // workbench_state only moves the Workspace Context; a legacy/global
+      // activeSessionId must never steal or clear another tab's selection.
+      activeSessionId: workspaceChanged ? null : state.activeSessionId,
     };
   }
 
@@ -486,6 +517,57 @@ function reduceEnvelope(state: WorkbenchState, envelope: WebEventEnvelopeV1): Wo
       return received;
     }
     return applyComposerState(received, composer);
+  }
+
+  if (envelope.type === 'session_runtime_changed') {
+    const runtime = envelope.payload.runtime;
+    const cached = received.sessionProjectionById[runtime.sessionId];
+    const sessionRuntimeById = cacheRuntimeSummary(received.sessionRuntimeById, runtime);
+    const sessionProjectionById = cached
+      ? cacheSessionProjection(received.sessionProjectionById, {
+          ...cached,
+          sessionRuntime: runtime,
+        })
+      : received.sessionProjectionById;
+    if (runtime.sessionId !== received.activeSessionId) {
+      return { ...received, sessionProjectionById, sessionRuntimeById };
+    }
+    return {
+      ...received,
+      sessionProjectionById,
+      sessionRuntimeById,
+      processing: ['running', 'waiting_approval', 'stopping'].includes(runtime.phase),
+      sessionSnapshot:
+        received.sessionSnapshot?.session.id === runtime.sessionId
+          ? { ...received.sessionSnapshot, sessionRuntime: runtime }
+          : received.sessionSnapshot,
+      composer:
+        received.composer?.sessionId === runtime.sessionId
+          ? { ...received.composer, sessionRuntime: runtime }
+          : received.composer,
+    };
+  }
+
+  if (envelope.type === 'workspace_mutation_changed') {
+    if (envelope.sessionId !== received.activeSessionId) return received;
+    const tool = received.tools.find(item => item.callId === envelope.payload.state.callId);
+    if (!tool) return received;
+    const workspaceMutation = {
+      phase: envelope.payload.state.phase,
+      ...(envelope.payload.state.queuePosition === undefined
+        ? {}
+        : { queuePosition: envelope.payload.state.queuePosition }),
+    };
+    return {
+      ...received,
+      tools: upsertTool(received.tools, { ...tool, workspaceMutation }),
+      announcement:
+        workspaceMutation.phase === 'queued'
+          ? `工具 ${tool.name} 正在等待工作树写入`
+          : workspaceMutation.phase === 'running'
+            ? `工具 ${tool.name} 已获得工作树写入权限`
+            : received.announcement,
+    };
   }
 
   if (envelope.sessionId !== null && envelope.sessionId !== received.activeSessionId) {
@@ -845,7 +927,8 @@ function reduceRuntimeEvent(
 
 function applySessionSnapshot(
   state: WorkbenchState,
-  snapshot: WebSessionSnapshotV1
+  snapshot: WebSessionSnapshotV1,
+  advanceEventCursor = true
 ): WorkbenchState {
   const transcript = transcriptFromSnapshot(snapshot).slice(-MAX_TRANSCRIPT);
   const agentMode = isAgentMode(snapshot.runtime.agentMode)
@@ -855,8 +938,12 @@ function applySessionSnapshot(
   const goal = goalFromPersistentSnapshot(snapshot.goal);
   return {
     ...clearSessionProjection(state),
-    lastCursor: Math.max(state.lastCursor, snapshot.eventCursor),
+    lastCursor: advanceEventCursor
+      ? Math.max(state.lastCursor, snapshot.eventCursor)
+      : state.lastCursor,
     activeSessionId: snapshot.session.id,
+    sessionProjectionById: cacheSessionProjection(state.sessionProjectionById, snapshot),
+    sessionRuntimeById: cacheRuntimeSummary(state.sessionRuntimeById, snapshot.sessionRuntime),
     sessions: upsertSessionSummary(state.sessions, snapshot.session),
     workspaceSessions: state.workspaceId
       ? {
@@ -907,6 +994,33 @@ function applySessionSnapshot(
     connection: state.connection === 'replay-required' ? 'connecting' : state.connection,
     replayReason: undefined,
     announcement: '会话状态已恢复',
+  };
+}
+
+function cacheBackgroundSessionSnapshot(
+  state: WorkbenchState,
+  snapshot: WebSessionSnapshotV1
+): WorkbenchState {
+  const workspaceSessions = state.workspaceId
+    ? {
+        ...state.workspaceSessions,
+        [state.workspaceId]: {
+          status: 'ready' as const,
+          items: upsertSessionSummary(
+            state.workspaceSessions[state.workspaceId]?.items ?? state.sessions,
+            snapshot.session
+          ),
+          nextCursor:
+            state.workspaceSessions[state.workspaceId]?.nextCursor ?? state.sessionNextCursor,
+        },
+      }
+    : state.workspaceSessions;
+  return {
+    ...state,
+    sessionProjectionById: cacheSessionProjection(state.sessionProjectionById, snapshot),
+    sessionRuntimeById: cacheRuntimeSummary(state.sessionRuntimeById, snapshot.sessionRuntime),
+    sessions: upsertSessionSummary(state.sessions, snapshot.session),
+    workspaceSessions,
   };
 }
 
@@ -1214,6 +1328,47 @@ function upsertTool(current: readonly WebToolCall[], tool: WebToolCall): readonl
   return [...current.filter(item => item.callId !== tool.callId), tool]
     .sort((left, right) => left.order - right.order)
     .slice(-MAX_TOOLS);
+}
+
+function cacheSessionProjection(
+  current: Readonly<Record<string, WebSessionSnapshotV1>>,
+  snapshot: WebSessionSnapshotV1
+): Readonly<Record<string, WebSessionSnapshotV1>> {
+  const entries = Object.entries(current).filter(
+    ([sessionId]) => sessionId !== snapshot.session.id
+  );
+  entries.push([snapshot.session.id, snapshot]);
+  let estimatedBytes = entries.reduce(
+    (total, [, value]) => total + estimateSessionProjectionBytes(value),
+    0
+  );
+  while (
+    entries.length > 1 &&
+    (entries.length > MAX_SESSION_PROJECTIONS || estimatedBytes > MAX_SESSION_PROJECTION_BYTES)
+  ) {
+    const removed = entries.shift();
+    if (removed) estimatedBytes -= estimateSessionProjectionBytes(removed[1]);
+  }
+  return Object.freeze(Object.fromEntries(entries));
+}
+
+function cacheRuntimeSummary(
+  current: Readonly<Record<string, WebSessionRuntimeSummaryV1>>,
+  summary: WebSessionRuntimeSummaryV1
+): Readonly<Record<string, WebSessionRuntimeSummaryV1>> {
+  const entries = Object.entries(current).filter(([sessionId]) => sessionId !== summary.sessionId);
+  entries.push([summary.sessionId, summary]);
+  return Object.freeze(Object.fromEntries(entries.slice(-MAX_SESSION_RUNTIME_SUMMARIES)));
+}
+
+function estimateSessionProjectionBytes(snapshot: WebSessionSnapshotV1): number {
+  try {
+    // UTF-16 code units provide a conservative serialized-size estimate for
+    // the browser-owned cache budget across ASCII and CJK content.
+    return JSON.stringify(snapshot).length * 2;
+  } catch {
+    return MAX_SESSION_PROJECTION_BYTES;
+  }
 }
 
 function clearSessionProjection(state: WorkbenchState): WorkbenchState {

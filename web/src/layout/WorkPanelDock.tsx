@@ -41,12 +41,10 @@ export interface WorkPanelDockProps {
   readonly expanded: boolean;
   readonly activePanel: WorkPanelId;
   readonly agentPanel: AgentPanelTab;
-  readonly settingsOpen: boolean;
   readonly onExpand: () => void;
   readonly onCollapse: () => void;
   readonly onPanelChange: (panel: WorkPanelId) => void;
   readonly onAgentPanelChange: (panel: AgentPanelTab) => void;
-  readonly onOpenSettings: () => void;
   readonly onWidthPreview: (width: number) => void;
   readonly onWidthCommit: (width: number) => void;
   readonly onSendToComposer: (text: string) => void;
@@ -59,12 +57,10 @@ export function WorkPanelDock({
   expanded,
   activePanel,
   agentPanel,
-  settingsOpen,
   onExpand,
   onCollapse,
   onPanelChange,
   onAgentPanelChange,
-  onOpenSettings,
   onWidthPreview,
   onWidthCommit,
   onSendToComposer,
@@ -232,17 +228,6 @@ export function WorkPanelDock({
             <h2>{PANELS.find(item => item.id === activePanel)?.label ?? 'Agent'}</h2>
           </div>
           <div className="work-panel-header-actions">
-            <button
-              type="button"
-              className="icon-button"
-              onClick={onOpenSettings}
-              aria-label="打开设置"
-              aria-haspopup="dialog"
-              aria-controls="settings-dialog"
-              aria-expanded={settingsOpen}
-            >
-              <Icon name="settings" />
-            </button>
             <button
               ref={closeRef}
               type="button"

@@ -4,6 +4,8 @@ import { resolve } from 'path';
 interface PackageManifest {
   name?: string;
   version?: string;
+  types?: string;
+  files?: string[];
   scripts?: Record<string, string>;
 }
 
@@ -32,6 +34,15 @@ describe('npm package lifecycle', () => {
     expect(cleanScript).toContain("const distDir = resolve(projectRoot, 'dist');");
     expect(cleanScript).toContain("relative(projectRoot, distDir) !== 'dist'");
     expect(cleanScript).toContain('rmSync(distDir, { recursive: true, force: true });');
+  });
+
+  it('publishes declarations while excluding generated source maps', () => {
+    const manifest = JSON.parse(
+      readFileSync(resolve(rootDir, 'package.json'), 'utf8')
+    ) as PackageManifest;
+
+    expect(manifest.types).toBe('dist/index.d.ts');
+    expect(manifest.files).toEqual(expect.arrayContaining(['dist/', '!dist/**/*.map']));
   });
 
   it('lets isolated packaged-runtime gates disable ambient env-file loading', () => {

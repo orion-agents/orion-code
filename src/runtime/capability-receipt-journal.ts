@@ -326,7 +326,7 @@ function replayAll(store: ThreadEventStore): readonly RuntimeEventEnvelopeV1[] {
   const events: RuntimeEventEnvelopeV1[] = [];
   let cursor = 0;
   while (true) {
-    const page = store.replay(cursor);
+    const page = store.replay(cursor, undefined, 'capability_receipt_journal');
     events.push(...page.events);
     if (!page.hasMore) return events;
     if (page.nextCursor <= cursor) {

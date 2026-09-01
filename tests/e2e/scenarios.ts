@@ -10,6 +10,8 @@ import {
   WEB_E2E_WEB31_SCENARIOS_V1,
   WEB_E2E_WEB32_CRITICAL_SCENARIOS_V1,
   WEB_E2E_WEB32_SCENARIOS_V1,
+  WEB_E2E_WEB33_CRITICAL_SCENARIOS_V1,
+  WEB_E2E_WEB33_SCENARIOS_V1,
 } from '../../src/runtime/release-receipts';
 
 export const WEB_E2E_FULL_SCENARIOS = WEB_E2E_FULL_SCENARIOS_V1;
@@ -19,6 +21,8 @@ export const WEB_E2E_WEB31_SCENARIOS = WEB_E2E_WEB31_SCENARIOS_V1;
 export const WEB_E2E_WEB31_CRITICAL_SCENARIOS = WEB_E2E_WEB31_CRITICAL_SCENARIOS_V1;
 export const WEB_E2E_WEB32_SCENARIOS = WEB_E2E_WEB32_SCENARIOS_V1;
 export const WEB_E2E_WEB32_CRITICAL_SCENARIOS = WEB_E2E_WEB32_CRITICAL_SCENARIOS_V1;
+export const WEB_E2E_WEB33_SCENARIOS = WEB_E2E_WEB33_SCENARIOS_V1;
+export const WEB_E2E_WEB33_CRITICAL_SCENARIOS = WEB_E2E_WEB33_CRITICAL_SCENARIOS_V1;
 export const WEB_E2E_SETTINGS_TAG = '@settings' as const;
 export const WEB_E2E_CRITICAL_GREP = webE2EGrepPattern(WEB_E2E_CRITICAL_SCENARIOS);
 
@@ -198,6 +202,148 @@ export const WEB32_REQUIRED_EVIDENCE_FACTS_V1: Readonly<
   ]),
 });
 
+export const WEB33_REQUIRED_EVIDENCE_FACTS_V1: Readonly<
+  Record<string, readonly WebE2ERequiredFactV1[]>
+> = Object.freeze({
+  'WEB33-P0-01': Object.freeze([
+    { key: 'web33.appearance_default', equals: 'orion-blocksmith+system' },
+    { key: 'web33.theme_color_verified', equals: true },
+    { key: 'web33.remote_theme_requests', equals: 0 },
+  ]),
+  'WEB33-P0-02': Object.freeze([
+    { key: 'web33.appearance_atomic_patch', equals: 'appearance.style,appearance.theme' },
+    { key: 'web33.appearance_committed', equals: 'orion-blocksmith+light' },
+    { key: 'web33.appearance_draft_preserved', equals: true },
+    { key: 'web33.appearance_focus_preserved', equals: true },
+  ]),
+  'WEB33-P0-03': Object.freeze([
+    { key: 'web33.appearance_reload_persisted', equals: true },
+    { key: 'web33.appearance_restart_persisted', equals: true },
+    { key: 'web33.appearance_nonce_rotated', equals: true },
+    { key: 'web33.appearance_session_preserved', equals: true },
+  ]),
+  'WEB33-P0-04': Object.freeze([
+    { key: 'web33.style_reset_default', equals: 'orion-blocksmith' },
+    { key: 'web33.style_reset_preserved_theme', equals: 'dark' },
+    { key: 'web33.theme_reset_default', equals: 'system' },
+    { key: 'web33.theme_reset_preserved_style', equals: 'classic' },
+  ]),
+  'WEB33-P0-05': Object.freeze([
+    { key: 'web33.appearance_clean_page_synced', equals: true },
+    { key: 'web33.appearance_dirty_draft_preserved', equals: true },
+    { key: 'web33.appearance_conflict_rebased', equals: true },
+  ]),
+  'WEB33-P0-06': Object.freeze([
+    { key: 'web33.appearance_last_good_verified', equals: true },
+    { key: 'web33.appearance_invalid_save_disabled', equals: true },
+    { key: 'web33.appearance_read_only_save_disabled', equals: true },
+  ]),
+  'WEB33-P0-07': Object.freeze([
+    { key: 'web33.theme_state_matrix', equals: 'tool,approval,plan,goal' },
+    { key: 'web33.theme_state_actions_verified', equals: true },
+  ]),
+  'WEB33-P0-08': Object.freeze([
+    { key: 'web33.theme_terminal_id_preserved', equals: true },
+    { key: 'web33.theme_terminal_buffer_preserved', equals: true },
+    { key: 'web33.theme_terminal_focus_preserved', equals: true },
+    { key: 'web33.theme_terminal_ansi_verified', equals: true },
+  ]),
+  'WEB33-P0-09': Object.freeze([
+    { key: 'web33.theme_engineering_surfaces', equals: 'files,git,review,tool-output' },
+    { key: 'web33.theme_large_output_bytes', minimum: 131072 },
+    { key: 'web33.theme_engineering_readable', equals: true },
+  ]),
+  'WEB33-P0-10': Object.freeze([
+    { key: 'web33.theme_viewport_matrix', equals: '320,390,760,1180,1440,1920' },
+    { key: 'web33.theme_horizontal_overflow', equals: 0 },
+    { key: 'web33.theme_responsive_controls_verified', equals: true },
+  ]),
+  'WEB33-P0-11': Object.freeze([
+    { key: 'web33.theme_axe_blocking_violations', equals: 0 },
+    { key: 'web33.theme_zoom_200_verified', equals: true },
+    { key: 'web33.theme_forced_colors_verified', equals: true },
+    { key: 'web33.theme_keyboard_verified', equals: true },
+  ]),
+  'WEB33-P0-12': Object.freeze([
+    { key: 'web33.theme_csp_violations', equals: 0 },
+    { key: 'web33.theme_external_asset_requests', equals: 0 },
+    { key: 'web33.theme_secret_findings', equals: 0 },
+    { key: 'web33.theme_asset_budget_verified', equals: true },
+  ]),
+  'WEB33-P0-16': Object.freeze([
+    { key: 'web33.running_switch_verified', equals: true },
+    { key: 'web33.background_turn_preserved', equals: true },
+    { key: 'web33.switch_sse_reconnects', equals: 0 },
+  ]),
+  'WEB33-P0-17': Object.freeze([
+    { key: 'web33.parallel_peak_running', minimum: 2 },
+    { key: 'web33.parallel_provider_requests', equals: 2 },
+    { key: 'web33.parallel_cross_session_leaks', equals: 0 },
+    { key: 'web33.workspace_kernel_participants', equals: 3 },
+    { key: 'web33.provider_gate_peak_active', equals: 2 },
+  ]),
+  'WEB33-P0-18': Object.freeze([
+    { key: 'web33.background_approval_preserved', equals: true },
+    { key: 'web33.foreground_turn_completed', equals: true },
+    { key: 'web33.background_approval_cross_leaks', equals: 0 },
+  ]),
+  'WEB33-P0-19': Object.freeze([
+    { key: 'web33.workspace_mutation_overlap', equals: 0 },
+    { key: 'web33.workspace_mutation_results', equals: 2 },
+    { key: 'web33.workspace_mutation_fifo_verified', equals: true },
+    { key: 'web33.workspace_mutation_wait_visible', equals: true },
+  ]),
+  'WEB33-P0-20': Object.freeze([
+    { key: 'web33.two_tab_selection_independent', equals: true },
+    { key: 'web33.explicit_session_routing_verified', equals: true },
+    { key: 'web33.stale_runtime_status', equals: 409 },
+    { key: 'web33.stale_runtime_side_effects', equals: 0 },
+  ]),
+  'WEB33-P0-21': Object.freeze([
+    { key: 'web33.warm_switch_budget', equals: true },
+    { key: 'web33.cold_switch_budget', equals: true },
+    { key: 'web33.long_session_messages', equals: 10000 },
+    { key: 'web33.switch_snapshot_pages_max', equals: 1 },
+    { key: 'web33.switch_catalog_requests', equals: 0 },
+    { key: 'web33.switch_sse_reconnects', equals: 0 },
+    { key: 'web33.switch_replay_resets', equals: 0 },
+    { key: 'web33.switch_log_scans', equals: 0 },
+    { key: 'web33.switch_log_bytes_scanned', equals: 0 },
+    { key: 'web33.switch_index_builds', equals: 0 },
+    { key: 'web33.switch_index_bytes_read', minimum: 1 },
+    { key: 'web33.switch_snapshot_bytes', minimum: 1 },
+    { key: 'web33.switch_index_bytes_budget', equals: true },
+    { key: 'web33.switch_snapshot_bytes_budget', equals: true },
+  ]),
+  'WEB33-P0-22': Object.freeze([
+    { key: 'web33.max_running_sessions', equals: 3 },
+    { key: 'web33.fourth_queue_position', equals: 1 },
+    { key: 'web33.fourth_queue_cancelled', equals: true },
+    { key: 'web33.fourth_provider_requests', equals: 0 },
+    { key: 'web33.restart_ghost_queue_items', equals: 0 },
+    { key: 'web33.graceful_shutdown_exit_code', equals: 0 },
+    { key: 'web33.restart_interrupted_sessions', equals: 3 },
+    { key: 'web33.pending_approvals_before_shutdown', equals: 1 },
+    { key: 'web33.pending_approvals_after_restart', equals: 0 },
+    { key: 'web33.restart_provider_replays', equals: 0 },
+  ]),
+  'WEB33-P0-23': Object.freeze([
+    { key: 'web33.shell_viewport_matrix', equals: '320,390,760,1024,1180,1181,1440,1920' },
+    { key: 'web33.work_panel_rail_px', equals: 48 },
+    { key: 'web33.shell_geometry_invariant', equals: true },
+    { key: 'web33.shell_horizontal_overflow', equals: 0 },
+    { key: 'web33.desktop_panel_preference_restored', equals: true },
+    { key: 'web33.shell_focus_restored', equals: true },
+  ]),
+  'WEB33-P0-24': Object.freeze([
+    { key: 'web33.persistent_settings_buttons', equals: 1 },
+    { key: 'web33.settings_location', equals: 'project-navigation-footer' },
+    { key: 'web33.header_settings_buttons', equals: 0 },
+    { key: 'web33.drawer_modal_exclusive', equals: true },
+    { key: 'web33.settings_focus_restored', equals: true },
+  ]),
+});
+
 export interface WebE2ERunnerIdentityV1 {
   readonly name: string;
   readonly image: string;
@@ -223,10 +369,10 @@ export function expectedWebE2EScenarios(
 }
 
 export function webE2EScenarioIdFromTitle(title: string): string {
-  const matches = title.match(/\b(?:E2E|SET|WEB31|WEB32)-P0-\d{2}\b/gu) ?? [];
+  const matches = title.match(/\b(?:E2E|SET|WEB31|WEB32|WEB33)-P0-\d{2}\b/gu) ?? [];
   if (matches.length !== 1) {
     throw new Error(
-      'Every Web E2E test title must include exactly one E2E-P0-XX, SET-P0-XX, WEB31-P0-XX, or WEB32-P0-XX ID.'
+      'Every Web E2E test title must include exactly one E2E-P0-XX, SET-P0-XX, WEB31-P0-XX, WEB32-P0-XX, or WEB33-P0-XX ID.'
     );
   }
   if (matches[0].startsWith('SET-P0-') && !title.includes(WEB_E2E_SETTINGS_TAG)) {

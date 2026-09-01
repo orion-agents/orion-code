@@ -649,6 +649,8 @@ function parseEnvelope(raw: string): WebEventEnvelopeV1 {
       'settings_invalidated',
       'workspace_resource_invalidated',
       'composer_state_changed',
+      'session_runtime_changed',
+      'workspace_mutation_changed',
     ].includes(String(value.type)) ||
     !isRecord(value.payload)
   ) {
@@ -695,6 +697,30 @@ function parseEnvelope(raw: string): WebEventEnvelopeV1 {
     return parseSettingsInvalidatedEvent(value);
   }
   if (
+    value.type === 'session_runtime_changed' &&
+    (!isRecord(value.payload.runtime) ||
+      value.sessionId !== value.payload.runtime.sessionId ||
+      !isSessionRuntimeSummary(value.payload.runtime))
+  ) {
+    throw new Error('Session Runtime 状态事件无效。');
+  }
+  if (value.type === 'workspace_mutation_changed') {
+    const state = value.payload.state;
+    if (
+      typeof value.sessionId !== 'string' ||
+      value.durable !== false ||
+      !isRecord(state) ||
+      typeof state.callId !== 'string' ||
+      state.callId.length < 1 ||
+      !['queued', 'running', 'completed', 'failed', 'cancelled'].includes(String(state.phase)) ||
+      (state.phase === 'queued'
+        ? !Number.isSafeInteger(state.queuePosition) || (state.queuePosition as number) < 1
+        : state.queuePosition !== undefined)
+    ) {
+      throw new Error('Workspace mutation 状态事件无效。');
+    }
+  }
+  if (
     value.type === 'workspace_resource_invalidated' &&
     (value.sessionId !== null ||
       value.threadId !== null ||
@@ -733,6 +759,41 @@ function parseEnvelope(raw: string): WebEventEnvelopeV1 {
     throw new Error('Replay reset 事件无效。');
   }
   return value as unknown as WebEventEnvelopeV1;
+}
+
+function isSessionRuntimeSummary(value: Record<string, unknown>): boolean {
+  const queued = value.phase === 'queued';
+  return (
+    typeof value.workspaceId === 'string' &&
+    UUID_PATTERN.test(value.workspaceId) &&
+    typeof value.sessionId === 'string' &&
+    UUID_PATTERN.test(value.sessionId) &&
+    typeof value.runtimeRevision === 'string' &&
+    UUID_PATTERN.test(value.runtimeRevision) &&
+    [
+      'cold',
+      'starting',
+      'idle',
+      'queued',
+      'running',
+      'waiting_approval',
+      'stopping',
+      'interrupted',
+      'failed',
+    ].includes(String(value.phase)) &&
+    Number.isSafeInteger(value.pendingApprovalCount) &&
+    (value.pendingApprovalCount as number) >= 0 &&
+    typeof value.resident === 'boolean' &&
+    Number.isSafeInteger(value.estimatedBytes) &&
+    (value.estimatedBytes as number) >= 0 &&
+    typeof value.updatedAt === 'string' &&
+    (queued
+      ? typeof value.queueId === 'string' &&
+        UUID_PATTERN.test(value.queueId) &&
+        Number.isSafeInteger(value.queuePosition) &&
+        (value.queuePosition as number) >= 1
+      : value.queueId === undefined && value.queuePosition === undefined)
+  );
 }
 
 function withPage(

@@ -44,16 +44,17 @@ describe('Web protocol v1', () => {
 
   test('parses a typed submit command and preserves its stable request id', () => {
     const requestId = randomUUID();
+    const target = commandTarget();
     const command = parseWebCommand({
       requestId,
-      expectedSessionId: 'session-1',
+      ...target,
       type: 'submit',
       text: 'ship v0.3.0',
     });
 
     expect(command).toEqual({
       requestId,
-      expectedSessionId: 'session-1',
+      ...target,
       type: 'submit',
       text: 'ship v0.3.0',
     });
@@ -67,7 +68,7 @@ describe('Web protocol v1', () => {
   test('supports exact BUILD, PLAN and AUTO selection', () => {
     const command = parseWebCommand({
       requestId: randomUUID(),
-      expectedSessionId: 'session-1',
+      ...commandTarget(),
       type: 'set_agent_mode',
       agentMode: 'plan',
     });
@@ -79,12 +80,32 @@ describe('Web protocol v1', () => {
     });
   });
 
+  test('requires an opaque queue identity when cancelling a queued Session turn', () => {
+    const queueId = randomUUID();
+    expect(
+      parseWebCommand({
+        requestId: randomUUID(),
+        ...commandTarget(),
+        type: 'cancel_queued_turn',
+        queueId,
+      })
+    ).toMatchObject({ type: 'cancel_queued_turn', queueId });
+    expect(() =>
+      parseWebCommand({
+        requestId: randomUUID(),
+        ...commandTarget(),
+        type: 'cancel_queued_turn',
+      })
+    ).toThrow('cancel_queued_turn requires queueId');
+  });
+
   test('requires an item-local revision for every queue mutation', () => {
     const base = {
       requestId: randomUUID(),
       workspaceId: randomUUID(),
       expectedContextRevision: randomUUID(),
       expectedSessionId: randomUUID(),
+      expectedSessionRuntimeRevision: randomUUID(),
       expectedControlRevision: randomUUID(),
     };
     expect(
@@ -110,7 +131,7 @@ describe('Web protocol v1', () => {
       toAgentRuntimeInput(
         parseWebCommand({
           requestId: randomUUID(),
-          expectedSessionId: 'session-1',
+          ...commandTarget(),
           type: 'permission_decision',
           requestPermissionId: 'permission-1',
           approved: true,
@@ -122,7 +143,7 @@ describe('Web protocol v1', () => {
     expect(() =>
       parseWebCommand({
         requestId: randomUUID(),
-        expectedSessionId: 'session-1',
+        ...commandTarget(),
         type: 'permission_decision',
         requestPermissionId: 'permission-1',
         approved: true,
@@ -132,14 +153,14 @@ describe('Web protocol v1', () => {
     expect(() =>
       parseWebCommand({
         requestId: randomUUID(),
-        expectedSessionId: 'session-1',
+        ...commandTarget(),
         type: 'submit',
         text: 'x',
         extra: true,
       })
     ).toThrow('Unknown command field');
     expect(() => parseWebCommand({ requestId: randomUUID(), type: 'submit', text: 'x' })).toThrow(
-      'expectedSessionId must be a non-empty string'
+      'workspaceId must be a non-empty string'
     );
   });
 
@@ -151,6 +172,7 @@ describe('Web protocol v1', () => {
         requestId,
         expectedRevision,
         operations: [
+          { op: 'set', key: 'appearance.style', value: 'orion-blocksmith' },
           { op: 'set', key: 'appearance.theme', value: 'dark' },
           { op: 'unset', key: 'defaults.effort' },
           { op: 'set', key: 'permissions.toolConfirmation', value: 'ask' },
@@ -160,6 +182,7 @@ describe('Web protocol v1', () => {
       requestId,
       expectedRevision,
       operations: [
+        { op: 'set', key: 'appearance.style', value: 'orion-blocksmith' },
         { op: 'set', key: 'appearance.theme', value: 'dark' },
         { op: 'unset', key: 'defaults.effort' },
         { op: 'set', key: 'permissions.toolConfirmation', value: 'ask' },
@@ -206,3 +229,12 @@ describe('Web protocol v1', () => {
     );
   });
 });
+
+function commandTarget() {
+  return {
+    workspaceId: randomUUID(),
+    expectedContextRevision: randomUUID(),
+    expectedSessionId: randomUUID(),
+    expectedSessionRuntimeRevision: randomUUID(),
+  } as const;
+}

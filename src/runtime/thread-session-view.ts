@@ -1,10 +1,7 @@
 import type { Message } from '../services/llm';
 import { realpathSync } from 'fs';
 import { resolve } from 'path';
-import {
-  openSessionCheckpointStorageV1,
-  openSessionStorageV1,
-} from './legacy-thread-materializer';
+import { openSessionCheckpointStorageV1, openSessionStorageV1 } from './legacy-thread-materializer';
 import type { RuntimeEventEnvelopeV1 } from './protocol/runtime-protocol-v1';
 import {
   normalizeSessionModelHistoryV1,
@@ -24,6 +21,7 @@ import {
   ThreadSessionIndexError,
   type ThreadSessionIndexHeadV1,
   type ThreadSessionIndexedPageV1,
+  type ThreadSessionLatestTurnV1,
   type ThreadSessionTranscriptMessageV1,
   type ThreadSessionTurnCommitV1,
 } from './thread-session-index';
@@ -106,6 +104,7 @@ export interface ThreadSessionSnapshotPageV1 {
     readonly lastRecordHash: string | null;
     readonly log: ThreadReadModelHeadV1['log'];
   };
+  readonly latestTurn?: ThreadSessionLatestTurnV1;
   readonly latestTurnCommit?: ThreadSessionTurnCommitV1;
   readonly latestPlanTurnCommit?: ThreadSessionTurnCommitV1;
 }
@@ -243,7 +242,10 @@ export function loadThreadSessionSnapshotPageV1(
         return snapshotPageFromIndex(sessionId, checkpoint.resolution.generation, page);
       }
     } catch (error) {
-      if (!(error instanceof ThreadSessionIndexError) || error.code !== 'ORION_THREAD_SESSION_INDEX_CORRUPT') {
+      if (
+        !(error instanceof ThreadSessionIndexError) ||
+        error.code !== 'ORION_THREAD_SESSION_INDEX_CORRUPT'
+      ) {
         throw error;
       }
     }
@@ -434,6 +436,7 @@ function snapshotPageFromIndex(
       lastRecordHash: manifest.lastRecordHash,
       log: manifest.log,
     },
+    ...(manifest.latestTurn ? { latestTurn: manifest.latestTurn } : {}),
     ...(manifest.latestTurnCommit ? { latestTurnCommit: manifest.latestTurnCommit } : {}),
     ...(manifest.latestPlanTurnCommit
       ? { latestPlanTurnCommit: manifest.latestPlanTurnCommit }
@@ -486,7 +489,7 @@ function replayAll(store: ThreadEventStore, cursor: number): readonly RuntimeEve
   const events: RuntimeEventEnvelopeV1[] = [];
   let nextCursor = 0;
   while (nextCursor < cursor) {
-    const replay = store.replay(nextCursor);
+    const replay = store.replay(nextCursor, undefined, 'thread_session_view');
     const page = replay.events.filter(event => event.seq <= cursor);
     if (page.length === 0) {
       throw new ThreadSessionViewError(

@@ -116,7 +116,7 @@ function readItemReceipt(
       'Terminal tool projection is missing its canonical receipt identity.'
     );
   }
-  const pair = store.replay(terminalSeq - 2, 2).events;
+  const pair = store.replay(terminalSeq - 2, 2, 'durable_tool_receipt').events;
   const factEvent = pair.find(event => event.seq === terminalSeq - 1);
   const terminalEvent = pair.find(event => event.seq === terminalSeq);
   if (!factEvent || !terminalEvent || terminalEvent.itemId !== item.itemId) {

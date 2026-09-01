@@ -22,10 +22,9 @@ export interface ConversationProps {
   readonly actions: WorkbenchActions;
   readonly navigationOpen: boolean;
   readonly inspectorExpanded: boolean;
-  readonly settingsOpen: boolean;
   readonly onOpenNavigation: () => void;
   readonly onToggleInspector: () => void;
-  readonly onOpenSettings: () => void;
+  readonly onRevealSettings: () => void;
   readonly onCreateSession: () => void;
   readonly composerInsertion: { readonly id: number; readonly text: string } | null;
 }
@@ -42,10 +41,9 @@ export function Conversation({
   actions,
   navigationOpen,
   inspectorExpanded,
-  settingsOpen,
   onOpenNavigation,
   onToggleInspector,
-  onOpenSettings,
+  onRevealSettings,
   onCreateSession,
   composerInsertion,
 }: ConversationProps) {
@@ -154,17 +152,6 @@ export function Conversation({
         <div className="header-actions">
           <button
             type="button"
-            className="icon-button"
-            onClick={onOpenSettings}
-            aria-label="打开设置"
-            aria-haspopup="dialog"
-            aria-controls="settings-dialog"
-            aria-expanded={settingsOpen}
-          >
-            <Icon name="settings" />
-          </button>
-          <button
-            type="button"
             className="icon-button inspector-toggle"
             onClick={onToggleInspector}
             aria-label={inspectorExpanded ? '关闭工作面板' : '打开工作面板'}
@@ -183,15 +170,8 @@ export function Conversation({
             <strong>模型尚未配置</strong>
             <span>请在 Orion 配置文件或环境变量中设置凭证。API Key 不会进入浏览器。</span>
           </div>
-          <button
-            type="button"
-            className="secondary-button"
-            onClick={onOpenSettings}
-            aria-haspopup="dialog"
-            aria-controls="settings-dialog"
-            aria-expanded={settingsOpen}
-          >
-            查看模型状态
+          <button type="button" className="secondary-button" onClick={onRevealSettings}>
+            转到设置
           </button>
         </div>
       ) : null}
@@ -362,13 +342,17 @@ function ToolCard({
   readonly activity?: WebTranscriptEntry['toolActivity'];
 }) {
   const stateLabel =
-    tool.state === 'running'
-      ? '运行中'
-      : tool.state === 'success'
-        ? '完成'
-        : tool.state === 'skipped'
-          ? '跳过'
-          : '失败';
+    tool.workspaceMutation?.phase === 'queued'
+      ? `等待工作树写入${tool.workspaceMutation.queuePosition ? `（第 ${tool.workspaceMutation.queuePosition} 位）` : ''}`
+      : tool.workspaceMutation?.phase === 'running'
+        ? '正在写入工作树'
+        : tool.state === 'running'
+          ? '运行中'
+          : tool.state === 'success'
+            ? '完成'
+            : tool.state === 'skipped'
+              ? '跳过'
+              : '失败';
   const preview = activity?.outputView?.preview || activity?.body || tool.error || tool.summary;
   return (
     <article

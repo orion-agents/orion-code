@@ -261,6 +261,36 @@ describe('v0.2.0 product OrionRuntime cutover', () => {
     await runner.close('resume replay complete');
   });
 
+  test('keeps an incomplete Session Runtime close fail-closed across duplicate calls', async () => {
+    const session = createLegacySession('cleanup report context');
+    const llm = createFakeLlm([{ content: 'cleanup report answer', model: 'model-test' }]);
+    const fixture = createProductFixture(llm);
+    const events = createUiSink();
+    const runtimes: ReturnType<typeof createProductOrionRuntimeV1>[] = [];
+    const runner = new OrionSessionRunnerV1({
+      eventSink: events.sink,
+      getSessionId: () => session.id,
+      createRuntime: id => {
+        const runtime = createProductOrionRuntimeV1(fixture, id);
+        runtimes.push(runtime);
+        return runtime;
+      },
+    });
+
+    await runner.runInput('start the runtime before cleanup');
+    expect(runtimes).toHaveLength(1);
+    runtimes[0].graph.scope.register('controlled-close-failure', () => {
+      throw new Error('controlled close failure');
+    });
+
+    const first = runner.close('verified cleanup failure');
+    const retry = runner.close('must not hide the first result');
+    expect(retry).toBe(first);
+    await expect(first).rejects.toThrow('cleanup was incomplete');
+    await expect(retry).rejects.toThrow('cleanup was incomplete');
+    expect(runtimes[0].state).toBe('closed');
+  });
+
   test('preserves the bounded surface during a same-session runtime rebind', async () => {
     const session = createLegacySession('same-session rebind context');
     const llm = createFakeLlm([{ content: 'visible answer', model: 'model-test' }]);

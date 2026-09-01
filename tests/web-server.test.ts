@@ -129,6 +129,25 @@ describe('Orion local Web host', () => {
     expect((sessions as { items: unknown[] }).items).toHaveLength(1);
   });
 
+  test('serves an omitted-tail recovery snapshot through the bounded latest-page path', async () => {
+    const context = await activeContext(handle);
+    const created = await fetch(`${handle.url}/api/v1/sessions`, {
+      method: 'POST',
+      headers: mutationHeaders(handle),
+      body: JSON.stringify({ requestId: randomUUID(), ...context }),
+    });
+    const createdBody = (await created.json()) as { session: { id: string } };
+    expect(created.status).toBe(201);
+
+    const snapshot = jest.spyOn(handle.workbench, 'sessionSnapshot');
+    const response = await fetch(
+      guardedUrl(handle, `/api/v1/sessions/${createdBody.session.id}/snapshot`, context)
+    );
+
+    expect(response.status).toBe(200);
+    expect(snapshot).toHaveBeenCalledWith(createdBody.session.id, undefined, 50, true, context);
+  });
+
   test('rejects a continuation cursor after the Session collection revision changes', async () => {
     const create = async () =>
       fetch(`${handle.url}/api/v1/sessions`, {
@@ -216,7 +235,7 @@ describe('Orion local Web host', () => {
       bootstrap: {
         contextRevision: bootstrap.contextRevision,
         workspaceId: bootstrap.workspaceId,
-        activeSessionId: createdBody.session.id,
+        activeSessionId: null,
       },
     });
 
@@ -281,7 +300,7 @@ describe('Orion local Web host', () => {
     });
   });
 
-  test('rejects a command when the active Session no longer matches the browser', async () => {
+  test('rejects a command with a stale Session Runtime revision before actor admission', async () => {
     const context = await activeContext(handle);
     const created = await fetch(`${handle.url}/api/v1/sessions`, {
       method: 'POST',
@@ -296,7 +315,9 @@ describe('Orion local Web host', () => {
       headers: mutationHeaders(handle),
       body: JSON.stringify({
         requestId: randomUUID(),
-        expectedSessionId: `${createdBody.session.id}-stale`,
+        ...context,
+        expectedSessionId: createdBody.session.id,
+        expectedSessionRuntimeRevision: randomUUID(),
         type: 'submit',
         text: 'must not run',
       }),
@@ -305,9 +326,13 @@ describe('Orion local Web host', () => {
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toMatchObject({
       status: 409,
-      code: 'active_session_changed',
+      code: 'session_runtime_revision_conflict',
     });
-    expect(handle.workbench.bootstrap(handle.nonce).activeSessionId).toBe(createdBody.session.id);
+    expect(handle.workbench.bootstrap(handle.nonce).activeSessionId).toBeNull();
+    expect(handle.workbench.sessionRuntimeSummary(createdBody.session.id)).toMatchObject({
+      phase: 'cold',
+      resident: false,
+    });
     expect(handle.workbench.runtime.store.getSnapshot().isProcessing).toBe(false);
   });
 

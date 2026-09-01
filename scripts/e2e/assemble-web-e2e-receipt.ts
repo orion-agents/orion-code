@@ -15,6 +15,7 @@ import {
 import {
   WEB31_REQUIRED_EVIDENCE_FACTS_V1,
   WEB32_REQUIRED_EVIDENCE_FACTS_V1,
+  WEB33_REQUIRED_EVIDENCE_FACTS_V1,
   webE2ERunnerDigest,
 } from '../../tests/e2e/scenarios';
 
@@ -276,7 +277,9 @@ export function verifyEvidenceBundle(
 function assertVersionedEvidenceFacts(scenario: WebE2EScenarioManifest, path: string): void {
   const scenarioId = scenario.scenarioId ?? '';
   const requirements =
-    WEB31_REQUIRED_EVIDENCE_FACTS_V1[scenarioId] ?? WEB32_REQUIRED_EVIDENCE_FACTS_V1[scenarioId];
+    WEB31_REQUIRED_EVIDENCE_FACTS_V1[scenarioId] ??
+    WEB32_REQUIRED_EVIDENCE_FACTS_V1[scenarioId] ??
+    WEB33_REQUIRED_EVIDENCE_FACTS_V1[scenarioId];
   if (!requirements) return;
   const facts = scenario.facts ?? {};
   for (const requirement of requirements) {
@@ -310,7 +313,9 @@ function addScreenshotEvidence(
   const screenshotFacts = Object.entries(scenario.facts ?? {}).filter(([key]) =>
     key.startsWith('screenshot.')
   );
-  const requiresScreenshot = /^(?:SET|WEB31|WEB32)-P0-\d{2}$/u.test(scenario.scenarioId ?? '');
+  const requiresScreenshot = /^(?:SET|WEB31|WEB32|WEB33)-P0-\d{2}$/u.test(
+    scenario.scenarioId ?? ''
+  );
   if (requiresScreenshot && screenshotFacts.length === 0) {
     throw new Error(`Release scenario screenshot evidence is missing: ${manifestPath}.`);
   }

@@ -22,6 +22,7 @@ import {
 import {
   WEB31_REQUIRED_EVIDENCE_FACTS_V1,
   WEB32_REQUIRED_EVIDENCE_FACTS_V1,
+  WEB33_REQUIRED_EVIDENCE_FACTS_V1,
 } from './e2e/scenarios';
 
 type ReleaseResult = {
@@ -66,6 +67,7 @@ function createWebEvidenceBundle(
     (
       WEB31_REQUIRED_EVIDENCE_FACTS_V1[scenarioId] ??
       WEB32_REQUIRED_EVIDENCE_FACTS_V1[scenarioId] ??
+      WEB33_REQUIRED_EVIDENCE_FACTS_V1[scenarioId] ??
       []
     ).map(requirement => [requirement.key, requirement.equals ?? requirement.minimum])
   );
@@ -247,9 +249,11 @@ describe('release-check script contract', () => {
     expect(pkg.files).toContain('docs/migration/v0.2.2-to-v0.3.0-settings.md');
     expect(pkg.files).toContain('docs/migration/v0.3.0-to-v0.3.1.md');
     expect(pkg.files).toContain('docs/migration/v0.3.1-to-v0.3.2.md');
+    expect(pkg.files).toContain('docs/migration/v0.3.2-to-v0.3.3.md');
     expect(pkg.files).toContain('docs/architecture/v0.3.0-web-api.yaml');
     expect(pkg.files).toContain('docs/architecture/v0.3.1-web-api.yaml');
     expect(pkg.files).toContain('docs/architecture/v0.3.2-web-api.yaml');
+    expect(pkg.files).toContain('docs/architecture/v0.3.3-web-api.yaml');
     expect(pkg.files).toContain('docs/architecture/agent-mode-permission-contract.md');
     expect(pkg.files).toContain('docs/plan/v0.2.0-dsh-harness-redesign-plan.md');
     expect(pkg.files).toContain('docs/plan/v0.2.0-release-checklist.md');
@@ -258,8 +262,10 @@ describe('release-check script contract', () => {
     expect(pkg.files).toContain('docs/plan/v0.3.0-node-runtime-compatibility-plan.md');
     expect(pkg.files).toContain('docs/plan/v0.3.1-web-workbench-professional-shell-plan.md');
     expect(pkg.files).toContain('docs/plan/v0.3.2-web-workbench-layout-and-composer-plan.md');
+    expect(pkg.files).toContain('docs/plan/v0.3.3-plan.md');
     expect(pkg.files).toContain('docs/test/v0.3.1-web-workbench-e2e-plan.md');
     expect(pkg.files).toContain('docs/test/v0.3.2-web-workbench-e2e-plan.md');
+    expect(pkg.files).toContain('docs/test/v0.3.3-web-workbench-e2e-plan.md');
     expect(pkg.files).not.toContain('assets/');
   });
 
@@ -300,9 +306,11 @@ describe('release-check script contract', () => {
     expect(script).toContain("'docs/migration/v0.2.2-to-v0.3.0-settings.md'");
     expect(script).toContain("'docs/migration/v0.3.0-to-v0.3.1.md'");
     expect(script).toContain("'docs/migration/v0.3.1-to-v0.3.2.md'");
+    expect(script).toContain("'docs/migration/v0.3.2-to-v0.3.3.md'");
     expect(script).toContain("'docs/architecture/v0.3.0-web-api.yaml'");
     expect(script).toContain("'docs/architecture/v0.3.1-web-api.yaml'");
     expect(script).toContain("'docs/architecture/v0.3.2-web-api.yaml'");
+    expect(script).toContain("'docs/architecture/v0.3.3-web-api.yaml'");
     expect(script).toContain("'docs/architecture/agent-mode-permission-contract.md'");
     expect(script).toContain("'docs/plan/v0.2.0-dsh-harness-redesign-plan.md'");
     expect(script).toContain("'docs/plan/v0.2.0-release-checklist.md'");
@@ -311,8 +319,10 @@ describe('release-check script contract', () => {
     expect(script).toContain("'docs/plan/v0.3.0-node-runtime-compatibility-plan.md'");
     expect(script).toContain("'docs/plan/v0.3.1-web-workbench-professional-shell-plan.md'");
     expect(script).toContain("'docs/plan/v0.3.2-web-workbench-layout-and-composer-plan.md'");
+    expect(script).toContain("'docs/plan/v0.3.3-plan.md'");
     expect(script).toContain("'docs/test/v0.3.1-web-workbench-e2e-plan.md'");
     expect(script).toContain("'docs/test/v0.3.2-web-workbench-e2e-plan.md'");
+    expect(script).toContain("'docs/test/v0.3.3-web-workbench-e2e-plan.md'");
     expect(script).toContain("['Web Workbench', webProbe]");
     expect(script).toContain('unexpected tarball entries');
   });
@@ -464,6 +474,36 @@ describe('release-check script contract', () => {
     expect(() =>
       verifyEvidenceBundle(failing.manifestPath, failing.manifest, [failing.scenario])
     ).toThrow('web32.plan_preapproval_side_effects is missing or invalid');
+  });
+
+  it('requires, digest-binds, and validates WEB33 evidence', () => {
+    const fixture = createWebEvidenceBundle({ scenarioId: 'WEB33-P0-17' });
+    const originalDigest = verifyEvidenceBundle(fixture.manifestPath, fixture.manifest, [
+      fixture.scenario,
+    ]);
+    writeFileSync(
+      fixture.screenshotPath,
+      Buffer.concat([ONE_PIXEL_PNG, Buffer.from('replacement web33 screenshot')])
+    );
+    expect(
+      verifyEvidenceBundle(fixture.manifestPath, fixture.manifest, [fixture.scenario])
+    ).not.toBe(originalDigest);
+
+    const missing = createWebEvidenceBundle({
+      scenarioId: 'WEB33-P0-12',
+      includeScreenshotFact: false,
+    });
+    expect(() =>
+      verifyEvidenceBundle(missing.manifestPath, missing.manifest, [missing.scenario])
+    ).toThrow('screenshot evidence is missing');
+
+    const failing = createWebEvidenceBundle({
+      scenarioId: 'WEB33-P0-21',
+      factOverrides: { 'web33.switch_snapshot_pages_max': 2 },
+    });
+    expect(() =>
+      verifyEvidenceBundle(failing.manifestPath, failing.manifest, [failing.scenario])
+    ).toThrow('web33.switch_snapshot_pages_max is missing or invalid');
   });
 
   it('rejects missing, unsafe-path, symlinked, or malformed Settings screenshots', () => {

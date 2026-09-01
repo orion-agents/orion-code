@@ -58,7 +58,12 @@ import {
   type LazySkillRuntimeOptions,
   type LazySkillRuntimeStatsV1,
 } from './skills';
-import { ExecutionService, type AuthoritySnapshotV1, type ToolBindingV1 } from './step-snapshot';
+import {
+  ExecutionService,
+  type AuthoritySnapshotV1,
+  type ToolBindingV1,
+  type WorkspaceMutationCoordinatorV1,
+} from './step-snapshot';
 import {
   createThreadCompactCandidateDraftV1,
   ThreadCompactMaintenanceRunnerV1,
@@ -208,6 +213,7 @@ export interface OrionRuntimeV1Options {
   readonly mcp: Omit<LazyMcpRuntimeOptions, 'signal'>;
   readonly resolveCapabilityConfiguration: OrionCapabilityConfigurationResolverV1;
   readonly approvalHandler?: FirstPartyApprovalHandlerV1;
+  readonly workspaceMutationCoordinator?: WorkspaceMutationCoordinatorV1;
   readonly contributors?: RuntimeContributorSlots;
   readonly subagents?: OrionSubagentCompositionV1;
   readonly thread?: Omit<
@@ -469,24 +475,29 @@ export class OrionRuntimeV1 {
     const projection = graph.thread.getProjection();
     const admission = graph.thread.getAdmissionSnapshot();
     const eventCursor = graph.eventStore.getCursor();
-    const recent = graph.eventStore.replay(Math.max(0, eventCursor - 256), 256).events;
-    const latestCapabilityEvent = [...recent]
-      .reverse()
-      .find(event => event.payload.type === 'capability.receipt');
-    const latestSnapshotEvent = [...recent]
-      .reverse()
-      .find(event => event.payload.type === 'step.snapshot');
-    const latestCommitEvent = [...recent]
-      .reverse()
-      .find(event => event.payload.type === 'turn.committed');
-    const latestCompactEvent = [...recent]
-      .reverse()
-      .find(event => event.payload.type.startsWith('compact.'));
+    const legacyRecent =
+      projection.diagnosticEvents && projection.compactEvents
+        ? []
+        : graph.eventStore.replay(Math.max(0, eventCursor - 256), 256, 'runtime_diagnostics_legacy')
+            .events;
+    const latestCapabilityEvent =
+      projection.diagnosticEvents?.latestCapability ??
+      [...legacyRecent].reverse().find(event => event.payload.type === 'capability.receipt');
+    const latestSnapshotEvent =
+      projection.diagnosticEvents?.latestStepSnapshot ??
+      [...legacyRecent].reverse().find(event => event.payload.type === 'step.snapshot');
+    const latestCommitProjection = Object.values(projection.turns)
+      .map(turn => turn.commit)
+      .filter((commit): commit is NonNullable<typeof commit> => Boolean(commit))
+      .sort((left, right) => left.seq - right.seq)
+      .at(-1);
+    const latestCompactEvent =
+      projection.compactEvents?.at(-1) ??
+      [...legacyRecent].reverse().find(event => event.payload.type.startsWith('compact.'));
     const capability = parseCapabilityDiagnostics(latestCapabilityEvent, latestSnapshotEvent);
-    const latestCommit =
-      latestCommitEvent?.payload.type === 'turn.committed'
-        ? parseTurnCommitV1(latestCommitEvent.payload.data.receipt)
-        : undefined;
+    const latestCommit = latestCommitProjection
+      ? parseTurnCommitV1(latestCommitProjection.receipt)
+      : undefined;
     const task = graph.taskContext.snapshot();
     const activeTurn = projection.activeTurnId
       ? projection.turns[projection.activeTurnId]
@@ -785,7 +796,7 @@ export class OrionRuntimeV1 {
       });
       const approval = new FirstPartyToolApprovalServiceV1(this.options.approvalHandler);
       const sandbox = new FirstPartySandboxServiceV1();
-      const execution = new ExecutionService();
+      const execution = new ExecutionService(this.options.workspaceMutationCoordinator);
       const toolJournal = new ThreadToolInvocationJournalV1(eventStore);
       const gateway = new ToolGateway({
         policy,

@@ -1,5 +1,6 @@
 import { digestRuntimeValue } from './protocol/canonical';
 import type { RuntimeEventEnvelopeV1, RuntimeEventTypeV1 } from './protocol/runtime-protocol-v1';
+import type { CompactRuntimeEventV1 } from './compact-transaction';
 
 export type ThreadProjectionStatusV1 = 'new' | 'active' | 'idle';
 export type TurnProjectionStatusV1 = 'active' | 'completed' | 'failed' | 'interrupted';
@@ -79,6 +80,11 @@ export interface PlanReviewProjectionV1 {
   readonly feedbackDigest?: string;
 }
 
+export interface ThreadDiagnosticEventsV1 {
+  readonly latestCapability?: RuntimeEventEnvelopeV1;
+  readonly latestStepSnapshot?: RuntimeEventEnvelopeV1;
+}
+
 export interface ThreadProjectionV1 {
   readonly version: 1;
   readonly threadId: string;
@@ -89,6 +95,15 @@ export interface ThreadProjectionV1 {
   readonly items: Readonly<Record<string, ItemProjectionV1>>;
   readonly queue: readonly QueuedTurnProjectionV1[];
   readonly planReview?: PlanReviewProjectionV1;
+  /** Missing only on projections written before diagnostics became head-only. */
+  readonly diagnosticEvents?: ThreadDiagnosticEventsV1;
+  /**
+   * Compact lifecycle facts retained by new projections so fresh-process
+   * orphan recovery does not have to replay the full authoritative JSONL.
+   * Missing means a projection written by an older Orion version and forces
+   * the store to take the verified scan fallback.
+   */
+  readonly compactEvents?: readonly RuntimeEventEnvelopeV1<CompactRuntimeEventV1>[];
   readonly stepSnapshotDigests: readonly string[];
   readonly capabilityReceiptDigests: readonly string[];
   readonly toolInvocationIds: readonly string[];
@@ -105,6 +120,11 @@ interface MutableThreadProjectionV1 {
   items: Record<string, ItemProjectionV1>;
   queue: QueuedTurnProjectionV1[];
   planReview?: PlanReviewProjectionV1;
+  diagnosticEvents: {
+    latestCapability?: RuntimeEventEnvelopeV1;
+    latestStepSnapshot?: RuntimeEventEnvelopeV1;
+  };
+  compactEvents: RuntimeEventEnvelopeV1<CompactRuntimeEventV1>[];
   stepSnapshotDigests: string[];
   capabilityReceiptDigests: string[];
   toolInvocationIds: string[];
@@ -135,6 +155,8 @@ export function projectThreadEvents(
     turns: {},
     items: {},
     queue: [],
+    diagnosticEvents: {},
+    compactEvents: [],
     stepSnapshotDigests: [],
     capabilityReceiptDigests: [],
     toolInvocationIds: [],
@@ -184,6 +206,10 @@ export function advanceThreadProjection(
     ),
     queue: projection.queue.map(item => ({ ...item })),
     ...(projection.planReview ? { planReview: { ...projection.planReview } } : {}),
+    diagnosticEvents: projection.diagnosticEvents
+      ? structuredClone(projection.diagnosticEvents)
+      : {},
+    compactEvents: (projection.compactEvents ?? []).map(event => structuredClone(event)),
     stepSnapshotDigests: [...projection.stepSnapshotDigests],
     capabilityReceiptDigests: [...projection.capabilityReceiptDigests],
     toolInvocationIds: [...projection.toolInvocationIds],
@@ -268,6 +294,7 @@ export function applyThreadEvent(
         throw invariant('step snapshot already exists', event);
       }
       state.stepSnapshotDigests.push(event.payload.data.digest);
+      state.diagnosticEvents.latestStepSnapshot = structuredClone(event);
       break;
     case 'capability.receipt':
       validateCapabilityReceipt(event);
@@ -275,6 +302,7 @@ export function applyThreadEvent(
         throw invariant('capability receipt already exists', event);
       }
       state.capabilityReceiptDigests.push(event.payload.data.digest);
+      state.diagnosticEvents.latestCapability = structuredClone(event);
       break;
     case 'tool.receipt':
       if (state.toolInvocationIds.includes(event.payload.data.invocationId)) {
@@ -285,6 +313,10 @@ export function applyThreadEvent(
     case 'compact.started':
     case 'compact.completed':
     case 'compact.failed':
+      state.compactEvents.push(
+        structuredClone(event) as RuntimeEventEnvelopeV1<CompactRuntimeEventV1>
+      );
+      break;
     case 'approval.requested':
       break;
     case 'item.delta':
@@ -685,6 +717,8 @@ function freezeProjection(state: MutableThreadProjectionV1): ThreadProjectionV1 
     ),
     items: Object.fromEntries(Object.entries(state.items).map(([id, item]) => [id, { ...item }])),
     queue: state.queue.map(item => ({ ...item })),
+    diagnosticEvents: structuredClone(state.diagnosticEvents),
+    compactEvents: state.compactEvents.map(event => structuredClone(event)),
     stepSnapshotDigests: [...state.stepSnapshotDigests],
     capabilityReceiptDigests: [...state.capabilityReceiptDigests],
     toolInvocationIds: [...state.toolInvocationIds],

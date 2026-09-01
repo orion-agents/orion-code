@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+} from 'react';
 
 import { Conversation } from './components/Conversation';
 import { RenameDialog, WorkspaceDialog } from './components/Dialogs';
@@ -15,6 +22,7 @@ import {
   type WorkPanelId,
 } from './state/layout-preferences';
 import type { WebSessionSummaryV1 } from './types';
+import { themeColorForAppearance } from './themes/theme-color';
 import { useWorkbench } from './useWorkbench';
 
 export function App() {
@@ -30,6 +38,8 @@ export function App() {
     readonly text: string;
   } | null>(null);
   const drawerTrigger = useRef<HTMLElement | null>(null);
+  const settingsOpenedFromDrawer = useRef(false);
+  const restoreProjectSettingsFocus = useRef(false);
   const shellRef = useRef<HTMLDivElement>(null);
   const shellWidth = useElementWidth(shellRef);
   const columns = computeWorkbenchColumns(shellWidth, layoutPreference);
@@ -48,6 +58,7 @@ export function App() {
       : (state.settingsMirror.lastGood ?? state.settings);
   const theme = appearance?.sections.appearance.theme.effectiveValue;
   const motion = appearance?.sections.appearance.motion.effectiveValue;
+  const uiStyle = appearance?.sections.appearance.style.effectiveValue ?? 'orion-blocksmith';
 
   const updateProjectNavigationPreference = useCallback(
     (patch: Partial<WorkbenchLayoutPreferenceV2['projectNavigation']>) => {
@@ -88,32 +99,78 @@ export function App() {
     );
   }, []);
 
+  const focusProjectSettingsEntry = useCallback(() => {
+    requestAnimationFrame(() =>
+      document.querySelector<HTMLButtonElement>('.workspace-rail [aria-label="打开设置"]')?.focus()
+    );
+  }, []);
+
+  const focusProjectSettings = useCallback(() => {
+    if (navigationOverlay) {
+      rememberDrawerTrigger();
+      setPanelOverlayOpen(false);
+      setNavigationOpen(true);
+    }
+    focusProjectSettingsEntry();
+  }, [focusProjectSettingsEntry, navigationOverlay, rememberDrawerTrigger]);
+
+  const openSettingsFromProjectNavigation = useCallback(() => {
+    settingsOpenedFromDrawer.current = navigationModalOpen;
+    if (navigationModalOpen) {
+      setNavigationOpen(false);
+      setPanelOverlayOpen(false);
+      drawerTrigger.current = null;
+    }
+    setSettingsOpen(true);
+  }, [navigationModalOpen]);
+
+  const closeSettings = useCallback(() => {
+    setSettingsOpen(false);
+    if (!settingsOpenedFromDrawer.current) return;
+    settingsOpenedFromDrawer.current = false;
+    restoreProjectSettingsFocus.current = true;
+    setNavigationOpen(true);
+  }, []);
+
   const closeDrawers = useCallback(() => {
     setNavigationOpen(false);
     setPanelOverlayOpen(false);
+    restoreProjectSettingsFocus.current = false;
     const trigger = drawerTrigger.current;
     drawerTrigger.current = null;
     if (trigger) requestAnimationFrame(() => trigger.focus());
   }, []);
 
-  useEffect(() => {
-    if (theme) document.documentElement.dataset.theme = theme;
-  }, [theme]);
+  useLayoutEffect(() => {
+    document.documentElement.dataset.theme = theme ?? 'system';
+    document.documentElement.dataset.motion = motion ?? 'system';
+    document.documentElement.dataset.uiStyle = uiStyle;
+  }, [motion, theme, uiStyle]);
 
   useEffect(() => {
-    if (motion) document.documentElement.dataset.motion = motion;
-  }, [motion]);
+    const media = window.matchMedia('(prefers-color-scheme: light)');
+    const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+    const update = () => {
+      if (meta) meta.content = themeColorForAppearance(uiStyle, theme ?? 'system', media.matches);
+    };
+    update();
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, [theme, uiStyle]);
 
   useEffect(() => {
     setNavigationOpen(false);
     setPanelOverlayOpen(false);
     drawerTrigger.current = null;
+    settingsOpenedFromDrawer.current = false;
+    restoreProjectSettingsFocus.current = false;
   }, [state.activeSessionId, state.workspace]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setNavigationOpen(false);
     setPanelOverlayOpen(false);
     drawerTrigger.current = null;
+    restoreProjectSettingsFocus.current = false;
   }, [columns.projectNavigation.mode, columns.workPanel.mode, navigationOverlay, panelOverlay]);
 
   useEffect(() => {
@@ -173,7 +230,10 @@ export function App() {
     const focusTimer = window.setTimeout(() => {
       const target = panelModalOpen
         ? inspector?.querySelector<HTMLButtonElement>('[aria-label="关闭工作面板"]')
-        : rail?.querySelector<HTMLButtonElement>('.drawer-close');
+        : restoreProjectSettingsFocus.current
+          ? rail?.querySelector<HTMLButtonElement>('[aria-label="打开设置"]')
+          : rail?.querySelector<HTMLButtonElement>('.drawer-close');
+      restoreProjectSettingsFocus.current = false;
       target?.focus();
     }, 0);
     const onKeyDown = (event: KeyboardEvent) => {
@@ -206,6 +266,8 @@ export function App() {
   };
 
   const goToSessionControls = () => {
+    settingsOpenedFromDrawer.current = false;
+    restoreProjectSettingsFocus.current = false;
     setSettingsOpen(false);
     requestAnimationFrame(() => document.querySelector<HTMLElement>('#orion-composer')?.focus());
   };
@@ -217,7 +279,7 @@ export function App() {
       </a>
       <div
         ref={shellRef}
-        className={`workbench-shell project-navigation-${columns.projectNavigation.mode} work-panel-${columns.workPanel.mode} ${panelDerivedRail && panelOverlayOpen ? 'work-panel-transient-overlay' : ''}`}
+        className={`workbench-shell project-navigation-${columns.projectNavigation.mode} work-panel-mode-${columns.workPanel.mode} ${panelDerivedRail && panelOverlayOpen ? 'work-panel-transient-overlay' : ''}`}
         style={
           {
             '--project-navigation-width': `${columns.projectNavigation.widthPx}px`,
@@ -250,7 +312,7 @@ export function App() {
             else updateProjectNavigationPreference({ expanded: false });
           }}
           onOpenWorkspaceDialog={() => setWorkspaceOpen(true)}
-          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenSettings={openSettingsFromProjectNavigation}
           onLoadMoreWorkspaces={() => void actions.loadMoreWorkspaces()}
           onCreateSession={createSession}
           onLoadWorkspaceSessions={(workspaceId, append) =>
@@ -288,7 +350,6 @@ export function App() {
             navigationOverlay ? navigationModalOpen : columns.projectNavigation.mode === 'dock'
           }
           inspectorExpanded={panelExpanded}
-          settingsOpen={settingsOpen}
           onOpenNavigation={() => {
             if (!navigationOverlay) {
               updateProjectNavigationPreference({ expanded: true });
@@ -312,7 +373,7 @@ export function App() {
             }
             updatePanelPreference({ expanded: !layoutPreference.workPanel.expanded });
           }}
-          onOpenSettings={() => setSettingsOpen(true)}
+          onRevealSettings={focusProjectSettings}
           onCreateSession={createSession}
           composerInsertion={composerInsertion}
         />
@@ -324,7 +385,6 @@ export function App() {
           expanded={panelExpanded}
           activePanel={layoutPreference.workPanel.activePanel}
           agentPanel={layoutPreference.workPanel.agentPanel}
-          settingsOpen={settingsOpen}
           onExpand={() => {
             if (panelOverlay || panelDerivedRail) setPanelOverlayOpen(true);
             else updatePanelPreference({ expanded: true });
@@ -335,7 +395,6 @@ export function App() {
           }}
           onPanelChange={(activePanel: WorkPanelId) => updatePanelPreference({ activePanel })}
           onAgentPanelChange={(agentPanel: AgentPanelId) => updatePanelPreference({ agentPanel })}
-          onOpenSettings={() => setSettingsOpen(true)}
           onWidthPreview={width => {
             const preview = computeWorkbenchColumns(shellWidth, {
               ...layoutPreference,
@@ -449,7 +508,7 @@ export function App() {
 
       <SettingsDialog
         open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
+        onClose={closeSettings}
         state={state}
         actions={actions}
         onGoToSessionControls={goToSessionControls}

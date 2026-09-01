@@ -41,8 +41,8 @@ async function main(): Promise<void> {
   if (sha256File(options.tarball) !== expectedSha) {
     throw new Error('Tarball SHA-256 differs from its receipt.');
   }
-  if (receipt.package?.name !== '@orion-agents/orion-code' || receipt.package.version !== '0.3.2') {
-    throw new Error('Primary runner requires @orion-agents/orion-code@0.3.2.');
+  if (receipt.package?.name !== '@orion-agents/orion-code' || receipt.package.version !== '0.3.3') {
+    throw new Error('Primary runner requires @orion-agents/orion-code@0.3.3.');
   }
 
   const primaryRoot = join(

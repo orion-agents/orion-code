@@ -49,6 +49,7 @@ export class WebEventHub {
   private nextCursor = 1;
   private retainedBytes = 0;
   private discardedDurableThrough = 0;
+  private replayResetCount = 0;
 
   constructor(options: WebEventHubOptions = {}) {
     this.maxEvents = positiveInteger(options.maxEvents ?? DEFAULT_MAX_EVENTS, 'maxEvents');
@@ -61,7 +62,10 @@ export class WebEventHub {
     context: { readonly sessionId?: string; readonly threadId?: string } = {}
   ): WebEventEnvelopeV1 {
     return this.emit(
-      { type: 'runtime_event', value: this.compactRuntimeEvent(sanitizeRuntimeEvent(event)) },
+      {
+        type: 'runtime_event',
+        value: this.compactRuntimeEvent(sanitizeRuntimeEvent(event), context.sessionId),
+      },
       isDurableRuntimeEvent(event),
       context
     );
@@ -109,6 +113,7 @@ export class WebEventHub {
   attach(response: ServerResponse, cursor: number): () => void {
     const latest = this.nextCursor - 1;
     if (cursor > latest || cursor < this.discardedDurableThrough) {
+      this.replayResetCount += 1;
       const reset: WebEventEnvelopeV1 = {
         apiVersion: WEB_API_VERSION,
         eventId: randomUUID(),
@@ -147,11 +152,17 @@ export class WebEventHub {
     this.clients.clear();
   }
 
-  snapshot(): { readonly earliest: number; readonly latest: number; readonly retained: number } {
+  snapshot(): {
+    readonly earliest: number;
+    readonly latest: number;
+    readonly retained: number;
+    readonly replayResets: number;
+  } {
     return Object.freeze({
       earliest: this.retained[0]?.envelope.cursor ?? this.nextCursor,
       latest: this.nextCursor - 1,
       retained: this.retained.length,
+      replayResets: this.replayResetCount,
     });
   }
 
@@ -167,11 +178,12 @@ export class WebEventHub {
     }
   }
 
-  private compactRuntimeEvent(event: AgentRuntimeEvent): AgentRuntimeEvent {
+  private compactRuntimeEvent(event: AgentRuntimeEvent, sessionId?: string): AgentRuntimeEvent {
     if (event.type === 'transcript_update' && typeof event.patch.content === 'string') {
       const content = event.patch.content;
-      const previous = this.transcriptContents.get(event.id);
-      this.rememberTranscriptContent(event.id, content);
+      const key = transcriptContentKey(sessionId, event.id);
+      const previous = this.transcriptContents.get(key);
+      this.rememberTranscriptContent(key, content);
       if (previous !== undefined && content.startsWith(previous)) {
         const patch = { ...event.patch };
         delete patch.content;
@@ -185,9 +197,12 @@ export class WebEventHub {
       return event;
     }
     if (event.type === 'transcript_finalize' || event.type === 'transcript_remove') {
-      this.transcriptContents.delete(event.id);
+      this.transcriptContents.delete(transcriptContentKey(sessionId, event.id));
     } else if (event.type === 'transcript_clear' || event.type === 'transcript_replace') {
-      this.transcriptContents.clear();
+      const prefix = transcriptSessionPrefix(sessionId);
+      for (const key of this.transcriptContents.keys()) {
+        if (key.startsWith(prefix)) this.transcriptContents.delete(key);
+      }
     }
     return event;
   }
@@ -201,6 +216,14 @@ export class WebEventHub {
       this.transcriptContents.delete(oldest);
     }
   }
+}
+
+function transcriptSessionPrefix(sessionId?: string): string {
+  return `${sessionId ?? '<surface>'}\u0000`;
+}
+
+function transcriptContentKey(sessionId: string | undefined, id: string): string {
+  return `${transcriptSessionPrefix(sessionId)}${id}`;
 }
 
 function toEnvelope(
@@ -277,6 +300,24 @@ function toEnvelope(
         ...base,
         sessionId: base.sessionId,
         durable: true,
+        type: event.type,
+        payload: { state: event.state },
+      };
+    case 'session_runtime_changed':
+      if (!base.sessionId) throw new Error('Session Runtime events require Session identity');
+      return {
+        ...base,
+        sessionId: base.sessionId,
+        durable: true,
+        type: event.type,
+        payload: { runtime: event.runtime },
+      };
+    case 'workspace_mutation_changed':
+      if (!base.sessionId) throw new Error('Workspace mutation events require Session identity');
+      return {
+        ...base,
+        sessionId: base.sessionId,
+        durable: false,
         type: event.type,
         payload: { state: event.state },
       };

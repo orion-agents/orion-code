@@ -58,7 +58,9 @@ export function ComposerControlCenter({ state, actions, insertion }: ComposerCon
   const draftKey = `${draftState.workspaceId}:${draftState.sessionId}`;
   const disabled = !sessionId || !state.bootstrap?.configured || state.connection !== 'live';
   const pending = Boolean(state.pendingAction);
-  const composerReady = !disabled && !pending;
+  const sessionTurnQueued = state.sessionSnapshot?.sessionRuntime.phase === 'queued';
+  const controlsReady = !disabled && !pending;
+  const composerReady = controlsReady && !sessionTurnQueued;
 
   useEffect(() => {
     if (!workspaceId || !sessionId) {
@@ -172,11 +174,17 @@ export function ComposerControlCenter({ state, actions, insertion }: ComposerCon
           placeholder={
             pending
               ? '正在同步会话控制状态…'
-              : disabled
-                ? '选择会话并配置模型后开始'
-                : state.processing
-                  ? '输入后续消息；Enter 排队，⌘/Ctrl+Enter Steer'
-                  : '描述任务，或输入 / 查看命令…'
+              : sessionTurnQueued
+                ? `任务正在排队${
+                    state.sessionSnapshot?.sessionRuntime.queuePosition
+                      ? `（第 ${state.sessionSnapshot.sessionRuntime.queuePosition} 位）`
+                      : ''
+                  }`
+                : disabled
+                  ? '选择会话并配置模型后开始'
+                  : state.processing
+                    ? '输入后续消息；Enter 排队，⌘/Ctrl+Enter Steer'
+                    : '描述任务，或输入 / 查看命令…'
           }
           disabled={!composerReady}
         />
@@ -254,6 +262,16 @@ export function ComposerControlCenter({ state, actions, insertion }: ComposerCon
                   Steer
                 </button>
               </>
+            ) : null}
+            {sessionTurnQueued ? (
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => consumeHandledAction(actions.cancelQueuedTurn())}
+                disabled={!controlsReady}
+              >
+                取消排队
+              </button>
             ) : null}
             <button
               type="submit"

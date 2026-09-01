@@ -24,6 +24,7 @@ import type {
 } from '../../src/web/protocol';
 import type { SettingsMirrorSnapshot } from './settings/settings-mirror';
 import type { SettingsInvalidatedEventV1, WebSettingsDocumentV1 } from './settings/types';
+import type { WebSessionRuntimeSummaryV1 } from '../../src/web/session-runtime-registry';
 
 export type WebBootstrapV1 = Omit<ProtocolWebBootstrapV1, 'settings'> & {
   readonly settings: WebSettingsDocumentV1;
@@ -54,6 +55,7 @@ export type {
   WebWorkspaceProjectSummaryV1,
   WebComposerControlStateV1,
   WebModelCatalogPageV1,
+  WebSessionRuntimeSummaryV1,
 };
 
 export type RuntimeEvent = Extract<
@@ -137,6 +139,10 @@ export interface WebToolCall {
   readonly error?: string;
   readonly outputBytes?: number;
   readonly artifactId?: string;
+  readonly workspaceMutation?: {
+    readonly phase: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+    readonly queuePosition?: number;
+  };
   readonly authorization?: {
     readonly approved: boolean;
     readonly source: string;
@@ -233,10 +239,22 @@ export interface DiagnosticsSnapshot extends Record<string, unknown> {
   };
   readonly mcp?: { readonly servers?: readonly string[] };
   readonly harness?: Record<string, unknown> | null;
+  readonly workspaceKernel?: {
+    readonly participantCount: number;
+    readonly ownerReleased: boolean;
+    readonly closed: boolean;
+    readonly providerGate: {
+      readonly activeCount: number;
+      readonly waitingCount: number;
+      readonly cooldownUntil: number | null;
+      readonly cooldownReason: string | null;
+    };
+  } | null;
   readonly eventStream?: {
     readonly earliest?: number;
     readonly latest?: number;
     readonly retained?: number;
+    readonly replayResets?: number;
   };
   readonly performance?: {
     readonly files?: {
@@ -248,6 +266,19 @@ export interface DiagnosticsSnapshot extends Record<string, unknown> {
       readonly processCount: number;
       readonly bytesRead: number;
       readonly itemsParsed: number;
+    };
+    readonly thread?: {
+      readonly eventStore: {
+        readonly logScans: number;
+        readonly bytesScanned: number;
+        readonly eventsScanned: number;
+      };
+      readonly sessionIndex: {
+        readonly indexBuilds: number;
+        readonly manifestReads: number;
+        readonly pageReads: number;
+        readonly bytesRead: number;
+      };
     };
   };
 }
@@ -293,6 +324,8 @@ export interface WorkbenchState {
   readonly workspaceNextCursor: string | null;
   readonly sessionNextCursor: string | null;
   readonly activeSessionId: string | null;
+  readonly sessionProjectionById: Readonly<Record<string, WebSessionSnapshotV1>>;
+  readonly sessionRuntimeById: Readonly<Record<string, WebSessionRuntimeSummaryV1>>;
   readonly transcript: readonly WebTranscriptEntry[];
   readonly tools: readonly WebToolCall[];
   readonly edits: readonly WebEditPreview[];
@@ -345,6 +378,8 @@ export const initialWorkbenchState: WorkbenchState = {
   workspaceNextCursor: null,
   sessionNextCursor: null,
   activeSessionId: null,
+  sessionProjectionById: {},
+  sessionRuntimeById: {},
   transcript: [],
   tools: [],
   edits: [],

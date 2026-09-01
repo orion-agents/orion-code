@@ -38,6 +38,7 @@ import {
   createSession,
   discardSettingsDraft,
   openSettings,
+  openSessionNavigation,
   selectSettingsSection,
   setSettingsPermission,
   setSettingsSelect,
@@ -977,6 +978,7 @@ test('SET-P0-13 Settings reflows at desktop, 390, 320, and 200 percent with keyb
   await expect(workbenchUi(page).settingsButton).toBeFocused();
 
   await page.setViewportSize({ width: 390, height: 844 });
+  await openSessionNavigation(page);
   await workbenchUi(page).settingsButton.focus();
   await workbenchUi(page).settingsButton.press('Enter');
   await selectSettingsSection(page, 'Advanced');
@@ -985,6 +987,7 @@ test('SET-P0-13 Settings reflows at desktop, 390, 320, and 200 percent with keyb
   await page.keyboard.press('Escape');
 
   await page.setViewportSize({ width: 320, height: 720 });
+  if (!(await workbenchUi(page).settingsButton.isVisible())) await openSessionNavigation(page);
   await workbenchUi(page).settingsButton.focus();
   await workbenchUi(page).settingsButton.press('Enter');
   await selectSettingsSection(page, 'Permissions');
@@ -1018,6 +1021,7 @@ test('SET-P0-13 Settings reflows at desktop, 390, 320, and 200 percent with keyb
     expect(zoom.innerWidth).toBeLessThanOrEqual(321);
     expect(zoom.visualWidth).toBeLessThanOrEqual(321);
     expect(zoom.devicePixelRatio).toBe(2);
+    if (!(await workbenchUi(page).settingsButton.isVisible())) await openSessionNavigation(page);
     const zoomHitTest = await workbenchUi(page).settingsButton.evaluate(button => {
       const rect = (element: Element | null) => {
         if (!element) return null;
@@ -1079,7 +1083,7 @@ test('SET-P0-14 installed tarball critical Settings journey runs on the supporte
   allowExpectedNetworkFailures(testInfo, 2);
   expect(artifactState.artifact.receipt.package).toMatchObject({
     name: '@orion-agents/orion-code',
-    version: '0.3.2',
+    version: '0.3.3',
   });
   expect(artifactState.environment.nodeMajor).toBe(Number(process.versions.node.split('.')[0]));
   expect([22, 24, 26]).toContain(artifactState.environment.nodeMajor);

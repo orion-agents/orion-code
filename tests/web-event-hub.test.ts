@@ -81,6 +81,7 @@ describe('WebEventHub', () => {
     hub.attach(fresh.response, 0);
     expect(fresh.writes.join('')).toContain('"type":"replay_reset"');
     expect(fresh.end).toHaveBeenCalledTimes(1);
+    expect(hub.snapshot().replayResets).toBe(2);
   });
 
   test('redacts committed events and cleanly ends a backpressured client for replay', () => {
@@ -170,6 +171,31 @@ describe('WebEventHub', () => {
     hub.attach(reconnected.response, 0);
     expect(reconnected.writes.join('')).toContain('workspace_resource_invalidated');
     expect(reconnected.writes.join('')).not.toContain('path');
+  });
+
+  test('emits Session-owned Workspace mutation wait state without retaining it for replay', () => {
+    const hub = new WebEventHub({ now: () => 1_700_000_000_000 });
+    const sink = responseSink();
+    hub.attach(sink.response, 0);
+    const envelope = hub.emit(
+      {
+        type: 'workspace_mutation_changed',
+        state: { callId: 'call-write', phase: 'queued', queuePosition: 1 },
+      },
+      false,
+      { sessionId: 'session-1' }
+    );
+
+    expect(envelope).toMatchObject({
+      type: 'workspace_mutation_changed',
+      durable: false,
+      sessionId: 'session-1',
+      payload: {
+        state: { callId: 'call-write', phase: 'queued', queuePosition: 1 },
+      },
+    });
+    expect(sink.writes.join('')).toContain('workspace_mutation_changed');
+    expect(hub.snapshot().retained).toBe(0);
   });
 
   test('whitelists only structured tool authorization while redacting nested auth material', () => {
@@ -359,5 +385,31 @@ describe('WebEventHub', () => {
     const wire = reconnected.writes.join('');
     expect(wire).toContain('"contentDelta":"GHI"');
     expect(wire).toContain('"contentStart":6');
+  });
+
+  test('keeps transcript delta baselines isolated when Sessions reuse an entry id', () => {
+    const hub = new WebEventHub();
+    hub.emitRuntime(
+      { type: 'transcript_update', id: 'shared-entry', patch: { content: 'abc' } },
+      { sessionId: 'session-A' }
+    );
+    hub.emitRuntime(
+      { type: 'transcript_update', id: 'shared-entry', patch: { content: 'xy' } },
+      { sessionId: 'session-B' }
+    );
+
+    const nextA = hub.emitRuntime(
+      { type: 'transcript_update', id: 'shared-entry', patch: { content: 'abcDEF' } },
+      { sessionId: 'session-A' }
+    );
+    const nextB = hub.emitRuntime(
+      { type: 'transcript_update', id: 'shared-entry', patch: { content: 'xyz' } },
+      { sessionId: 'session-B' }
+    );
+
+    expect(JSON.stringify(nextA)).toContain('"contentDelta":"DEF"');
+    expect(JSON.stringify(nextA)).toContain('"contentStart":3');
+    expect(JSON.stringify(nextB)).toContain('"contentDelta":"z"');
+    expect(JSON.stringify(nextB)).toContain('"contentStart":2');
   });
 });

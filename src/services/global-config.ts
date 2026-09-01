@@ -48,7 +48,10 @@ export interface ProjectConfig {
 export type ToolConfirmationPolicy = 'ask' | 'allow' | 'deny';
 
 /** Browser appearance preferences persisted in the canonical global document. */
+export type WebUiStylePreferenceV1 = 'classic' | 'orion-blocksmith';
+
 export interface WebAppearanceConfigV1 {
+  style?: WebUiStylePreferenceV1;
   theme?: 'system' | 'light' | 'dark';
   motion?: 'system' | 'reduced';
 }
@@ -423,7 +426,10 @@ export function validateGlobalConfigDocumentStrict(
     if (!isRecord(value.web)) invalidField('web');
     if (value.web.appearance !== undefined) {
       if (!isRecord(value.web.appearance)) invalidField('web.appearance');
-      const { theme, motion } = value.web.appearance;
+      const { style, theme, motion } = value.web.appearance;
+      if (style !== undefined && style !== 'classic' && style !== 'orion-blocksmith') {
+        invalidField('web.appearance.style');
+      }
       if (theme !== undefined && theme !== 'system' && theme !== 'light' && theme !== 'dark') {
         invalidField('web.appearance.theme');
       }
@@ -719,6 +725,9 @@ function sanitizeWebConfig(value: unknown): WebConfigV1 | undefined {
   const sanitized = { ...raw };
   if (raw.appearance && typeof raw.appearance === 'object' && !Array.isArray(raw.appearance)) {
     const appearance = { ...(raw.appearance as Record<string, unknown>) };
+    if (appearance.style !== 'classic' && appearance.style !== 'orion-blocksmith') {
+      delete appearance.style;
+    }
     if (
       appearance.theme !== 'system' &&
       appearance.theme !== 'light' &&

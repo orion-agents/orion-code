@@ -6,10 +6,32 @@ import type { Message } from '../services/llm';
 import { canonicalRuntimeJson, digestRuntimeValue } from './protocol/canonical';
 import type { RuntimeEventEnvelopeV1 } from './protocol/runtime-protocol-v1';
 import type { ThreadLogIdentityV1 } from './thread-event-store';
-import type { ItemProjectionV1, ThreadProjectionV1 } from './thread-projection';
+import type {
+  ItemProjectionV1,
+  ThreadProjectionV1,
+  TurnProjectionStatusV1,
+} from './thread-projection';
 
 const TRANSCRIPT_PAGE_ITEMS = 100;
 const MAX_MANIFEST_PAGES = 100_000;
+const threadSessionIndexPerformance = {
+  indexBuilds: 0,
+  manifestReads: 0,
+  pageReads: 0,
+  bytesRead: 0,
+};
+
+export interface ThreadSessionIndexPerformanceCountersV1 {
+  readonly indexBuilds: number;
+  readonly manifestReads: number;
+  readonly pageReads: number;
+  readonly bytesRead: number;
+}
+
+/** Process-local monotonic derived-index counters for Web performance evidence. */
+export function threadSessionIndexPerformanceCountersV1(): ThreadSessionIndexPerformanceCountersV1 {
+  return Object.freeze({ ...threadSessionIndexPerformance });
+}
 
 export interface ThreadSessionTranscriptMessageV1 {
   readonly role: Message['role'];
@@ -24,6 +46,13 @@ export interface ThreadSessionTranscriptMessageV1 {
 export interface ThreadSessionTurnCommitV1 {
   readonly seq: number;
   readonly receipt: string;
+}
+
+export interface ThreadSessionLatestTurnV1 {
+  readonly turnId: string;
+  readonly status: TurnProjectionStatusV1;
+  readonly startedSeq: number;
+  readonly terminalSeq?: number;
 }
 
 export interface ThreadSessionIndexHeadV1 {
@@ -63,6 +92,7 @@ export interface ThreadSessionIndexManifestV1 {
   readonly updatedAt: number;
   readonly messageCount: number;
   readonly pages: readonly StoredTranscriptPagePointerV1[];
+  readonly latestTurn?: ThreadSessionLatestTurnV1;
   readonly latestTurnCommit?: ThreadSessionTurnCommitV1;
   readonly latestPlanTurnCommit?: ThreadSessionTurnCommitV1;
   readonly digest: string;
@@ -95,6 +125,7 @@ export function buildThreadSessionIndexV1(input: {
   readonly events: readonly RuntimeEventEnvelopeV1[];
   readonly head: ThreadSessionIndexHeadV1;
 }): ThreadSessionIndexManifestV1 {
+  threadSessionIndexPerformance.indexBuilds += 1;
   const previous = readManifest(manifestPath(input.rootDir, input.threadId), input.threadId);
   const messages = projectTranscriptMessages(input.projection.items, input.events);
   const pages: StoredTranscriptPagePointerV1[] = [];
@@ -156,7 +187,27 @@ export function advanceThreadSessionIndexV1(input: {
   }
   const pages = [...current.pages];
   let messageCount = current.messageCount;
-  for (let start = 0; start < messages.length; start += TRANSCRIPT_PAGE_ITEMS) {
+  let messageOffset = 0;
+  const partialTail = pages.at(-1);
+  if (
+    partialTail &&
+    partialTail.end === messageCount &&
+    partialTail.end - partialTail.start < TRANSCRIPT_PAGE_ITEMS &&
+    messages.length > 0
+  ) {
+    const existing = readPage(input.rootDir, input.threadId, partialTail);
+    const appended = messages.slice(
+      0,
+      Math.min(messages.length, TRANSCRIPT_PAGE_ITEMS - existing.items.length)
+    );
+    pages[pages.length - 1] = writeImmutablePage(input.rootDir, input.threadId, partialTail.start, [
+      ...existing.items,
+      ...appended,
+    ]);
+    messageOffset = appended.length;
+    messageCount += appended.length;
+  }
+  for (let start = messageOffset; start < messages.length; start += TRANSCRIPT_PAGE_ITEMS) {
     const chunk = messages.slice(start, start + TRANSCRIPT_PAGE_ITEMS);
     pages.push(writeImmutablePage(input.rootDir, input.threadId, messageCount, chunk));
     messageCount += chunk.length;
@@ -170,6 +221,7 @@ export function advanceThreadSessionIndexV1(input: {
     updatedAt: input.nextHead.lastEventTimestamp,
     messageCount,
     pages,
+    ...(nextCommits.latestTurn ? { latestTurn: nextCommits.latestTurn } : {}),
     latestTurnCommit: nextCommits.latestTurnCommit ?? current.latestTurnCommit,
     latestPlanTurnCommit: nextCommits.latestPlanTurnCommit ?? current.latestPlanTurnCommit,
   });
@@ -264,6 +316,7 @@ function createManifest(input: {
   readonly updatedAt: number;
   readonly messageCount: number;
   readonly pages: readonly StoredTranscriptPagePointerV1[];
+  readonly latestTurn?: ThreadSessionLatestTurnV1;
   readonly latestTurnCommit?: ThreadSessionTurnCommitV1;
   readonly latestPlanTurnCommit?: ThreadSessionTurnCommitV1;
 }): ThreadSessionIndexManifestV1 {
@@ -280,6 +333,7 @@ function createManifest(input: {
     updatedAt: input.updatedAt,
     messageCount: input.messageCount,
     pages: input.pages.map(page => ({ ...page })),
+    ...(input.latestTurn ? { latestTurn: { ...input.latestTurn } } : {}),
     ...(input.latestTurnCommit ? { latestTurnCommit: { ...input.latestTurnCommit } } : {}),
     ...(input.latestPlanTurnCommit
       ? { latestPlanTurnCommit: { ...input.latestPlanTurnCommit } }
@@ -292,6 +346,7 @@ function latestAuthorityCommits(
   projection: ThreadProjectionV1,
   events?: readonly RuntimeEventEnvelopeV1[]
 ): {
+  readonly latestTurn?: ThreadSessionLatestTurnV1;
   readonly latestTurnCommit?: ThreadSessionTurnCommitV1;
   readonly latestPlanTurnCommit?: ThreadSessionTurnCommitV1;
 } {
@@ -302,7 +357,11 @@ function latestAuthorityCommits(
           .map(event => event.turnId as string)
       )
     : undefined;
-  const commits = Object.values(projection.turns)
+  const orderedTurns = Object.values(projection.turns).sort(
+    (left, right) => left.startedSeq - right.startedSeq
+  );
+  const latestTurnProjection = orderedTurns.at(-1);
+  const commits = orderedTurns
     .filter(turn => !committedTurns || committedTurns.has(turn.turnId))
     .flatMap(turn => (turn.commit ? [{ seq: turn.commit.seq, receipt: turn.commit.receipt }] : []))
     .sort((left, right) => left.seq - right.seq);
@@ -311,6 +370,18 @@ function latestAuthorityCommits(
     .reverse()
     .find(commit => turnCommitContainsPlan(commit.receipt));
   return {
+    ...(latestTurnProjection
+      ? {
+          latestTurn: {
+            turnId: latestTurnProjection.turnId,
+            status: latestTurnProjection.status,
+            startedSeq: latestTurnProjection.startedSeq,
+            ...(latestTurnProjection.terminalSeq !== undefined
+              ? { terminalSeq: latestTurnProjection.terminalSeq }
+              : {}),
+          },
+        }
+      : {}),
     ...(latestTurnCommit ? { latestTurnCommit } : {}),
     ...(latestPlanTurnCommit ? { latestPlanTurnCommit } : {}),
   };
@@ -354,7 +425,7 @@ function writeManifest(rootDir: string, manifest: ThreadSessionIndexManifestV1):
 }
 
 function readManifest(path: string, threadId: string): ThreadSessionIndexManifestV1 | null {
-  const value = readRegularJson(path);
+  const value = readRegularJson(path, 'manifest');
   if (!isRecord(value)) return null;
   const { digest: _digest, ...content } = value;
   void _digest;
@@ -383,11 +454,22 @@ function readManifest(path: string, threadId: string): ThreadSessionIndexManifes
     nextStart = page.end as number;
   }
   if (nextStart !== value.messageCount) return null;
+  if (value.latestTurn !== undefined && !isLatestTurn(value.latestTurn)) return null;
   if (value.latestTurnCommit !== undefined && !isTurnCommit(value.latestTurnCommit)) return null;
   if (value.latestPlanTurnCommit !== undefined && !isTurnCommit(value.latestPlanTurnCommit)) {
     return null;
   }
   return deepFreeze(value as unknown as ThreadSessionIndexManifestV1);
+}
+
+function isLatestTurn(value: unknown): value is ThreadSessionLatestTurnV1 {
+  return (
+    isRecord(value) &&
+    typeof value.turnId === 'string' &&
+    ['active', 'completed', 'failed', 'interrupted'].includes(String(value.status)) &&
+    positiveSafeInteger(value.startedSeq) &&
+    (value.terminalSeq === undefined || positiveSafeInteger(value.terminalSeq))
+  );
 }
 
 function readPage(
@@ -409,7 +491,7 @@ function readPage(
 }
 
 function readStoredPage(path: string, threadId: string): StoredTranscriptPageV1 | null {
-  const value = readRegularJson(path);
+  const value = readRegularJson(path, 'page');
   if (!isRecord(value)) return null;
   const { digest: _digest, ...content } = value;
   void _digest;
@@ -621,7 +703,7 @@ function isMessageRole(value: unknown): value is Message['role'] {
   return value === 'system' || value === 'user' || value === 'assistant' || value === 'tool';
 }
 
-function readRegularJson(path: string): unknown {
+function readRegularJson(path: string, kind: 'manifest' | 'page'): unknown {
   let fd: number | undefined;
   try {
     fd = openSync(
@@ -629,7 +711,11 @@ function readRegularJson(path: string): unknown {
       constants.O_RDONLY | (typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0)
     );
     if (!fstatSync(fd).isFile()) return undefined;
-    return JSON.parse(readFileSync(fd, 'utf8')) as unknown;
+    const bytes = readFileSync(fd);
+    threadSessionIndexPerformance.bytesRead += bytes.byteLength;
+    if (kind === 'manifest') threadSessionIndexPerformance.manifestReads += 1;
+    else threadSessionIndexPerformance.pageReads += 1;
+    return JSON.parse(bytes.toString('utf8')) as unknown;
   } catch {
     return undefined;
   } finally {

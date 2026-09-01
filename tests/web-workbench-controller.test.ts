@@ -32,6 +32,42 @@ describe('WebWorkbenchController', () => {
     rmSync(workspace, { recursive: true, force: true });
   });
 
+  test('boots the production composition root before Session actors reuse its Workspace kernel', async () => {
+    const controller = await WebWorkbenchController.create({ cwd: workspace });
+    const rootKernel = controller.runtime.workspaceRuntimeKernel;
+    expect(rootKernel).toBeDefined();
+    expect(rootKernel?.diagnostics()).toMatchObject({
+      participantCount: 1,
+      ownerReleased: false,
+      closed: false,
+    });
+
+    const session = await controller.createSession('production actor kernel');
+    const baseline = controller.bootstrap('nonce');
+    const guard = {
+      workspaceId: baseline.workspaceId,
+      expectedContextRevision: baseline.contextRevision,
+    };
+    const cold = controller.composerState(session.id, guard);
+    await controller.applyComposerAction({
+      requestId: randomUUID(),
+      ...guard,
+      expectedSessionId: session.id,
+      expectedSessionRuntimeRevision: cold.sessionRuntime.runtimeRevision,
+      expectedControlRevision: cold.controlRevision,
+      type: 'set_agent_mode',
+      mode: 'plan',
+    });
+
+    expect(rootKernel?.diagnostics()).toMatchObject({ participantCount: 2, closed: false });
+    await controller.shutdown();
+    expect(rootKernel?.diagnostics()).toMatchObject({
+      participantCount: 0,
+      ownerReleased: true,
+      closed: true,
+    });
+  });
+
   test('coalesces concurrent retries and rejects request-id reuse with another payload', async () => {
     const controller = await WebWorkbenchController.create({
       cwd: workspace,
@@ -106,34 +142,232 @@ describe('WebWorkbenchController', () => {
     await controller.shutdown();
   });
 
-  test('rejects commands while a Session rebind is still in progress', async () => {
-    const runtime = createFakeWebRuntime(workspace);
+  test('keeps Session selection responsive while another actor is starting', async () => {
+    const surfaceRuntime = createFakeWebRuntime(workspace);
+    const actorRuntime = createFakeWebRuntime(workspace);
     let release!: () => void;
     const rebind = new Promise<void>(resolve => {
       release = resolve;
     });
-    runtime.rebindSessionRuntime = jest.fn(() => rebind);
+    const rebindSessionRuntime = jest.fn(() => rebind);
+    actorRuntime.rebindSessionRuntime = rebindSessionRuntime;
     const controller = await WebWorkbenchController.create({
       cwd: workspace,
-      createRuntime: async () => runtime,
+      createRuntime: async () => surfaceRuntime,
+      createSessionRuntime: async () => actorRuntime,
     });
 
-    const creation = controller.createSession('held transition');
-    await Promise.resolve();
-    const sessionId = controller.runtime.getSession()?.id;
-    expect(sessionId).toEqual(expect.any(String));
-    await expect(
-      controller.dispatch({
-        requestId: 'held-command',
-        expectedSessionId: sessionId,
-        type: 'submit',
-        text: 'must not run during rebind',
-      })
-    ).rejects.toMatchObject({ status: 409, code: 'runtime_busy' });
+    const first = await controller.createSession('held actor');
+    const starting = controller.dispatch({
+      requestId: randomUUID(),
+      ...sessionCommandTarget(controller, first.id),
+      type: 'submit',
+      text: 'start after rebind',
+    });
+    await waitForCondition(rebindSessionRuntime);
+    expect(rebindSessionRuntime).toHaveBeenCalledTimes(1);
+
+    const second = await controller.createSession('foreground remains responsive');
+    await expect(controller.activateSession(second.id)).resolves.toMatchObject({
+      result: 'foreground_session_selected',
+      sessionRuntime: { sessionId: second.id, phase: 'cold' },
+    });
 
     release();
-    await expect(creation).resolves.toMatchObject({ id: sessionId });
-    expect(controller.runtime.store.getSnapshot().isProcessing).toBe(false);
+    await expect(starting).resolves.toMatchObject({ requestId: expect.any(String) });
+    await controller.shutdown();
+  });
+
+  test('fails closed when a Session actor start failure cannot be cleaned up', async () => {
+    const surfaceRuntime = createFakeWebRuntime(workspace);
+    const actorRuntime = createFakeWebRuntime(workspace);
+    actorRuntime.rebindSessionRuntime = jest.fn(async () => {
+      throw new Error('rebind failed');
+    });
+    let shutdownAttempts = 0;
+    actorRuntime.shutdown = jest.fn(async () => {
+      actorRuntime.settingsCoordinator?.close();
+      shutdownAttempts += 1;
+      if (shutdownAttempts === 1) throw new Error('shutdown failed');
+    });
+    const controller = await WebWorkbenchController.create({
+      cwd: workspace,
+      createRuntime: async () => surfaceRuntime,
+      createSessionRuntime: async () => actorRuntime,
+    });
+    const session = await controller.createSession('cleanup failure');
+
+    await expect(
+      controller.dispatch({
+        requestId: randomUUID(),
+        ...sessionCommandTarget(controller, session.id),
+        type: 'submit',
+        text: 'must not start',
+      })
+    ).rejects.toMatchObject({
+      status: 503,
+      code: 'session_actor_cleanup_failed',
+    });
+    expect(actorRuntime.rebindSessionRuntime).toHaveBeenCalledTimes(1);
+    expect(actorRuntime.shutdown).toHaveBeenCalledTimes(1);
+    expect(controller.sessionRuntimeSummary(session.id)).toMatchObject({
+      phase: 'failed',
+      resident: true,
+    });
+    await controller.shutdown();
+    expect(actorRuntime.shutdown).toHaveBeenCalledTimes(2);
+  });
+
+  test('continues Host cleanup when a resident Session actor cannot close', async () => {
+    const surfaceRuntime = createFakeWebRuntime(workspace);
+    const actorRuntime = createFakeWebRuntime(workspace);
+    actorRuntime.createAgentRunner = () => ({ runInput: jest.fn(async () => undefined) });
+    actorRuntime.shutdown = jest.fn(async () => {
+      actorRuntime.settingsCoordinator?.close();
+      throw new Error('persistent actor shutdown failure');
+    });
+    const controller = await WebWorkbenchController.create({
+      cwd: workspace,
+      createRuntime: async () => surfaceRuntime,
+      createSessionRuntime: async () => actorRuntime,
+    });
+    const closeEvents = jest.spyOn(controller.eventHub, 'close');
+    const session = await controller.createSession('persistent cleanup failure');
+    await controller.dispatch({
+      requestId: randomUUID(),
+      ...sessionCommandTarget(controller, session.id),
+      type: 'submit',
+      text: 'finish before shutdown',
+    });
+    await controller.waitForSessionIdle(session.id);
+
+    await expect(controller.shutdown()).rejects.toMatchObject({
+      status: 503,
+      code: 'workbench_shutdown_incomplete',
+    });
+    expect(actorRuntime.shutdown).toHaveBeenCalledTimes(2);
+    expect(surfaceRuntime.shutdown).toHaveBeenCalledTimes(1);
+    expect(closeEvents).toHaveBeenCalledTimes(1);
+  });
+
+  test('runs two Session actors concurrently without cross-routing their prompts', async () => {
+    let releaseFirst!: () => void;
+    let releaseSecond!: () => void;
+    const firstTurn = new Promise<void>(resolve => {
+      releaseFirst = resolve;
+    });
+    const secondTurn = new Promise<void>(resolve => {
+      releaseSecond = resolve;
+    });
+    const firstRunInput = jest.fn((_input: string) => firstTurn);
+    const secondRunInput = jest.fn((_input: string) => secondTurn);
+    const actorRuntimes = [createFakeWebRuntime(workspace), createFakeWebRuntime(workspace)];
+    actorRuntimes[0].createAgentRunner = () => ({ runInput: firstRunInput });
+    actorRuntimes[1].createAgentRunner = () => ({ runInput: secondRunInput });
+    const controller = await WebWorkbenchController.create({
+      cwd: workspace,
+      createRuntime: async () => createFakeWebRuntime(workspace),
+      createSessionRuntime: async () => {
+        const runtime = actorRuntimes.shift();
+        if (!runtime) throw new Error('Unexpected extra Session actor.');
+        return runtime;
+      },
+    });
+    const first = await controller.createSession('parallel first');
+    const second = await controller.createSession('parallel second');
+
+    const [firstResult, secondResult] = await Promise.all([
+      controller.dispatch({
+        requestId: randomUUID(),
+        ...sessionCommandTarget(controller, first.id),
+        type: 'submit',
+        text: 'FIRST_SESSION_PROMPT',
+      }),
+      controller.dispatch({
+        requestId: randomUUID(),
+        ...sessionCommandTarget(controller, second.id),
+        type: 'submit',
+        text: 'SECOND_SESSION_PROMPT',
+      }),
+    ]);
+
+    expect(firstResult).toMatchObject({ result: 'started', sessionRuntime: { phase: 'running' } });
+    expect(secondResult).toMatchObject({ result: 'started', sessionRuntime: { phase: 'running' } });
+    expect(firstRunInput).toHaveBeenCalledWith('FIRST_SESSION_PROMPT', expect.any(Object));
+    expect(secondRunInput).toHaveBeenCalledWith('SECOND_SESSION_PROMPT', expect.any(Object));
+    expect(firstRunInput).toHaveBeenCalledTimes(1);
+    expect(secondRunInput).toHaveBeenCalledTimes(1);
+    expect(controller.sessionRuntimeSummary(first.id).phase).toBe('running');
+    expect(controller.sessionRuntimeSummary(second.id).phase).toBe('running');
+
+    releaseFirst();
+    releaseSecond();
+    await Promise.all([
+      controller.waitForSessionIdle(first.id),
+      controller.waitForSessionIdle(second.id),
+    ]);
+    expect(controller.sessionRuntimeSummary(first.id).phase).toBe('idle');
+    expect(controller.sessionRuntimeSummary(second.id).phase).toBe('idle');
+    await controller.shutdown();
+  });
+
+  test('exposes the fourth Session turn as a cancellable FIFO admission', async () => {
+    const releases: Array<() => void> = [];
+    const actorRuntimes = Array.from({ length: 4 }, () => {
+      const runtime = createFakeWebRuntime(workspace);
+      const settled = new Promise<void>(resolve => releases.push(resolve));
+      runtime.createAgentRunner = () => ({ runInput: jest.fn(() => settled) });
+      return runtime;
+    });
+    const controller = await WebWorkbenchController.create({
+      cwd: workspace,
+      createRuntime: async () => createFakeWebRuntime(workspace),
+      createSessionRuntime: async () => {
+        const runtime = actorRuntimes.shift();
+        if (!runtime) throw new Error('Unexpected extra Session actor.');
+        return runtime;
+      },
+    });
+    const sessions = await Promise.all(
+      Array.from({ length: 4 }, (_, index) => controller.createSession(`parallel ${index + 1}`))
+    );
+
+    for (const [index, session] of sessions.entries()) {
+      const result = await controller.dispatch({
+        requestId: randomUUID(),
+        ...sessionCommandTarget(controller, session.id),
+        type: 'submit',
+        text: `SESSION_${index + 1}`,
+      });
+      if (index < 3) expect(result).toMatchObject({ result: 'started' });
+      else {
+        expect(result).toMatchObject({
+          result: 'session_turn_queued',
+          queuePosition: 1,
+          sessionRuntime: { phase: 'queued' },
+        });
+        expect(result.queueId).toBeDefined();
+        const cancelled = await controller.dispatch({
+          requestId: randomUUID(),
+          ...sessionCommandTarget(controller, session.id),
+          type: 'cancel_queued_turn',
+          queueId: result.queueId,
+        });
+        expect(cancelled).toMatchObject({
+          result: 'session_turn_queue_cancelled',
+          sessionRuntime: { phase: 'idle' },
+        });
+      }
+    }
+
+    const fourthRuntime = controller.sessionRuntimeSummary(sessions[3].id);
+    expect(fourthRuntime).toMatchObject({ phase: 'idle' });
+    expect(fourthRuntime).not.toHaveProperty('queueId');
+    expect(fourthRuntime).not.toHaveProperty('queuePosition');
+    releases.slice(0, 3).forEach(release => release());
+    await Promise.all(
+      sessions.slice(0, 3).map(session => controller.waitForSessionIdle(session.id))
+    );
     await controller.shutdown();
   });
 
@@ -182,14 +416,15 @@ describe('WebWorkbenchController', () => {
 
     const second = await controller.createSession('second');
     expect(loadSessionMeta(second.id)?.model).toBe('next-model');
-    expect(controller.runtime.store.getSnapshot().currentModel).toBe('next-model');
     await controller.shutdown();
   });
 
   test('coalesces Context telemetry without invalidating control CAS, but revisions authority changes', async () => {
+    const actorRuntime = createFakeWebRuntime(workspace);
     const controller = await WebWorkbenchController.create({
       cwd: workspace,
       createRuntime: async cwd => createFakeWebRuntime(cwd),
+      createSessionRuntime: async () => actorRuntime,
     });
     const session = await controller.createSession('composer revision');
     const baseline = controller.bootstrap('nonce');
@@ -197,9 +432,19 @@ describe('WebWorkbenchController', () => {
       workspaceId: baseline.workspaceId,
       expectedContextRevision: baseline.contextRevision,
     };
-    const before = controller.composerState(session.id, guard);
+    const cold = controller.composerState(session.id, guard);
+    const activated = await controller.applyComposerAction({
+      requestId: randomUUID(),
+      ...guard,
+      expectedSessionId: session.id,
+      expectedSessionRuntimeRevision: cold.sessionRuntime.runtimeRevision,
+      expectedControlRevision: cold.controlRevision,
+      type: 'set_agent_mode',
+      mode: 'plan',
+    });
+    const before = activated.state;
 
-    controller.runtime.store.setContextUsage(
+    actorRuntime.store.setContextUsage(
       createContextUsageSnapshot({ modelId: 'test-model', usedTokens: 2_048 })
     );
     await new Promise(resolve => setTimeout(resolve, 140));
@@ -207,36 +452,27 @@ describe('WebWorkbenchController', () => {
     expect(telemetry.contextUsage).toMatchObject({ modelId: 'test-model', usedTokens: 2_048 });
     expect(telemetry.controlRevision).toBe(before.controlRevision);
 
-    controller.controller.setAgentMode('plan');
+    const changed = await controller.applyComposerAction({
+      requestId: randomUUID(),
+      ...guard,
+      expectedSessionId: session.id,
+      expectedSessionRuntimeRevision: telemetry.sessionRuntime.runtimeRevision,
+      expectedControlRevision: telemetry.controlRevision,
+      type: 'set_agent_mode',
+      mode: 'auto',
+    });
+    expect(changed.state.mode.baseMode).toBe('auto');
     await expect(
       controller.applyComposerAction({
         requestId: randomUUID(),
         ...guard,
         expectedSessionId: session.id,
-        expectedControlRevision: before.controlRevision,
-        type: 'set_agent_mode',
-        mode: 'auto',
-      })
-    ).rejects.toMatchObject({ status: 409, code: 'composer_control_conflict' });
-    const snapshot = controller.sessionSnapshot(session.id, undefined, 50, false, guard);
-    const authority = snapshot.composer;
-    expect(authority.mode.baseMode).toBe('plan');
-    expect(authority.controlRevision).not.toBe(before.controlRevision);
-
-    await new Promise(resolve => setTimeout(resolve, 140));
-    expect(controller.composerState(session.id, guard).controlRevision).toBe(
-      authority.controlRevision
-    );
-    await expect(
-      controller.applyComposerAction({
-        requestId: randomUUID(),
-        ...guard,
-        expectedSessionId: session.id,
-        expectedControlRevision: authority.controlRevision,
+        expectedSessionRuntimeRevision: changed.state.sessionRuntime.runtimeRevision,
+        expectedControlRevision: telemetry.controlRevision,
         type: 'set_agent_mode',
         mode: 'interactive',
       })
-    ).resolves.toMatchObject({ state: { mode: { baseMode: 'interactive' } } });
+    ).rejects.toMatchObject({ status: 409, code: 'composer_control_conflict' });
     await controller.shutdown();
   });
 
@@ -257,7 +493,8 @@ describe('WebWorkbenchController', () => {
     const controller = await WebWorkbenchController.create({
       cwd: workspace,
       eventHub,
-      createRuntime: async () => runtime,
+      createRuntime: async () => createFakeWebRuntime(workspace),
+      createSessionRuntime: async () => runtime,
     });
     const session = await controller.createSession('queued Composer CAS');
     const baseline = controller.bootstrap('nonce');
@@ -268,7 +505,7 @@ describe('WebWorkbenchController', () => {
 
     await controller.dispatch({
       requestId: randomUUID(),
-      expectedSessionId: session.id,
+      ...sessionCommandTarget(controller, session.id),
       type: 'submit',
       text: 'hold the first turn',
     });
@@ -279,7 +516,7 @@ describe('WebWorkbenchController', () => {
 
     await controller.dispatch({
       requestId: randomUUID(),
-      expectedSessionId: session.id,
+      ...sessionCommandTarget(controller, session.id),
       type: 'queue_followup',
       text: 'queued original',
     });
@@ -304,6 +541,7 @@ describe('WebWorkbenchController', () => {
         requestId: randomUUID(),
         ...guard,
         expectedSessionId: session.id,
+        expectedSessionRuntimeRevision: queuedState!.sessionRuntime.runtimeRevision,
         expectedControlRevision: queuedState!.controlRevision,
         type: 'edit_queue_item',
         itemId: queuedItem!.id,
@@ -316,15 +554,88 @@ describe('WebWorkbenchController', () => {
     });
 
     releaseFirstTurn();
-    await controller.controller.waitForIdle();
+    await controller.waitForSessionIdle(session.id);
+    await controller.shutdown();
+  });
+
+  test('replays an early Workspace mutation state after tool ownership is projected', async () => {
+    const runtime = createFakeWebRuntime(workspace);
+    const eventHub = new WebEventHub();
+    const emit = jest.spyOn(eventHub, 'emit');
+    const emitRuntime = jest.spyOn(eventHub, 'emitRuntime');
+    const controller = await WebWorkbenchController.create({
+      cwd: workspace,
+      eventHub,
+      createRuntime: async () => runtime,
+    });
+    const bootstrap = controller.bootstrap('nonce');
+    const callId = randomUUID();
+    const harness = controller as unknown as {
+      emitWorkspaceMutationState(state: {
+        workspaceId: string;
+        invocationId: string;
+        phase: 'queued';
+        queuePosition: number;
+      }): void;
+      emitSessionActorRuntimeEvent(
+        key: { workspaceId: string; sessionId: string },
+        runtime: ReturnType<typeof createFakeWebRuntime>,
+        actor: undefined,
+        event: {
+          type: 'tool_started';
+          event: {
+            callId: string;
+            name: string;
+            args: Record<string, unknown>;
+            sequence: number;
+          };
+        }
+      ): string | void;
+    };
+
+    harness.emitWorkspaceMutationState({
+      workspaceId: bootstrap.workspaceId,
+      invocationId: callId,
+      phase: 'queued',
+      queuePosition: 1,
+    });
+    expect(emit).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'workspace_mutation_changed' }),
+      expect.anything(),
+      expect.anything()
+    );
+
+    harness.emitSessionActorRuntimeEvent(
+      { workspaceId: bootstrap.workspaceId, sessionId: 'session-queued-owner' },
+      runtime,
+      undefined,
+      {
+        type: 'tool_started',
+        event: { callId, name: 'exec_command', args: {}, sequence: 1 },
+      }
+    );
+
+    expect(emitRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'tool_started' }),
+      expect.objectContaining({ sessionId: 'session-queued-owner' })
+    );
+    expect(emit).toHaveBeenCalledWith(
+      {
+        type: 'workspace_mutation_changed',
+        state: { callId, phase: 'queued', queuePosition: 1 },
+      },
+      false,
+      { sessionId: 'session-queued-owner' }
+    );
+    expect(emitRuntime.mock.invocationCallOrder[0]).toBeLessThan(emit.mock.invocationCallOrder[0]);
     await controller.shutdown();
   });
 
   test('resolves exact structured file and Skill Context into one redacted manifest', async () => {
     const marker = 'OPAQUE_WEB32_CONTEXT_SECRET';
     writeFileSync(join(workspace, 'source.ts'), `export const token = '${marker}';\n`);
-    const runtime = createFakeWebRuntime(workspace);
-    runtime.inspectSkills = async () => [
+    const surfaceRuntime = createFakeWebRuntime(workspace);
+    surfaceRuntime.inspectSkills = async () => [
       {
         id: 'review-safely',
         name: 'Review safely',
@@ -337,9 +648,13 @@ describe('WebWorkbenchController', () => {
         digest: 'skill-digest-v1',
       },
     ];
+    const actorRuntime = createFakeWebRuntime(workspace);
+    const runInput = jest.fn(async (_input: string) => undefined);
+    actorRuntime.createAgentRunner = () => ({ runInput });
     const controller = await WebWorkbenchController.create({
       cwd: workspace,
-      createRuntime: async () => runtime,
+      createRuntime: async () => surfaceRuntime,
+      createSessionRuntime: async () => actorRuntime,
     });
     const session = await controller.createSession('context manifest');
     const baseline = controller.bootstrap('nonce');
@@ -350,11 +665,9 @@ describe('WebWorkbenchController', () => {
     const files = controller.listFiles(guard, { pageSize: 100 });
     const source = files.items.find(item => item.name === 'source.ts')!;
     const sourcePage = controller.readFileContent(guard, { fileId: source.id });
-    const handle = jest.spyOn(controller.controller, 'handle').mockReturnValue({ type: 'started' });
-
     const result = await controller.dispatch({
       requestId: randomUUID(),
-      expectedSessionId: session.id,
+      ...sessionCommandTarget(controller, session.id),
       type: 'submit',
       text: 'Review the selected Context',
       contextReferences: [
@@ -378,9 +691,8 @@ describe('WebWorkbenchController', () => {
       referenceCount: 2,
       totalBytes: expect.any(Number),
     });
-    const input = handle.mock.calls[0]?.[0];
-    expect(input).toMatchObject({ type: 'submit', source: 'programmatic' });
-    const resolvedText = input?.type === 'submit' ? input.text : '';
+    await waitForCondition(runInput);
+    const resolvedText = runInput.mock.calls[0]?.[0] ?? '';
     expect(resolvedText).toContain('[Orion Context Manifest V1]');
     expect(resolvedText).toContain('source.ts');
     expect(resolvedText).toContain('$review-safely');
@@ -393,9 +705,16 @@ describe('WebWorkbenchController', () => {
   test('blocks stale and sensitive Context references before runtime admission', async () => {
     writeFileSync(join(workspace, 'notes.txt'), 'first revision\n');
     writeFileSync(join(workspace, '.env'), 'TOKEN=OPAQUE_CONTEXT_ENV_SECRET\n');
+    const runInput = jest.fn(async (_input: string) => undefined);
+    const createSessionRuntime = jest.fn(async () => {
+      const actorRuntime = createFakeWebRuntime(workspace);
+      actorRuntime.createAgentRunner = () => ({ runInput });
+      return actorRuntime;
+    });
     const controller = await WebWorkbenchController.create({
       cwd: workspace,
       createRuntime: async cwd => createFakeWebRuntime(cwd),
+      createSessionRuntime,
     });
     const session = await controller.createSession('context validation');
     const baseline = controller.bootstrap('nonce');
@@ -407,13 +726,11 @@ describe('WebWorkbenchController', () => {
     const notes = files.items.find(item => item.name === 'notes.txt')!;
     const sensitive = files.items.find(item => item.name === '.env')!;
     const notesPage = controller.readFileContent(guard, { fileId: notes.id });
-    const handle = jest.spyOn(controller.controller, 'handle').mockReturnValue({ type: 'started' });
-
     writeFileSync(join(workspace, 'notes.txt'), 'a newer and longer revision\n');
     await expect(
       controller.dispatch({
         requestId: randomUUID(),
-        expectedSessionId: session.id,
+        ...sessionCommandTarget(controller, session.id),
         type: 'submit',
         text: 'Do not admit stale Context',
         contextReferences: [
@@ -430,7 +747,7 @@ describe('WebWorkbenchController', () => {
     await expect(
       controller.dispatch({
         requestId: randomUUID(),
-        expectedSessionId: session.id,
+        ...sessionCommandTarget(controller, session.id),
         type: 'submit',
         text: 'Do not admit sensitive Context',
         contextReferences: [
@@ -444,11 +761,12 @@ describe('WebWorkbenchController', () => {
       })
     ).rejects.toMatchObject({ status: 403, code: 'context_reference_forbidden' });
 
-    expect(handle).not.toHaveBeenCalled();
+    expect(runInput).not.toHaveBeenCalled();
+    expect(createSessionRuntime).not.toHaveBeenCalled();
     await controller.shutdown();
   });
 
-  test('keeps diagnostics read-only until a Session is explicitly active', async () => {
+  test('keeps workspace diagnostics cold after Session metadata is created', async () => {
     const runtime = createFakeWebRuntime(workspace);
     const getHarnessDiagnostics = jest.fn(async () => undefined);
     runtime.getHarnessDiagnostics = getHarnessDiagnostics;
@@ -464,12 +782,12 @@ describe('WebWorkbenchController', () => {
     expect(getHarnessDiagnostics).not.toHaveBeenCalled();
     expect(controller.bootstrap('test-nonce').activeSessionId).toBeNull();
 
-    const session = await controller.createSession('diagnostics session');
+    await controller.createSession('diagnostics session');
     await expect(controller.diagnostics()).resolves.toMatchObject({
-      activeSessionId: session.id,
+      activeSessionId: null,
       harness: null,
     });
-    expect(getHarnessDiagnostics).toHaveBeenCalledTimes(1);
+    expect(getHarnessDiagnostics).not.toHaveBeenCalled();
     await controller.shutdown();
   });
 
@@ -637,17 +955,73 @@ describe('WebWorkbenchController', () => {
         payload: { type: 'item.completed', data: { content: 'indexed-206' } },
       },
     ]);
-    const consistentActive = controller.sessionSnapshot(session.id, undefined, 50, true);
-    expect(consistentActive.runtime.active).toBe(true);
-    expect(consistentActive.threadCursor).toBe(activeProjection.cursor);
-    expect(consistentActive.projectionDigest).toBe(activeProjection.digest);
-    expect(consistentActive.transcript.items.at(-1)).toMatchObject({ content: 'indexed-205' });
-    expect(consistentActive.transcript.items).not.toEqual(
-      expect.arrayContaining([expect.objectContaining({ content: 'indexed-206' })])
-    );
+    const consistentCold = controller.sessionSnapshot(session.id, undefined, 50, true);
+    expect(consistentCold.runtime.active).toBe(false);
+    expect(consistentCold.threadCursor).toBe(activeProjection.cursor + 3);
+    expect(consistentCold.projectionDigest).not.toBe(activeProjection.digest);
+    expect(consistentCold.transcript.items.at(-1)).toMatchObject({ content: 'indexed-206' });
     expect(() => controller.sessionSnapshot(session.id, oldCursor ?? undefined, 50, true)).toThrow(
       expect.objectContaining({ status: 409, code: 'transcript_cursor_stale' })
     );
     await controller.shutdown();
   });
+
+  test('projects a recovered durable interruption instead of reporting the actor idle', async () => {
+    const session = createSession(workspace, 'test-model');
+    appendSessionMessages(session.id, [
+      { role: 'user', content: 'recover interrupted turn', timestamp: 1 },
+    ]);
+    const materialized = materializeLegacyThreadV1({
+      projectPath: workspace,
+      sessionId: session.id,
+    });
+    const store = new ThreadEventStore(
+      getProjectThreadsV2Dir(workspace),
+      materialized.plan.receipt.threadId
+    );
+    const turnId = randomUUID();
+    store.appendDurableBatch([
+      {
+        turnId,
+        payload: { type: 'turn.started', data: { input: 'held request', mode: 'build' } },
+      },
+      {
+        turnId,
+        payload: {
+          type: 'turn.interrupted',
+          data: { reason: 'runtime_restarted_before_terminal_commit' },
+        },
+      },
+    ]);
+
+    const controller = await WebWorkbenchController.create({
+      cwd: workspace,
+      createRuntime: async cwd => createFakeWebRuntime(cwd),
+    });
+
+    const snapshot = controller.sessionSnapshot(session.id, undefined, 50, true);
+    expect(snapshot.runtime.active).toBe(false);
+    expect(snapshot.sessionRuntime.phase).toBe('interrupted');
+    expect(snapshot.composer.sessionRuntime.phase).toBe('interrupted');
+    expect(snapshot.runtime.processing).toBe(false);
+    await controller.shutdown();
+  });
 });
+
+function sessionCommandTarget(controller: WebWorkbenchController, sessionId: string) {
+  const bootstrap = controller.bootstrap('command-target');
+  return {
+    workspaceId: bootstrap.workspaceId,
+    expectedContextRevision: bootstrap.contextRevision,
+    expectedSessionId: sessionId,
+    expectedSessionRuntimeRevision: controller.sessionRuntimeSummary(sessionId).runtimeRevision,
+  } as const;
+}
+
+async function waitForCondition(condition: jest.Mock, attempts = 100): Promise<void> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (condition.mock.calls.length > 0) return;
+    await new Promise<void>(resolve => setTimeout(resolve, 1));
+  }
+  throw new Error('Timed out waiting for the test condition.');
+}

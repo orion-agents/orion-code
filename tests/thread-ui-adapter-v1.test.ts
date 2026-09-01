@@ -460,7 +460,7 @@ describe('ThreadUiAdapterV1', () => {
     await runtime.waitForIdle();
     expect(adapter.flush().cursor).toBe(runtime.getProjection().cursor);
 
-    expect(replay).toHaveBeenCalledWith(1);
+    expect(replay).toHaveBeenCalledWith(1, undefined, 'ui_gap_recovery');
     const finalizedContent = events
       .filter(
         (event): event is Extract<AgentRuntimeEvent, { type: 'transcript_finalize' }> =>
