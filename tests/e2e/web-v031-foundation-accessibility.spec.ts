@@ -858,6 +858,7 @@ async function openInspectorWithKeyboard(page: Page): Promise<void> {
 }
 
 async function openNavigationWithKeyboard(page: Page): Promise<void> {
+  await expect(page.locator('.workbench-shell')).toHaveClass(/project-navigation-drawer/u);
   const button = workbenchUi(page).navigationButton;
   await expect(button).toBeVisible();
   await button.focus();

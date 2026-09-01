@@ -81,7 +81,7 @@ export function SettingsDialog({
   const closeRef = useRef<HTMLButtonElement>(null);
   const discardRef = useRef<HTMLButtonElement>(null);
   const focusBeforeDiscard = useRef<HTMLElement | null>(null);
-  const observedRevision = useRef<string | null>(null);
+  const observedDocument = useRef<WebSettingsDocumentV1 | null>(null);
   const wasOpen = useRef(false);
   const saveRequestId = useRef<string | null>(null);
   const previousPhase = useRef(initialSettingsEditorState.phase);
@@ -109,26 +109,26 @@ export function SettingsDialog({
     if (open && !wasOpen.current) {
       if (document) {
         dispatch({ type: 'open', document });
-        observedRevision.current = document.revision;
+        observedDocument.current = document;
       }
       setConfirmAllow(false);
       setAllowAcknowledged(false);
       setDocumentAction(null);
-    } else if (open && document && observedRevision.current === null) {
+    } else if (open && document && observedDocument.current === null) {
       dispatch({ type: 'open', document });
-      observedRevision.current = document.revision;
+      observedDocument.current = document;
     } else if (
       open &&
       document &&
-      observedRevision.current !== null &&
-      observedRevision.current !== document.revision
+      observedDocument.current !== null &&
+      observedDocument.current !== document
     ) {
       if (editor.phase === 'saving') return;
-      observedRevision.current = document.revision;
+      observedDocument.current = document;
       dispatch({ type: 'server_updated', document });
     } else if (!open && wasOpen.current) {
       dispatch({ type: 'close' });
-      observedRevision.current = null;
+      observedDocument.current = null;
       saveRequestId.current = null;
     }
     wasOpen.current = open;
@@ -155,7 +155,7 @@ export function SettingsDialog({
     if (!open || !editor.draft || !state.workspace) return;
     if (editor.draft.workspace === state.workspace) return;
     dispatch({ type: 'close' });
-    observedRevision.current = null;
+    observedDocument.current = null;
   }, [editor.draft, open, state.workspace]);
 
   const draft = editor.draft;
@@ -192,7 +192,7 @@ export function SettingsDialog({
     try {
       const result = await actions.updateSettings(draft.base.revision, operations, stableId);
       saveRequestId.current = null;
-      observedRevision.current = result.settings.revision;
+      observedDocument.current = result.settings;
       dispatch({ type: 'save_succeeded', document: result.settings });
     } catch (error) {
       const code = error instanceof WebApiError ? (error.code ?? 'settings_rejected') : 'network';
@@ -200,7 +200,7 @@ export function SettingsDialog({
       if (code === 'settings_revision_conflict') {
         saveRequestId.current = null;
         latest = await actions.refreshSettings().catch(() => undefined);
-        if (latest) observedRevision.current = latest.revision;
+        if (latest) observedDocument.current = latest;
       } else if (error instanceof WebApiError && error.status < 500) {
         // A definite Host answer is not retried under the same idempotency key.
         saveRequestId.current = null;

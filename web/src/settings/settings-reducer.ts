@@ -134,8 +134,17 @@ export function settingsEditorReducer(
       if (!state.draft) {
         return { ...state, phase: 'ready', draft: hydrateSettingsDraft(action.document) };
       }
-      if (state.phase === 'saving' || state.draft.base.revision === action.document.revision) {
+      if (state.phase === 'saving') {
         return state;
+      }
+      if (state.draft.base.revision === action.document.revision) {
+        const dirty = dirtySettingsKeys(state.draft).length > 0;
+        return {
+          ...state,
+          draft: dirty
+            ? { ...state.draft, base: action.document }
+            : hydrateSettingsDraft(action.document),
+        };
       }
       if (
         state.draft.workspace !== action.document.workspace ||

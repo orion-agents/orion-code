@@ -88,7 +88,7 @@ describe('TerminalWriteQueue', () => {
     expect(sequences).toEqual([1]);
   });
 
-  it('warms a cold burst at 2.5KiB before using the 3KiB sustained budget', () => {
+  it('warms a cold burst at 2KiB before using the 3KiB sustained budget', () => {
     const scheduler = new TaskScheduler();
     const writes: Array<{ data: string; callback: () => void }> = [];
     const queue = new TerminalWriteQueue({
@@ -101,7 +101,7 @@ describe('TerminalWriteQueue', () => {
     queue.enqueue('x'.repeat(512 * 1024));
     for (let frame = 0; frame < 120; frame += 1) {
       scheduler.runNext();
-      expect(writes[frame].data).toHaveLength(2_560);
+      expect(writes[frame].data).toHaveLength(2 * 1024);
       writes[frame].callback();
     }
     scheduler.runNext();
