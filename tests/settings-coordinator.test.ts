@@ -561,7 +561,11 @@ describe('SettingsCoordinatorV1', () => {
     const coordinator = create({ runtimeIdle: idleProbe, runtimeApply: apply });
     writeFileSync(documentPath, JSON.stringify({ schemaVersion: 1, toolConfirmation: 'deny' }));
 
-    await waitUntil(() => idleProbe.mock.calls.length > 0);
+    await expect(coordinator.synchronizeExternalChanges()).rejects.toMatchObject({
+      status: 409,
+      code: 'runtime_busy',
+    });
+    expect(idleProbe).toHaveBeenCalled();
     expect(apply).not.toHaveBeenCalled();
     expect(coordinator.hasPendingExternalChanges()).toBe(true);
 
