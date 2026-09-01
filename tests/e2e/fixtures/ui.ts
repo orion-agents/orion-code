@@ -395,10 +395,17 @@ export async function renameActiveSession(
   await activeRow.hover();
   await expect(renameButton).toBeVisible({ timeout: options.timeout });
   await expect(renameButton).toBeEnabled({ timeout: options.timeout });
+  const previousName = await activeRow.locator('.project-session-main strong').innerText();
   await renameButton.focus();
   await renameButton.press('Enter');
   await expect(ui.renameDialog).toBeVisible({ timeout: options.timeout });
-  await ui.renameDialog.getByRole('textbox', { name: '会话名称' }).fill(nextName);
+  const nameInput = ui.renameDialog.getByRole('textbox', { name: '会话名称' });
+  // The controlled dialog initializes its draft in an effect. Waiting for that
+  // value prevents a fast browser from racing fill() against the initialization
+  // and appending the new name to the generated Session title.
+  await expect(nameInput).toHaveValue(previousName, { timeout: options.timeout });
+  await nameInput.fill(nextName);
+  await expect(nameInput).toHaveValue(nextName, { timeout: options.timeout });
   await ui.renameDialog.getByRole('button', { name: '保存', exact: true }).click();
   await expect(ui.renameDialog).toBeHidden({ timeout: options.timeout });
   await expect(
