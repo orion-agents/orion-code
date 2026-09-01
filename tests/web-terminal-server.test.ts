@@ -25,6 +25,7 @@ class BackpressureTerminalProcess implements TerminalProcessV1 {
   alive = true;
   pauseCalls = 0;
   resumeCalls = 0;
+  onPause: (() => void) | undefined;
   private readonly dataListeners = new Set<(data: string) => void>();
   private readonly exitListeners = new Set<
     (event: { exitCode: number; signal?: number }) => void
@@ -41,6 +42,7 @@ class BackpressureTerminalProcess implements TerminalProcessV1 {
   pause(): void {
     this.paused = true;
     this.pauseCalls += 1;
+    this.onPause?.();
   }
 
   resume(): void {
@@ -110,7 +112,7 @@ describe('terminal WebSocket backpressure', () => {
   });
 
   afterEach(async () => {
-    client?.close();
+    client?.terminate();
     await sockets.close();
     await manager.shutdown();
     await new Promise<void>(resolvePromise => server.close(() => resolvePromise()));
@@ -177,9 +179,10 @@ describe('terminal WebSocket backpressure', () => {
     });
     await waitForWebSocket(client, 'open');
     const transport = (client as unknown as { readonly _socket: Socket })._socket;
-    transport.pause();
+    terminalProcess.onPause = () => transport.pause();
     client.send(JSON.stringify({ type: 'authenticate', ticket: created.ticket, afterSequence: 0 }));
-    await waitFor(() => terminalProcess.paused, 5_000);
+    await waitFor(() => terminalProcess.pauseCalls > 0 && terminalProcess.paused, 5_000);
+    terminalProcess.onPause = undefined;
 
     terminalProcess.emitExit({ exitCode: 0 });
     transport.resume();
