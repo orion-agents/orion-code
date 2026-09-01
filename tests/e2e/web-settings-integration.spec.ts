@@ -1045,7 +1045,10 @@ test('SET-P0-13 Settings reflows at desktop, 390, 320, and 200 percent with keyb
     expect(zoom.innerWidth).toBeLessThanOrEqual(321);
     expect(zoom.visualWidth).toBeLessThanOrEqual(321);
     expect(zoom.devicePixelRatio).toBe(2);
-    if (!(await workbenchUi(page).settingsButton.isVisible())) await openSessionNavigation(page);
+    // A transformed, off-screen drawer still satisfies Playwright's `isVisible()`.
+    // Re-evaluate the responsive column mode and explicitly open the drawer before
+    // hit-testing the only Settings entry at the 200% equivalent viewport.
+    await openSessionNavigation(page);
     const zoomHitTest = await workbenchUi(page).settingsButton.evaluate(button => {
       const rect = (element: Element | null) => {
         if (!element) return null;
