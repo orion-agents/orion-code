@@ -28,7 +28,7 @@ import {
   type ThreadSessionRuntimeActivationV1,
   type ThreadSessionViewV1,
 } from '../runtime/thread-session-view';
-import type { ThreadProjectionV1 } from '../runtime/thread-projection';
+import type { PlanReviewProjectionV1, ThreadProjectionV1 } from '../runtime/thread-projection';
 import { FileToolDetailRepository } from '../runtime/tool-detail-repository';
 import { parsePlanReceiptV1, parseTurnCommitV1 } from '../runtime/turn-commit';
 import { SessionComposerControlError } from '../runtime/session-composer-control';
@@ -590,7 +590,7 @@ export class WebWorkbenchController {
         : null;
     const projectedComposer = actor
       ? this.projectActorComposerState(actor, session)
-      : this.projectComposerStateValue(session);
+      : this.projectComposerStateValue(session, undefined, indexedPage?.planReview);
     const composer =
       projectedComposer.sessionRuntime.phase === sessionRuntime.phase
         ? projectedComposer
@@ -680,7 +680,8 @@ export class WebWorkbenchController {
 
   private projectComposerStateValue(
     session: SessionMeta,
-    actor?: WebWorkbenchSessionActorV1
+    actor?: WebWorkbenchSessionActorV1,
+    indexedPlanReview?: PlanReviewProjectionV1
   ): WebComposerControlStateV1 {
     const runtimeOwner = actor?.runtime ?? this.runtimeValue;
     const controller = actor?.controller;
@@ -699,7 +700,7 @@ export class WebWorkbenchController {
     const projection = actor
       ? this.activeOrionRuntimes.get(session.id)?.thread.getProjection()
       : undefined;
-    const review = projection?.planReview;
+    const review = projection?.planReview ?? indexedPlanReview;
     const workspaceId = this.workspaceRegistry
       .list()
       .find(entry => entry.canonicalPath === canonicalDirectory(session.projectPath))?.id;

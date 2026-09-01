@@ -8,6 +8,7 @@ import type { RuntimeEventEnvelopeV1 } from './protocol/runtime-protocol-v1';
 import type { ThreadLogIdentityV1 } from './thread-event-store';
 import type {
   ItemProjectionV1,
+  PlanReviewProjectionV1,
   ThreadProjectionV1,
   TurnProjectionStatusV1,
 } from './thread-projection';
@@ -95,6 +96,7 @@ export interface ThreadSessionIndexManifestV1 {
   readonly latestTurn?: ThreadSessionLatestTurnV1;
   readonly latestTurnCommit?: ThreadSessionTurnCommitV1;
   readonly latestPlanTurnCommit?: ThreadSessionTurnCommitV1;
+  readonly planReview?: PlanReviewProjectionV1;
   readonly digest: string;
 }
 
@@ -148,6 +150,7 @@ export function buildThreadSessionIndexV1(input: {
     updatedAt: input.events.at(-1)?.timestamp ?? 0,
     messageCount: messages.length,
     pages,
+    ...(input.projection.planReview ? { planReview: input.projection.planReview } : {}),
     ...commits,
   });
   writeManifest(input.rootDir, manifest);
@@ -224,6 +227,7 @@ export function advanceThreadSessionIndexV1(input: {
     ...(nextCommits.latestTurn ? { latestTurn: nextCommits.latestTurn } : {}),
     latestTurnCommit: nextCommits.latestTurnCommit ?? current.latestTurnCommit,
     latestPlanTurnCommit: nextCommits.latestPlanTurnCommit ?? current.latestPlanTurnCommit,
+    ...(input.projection.planReview ? { planReview: input.projection.planReview } : {}),
   });
   writeManifest(input.rootDir, manifest);
   return true;
@@ -319,6 +323,7 @@ function createManifest(input: {
   readonly latestTurn?: ThreadSessionLatestTurnV1;
   readonly latestTurnCommit?: ThreadSessionTurnCommitV1;
   readonly latestPlanTurnCommit?: ThreadSessionTurnCommitV1;
+  readonly planReview?: PlanReviewProjectionV1;
 }): ThreadSessionIndexManifestV1 {
   const content = {
     version: 1 as const,
@@ -338,6 +343,7 @@ function createManifest(input: {
     ...(input.latestPlanTurnCommit
       ? { latestPlanTurnCommit: { ...input.latestPlanTurnCommit } }
       : {}),
+    ...(input.planReview ? { planReview: { ...input.planReview } } : {}),
   };
   return deepFreeze({ ...content, digest: digestRuntimeValue(content) });
 }
@@ -459,7 +465,30 @@ function readManifest(path: string, threadId: string): ThreadSessionIndexManifes
   if (value.latestPlanTurnCommit !== undefined && !isTurnCommit(value.latestPlanTurnCommit)) {
     return null;
   }
+  if (value.planReview !== undefined && !isPlanReview(value.planReview)) return null;
   return deepFreeze(value as unknown as ThreadSessionIndexManifestV1);
+}
+
+function isPlanReview(value: unknown): value is PlanReviewProjectionV1 {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.reviewId === 'string' &&
+    value.reviewId.length > 0 &&
+    typeof value.revision === 'string' &&
+    value.revision.length > 0 &&
+    isSha256(value.planDigest) &&
+    isSha256(value.planReceiptDigest) &&
+    ['awaiting_review', 'approved', 'continued', 'cancelled'].includes(String(value.status)) &&
+    nonNegativeSafeInteger(value.createdAt) &&
+    typeof value.createdModel === 'string' &&
+    value.createdModel.length > 0 &&
+    ['build', 'auto'].includes(String(value.returnMode)) &&
+    positiveSafeInteger(value.requestedSeq) &&
+    (value.resolvedAt === undefined || nonNegativeSafeInteger(value.resolvedAt)) &&
+    (value.resolvedSeq === undefined || positiveSafeInteger(value.resolvedSeq)) &&
+    (value.feedback === undefined || typeof value.feedback === 'string') &&
+    (value.feedbackDigest === undefined || isSha256(value.feedbackDigest))
+  );
 }
 
 function isLatestTurn(value: unknown): value is ThreadSessionLatestTurnV1 {

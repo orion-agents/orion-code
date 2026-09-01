@@ -465,6 +465,7 @@ function controlGuard(
     workspaceId: bootstrap.workspaceId,
     expectedContextRevision: bootstrap.contextRevision,
     expectedSessionId: sessionId,
+    expectedSessionRuntimeRevision: state.sessionRuntime.runtimeRevision,
     expectedControlRevision: state.controlRevision,
   };
 }

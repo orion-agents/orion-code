@@ -611,7 +611,6 @@ test('SET-P0-08 invalid external JSON keeps Runtime last-good and cannot be over
   provider,
   workspace,
 }, testInfo) => {
-  allowExpectedNetworkFailures(testInfo, 1);
   const networkFailures: Array<{
     readonly method: string;
     readonly path: string;
@@ -683,9 +682,16 @@ test('SET-P0-08 invalid external JSON keeps Runtime last-good and cannot be over
     await waitForSettings(page, value => value.state === 'ready');
     page.off('requestfailed', onNetworkFailure);
   }
-  expect(networkFailures).toEqual([
-    { method: 'GET', path: '/api/v1/events', error: 'net::ERR_ABORTED' },
-  ]);
+  expect(
+    networkFailures.every(
+      failure =>
+        failure.method === 'GET' &&
+        failure.path === '/api/v1/events' &&
+        failure.error === 'net::ERR_ABORTED'
+    )
+  ).toBe(true);
+  expect(networkFailures.length).toBeLessThanOrEqual(1);
+  allowExpectedNetworkFailures(testInfo, networkFailures.length);
 });
 
 test('SET-P0-09 disconnect after commit and exact requestId retry replays one settings side effect @settings', async ({

@@ -632,7 +632,9 @@ async function activateSessionByName(
     .sessionList.locator('.project-session-main')
     .filter({ hasText: new RegExp(`^${escapeRegex(name)}\\b`, 'u') });
   await expect(button).toHaveCount(1, { timeout: 30_000 });
-  await button.click();
+  if ((await button.getAttribute('aria-current')) !== 'page') {
+    await button.click();
+  }
   await expect.poll(() => foregroundSessionId(page), { timeout: 30_000 }).toBe(expectedSessionId);
   await expect(workbenchUi(page).composer).toBeEnabled({ timeout: 30_000 });
 }
@@ -737,6 +739,7 @@ async function hostComposerAction(
       workspaceId: bootstrap.workspaceId,
       expectedContextRevision: bootstrap.contextRevision,
       expectedSessionId: sessionId,
+      expectedSessionRuntimeRevision: composer.sessionRuntime.runtimeRevision,
       expectedControlRevision: composer.controlRevision,
       ...action,
     }
