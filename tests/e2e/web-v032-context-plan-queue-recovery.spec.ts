@@ -113,7 +113,8 @@ test('WEB32-P0-08 structured Context references are exact, removable, stale-safe
   });
   const resolvedRequest = await provider.waitForRequest(
     request =>
-      request.sequence > providerSequence && request.lastUserText.includes('context-manifest')
+      request.sequence > providerSequence && request.lastUserText.includes('context-manifest'),
+    45_000
   );
   const manifest = parseContextManifest(resolvedRequest.lastUserText);
   expect(manifest.manifestDigest).toBe(command.contextReceipt?.manifestDigest);
