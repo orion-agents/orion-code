@@ -501,7 +501,7 @@ test('WEB32-P0-11 two-tab control CAS and replay recovery preserve the matching 
       .click();
     const stale = await staleResponse;
     expect(stale.status()).toBe(409);
-    expect(problemCode(await stale.json())).toBe('composer_control_conflict');
+    expect(problemCode(await stale.json())).toBe('session_runtime_revision_conflict');
     const afterConflict = await hostComposerState(host.url, await webBootstrap(page), target.id);
     expect(afterConflict.mode.baseMode).toBe(staleControl.mode.baseMode);
     expect(afterConflict.permission.override).toBe('deny');
