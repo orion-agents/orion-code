@@ -2,7 +2,7 @@
 // first two seconds of a cold burst include parser/JIT/renderer setup and benefit from
 // more paint opportunities; the steady-state budget still drains 10MiB within the
 // responsiveness gate without dropping or coalescing terminal output.
-const DEFAULT_WARMUP_CHUNK_CHARACTERS = 2 * 1024;
+const DEFAULT_WARMUP_CHUNK_CHARACTERS = 1 * 1024;
 const DEFAULT_WARMUP_FRAMES = 120;
 const DEFAULT_RENDER_CHUNK_CHARACTERS = 3 * 1024;
 const DEFAULT_IN_FLIGHT_CHARACTERS = 3 * 1024;

@@ -254,8 +254,12 @@ def wait_for_screen_update(
     visible = ""
     while time.time() < deadline:
         visible = sync_screen()
-        compact = visible.replace(" ", "")
-        if required in compact and forbidden not in compact:
+        # Redraws during streaming can leave an older prompt in terminal
+        # scrollback. Verify a currently visible editor row has the updated
+        # buffer instead of rejecting a correct redraw because a historical
+        # row still contains the pre-edit text.
+        compact_lines = [line.replace(" ", "") for line in visible.splitlines()]
+        if any(required in line and forbidden not in line for line in compact_lines):
             return visible
         time.sleep(0.05)
     raise AssertionError(
