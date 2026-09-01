@@ -408,7 +408,7 @@ test('WEB32-P0-10 queued follow-ups support exact edits and Steer while drafts r
   const steerHttpResponse = await steerResponse;
   const steerBody = await steerHttpResponse.json();
   expect({ status: steerHttpResponse.status(), code: problemCode(steerBody) }).toEqual({
-    status: 200,
+    status: 202,
     code: undefined,
   });
   const steer = steerBody as WebCommandResultV1;
