@@ -12,8 +12,9 @@ import {
   listProjectDurableToolReceiptRefsV1,
 } from '../runtime/durable-tool-receipt-reader';
 import { loadFirstPartyMcpConfigurationV1 } from '../runtime/mcp';
-import { createProductUiRuntime } from '../runtime/product-bootstrap';
+import { createProductUiRuntime, createWorkspaceRuntimeKernelV1 } from '../runtime/product-bootstrap';
 import type { OrionRuntimeV1 } from '../runtime/orion-runtime-v1';
+import type { WorkspaceRuntimeKernelV1 } from '../runtime/workspace-runtime-kernel';
 import { digestRuntimeValue } from '../runtime/protocol/canonical';
 import { PlanReviewControlError } from '../runtime/plan-review';
 import type { RuntimeEventEnvelopeV1 } from '../runtime/protocol/runtime-protocol-v1';
@@ -35,7 +36,7 @@ import { SessionComposerControlError } from '../runtime/session-composer-control
 import type { OrionCodeUiRuntime } from '../runtime/ui-events';
 import { incrementSessionCount } from '../services/global-config';
 import { redactTraceText } from '../services/redaction';
-import { SettingsCoordinatorError } from '../services/settings-coordinator';
+import { SettingsCoordinatorError, type SettingsInvalidationV1 } from '../services/settings-coordinator';
 import {
   countSessionsByProject,
   createSession,
@@ -145,6 +146,13 @@ export class WebWorkbenchController {
   private readonly createRuntime: (cwd: string) => Promise<OrionCodeUiRuntime>;
   private readonly createSessionRuntime: (cwd: string) => Promise<OrionCodeUiRuntime>;
   private sessionRegistry: WebSessionRuntimeRegistryV1<WebWorkbenchSessionActorV1>;
+  /**
+   * Workspace-scoped shared kernels owned by this Host. Control planes and
+   * Session actors both borrow from this pool, so a Workspace Context switch
+   * never tears down kernels that resident actors still reference. The pool is
+   * released only during Host shutdown.
+   */
+  private readonly workspaceKernels = new Map<string, WorkspaceRuntimeKernelV1>();
   private readonly workspaceRegistry: WorkspaceRegistryV1;
   readonly terminalManager: TerminalManagerV1;
   private readonly mutationResults = new Map<string, CachedMutationResult>();
@@ -212,6 +220,10 @@ export class WebWorkbenchController {
       (cwd =>
         createProductUiRuntime({
           cwd,
+          // Borrow the workspace kernel from the Host-owned pool so the
+          // control plane shares config/Tool/MCP/Settings services with the
+          // resident Session actors of the same Workspace.
+          workspaceRuntimeKernel: this.workspaceKernelFor(cwd),
           workspaceMutationCoordinator: this.workspaceMutations,
           shutdownReason: 'Orion Web Workbench shutdown',
           onActiveSessionRuntime: (runtime, sessionId, activation) =>
@@ -235,7 +247,9 @@ export class WebWorkbenchController {
       (cwd =>
         createProductUiRuntime({
           cwd,
-          workspaceRuntimeKernel: this.runtimeValue.workspaceRuntimeKernel,
+          // Session actors must keep the kernel of the Workspace they were
+          // created for, never the currently active control plane's kernel.
+          workspaceRuntimeKernel: this.workspaceKernelFor(cwd),
           workspaceMutationCoordinator: this.workspaceMutations,
           shutdownReason: 'Orion Web Session actor shutdown',
           onActiveSessionRuntime: (runtime, sessionId, activation) =>
@@ -1199,18 +1213,28 @@ export class WebWorkbenchController {
         await previousController.stopActiveTurn();
         await previousController.waitForIdle();
         if (targetWorkspace !== previousWorkspace) {
-          await this.sessionRegistry.shutdown('Workspace Context changed');
-          await previousRuntime.shutdown();
+          // Detach the control-plane foreground first: releasing the previous
+          // control plane must not end a Session that a resident actor of that
+          // Workspace is still driving.
+          await this.restoreContextSession(null);
+          // P1-A runtime ownership: the Host-level Session registry and its
+          // resident actors are preserved across a Workspace Context switch.
+          // Only the active control plane is swapped. Both control planes
+          // borrowed their Workspace kernel from the shared pool, so releasing
+          // the previous one never tears down kernels that running Session
+          // actors of that Workspace still reference. Install the target
+          // control plane first, then release the previous one's mutable state.
           await this.installRuntime(targetWorkspace, false);
-          this.sessionRegistry = this.createSessionRegistry();
+          await previousRuntime.shutdown();
         }
         this.workspaceRegistry.register(targetWorkspace, { activated: true });
       } catch (activationError) {
         try {
-          if (targetWorkspace !== previousWorkspace) {
-            if (this.runtimeValue !== previousRuntime) await this.runtimeValue.shutdown();
+          if (this.runtimeValue !== previousRuntime) {
+            // The target control plane installed but a later step failed; tear
+            // it down and reinstall the previous Workspace's control plane.
+            await this.runtimeValue.shutdown();
             await this.installRuntime(previousWorkspace, false);
-            this.sessionRegistry = this.createSessionRegistry();
           }
           await this.restoreContextSession(previousSessionId);
         } catch {
@@ -1728,6 +1752,7 @@ export class WebWorkbenchController {
     }
     this.workspaceMutationOwners.clear();
     this.pendingWorkspaceMutationStates.clear();
+    this.releaseWorkspaceKernels();
     if (failures.length > 0) {
       throw new WebWorkbenchError(
         503,
@@ -1735,6 +1760,62 @@ export class WebWorkbenchController {
         'workbench_shutdown_incomplete'
       );
     }
+  }
+
+  /**
+   * Return the workspace kernel for `cwd`, creating and pooling one on first
+   * use. Control planes and Session actors borrow the same kernel instance per
+   * canonical Workspace; the pool is released only when the Host shuts down.
+   */
+  private workspaceKernelFor(cwd: string): WorkspaceRuntimeKernelV1 {
+    const canonical = canonicalDirectory(cwd);
+    const existing = this.workspaceKernels.get(canonical);
+    if (existing && !existing.diagnostics().closed) return existing;
+    if (existing) this.workspaceKernels.delete(canonical);
+    const kernel = createWorkspaceRuntimeKernelV1({
+      cwd: canonical,
+      onSettingsInvalidated: event =>
+        this.onWorkspaceKernelSettingsInvalidated(canonical, event),
+    });
+    this.workspaceKernels.set(canonical, kernel);
+    return kernel;
+  }
+
+  /**
+   * Settings invalidations from pooled kernels are only forwarded while their
+   * Workspace is the active Context. A background Workspace's coordinator
+   * keeps watching its own durable file; its next activation publishes a fresh
+   * Settings document through `emitSettingsWorkspaceChange()`.
+   */
+  private onWorkspaceKernelSettingsInvalidated(
+    kernelWorkspace: string,
+    event: SettingsInvalidationV1
+  ): void {
+    if (this.suppressContextEdges > 0) return;
+    if (kernelWorkspace !== this.workspaceValue) return;
+    this.eventHub.emit(
+      {
+        type: 'settings_invalidated',
+        revision: event.revision,
+        reason: event.reason,
+        state: event.state,
+      },
+      false
+    );
+  }
+
+  /**
+   * Release the Host owner seat on every pooled kernel. Runtime shutdowns have
+   * already disposed their Settings participants (actors first, then the
+   * active control plane), so an unowned kernel with zero participants closes
+   * its Settings coordinator here. A kernel that still has a running actor
+   * participant survives until that actor actually terminates.
+   */
+  private releaseWorkspaceKernels(): void {
+    for (const kernel of this.workspaceKernels.values()) {
+      kernel.releaseOwner();
+    }
+    this.workspaceKernels.clear();
   }
 
   private createSessionRegistry(): WebSessionRuntimeRegistryV1<WebWorkbenchSessionActorV1> {
@@ -2264,18 +2345,9 @@ export class WebWorkbenchController {
         'runtime_busy'
       );
     }
-    const activeActor = this.sessionRegistry
-      .summaries()
-      .find(runtime =>
-        ['starting', 'queued', 'running', 'waiting_approval', 'stopping'].includes(runtime.phase)
-      );
-    if (activeActor) {
-      throw new WebWorkbenchError(
-        409,
-        `Cannot ${operation} while Session ${activeActor.sessionId} is ${activeActor.phase}.`,
-        'runtime_busy'
-      );
-    }
+    // P1-A: Session actors are scoped to their own Workspace and survive a
+    // Context switch (WEB35-P0-08/09), so an active actor in a non-target
+    // Workspace must not block switching the active control plane.
   }
 
   private assertMutationAdmission(): void {

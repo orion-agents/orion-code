@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -1344,6 +1344,135 @@ describe('WebWorkbenchController', () => {
     expect(snapshot.composer.sessionRuntime.phase).toBe('interrupted');
     expect(snapshot.runtime.processing).toBe(false);
     await controller.shutdown();
+  });
+
+  test('keeps a running Session actor alive across a Workspace switch and back (WEB35-P0-08/09)', async () => {
+    const secondary = join(workspace, 'secondary');
+    mkdirSync(secondary);
+    const releases: Array<() => void> = [];
+    const heldTurn = () => new Promise<void>(resolve => releases.push(resolve));
+    const runInputA = jest.fn(() => heldTurn());
+    const runInputB = jest.fn(() => heldTurn());
+    const actorRuntimeA = createFakeWebRuntime(workspace);
+    actorRuntimeA.createAgentRunner = () => ({ runInput: runInputA });
+    const actorRuntimeB = createFakeWebRuntime(secondary);
+    actorRuntimeB.createAgentRunner = () => ({ runInput: runInputB });
+    const actorRuntimes = [actorRuntimeA, actorRuntimeB];
+    const controller = await WebWorkbenchController.create({
+      cwd: workspace,
+      createRuntime: async cwd => createFakeWebRuntime(cwd),
+      createSessionRuntime: async () => {
+        const runtime = actorRuntimes.shift();
+        if (!runtime) throw new Error('Unexpected extra Session actor.');
+        return runtime;
+      },
+    });
+
+    // A runs a turn in the primary Workspace.
+    const sessionA = await controller.createSession('A running session');
+    const primaryContext = settingsContext(controller);
+    const startedA = await controller.dispatch({
+      requestId: randomUUID(),
+      ...sessionCommandTarget(controller, sessionA.id),
+      type: 'submit',
+      text: 'A_RUNNING_TURN',
+    });
+    expect(startedA).toMatchObject({ result: 'started', sessionRuntime: { phase: 'running' } });
+    const createdAfterA = ((await controller.diagnostics()).session as
+      | WebSessionActivityDiagnostics
+      | undefined)?.actors.actorsCreated;
+
+    // Switching to B while A's actor is still running must neither be blocked
+    // (the old gate rejected every active Session actor) nor tear A down.
+    await controller.switchWorkspace(secondary, primaryContext);
+    expect(controller.workspace).toBe(realpathSync(secondary));
+    expect(actorRuntimeA.shutdown).not.toHaveBeenCalled();
+    expect(
+      ((await controller.diagnostics()).session as WebSessionActivityDiagnostics | undefined)
+        ?.actors.actorsCreated
+    ).toBe(createdAfterA);
+
+    // B can submit its own turn concurrently while A is still running.
+    const sessionB = await controller.createSession('B concurrent turn');
+    const startedB = await controller.dispatch({
+      requestId: randomUUID(),
+      ...sessionCommandTarget(controller, sessionB.id),
+      type: 'submit',
+      text: 'B_RUNNING_TURN',
+    });
+    expect(startedB).toMatchObject({ result: 'started', sessionRuntime: { phase: 'running' } });
+    expect(runInputB).toHaveBeenCalledTimes(1);
+
+    // Release both turns; each Session settles in its own Workspace context.
+    expect(releases).toHaveLength(2);
+    for (const release of releases) release();
+    await controller.waitForSessionIdle(sessionB.id);
+    expect(controller.sessionRuntimeSummary(sessionB.id)).toMatchObject({
+      phase: 'idle',
+      resident: true,
+    });
+
+    // Returning to A recovers the original actor: resident, idle, and not
+    // re-created by the Context round-trip.
+    const secondaryContext = settingsContext(controller);
+    await controller.switchWorkspace(workspace, secondaryContext);
+    expect(controller.workspace).toBe(realpathSync(workspace));
+    await controller.waitForSessionIdle(sessionA.id);
+    expect(controller.sessionRuntimeSummary(sessionA.id)).toMatchObject({
+      phase: 'idle',
+      resident: true,
+    });
+    expect(
+      ((await controller.diagnostics()).session as WebSessionActivityDiagnostics | undefined)
+        ?.actors.actorsCreated
+    ).toBe((createdAfterA ?? 0) + 1);
+
+    // Host shutdown is the single point that closes every Workspace's actors.
+    await controller.shutdown();
+    expect(actorRuntimeA.shutdown).toHaveBeenCalledTimes(1);
+    expect(actorRuntimeB.shutdown).toHaveBeenCalledTimes(1);
+  });
+
+  test('preserves resident Session actors when a Workspace switch fails and rolls back', async () => {
+    const secondary = join(workspace, 'secondary');
+    mkdirSync(secondary);
+    const actorRuntime = createFakeWebRuntime(workspace);
+    actorRuntime.createAgentRunner = () => ({ runInput: jest.fn(async () => undefined) });
+    let installs = 0;
+    const controller = await WebWorkbenchController.create({
+      cwd: workspace,
+      createRuntime: async cwd => {
+        installs += 1;
+        if (installs > 1) throw new Error('secondary control plane install exploded');
+        return createFakeWebRuntime(cwd);
+      },
+      createSessionRuntime: async () => actorRuntime,
+    });
+    const session = await controller.createSession('rollback survivor');
+    await controller.dispatch({
+      requestId: randomUUID(),
+      ...sessionCommandTarget(controller, session.id),
+      type: 'submit',
+      text: 'finish before rollback',
+    });
+    await controller.waitForSessionIdle(session.id);
+    const residentRevision = controller.sessionRuntimeSummary(session.id).runtimeRevision;
+    const primaryContext = settingsContext(controller);
+
+    await expect(controller.switchWorkspace(secondary, primaryContext)).rejects.toThrow(
+      'secondary control plane install exploded'
+    );
+
+    // The failed activation restores the previous Context without rebuilding
+    // the Session registry: the resident actor is still the same one.
+    expect(controller.workspace).toBe(realpathSync(workspace));
+    expect(controller.sessionRuntimeSummary(session.id)).toMatchObject({
+      phase: 'idle',
+      resident: true,
+    });
+    expect(controller.sessionRuntimeSummary(session.id).runtimeRevision).toBe(residentRevision);
+    await controller.shutdown();
+    expect(actorRuntime.shutdown).toHaveBeenCalledTimes(1);
   });
 });
 

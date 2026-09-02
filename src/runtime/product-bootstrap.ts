@@ -46,6 +46,51 @@ import {
   type WorkspaceSettingsRuntimeParticipantV1,
 } from './workspace-runtime-kernel';
 
+export interface CreateWorkspaceRuntimeKernelOptionsV1 {
+  readonly cwd: string;
+  readonly uiRenderer?: UIRenderer;
+  readonly onSettingsInvalidated?: (event: SettingsInvalidationV1) => void;
+}
+
+/**
+ * Composition root for one workspace-owned kernel. Web Hosts pool kernels per
+ * canonical Workspace so a Context switch can keep running Session actors on
+ * the config/Tool/MCP/Settings services they were created with, instead of
+ * rebuilding them against whatever Workspace is active at actor-start time.
+ */
+export function createWorkspaceRuntimeKernelV1(
+  options: CreateWorkspaceRuntimeKernelOptionsV1
+): WorkspaceRuntimeKernelV1 {
+  const canonicalCwd = resolve(options.cwd);
+  ensureConfigDir();
+  recordFirstStartTime();
+  const kernelConfig = loadConfig(
+    options.uiRenderer ? { ui: { renderer: options.uiRenderer } } : {}
+  );
+  const kernelTools = createProductionFirstPartyToolUniverseV1({
+    context: {
+      cwd: canonicalCwd,
+      config: { name: kernelConfig.name, mode: kernelConfig.mode },
+    },
+  });
+  const kernelSkillProvider = createProductionFilesystemSkillProviderV1({
+    cwd: canonicalCwd,
+    configuredPaths: kernelConfig.skills?.paths,
+  });
+  const kernelMcpAdapter = createFirstPartyMcpAdapterV1({
+    config: loadFirstPartyMcpConfigurationV1(),
+    baseDirectory: canonicalCwd,
+  });
+  return new WorkspaceRuntimeKernelV1({
+    cwd: canonicalCwd,
+    config: kernelConfig,
+    toolUniverse: kernelTools,
+    skillProvider: kernelSkillProvider,
+    mcpAdapter: kernelMcpAdapter,
+    onSettingsInvalidated: options.onSettingsInvalidated,
+  });
+}
+
 export interface ProductUiRuntimeBootstrapOptions {
   readonly cwd: string;
   readonly uiRenderer?: UIRenderer;
@@ -78,31 +123,9 @@ export async function createProductUiRuntime(
   const ownsWorkspaceRuntimeKernel = options.workspaceRuntimeKernel === undefined;
   let workspaceRuntimeKernel = options.workspaceRuntimeKernel;
   if (!workspaceRuntimeKernel) {
-    ensureConfigDir();
-    recordFirstStartTime();
-    const kernelConfig = loadConfig(
-      options.uiRenderer ? { ui: { renderer: options.uiRenderer } } : {}
-    );
-    const kernelTools = createProductionFirstPartyToolUniverseV1({
-      context: {
-        cwd: canonicalCwd,
-        config: { name: kernelConfig.name, mode: kernelConfig.mode },
-      },
-    });
-    const kernelSkillProvider = createProductionFilesystemSkillProviderV1({
+    workspaceRuntimeKernel = createWorkspaceRuntimeKernelV1({
       cwd: canonicalCwd,
-      configuredPaths: kernelConfig.skills?.paths,
-    });
-    const kernelMcpAdapter = createFirstPartyMcpAdapterV1({
-      config: loadFirstPartyMcpConfigurationV1(),
-      baseDirectory: canonicalCwd,
-    });
-    workspaceRuntimeKernel = new WorkspaceRuntimeKernelV1({
-      cwd: canonicalCwd,
-      config: kernelConfig,
-      toolUniverse: kernelTools,
-      skillProvider: kernelSkillProvider,
-      mcpAdapter: kernelMcpAdapter,
+      uiRenderer: options.uiRenderer,
       onSettingsInvalidated: options.onSettingsInvalidated,
     });
   } else if (workspaceRuntimeKernel.cwd !== canonicalCwd) {
