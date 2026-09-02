@@ -72,10 +72,15 @@ export class TranscriptInspectorSurface {
         this.output.off('error', onError);
         this.output.off('close', onClose);
       };
-      const onDrain = (): void => { cleanup(); resolve(); };
+      const onDrain = (): void => {
+        cleanup();
+        resolve();
+      };
       const onError = (error?: unknown): void => {
         cleanup();
-        reject(error instanceof Error ? error : new Error(String(error ?? 'terminal output error')));
+        reject(
+          error instanceof Error ? error : new Error(String(error ?? 'terminal output error'))
+        );
       };
       const onClose = (): void => onError(new Error('terminal output closed before drain'));
       this.output.on('drain', onDrain);

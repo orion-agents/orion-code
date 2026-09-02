@@ -105,15 +105,23 @@ export interface ResearchCostSummary {
 /** Summarize research cost from the packet usage + source counts. */
 export function researchCostSummary(
   packet: ResearchPacket,
-  opts: { fetchedBytes?: number } = {},
+  opts: { fetchedBytes?: number } = {}
 ): ResearchCostSummary {
   const notes: string[] = [];
   const retrieved = packet.sources.filter(s => s.status === 'retrieved').length;
   if (packet.sources.length > packet.request.maxSources) {
-    notes.push(`source count exceeded request budget (${packet.sources.length} > ${packet.request.maxSources})`);
+    notes.push(
+      `source count exceeded request budget (${packet.sources.length} > ${packet.request.maxSources})`
+    );
   }
-  if (opts.fetchedBytes !== undefined && packet.request.maxFetchBytes > 0 && opts.fetchedBytes > packet.request.maxFetchBytes) {
-    notes.push(`fetched bytes exceeded budget (${opts.fetchedBytes} > ${packet.request.maxFetchBytes})`);
+  if (
+    opts.fetchedBytes !== undefined &&
+    packet.request.maxFetchBytes > 0 &&
+    opts.fetchedBytes > packet.request.maxFetchBytes
+  ) {
+    notes.push(
+      `fetched bytes exceeded budget (${opts.fetchedBytes} > ${packet.request.maxFetchBytes})`
+    );
   }
   return {
     modelRequests: packet.usage.modelRequests,

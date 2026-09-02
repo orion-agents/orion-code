@@ -190,11 +190,13 @@ export function resolveCitations(packet: ResearchPacket): CitationResolution {
 function classifyVerification(
   claim: ResearchClaim,
   hasRetrieved: boolean,
-  activeSources: ResearchSource[],
+  activeSources: ResearchSource[]
 ): Verification {
   if (claim.evidenceKind === 'inference') return 'unverified';
   if (!hasRetrieved) return 'unverified';
-  const onlyExcerpt = activeSources.every(s => !!s.excerpt && s.excerpt.length < 4000 && !s.contentHash);
+  const onlyExcerpt = activeSources.every(
+    s => !!s.excerpt && s.excerpt.length < 4000 && !s.contentHash
+  );
   return onlyExcerpt ? 'partially_observed' : 'observed';
 }
 
@@ -225,7 +227,11 @@ function auditCompletion(packet: ResearchPacket, bindings: ClaimBinding[]): Comp
   let status: CompletionAudit['status'];
   if (unverifiedClaimIds.length === 0) {
     status = 'met';
-  } else if (packet.claims.some(c => (bindings.find(b => b.claimId === c.id)?.referencedSourceIds.length ?? 0) > 0)) {
+  } else if (
+    packet.claims.some(
+      c => (bindings.find(b => b.claimId === c.id)?.referencedSourceIds.length ?? 0) > 0
+    )
+  ) {
     status = 'partial';
   } else {
     status = 'unmet';

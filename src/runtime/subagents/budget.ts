@@ -45,7 +45,11 @@ export interface BudgetSnapshot {
 export interface BudgetViolation {
   taskId: string;
   /** The enforced limit that was exceeded. */
-  limit: 'maxModelRequestsPerTask' | 'maxToolCallsPerTask' | 'timeoutMs' | 'maxModelRequestsPerTurn';
+  limit:
+    | 'maxModelRequestsPerTask'
+    | 'maxToolCallsPerTask'
+    | 'timeoutMs'
+    | 'maxModelRequestsPerTurn';
   /** The observed value. */
   observed: number;
   /** The enforced ceiling. */
@@ -170,7 +174,10 @@ export class SubagentBudgetLedger {
   snapshot(): BudgetSnapshot {
     const used = sumSubtaskUsage(this.reconciled);
     const reservedModelRequests = sumSubtaskUsage(
-      Array.from(this.reserved.entries()).map(([, n]) => ({ ...EMPTY_SUBTASK_USAGE, modelRequests: n })),
+      Array.from(this.reserved.entries()).map(([, n]) => ({
+        ...EMPTY_SUBTASK_USAGE,
+        modelRequests: n,
+      }))
     ).modelRequests;
     const availableModelRequests = this.availableModelRequests();
     return {

@@ -94,7 +94,7 @@ export function reduceInputChunk(state: InputBuffer, text: string): InputBuffer 
     buffer = '';
   };
 
-  for (let index = 0; index < text.length;) {
+  for (let index = 0; index < text.length; ) {
     const slice = text.slice(index);
 
     if (slice.startsWith('\x1b[200~')) {

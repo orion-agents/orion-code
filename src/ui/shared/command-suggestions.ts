@@ -31,8 +31,8 @@ export function buildCommandSuggestions(
   const visibleCommands = commands.filter(cmd => !cmd.isHidden);
   const matches = normalizedQuery
     ? visibleCommands
-      .filter(cmd => commandMatches(cmd, normalizedQuery))
-      .sort((a, b) => commandMatchRank(a, normalizedQuery) - commandMatchRank(b, normalizedQuery))
+        .filter(cmd => commandMatches(cmd, normalizedQuery))
+        .sort((a, b) => commandMatchRank(a, normalizedQuery) - commandMatchRank(b, normalizedQuery))
     : visibleCommands;
   const limitedCommands = matches.slice(0, limit);
 

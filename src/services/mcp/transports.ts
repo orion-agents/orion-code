@@ -115,7 +115,7 @@ export class SseTransport extends BaseTransport {
       this.emitConnected();
     };
 
-    this.eventSource.onmessage = (event) => {
+    this.eventSource.onmessage = event => {
       try {
         const msg = JSON.parse(event.data) as TransportMessage;
         this.emitMessage(msg);
@@ -222,7 +222,7 @@ export class WebSocketTransport extends BaseTransport {
         resolve();
       };
 
-      this.ws.onmessage = (event) => {
+      this.ws.onmessage = event => {
         try {
           const msg = JSON.parse(event.data as string) as TransportMessage;
           this.emitMessage(msg);
@@ -231,7 +231,7 @@ export class WebSocketTransport extends BaseTransport {
         }
       };
 
-      this.ws.onerror = (err) => {
+      this.ws.onerror = err => {
         this.emitError(new Error('WebSocket error'));
         reject(err);
       };
@@ -356,7 +356,7 @@ export class HttpTransport extends BaseTransport {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
 
-      const data = await response.json() as TransportMessage;
+      const data = (await response.json()) as TransportMessage;
       this.emitMessage(data);
     } catch (err) {
       clearTimeout(timeoutId);

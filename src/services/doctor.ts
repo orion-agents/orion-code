@@ -10,11 +10,7 @@ import {
   getProjectSessionsDir,
   getMcpConfigPath,
 } from './config-dir';
-import {
-  isProductUIRenderer,
-  isConfigured,
-  type OrionCodeCLIConfig,
-} from './config';
+import { isProductUIRenderer, isConfigured, type OrionCodeCLIConfig } from './config';
 import { createFirstPartyMcpAdapterV1, loadFirstPartyMcpConfigurationV1 } from '../runtime/mcp';
 import { loadProjectInstructionFiles } from './project-instructions';
 import { refreshProjectInstructions } from './prompt-context';

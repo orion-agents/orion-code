@@ -10,7 +10,6 @@ import { errorMessage } from '../utils/errors';
 
 export { isSemanticEnabled } from './semantic-config';
 
-
 // ============================================================================
 // Types
 // ============================================================================
@@ -132,7 +131,11 @@ export function resetSemanticSearchService(): void {
 // ============================================================================
 
 /** Quick semantic search */
-export async function semanticSearch(query: string, projectPath?: string, limit?: number): Promise<SearchResult[]> {
+export async function semanticSearch(
+  query: string,
+  projectPath?: string,
+  limit?: number
+): Promise<SearchResult[]> {
   const service = getSemanticSearchService();
   const result = await service.search({ query, projectPath, limit });
   return result.memories;

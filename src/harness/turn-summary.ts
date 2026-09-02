@@ -37,7 +37,9 @@ function unique(items: string[]): string[] {
 function parseJsonObject(text: string): Record<string, unknown> | null {
   try {
     const parsed = JSON.parse(text);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
   } catch {
     return null;
   }
@@ -66,14 +68,19 @@ function isVerificationCommand(command: string | undefined): boolean {
 function toolOutputLine(content: string): string {
   const parsed = parseJsonObject(content);
   if (!parsed) return compact(content, 180);
-  const output = readString(parsed.output) || readString(parsed.error) || readString(parsed.message);
+  const output =
+    readString(parsed.output) || readString(parsed.error) || readString(parsed.message);
   return compact(output ?? content, 180);
 }
 
 function extractUnresolved(assistantContent: string, failedVerification: string[]): string[] {
   const unresolved: string[] = [...failedVerification];
   const text = assistantContent.toLowerCase();
-  if (/(未完成|无法|不能|失败|blocked|failed|todo|next step|incomplete|cannot)/i.test(assistantContent)) {
+  if (
+    /(未完成|无法|不能|失败|blocked|failed|todo|next step|incomplete|cannot)/i.test(
+      assistantContent
+    )
+  ) {
     unresolved.push(compact(assistantContent, 180));
   }
   if (text.includes('needs verification') || text.includes('not verified')) {

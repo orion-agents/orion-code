@@ -50,8 +50,12 @@ export function buildChildMessages(inputs: ChildContextInputs): Message[] {
     lines.push(`# Operating context`);
     lines.push(`- Project root: ${cwd}`);
     if (i.modelLabel) lines.push(`- Model: ${i.modelLabel}`);
-    lines.push('- You are a child agent at delegation depth 1. You may NOT create further subagents.');
-    lines.push('- You may NOT edit, write, delete, commit, push, publish, install, or run shell commands.');
+    lines.push(
+      '- You are a child agent at delegation depth 1. You may NOT create further subagents.'
+    );
+    lines.push(
+      '- You may NOT edit, write, delete, commit, push, publish, install, or run shell commands.'
+    );
     if (i.rootObjectiveSummary) {
       lines.push('');
       lines.push(`# Root objective (read-only summary)`);
@@ -87,20 +91,27 @@ export function buildChildMessages(inputs: ChildContextInputs): Message[] {
       lines.push(`expected output: ${packet.expectedOutput}`);
     }
     lines.push('');
-    lines.push('Investigate now using only the read-only tools available to you, then emit the JSON result object as specified in your system prompt.');
+    lines.push(
+      'Investigate now using only the read-only tools available to you, then emit the JSON result object as specified in your system prompt.'
+    );
     return lines.join('\n');
   }
 }
 
 function compactCapsule(capsule: ContextCapsule): string {
   const lines: string[] = [];
-  if (capsule.contract?.objective) lines.push(`- contract objective: ${truncate(capsule.contract.objective, 200)}`);
-  if (capsule.completed.length > 0) lines.push(`- completed: ${truncate(capsule.completed.join('; '), 300)}`);
-  if (capsule.openTodos.length > 0) lines.push(`- open todos: ${truncate(capsule.openTodos.join('; '), 300)}`);
-  if (capsule.changedFiles.length > 0) lines.push(`- changed files: ${truncate(capsule.changedFiles.join(', '), 300)}`);
+  if (capsule.contract?.objective)
+    lines.push(`- contract objective: ${truncate(capsule.contract.objective, 200)}`);
+  if (capsule.completed.length > 0)
+    lines.push(`- completed: ${truncate(capsule.completed.join('; '), 300)}`);
+  if (capsule.openTodos.length > 0)
+    lines.push(`- open todos: ${truncate(capsule.openTodos.join('; '), 300)}`);
+  if (capsule.changedFiles.length > 0)
+    lines.push(`- changed files: ${truncate(capsule.changedFiles.join(', '), 300)}`);
   if (capsule.keyFacts.length > 0) {
     lines.push(`- key facts:`);
-    for (const fact of capsule.keyFacts.slice(0, 5)) lines.push(`  - ${truncate(fact.content, 160)}`);
+    for (const fact of capsule.keyFacts.slice(0, 5))
+      lines.push(`  - ${truncate(fact.content, 160)}`);
   }
   if (capsule.nextAction) lines.push(`- next action: ${truncate(capsule.nextAction, 200)}`);
   return lines.length > 0 ? lines.join('\n') : '(no capsule fields)';

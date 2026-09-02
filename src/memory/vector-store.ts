@@ -16,7 +16,7 @@ declare module 'better-sqlite3' {
     allowExtension?: boolean;
   }
 }
-import { createHash } from 'crypto';  // Issue #32 #3.4: 用于 hashProject
+import { createHash } from 'crypto'; // Issue #32 #3.4: 用于 hashProject
 import { getEmbeddingService, type EmbeddingConfig } from './embeddings';
 import type { MemoryEntry, MemoryType } from './types';
 import { getCanonicalProjectKey, getConfigHome } from '../services/config-dir';
@@ -280,33 +280,35 @@ export class VectorStore {
     const memoryId = this.memoryId(projectKey, entry.name);
 
     // Issue #32 #3.3: 使用事务确保 embed 失败时不写 memories 表
-    const upsertTransaction = this.db.transaction((data: {
-      id: string;
-      name: string;
-      type: string;
-      content: string;
-      description: string;
-      projectKey: string;
-      createdAt: number;
-      updatedAt: number;
-    }) => {
-      // Insert/update memory record
-      const stmt = this.db.prepare(`
+    const upsertTransaction = this.db.transaction(
+      (data: {
+        id: string;
+        name: string;
+        type: string;
+        content: string;
+        description: string;
+        projectKey: string;
+        createdAt: number;
+        updatedAt: number;
+      }) => {
+        // Insert/update memory record
+        const stmt = this.db.prepare(`
         INSERT OR REPLACE INTO memories (id, name, type, content, description, project, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
-      stmt.run(
-        data.id,
-        data.name,
-        data.type,
-        data.content,
-        data.description,
-        data.projectKey,
-        data.createdAt,
-        data.updatedAt
-      );
-    });
+        stmt.run(
+          data.id,
+          data.name,
+          data.type,
+          data.content,
+          data.description,
+          data.projectKey,
+          data.createdAt,
+          data.updatedAt
+        );
+      }
+    );
 
     // Generate embedding first (before transaction)
     if (this.initialized) {
@@ -402,11 +404,15 @@ export class VectorStore {
     const scopedIds = projectKeys.map(projectKey => this.memoryId(projectKey, name));
     const idPlaceholders = scopedIds.map(() => '?').join(', ');
     const projectPlaceholders = projectKeys.map(() => '?').join(', ');
-    const rows = this.db.prepare(`
+    const rows = this.db
+      .prepare(
+        `
       SELECT id FROM memories
       WHERE id IN (${idPlaceholders})
          OR (id = ? AND project IN (${projectPlaceholders}))
-    `).all(...scopedIds, name, ...projectKeys) as Array<{ id: string }>;
+    `
+      )
+      .all(...scopedIds, name, ...projectKeys) as Array<{ id: string }>;
 
     this.deleteMemoryIds(rows.map(row => row.id));
   }
@@ -425,7 +431,11 @@ export class VectorStore {
   }
 
   /** Semantic search using vectors */
-  private async semanticSearch(query: string, limit: number, projectKeys?: string[]): Promise<SearchResult[]> {
+  private async semanticSearch(
+    query: string,
+    limit: number,
+    projectKeys?: string[]
+  ): Promise<SearchResult[]> {
     try {
       const queryVector = await this.embeddingService.embed(query);
       const projectPlaceholders = projectKeys?.map(() => '?').join(', ');
@@ -536,12 +546,16 @@ export class VectorStore {
 
   /** Count rows by project key for storage maintenance diagnostics. */
   getProjectStats(): VectorProjectStats[] {
-    const rows = this.db.prepare(`
+    const rows = this.db
+      .prepare(
+        `
       SELECT COALESCE(project, 'global') as project, COUNT(*) as rows
       FROM memories
       GROUP BY COALESCE(project, 'global')
       ORDER BY rows DESC, project ASC
-    `).all() as Array<{ project: string; rows: number }>;
+    `
+      )
+      .all() as Array<{ project: string; rows: number }>;
 
     return rows.map(row => ({ project: row.project, rows: row.rows }));
   }
@@ -562,8 +576,11 @@ export class VectorStore {
   }
 
   private deleteProjectRows(project: string): number {
-    const ids = (this.db.prepare('SELECT id FROM memories WHERE project = ?').all(project) as Array<{ id: string }>)
-      .map(row => row.id);
+    const ids = (
+      this.db.prepare('SELECT id FROM memories WHERE project = ?').all(project) as Array<{
+        id: string;
+      }>
+    ).map(row => row.id);
     if (ids.length === 0) return 0;
 
     this.deleteMemoryIds(ids);
@@ -580,10 +597,15 @@ export class VectorStore {
   }
 
   private deleteVectorsForMemoryIds(ids: string[]): void {
-    if (!this.hasTable('memory_vectors') || !this.hasTable('vec_memories') || ids.length === 0) return;
+    if (!this.hasTable('memory_vectors') || !this.hasTable('vec_memories') || ids.length === 0)
+      return;
 
     const placeholders = ids.map(() => '?').join(', ');
-    this.db.prepare(`DELETE FROM vec_memories WHERE rowid IN (SELECT vector_rowid FROM memory_vectors WHERE memory_id IN (${placeholders}))`).run(...ids);
+    this.db
+      .prepare(
+        `DELETE FROM vec_memories WHERE rowid IN (SELECT vector_rowid FROM memory_vectors WHERE memory_id IN (${placeholders}))`
+      )
+      .run(...ids);
     this.db.prepare(`DELETE FROM memory_vectors WHERE memory_id IN (${placeholders})`).run(...ids);
   }
 
@@ -606,7 +628,7 @@ export class VectorStore {
   }
 
   private hasTable(name: string): boolean {
-    const row = this.db.prepare("SELECT name FROM sqlite_master WHERE name = ?").get(name);
+    const row = this.db.prepare('SELECT name FROM sqlite_master WHERE name = ?').get(name);
     return !!row;
   }
 

@@ -156,45 +156,111 @@ function parseSgrParams(params: string): SgrChange | null {
         change.clearBg = false;
         change.set = {};
         break;
-      case 1:  change.set = { ...change.set, bold: true }; break;
-      case 2:  change.set = { ...change.set, dim: true }; break;
-      case 30: setForeground(change, named('black')); break;
-      case 31: setForeground(change, named('red')); break;
-      case 32: setForeground(change, named('green')); break;
-      case 33: setForeground(change, named('yellow')); break;
-      case 34: setForeground(change, named('blue')); break;
-      case 35: setForeground(change, named('magenta')); break;
-      case 36: setForeground(change, named('cyan')); break;
-      case 37: setForeground(change, named('white')); break;
-      case 39: clearForeground(change); break;
-      case 40: setBackground(change, named('black')); break;
-      case 41: setBackground(change, named('red')); break;
-      case 42: setBackground(change, named('green')); break;
-      case 43: setBackground(change, named('yellow')); break;
-      case 44: setBackground(change, named('blue')); break;
-      case 45: setBackground(change, named('magenta')); break;
-      case 46: setBackground(change, named('cyan')); break;
-      case 47: setBackground(change, named('white')); break;
-      case 49: clearBackground(change); break;
+      case 1:
+        change.set = { ...change.set, bold: true };
+        break;
+      case 2:
+        change.set = { ...change.set, dim: true };
+        break;
+      case 30:
+        setForeground(change, named('black'));
+        break;
+      case 31:
+        setForeground(change, named('red'));
+        break;
+      case 32:
+        setForeground(change, named('green'));
+        break;
+      case 33:
+        setForeground(change, named('yellow'));
+        break;
+      case 34:
+        setForeground(change, named('blue'));
+        break;
+      case 35:
+        setForeground(change, named('magenta'));
+        break;
+      case 36:
+        setForeground(change, named('cyan'));
+        break;
+      case 37:
+        setForeground(change, named('white'));
+        break;
+      case 39:
+        clearForeground(change);
+        break;
+      case 40:
+        setBackground(change, named('black'));
+        break;
+      case 41:
+        setBackground(change, named('red'));
+        break;
+      case 42:
+        setBackground(change, named('green'));
+        break;
+      case 43:
+        setBackground(change, named('yellow'));
+        break;
+      case 44:
+        setBackground(change, named('blue'));
+        break;
+      case 45:
+        setBackground(change, named('magenta'));
+        break;
+      case 46:
+        setBackground(change, named('cyan'));
+        break;
+      case 47:
+        setBackground(change, named('white'));
+        break;
+      case 49:
+        clearBackground(change);
+        break;
       // 90-97: bright foreground colours. Bright ≠ bold (separate SGR attrs).
-      case 90: setForeground(change, named('black')); break;
-      case 91: setForeground(change, named('red')); break;
-      case 92: setForeground(change, named('green')); break;
-      case 93: setForeground(change, named('yellow')); break;
-      case 94: setForeground(change, named('blue')); break;
-      case 95: setForeground(change, named('magenta')); break;
-      case 96: setForeground(change, named('cyan')); break;
-      case 97: setForeground(change, named('white')); break;
+      case 90:
+        setForeground(change, named('black'));
+        break;
+      case 91:
+        setForeground(change, named('red'));
+        break;
+      case 92:
+        setForeground(change, named('green'));
+        break;
+      case 93:
+        setForeground(change, named('yellow'));
+        break;
+      case 94:
+        setForeground(change, named('blue'));
+        break;
+      case 95:
+        setForeground(change, named('magenta'));
+        break;
+      case 96:
+        setForeground(change, named('cyan'));
+        break;
+      case 97:
+        setForeground(change, named('white'));
+        break;
       // Unrecognised SGR codes are ignored (they are still valid SGR).
-      default: break;
+      default:
+        break;
     }
   }
   if (!hasAny) return null;
   return change;
 }
 
-const VALID_NAMED_COLORS = ['black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white'] as const;
-type NamedColorValue = typeof VALID_NAMED_COLORS[number];
+const VALID_NAMED_COLORS = [
+  'black',
+  'red',
+  'green',
+  'yellow',
+  'blue',
+  'magenta',
+  'cyan',
+  'white',
+] as const;
+type NamedColorValue = (typeof VALID_NAMED_COLORS)[number];
 
 function named(name: string): TuiColor {
   // The SGR code mapping only produces valid named colors, but guard anyway.
@@ -266,9 +332,17 @@ function skipEscapeSequence(text: string, index: number): number {
     while (i < text.length) {
       const cp = text.codePointAt(i);
       if (cp === undefined) break;
-      if (cp >= 0x30 && cp <= 0x3f) { i += 1; continue; } // parameter byte
-      if (cp >= 0x20 && cp <= 0x2f) { i += 1; continue; } // intermediate byte
-      if (cp >= 0x40 && cp <= 0x7e) { return i + 1; }     // final byte
+      if (cp >= 0x30 && cp <= 0x3f) {
+        i += 1;
+        continue;
+      } // parameter byte
+      if (cp >= 0x20 && cp <= 0x2f) {
+        i += 1;
+        continue;
+      } // intermediate byte
+      if (cp >= 0x40 && cp <= 0x7e) {
+        return i + 1;
+      } // final byte
       break; // not a valid CSI byte — bail out
     }
     return text.length;

@@ -13,7 +13,11 @@ export interface EditorResult {
 export interface EditorOptions {
   initialContent?: string;
   env?: NodeJS.ProcessEnv;
-  spawnSync?: (command: string, args: string[], options: { stdio: 'inherit'; shell: boolean }) => SpawnSyncReturns<Buffer>;
+  spawnSync?: (
+    command: string,
+    args: string[],
+    options: { stdio: 'inherit'; shell: boolean }
+  ) => SpawnSyncReturns<Buffer>;
 }
 
 export function selectEditor(env: NodeJS.ProcessEnv = process.env): string {
@@ -30,7 +34,11 @@ export function openExternalEditor(options: EditorOptions = {}): EditorResult {
   try {
     writeFileSync(file, options.initialContent ?? '', { encoding: 'utf8', mode: 0o600 });
     // Explicit chmod for platforms where writeFileSync mode may not apply.
-    try { chmodSync(file, 0o600); } catch { /* best effort */ }
+    try {
+      chmodSync(file, 0o600);
+    } catch {
+      /* best effort */
+    }
     const result = spawn(editor, [file], {
       stdio: 'inherit',
       shell: true,
@@ -52,6 +60,10 @@ export function openExternalEditor(options: EditorOptions = {}): EditorResult {
     return { error: error instanceof Error ? error.message : String(error) };
   } finally {
     // v0.2.23: guaranteed cleanup of temp dir.
-    try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      /* best effort */
+    }
   }
 }

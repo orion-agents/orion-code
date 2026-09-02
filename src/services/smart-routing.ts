@@ -41,20 +41,29 @@ export interface SmartRoutingConfig {
 // ============================================================================
 
 const DEFAULT_CONFIG: SmartRoutingConfig = {
-  cheapModel: 'gpt-3.5-turbo',  // 或 haiku
-  strongModel: 'gpt-4o',        // 或 sonnet/opus
+  cheapModel: 'gpt-3.5-turbo', // 或 haiku
+  strongModel: 'gpt-4o', // 或 sonnet/opus
   simpleThresholdChars: 160,
   simpleThresholdWords: 28,
   strongKeywords: [
-    'plan', 'design', 'implement', 'debug', 'refactor',
-    'architecture', 'optimize', 'security', 'performance',
-    'complex', 'analyze', 'investigate', 'troubleshoot',
-    'explain', 'review', 'audit',
+    'plan',
+    'design',
+    'implement',
+    'debug',
+    'refactor',
+    'architecture',
+    'optimize',
+    'security',
+    'performance',
+    'complex',
+    'analyze',
+    'investigate',
+    'troubleshoot',
+    'explain',
+    'review',
+    'audit',
   ],
-  simpleKeywords: [
-    'fix', 'add', 'remove', 'update', 'rename',
-    'simple', 'quick', 'minor', 'small',
-  ],
+  simpleKeywords: ['fix', 'add', 'remove', 'update', 'rename', 'simple', 'quick', 'minor', 'small'],
 };
 
 // ============================================================================
@@ -163,15 +172,12 @@ function analyzeHistoryComplexity(messages: Message[]): number {
     .reduce((sum, m) => sum + (m.tool_calls?.length || 0), 0);
 
   // 统计消息长度
-  const avgLength = messages
-    .filter(m => m.content)
-    .reduce((sum, m) => sum + (m.content?.length || 0), 0) / messages.length;
+  const avgLength =
+    messages.filter(m => m.content).reduce((sum, m) => sum + (m.content?.length || 0), 0) /
+    messages.length;
 
   // 复杂度评分
-  const score = Math.min(
-    (toolCallCount / 10) * 0.5 + (avgLength / 500) * 0.5,
-    1
-  );
+  const score = Math.min((toolCallCount / 10) * 0.5 + (avgLength / 500) * 0.5, 1);
 
   return score;
 }

@@ -28,10 +28,7 @@ import type {
   FileMapping,
 } from './types';
 import { errorMessage } from '../utils/errors';
-import {
-  isNativeVectorDatabaseUnavailableError,
-  openBetterSqlite3,
-} from '../memory/vector-store';
+import { isNativeVectorDatabaseUnavailableError, openBetterSqlite3 } from '../memory/vector-store';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -61,14 +58,7 @@ const PROJECT_RENAME_MAP: Array<{ from: string; to: string }> = [
 ];
 
 /** Subdirectories whose contents are copied verbatim. */
-const VERBATIM_DIRS = new Set([
-  'projects',
-  'skills',
-  'cost',
-  'cache',
-  'backups',
-  'migration-logs',
-]);
+const VERBATIM_DIRS = new Set(['projects', 'skills', 'cost', 'cache', 'backups', 'migration-logs']);
 
 /** Directories whose parent is renamed (e.g. backups → backups/openhorse). */
 const NESTED_DIRS: Record<string, string> = {
@@ -86,7 +76,7 @@ function treeHash(dir: string): string {
   const hashes: string[] = [];
   const walk = (d: string) => {
     const entries = readdirSync(d, { withFileTypes: true }).sort((a, b) =>
-      a.name.localeCompare(b.name),
+      a.name.localeCompare(b.name)
     );
     for (const entry of entries) {
       const fullPath = join(d, entry.name);
@@ -101,7 +91,11 @@ function treeHash(dir: string): string {
   return sha256(hashes.sort().join('\n'));
 }
 
-function inventorySource(sourceRoot: string): { fileCount: number; totalBytes: number; treeSha256: string } {
+function inventorySource(sourceRoot: string): {
+  fileCount: number;
+  totalBytes: number;
+  treeSha256: string;
+} {
   let fileCount = 0;
   let totalBytes = 0;
   const walk = (d: string) => {
@@ -149,7 +143,6 @@ function copyDirRecursive(srcDir: string, destDir: string): FileMapping[] {
   return mappings;
 }
 
-
 // ── Config key remapping ─────────────────────────────────────────────────────
 
 function remapConfigKeys(content: string): string {
@@ -178,9 +171,7 @@ function verifySqlite(path: string): SqliteVerification {
   try {
     db = openBetterSqlite3(path, { readonly: true });
     const result = db.pragma('integrity_check') as Array<{ integrity_check?: unknown }>;
-    return result?.[0]?.integrity_check === 'ok'
-      ? { status: 'verified' }
-      : { status: 'invalid' };
+    return result?.[0]?.integrity_check === 'ok' ? { status: 'verified' } : { status: 'invalid' };
   } catch (error) {
     // ABI/module failures are environmental and actionable, not evidence that
     // the user's vector database failed its integrity check. Migration itself
@@ -232,7 +223,8 @@ export function migrateBrand(options: MigrationOptions = {}): MigrationResult {
   if (existsSync(targetRoot) && readdirSync(targetRoot).length > 0) {
     manifest.conflicts.push({
       path: targetRoot,
-      reason: 'Target directory already exists and is non-empty. Remove it or move it aside before migrating.',
+      reason:
+        'Target directory already exists and is non-empty. Remove it or move it aside before migrating.',
     });
     return { success: false, manifest };
   }
@@ -308,7 +300,9 @@ export function migrateBrand(options: MigrationOptions = {}): MigrationResult {
     if (existsSync(vectorSrc)) {
       const verification = verifySqlite(vectorSrc);
       if (verification.status === 'invalid') {
-        manifest.warnings.push('vector.db integrity check failed. The file was copied but may be corrupted.');
+        manifest.warnings.push(
+          'vector.db integrity check failed. The file was copied but may be corrupted.'
+        );
       } else if (verification.status === 'unavailable') {
         manifest.warnings.push(
           `vector.db was copied verbatim, but integrity verification was skipped because the native SQLite verifier is unavailable. ${verification.reason}`
@@ -324,7 +318,7 @@ export function migrateBrand(options: MigrationOptions = {}): MigrationResult {
       // Compare file count and byte count
       if (outputSnapshot.fileCount !== manifest.sourceSnapshot.fileCount) {
         manifest.warnings.push(
-          `File count mismatch: source=${manifest.sourceSnapshot.fileCount} vs staging=${outputSnapshot.fileCount}`,
+          `File count mismatch: source=${manifest.sourceSnapshot.fileCount} vs staging=${outputSnapshot.fileCount}`
         );
       }
 
@@ -342,7 +336,7 @@ export function migrateBrand(options: MigrationOptions = {}): MigrationResult {
       writeFileSync(
         join(manifestDir, `migration-${manifest.migrationId}.json`),
         JSON.stringify(manifest, null, 2),
-        { mode: 0o600 },
+        { mode: 0o600 }
       );
     } else {
       // Issue #48: a dry run only staged into `stagingRoot` for preview. Discard
@@ -383,7 +377,7 @@ function migrateConfigFiles(
   sourceRoot: string,
   destRoot: string,
   options: MigrationOptions,
-  _manifest: BrandMigrationManifestV1,
+  _manifest: BrandMigrationManifestV1
 ): FileMapping[] {
   const mappings: FileMapping[] = [];
 
@@ -411,7 +405,7 @@ function migrateConfigFiles(
 
 export function migrateProjectFiles(
   projectPath: string,
-  options: MigrationOptions = {},
+  options: MigrationOptions = {}
 ): { success: boolean; renamed: FileMapping[]; conflicts: FileMapping[]; warnings: string[] } {
   const renamed: FileMapping[] = [];
   const conflicts: FileMapping[] = [];
@@ -419,7 +413,12 @@ export function migrateProjectFiles(
 
   const resolved = resolve(projectPath);
   if (!existsSync(resolved)) {
-    return { success: false, renamed, conflicts, warnings: [`Project path ${resolved} does not exist.`] };
+    return {
+      success: false,
+      renamed,
+      conflicts,
+      warnings: [`Project path ${resolved} does not exist.`],
+    };
   }
 
   for (const { from, to } of PROJECT_RENAME_MAP) {

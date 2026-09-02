@@ -1,4 +1,8 @@
-import { collectWorkspaceDiff, type WorkspaceDiffFile, type WorkspaceDiffReport } from './workspace-diff';
+import {
+  collectWorkspaceDiff,
+  type WorkspaceDiffFile,
+  type WorkspaceDiffReport,
+} from './workspace-diff';
 
 export interface CommitPlan {
   diff: WorkspaceDiffReport;
@@ -40,16 +44,30 @@ function inferScope(files: WorkspaceDiffFile[]): string | undefined {
 function inferType(files: WorkspaceDiffFile[]): string {
   if (files.length === 0) return 'chore';
   const paths = files.map(file => file.path.toLowerCase());
-  if (paths.every(path => path.startsWith('docs/') || path.startsWith('readme') || path.endsWith('.md'))) return 'docs';
+  if (
+    paths.every(
+      path => path.startsWith('docs/') || path.startsWith('readme') || path.endsWith('.md')
+    )
+  )
+    return 'docs';
   if (paths.every(path => path.includes('test') || path.startsWith('tests/'))) return 'test';
-  if (paths.every(path => path.includes('package') || path.includes('tsconfig') || path.includes('config'))) return 'chore';
+  if (
+    paths.every(
+      path => path.includes('package') || path.includes('tsconfig') || path.includes('config')
+    )
+  )
+    return 'chore';
   return 'feat';
 }
 
 function inferSubject(files: WorkspaceDiffFile[]): string {
   if (files.length === 0) return 'no workspace changes';
   const paths = files.map(file => file.path.toLowerCase());
-  if (paths.every(path => path.startsWith('docs/') || path.startsWith('readme') || path.endsWith('.md'))) {
+  if (
+    paths.every(
+      path => path.startsWith('docs/') || path.startsWith('readme') || path.endsWith('.md')
+    )
+  ) {
     return 'update documentation';
   }
   if (paths.every(path => path.includes('test') || path.startsWith('tests/'))) {
@@ -137,7 +155,8 @@ export function createCommitPlan(options: CommitPlanOptions = {}): CommitPlan {
     suggestedMessage,
     title,
     body,
-    readyToCommit: diff.staged.length > 0 && diff.unstaged.length === 0 && diff.untracked.length === 0,
+    readyToCommit:
+      diff.staged.length > 0 && diff.unstaged.length === 0 && diff.untracked.length === 0,
     warnings,
     nextSteps,
   };

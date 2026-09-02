@@ -72,9 +72,7 @@ export class EmbeddingService {
       const batch = texts.slice(i, i + batchSize);
 
       // 使用 Promise.allSettled 确保部分失败不影响整体
-      const batchResults = await Promise.allSettled(
-        batch.map(t => this.embed(t))
-      );
+      const batchResults = await Promise.allSettled(batch.map(t => this.embed(t)));
 
       for (const result of batchResults) {
         if (result.status === 'fulfilled') {
@@ -96,12 +94,16 @@ export class EmbeddingService {
     const model = this.config.model || 'nomic-embed-text';
 
     try {
-      const response = await axios.post(`${baseUrl}/api/embeddings`, {
-        model,
-        prompt: text,
-      }, {
-        timeout: 30000,
-      });
+      const response = await axios.post(
+        `${baseUrl}/api/embeddings`,
+        {
+          model,
+          prompt: text,
+        },
+        {
+          timeout: 30000,
+        }
+      );
 
       return response.data.embedding;
     } catch (err) {
@@ -130,7 +132,7 @@ export class EmbeddingService {
         },
         {
           headers: {
-            'Authorization': `Bearer ${apiKey}`,
+            Authorization: `Bearer ${apiKey}`,
             'Content-Type': 'application/json',
           },
           timeout: 30000,
@@ -154,8 +156,8 @@ let defaultService: EmbeddingService | null = null;
 export function getEmbeddingService(config?: EmbeddingConfig): EmbeddingService {
   if (!defaultService) {
     // Auto-detect provider from environment
-    const provider = process.env[ENV.EMBEDDING_PROVIDER] ||
-      (process.env.OLLAMA_BASE_URL ? 'ollama' : 'openai');
+    const provider =
+      process.env[ENV.EMBEDDING_PROVIDER] || (process.env.OLLAMA_BASE_URL ? 'ollama' : 'openai');
 
     defaultService = new EmbeddingService({
       provider: provider as 'ollama' | 'openai',

@@ -9,12 +9,7 @@ import {
   type RichTextSpan,
   type RichTextThemeResolver,
 } from './types';
-import {
-  styleKey,
-  type StyledRow,
-  type StyledSpan,
-  type TuiStyle,
-} from '../../tui-core/style';
+import { styleKey, type StyledRow, type StyledSpan, type TuiStyle } from '../../tui-core/style';
 
 export interface RichTextLayoutOptions {
   width: number;
@@ -40,7 +35,7 @@ function layoutBlock(
   block: RichTextBlock,
   width: number,
   theme: RichTextThemeResolver,
-  indent: number,
+  indent: number
 ): StyledRow[] {
   switch (block.type) {
     case 'paragraph':
@@ -59,10 +54,12 @@ function layoutBlock(
       return layoutTable(block, width, theme, indent);
     case 'rule': {
       const available = Math.max(1, width - indent);
-      return [[
-        { text: ' '.repeat(indent), style: theme('muted') },
-        { text: '─'.repeat(available), style: theme('muted') },
-      ]];
+      return [
+        [
+          { text: ' '.repeat(indent), style: theme('muted') },
+          { text: '─'.repeat(available), style: theme('muted') },
+        ],
+      ];
     }
   }
 }
@@ -72,7 +69,7 @@ function layoutInline(
   width: number,
   theme: RichTextThemeResolver,
   baseStyle: TuiStyle,
-  indent: number,
+  indent: number
 ): StyledRow[] {
   const prefix: StyledRow = indent > 0 ? [{ text: ' '.repeat(indent), style: baseStyle }] : [];
   const styled = spans.map(span => ({
@@ -86,7 +83,7 @@ function layoutList(
   block: Extract<RichTextBlock, { type: 'list' }>,
   width: number,
   theme: RichTextThemeResolver,
-  indent: number,
+  indent: number
 ): StyledRow[] {
   const rows: StyledRow[] = [];
 
@@ -109,13 +106,7 @@ function layoutList(
           text: span.text,
           style: resolveSpanStyle(span, base, theme),
         }));
-        rows.push(...layoutPrefixedSpans(
-          styled,
-          width,
-          firstPrefix,
-          continuationPrefix,
-          true,
-        ));
+        rows.push(...layoutPrefixedSpans(styled, width, firstPrefix, continuationPrefix, true));
         return;
       }
 
@@ -134,12 +125,14 @@ function layoutQuote(
   block: Extract<RichTextBlock, { type: 'quote' }>,
   width: number,
   theme: RichTextThemeResolver,
-  indent: number,
+  indent: number
 ): StyledRow[] {
-  const prefix: StyledRow = [{
-    text: `${' '.repeat(normalizeIndent(indent, width))}> `,
-    style: theme('muted'),
-  }];
+  const prefix: StyledRow = [
+    {
+      text: `${' '.repeat(normalizeIndent(indent, width))}> `,
+      style: theme('muted'),
+    },
+  ];
   const prefixWidth = rowWidth(prefix);
   const childWidth = Math.max(1, width - prefixWidth);
   const rows: StyledRow[] = [];
@@ -160,7 +153,7 @@ function layoutCode(
   width: number,
   theme: RichTextThemeResolver,
   indent: number,
-  language?: string,
+  language?: string
 ): StyledRow[] {
   const safeIndent = normalizeIndent(indent, width);
   const available = Math.max(1, width - safeIndent);
@@ -170,14 +163,15 @@ function layoutCode(
 
   if (language) {
     const labelStyle = mergeStyles(style, theme('muted'));
-    const labelPrefix: StyledRow = safeIndent > 0
-      ? [{ text: ' '.repeat(safeIndent), style: labelStyle }]
-      : [];
+    const labelPrefix: StyledRow =
+      safeIndent > 0 ? [{ text: ' '.repeat(safeIndent), style: labelStyle }] : [];
     const label = truncateToWidth(language, available);
-    rows.push(clampRow([
-      ...labelPrefix,
-      ...padRow([{ text: label, style: labelStyle }], available, labelStyle),
-    ], width));
+    rows.push(
+      clampRow(
+        [...labelPrefix, ...padRow([{ text: label, style: labelStyle }], available, labelStyle)],
+        width
+      )
+    );
   }
 
   for (const line of lines.length > 0 ? lines : ['']) {
@@ -194,7 +188,7 @@ function layoutDiff(
   lines: DiffLine[],
   width: number,
   theme: RichTextThemeResolver,
-  indent: number,
+  indent: number
 ): StyledRow[] {
   const rows: StyledRow[] = [];
   const safeIndent = normalizeIndent(indent, width);
@@ -204,13 +198,15 @@ function layoutDiff(
     const style = diffLineStyle(line.kind, theme);
     const firstPrefix: StyledRow = [{ text: `${' '.repeat(safeIndent)}${prefix}`, style }];
     const continuationPrefix: StyledRow = [{ text: `${' '.repeat(safeIndent)}↳`, style }];
-    rows.push(...layoutPrefixedSpans(
-      [{ text: line.content, style }],
-      width,
-      firstPrefix,
-      continuationPrefix,
-      false,
-    ));
+    rows.push(
+      ...layoutPrefixedSpans(
+        [{ text: line.content, style }],
+        width,
+        firstPrefix,
+        continuationPrefix,
+        false
+      )
+    );
   }
 
   return rows;
@@ -234,7 +230,7 @@ function layoutTable(
   block: Extract<RichTextBlock, { type: 'table' }>,
   width: number,
   theme: RichTextThemeResolver,
-  indent: number,
+  indent: number
 ): StyledRow[] {
   const safeIndent = normalizeIndent(indent, width);
   const available = Math.max(1, width - safeIndent);
@@ -245,9 +241,8 @@ function layoutTable(
   if (columnWidth < 4) return layoutTableAsKeyValue(block, width, theme, safeIndent);
 
   const rows: StyledRow[] = [];
-  const indentSpan: StyledSpan[] = safeIndent > 0
-    ? [{ text: ' '.repeat(safeIndent), style: theme('assistantText') }]
-    : [];
+  const indentSpan: StyledSpan[] =
+    safeIndent > 0 ? [{ text: ' '.repeat(safeIndent), style: theme('assistantText') }] : [];
 
   const header: StyledRow = [...indentSpan];
   for (let column = 0; column < columnCount; column++) {
@@ -282,7 +277,7 @@ function layoutTableAsKeyValue(
   block: Extract<RichTextBlock, { type: 'table' }>,
   width: number,
   theme: RichTextThemeResolver,
-  indent: number,
+  indent: number
 ): StyledRow[] {
   const rows: StyledRow[] = [];
   const prefixIndent = ' '.repeat(normalizeIndent(indent, width));
@@ -293,18 +288,14 @@ function layoutTableAsKeyValue(
       const value = sourceRow[column] ?? [];
       const prefix: StyledRow = [{ text: `${prefixIndent}${key}: `, style: theme('heading') }];
       const safePrefix = clampRow(prefix, Math.max(1, width - 1));
-      const continuation: StyledRow = [{ text: ' '.repeat(rowWidth(safePrefix)), style: theme('muted') }];
+      const continuation: StyledRow = [
+        { text: ' '.repeat(rowWidth(safePrefix)), style: theme('muted') },
+      ];
       const styledValue = value.map(span => ({
         text: span.text,
         style: resolveSpanStyle(span, theme('assistantText'), theme),
       }));
-      rows.push(...layoutPrefixedSpans(
-        styledValue,
-        width,
-        safePrefix,
-        continuation,
-        true,
-      ));
+      rows.push(...layoutPrefixedSpans(styledValue, width, safePrefix, continuation, true));
     }
   }
 
@@ -316,7 +307,7 @@ function layoutPrefixedSpans(
   width: number,
   firstPrefix: StyledRow,
   continuationPrefix: StyledRow,
-  softWrap: boolean,
+  softWrap: boolean
 ): StyledRow[] {
   const prefixWidth = Math.max(rowWidth(firstPrefix), rowWidth(continuationPrefix));
   if (prefixWidth >= width) {
@@ -327,10 +318,9 @@ function layoutPrefixedSpans(
   }
 
   const bodyRows = wrapStyledSpans(spans, width - prefixWidth, softWrap);
-  return bodyRows.map((row, index) => clampRow([
-    ...(index === 0 ? firstPrefix : continuationPrefix),
-    ...row,
-  ], width));
+  return bodyRows.map((row, index) =>
+    clampRow([...(index === 0 ? firstPrefix : continuationPrefix), ...row], width)
+  );
 }
 
 function wrapStyledSpans(spans: StyledSpan[], width: number, softWrap: boolean): StyledRow[] {
@@ -418,7 +408,7 @@ function unitsToRow(units: StyledUnit[]): StyledRow {
 function resolveSpanStyle(
   span: RichTextSpan,
   baseStyle: TuiStyle,
-  theme: RichTextThemeResolver,
+  theme: RichTextThemeResolver
 ): TuiStyle {
   let style = baseStyle;
   if (span.linkUrl) style = mergeStyles(style, theme('link'));

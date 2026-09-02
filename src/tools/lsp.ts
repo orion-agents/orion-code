@@ -10,7 +10,12 @@
  * 支持 tsserver, pyright
  */
 
-import { buildTool, type OrionCodeTool, type ToolResult, type ToolContext } from '../framework/tool';
+import {
+  buildTool,
+  type OrionCodeTool,
+  type ToolResult,
+  type ToolContext,
+} from '../framework/tool';
 import { spawn, spawnSync, ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
 
@@ -47,12 +52,22 @@ interface LspHover {
 export class LspClient extends EventEmitter {
   private process: ChildProcess | null = null;
   private requestId: number = 0;
-  private pendingRequests: Map<number, { resolve: (...args: unknown[]) => unknown; reject: (...args: unknown[]) => unknown; timer: NodeJS.Timeout }> = new Map();
+  private pendingRequests: Map<
+    number,
+    {
+      resolve: (...args: unknown[]) => unknown;
+      reject: (...args: unknown[]) => unknown;
+      timer: NodeJS.Timeout;
+    }
+  > = new Map();
   private buffer: string = '';
   private initialized: boolean = false;
   private lspCommand: { cmd: string; args: string[] } | null = null;
 
-  constructor(private language: string, private projectRoot: string) {
+  constructor(
+    private language: string,
+    private projectRoot: string
+  ) {
     super();
   }
 
@@ -61,11 +76,9 @@ export class LspClient extends EventEmitter {
    * Uses spawnSync with `which`/`where` to avoid async ENOENT race.
    */
   private static probeBinary(cmd: string): boolean {
-    const res = spawnSync(
-      process.platform === 'win32' ? 'where' : 'which',
-      [cmd],
-      { stdio: 'ignore' },
-    );
+    const res = spawnSync(process.platform === 'win32' ? 'where' : 'which', [cmd], {
+      stdio: 'ignore',
+    });
     return res.status === 0;
   }
 
@@ -78,8 +91,8 @@ export class LspClient extends EventEmitter {
     if (!LspClient.probeBinary(command.cmd)) {
       throw new Error(
         `LSP binary "${command.cmd}" not found in PATH. ` +
-        `Install it first: npm i -g ${command.cmd}` +
-        (command.cmd === 'typescript-language-server' ? ' typescript' : ''),
+          `Install it first: npm i -g ${command.cmd}` +
+          (command.cmd === 'typescript-language-server' ? ' typescript' : '')
       );
     }
 
@@ -103,9 +116,10 @@ export class LspClient extends EventEmitter {
     // Guard against async ENOENT: if no listener is registered,
     // warn instead of crashing. This is the last-resort safety net.
     this.process.on('error', (err: NodeJS.ErrnoException) => {
-      const msg = err.code === 'ENOENT'
-        ? `LSP binary "${command.cmd}" failed to start (ENOENT). Is it installed?`
-        : `LSP process error: ${err.message}`;
+      const msg =
+        err.code === 'ENOENT'
+          ? `LSP binary "${command.cmd}" failed to start (ENOENT). Is it installed?`
+          : `LSP process error: ${err.message}`;
 
       if (this.listenerCount('error') === 0) {
         console.warn(`[LSP] ${msg}`);
@@ -143,7 +157,9 @@ export class LspClient extends EventEmitter {
         await this.sendRequest('shutdown', null);
       } catch (err) {
         // Server may already be gone; proceed to exit/kill regardless.
-        console.warn(`[lsp] shutdown request failed: ${err instanceof Error ? err.message : String(err)}`);
+        console.warn(
+          `[lsp] shutdown request failed: ${err instanceof Error ? err.message : String(err)}`
+        );
       }
       try {
         // `exit` is a *notification* — fire and forget. Servers are not required
@@ -180,7 +196,10 @@ export class LspClient extends EventEmitter {
     this.pendingRequests.clear();
   }
 
-  async getDefinition(uri: string, position: LspPosition): Promise<LspLocation[] | LspLocation | null> {
+  async getDefinition(
+    uri: string,
+    position: LspPosition
+  ): Promise<LspLocation[] | LspLocation | null> {
     const result = await this.sendRequest('textDocument/definition', {
       textDocument: { uri },
       position,
@@ -188,7 +207,11 @@ export class LspClient extends EventEmitter {
     return result as LspLocation[] | LspLocation | null;
   }
 
-  async getReferences(uri: string, position: LspPosition, includeDeclaration: boolean = true): Promise<LspLocation[] | null> {
+  async getReferences(
+    uri: string,
+    position: LspPosition,
+    includeDeclaration: boolean = true
+  ): Promise<LspLocation[] | null> {
     const result = await this.sendRequest('textDocument/references', {
       textDocument: { uri },
       position,
@@ -294,7 +317,11 @@ export class LspClient extends EventEmitter {
     }
   }
 
-  private handleResponse(response: { id?: number; result?: unknown; error?: { message: string } }): void {
+  private handleResponse(response: {
+    id?: number;
+    result?: unknown;
+    error?: { message: string };
+  }): void {
     if (response.id !== undefined) {
       const pending = this.pendingRequests.get(response.id);
       if (pending) {
@@ -325,7 +352,7 @@ class LspManager {
 
       // Fallback error listener — ensures the client NEVER crashes the process
       // due to an unhandled 'error' event emission.
-      client.on('error', (msg) => {
+      client.on('error', msg => {
         console.warn(`[LSP:${language}] ${msg}`);
       });
 
@@ -393,12 +420,14 @@ function formatLocationResult(location: LspLocation[] | LspLocation | null): str
 
   if (locations.length === 0) return 'No definition found';
 
-  return locations.map(loc => {
-    const path = loc.uri.replace('file://', '');
-    const line = loc.range.start.line + 1;
-    const char = loc.range.start.character + 1;
-    return `${path}:${line}:${char}`;
-  }).join('\n');
+  return locations
+    .map(loc => {
+      const path = loc.uri.replace('file://', '');
+      const line = loc.range.start.line + 1;
+      const char = loc.range.start.character + 1;
+      return `${path}:${line}:${char}`;
+    })
+    .join('\n');
 }
 
 /**
@@ -442,7 +471,8 @@ function validatePositionArgs(filePath: unknown, line: unknown, character: unkno
 
 export const lspGetDefinitionTool: OrionCodeTool = buildTool({
   name: 'lsp_get_definition',
-  description: 'Get definition location for a symbol at a position. Supports TypeScript, JavaScript, Python.',
+  description:
+    'Get definition location for a symbol at a position. Supports TypeScript, JavaScript, Python.',
   parameters: {
     type: 'object',
     properties: {
@@ -491,7 +521,8 @@ export const lspGetDefinitionTool: OrionCodeTool = buildTool({
 
 export const lspGetReferencesTool: OrionCodeTool = buildTool({
   name: 'lsp_get_references',
-  description: 'Get all references to a symbol at a position. Supports TypeScript, JavaScript, Python.',
+  description:
+    'Get all references to a symbol at a position. Supports TypeScript, JavaScript, Python.',
   parameters: {
     type: 'object',
     properties: {
@@ -545,7 +576,8 @@ export const lspGetReferencesTool: OrionCodeTool = buildTool({
 
 export const lspGetHoverTool: OrionCodeTool = buildTool({
   name: 'lsp_get_hover',
-  description: 'Get hover information (type, docs) for a symbol at a position. Supports TypeScript, JavaScript, Python.',
+  description:
+    'Get hover information (type, docs) for a symbol at a position. Supports TypeScript, JavaScript, Python.',
   parameters: {
     type: 'object',
     properties: {
@@ -594,7 +626,8 @@ export const lspGetHoverTool: OrionCodeTool = buildTool({
 
 export const lspGetDiagnosticsTool: OrionCodeTool = buildTool({
   name: 'lsp_get_diagnostics',
-  description: 'Get diagnostics (errors, warnings) for a file. Supports TypeScript, JavaScript, Python.',
+  description:
+    'Get diagnostics (errors, warnings) for a file. Supports TypeScript, JavaScript, Python.',
   parameters: {
     type: 'object',
     properties: {
@@ -631,12 +664,14 @@ export const lspGetDiagnosticsTool: OrionCodeTool = buildTool({
         4: 'Hint',
       };
 
-      const output = diagnostics.map(d => {
-        const sev = severityMap[d.severity] || 'Unknown';
-        const line = d.range.start.line + 1;
-        const char = d.range.start.character + 1;
-        return `[${sev}] ${file_path}:${line}:${char}: ${d.message}`;
-      }).join('\n');
+      const output = diagnostics
+        .map(d => {
+          const sev = severityMap[d.severity] || 'Unknown';
+          const line = d.range.start.line + 1;
+          const char = d.range.start.character + 1;
+          return `[${sev}] ${file_path}:${line}:${char}: ${d.message}`;
+        })
+        .join('\n');
 
       return { success: true, output };
     } catch (err) {

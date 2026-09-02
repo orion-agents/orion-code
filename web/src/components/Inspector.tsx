@@ -1,11 +1,4 @@
-import {
-  useEffect,
-  useId,
-  useMemo,
-  useState,
-  type FormEvent,
-  type KeyboardEvent,
-} from 'react';
+import { useEffect, useId, useMemo, useState, type FormEvent, type KeyboardEvent } from 'react';
 
 import type { WorkbenchActions } from '../useWorkbench';
 import {
@@ -64,40 +57,35 @@ export function AgentPanel({ state, actions, tab, onTabChange }: AgentPanelProps
 
   return (
     <div className="agent-panel">
-        <div
-          className="inspector-tabs"
-          role="tablist"
-          aria-label="详情类别"
-          onKeyDown={onTabKeyDown}
-        >
-          {TABS.map(item => (
-            <button
-              id={`${panelId}-tab-${item.id}`}
-              key={item.id}
-              type="button"
-              role="tab"
-              aria-selected={tab === item.id}
-              aria-controls={`${panelId}-panel`}
-              tabIndex={tab === item.id ? 0 : -1}
-              onClick={() => onTabChange(item.id)}
-            >
-              <Icon name={item.icon} size={15} />
-              <span>{item.label}</span>
-            </button>
-          ))}
-        </div>
-        <div
-          id={`${panelId}-panel`}
-          className="inspector-body"
-          role="tabpanel"
-          aria-labelledby={`${panelId}-tab-${tab}`}
-          tabIndex={0}
-        >
-          {tab === 'goal' ? <GoalPanel state={state} actions={actions} /> : null}
-          {tab === 'activity' ? <ActivityPanel state={state} actions={actions} /> : null}
-          {tab === 'integrations' ? <IntegrationsPanel state={state} actions={actions} /> : null}
-          {tab === 'diagnostics' ? <DiagnosticsPanel state={state} actions={actions} /> : null}
-        </div>
+      <div className="inspector-tabs" role="tablist" aria-label="详情类别" onKeyDown={onTabKeyDown}>
+        {TABS.map(item => (
+          <button
+            id={`${panelId}-tab-${item.id}`}
+            key={item.id}
+            type="button"
+            role="tab"
+            aria-selected={tab === item.id}
+            aria-controls={`${panelId}-panel`}
+            tabIndex={tab === item.id ? 0 : -1}
+            onClick={() => onTabChange(item.id)}
+          >
+            <Icon name={item.icon} size={15} />
+            <span>{item.label}</span>
+          </button>
+        ))}
+      </div>
+      <div
+        id={`${panelId}-panel`}
+        className="inspector-body"
+        role="tabpanel"
+        aria-labelledby={`${panelId}-tab-${tab}`}
+        tabIndex={0}
+      >
+        {tab === 'goal' ? <GoalPanel state={state} actions={actions} /> : null}
+        {tab === 'activity' ? <ActivityPanel state={state} actions={actions} /> : null}
+        {tab === 'integrations' ? <IntegrationsPanel state={state} actions={actions} /> : null}
+        {tab === 'diagnostics' ? <DiagnosticsPanel state={state} actions={actions} /> : null}
+      </div>
     </div>
   );
 }

@@ -115,9 +115,7 @@ export function DiffViewer({
           {(active?.lines ?? page.lines).map((line, index) => (
             <span
               key={`${index}:${line}`}
-              className={
-                line.startsWith('+') ? 'addition' : line.startsWith('-') ? 'deletion' : ''
-              }
+              className={line.startsWith('+') ? 'addition' : line.startsWith('-') ? 'deletion' : ''}
             >
               {displayLine(line, showWhitespace) || ' '}
               {'\n'}

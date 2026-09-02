@@ -378,10 +378,7 @@ export function resolveThreadProjectionDigestVersionV1(
       ? requestedVersion
       : undefined;
   }
-  for (const version of [
-    CURRENT_THREAD_PROJECTION_DIGEST_VERSION_V1,
-    1,
-  ] as const) {
+  for (const version of [CURRENT_THREAD_PROJECTION_DIGEST_VERSION_V1, 1] as const) {
     if (threadProjectionDigestForVersionV1(projection, version) === digest) return version;
   }
   return undefined;

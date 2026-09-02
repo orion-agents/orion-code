@@ -109,9 +109,7 @@ export function validateAndSanitizePath(key: string): string {
   const result = sanitizePathKey(key);
 
   if (!result.safe) {
-    throw new PathTraversalError(
-      `Path security violation: ${result.violations.join(', ')}`
-    );
+    throw new PathTraversalError(`Path security violation: ${result.violations.join(', ')}`);
   }
 
   return result.sanitizedKey;

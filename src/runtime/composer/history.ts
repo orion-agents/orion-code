@@ -32,13 +32,13 @@ export const initialHistoryState: InputHistoryState = {
 export function pushHistoryEntry(state: InputHistoryState, value: string): InputHistoryState {
   if (!value) return state;
   // Deduplicate consecutive identical.
-  const entries = state.entries[state.entries.length - 1] === value
-    ? state.entries
-    : [...state.entries, value];
+  const entries =
+    state.entries[state.entries.length - 1] === value ? state.entries : [...state.entries, value];
   // Bound size.
-  const trimmed = entries.length > MAX_HISTORY_ENTRIES
-    ? entries.slice(entries.length - MAX_HISTORY_ENTRIES)
-    : entries;
+  const trimmed =
+    entries.length > MAX_HISTORY_ENTRIES
+      ? entries.slice(entries.length - MAX_HISTORY_ENTRIES)
+      : entries;
   return {
     entries: trimmed,
     index: null,

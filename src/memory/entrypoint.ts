@@ -8,7 +8,12 @@
 
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
-import { getMemoryDir, MAX_ENTRYPOINT_LINES, MAX_ENTRYPOINT_BYTES, ENTRYPOINT_NAME } from './storage';
+import {
+  getMemoryDir,
+  MAX_ENTRYPOINT_LINES,
+  MAX_ENTRYPOINT_BYTES,
+  ENTRYPOINT_NAME,
+} from './storage';
 
 // ============================================================================
 // Types
@@ -113,7 +118,9 @@ export function truncateIfNeeded(content: string): TruncatedContent {
   // Add truncation warning line if needed
   if (wasLineTruncated || wasByteTruncated) {
     lines.push('');
-    lines.push('> WARNING: MEMORY.md truncated. Keep index entries concise (each under ~150 chars).');
+    lines.push(
+      '> WARNING: MEMORY.md truncated. Keep index entries concise (each under ~150 chars).'
+    );
   }
 
   return {

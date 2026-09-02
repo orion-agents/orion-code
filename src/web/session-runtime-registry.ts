@@ -155,7 +155,11 @@ export class WebSessionRuntimeRegistryV1<TActor extends object> {
    * no Session actor (actorsCreated delta 0) and performed no capacity
    * eviction (actorsEvicted delta 0) while the pool keeps actors alive.
    */
-  stats(): { readonly actorsCreated: number; readonly actorsClosed: number; readonly actorsEvicted: number } {
+  stats(): {
+    readonly actorsCreated: number;
+    readonly actorsClosed: number;
+    readonly actorsEvicted: number;
+  } {
     return {
       actorsCreated: this.actorsCreatedCount,
       actorsClosed: this.actorsClosedCount,

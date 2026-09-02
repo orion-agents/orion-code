@@ -35,7 +35,7 @@ const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', 
 export interface HeaderBoxConfig {
   provider: string;
   model: string;
-  endpoint?: string;  // kept for backward compat, no longer shown
+  endpoint?: string; // kept for backward compat, no longer shown
   status: 'ready' | 'loading' | 'error' | 'processing';
   statusText?: string;
   version: string;
@@ -52,20 +52,29 @@ export function renderHeaderBox(config: HeaderBoxConfig): string {
   parts.push(ACCENT(config.model));
 
   // Provider (shortened)
-  const providerShort = config.provider === 'Alibaba Cloud' ? 'Qwen'
-    : config.provider === 'Anthropic' ? 'Anthropic'
-    : config.provider === 'OpenAI' ? 'OpenAI'
-    : config.provider;
+  const providerShort =
+    config.provider === 'Alibaba Cloud'
+      ? 'Qwen'
+      : config.provider === 'Anthropic'
+        ? 'Anthropic'
+        : config.provider === 'OpenAI'
+          ? 'OpenAI'
+          : config.provider;
   if (providerShort) {
     parts.push(DIM(providerShort));
   }
 
   // Status
-  const statusIcon = config.status === 'ready' ? GREEN('●')
-    : config.status === 'loading' ? YELLOW('○')
-    : config.status === 'error' ? RED('●')
-    : config.status === 'processing' ? ACCENT('◌')
-    : DIM('○');
+  const statusIcon =
+    config.status === 'ready'
+      ? GREEN('●')
+      : config.status === 'loading'
+        ? YELLOW('○')
+        : config.status === 'error'
+          ? RED('●')
+          : config.status === 'processing'
+            ? ACCENT('◌')
+            : DIM('○');
   parts.push(statusIcon);
 
   return `  ${BRAND('orion')} ${DIM('v' + config.version)}  ${DIM('│')} ${parts.join(` ${DIM('│')} `)}`;
@@ -75,7 +84,11 @@ export function renderHeaderBox(config: HeaderBoxConfig): string {
  * Renders the full prompt area with separators
  * Returns { topSep, promptLine, bottomSep }
  */
-export function renderPromptArea(modeText?: string): { topSep: string; promptLine: string; bottomSep: string } {
+export function renderPromptArea(modeText?: string): {
+  topSep: string;
+  promptLine: string;
+  bottomSep: string;
+} {
   const terminalWidth = process.stdout.columns || 80;
   const modeIndicator = modeText ? ` [${modeText}]` : '';
   const promptChar = '❯';
@@ -132,7 +145,6 @@ export function renderFooterBar(contextFile?: string, effort?: string): string {
 
   return `  ${shortcuts}${' '.repeat(spacing)}${rightSide}`;
 }
-
 
 /**
  * Truncate string from left side, adding ... if truncated
@@ -217,7 +229,7 @@ export function toolLine(
   name: string,
   args: Record<string, unknown>,
   success: boolean,
-  duration?: number,
+  duration?: number
 ): string {
   const argSummary = compactArgs(args);
   const status = success

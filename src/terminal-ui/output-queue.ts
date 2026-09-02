@@ -107,10 +107,18 @@ export class TerminalOutputQueue {
 
       const cleanup = (): void => {
         if (drainListener) {
-          try { this.writer.off('drain', drainListener); } catch { /* ok */ }
+          try {
+            this.writer.off('drain', drainListener);
+          } catch {
+            /* ok */
+          }
           drainListener = null;
         }
-        try { this.writer.off('error', onError); } catch { /* ok */ }
+        try {
+          this.writer.off('error', onError);
+        } catch {
+          /* ok */
+        }
       };
 
       const onError = (error: Error): void => {
@@ -130,7 +138,11 @@ export class TerminalOutputQueue {
                 if (!drainListener) return; // already cleaned up
                 const listener = drainListener;
                 drainListener = null;
-                try { this.writer.off('drain', listener); } catch { /* ok */ }
+                try {
+                  this.writer.off('drain', listener);
+                } catch {
+                  /* ok */
+                }
                 writeNext();
               };
               this.writer.on('drain', drainListener);

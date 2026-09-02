@@ -490,8 +490,8 @@ export function workbenchReducer(
       };
     }
     case 'reset_session_view': {
-      const switching = Boolean(action.activeSessionId) &&
-        action.activeSessionId !== state.activeSessionId;
+      const switching =
+        Boolean(action.activeSessionId) && action.activeSessionId !== state.activeSessionId;
       const cached = Boolean(
         action.activeSessionId && state.sessionProjectionById[action.activeSessionId]
       );

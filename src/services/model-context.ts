@@ -544,7 +544,7 @@ export function resolveContextBudget(
   const model = resolveModelContext(modelId);
   const requested = Number.isFinite(requestedOutputTokens)
     ? Math.max(0, Math.round(requestedOutputTokens ?? 0))
-    : model.maxOutputTokens ?? 8192;
+    : (model.maxOutputTokens ?? 8192);
 
   // 输出预留最多占上下文窗口的一半：某些条目的 maxOutputTokens 等于（甚至接近）
   // contextWindow，直接相减会把可用输入预算打到 0/负数。

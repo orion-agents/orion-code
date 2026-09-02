@@ -18,7 +18,4 @@ export {
   type AutoFixTrigger,
 } from './autoFixConfig';
 
-export {
-  autoFixHook,
-  shouldTriggerAutoFix,
-} from './autoFixHook';
+export { autoFixHook, shouldTriggerAutoFix } from './autoFixHook';

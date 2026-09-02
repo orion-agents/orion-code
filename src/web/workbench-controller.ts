@@ -12,7 +12,10 @@ import {
   listProjectDurableToolReceiptRefsV1,
 } from '../runtime/durable-tool-receipt-reader';
 import { loadFirstPartyMcpConfigurationV1 } from '../runtime/mcp';
-import { createProductUiRuntime, createWorkspaceRuntimeKernelV1 } from '../runtime/product-bootstrap';
+import {
+  createProductUiRuntime,
+  createWorkspaceRuntimeKernelV1,
+} from '../runtime/product-bootstrap';
 import type { OrionRuntimeV1 } from '../runtime/orion-runtime-v1';
 import type { WorkspaceRuntimeKernelV1 } from '../runtime/workspace-runtime-kernel';
 import { digestRuntimeValue } from '../runtime/protocol/canonical';
@@ -36,7 +39,10 @@ import { SessionComposerControlError } from '../runtime/session-composer-control
 import type { OrionCodeUiRuntime } from '../runtime/ui-events';
 import { incrementSessionCount } from '../services/global-config';
 import { redactTraceText } from '../services/redaction';
-import { SettingsCoordinatorError, type SettingsInvalidationV1 } from '../services/settings-coordinator';
+import {
+  SettingsCoordinatorError,
+  type SettingsInvalidationV1,
+} from '../services/settings-coordinator';
 import {
   countSessionsByProject,
   createSession,
@@ -1774,8 +1780,7 @@ export class WebWorkbenchController {
     if (existing) this.workspaceKernels.delete(canonical);
     const kernel = createWorkspaceRuntimeKernelV1({
       cwd: canonical,
-      onSettingsInvalidated: event =>
-        this.onWorkspaceKernelSettingsInvalidated(canonical, event),
+      onSettingsInvalidated: event => this.onWorkspaceKernelSettingsInvalidated(canonical, event),
     });
     this.workspaceKernels.set(canonical, kernel);
     return kernel;

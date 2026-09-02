@@ -143,7 +143,9 @@ export class StrategyTracker {
     const failed = this.getFailedAttempts();
     const pending = this.attempts.filter(a => a.result === 'pending');
 
-    lines.push(`Strategy Summary: ${successful.length} success, ${failed.length} failed, ${pending.length} pending`);
+    lines.push(
+      `Strategy Summary: ${successful.length} success, ${failed.length} failed, ${pending.length} pending`
+    );
 
     if (failed.length > 0) {
       lines.push('');

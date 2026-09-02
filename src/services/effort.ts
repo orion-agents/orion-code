@@ -1,21 +1,11 @@
 import type { ProviderProtocol, ResolvedModelProfile } from './model-registry';
 
-export const EFFORT_LEVELS = [
-  'none',
-  'minimal',
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-  'max',
-] as const;
+export const EFFORT_LEVELS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 
 export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 export type EffortPreference = 'auto' | EffortLevel;
 export type EffortScope = 'session' | 'project' | 'global';
-export type EffortAdapterId =
-  | 'openai-chat-reasoning-effort'
-  | 'anthropic-output-config-effort';
+export type EffortAdapterId = 'openai-chat-reasoning-effort' | 'anthropic-output-config-effort';
 
 export interface ReasoningCapability {
   kind: 'effort-level' | 'thinking-level' | 'thinking-budget';
@@ -105,7 +95,9 @@ export interface ProviderEffortSnapshot {
 }
 
 /** Build an immutable provider fragment. `auto` intentionally sends no override. */
-export function buildProviderEffortParams(snapshot: ProviderEffortSnapshot): Record<string, unknown> {
+export function buildProviderEffortParams(
+  snapshot: ProviderEffortSnapshot
+): Record<string, unknown> {
   if (
     !snapshot.resolved.supported ||
     snapshot.resolved.requested === 'auto' ||

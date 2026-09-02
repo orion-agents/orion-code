@@ -7,12 +7,7 @@
  * of provider quirks, so the root Agent only ever sees structured data.
  */
 
-import type {
-  SubagentRole,
-  SubtaskFinding,
-  SubtaskResult,
-  SubtaskResultStatus,
-} from './types';
+import type { SubagentRole, SubtaskFinding, SubtaskResult, SubtaskResultStatus } from './types';
 import { EMPTY_SUBTASK_USAGE } from './types';
 import { extractJsonObject } from '../../utils/json';
 
@@ -57,7 +52,10 @@ function parseFindings(raw: unknown): SubtaskFinding[] {
       severity: parseSeverity(obj.severity),
       evidence: str(obj.evidence, 1500),
       file: obj.file != null ? str(obj.file, 500) : undefined,
-      line: typeof obj.line === 'number' && Number.isFinite(obj.line) ? Math.max(0, Math.floor(obj.line)) : undefined,
+      line:
+        typeof obj.line === 'number' && Number.isFinite(obj.line)
+          ? Math.max(0, Math.floor(obj.line))
+          : undefined,
     });
     if (out.length >= MAX_FINDINGS) break;
   }
@@ -65,7 +63,13 @@ function parseFindings(raw: unknown): SubtaskFinding[] {
 }
 
 function parseSeverity(value: unknown): SubtaskFinding['severity'] {
-  if (value === 'critical' || value === 'high' || value === 'medium' || value === 'low' || value === 'info') {
+  if (
+    value === 'critical' ||
+    value === 'high' ||
+    value === 'medium' ||
+    value === 'low' ||
+    value === 'info'
+  ) {
     return value;
   }
   return undefined;
@@ -181,10 +185,15 @@ export function parseSubtaskResult(args: {
 function summarizeFailure(status: SubtaskResultStatus, content: string): string {
   const tail = truncate(content.trim(), 300);
   switch (status) {
-    case 'timed_out': return `Child timed out. Partial output: ${tail || '(none)'}`;
-    case 'cancelled': return `Child was cancelled. Partial output: ${tail || '(none)'}`;
-    case 'failed': return `Child failed. Output: ${tail || '(none)'}`;
-    case 'rejected': return `Child was rejected by policy before running.`;
-    default: return tail || '(no output)';
+    case 'timed_out':
+      return `Child timed out. Partial output: ${tail || '(none)'}`;
+    case 'cancelled':
+      return `Child was cancelled. Partial output: ${tail || '(none)'}`;
+    case 'failed':
+      return `Child failed. Output: ${tail || '(none)'}`;
+    case 'rejected':
+      return `Child was rejected by policy before running.`;
+    default:
+      return tail || '(no output)';
   }
 }

@@ -109,45 +109,52 @@ export async function verifyAwsCredentials(auth: AwsAuth): Promise<StsResult> {
   const credentialContext = resolveCredentialContext(auth);
   if (credentialContext.error) return { success: false, error: credentialContext.error };
   // 尝试调用 AWS CLI
-  return new Promise((resolve) => {
+  return new Promise(resolve => {
     const region = auth.region || 'us-east-1';
 
-    execFile('aws', [
-      'sts',
-      'get-caller-identity',
-      ...credentialContext.profileArgs,
-      '--region', region,
-      '--output', 'json',
-    ], {
-      timeout: 10000,
-      env: credentialContext.env,
-    }, (error, stdout, stderr) => {
-      if (error) {
-        resolve({
-          success: false,
-          error: stderr.toString() || error.message,
-        });
-        return;
-      }
-
-      try {
-        const result = JSON.parse(stdout.toString());
-        if (!result || typeof result.Arn !== 'string') {
-          resolve({ success: false, error: 'AWS identity response is missing Arn' });
+    execFile(
+      'aws',
+      [
+        'sts',
+        'get-caller-identity',
+        ...credentialContext.profileArgs,
+        '--region',
+        region,
+        '--output',
+        'json',
+      ],
+      {
+        timeout: 10000,
+        env: credentialContext.env,
+      },
+      (error, stdout, stderr) => {
+        if (error) {
+          resolve({
+            success: false,
+            error: stderr.toString() || error.message,
+          });
           return;
         }
-        resolve({
-          success: true,
-          // get-caller-identity 不返回凭证，仅验证身份
-          accessKeyId: result.Arn?.split(':')[4]?.split('/')[1],
-        });
-      } catch {
-        resolve({
-          success: false,
-          error: 'Failed to parse AWS response',
-        });
+
+        try {
+          const result = JSON.parse(stdout.toString());
+          if (!result || typeof result.Arn !== 'string') {
+            resolve({ success: false, error: 'AWS identity response is missing Arn' });
+            return;
+          }
+          resolve({
+            success: true,
+            // get-caller-identity 不返回凭证，仅验证身份
+            accessKeyId: result.Arn?.split(':')[4]?.split('/')[1],
+          });
+        } catch {
+          resolve({
+            success: false,
+            error: 'Failed to parse AWS response',
+          });
+        }
       }
-    });
+    );
   });
 }
 
@@ -161,38 +168,46 @@ export async function getStsToken(
   if (auth.roleArn) return assumeAwsRole(auth, auth.roleArn, durationSeconds);
   const credentialContext = resolveCredentialContext(auth);
   if (credentialContext.error) return { success: false, error: credentialContext.error };
-  return new Promise((resolve) => {
+  return new Promise(resolve => {
     const region = auth.region || 'us-east-1';
 
-    execFile('aws', [
-      'sts',
-      'get-session-token',
-      ...credentialContext.profileArgs,
-      '--region', region,
-      '--duration-seconds', String(durationSeconds),
-      '--output', 'json',
-    ], {
-      timeout: 15000,
-      env: credentialContext.env,
-    }, (error, stdout, stderr) => {
-      if (error) {
-        resolve({
-          success: false,
-          error: stderr.toString() || error.message,
-        });
-        return;
-      }
+    execFile(
+      'aws',
+      [
+        'sts',
+        'get-session-token',
+        ...credentialContext.profileArgs,
+        '--region',
+        region,
+        '--duration-seconds',
+        String(durationSeconds),
+        '--output',
+        'json',
+      ],
+      {
+        timeout: 15000,
+        env: credentialContext.env,
+      },
+      (error, stdout, stderr) => {
+        if (error) {
+          resolve({
+            success: false,
+            error: stderr.toString() || error.message,
+          });
+          return;
+        }
 
-      try {
-        const result = JSON.parse(stdout.toString());
-        resolve(credentialsFromResponse(result.Credentials));
-      } catch {
-        resolve({
-          success: false,
-          error: 'Failed to parse STS response',
-        });
+        try {
+          const result = JSON.parse(stdout.toString());
+          resolve(credentialsFromResponse(result.Credentials));
+        } catch {
+          resolve({
+            success: false,
+            error: 'Failed to parse STS response',
+          });
+        }
       }
-    });
+    );
   });
 }
 
@@ -210,31 +225,41 @@ export async function assumeAwsRole(
   const externalIdArgs = auth.externalId ? ['--external-id', auth.externalId] : [];
 
   return new Promise(resolve => {
-    execFile('aws', [
-      'sts',
-      'assume-role',
-      '--role-arn', roleArn,
-      '--role-session-name', sessionName,
-      ...externalIdArgs,
-      ...credentialContext.profileArgs,
-      '--region', region,
-      '--duration-seconds', String(durationSeconds),
-      '--output', 'json',
-    ], {
-      timeout: 15000,
-      env: credentialContext.env,
-    }, (error, stdout, stderr) => {
-      if (error) {
-        resolve({ success: false, error: stderr.toString() || error.message });
-        return;
+    execFile(
+      'aws',
+      [
+        'sts',
+        'assume-role',
+        '--role-arn',
+        roleArn,
+        '--role-session-name',
+        sessionName,
+        ...externalIdArgs,
+        ...credentialContext.profileArgs,
+        '--region',
+        region,
+        '--duration-seconds',
+        String(durationSeconds),
+        '--output',
+        'json',
+      ],
+      {
+        timeout: 15000,
+        env: credentialContext.env,
+      },
+      (error, stdout, stderr) => {
+        if (error) {
+          resolve({ success: false, error: stderr.toString() || error.message });
+          return;
+        }
+        try {
+          const result = JSON.parse(stdout.toString());
+          resolve(credentialsFromResponse(result.Credentials));
+        } catch {
+          resolve({ success: false, error: 'Failed to parse STS response' });
+        }
       }
-      try {
-        const result = JSON.parse(stdout.toString());
-        resolve(credentialsFromResponse(result.Credentials));
-      } catch {
-        resolve({ success: false, error: 'Failed to parse STS response' });
-      }
-    });
+    );
   });
 }
 
@@ -242,11 +267,16 @@ export async function assumeAwsRole(
  * 检测 AWS CLI 是否可用
  */
 export async function checkAwsCliAvailable(): Promise<boolean> {
-  return new Promise((resolve) => {
-    execFile('aws', ['--version'], {
-      timeout: 5000,
-    }, (error) => {
-      resolve(!error);
-    });
+  return new Promise(resolve => {
+    execFile(
+      'aws',
+      ['--version'],
+      {
+        timeout: 5000,
+      },
+      error => {
+        resolve(!error);
+      }
+    );
   });
 }

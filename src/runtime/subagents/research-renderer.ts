@@ -76,7 +76,10 @@ export type ResearchLifecycleSummary = Pick<
 export type ResearchRenderMode = 'tui' | 'terminal' | 'print' | 'json';
 
 /** Compute the canonical view once; all renderers project this. */
-export function buildResearchView(packet: ResearchPacket, resolution: CitationResolution): ResearchView {
+export function buildResearchView(
+  packet: ResearchPacket,
+  resolution: CitationResolution
+): ResearchView {
   const sources = packet.sources;
   const retrieved = sources.filter(s => s.status === 'retrieved').length;
   const partial = sources.filter(s => s.status === 'partial').length;
@@ -134,15 +137,18 @@ export function buildResearchView(packet: ResearchPacket, resolution: CitationRe
 function buildConclusion(
   packet: ResearchPacket,
   resolution: CitationResolution,
-  counts: { retrieved: number; failed: number; blocked: number },
+  counts: { retrieved: number; failed: number; blocked: number }
 ): string {
   const unverified = resolution.audit.unverifiedClaimIds.length;
   if (resolution.audit.status === 'met') {
     return `Research complete: ${resolution.evidenceCandidates.length} evidence candidate(s) from ${counts.retrieved} verified source(s).`;
   }
   const parts: string[] = [];
-  parts.push(`Research ${resolution.audit.status}: ${resolution.evidenceCandidates.length} evidence candidate(s)`);
-  if (counts.failed + counts.blocked > 0) parts.push(`${counts.failed + counts.blocked} source(s) failed/blocked`);
+  parts.push(
+    `Research ${resolution.audit.status}: ${resolution.evidenceCandidates.length} evidence candidate(s)`
+  );
+  if (counts.failed + counts.blocked > 0)
+    parts.push(`${counts.failed + counts.blocked} source(s) failed/blocked`);
   if (resolution.conflicts.length > 0) parts.push(`${resolution.conflicts.length} conflict(s)`);
   if (unverified > 0) parts.push(`${unverified} claim(s) without independent verification`);
   return parts.join('; ') + '.';
@@ -194,7 +200,9 @@ function renderTerminal(view: ResearchView): string {
 
 function renderPrint(view: ResearchView): string {
   // Stable schema text (not raw concatenated claim text).
-  const claims = view.claims.map(c => `  - ${c.id}: ${c.verification} (${c.bindingStatus})`).join('\n');
+  const claims = view.claims
+    .map(c => `  - ${c.id}: ${c.verification} (${c.bindingStatus})`)
+    .join('\n');
   return [
     `# Research: ${view.objective}`,
     `Status: ${view.stage} | Audit: ${view.auditStatus}`,
@@ -235,9 +243,17 @@ export type ResearchLifecycleEvent =
       summary?: ResearchLifecycleSummary;
     };
 
-export function toLifecycleEvents(view: ResearchView, resolution?: CitationResolution): ResearchLifecycleEvent[] {
+export function toLifecycleEvents(
+  view: ResearchView,
+  resolution?: CitationResolution
+): ResearchLifecycleEvent[] {
   const events: ResearchLifecycleEvent[] = [
-    { type: 'research_started', packetId: view.packetId, objective: view.objective, mode: view.mode },
+    {
+      type: 'research_started',
+      packetId: view.packetId,
+      objective: view.objective,
+      mode: view.mode,
+    },
   ];
   for (const s of view.sources) {
     events.push({
