@@ -2,11 +2,15 @@
 
 Local-first, goal-driven coding agent for the terminal and browser.
 
-> v0.3.3 candidate — a bounded multi-Session Web Workbench, the built-in Orion Blocksmith theme
-> and the existing single-Session TUI/terminal surfaces. Candidate source is not an npm publication,
-> Git tag, or merge-ready release.
+> v0.3.4 candidate — a compatible security, terminal-ordering and release-evidence stabilization of
+> the v0.3.3 multi-Session Web Workbench. Candidate source is not an npm publication, Git tag, or
+> merge-ready release.
 
 [中文说明](README.zh-CN.md) ·
+[v0.3.4 stabilization plan](docs/plan/v0.3.4-stabilization-plan.md) ·
+[v0.3.4 contract](docs/architecture/v0.3.4-stabilization-contract.md) ·
+[v0.3.4 E2E plan](docs/test/v0.3.4-stabilization-e2e-plan.md) ·
+[v0.3.4 migration](docs/migration/v0.3.3-to-v0.3.4.md) ·
 [v0.3.3 plan](docs/plan/v0.3.3-plan.md) ·
 [v0.3.3 Web API](docs/architecture/v0.3.3-web-api.yaml) ·
 [mode/permission contract](docs/architecture/agent-mode-permission-contract.md) ·
@@ -19,6 +23,23 @@ Local-first, goal-driven coding agent for the terminal and browser.
 [Migration guide](docs/migration/v0.2.2-to-v0.3.0.md) ·
 [Settings migration](docs/migration/v0.2.2-to-v0.3.0-settings.md) ·
 [real-state gallery](docs/assets/screenshots/v0.3.0-web/README.md)
+
+## What v0.3.4 stabilizes
+
+- **Context-bound writes.** Settings mutations now carry the active Workspace and Context revision;
+  stale tabs fail with no write or Runtime apply. Blank Session renames and busy slash commands also
+  fail without corrupting durable or active-turn state.
+- **One sensitive-data boundary.** Structured credentials, URL userinfo, canonical file targets,
+  Git diff paths, tool artifacts and concurrent command output are checked and redacted before they
+  reach browser or evidence surfaces.
+- **Deterministic Terminal transport.** Split surrogate pairs, browser write backpressure and
+  reconnect races preserve complete Unicode and the required replay, live-tail, exit and close
+  order.
+- **Honest durable/read projections.** Tool receipt and journal facts must validate as a pair;
+  symbolic links expose an effective target kind without losing lexical identity, and Review
+  distinguishes total changed files from its bounded visible page.
+- **Fail-closed release proof.** Failed live canaries, duplicate runtime evidence and lifecycle
+  scripts hidden inside a supposedly safe package-install stage are release blockers.
 
 ## What v0.3.3 includes
 
@@ -92,10 +113,10 @@ user extension boundaries.
 Node.js 22.12+, 24, and 26 are supported. Use Node 24 LTS for production or Node 26 Current for
 current development environments. Node 20 is upstream EOL and is no longer a v0.3 runtime.
 
-After the immutable `0.3.3` npm receipt exists:
+After the immutable `0.3.4` npm receipt exists:
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.3
+npm install -g @orion-agents/orion-code@0.3.4
 orion --version
 orion doctor
 ```
@@ -285,7 +306,10 @@ Node 22/24/26 for package identity, native SQLite, TUI, terminal, print, Web, Go
 MCP, Compact, and resume journeys. WEB33-P0-01..12 qualify the built-in appearance contract, while
 WEB33-P0-16..24 qualify parallel Session actors, foreground-local switching, bounded queues, the
 right rail and the single Settings entry. See the [`v0.3.3 plan`](docs/plan/v0.3.3-plan.md) and
-[`v0.3.3 E2E qualification plan`](docs/test/v0.3.3-web-workbench-e2e-plan.md).
+[`v0.3.3 E2E qualification plan`](docs/test/v0.3.3-web-workbench-e2e-plan.md). The security and
+stabilization delta is defined by the
+[`v0.3.4 test plan`](docs/test/v0.3.4-stabilization-e2e-plan.md), which does not treat source gates
+as release evidence.
 
 ## Security
 

@@ -55,4 +55,25 @@ describe('redaction: non-Bearer Authorization schemes (issue #37 item 1)', () =>
     expect(out).toContain('[REDACTED_SECRET]');
     expect(out).not.toContain('dXNlcjpwYXNz');
   });
+
+  it('redacts complete URL userinfo before token-shaped password fragments', () => {
+    const marker = 'synthetic-tail';
+    const out = redactTraceText(`https://demo-user:token:${marker}@example.invalid/v1`);
+
+    expect(out).toBe('https://[REDACTED_CREDENTIAL]@example.invalid/v1');
+    expect(out).not.toContain('demo-user');
+    expect(out).not.toContain(marker);
+  });
+
+  it('redacts sensitive JSON keys with vendor or header prefixes', () => {
+    const marker = 'SYNTHETIC_X_CLIENT_SECRET_9f4d2c8a';
+    const out = redactTraceText(
+      JSON.stringify({ 'x-client-secret': marker, safe: 'visible', nestedToken: marker })
+    );
+
+    expect(out).not.toContain(marker);
+    expect(out).toContain('"x-client-secret":"[REDACTED_SECRET]"');
+    expect(out).toContain('"nestedToken":"[REDACTED_SECRET]"');
+    expect(out).toContain('"safe":"visible"');
+  });
 });

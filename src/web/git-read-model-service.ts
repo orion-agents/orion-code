@@ -3,7 +3,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from 'crypto';
 import { lstatSync, realpathSync, statSync } from 'fs';
 import { basename, isAbsolute, relative, resolve, sep } from 'path';
 
-import { redactTraceText } from '../services/redaction';
+import { isSensitiveFilePath, redactTraceText } from '../services/redaction';
 import { WebWorkbenchError } from './errors';
 
 const GIT_TIMEOUT_MS = 5_000;
@@ -252,6 +252,13 @@ export class GitReadModelServiceV1 {
     const record = snapshot.records.find(candidate => candidate.path === path);
     if (!record) {
       throw new WebWorkbenchError(409, 'Git file changed before diff.', 'git_revision_conflict');
+    }
+    if (isSensitiveGitRecord(record)) {
+      throw new WebWorkbenchError(
+        403,
+        'Sensitive file content is not available in the Web Workbench.',
+        'sensitive_file_blocked'
+      );
     }
     const lineLimit = boundedInteger(
       input.lineLimit ?? DEFAULT_DIFF_LINES,
@@ -627,6 +634,13 @@ function isConflictRecord(record: GitStatusRecord): boolean {
     record.worktreeStatus === 'U' ||
     `${record.indexStatus}${record.worktreeStatus}` === 'AA' ||
     `${record.indexStatus}${record.worktreeStatus}` === 'DD'
+  );
+}
+
+function isSensitiveGitRecord(record: GitStatusRecord): boolean {
+  return (
+    isSensitiveFilePath(record.path) ||
+    (record.renamedFrom !== undefined && isSensitiveFilePath(record.renamedFrom))
   );
 }
 

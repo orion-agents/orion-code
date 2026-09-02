@@ -158,25 +158,94 @@ describe('FileReadServiceV1', () => {
     expect(text.content).not.toContain('OPAQUE_FILE_SECRET');
   });
 
+  test('classifies binary data that appears after the initial 8 KiB sample', () => {
+    writeFileSync(
+      join(workspace, 'late-nul.txt'),
+      Buffer.concat([Buffer.alloc(8192, 0x41), Buffer.from([0]), Buffer.from('after-nul\n')])
+    );
+    const service = new FileReadServiceV1(workspace);
+    const file = service.list().items.find(item => item.name === 'late-nul.txt')!;
+
+    const page = service.readContent({ fileId: file.id, limitBytes: 16 * 1024 });
+
+    expect(page).toMatchObject({
+      binary: true,
+      mediaType: 'application/octet-stream',
+      nextCursor: null,
+    });
+    expect(page).not.toHaveProperty('content');
+  });
+
+  test('fails closed when a later cursor page contains binary data', () => {
+    writeFileSync(
+      join(workspace, 'paged-binary.txt'),
+      Buffer.concat([Buffer.alloc(8191, 0x41), Buffer.from('\n'), Buffer.from([0, 1, 2, 3])])
+    );
+    const service = new FileReadServiceV1(workspace);
+    const file = service.list().items.find(item => item.name === 'paged-binary.txt')!;
+    const first = service.readContent({ fileId: file.id, limitBytes: 8192 });
+
+    expect(first.binary).toBe(false);
+    expect(first.nextCursor).toEqual(expect.any(String));
+    const second = service.readContent({
+      fileId: file.id,
+      cursor: first.nextCursor ?? undefined,
+      limitBytes: 8192,
+    });
+    expect(second).toMatchObject({
+      binary: true,
+      offsetBytes: 8192,
+      nextCursor: null,
+    });
+    expect(second).not.toHaveProperty('content');
+  });
+
   test('allows contained symlinks and fails closed for outside targets and forged ids', () => {
     const outside = join(root, 'outside.txt');
     writeFileSync(outside, 'outside secret');
     writeFileSync(join(workspace, 'inside.txt'), 'inside');
+    mkdirSync(join(workspace, 'inside-directory'));
+    writeFileSync(join(workspace, 'inside-directory', 'child.txt'), 'child');
     symlinkSync(join(workspace, 'inside.txt'), join(workspace, 'inside-link'));
+    symlinkSync(join(workspace, 'inside-directory'), join(workspace, 'directory-link'));
     symlinkSync(outside, join(workspace, 'outside-link'));
     const service = new FileReadServiceV1(workspace);
     const items = service.list().items;
     const inside = items.find(item => item.name === 'inside-link')!;
+    const directory = items.find(item => item.name === 'directory-link')!;
     const escaped = items.find(item => item.name === 'outside-link')!;
 
-    expect(inside).toMatchObject({ kind: 'symlink', readable: true });
+    expect(inside).toMatchObject({ kind: 'symlink', targetKind: 'file', readable: true });
     expect(service.readContent({ fileId: inside.id }).content).toBe('inside');
+    expect(directory).toMatchObject({
+      kind: 'symlink',
+      targetKind: 'directory',
+      readable: true,
+    });
+    expect(service.list({ parentId: directory.id }).items).toEqual([
+      expect.objectContaining({ name: 'child.txt', kind: 'file' }),
+    ]);
     expect(escaped).toMatchObject({ kind: 'symlink', readable: false });
     expect(() => service.readContent({ fileId: escaped.id })).toThrow(
       expect.objectContaining({ status: 403, code: 'file_outside_workspace' })
     );
     expect(() => service.readContent({ fileId: 'file_forged' })).toThrow(
       expect.objectContaining({ status: 404, code: 'file_not_found' })
+    );
+  });
+
+  test('blocks an innocuous internal symlink alias whose canonical target is sensitive', () => {
+    const marker = 'SYNTHETIC_CANONICAL_FILE_MARKER_7c39a2';
+    writeFileSync(join(workspace, '.env'), marker);
+    symlinkSync(join(workspace, '.env'), join(workspace, 'notes-link'));
+    const service = new FileReadServiceV1(workspace);
+
+    const link = service.list().items.find(item => item.name === 'notes-link')!;
+
+    expect(link).toMatchObject({ kind: 'symlink', readable: true, sensitive: true });
+    expect(JSON.stringify(link)).not.toContain(marker);
+    expect(() => service.readContent({ fileId: link.id })).toThrow(
+      expect.objectContaining({ status: 403, code: 'sensitive_file_blocked' })
     );
   });
 

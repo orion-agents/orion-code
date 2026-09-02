@@ -746,7 +746,8 @@ paths:
       operationId: updateSettings
       description: >-
         Atomically apply one bounded batch only when `expectedRevision` equals the keyed revision of
-        the exact current orion.json bytes. Duplicate keys and partial commits are rejected.
+        the exact current orion.json bytes and the supplied Workspace Context guard still matches.
+        Duplicate keys, stale tabs and partial commits are rejected with zero side effects.
       security: [{ webNonce: [] }]
       requestBody:
         required: true
@@ -1220,6 +1221,10 @@ components:
           minLength: 1
           description: Sanitized workspace-relative display metadata; requests still use opaque id.
         kind: { type: string, enum: [file, directory, symlink] }
+        targetKind:
+          type: string
+          enum: [file, directory]
+          description: Effective target kind when a readable node is a symbolic link.
         sizeBytes: { type: integer, minimum: 0 }
         modifiedAt: { type: string, format: date-time }
         sensitive: { type: boolean }
@@ -1397,6 +1402,7 @@ components:
         - isRepository
         - clean
         - changedFiles
+        - totalChangedFiles
         - stagedCount
         - unstagedCount
         - untrackedCount
@@ -1409,6 +1415,7 @@ components:
         isRepository: { type: boolean }
         clean: { type: boolean }
         changedFiles: { $ref: '#/components/schemas/GitFileList' }
+        totalChangedFiles: { type: integer, minimum: 0 }
         stagedCount: { type: integer, minimum: 0 }
         unstagedCount: { type: integer, minimum: 0 }
         untrackedCount: { type: integer, minimum: 0 }
@@ -2440,9 +2447,11 @@ components:
     UpdateSettingsRequest:
       type: object
       additionalProperties: false
-      required: [requestId, expectedRevision, operations]
+      required: [requestId, workspaceId, expectedContextRevision, expectedRevision, operations]
       properties:
         requestId: { $ref: '#/components/schemas/RequestId' }
+        workspaceId: { type: string, format: uuid }
+        expectedContextRevision: { $ref: '#/components/schemas/ContextRevision' }
         expectedRevision: { $ref: '#/components/schemas/SettingsRevision' }
         operations:
           type: array

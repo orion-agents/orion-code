@@ -488,7 +488,16 @@ export class ThreadUiAdapterV1 implements AgentRuntimeRunnerV1 {
     if (isToolItem(presentation.kind)) {
       const durableReceiptFact = this.toolReceiptFacts.get(presentation.itemId);
       let receipt: ToolInvocationReceiptV1 | undefined;
-      if (terminal.receipt && durableReceiptFact) {
+      const hasTerminalReceipt = terminal.receipt !== undefined;
+      const hasDurableReceiptFact = durableReceiptFact !== undefined;
+      if (hasTerminalReceipt !== hasDurableReceiptFact) {
+        throw new ThreadUiAdapterError(
+          hasTerminalReceipt
+            ? `Tool item ${presentation.itemId} has a canonical receipt without its durable receipt fact.`
+            : `Tool item ${presentation.itemId} has a durable receipt fact without its canonical terminal receipt.`
+        );
+      }
+      if (hasTerminalReceipt && durableReceiptFact) {
         try {
           receipt = validateDurableToolInvocationReceiptV1({
             terminalEvent: event,

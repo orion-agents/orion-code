@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -13,6 +13,7 @@ import { materializeLegacyThreadV1 } from '../src/runtime/legacy-thread-material
 import { ThreadEventStore } from '../src/runtime/thread-event-store';
 import { loadThreadSessionViewV1 } from '../src/runtime/thread-session-view';
 import { createContextUsageSnapshot } from '../src/services/model-context';
+import { buildRegistry } from '../src/services/model-registry';
 import { WebEventHub } from '../src/web/event-hub';
 import {
   pageCollectionItems,
@@ -311,6 +312,48 @@ describe('WebWorkbenchController', () => {
     await controller.shutdown();
   });
 
+  test('routes a running Session submit to steering without admitting another turn', async () => {
+    let releaseTurn!: () => void;
+    const activeTurn = new Promise<void>(resolve => {
+      releaseTurn = resolve;
+    });
+    const runInput = jest.fn(() => activeTurn);
+    const actorRuntime = createFakeWebRuntime(workspace);
+    actorRuntime.createAgentRunner = () => ({ runInput });
+    const controller = await WebWorkbenchController.create({
+      cwd: workspace,
+      createRuntime: async () => createFakeWebRuntime(workspace),
+      createSessionRuntime: async () => actorRuntime,
+    });
+    const session = await controller.createSession('steering target');
+
+    const started = await controller.dispatch({
+      requestId: randomUUID(),
+      ...sessionCommandTarget(controller, session.id),
+      type: 'submit',
+      text: 'hold the active turn',
+    });
+    expect(started).toMatchObject({ result: 'started', sessionRuntime: { phase: 'running' } });
+
+    const steered = await controller.dispatch({
+      requestId: randomUUID(),
+      ...sessionCommandTarget(controller, session.id),
+      type: 'submit',
+      text: 'revise the active turn',
+    });
+
+    expect(steered).toMatchObject({
+      result: 'revision_requested',
+      sessionRuntime: { phase: 'running' },
+    });
+    expect(runInput).toHaveBeenCalledTimes(1);
+    expect(controller.sessionRuntimeSummary(session.id).phase).toBe('running');
+
+    releaseTurn();
+    await controller.waitForSessionIdle(session.id);
+    await controller.shutdown();
+  });
+
   test('exposes the fourth Session turn as a cancellable FIFO admission', async () => {
     const releases: Array<() => void> = [];
     const actorRuntimes = Array.from({ length: 4 }, () => {
@@ -379,6 +422,7 @@ describe('WebWorkbenchController', () => {
     const before = controller.settings();
     const after = await controller.updateSettings({
       requestId: '7f88f043-4f90-4eca-8d35-224a6123cda2',
+      ...settingsContext(controller),
       expectedRevision: before.revision,
       operations: [{ op: 'set', key: 'permissions.toolConfirmation', value: 'deny' }],
     });
@@ -389,6 +433,7 @@ describe('WebWorkbenchController', () => {
     await expect(
       controller.updateSettings({
         requestId: 'b4c1ae96-4ef6-49d6-9998-52ed314cc503',
+        ...settingsContext(controller),
         expectedRevision: before.revision,
         operations: [{ op: 'set', key: 'permissions.toolConfirmation', value: 'allow' }],
       })
@@ -406,6 +451,7 @@ describe('WebWorkbenchController', () => {
 
     const changed = await controller.updateSettings({
       requestId: '85ca501f-3d3f-431a-a4c8-fbd26df5872f',
+      ...settingsContext(controller),
       expectedRevision: before.revision,
       operations: [{ op: 'set', key: 'defaults.model', value: 'next-model' }],
     });
@@ -416,6 +462,42 @@ describe('WebWorkbenchController', () => {
 
     const second = await controller.createSession('second');
     expect(loadSessionMeta(second.id)?.model).toBe('next-model');
+    await controller.shutdown();
+  });
+
+  test('rejects a delayed Settings write after the active workspace changes', async () => {
+    const secondary = join(workspace, 'secondary');
+    mkdirSync(secondary);
+    const updates = new Map<string, jest.Mock>();
+    const controller = await WebWorkbenchController.create({
+      cwd: workspace,
+      createRuntime: async cwd => {
+        const runtime = createFakeWebRuntime(cwd);
+        const update = jest.fn(runtime.updateSettings);
+        runtime.updateSettings = update;
+        updates.set(cwd, update);
+        return runtime;
+      },
+    });
+    const before = controller.settings();
+    const initialWorkspace = controller.workspace;
+    const staleContext = settingsContext(controller);
+
+    await controller.switchWorkspace(secondary, staleContext);
+    const targetWorkspace = controller.workspace;
+    expect(targetWorkspace).not.toBe(initialWorkspace);
+    await expect(
+      controller.updateSettings({
+        requestId: randomUUID(),
+        ...staleContext,
+        expectedRevision: before.revision,
+        operations: [{ op: 'set', key: 'defaults.effort', value: 'high' }],
+      })
+    ).rejects.toMatchObject({ status: 409, code: 'context_revision_conflict' });
+
+    expect(updates.get(initialWorkspace)).toHaveBeenCalledTimes(0);
+    expect(updates.get(targetWorkspace)).toHaveBeenCalledTimes(0);
+    expect(controller.settings().sections.defaults.effort.explicitValue).toBeUndefined();
     await controller.shutdown();
   });
 
@@ -473,6 +555,132 @@ describe('WebWorkbenchController', () => {
         mode: 'interactive',
       })
     ).rejects.toMatchObject({ status: 409, code: 'composer_control_conflict' });
+    await controller.shutdown();
+  });
+
+  test('projects canonical Session preferences after cold and resident Composer actions', async () => {
+    const actorRuntime = createFakeWebRuntime(workspace);
+    const built = buildRegistry({
+      providers: [
+        {
+          id: 'test',
+          baseUrl: 'https://example.invalid/v1',
+          apiKey: 'test-key',
+          protocol: 'openai-completions',
+        },
+      ],
+      models: [
+        {
+          id: 'test-model',
+          provider: 'test',
+          model: 'test-model',
+          reasoningCapability: {
+            kind: 'effort-level',
+            supportedLevels: ['low', 'high'],
+            defaultLevel: 'low',
+            adapter: 'openai-chat-reasoning-effort',
+            source: 'config',
+          },
+        },
+        {
+          id: 'next-model',
+          provider: 'test',
+          model: 'next-model',
+          reasoningCapability: {
+            kind: 'effort-level',
+            supportedLevels: ['low', 'high'],
+            defaultLevel: 'low',
+            adapter: 'openai-chat-reasoning-effort',
+            source: 'config',
+          },
+        },
+      ],
+      defaultModel: 'test-model',
+    });
+    if (!built.registry) throw new Error('Composer model registry fixture failed.');
+    actorRuntime.config.modelRegistry = built.registry;
+    const eventHub = new WebEventHub();
+    const emit = jest.spyOn(eventHub, 'emit');
+    const controller = await WebWorkbenchController.create({
+      cwd: workspace,
+      eventHub,
+      createRuntime: async cwd => createFakeWebRuntime(cwd),
+      createSessionRuntime: async () => actorRuntime,
+    });
+    const session = await controller.createSession('canonical Composer Session');
+    const baseline = controller.bootstrap('canonical-composer');
+    const guard = {
+      workspaceId: baseline.workspaceId,
+      expectedContextRevision: baseline.contextRevision,
+    };
+    const cold = controller.composerState(session.id, guard);
+    expect(cold.sessionRuntime).toMatchObject({ phase: 'cold', resident: false });
+
+    const selected = await controller.applyComposerAction({
+      requestId: randomUUID(),
+      ...guard,
+      expectedSessionId: session.id,
+      expectedSessionRuntimeRevision: cold.sessionRuntime.runtimeRevision,
+      expectedControlRevision: cold.controlRevision,
+      type: 'select_model',
+      modelId: 'next-model',
+      effort: 'high',
+    });
+
+    expect(selected).toMatchObject({
+      outcome: 'applied',
+      state: {
+        sessionId: session.id,
+        sessionRuntime: { resident: true },
+        model: {
+          modelId: 'next-model',
+          effort: { requested: 'high', effective: 'high' },
+        },
+      },
+    });
+    expect(loadSessionMeta(session.id)).toMatchObject({
+      model: 'next-model',
+      effortPreference: 'high',
+    });
+
+    const permission = await controller.applyComposerAction({
+      requestId: randomUUID(),
+      ...guard,
+      expectedSessionId: session.id,
+      expectedSessionRuntimeRevision: selected.state.sessionRuntime.runtimeRevision,
+      expectedControlRevision: selected.state.controlRevision,
+      type: 'set_permission_override',
+      value: 'allow',
+    });
+
+    expect(permission.state).toMatchObject({
+      model: {
+        modelId: 'next-model',
+        effort: { requested: 'high', effective: 'high' },
+      },
+      permission: { effective: 'allow', override: 'allow', source: 'session' },
+    });
+    expect(loadSessionMeta(session.id)).toMatchObject({
+      model: 'next-model',
+      effortPreference: 'high',
+      toolConfirmationOverride: 'allow',
+    });
+    expect(controller.composerState(session.id, guard)).toMatchObject({
+      controlRevision: permission.state.controlRevision,
+      model: {
+        modelId: 'next-model',
+        effort: { requested: 'high', effective: 'high' },
+      },
+      permission: { effective: 'allow', override: 'allow', source: 'session' },
+    });
+    const latestComposerEvent = emit.mock.calls
+      .map(call => call[0])
+      .filter(event => event.type === 'composer_state_changed')
+      .at(-1);
+    expect(latestComposerEvent).toEqual({
+      type: 'composer_state_changed',
+      state: permission.state,
+    });
     await controller.shutdown();
   });
 
@@ -1015,6 +1223,14 @@ function sessionCommandTarget(controller: WebWorkbenchController, sessionId: str
     expectedContextRevision: bootstrap.contextRevision,
     expectedSessionId: sessionId,
     expectedSessionRuntimeRevision: controller.sessionRuntimeSummary(sessionId).runtimeRevision,
+  } as const;
+}
+
+function settingsContext(controller: WebWorkbenchController) {
+  const bootstrap = controller.bootstrap('settings-context');
+  return {
+    workspaceId: bootstrap.workspaceId,
+    expectedContextRevision: bootstrap.contextRevision,
   } as const;
 }
 

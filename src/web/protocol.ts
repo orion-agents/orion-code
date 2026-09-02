@@ -145,6 +145,8 @@ export type WebSettingsOperationV1 =
 
 export interface WebSettingsUpdateRequestV1 {
   readonly requestId: string;
+  readonly workspaceId: string;
+  readonly expectedContextRevision: string;
   readonly expectedRevision: string;
   readonly operations: readonly WebSettingsOperationV1[];
 }
@@ -884,12 +886,21 @@ export function parseWebComposerAction(value: unknown): WebComposerActionV1 {
 
 function parseWebSettingsUpdateValue(value: unknown): WebSettingsUpdateRequestV1 {
   const row = requireRecord(value, 'Settings request');
-  assertOnlyKeys(row, ['requestId', 'expectedRevision', 'operations'], 'settings');
+  assertOnlyKeys(
+    row,
+    ['requestId', 'workspaceId', 'expectedContextRevision', 'expectedRevision', 'operations'],
+    'settings'
+  );
   if (Buffer.byteLength(JSON.stringify(row), 'utf8') > SETTINGS_MAX_BODY_BYTES) {
     throw new WebProtocolError(`Settings request exceeds ${SETTINGS_MAX_BODY_BYTES} bytes`);
   }
   const requestId = requireBoundedString(row.requestId, 'requestId', 128);
   if (!UUID_PATTERN.test(requestId)) throw new WebProtocolError('requestId must be a UUID');
+  const workspaceId = requireUuidString(row.workspaceId, 'workspaceId');
+  const expectedContextRevision = requireUuidString(
+    row.expectedContextRevision,
+    'expectedContextRevision'
+  );
   const expectedRevision = requireBoundedString(row.expectedRevision, 'expectedRevision', 128);
   if (!SETTINGS_REVISION_PATTERN.test(expectedRevision)) {
     throw new WebProtocolError('expectedRevision is not a valid Settings revision');
@@ -914,6 +925,8 @@ function parseWebSettingsUpdateValue(value: unknown): WebSettingsUpdateRequestV1
   });
   return Object.freeze({
     requestId,
+    workspaceId,
+    expectedContextRevision,
     expectedRevision,
     operations: Object.freeze(operations),
   });

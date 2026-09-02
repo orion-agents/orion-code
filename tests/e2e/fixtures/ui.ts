@@ -168,6 +168,7 @@ export async function openSessionNavigation(
   options: UiOperationOptions = {}
 ): Promise<Locator> {
   const ui = workbenchUi(page);
+  const railSurface = page.locator('#workspace-rail');
   // Let the ResizeObserver-driven column solver commit after a viewport change.
   // Otherwise a stale desktop rail can appear visible for one frame while the
   // shell is already transitioning to the modal drawer contract.
@@ -182,22 +183,20 @@ export async function openSessionNavigation(
     element.classList.contains('project-navigation-drawer')
   );
   if (drawerMode) {
-    if (!(await ui.workspaceRail.evaluate(element => element.classList.contains('drawer-open')))) {
+    if (!(await railSurface.evaluate(element => element.classList.contains('drawer-open')))) {
       await ui.navigationButton.click();
       await expect(ui.navigationButton).toHaveAttribute('aria-expanded', 'true', {
         timeout: options.timeout,
       });
     }
   } else if (
-    await ui.workspaceRail.evaluate(element =>
-      element.classList.contains('project-navigator-collapsed')
-    )
+    await railSurface.evaluate(element => element.classList.contains('project-navigator-collapsed'))
   ) {
-    await ui.workspaceRail.getByRole('button', { name: '展开项目导航', exact: true }).click();
-    await expect(ui.workspaceRail).not.toHaveClass(/project-navigator-collapsed/u, {
+    await railSurface.getByRole('button', { name: '展开项目导航', exact: true }).click();
+    await expect(railSurface).not.toHaveClass(/project-navigator-collapsed/u, {
       timeout: options.timeout,
     });
-  } else if (!(await ui.workspaceRail.isVisible())) {
+  } else if (!(await railSurface.isVisible())) {
     await ui.navigationButton.click();
     await expect(ui.navigationButton).toHaveAttribute('aria-expanded', 'true', {
       timeout: options.timeout,
@@ -396,10 +395,17 @@ export async function renameActiveSession(
   await activeRow.hover();
   await expect(renameButton).toBeVisible({ timeout: options.timeout });
   await expect(renameButton).toBeEnabled({ timeout: options.timeout });
+  const previousName = await activeRow.locator('.project-session-main strong').innerText();
   await renameButton.focus();
   await renameButton.press('Enter');
   await expect(ui.renameDialog).toBeVisible({ timeout: options.timeout });
-  await ui.renameDialog.getByRole('textbox', { name: '会话名称' }).fill(nextName);
+  const nameInput = ui.renameDialog.getByRole('textbox', { name: '会话名称' });
+  // The controlled dialog initializes its draft in an effect. Waiting for that
+  // value prevents a fast browser from racing fill() against the initialization
+  // and appending the new name to the generated Session title.
+  await expect(nameInput).toHaveValue(previousName, { timeout: options.timeout });
+  await nameInput.fill(nextName);
+  await expect(nameInput).toHaveValue(nextName, { timeout: options.timeout });
   await ui.renameDialog.getByRole('button', { name: '保存', exact: true }).click();
   await expect(ui.renameDialog).toBeHidden({ timeout: options.timeout });
   await expect(

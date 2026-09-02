@@ -13,7 +13,12 @@ import type {
   WebSessionSnapshotV1,
 } from '../../src/web/protocol';
 import { digestRuntimeValue } from '../../src/runtime/protocol/canonical';
-import { activeSessionSnapshot, webBootstrap } from './fixtures/api';
+import {
+  activeSessionSnapshot,
+  foregroundSessionId,
+  sessionSnapshot,
+  webBootstrap,
+} from './fixtures/api';
 import { OPENAI_FIXTURE_MARKERS, OPENAI_FIXTURE_PROMPTS } from './fixtures/openai-provider';
 import { startOrionHost } from './fixtures/orion-host';
 import {
@@ -108,7 +113,8 @@ test('WEB32-P0-08 structured Context references are exact, removable, stale-safe
   });
   const resolvedRequest = await provider.waitForRequest(
     request =>
-      request.sequence > providerSequence && request.lastUserText.includes('context-manifest')
+      request.sequence > providerSequence && request.lastUserText.includes('context-manifest'),
+    45_000
   );
   const manifest = parseContextManifest(resolvedRequest.lastUserText);
   expect(manifest.manifestDigest).toBe(command.contextReceipt?.manifestDigest);
@@ -142,6 +148,8 @@ test('WEB32-P0-08 structured Context references are exact, removable, stale-safe
   expect(provider.requests).toHaveLength(requestsBeforeStale);
 
   const current = await webBootstrap(page);
+  const currentSessionId = await foregroundSessionId(page, current.workspaceId);
+  const currentSnapshot = await sessionSnapshot(page, currentSessionId);
   const rootFiles = await hostGuardedGet<WebFileTreePageV1>(host.url, '/api/v1/files', current, {
     pageSize: '100',
   });
@@ -149,7 +157,10 @@ test('WEB32-P0-08 structured Context references are exact, removable, stale-safe
   expect(sensitive).toBeDefined();
   const forbidden = await hostCommand(host.url, current, {
     requestId: randomUUID(),
-    expectedSessionId: current.activeSessionId,
+    workspaceId: current.workspaceId,
+    expectedContextRevision: current.contextRevision,
+    expectedSessionId: currentSessionId,
+    expectedSessionRuntimeRevision: currentSnapshot.sessionRuntime.runtimeRevision,
     type: 'submit',
     text: 'fixture:forbidden-context must not reach the provider',
     contextReferences: [
@@ -210,7 +221,7 @@ test('WEB32-P0-09 durable Plan review blocks execution and resolves approve, con
     await page.goto(replacement.url, { waitUntil: 'domcontentloaded' });
     await waitForWorkbenchReady(page, { timeout: 30_000 });
     await activateSessionByName(page, 'WEB32 Plan approve', awaitingApprove.session.id);
-    const recovered = await activeSessionSnapshot(page);
+    const recovered = await sessionSnapshot(page, awaitingApprove.session.id);
     expect(recovered.session.id).toBe(awaitingApprove.session.id);
     expect(recovered.composer.planReview).toMatchObject({
       planDigest: awaitingApprove.composer.planReview!.planDigest,
@@ -225,12 +236,18 @@ test('WEB32-P0-09 durable Plan review blocks execution and resolves approve, con
     evidence.recordFact('screenshot.plan-review', basename(screenshotName));
 
     const active = await webBootstrap(page);
-    const composer = await hostComposerState(replacement.url, active);
-    const stale = await hostComposerAction(replacement.url, active, composer, {
-      type: 'review_plan',
-      planDigest: '0'.repeat(64),
-      action: 'approve',
-    });
+    const composer = await hostComposerState(replacement.url, active, awaitingApprove.session.id);
+    const stale = await hostComposerAction(
+      replacement.url,
+      active,
+      awaitingApprove.session.id,
+      composer,
+      {
+        type: 'review_plan',
+        planDigest: '0'.repeat(64),
+        action: 'approve',
+      }
+    );
     expect(stale.status).toBe(409);
     expect(problemCode(stale.body)).toBe('plan_review_stale');
 
@@ -314,6 +331,7 @@ test('WEB32-P0-10 queued follow-ups support exact edits and Steer while drafts r
   testInfo.setTimeout(180_000);
   const finishSseTransitionEvidence = observeSessionSseTransitions(page);
   await createSession(page, { name: 'WEB32 Queue controls' });
+  const queueSessionId = await foregroundSessionId(page);
   await submitPrompt(page, OPENAI_FIXTURE_PROMPTS.pending);
   await waitForApproval(page, 'write_file', { timeout: 45_000 });
 
@@ -353,22 +371,23 @@ test('WEB32-P0-10 queued follow-ups support exact edits and Steer while drafts r
   evidence.recordFact('screenshot.queue-editor', basename(screenshotName));
 
   const active = await webBootstrap(page);
-  const beforeCas = await hostComposerState(host.url, active);
+  const beforeCas = await hostComposerState(host.url, active, queueSessionId);
   const casItem = beforeCas.queue.items[0];
-  const firstEdit = await hostComposerAction(host.url, active, beforeCas, {
+  const firstEdit = await hostComposerAction(host.url, active, queueSessionId, beforeCas, {
     type: 'edit_queue_item',
     itemId: casItem.id,
     expectedItemRevision: casItem.revision,
     text: 'queue beta host edit',
   });
   expect(firstEdit.status).toBe(200);
-  const afterCas = await hostComposerState(host.url, active);
+  const afterCas = await hostComposerState(host.url, active, queueSessionId);
   expect(afterCas.queue.items[0]).toMatchObject({
     id: casItem.id,
     text: 'queue beta host edit',
     revision: casItem.revision + 1,
   });
-  const staleEdit = await hostComposerAction(host.url, active, afterCas, {
+  await expect(rows.nth(0)).toContainText('queue beta host edit');
+  const staleEdit = await hostComposerAction(host.url, active, queueSessionId, afterCas, {
     type: 'edit_queue_item',
     itemId: casItem.id,
     expectedItemRevision: casItem.revision,
@@ -376,7 +395,7 @@ test('WEB32-P0-10 queued follow-ups support exact edits and Steer while drafts r
   });
   expect(staleEdit.status).toBe(409);
   expect(problemCode(staleEdit.body)).toBe('queue_item_conflict');
-  expect((await hostComposerState(host.url, active)).queue.items[0].text).toBe(
+  expect((await hostComposerState(host.url, active, queueSessionId)).queue.items[0].text).toBe(
     'queue beta host edit'
   );
 
@@ -387,7 +406,13 @@ test('WEB32-P0-10 queued follow-ups support exact edits and Steer while drafts r
   });
   await ui.composer.fill('fixture:steer revise the active request now');
   await page.getByRole('button', { name: 'Steer', exact: true }).click();
-  const steer = (await (await steerResponse).json()) as WebCommandResultV1;
+  const steerHttpResponse = await steerResponse;
+  const steerBody = await steerHttpResponse.json();
+  expect({ status: steerHttpResponse.status(), code: problemCode(steerBody) }).toEqual({
+    status: 202,
+    code: undefined,
+  });
+  const steer = steerBody as WebCommandResultV1;
   expect(steer.result).toBe('revision_requested');
   const queueAfterSteer = (await activeSessionSnapshot(page)).composer.queue.items;
   const admittedWhileSteering = queueBeforeSteer.length - queueAfterSteer.length;
@@ -459,17 +484,20 @@ test('WEB32-P0-11 two-tab control CAS and replay recovery preserve the matching 
   try {
     await other.goto(host.url, { waitUntil: 'domcontentloaded' });
     await waitForWorkbenchReady(other, { timeout: 30_000 });
-    expect((await activeSessionSnapshot(other)).session.id).toBe(target.id);
-    const staleControl = await hostComposerState(host.url, await webBootstrap(other));
+    await activateSessionByName(other, 'WEB32 Recovery target', target.id);
+    expect((await sessionSnapshot(other, target.id)).session.id).toBe(target.id);
+    const staleControl = await hostComposerState(host.url, await webBootstrap(other), target.id);
     await closeCapturedEventSources(other);
 
     const activeControl = await webBootstrap(page);
-    const applied = await hostComposerAction(host.url, activeControl, staleControl, {
+    const applied = await hostComposerAction(host.url, activeControl, target.id, staleControl, {
       type: 'set_permission_override',
       value: 'deny',
     });
     expect(applied.status).toBe(200);
-    expect((await hostComposerState(host.url, activeControl)).permission.override).toBe('deny');
+    expect((await hostComposerState(host.url, activeControl, target.id)).permission.override).toBe(
+      'deny'
+    );
 
     evidence.expectConsoleErrorOnce(
       'Failed to load resource: the server responded with a status of 409 (Conflict)'
@@ -485,8 +513,8 @@ test('WEB32-P0-11 two-tab control CAS and replay recovery preserve the matching 
       .click();
     const stale = await staleResponse;
     expect(stale.status()).toBe(409);
-    expect(problemCode(await stale.json())).toBe('composer_control_conflict');
-    const afterConflict = await hostComposerState(host.url, await webBootstrap(page));
+    expect(problemCode(await stale.json())).toBe('session_runtime_revision_conflict');
+    const afterConflict = await hostComposerState(host.url, await webBootstrap(page), target.id);
     expect(afterConflict.mode.baseMode).toBe(staleControl.mode.baseMode);
     expect(afterConflict.permission.override).toBe('deny');
     expect(provider.requests).toHaveLength(providerRequestsBefore);
@@ -510,7 +538,7 @@ test('WEB32-P0-11 two-tab control CAS and replay recovery preserve the matching 
     await page.goto(replacement.url, { waitUntil: 'domcontentloaded' });
     await waitForWorkbenchReady(page, { timeout: 30_000 });
     await activateSessionByName(page, 'WEB32 Recovery target', target.id);
-    const restarted = await activeSessionSnapshot(page);
+    const restarted = await sessionSnapshot(page, target.id);
     expect(restarted.session.id).toBe(target.id);
     expect(restarted.composer.permission.override).toBe('deny');
 
@@ -570,7 +598,7 @@ test('WEB32-P0-11 two-tab control CAS and replay recovery preserve the matching 
     releaseSnapshot = undefined;
     await expect(workbenchUi(page).composer).toBeEnabled({ timeout: 30_000 });
     await page.unroute(snapshotRoute);
-    expect((await activeSessionSnapshot(page)).session.id).toBe(target.id);
+    expect((await sessionSnapshot(page, target.id)).session.id).toBe(target.id);
 
     const screenshotName = 'web32-p0-11-recovery-barrier.png';
     await page.locator('.composer-control-center').screenshot({
@@ -616,10 +644,10 @@ async function activateSessionByName(
     .sessionList.locator('.project-session-main')
     .filter({ hasText: new RegExp(`^${escapeRegex(name)}\\b`, 'u') });
   await expect(button).toHaveCount(1, { timeout: 30_000 });
-  await button.click();
-  await expect
-    .poll(async () => (await webBootstrap(page)).activeSessionId, { timeout: 30_000 })
-    .toBe(expectedSessionId);
+  if ((await button.getAttribute('aria-current')) !== 'page') {
+    await button.click();
+  }
+  await expect.poll(() => foregroundSessionId(page), { timeout: 30_000 }).toBe(expectedSessionId);
   await expect(workbenchUi(page).composer).toBeEnabled({ timeout: 30_000 });
 }
 
@@ -695,12 +723,12 @@ function parseContextManifest(text: string): {
 
 async function hostComposerState(
   hostUrl: string,
-  bootstrap: WebBootstrapV1
+  bootstrap: WebBootstrapV1,
+  sessionId: string
 ): Promise<WebComposerActionResultV1['state']> {
-  if (!bootstrap.activeSessionId) throw new Error('No active Session for Composer state.');
   const result = await hostGuardedGet<WebComposerActionResultV1['state']>(
     hostUrl,
-    `/api/v1/sessions/${encodeURIComponent(bootstrap.activeSessionId)}/composer-state`,
+    `/api/v1/sessions/${encodeURIComponent(sessionId)}/composer-state`,
     bootstrap
   );
   if (result.status !== 200) throw new Error(`Composer state failed with HTTP ${result.status}.`);
@@ -710,19 +738,20 @@ async function hostComposerState(
 async function hostComposerAction(
   hostUrl: string,
   bootstrap: WebBootstrapV1,
+  sessionId: string,
   composer: WebComposerActionResultV1['state'],
   action: Readonly<Record<string, unknown>>
 ): Promise<{ readonly status: number; readonly body: unknown }> {
-  if (!bootstrap.activeSessionId) throw new Error('No active Session for Composer action.');
   return hostJson(
     hostUrl,
-    `/api/v1/sessions/${encodeURIComponent(bootstrap.activeSessionId)}/composer-actions`,
+    `/api/v1/sessions/${encodeURIComponent(sessionId)}/composer-actions`,
     bootstrap.nonce,
     {
       requestId: randomUUID(),
       workspaceId: bootstrap.workspaceId,
       expectedContextRevision: bootstrap.contextRevision,
-      expectedSessionId: bootstrap.activeSessionId,
+      expectedSessionId: sessionId,
+      expectedSessionRuntimeRevision: composer.sessionRuntime.runtimeRevision,
       expectedControlRevision: composer.controlRevision,
       ...action,
     }

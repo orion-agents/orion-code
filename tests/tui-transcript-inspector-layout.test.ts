@@ -4,7 +4,7 @@ import type { ToolInspectorViewModel } from '../src/tui-ui/transcript-inspector'
 function frameText(view: ToolInspectorViewModel, width = 80, height = 20): string {
   const frame = renderTranscriptInspectorFrame(view, { width, height });
   return frame.rows
-    .map(row => row.map(cell => cell.width === 0 ? '' : cell.char).join(''))
+    .map(row => row.map(cell => (cell.width === 0 ? '' : cell.char)).join(''))
     .join('\n');
 }
 
@@ -61,5 +61,22 @@ describe('TUI transcript Inspector layout', () => {
     const text = frameText(offsetView);
     expect(text).toContain('第二页内容');
     expect(text).not.toContain('完整工具输出');
+  });
+
+  it('keeps tool identifiers and search text on one sanitized line', () => {
+    const unsafe = view(false);
+    const entry = {
+      ...unsafe.entries[0],
+      toolName: 'read_file\nFORGED_ROW\t\x1b[31mred\x1b[0m\x9f',
+    };
+    unsafe.entries = [entry];
+    unsafe.selected = entry;
+    unsafe.searchQuery = 'query\nFORGED_SEARCH\x1b]0;title\x07';
+
+    const text = frameText(unsafe);
+    expect(text).toContain('read_file FORGED_ROW red');
+    expect(text).toContain('search: query FORGED_SEARCH');
+    expect(text).not.toContain('\x1b');
+    expect(text).not.toContain('\x9f');
   });
 });

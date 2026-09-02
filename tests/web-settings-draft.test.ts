@@ -2,7 +2,6 @@ import {
   conflictSettingsKeys,
   draftOperations,
   hydrateSettingsDraft,
-  rebaseSettingsDraft,
   resetDraftValue,
   setDraftValue,
 } from '../web/src/settings/settings-draft';
@@ -119,6 +118,45 @@ describe('Web Settings draft and mirror', () => {
     });
     expect(state.phase).toBe('conflict');
     expect(state.draft?.serverLatest?.revision).toBe(base.revision);
+  });
+
+  test('folds same-revision availability metadata without discarding a dirty draft', () => {
+    const base = settingsDocument('hmac-sha256:5'.padEnd(76, '5'));
+    const readOnly: WebSettingsDocumentV1 = {
+      ...base,
+      state: 'read-only',
+      writable: false,
+      sections: {
+        ...base.sections,
+        appearance: {
+          ...base.sections.appearance,
+          theme: {
+            ...base.sections.appearance.theme,
+            writable: false,
+            blockedReason: 'read_only',
+          },
+        },
+      },
+    };
+    let state = settingsEditorReducer(initialSettingsEditorState, {
+      type: 'open',
+      document: base,
+    });
+    state = settingsEditorReducer(state, {
+      type: 'set_value',
+      key: 'appearance.theme',
+      value: 'dark',
+    });
+
+    state = settingsEditorReducer(state, { type: 'server_updated', document: readOnly });
+
+    expect(state.draft?.base.state).toBe('read-only');
+    expect(state.draft?.base.writable).toBe(false);
+    expect(state.draft?.base.sections.appearance.theme.writable).toBe(false);
+    expect(state.draft?.values['appearance.theme']).toBe('dark');
+    expect(draftOperations(state.draft!)).toEqual([
+      { op: 'set', key: 'appearance.theme', value: 'dark' },
+    ]);
   });
 
   test('coalesces invalidations and discards a stale in-flight read after an accepted write', async () => {

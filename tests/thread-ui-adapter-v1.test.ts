@@ -9,7 +9,7 @@ import type {
 } from '../src/runtime/agent-runtime-protocol';
 import type { AgentTurnRequest } from '../src/runtime/goals/types';
 import { GoalLifecycleServiceV2 } from '../src/runtime/goal-lifecycle-v2';
-import { digestRuntimeValue } from '../src/runtime/protocol/canonical';
+import { canonicalRuntimeJson, digestRuntimeValue } from '../src/runtime/protocol/canonical';
 import {
   ExecutionService,
   captureStepSnapshotV1,
@@ -18,7 +18,7 @@ import {
   createExecutionPolicySnapshotV1,
   type ToolBindingV1,
 } from '../src/runtime/step-snapshot';
-import { ThreadEventStore } from '../src/runtime/thread-event-store';
+import { ThreadEventStore, type AppendRuntimeEventV1 } from '../src/runtime/thread-event-store';
 import { ThreadToolInvocationJournalV1 } from '../src/runtime/thread-tool-journal';
 import {
   ThreadRuntimeV1,
@@ -292,6 +292,37 @@ describe('ThreadUiAdapterV1', () => {
     expect(finished?.event.executionPolicyDigest).toBe(committedReceipt?.executionPolicyDigest);
     adapter.close();
   });
+
+  test.each([
+    ['terminal-only', 'without its durable receipt fact'],
+    ['fact-only', 'without its canonical terminal receipt'],
+    ['mismatched', 'does not match its canonical receipt'],
+  ] as const)(
+    'fails closed when canonical and durable tool receipt evidence is %s',
+    (mode, expectedMessage) => {
+      const store = createStore();
+      const runtime = new ThreadRuntimeV1({
+        store,
+        runner: { run: async () => ({ status: 'completed' }) },
+        recoverIncomplete: false,
+      });
+      appendToolReceiptFixture(store, mode);
+      const { events, sink } = collectAgentEvents();
+      const adapter = new ThreadUiAdapterV1({ runtime, eventSink: sink, cursor: 0 });
+      let thrown: unknown;
+
+      try {
+        adapter.flush();
+      } catch (error) {
+        thrown = error;
+      }
+      adapter.close();
+
+      expect(thrown).toBeInstanceOf(ThreadUiAdapterError);
+      expect((thrown as Error).message).toContain(expectedMessage);
+      expect(events).not.toContainEqual(expect.objectContaining({ type: 'tool_finished' }));
+    }
+  );
 
   test('runs typed Goal requests and exposes a narrow durable interrupt port', async () => {
     const { events, sink } = collectAgentEvents();
@@ -568,4 +599,111 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<voi
     if (Date.now() > deadline) throw new Error('Timed out waiting for condition');
     await new Promise(resolve => setImmediate(resolve));
   }
+}
+
+type ToolReceiptFixtureMode = 'terminal-only' | 'fact-only' | 'mismatched';
+
+function appendToolReceiptFixture(store: ThreadEventStore, mode: ToolReceiptFixtureMode): void {
+  const turnId = randomUUID();
+  const stepId = randomUUID();
+  const invocationId = randomUUID();
+  const receipt = createToolReceiptFixture({
+    threadId: store.threadId,
+    turnId,
+    stepId,
+    invocationId,
+  });
+  const events: AppendRuntimeEventV1[] = [
+    {
+      turnId,
+      payload: { type: 'turn.started', data: { input: 'verify receipt', mode: 'build' } },
+    },
+    {
+      turnId,
+      stepId,
+      itemId: invocationId,
+      payload: {
+        type: 'item.started',
+        data: { kind: 'command', name: 'exec_command', inputDigest: digestRuntimeValue({}) },
+      },
+    },
+  ];
+  if (mode !== 'terminal-only') {
+    events.push({
+      turnId,
+      stepId,
+      itemId: invocationId,
+      payload: {
+        type: 'tool.receipt',
+        data: {
+          invocationId,
+          terminal: receipt.terminal,
+          success: receipt.success,
+          outputDigest: receipt.outputDigest,
+          receiptDigest: mode === 'mismatched' ? 'e'.repeat(64) : receipt.digest,
+          intentDigest: receipt.intentDigest,
+        },
+      },
+    });
+  }
+  events.push(
+    {
+      turnId,
+      stepId,
+      itemId: invocationId,
+      payload: {
+        type: 'item.completed',
+        data: {
+          summary: 'ok',
+          outputDigest: receipt.outputDigest,
+          ...(mode === 'fact-only' ? {} : { receipt: canonicalRuntimeJson(receipt) }),
+        },
+      },
+    },
+    {
+      turnId,
+      payload: { type: 'turn.completed', data: { outcome: 'receipt fixture complete' } },
+    }
+  );
+  store.appendDurableBatch(events);
+}
+
+function createToolReceiptFixture(input: {
+  readonly threadId: string;
+  readonly turnId: string;
+  readonly stepId: string;
+  readonly invocationId: string;
+}): ToolInvocationReceiptV1 {
+  const result = {
+    schemaVersion: 1,
+    success: true,
+    output: 'ok',
+    summary: 'ok',
+    outputBytes: 2,
+  };
+  const policyContent = { behavior: 'allow' as const, source: 'allowlist:fixture' };
+  const policy = { ...policyContent, digest: digestRuntimeValue(policyContent) };
+  const content = {
+    version: 1 as const,
+    invocationId: input.invocationId,
+    threadId: input.threadId,
+    turnId: input.turnId,
+    stepId: input.stepId,
+    toolName: 'exec_command',
+    snapshotDigest: digestRuntimeValue({ type: 'snapshot' }),
+    routerDigest: digestRuntimeValue({ type: 'router' }),
+    authorityDigest: digestRuntimeValue({ type: 'authority' }),
+    executionPolicyDigest: digestRuntimeValue({ type: 'execution-policy' }),
+    intentDigest: digestRuntimeValue({ type: 'intent' }),
+    policy,
+    terminal: 'completed' as const,
+    terminalPhase: 'execute' as const,
+    success: true,
+    result,
+    outputDigest: digestRuntimeValue(result),
+    startedAt: 1_700_000_000_000,
+    finishedAt: 1_700_000_000_005,
+    durationMs: 5,
+  };
+  return { ...content, digest: digestRuntimeValue(content) };
 }

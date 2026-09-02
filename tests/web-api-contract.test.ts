@@ -5,7 +5,7 @@ import { load } from 'js-yaml';
 
 type JsonObject = Record<string, unknown>;
 
-const contractPath = resolve(__dirname, '../docs/architecture/v0.3.2-web-api.yaml');
+const contractPath = resolve(__dirname, '../docs/architecture/v0.3.3-web-api.yaml');
 
 describe('Orion Web OpenAPI contract', () => {
   const document = load(readFileSync(contractPath, 'utf8')) as JsonObject;
@@ -44,7 +44,13 @@ describe('Orion Web OpenAPI contract', () => {
       document,
       '#/components/schemas/UpdateSettingsRequest'
     ) as JsonObject;
-    expect(settings.required).toEqual(['requestId', 'expectedRevision', 'operations']);
+    expect(settings.required).toEqual([
+      'requestId',
+      'workspaceId',
+      'expectedContextRevision',
+      'expectedRevision',
+      'operations',
+    ]);
     const operations = settings.properties as JsonObject;
     expect((operations.operations as JsonObject).minItems).toBe(1);
     expect((operations.operations as JsonObject).maxItems).toBe(20);
@@ -99,7 +105,7 @@ describe('Orion Web OpenAPI contract', () => {
     );
 
     const event = resolveReference(document, '#/components/schemas/WebEventEnvelope') as JsonObject;
-    expect(event.oneOf).toHaveLength(7);
+    expect(event.oneOf).toHaveLength(9);
     for (const branch of event.oneOf as JsonObject[]) {
       const schema = resolveReference(document, branch.$ref as string) as JsonObject;
       expect(schema.required).toEqual(
@@ -161,6 +167,23 @@ describe('Orion Web OpenAPI contract', () => {
     expect(JSON.stringify((fileNode.properties as JsonObject).displayPath)).toContain(
       'workspace-relative'
     );
+    expect((fileNode.properties as JsonObject).targetKind).toEqual(
+      expect.objectContaining({ enum: ['file', 'directory'] })
+    );
+
+    const settingsUpdate = resolveReference(
+      document,
+      '#/components/schemas/UpdateSettingsRequest'
+    ) as JsonObject;
+    expect(settingsUpdate.required).toEqual(
+      expect.arrayContaining(['workspaceId', 'expectedContextRevision', 'expectedRevision'])
+    );
+
+    const reviewSnapshot = resolveReference(
+      document,
+      '#/components/schemas/ReviewSnapshot'
+    ) as JsonObject;
+    expect(reviewSnapshot.required).toEqual(expect.arrayContaining(['totalChangedFiles']));
 
     const verification = resolveReference(
       document,
@@ -321,7 +344,7 @@ describe('Orion Web OpenAPI contract', () => {
     ).toContain('pre-sanitized derivative');
   });
 
-  test('freezes the v0.3.2 Composer union, Context references and durable control event', () => {
+  test('freezes the v0.3.3 Composer union, Context references and durable control event', () => {
     const paths = document.paths as JsonObject;
     for (const path of [
       '/sessions/{sessionId}/composer-state',

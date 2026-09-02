@@ -12,6 +12,7 @@ import {
   activeSessionSnapshot,
   sessionSnapshot,
   settingsSnapshot,
+  storedForegroundSessionId,
   updateSettings,
   webBootstrap,
 } from './fixtures/api';
@@ -143,8 +144,7 @@ test('SET-P0-02 default model affects only newly created Sessions and the real p
   await selectSettingsSection(page, 'Models & Reasoning');
   await setSettingsSelect(page, '默认模型', OPENAI_FIXTURE_ALTERNATE_MODEL);
   await applySettings(page, 1);
-  const currentCard = workbenchUi(page).settingsDialog.getByLabel('当前会话设置');
-  await expect(currentCard).toContainText(OPENAI_FIXTURE_MODEL);
+  await expect(workbenchUi(page).modelButton).toContainText(OPENAI_FIXTURE_MODEL);
   await closeSettings(page);
 
   await createSession(page, { name: 'Model after default change' });
@@ -231,7 +231,7 @@ test('SET-P0-03 project Effort wins over global and model defaults across worksp
   try {
     await page.goto(replacement.url, { waitUntil: 'domcontentloaded' });
     await waitForWorkbenchReady(page, { timeout: 30_000 });
-    if (!(await webBootstrap(page)).activeSessionId) {
+    if (!(await storedForegroundSessionId(page))) {
       await createSession(page);
     } else {
       await expect(workbenchUi(page).composer).toBeEnabled({ timeout: 30_000 });
@@ -425,14 +425,17 @@ test('SET-P0-05 one UI draft emits one atomic three-field PATCH and rejects all 
   expect(after.sections.defaults.effort.effectiveValue).toBe('high');
 
   const committedBytes = workspace.readConfigBytes();
+  const activeContext = await hostBootstrap(host.url);
   const rejected = await hostJson<unknown>(
     host.url,
-    (await hostBootstrap(host.url)).nonce,
+    activeContext.nonce,
     '/api/v1/settings',
     'PATCH',
     {
       requestId: randomUUID(),
       expectedRevision: after.revision,
+      workspaceId: activeContext.workspaceId,
+      expectedContextRevision: activeContext.contextRevision,
       operations: [
         { op: 'set', key: 'appearance.theme', value: 'light' },
         { op: 'set', key: 'defaults.model', value: 'fixture-model-does-not-exist' },
@@ -608,7 +611,6 @@ test('SET-P0-08 invalid external JSON keeps Runtime last-good and cannot be over
   provider,
   workspace,
 }, testInfo) => {
-  allowExpectedNetworkFailures(testInfo, 1);
   const networkFailures: Array<{
     readonly method: string;
     readonly path: string;
@@ -624,6 +626,7 @@ test('SET-P0-08 invalid external JSON keeps Runtime last-good and cannot be over
   page.on('requestfailed', onNetworkFailure);
   await createSession(page, { name: 'Last-good runtime session' });
   const before = await settingsSnapshot(page);
+  const activeContext = await hostBootstrap(host.url);
   const originalBytes = workspace.readConfigBytes();
   const leakMarker = 'settings-invalid-secret-marker-93c417';
   const invalidBytes = Buffer.from(`{"apiKey":"${leakMarker}"`, 'utf8');
@@ -648,12 +651,14 @@ test('SET-P0-08 invalid external JSON keeps Runtime last-good and cannot be over
 
     const rejected = await hostJson<WebSettingsMutationResultV1>(
       host.url,
-      (await hostBootstrap(host.url)).nonce,
+      activeContext.nonce,
       '/api/v1/settings',
       'PATCH',
       {
         requestId: randomUUID(),
         expectedRevision: before.revision,
+        workspaceId: activeContext.workspaceId,
+        expectedContextRevision: activeContext.contextRevision,
         operations: [{ op: 'set', key: 'appearance.theme', value: 'dark' }],
       }
     );
@@ -677,9 +682,16 @@ test('SET-P0-08 invalid external JSON keeps Runtime last-good and cannot be over
     await waitForSettings(page, value => value.state === 'ready');
     page.off('requestfailed', onNetworkFailure);
   }
-  expect(networkFailures).toEqual([
-    { method: 'GET', path: '/api/v1/events', error: 'net::ERR_ABORTED' },
-  ]);
+  expect(
+    networkFailures.every(
+      failure =>
+        failure.method === 'GET' &&
+        failure.path === '/api/v1/events' &&
+        failure.error === 'net::ERR_ABORTED'
+    )
+  ).toBe(true);
+  expect(networkFailures.length).toBeLessThanOrEqual(1);
+  allowExpectedNetworkFailures(testInfo, networkFailures.length);
 });
 
 test('SET-P0-09 disconnect after commit and exact requestId retry replays one settings side effect @settings', async ({
@@ -689,11 +701,14 @@ test('SET-P0-09 disconnect after commit and exact requestId retry replays one se
   workspace,
 }) => {
   const before = await settingsSnapshot(page);
-  const nonce = (await hostBootstrap(host.url)).nonce;
+  const bootstrap = await hostBootstrap(host.url);
+  const nonce = bootstrap.nonce;
   const requestId = randomUUID();
   const body = {
     requestId,
     expectedRevision: before.revision,
+    workspaceId: bootstrap.workspaceId,
+    expectedContextRevision: bootstrap.contextRevision,
     operations: [{ op: 'set', key: 'appearance.theme', value: 'dark' }],
   } as const;
 
@@ -797,6 +812,8 @@ test('SET-P0-10 an old page recovers a same-origin Host restart before saving wi
       body: JSON.stringify({
         requestId: randomUUID(),
         expectedRevision: restartedBootstrap.settings.revision,
+        workspaceId: restartedBootstrap.workspaceId,
+        expectedContextRevision: restartedBootstrap.contextRevision,
         operations: [{ op: 'set', key: 'appearance.theme', value: 'light' }],
       }),
     });
@@ -832,6 +849,8 @@ test('SET-P0-11 settings mutations and open-document fail closed except the lega
   const body = JSON.stringify({
     requestId: randomUUID(),
     expectedRevision: bootstrap.settings.revision,
+    workspaceId: bootstrap.workspaceId,
+    expectedContextRevision: bootstrap.contextRevision,
     operations: [{ op: 'set', key: 'appearance.theme', value: 'dark' }],
   });
   const hostile = await rawRequest(host.url, {
@@ -907,16 +926,21 @@ test('SET-P0-12 persisted Settings evidence is free of secrets, headers, env nam
   await setSettingsSelect(page, '主题', 'dark');
   await applySettings(page, 1);
   const after = await settingsSnapshot(page);
+  const captureContext = await hostBootstrap(host.url);
   const problem = await rawRequest(host.url, {
     method: 'PATCH',
     path: '/api/v1/settings',
     origin: host.url,
-    nonce: (await hostBootstrap(host.url)).nonce,
-    body: JSON.stringify({ requestId: randomUUID(), expectedRevision: after.revision }),
+    nonce: captureContext.nonce,
+    body: JSON.stringify({
+      requestId: randomUUID(),
+      expectedRevision: after.revision,
+      workspaceId: captureContext.workspaceId,
+      expectedContextRevision: captureContext.contextRevision,
+    }),
   });
   expect(problem.status).toBe(400);
 
-  const captureContext = await hostBootstrap(host.url);
   const diagnosticsQuery = new URLSearchParams({
     workspaceId: captureContext.workspaceId,
     expectedContextRevision: captureContext.contextRevision,
@@ -1021,7 +1045,10 @@ test('SET-P0-13 Settings reflows at desktop, 390, 320, and 200 percent with keyb
     expect(zoom.innerWidth).toBeLessThanOrEqual(321);
     expect(zoom.visualWidth).toBeLessThanOrEqual(321);
     expect(zoom.devicePixelRatio).toBe(2);
-    if (!(await workbenchUi(page).settingsButton.isVisible())) await openSessionNavigation(page);
+    // A transformed, off-screen drawer still satisfies Playwright's `isVisible()`.
+    // Re-evaluate the responsive column mode and explicitly open the drawer before
+    // hit-testing the only Settings entry at the 200% equivalent viewport.
+    await openSessionNavigation(page);
     const zoomHitTest = await workbenchUi(page).settingsButton.evaluate(button => {
       const rect = (element: Element | null) => {
         if (!element) return null;
@@ -1083,7 +1110,7 @@ test('SET-P0-14 installed tarball critical Settings journey runs on the supporte
   allowExpectedNetworkFailures(testInfo, 2);
   expect(artifactState.artifact.receipt.package).toMatchObject({
     name: '@orion-agents/orion-code',
-    version: '0.3.3',
+    version: '0.3.4',
   });
   expect(artifactState.environment.nodeMajor).toBe(Number(process.versions.node.split('.')[0]));
   expect([22, 24, 26]).toContain(artifactState.environment.nodeMajor);

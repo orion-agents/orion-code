@@ -25,6 +25,7 @@ import {
   type ThreadSessionTranscriptMessageV1,
   type ThreadSessionTurnCommitV1,
 } from './thread-session-index';
+import type { PlanReviewProjectionV1 } from './thread-projection';
 
 export type {
   ThreadSessionTranscriptMessageV1,
@@ -107,6 +108,7 @@ export interface ThreadSessionSnapshotPageV1 {
   readonly latestTurn?: ThreadSessionLatestTurnV1;
   readonly latestTurnCommit?: ThreadSessionTurnCommitV1;
   readonly latestPlanTurnCommit?: ThreadSessionTurnCommitV1;
+  readonly planReview?: PlanReviewProjectionV1;
 }
 
 export class ThreadSessionViewError extends Error {
@@ -441,6 +443,7 @@ function snapshotPageFromIndex(
     ...(manifest.latestPlanTurnCommit
       ? { latestPlanTurnCommit: manifest.latestPlanTurnCommit }
       : {}),
+    ...(manifest.planReview ? { planReview: manifest.planReview } : {}),
   });
 }
 

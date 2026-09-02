@@ -28,7 +28,13 @@ import type {
   WebReviewSnapshotV1,
   WebSessionSummaryV1,
 } from '../../src/web/protocol';
-import { browserGet, browserMutation, webBootstrap } from './fixtures/api';
+import {
+  browserGet,
+  browserMutation,
+  foregroundSessionId,
+  rememberForegroundSession,
+  webBootstrap,
+} from './fixtures/api';
 import { allowExpectedNetworkFailures, expect, test } from './fixtures/test';
 import { createSession, openInspector, waitForWorkbenchReady, workbenchUi } from './fixtures/ui';
 
@@ -56,25 +62,28 @@ test('WEB31-P0-02 cross-project Context CAS rejects a stale tab with zero side e
   try {
     await createSession(page, { name: 'Primary Context Session' });
     const primary = await webBootstrap(page);
-    expect(primary.activeSessionId).toEqual(expect.any(String));
+    const primarySessionId = await foregroundSessionId(page, primary.workspaceId);
 
     await switchWorkspaceThroughUi(page, workspace.secondaryWorkspace);
     await createSession(page, { name: 'Secondary Context Session' });
     const secondary = await webBootstrap(page);
+    const secondarySessionId = await foregroundSessionId(page, secondary.workspaceId);
     expect(secondary.workspace).toBe(realpathSync(workspace.secondaryWorkspace));
-    expect(secondary.activeSessionId).toEqual(expect.any(String));
 
     stalePage = await context.newPage();
     stalePage.on('requestfailed', onRequestFailed);
     detachStaleEvidence = evidence.attachPage(stalePage);
     await stalePage.goto(host.url, { waitUntil: 'domcontentloaded' });
     await waitForWorkbenchReady(stalePage, { timeout: 30_000 });
+    await rememberForegroundSession(stalePage, secondarySessionId, secondary.workspaceId);
+    await stalePage.reload({ waitUntil: 'domcontentloaded' });
+    await waitForWorkbenchReady(stalePage, { timeout: 30_000 });
     const stale = await webBootstrap(stalePage);
     expect(stale).toMatchObject({
       workspaceId: secondary.workspaceId,
       contextRevision: secondary.contextRevision,
-      activeSessionId: secondary.activeSessionId,
     });
+    expect(await foregroundSessionId(stalePage, secondary.workspaceId)).toBe(secondarySessionId);
 
     const secondarySessionsBefore = await workspaceSessions(stalePage, secondary.workspaceId);
     const providerRequestsBefore = provider.requests.length;
@@ -88,14 +97,13 @@ test('WEB31-P0-02 cross-project Context CAS rejects a stale tab with zero side e
           requestId: randomUUID(),
           expectedContextRevision: secondary.contextRevision,
           workspaceId: primary.workspaceId,
-          sessionId: primary.activeSessionId,
+          sessionId: primarySessionId,
         },
       }
     );
     expect(activated.status).toBe(200);
     expect(activated.body.bootstrap).toMatchObject({
       workspaceId: primary.workspaceId,
-      activeSessionId: primary.activeSessionId,
     });
     expect(activated.body.contextRevision).not.toBe(secondary.contextRevision);
 
@@ -105,7 +113,7 @@ test('WEB31-P0-02 cross-project Context CAS rejects a stale tab with zero side e
         requestId: randomUUID(),
         expectedContextRevision: stale.contextRevision,
         workspaceId: secondary.workspaceId,
-        sessionId: secondary.activeSessionId,
+        sessionId: secondarySessionId,
       },
     });
     expect(staleActivation.status).toBe(409);
@@ -143,7 +151,7 @@ test('WEB31-P0-02 cross-project Context CAS rejects a stale tab with zero side e
     const secondarySessionsAfter = await workspaceSessions(page, secondary.workspaceId);
     const sideEffects = [
       authoritative.workspaceId !== primary.workspaceId,
-      authoritative.activeSessionId !== primary.activeSessionId,
+      (await foregroundSessionId(page, primary.workspaceId)) !== primarySessionId,
       secondarySessionsAfter.items.length !== secondarySessionsBefore.items.length,
       secondarySessionsAfter.items.some(session => session.name === 'MUST NOT EXIST'),
       provider.requests.length !== providerRequestsBefore,
@@ -151,8 +159,8 @@ test('WEB31-P0-02 cross-project Context CAS rejects a stale tab with zero side e
     expect(sideEffects).toBe(0);
 
     await expect
-      .poll(async () => (await webBootstrap(page)).activeSessionId, { timeout: 30_000 })
-      .toBe(primary.activeSessionId);
+      .poll(() => foregroundSessionId(page, primary.workspaceId), { timeout: 30_000 })
+      .toBe(primarySessionId);
     const screenshotName = 'web31-p0-02-context-cas.png';
     await page.screenshot({
       path: join(evidence.scenarioDirectory, screenshotName),

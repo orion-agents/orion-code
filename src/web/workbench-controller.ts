@@ -28,7 +28,7 @@ import {
   type ThreadSessionRuntimeActivationV1,
   type ThreadSessionViewV1,
 } from '../runtime/thread-session-view';
-import type { ThreadProjectionV1 } from '../runtime/thread-projection';
+import type { PlanReviewProjectionV1, ThreadProjectionV1 } from '../runtime/thread-projection';
 import { FileToolDetailRepository } from '../runtime/tool-detail-repository';
 import { parsePlanReceiptV1, parseTurnCommitV1 } from '../runtime/turn-commit';
 import { SessionComposerControlError } from '../runtime/session-composer-control';
@@ -590,7 +590,7 @@ export class WebWorkbenchController {
         : null;
     const projectedComposer = actor
       ? this.projectActorComposerState(actor, session)
-      : this.projectComposerStateValue(session);
+      : this.projectComposerStateValue(session, undefined, indexedPage?.planReview);
     const composer =
       projectedComposer.sessionRuntime.phase === sessionRuntime.phase
         ? projectedComposer
@@ -680,7 +680,8 @@ export class WebWorkbenchController {
 
   private projectComposerStateValue(
     session: SessionMeta,
-    actor?: WebWorkbenchSessionActorV1
+    actor?: WebWorkbenchSessionActorV1,
+    indexedPlanReview?: PlanReviewProjectionV1
   ): WebComposerControlStateV1 {
     const runtimeOwner = actor?.runtime ?? this.runtimeValue;
     const controller = actor?.controller;
@@ -699,7 +700,7 @@ export class WebWorkbenchController {
     const projection = actor
       ? this.activeOrionRuntimes.get(session.id)?.thread.getProjection()
       : undefined;
-    const review = projection?.planReview;
+    const review = projection?.planReview ?? indexedPlanReview;
     const workspaceId = this.workspaceRegistry
       .list()
       .find(entry => entry.canonicalPath === canonicalDirectory(session.projectPath))?.id;
@@ -775,8 +776,16 @@ export class WebWorkbenchController {
     } catch (error) {
       throw mapSessionRuntimeError(error);
     }
+    const actorSession = actor.runtime.getSession();
+    if (!actorSession || actorSession.id !== input.expectedSessionId) {
+      throw new WebWorkbenchError(
+        503,
+        'Session actor is not bound to the expected Session.',
+        'session_unavailable'
+      );
+    }
     if (!wasResident) actor.composerRevision = input.expectedControlRevision;
-    const admittedState = this.projectActorComposerState(actor, session);
+    const admittedState = this.projectActorComposerState(actor, actorSession);
     if (input.expectedControlRevision !== admittedState.controlRevision) {
       throw new WebWorkbenchError(
         409,
@@ -873,7 +882,7 @@ export class WebWorkbenchController {
       actor.suppressComposerEdges -= 1;
     }
     actor.composerRevision = randomUUID();
-    const state = this.projectComposerStateValue(session, actor);
+    const state = this.projectComposerStateValue(actorSession, actor);
     actor.composerAuthorityDigest = composerAuthorityDigest(state);
     this.eventHub.emit({ type: 'composer_state_changed', state }, true, {
       sessionId: input.expectedSessionId,
@@ -1087,8 +1096,10 @@ export class WebWorkbenchController {
     if (canonicalDirectory(session.projectPath) !== this.workspaceValue) {
       throw new WebWorkbenchError(409, 'Session belongs to another workspace.');
     }
-    if (name.length > 120) throw new WebWorkbenchError(400, 'Session name is too long.');
-    const updated = renameSession(session.id, name);
+    const normalizedName = name.trim();
+    if (!normalizedName) throw new WebWorkbenchError(400, 'Session name is required.');
+    if (normalizedName.length > 120) throw new WebWorkbenchError(400, 'Session name is too long.');
+    const updated = renameSession(session.id, normalizedName);
     if (!updated) throw new WebWorkbenchError(404, 'Session no longer exists.');
     return projectSessionSummary(updated);
   }
@@ -1218,6 +1229,30 @@ export class WebWorkbenchController {
           : toAgentRuntimeInput({ ...command, ...(resolved ? { text: resolved.text } : {}) });
       try {
         if (command.type === 'submit') {
+          const currentRuntime = this.sessionRegistry.summary(key);
+          if (['running', 'waiting_approval'].includes(currentRuntime.phase)) {
+            const routed = await this.sessionRegistry.withActor(
+              key,
+              command.expectedSessionRuntimeRevision,
+              actor => {
+                if (!actor.controller.hasActiveTurn()) {
+                  throw new WebSessionRuntimeRegistryError(
+                    409,
+                    'session_runtime_revision_conflict',
+                    'The Session turn ended before steering was admitted.'
+                  );
+                }
+                return actor.controller.handle(runtimeInput);
+              }
+            );
+            return Object.freeze({
+              requestId: command.requestId,
+              result: routed.result.type,
+              detail: JSON.stringify(routed.result),
+              sessionRuntime: routed.runtime,
+              ...(resolved ? { contextReceipt: resolved.receipt } : {}),
+            });
+          }
           const admission = await this.sessionRegistry.admitTurn({
             key,
             expectedRuntimeRevision: command.expectedSessionRuntimeRevision,
@@ -1471,6 +1506,7 @@ export class WebWorkbenchController {
   async updateSettings(
     input: WebSettingsUpdateRequestV1
   ): Promise<Omit<WebSettingsMutationResultV1, 'requestId'>> {
+    this.assertContextGuard(input);
     this.assertSettingsAvailable();
     const update = this.runtimeValue.updateSettings;
     if (!update) {

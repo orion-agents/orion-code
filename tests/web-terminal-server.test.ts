@@ -25,6 +25,7 @@ class BackpressureTerminalProcess implements TerminalProcessV1 {
   alive = true;
   pauseCalls = 0;
   resumeCalls = 0;
+  onPause: (() => void) | undefined;
   private readonly dataListeners = new Set<(data: string) => void>();
   private readonly exitListeners = new Set<
     (event: { exitCode: number; signal?: number }) => void
@@ -41,6 +42,7 @@ class BackpressureTerminalProcess implements TerminalProcessV1 {
   pause(): void {
     this.paused = true;
     this.pauseCalls += 1;
+    this.onPause?.();
   }
 
   resume(): void {
@@ -65,6 +67,11 @@ class BackpressureTerminalProcess implements TerminalProcessV1 {
   emitData(data: string): void {
     if (this.paused || !this.alive) return;
     for (const listener of this.dataListeners) listener(data);
+  }
+
+  emitExit(event: { exitCode: number; signal?: number }): void {
+    this.alive = false;
+    for (const listener of this.exitListeners) listener(event);
   }
 }
 
@@ -105,7 +112,7 @@ describe('terminal WebSocket backpressure', () => {
   });
 
   afterEach(async () => {
-    client?.close();
+    client?.terminate();
     await sockets.close();
     await manager.shutdown();
     await new Promise<void>(resolvePromise => server.close(() => resolvePromise()));
@@ -150,6 +157,45 @@ describe('terminal WebSocket backpressure', () => {
       5_000
     );
     expect(client.readyState).toBe(WebSocket.OPEN);
+  }, 15_000);
+
+  test('orders replay, buffered live output and exit before closing the socket', async () => {
+    const created = manager.create({
+      workspaceId: 'workspace',
+      expectedContextRevision: 'revision',
+    });
+    for (let index = 0; index < 260; index += 1) {
+      terminalProcess.emitData(`${String(index).padStart(4, '0')}:${'x'.repeat(7_995)}`);
+    }
+
+    const messages: Array<Record<string, unknown>> = [];
+    client = new WebSocket(
+      `${serverOrigin(server).replace(/^http/u, 'ws')}/api/v1/terminals/${created.terminal.id}/stream`,
+      TERMINAL_WEBSOCKET_PROTOCOL,
+      { origin: serverOrigin(server) }
+    );
+    client.on('message', data => {
+      messages.push(JSON.parse(data.toString()) as Record<string, unknown>);
+    });
+    await waitForWebSocket(client, 'open');
+    const transport = (client as unknown as { readonly _socket: Socket })._socket;
+    terminalProcess.onPause = () => transport.pause();
+    client.send(JSON.stringify({ type: 'authenticate', ticket: created.ticket, afterSequence: 0 }));
+    await waitFor(() => terminalProcess.pauseCalls > 0, 5_000);
+    terminalProcess.onPause = undefined;
+
+    terminalProcess.emitExit({ exitCode: 0 });
+    transport.resume();
+    await waitForWebSocket(client, 'close');
+
+    expect(messages[0]?.type).toBe('ready');
+    expect(messages.at(-1)).toMatchObject({ type: 'exit', exitCode: 0 });
+    const sequences = messages
+      .filter(message => message.type === 'output')
+      .map(message => Number(message.sequence));
+    expect(sequences.length).toBeGreaterThan(200);
+    expect(sequences).toEqual([...sequences].sort((left, right) => left - right));
+    expect(new Set(sequences).size).toBe(sequences.length);
   }, 15_000);
 });
 

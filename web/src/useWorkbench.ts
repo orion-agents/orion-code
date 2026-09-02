@@ -40,6 +40,7 @@ import type {
 import { initialWorkbenchState, type DiagnosticsSnapshot, type WorkbenchState } from './types';
 import { upsertSessionSummary } from './state/session-collection';
 import { removeComposerDraftsForWorkspace } from './state/composer-drafts';
+import { selectPreferredForegroundSession } from './state/foreground-session';
 
 export type WorkbenchAgentMode = 'interactive' | 'plan' | 'auto';
 
@@ -216,7 +217,8 @@ export function useWorkbench(): UseWorkbenchResult {
       const settings = await migrateLegacyAppearance(
         api,
         settingsMirror,
-        mirrorSnapshot.document ?? mirrorSnapshot.lastGood ?? bootstrap.settings
+        mirrorSnapshot.document ?? mirrorSnapshot.lastGood ?? bootstrap.settings,
+        context
       );
       if (generation !== resourceGeneration.current) return;
       dispatch({
@@ -1135,7 +1137,12 @@ export function useWorkbench(): UseWorkbenchResult {
           'settings_invalid_operation'
         );
       }
-      const result = await api.updateSettings(expectedRevision, operations, stableRequestId);
+      const result = await api.updateSettings(
+        expectedRevision,
+        operations,
+        requireContextGuard(stateRef.current),
+        stableRequestId
+      );
       settingsMirror.accept(result.settings);
       return result;
     },
@@ -1338,7 +1345,8 @@ export function useWorkbench(): UseWorkbenchResult {
 async function migrateLegacyAppearance(
   api: OrionWebApi,
   mirror: SettingsMirror,
-  initialDocument: WebSettingsDocumentV1
+  initialDocument: WebSettingsDocumentV1,
+  context: WebContextGuardV1
 ): Promise<WebSettingsDocumentV1> {
   let document = initialDocument;
 
@@ -1354,7 +1362,12 @@ async function migrateLegacyAppearance(
     }
 
     try {
-      const result = await api.updateSettings(document.revision, migration.operations, requestId());
+      const result = await api.updateSettings(
+        document.revision,
+        migration.operations,
+        context,
+        requestId()
+      );
       mirror.accept(result.settings);
       clearLegacyAppearance(migration.keysToClear);
       return result.settings;
@@ -1399,11 +1412,8 @@ function preferredForegroundSession(
   sessions: readonly import('./types').WebSessionSummaryV1[],
   hostDefault: string | null
 ): string | null {
-  const available = new Set(sessions.map(session => session.id));
   const stored = readSessionStorage(`${WEB_FOREGROUND_PREFIX}${workspaceId}`);
-  if (stored && available.has(stored)) return stored;
-  if (hostDefault && available.has(hostDefault)) return hostDefault;
-  return sessions[0]?.id ?? null;
+  return selectPreferredForegroundSession(stored, sessions, hostDefault);
 }
 
 function rememberForegroundSession(workspaceId: string, sessionId: string | null): void {

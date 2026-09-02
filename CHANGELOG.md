@@ -22,6 +22,43 @@ which is **not** a pass.
 
 ## [Unreleased]
 
+## [0.3.4] — CANDIDATE
+
+> **Status: candidate.** This stabilization work is isolated on the v0.3.4 worktree. It is not
+> merged, tagged or published to npm, and exact-artifact qualification remains a separate gate.
+
+### Changed
+
+- Bind Settings writes to the active Workspace and Context revision in addition to the Settings
+  document revision, so a stale browser tab cannot apply a valid patch to another Workspace.
+- Preserve lexical symbolic-link identity while projecting a contained target as a file or
+  directory, and expose the true changed-file total separately from the bounded Review page.
+- Split exact-tgz qualification into a script-disabled identity stage and a separate lifecycle-
+  enabled consumer/native stage.
+
+### Fixed
+
+- Keep split terminal surrogate pairs intact across delayed PTY callbacks, wait for browser write
+  capacity without animation-frame spin, and drain reconnect data in replay, live-tail, exit order.
+- Reject blank Session renames without changing durable metadata, and keep active-turn state intact
+  when a busy-rejected slash command fails.
+- Isolate concurrent command transcript capture so interleaved output cannot cross Sessions or
+  leave the process-wide console bridge installed.
+- Project cold and resident Composer model, Effort and permission changes from the actor Runtime's
+  canonical Session instead of a pre-actor metadata copy.
+- Detect binary content on every file page, render contained directory symlinks as expandable and
+  label Review truncation against the true repository total.
+
+### Security
+
+- Redact URL userinfo and structured sensitive keys before browser/evidence projection; evaluate
+  file aliases plus canonical targets and block sensitive current or rename-source Git diffs before
+  starting a content process.
+- Require matching, canonical-digest-verified terminal receipts and durable receipt facts before a
+  modern tool result can project success.
+- Fail release qualification for a failed live canary or duplicated runtime run and manifest
+  evidence instead of accepting a structurally complete but non-independent matrix.
+
 ## [0.3.3] — CANDIDATE
 
 > **Status: candidate.** The implementation and local qualification remain isolated on the v0.3.3

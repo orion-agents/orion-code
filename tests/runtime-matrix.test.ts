@@ -446,6 +446,11 @@ describe('v0.3.x release receipts', () => {
       scenarioIds: runtimeRuns[0].scenarioIds.filter(id => id !== 'WEB33-P0-23'),
     };
     const duplicate = { ...primary[1], runId: primary[0].runId };
+    const duplicateRuntime = {
+      ...runtimeRuns[1],
+      runId: runtimeRuns[0].runId,
+      manifestDigest: runtimeRuns[0].manifestDigest,
+    };
     const leaked = { ...runtimeRuns[2], secretScanFindings: 1 };
 
     expect(create(primary, [skipped, runtimeRuns[1], runtimeRuns[2]]).decision).toBe('NO_GO');
@@ -453,7 +458,38 @@ describe('v0.3.x release receipts', () => {
     expect(create(primary, [runtimeRuns[0], runtimeRuns[1], skippedWeb32]).decision).toBe('NO_GO');
     expect(create(primary, [skippedWeb33, runtimeRuns[1], runtimeRuns[2]]).decision).toBe('NO_GO');
     expect(create([primary[0], duplicate, primary[2]], runtimeRuns).decision).toBe('NO_GO');
+    expect(create(primary, [runtimeRuns[0], duplicateRuntime, runtimeRuns[2]]).decision).toBe(
+      'NO_GO'
+    );
     expect(create(primary, [runtimeRuns[0], runtimeRuns[1], leaked]).decision).toBe('NO_GO');
+  });
+
+  test('fails Web E2E receipt when an attempted live canary fails', () => {
+    const packaged = artifact();
+    const create = (liveCanary: 'PASS' | 'FAIL' | 'NOT_RUN') =>
+      createWebE2EReleaseReceiptV1({
+        version: 1,
+        kind: 'orion.web-e2e-release',
+        createdAt: '2026-08-26T00:00:00.000Z',
+        source: packaged.source,
+        artifactReceiptDigest: packaged.receiptDigest,
+        tarballSha256: packaged.tarball.sha256,
+        package: packaged.package,
+        primaryRuns: [webRun('primary', 1), webRun('primary', 2), webRun('primary', 3)],
+        runtimeRuns: [webRun('runtime', 22), webRun('runtime', 24), webRun('runtime', 26)],
+        liveCanary,
+      });
+
+    expect(create('PASS').decision).toBe('GO');
+    expect(create('NOT_RUN').decision).toBe('GO');
+    expect(create('FAIL')).toEqual(
+      expect.objectContaining({
+        decision: 'NO_GO',
+        checks: expect.arrayContaining([
+          expect.objectContaining({ id: 'live_canary', status: 'fail' }),
+        ]),
+      })
+    );
   });
 
   test('accepts only a complete Node 22/24/26 matrix bound to one exact tarball', () => {

@@ -88,7 +88,7 @@ describe('TerminalWriteQueue', () => {
     expect(sequences).toEqual([1]);
   });
 
-  it('caps the default animation-frame submission budget at one 3KiB write', () => {
+  it('warms a cold burst at 1KiB before using the 3KiB sustained budget', () => {
     const scheduler = new TaskScheduler();
     const writes: Array<{ data: string; callback: () => void }> = [];
     const queue = new TerminalWriteQueue({
@@ -98,12 +98,14 @@ describe('TerminalWriteQueue', () => {
       cancelTask: scheduler.cancel,
     });
 
-    queue.enqueue('x'.repeat(4 * 1024));
+    queue.enqueue('x'.repeat(512 * 1024));
+    for (let frame = 0; frame < 120; frame += 1) {
+      scheduler.runNext();
+      expect(writes[frame].data).toHaveLength(1 * 1024);
+      writes[frame].callback();
+    }
     scheduler.runNext();
-
-    expect(writes).toHaveLength(1);
-    expect(writes.reduce((total, write) => total + write.data.length, 0)).toBe(3 * 1024);
-    expect(scheduler.size()).toBe(0);
+    expect(writes[120].data).toHaveLength(3 * 1024);
   });
 
   it('never splits a Unicode surrogate pair at a render boundary', () => {
@@ -127,6 +129,30 @@ describe('TerminalWriteQueue', () => {
     writes[1].callback();
     scheduler.runNext();
     expect(writes[2].data).toBe('b');
+  });
+
+  it('waits for xterm acknowledgement instead of spinning frames at a surrogate boundary', () => {
+    const scheduler = new TaskScheduler();
+    const writes: Array<{ data: string; callback: () => void }> = [];
+    const queue = new TerminalWriteQueue({
+      target: { write: (data, callback) => writes.push({ data, callback }) },
+      onSequenceCommitted: () => undefined,
+      scheduleTask: scheduler.schedule,
+      cancelTask: scheduler.cancel,
+      maxChunkCharacters: 2,
+      maxInFlightCharacters: 3,
+    });
+
+    queue.enqueue('ab😀');
+    scheduler.runNext();
+    expect(writes.map(write => write.data)).toEqual(['ab']);
+    expect(scheduler.size()).toBe(0);
+
+    writes[0].callback();
+    expect(scheduler.size()).toBe(1);
+    scheduler.runNext();
+    expect(writes.map(write => write.data)).toEqual(['ab', '😀']);
+    expect(scheduler.size()).toBe(0);
   });
 
   it('cancels pending work and suppresses late callbacks after disposal', () => {

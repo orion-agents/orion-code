@@ -9,7 +9,12 @@ import type {
   WebToolDetailPageV1,
   WebToolDetailSummaryV1,
 } from '../../src/web/protocol';
-import { activeSessionSnapshot, guardedBrowserGet, webBootstrap } from './fixtures/api';
+import {
+  activeSessionSnapshot,
+  foregroundSessionId,
+  guardedBrowserGet,
+  webBootstrap,
+} from './fixtures/api';
 import { MCP_FIXTURE_ECHO_TOOL } from './fixtures/mcp-server';
 import { OPENAI_FIXTURE_MARKERS, OPENAI_FIXTURE_PROMPTS } from './fixtures/openai-provider';
 import { allowExpectedNetworkFailures, capturedSseEvents, expect, test } from './fixtures/test';
@@ -73,7 +78,9 @@ test('E2E-P0-07 workspaces stay isolated while MCP and large artifacts are expli
   expect(crossWorkspace.status).toBe(409);
   const afterRejectedActivation = await webBootstrap(page);
   expect(afterRejectedActivation.workspace).toBe(secondaryWorkspace);
-  expect(afterRejectedActivation.activeSessionId).toBe(secondary.session.id);
+  expect(await foregroundSessionId(page, afterRejectedActivation.workspaceId)).toBe(
+    secondary.session.id
+  );
   evidence.recordFact('workspace.primary_session_digest', digestIdentifier(primary.session.id));
   evidence.recordFact('workspace.secondary_session_digest', digestIdentifier(secondary.session.id));
   evidence.recordFact('workspace.cross_activation_status', crossWorkspace.status);

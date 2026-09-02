@@ -126,9 +126,10 @@ export function ReviewPanel({
           </span>
           <div>
             <strong>
-              {snapshot.clean ? '没有待审阅变更' : `${snapshot.changedFiles.length} 个变更文件`}
+              {snapshot.clean ? '没有待审阅变更' : `${snapshot.totalChangedFiles} 个变更文件`}
             </strong>
             <span>
+              {snapshot.truncated ? '当前显示 · ' : ''}
               {snapshot.stagedCount} staged · {snapshot.unstagedCount} unstaged ·{' '}
               {snapshot.untrackedCount} untracked · {snapshot.conflictCount} conflict
             </span>
@@ -144,6 +145,12 @@ export function ReviewPanel({
           <Icon name="refresh" size={15} />
         </button>
       </div>
+      {snapshot.truncated ? (
+        <p className="resource-notice" role="status">
+          当前显示 {snapshot.changedFiles.length} / {snapshot.totalChangedFiles}{' '}
+          个变更文件；分类计数仅覆盖当前显示范围。
+        </p>
+      ) : null}
       {resourceNotice ? (
         <p className="resource-notice" role="status">
           {resourceNotice}

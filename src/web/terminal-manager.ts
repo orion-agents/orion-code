@@ -588,7 +588,7 @@ export class TerminalManagerV1 {
     }
   }
 
-  private flushPendingOutput(entry: TerminalEntry, force: boolean): void {
+  private flushPendingOutput(entry: TerminalEntry, force: boolean, final = false): void {
     let emitted = false;
     while (
       entry.pendingOutput.length > 0 &&
@@ -604,14 +604,14 @@ export class TerminalManagerV1 {
         end -= 1;
       }
       if (
-        !force &&
+        !final &&
         end === entry.pendingOutput.length &&
         isHighSurrogate(entry.pendingOutput.charCodeAt(end - 1))
       ) {
         break;
       }
       if (end <= 0) break;
-      const value = entry.pendingOutput.slice(0, end);
+      const value = replaceUnpairedSurrogates(entry.pendingOutput.slice(0, end));
       entry.pendingOutput = entry.pendingOutput.slice(end);
       const frame = Object.freeze({
         sequence: entry.nextSequence++,
@@ -638,7 +638,7 @@ export class TerminalManagerV1 {
 
   private handleExit(entry: TerminalEntry, event: { exitCode: number; signal?: number }): void {
     if (this.terminals.get(entry.id) !== entry) return;
-    this.flushPendingOutput(entry, true);
+    this.flushPendingOutput(entry, true, true);
     entry.state = 'exited';
     entry.exitCode = event.exitCode;
     entry.signal = event.signal;
@@ -869,6 +869,25 @@ function isHighSurrogate(value: number): boolean {
 
 function isLowSurrogate(value: number): boolean {
   return value >= 0xdc00 && value <= 0xdfff;
+}
+
+function replaceUnpairedSurrogates(value: string): string {
+  let normalized = '';
+  for (let index = 0; index < value.length; index += 1) {
+    const current = value.charCodeAt(index);
+    if (isHighSurrogate(current)) {
+      const next = value.charCodeAt(index + 1);
+      if (isLowSurrogate(next)) {
+        normalized += value[index] + value[index + 1];
+        index += 1;
+      } else {
+        normalized += '\ufffd';
+      }
+      continue;
+    }
+    normalized += isLowSurrogate(current) ? '\ufffd' : value[index];
+  }
+  return normalized;
 }
 
 interface ProcessRow {

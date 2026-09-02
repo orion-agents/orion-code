@@ -5255,6 +5255,13 @@ html[data-panel-resizing] .workbench-shell {
     max-width: 280px;
     flex: 0 0 auto;
   }
+  .composer-control-actions .model-control-cluster {
+    width: 100%;
+    flex: 1 0 100%;
+  }
+  .model-control-cluster .composer-control-trigger {
+    min-width: 32px;
+  }
 }
 
 @media (max-width: 480px) {

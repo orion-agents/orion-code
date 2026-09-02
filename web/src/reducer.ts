@@ -1028,9 +1028,27 @@ function applyComposerState(
   state: WorkbenchState,
   composer: WebComposerControlStateV1
 ): WorkbenchState {
+  const cached = state.sessionProjectionById[composer.sessionId];
+  const sessionProjectionById = cached
+    ? cacheSessionProjection(state.sessionProjectionById, {
+        ...cached,
+        sessionRuntime: composer.sessionRuntime,
+        composer,
+      })
+    : state.sessionProjectionById;
   return {
     ...state,
     composer,
+    sessionSnapshot:
+      state.sessionSnapshot?.session.id === composer.sessionId
+        ? {
+            ...state.sessionSnapshot,
+            sessionRuntime: composer.sessionRuntime,
+            composer,
+          }
+        : state.sessionSnapshot,
+    sessionProjectionById,
+    sessionRuntimeById: cacheRuntimeSummary(state.sessionRuntimeById, composer.sessionRuntime),
     processing: composer.processing,
     mode: composer.mode,
     queue: {
