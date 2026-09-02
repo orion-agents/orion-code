@@ -171,6 +171,20 @@ export class WebWorkbenchController {
   private contextTransitionReserved = false;
   private closed = false;
   private shutdownResult?: Promise<void>;
+  /**
+   * Host-observed Web activity counters. Exposed through diagnostics() so E2E
+   * and the diagnostics panel can prove that a pure Session selection issues
+   * no control-plane reinstall (controlPlaneInstalls delta 0) and that
+   * snapshots stay bounded and fast (snapshotTotalMs / snapshotLastMs).
+   */
+  private readonly sessionActivity = {
+    snapshotRequests: 0,
+    snapshotFailures: 0,
+    snapshotTotalMs: 0,
+    snapshotLastMs: 0,
+    controlPlaneInstalls: 0,
+    controlPlaneShutdowns: 0,
+  };
   private workspaceWatchers: FSWatcher[] = [];
   private resourceInvalidationTimer?: NodeJS.Timeout;
 
@@ -430,6 +444,24 @@ export class WebWorkbenchController {
     tail = false,
     context?: WebContextGuardV1
   ): WebSessionSnapshotV1 {
+    const startedAt = Date.now();
+    try {
+      const snapshot = this.snapshotSessionV1(sessionId, cursor, pageSize, tail, context);
+      this.recordSessionSnapshotActivity(startedAt);
+      return snapshot;
+    } catch (error) {
+      this.recordSessionSnapshotActivity(startedAt, true);
+      throw error;
+    }
+  }
+
+  private snapshotSessionV1(
+    sessionId: string,
+    cursor?: string,
+    pageSize = 50,
+    tail = false,
+    context?: WebContextGuardV1
+  ): WebSessionSnapshotV1 {
     if (context) this.assertContextGuard(context);
     const session = requireSession(sessionId);
     if (canonicalDirectory(session.projectPath) !== this.workspaceValue) {
@@ -630,6 +662,14 @@ export class WebWorkbenchController {
     });
     if (context) this.assertContextGuard(context);
     return snapshot;
+  }
+
+  private recordSessionSnapshotActivity(startedAt: number, failed = false): void {
+    const elapsedMs = Date.now() - startedAt;
+    this.sessionActivity.snapshotRequests += 1;
+    if (failed) this.sessionActivity.snapshotFailures += 1;
+    this.sessionActivity.snapshotTotalMs += elapsedMs;
+    this.sessionActivity.snapshotLastMs = elapsedMs;
   }
 
   composerState(sessionId: string, context?: WebContextGuardV1): WebComposerControlStateV1 {
@@ -1630,6 +1670,10 @@ export class WebWorkbenchController {
       harness,
       eventStream: this.eventHub.snapshot(),
       workspaceKernel: this.runtimeValue.workspaceRuntimeKernel?.diagnostics() ?? null,
+      session: {
+        ...this.sessionActivity,
+        actors: this.sessionRegistry.stats(),
+      },
       performance: {
         files: this.fileService.performanceCounters(),
         git: this.gitService.performanceCounters(),
@@ -1652,6 +1696,7 @@ export class WebWorkbenchController {
 
   private async shutdownOwnedResources(): Promise<void> {
     const failures: unknown[] = [];
+    this.sessionActivity.controlPlaneShutdowns += 1;
     this.workspaceMutations.close('Orion Web Workbench shutdown');
 
     try {
@@ -1879,6 +1924,10 @@ export class WebWorkbenchController {
   }
 
   private async installRuntime(workspace: string, publishState = true): Promise<void> {
+    // Every control-plane install reloads the Workspace catalog, provider
+    // wiring, Skills and MCP adapters, so this counter proxies "catalog
+    // reload" for the runtime-ownership diagnostics matrix.
+    this.sessionActivity.controlPlaneInstalls += 1;
     this.closeComposerObserver();
     const runtime = await this.createRuntime(workspace);
     this.closeWorkspaceWatchers();

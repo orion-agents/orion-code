@@ -760,6 +760,42 @@ function DiagnosticsPanel({
           <DiagnosticRow label="事件 UUID" value={state.lastEventId?.slice(0, 12) ?? '—'} />
           <DiagnosticRow label="会话快照" value={snapshotSync.status} />
           <DiagnosticRow label="保留事件" value={`${diagnostics?.eventStream?.retained ?? '—'}`} />
+          <DiagnosticRow
+            label="快照请求"
+            value={
+              diagnostics?.session
+                ? `${diagnostics.session.snapshotRequests} 次 / 失败 ${diagnostics.session.snapshotFailures}`
+                : '—'
+            }
+          />
+          <DiagnosticRow
+            label="快照时延"
+            value={
+              diagnostics?.session
+                ? `${diagnostics.session.snapshotLastMs} ms（累计 ${diagnostics.session.snapshotTotalMs} ms）`
+                : '—'
+            }
+          />
+          <DiagnosticRow
+            label="Session actor"
+            value={
+              diagnostics?.session
+                ? `${diagnostics.session.actors.actorsCreated} 分配 / ${diagnostics.session.actors.actorsEvicted} LRU 驱逐`
+                : '—'
+            }
+          />
+          <DiagnosticRow
+            label="control plane"
+            value={
+              diagnostics?.session
+                ? `${diagnostics.session.controlPlaneInstalls} 次装载 / ${diagnostics.session.controlPlaneShutdowns} 次关闭`
+                : '—'
+            }
+          />
+          <DiagnosticRow
+            label="浏览器切换"
+            value={`${state.clientTelemetry.sessionSwitches} 次 / 缓存命中 ${state.clientTelemetry.snapshotCacheHits} / 加载 ${state.clientTelemetry.snapshotLoads}`}
+          />
         </dl>
       </section>
       {diagnostics?.contextUsage ? (

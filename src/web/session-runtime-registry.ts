@@ -108,6 +108,12 @@ export class WebSessionRuntimeRegistryV1<TActor extends object> {
   private ordinal = 0;
   private runningCountValue = 0;
   private closed = false;
+  // Host-level actor pool counters. Allocations are the authoritative signal
+  // for "pure selection must not start a Session Runtime" diagnostics: an E2E
+  // reads these before/after a switch and asserts a zero delta.
+  private actorsCreatedCount = 0;
+  private actorsClosedCount = 0;
+  private actorsEvictedCount = 0;
 
   constructor(private readonly options: WebSessionRuntimeRegistryOptionsV1<TActor>) {
     this.maxRunningSessions = boundedInteger(
@@ -141,6 +147,20 @@ export class WebSessionRuntimeRegistryV1<TActor extends object> {
     let count = 0;
     for (const record of this.records.values()) if (record.actor !== undefined) count += 1;
     return count;
+  }
+
+  /**
+   * Cumulative actor pool counters since the registry was created. E2E and
+   * diagnostics compare two reads to prove a pure Session selection allocated
+   * no Session actor (actorsCreated delta 0) and performed no capacity
+   * eviction (actorsEvicted delta 0) while the pool keeps actors alive.
+   */
+  stats(): { readonly actorsCreated: number; readonly actorsClosed: number; readonly actorsEvicted: number } {
+    return {
+      actorsCreated: this.actorsCreatedCount,
+      actorsClosed: this.actorsClosedCount,
+      actorsEvicted: this.actorsEvictedCount,
+    };
   }
 
   summary(key: WebSessionActorKeyV1): WebSessionRuntimeSummaryV1 {
@@ -334,6 +354,7 @@ export class WebSessionRuntimeRegistryV1<TActor extends object> {
             await this.options.closeActor(actor, reason);
             record.actor = undefined;
             record.estimatedBytes = 0;
+            this.actorsClosedCount += 1;
             this.transition(record, wasActive ? 'interrupted' : 'cold');
           } catch (error) {
             record.failure = error;
@@ -401,6 +422,7 @@ export class WebSessionRuntimeRegistryV1<TActor extends object> {
       record.actorReady = true;
       actor = undefined;
       record.failure = undefined;
+      this.actorsCreatedCount += 1;
       this.transition(record, 'idle');
       return record.actor;
     } catch (error) {
@@ -446,6 +468,7 @@ export class WebSessionRuntimeRegistryV1<TActor extends object> {
       );
     }
     await this.closeResidentLocked(candidate, 'idle Session actor evicted by LRU', 'cold');
+    this.actorsEvictedCount += 1;
   }
 
   private isEvictable(record: SessionActorRecord<TActor>): boolean {
@@ -471,6 +494,7 @@ export class WebSessionRuntimeRegistryV1<TActor extends object> {
       await this.options.closeActor(actor, reason);
       record.actor = undefined;
       record.estimatedBytes = 0;
+      this.actorsClosedCount += 1;
       this.transition(record, terminalPhase);
     } catch (error) {
       record.failure = error;

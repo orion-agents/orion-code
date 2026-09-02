@@ -26,6 +26,20 @@ import {
 } from './support/thread-projection-compat';
 import { createFakeWebRuntime } from './support/web-runtime';
 
+interface WebSessionActivityDiagnostics {
+  readonly snapshotRequests: number;
+  readonly snapshotFailures: number;
+  readonly snapshotTotalMs: number;
+  readonly snapshotLastMs: number;
+  readonly controlPlaneInstalls: number;
+  readonly controlPlaneShutdowns: number;
+  readonly actors: {
+    readonly actorsCreated: number;
+    readonly actorsClosed: number;
+    readonly actorsEvicted: number;
+  };
+}
+
 describe('WebWorkbenchController', () => {
   let workspace: string;
 
@@ -1098,6 +1112,45 @@ describe('WebWorkbenchController', () => {
       'message-5',
     ]);
     expect(oldest.transcript.nextCursor).toBeNull();
+    await controller.shutdown();
+  });
+
+  test('counts snapshot activity and proves cold reads allocate no Session actor', async () => {
+    const session = createSession(workspace, 'test-model');
+    appendSessionMessages(session.id, [{ role: 'user', content: 'hello', timestamp: 1 }]);
+    const controller = await WebWorkbenchController.create({
+      cwd: workspace,
+      createRuntime: async cwd => createFakeWebRuntime(cwd),
+    });
+
+    const before = await controller.diagnostics();
+    const beforeSession = before.session as
+      | WebSessionActivityDiagnostics
+      | undefined;
+    expect(beforeSession).toMatchObject({
+      snapshotRequests: 0,
+      snapshotFailures: 0,
+      actors: { actorsCreated: 0, actorsClosed: 0, actorsEvicted: 0 },
+    });
+    expect(beforeSession?.controlPlaneInstalls).toBeGreaterThanOrEqual(1);
+
+    expect(controller.sessionSnapshot(session.id, undefined, 50, true).session.id).toBe(
+      session.id
+    );
+    // An unknown Session fails the request; the failure itself is counted but
+    // must not allocate an actor or touch the control plane.
+    expect(() => controller.sessionSnapshot('missing-session', undefined, 50, true)).toThrow();
+
+    const after = await controller.diagnostics();
+    const afterSession = after.session as WebSessionActivityDiagnostics | undefined;
+    expect(afterSession).toMatchObject({
+      snapshotRequests: 2,
+      snapshotFailures: 1,
+      actors: { actorsCreated: 0, actorsClosed: 0, actorsEvicted: 0 },
+    });
+    expect(afterSession?.snapshotTotalMs ?? 0).toBeGreaterThanOrEqual(
+      afterSession?.snapshotLastMs ?? 0
+    );
     await controller.shutdown();
   });
 

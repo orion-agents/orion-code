@@ -339,6 +339,75 @@ describe('Web Workbench reducer', () => {
     expect(latest.sessionSync['session-1']).toEqual({ status: 'ready', requestId: 2 });
   });
 
+  test('tracks Session switch, cache-hit, load and failure client telemetry', () => {
+    const contextual = {
+      ...initialWorkbenchState,
+      connection: 'live' as const,
+      contextRevision: 'context-1',
+      workspaceId: 'workspace-1',
+    };
+    const cold = workbenchReducer(contextual, {
+      type: 'reset_session_view',
+      activeSessionId: 'session-1',
+    });
+    expect(cold.clientTelemetry).toEqual({
+      sessionSwitches: 1,
+      snapshotCacheHits: 0,
+      snapshotLoads: 0,
+      snapshotFailures: 0,
+    });
+
+    const started = workbenchReducer(cold, {
+      type: 'session_snapshot_started',
+      sessionId: 'session-1',
+      requestId: 1,
+      cached: false,
+      contextRevision: 'context-1',
+      workspaceId: 'workspace-1',
+    });
+    expect(started.clientTelemetry.snapshotLoads).toBe(1);
+
+    const failed = workbenchReducer(started, {
+      type: 'snapshot_failed',
+      sessionId: 'session-1',
+      requestId: 1,
+      contextRevision: 'context-1',
+      workspaceId: 'workspace-1',
+      detail: 'temporary failure',
+    });
+    expect(failed.clientTelemetry.snapshotFailures).toBe(1);
+
+    // Cache a background Session, then switch to it: a switch plus a cache hit,
+    // and the cached transcript renders without clearing.
+    const backgroundStarted = workbenchReducer(failed, {
+      type: 'session_snapshot_started',
+      sessionId: 'session-2',
+      requestId: 2,
+      cached: true,
+      contextRevision: 'context-1',
+      workspaceId: 'workspace-1',
+    });
+    const backgroundCached = workbenchReducer(backgroundStarted, {
+      type: 'session_snapshot_loaded',
+      snapshot: snapshotFor('session-2', 'cached content'),
+      requestId: 2,
+      contextRevision: 'context-1',
+      workspaceId: 'workspace-1',
+    });
+    const warm = workbenchReducer(backgroundCached, {
+      type: 'reset_session_view',
+      activeSessionId: 'session-2',
+    });
+    expect(warm.clientTelemetry).toEqual({
+      sessionSwitches: 2,
+      snapshotCacheHits: 1,
+      snapshotLoads: 2, // foreground session-1 load + background session-2 prefetch
+      snapshotFailures: 1,
+    });
+    expect(warm.transcript.map(entry => entry.content)).toEqual(['cached content']);
+    expect(warm.sessionSync['session-2']?.status).toBe('refreshing');
+  });
+
   test('caches a completed non-foreground snapshot without replacing the selected Session', () => {
     const contextual = {
       ...initialWorkbenchState,

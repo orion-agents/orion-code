@@ -256,6 +256,19 @@ export interface DiagnosticsSnapshot extends Record<string, unknown> {
     readonly retained?: number;
     readonly replayResets?: number;
   };
+  readonly session?: {
+    readonly snapshotRequests: number;
+    readonly snapshotFailures: number;
+    readonly snapshotTotalMs: number;
+    readonly snapshotLastMs: number;
+    readonly controlPlaneInstalls: number;
+    readonly controlPlaneShutdowns: number;
+    readonly actors: {
+      readonly actorsCreated: number;
+      readonly actorsClosed: number;
+      readonly actorsEvicted: number;
+    };
+  };
   readonly performance?: {
     readonly files?: {
       readonly readOperations: number;
@@ -335,6 +348,15 @@ export interface WorkbenchState {
   readonly sessionNextCursor: string | null;
   readonly activeSessionId: string | null;
   readonly sessionSync: Readonly<Record<string, SessionSnapshotSyncState>>;
+  /** Browser-local cumulative counters for Session switching diagnostics.
+   * Distinct from Host `diagnostics.session`: this tracks foreground switches
+   * and cache-hit renders, which only the browser can observe. */
+  readonly clientTelemetry: {
+    readonly sessionSwitches: number;
+    readonly snapshotCacheHits: number;
+    readonly snapshotLoads: number;
+    readonly snapshotFailures: number;
+  };
   readonly sessionProjectionById: Readonly<Record<string, WebSessionSnapshotV1>>;
   readonly sessionRuntimeById: Readonly<Record<string, WebSessionRuntimeSummaryV1>>;
   readonly transcript: readonly WebTranscriptEntry[];
@@ -390,6 +412,12 @@ export const initialWorkbenchState: WorkbenchState = {
   sessionNextCursor: null,
   activeSessionId: null,
   sessionSync: {},
+  clientTelemetry: {
+    sessionSwitches: 0,
+    snapshotCacheHits: 0,
+    snapshotLoads: 0,
+    snapshotFailures: 0,
+  },
   sessionProjectionById: {},
   sessionRuntimeById: {},
   transcript: [],

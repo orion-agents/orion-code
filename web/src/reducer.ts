@@ -242,10 +242,13 @@ export function workbenchReducer(
       ) {
         return state;
       }
-      return setSessionSnapshotSync(state, action.sessionId, {
-        status: action.cached ? 'refreshing' : 'loading',
-        requestId: action.requestId,
-      });
+      return withTelemetry(
+        setSessionSnapshotSync(state, action.sessionId, {
+          status: action.cached ? 'refreshing' : 'loading',
+          requestId: action.requestId,
+        }),
+        { snapshotLoads: 1 }
+      );
     case 'session_snapshot_loaded': {
       const sessionId = action.snapshot.session.id;
       if (!snapshotContextMatches(state, action.contextRevision, action.workspaceId)) return state;
@@ -459,11 +462,14 @@ export function workbenchReducer(
       if (!snapshotRequestMatches(state, action.sessionId, action.requestId)) return state;
       if (action.sessionId !== state.activeSessionId && action.requestId === undefined)
         return state;
-      const failed = setSessionSnapshotSync(state, action.sessionId, {
-        status: 'failed',
-        requestId: action.requestId ?? state.sessionSync[action.sessionId]?.requestId ?? null,
-        error: action.detail,
-      });
+      const failed = withTelemetry(
+        setSessionSnapshotSync(state, action.sessionId, {
+          status: 'failed',
+          requestId: action.requestId ?? state.sessionSync[action.sessionId]?.requestId ?? null,
+          error: action.detail,
+        }),
+        { snapshotFailures: 1 }
+      );
       if (action.sessionId !== state.activeSessionId) return failed;
       if (state.connection === 'replay-required') return failed;
       return {
@@ -483,7 +489,16 @@ export function workbenchReducer(
         announcement: '当前会话快照尚未同步，写操作已暂停',
       };
     }
-    case 'reset_session_view':
+    case 'reset_session_view': {
+      const switching = Boolean(action.activeSessionId) &&
+        action.activeSessionId !== state.activeSessionId;
+      const cached = Boolean(
+        action.activeSessionId && state.sessionProjectionById[action.activeSessionId]
+      );
+      const telemetry = {
+        ...(switching ? { sessionSwitches: 1 } : {}),
+        ...(cached ? { snapshotCacheHits: 1 } : {}),
+      };
       if (action.activeSessionId && state.sessionProjectionById[action.activeSessionId]) {
         const sessionId = action.activeSessionId;
         const restored = applySessionSnapshot(
@@ -491,18 +506,21 @@ export function workbenchReducer(
           state.sessionProjectionById[sessionId],
           false
         );
-        return {
-          ...setSessionSnapshotSync(restored, sessionId, {
-            status: 'refreshing',
-            requestId: state.sessionSync[sessionId]?.requestId ?? null,
-          }),
-          notice:
-            state.notice?.domain === 'session-snapshot' && state.notice.sessionId !== sessionId
-              ? null
-              : state.notice,
-          statusMessage: '已显示最近会话状态，正在同步…',
-          announcement: '已切换到缓存会话，正在同步最新状态',
-        };
+        return withTelemetry(
+          {
+            ...setSessionSnapshotSync(restored, sessionId, {
+              status: 'refreshing',
+              requestId: state.sessionSync[sessionId]?.requestId ?? null,
+            }),
+            notice:
+              state.notice?.domain === 'session-snapshot' && state.notice.sessionId !== sessionId
+                ? null
+                : state.notice,
+            statusMessage: '已显示最近会话状态，正在同步…',
+            announcement: '已切换到缓存会话，正在同步最新状态',
+          },
+          telemetry
+        );
       }
       const cleared = {
         ...clearSessionProjection(state),
@@ -515,12 +533,14 @@ export function workbenchReducer(
         statusMessage: action.activeSessionId ? '正在加载会话快照…' : '请选择会话',
         announcement: action.activeSessionId ? '正在加载会话快照' : '会话已清除',
       };
-      return action.activeSessionId
+      const synced = action.activeSessionId
         ? setSessionSnapshotSync(cleared, action.activeSessionId, {
             status: 'loading',
             requestId: state.sessionSync[action.activeSessionId]?.requestId ?? null,
           })
         : cleared;
+      return withTelemetry(synced, telemetry);
+    }
     case 'recovering':
       return {
         ...state,
@@ -1523,6 +1543,7 @@ function setSessionSnapshotSync(
   const overflow = Object.keys(sessionSync).length - MAX_SESSION_SYNC_ENTRIES;
   if (overflow > 0) {
     Object.keys(sessionSync)
+      .filter(id => id !== state.activeSessionId && id !== sessionId)
       .slice(0, overflow)
       .forEach(id => delete sessionSync[id]);
   }
@@ -1530,6 +1551,19 @@ function setSessionSnapshotSync(
     ...state,
     sessionSync,
   };
+}
+
+function withTelemetry(
+  state: WorkbenchState,
+  delta: Partial<WorkbenchState['clientTelemetry']>
+): WorkbenchState {
+  const clientTelemetry: WorkbenchState['clientTelemetry'] = {
+    sessionSwitches: state.clientTelemetry.sessionSwitches + (delta.sessionSwitches ?? 0),
+    snapshotCacheHits: state.clientTelemetry.snapshotCacheHits + (delta.snapshotCacheHits ?? 0),
+    snapshotLoads: state.clientTelemetry.snapshotLoads + (delta.snapshotLoads ?? 0),
+    snapshotFailures: state.clientTelemetry.snapshotFailures + (delta.snapshotFailures ?? 0),
+  };
+  return { ...state, clientTelemetry };
 }
 
 function markSessionSnapshotReady(state: WorkbenchState, sessionId: string): WorkbenchState {
