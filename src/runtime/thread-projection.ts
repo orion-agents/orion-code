@@ -355,6 +355,8 @@ export function threadProjectionDigestForVersionV1(
     ...legacyContent
   } = projection;
   void _digest;
+  void _diagnosticEvents;
+  void _compactEvents;
   if (version === 1) return digestRuntimeValue(legacyContent);
   const content = {
     ...legacyContent,
