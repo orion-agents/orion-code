@@ -1,4 +1,5 @@
 import { allowExpectedNetworkFailures, test, expect } from './fixtures/test';
+import { readRepositoryVersion } from './fixtures/package-version';
 import { relative, resolve } from 'path';
 import {
   activeSessionButton,
@@ -7,13 +8,13 @@ import {
   workbenchUi,
 } from './fixtures/ui';
 
-test('E2E-P0-01 packaged Host renders v0.3.4 and persists a renamed session', async ({
+test('E2E-P0-01 packaged Host renders the repository version and persists a renamed session', async ({
   artifactState,
   evidence,
   host,
   page,
 }, testInfo) => {
-  const expectedVersion = '0.3.4';
+  const expectedVersion = readRepositoryVersion(artifactState.repositoryRoot);
   // Session activation deliberately replaces the EventSource; Chrome reports the old stream aborted.
   allowExpectedNetworkFailures(testInfo, 3);
   expect(artifactState.artifact.receipt.package).toMatchObject({

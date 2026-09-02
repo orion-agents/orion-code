@@ -231,14 +231,36 @@ function checkVersionConsistency() {
       );
     }
   }
+  // A release may live on a topic branch (`codex/vX.Y.Z`) or run inside CI on
+  // a detached HEAD where `git branch --show-current` is empty. Consider the
+  // local branch plus the pull-request head ref (`GITHUB_HEAD_REF`) and the
+  // expanded push ref (`GITHUB_REF`) so the release gate still pins the
+  // manifest version to the branch under review.
   const branch = run('git', ['branch', '--show-current']).stdout.trim();
-  const releaseBranchVersion = branch.match(/^v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/)?.[1];
-  if (releaseBranchVersion) {
-    checked.push(`release-branch=${branch}`);
-    if (version !== releaseBranchVersion) {
-      mismatches.push(
-        `release branch ${branch}: package.json version expected ${releaseBranchVersion}, found ${version}`
-      );
+  const releaseRefCandidates = [
+    branch,
+    process.env.GITHUB_HEAD_REF ?? '',
+    (process.env.GITHUB_REF ?? '').replace(/^refs\/heads\//, ''),
+  ]
+    .map(candidate => candidate.trim())
+    .filter(Boolean);
+  const releaseBranchMatches = [];
+  for (const candidate of releaseRefCandidates) {
+    const candidateVersion = candidate.match(
+      /^(?:codex\/)?v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/
+    )?.[1];
+    if (candidateVersion) {
+      releaseBranchMatches.push({ candidate, candidateVersion });
+    }
+  }
+  if (releaseBranchMatches.length > 0) {
+    checked.push(`release-branch=${releaseBranchMatches.map(match => match.candidate).join('|')}`);
+    for (const { candidate, candidateVersion } of releaseBranchMatches) {
+      if (version !== candidateVersion) {
+        mismatches.push(
+          `release branch ${candidate}: package.json version expected ${candidateVersion}, found ${version}`
+        );
+      }
     }
   }
 

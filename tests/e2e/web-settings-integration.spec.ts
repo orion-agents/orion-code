@@ -25,6 +25,7 @@ import {
   OPENAI_FIXTURE_PROMPTS,
 } from './fixtures/openai-provider';
 import { startOrionHost } from './fixtures/orion-host';
+import { readRepositoryVersion } from './fixtures/package-version';
 import {
   allowExpectedNetworkFailures,
   capturedSseEvents,
@@ -1108,9 +1109,10 @@ test('SET-P0-14 installed tarball critical Settings journey runs on the supporte
   provider,
 }, testInfo) => {
   allowExpectedNetworkFailures(testInfo, 2);
+  const expectedVersion = readRepositoryVersion(artifactState.repositoryRoot);
   expect(artifactState.artifact.receipt.package).toMatchObject({
     name: '@orion-agents/orion-code',
-    version: '0.3.4',
+    version: expectedVersion,
   });
   expect(artifactState.environment.nodeMajor).toBe(Number(process.versions.node.split('.')[0]));
   expect([22, 24, 26]).toContain(artifactState.environment.nodeMajor);

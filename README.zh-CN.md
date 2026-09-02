@@ -2,10 +2,13 @@
 
 面向终端与浏览器、本地优先的目标驱动 Coding Agent。
 
-> v0.3.4 候选版本：对 v0.3.3 多 Session Web Workbench 进行兼容的安全、终端顺序与发布证据
-> 稳定化。Candidate 源码不代表已创建 npm 发布、Git tag 或达到可合并状态。
+> v0.3.5 候选版本：面向 v0.3.x 多 Session Web Workbench 的会话连续性与运行时所有权修复。
+> 会话快照状态与传输解耦、Session 切换即时完成，且 Workspace Context 切换不再中断其他
+> Workspace 仍在运行的 Session actor。Candidate 源码不代表已创建 npm 发布、Git tag 或达到
+> 可合并状态。
 
 [English](README.md) ·
+[v0.3.5 方案](docs/plan/v0.3.5-plan.md) ·
 [v0.3.4 稳定化方案](docs/plan/v0.3.4-stabilization-plan.md) ·
 [v0.3.4 合同](docs/architecture/v0.3.4-stabilization-contract.md) ·
 [v0.3.4 E2E 方案](docs/test/v0.3.4-stabilization-e2e-plan.md) ·
@@ -98,7 +101,7 @@ Current。Node 20 已结束上游维护，不再属于 v0.3 Runtime 合同。
 当 npm 已存在不可变的 `0.3.4` 发布凭据后：
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.4
+npm install -g @orion-agents/orion-code@0.3.5
 orion --version
 orion doctor
 ```

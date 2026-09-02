@@ -1,6 +1,6 @@
 {
   "name": "@orion-agents/orion-code",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "Orion Code - local-first goal-driven coding agent for terminal and Web.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -57,6 +57,7 @@
     "dev:web": "vite --config web/vite.config.ts",
     "test": "jest",
     "test:web-browser": "ts-node --transpile-only scripts/smoke/web-workbench-browser.ts",
+    "typecheck:e2e": "tsc -p tests/e2e/tsconfig.json",
     "test:web-e2e": "playwright test",
     "test:web-e2e:critical": "ts-node --transpile-only scripts/e2e/run-web-e2e-critical.ts",
     "test:web-e2e:primary": "ts-node --transpile-only scripts/e2e/run-web-e2e-primary.ts",
@@ -65,6 +66,7 @@
     "deps:check": "bash scripts/release/dep-health-check.sh",
     "lint": "eslint src/ web/src/ scripts/smoke/web-workbench-browser.ts scripts/e2e/ tests/e2e/ playwright.config.ts",
     "format": "prettier --write src/ web/src/ scripts/smoke/web-workbench-browser.ts scripts/e2e/ tests/e2e/ playwright.config.ts",
+    "format:check": "prettier --check src/ web/src/ scripts/smoke/web-workbench-browser.ts scripts/e2e/ tests/e2e/ playwright.config.ts",
     "release:check": "node scripts/release/release-check.js",
     "bench:harness": "ts-node --transpile-only scripts/bench/harness-runtime.ts",
     "bench:harness:baseline": "ts-node --transpile-only scripts/bench/harness-runtime.ts --mode baseline",

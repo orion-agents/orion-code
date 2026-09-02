@@ -2,11 +2,13 @@
 
 Local-first, goal-driven coding agent for the terminal and browser.
 
-> v0.3.4 candidate — a compatible security, terminal-ordering and release-evidence stabilization of
-> the v0.3.3 multi-Session Web Workbench. Candidate source is not an npm publication, Git tag, or
-> merge-ready release.
+> v0.3.5 candidate — a Session-continuity and runtime-ownership fix for the v0.3.x multi-Session
+> Web Workbench: snapshot state is decoupled from the transport, Session switches are instant, and
+> a Workspace Context switch no longer tears down Session actors of other Workspaces. Candidate
+> source is not an npm publication, Git tag, or merge-ready release.
 
 [中文说明](README.zh-CN.md) ·
+[v0.3.5 plan](docs/plan/v0.3.5-plan.md) ·
 [v0.3.4 stabilization plan](docs/plan/v0.3.4-stabilization-plan.md) ·
 [v0.3.4 contract](docs/architecture/v0.3.4-stabilization-contract.md) ·
 [v0.3.4 E2E plan](docs/test/v0.3.4-stabilization-e2e-plan.md) ·
@@ -23,6 +25,26 @@ Local-first, goal-driven coding agent for the terminal and browser.
 [Migration guide](docs/migration/v0.2.2-to-v0.3.0.md) ·
 [Settings migration](docs/migration/v0.2.2-to-v0.3.0-settings.md) ·
 [real-state gallery](docs/assets/screenshots/v0.3.0-web/README.md)
+
+## What v0.3.5 changes
+
+- **Session snapshot state is its own machine.** A failed HTTP snapshot marks only the foreground
+  Session `failed` and never flips the live SSE into `replay-required`; Composer and command gates
+  require both a live transport and a ready foreground Session snapshot.
+- **Instant Session switching.** A cached projection renders synchronously, a bounded tail snapshot
+  refreshes it in the background, the most recent Sessions are prefetched after a baseline, and stale
+  responses can never overwrite the browser-local foreground.
+- **Runtime ownership across Workspaces.** The Host-level Session actor registry is created once per
+  Host. A Workspace Context switch swaps only the active control plane; Session actors of other
+  Workspaces keep running on the Workspace kernel they were created with, and only Host shutdown
+  closes every actor and kernel. Failed switches roll back without rebuilding the registry.
+- **Provable runtime ownership.** Host and browser diagnostics count Session snapshot requests,
+  latency and failures, Session switches and cache hits, and actor allocation/eviction/closure — so a
+  pure selection provably allocates zero Session Runtimes.
+- **Release hygiene.** Version identity moves to 0.3.5; `release:check` understands `codex/vX.Y.Z`
+  and `GITHUB_HEAD_REF`; the Web rail no longer hardcodes a fallback version.
+
+This branch also carries the merged [v0.3.4 stabilization](#what-v034-stabilizes) below.
 
 ## What v0.3.4 stabilizes
 
@@ -113,10 +135,10 @@ user extension boundaries.
 Node.js 22.12+, 24, and 26 are supported. Use Node 24 LTS for production or Node 26 Current for
 current development environments. Node 20 is upstream EOL and is no longer a v0.3 runtime.
 
-After the immutable `0.3.4` npm receipt exists:
+After the immutable `0.3.5` npm receipt exists:
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.4
+npm install -g @orion-agents/orion-code@0.3.5
 orion --version
 orion doctor
 ```

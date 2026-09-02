@@ -22,6 +22,40 @@ which is **not** a pass.
 
 ## [Unreleased]
 
+## [0.3.5] — CANDIDATE
+
+> **Status: candidate.** This work is isolated on the codex/v0.3.5 worktree. It is not
+> merged, tagged or published to npm, and exact-artifact qualification remains a separate gate.
+
+### Added
+
+- Version thread projection digests so v0.3.2/v0.3.3 cutover receipts keep verifying while new
+  projections carry the full diagnostic/compact shape; forged digests fail closed.
+- Session snapshot sync state is decoupled from the Host transport: a Session snapshot failure
+  can no longer flip the live SSE to `replay-required`; Composer and command gates require both
+  transport live and the foreground Session snapshot ready.
+- Host and browser diagnostics counters for Session switches, snapshot cache hits/loads/latency,
+  and Session actor allocation/eviction/closure, so "pure selection allocates no Runtime" is
+  provable from counters instead of prose.
+- Runtime ownership across Workspace Context switches: the Host-level Session registry is created
+  once and preserved; control planes and Session actors borrow per-Workspace shared kernels, and
+  only Host shutdown closes every actor and kernel.
+
+### Changed
+
+- Instant Session switching renders a cached projection immediately, refreshes with a bounded
+  tail snapshot in the background, and prefetches the most recent Sessions after a baseline.
+- Version and release hygiene: package identity moves to 0.3.5, `release:check` recognizes
+  `codex/vX.Y.Z` and `GITHUB_HEAD_REF` release branches, and the Web rail no longer falls back to
+  a hardcoded version string.
+
+### Fixed
+
+- Workspace Context activation no longer shuts down resident Session actors of other Workspaces
+  or requires every actor to be idle before switching the active control plane.
+- A failed Context activation restores the previous control plane without rebuilding the Session
+  registry, so resident actors and their Runtime revisions survive the rollback.
+
 ## [0.3.4] — CANDIDATE
 
 > **Status: candidate.** This stabilization work is isolated on the v0.3.4 worktree. It is not

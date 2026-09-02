@@ -523,7 +523,9 @@ export function ProjectNavigator({
         >
           <Icon name="settings" size={14} />
         </button>
-        <span className="version">v{state.bootstrap?.productVersion ?? '0.3.3'}</span>
+        {state.bootstrap?.productVersion ? (
+          <span className="version">v{state.bootstrap.productVersion}</span>
+        ) : null}
       </footer>
       {resizable ? (
         <PanelResizeHandle
