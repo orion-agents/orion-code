@@ -1,5 +1,5 @@
-import { randomUUID } from 'crypto';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { createHash, randomUUID } from 'crypto';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -20,6 +20,10 @@ import {
   pageItems,
   WebWorkbenchController,
 } from '../src/web/workbench-controller';
+import {
+  rewriteCutoverProjectionReceipt,
+  v032ProjectionDigest,
+} from './support/thread-projection-compat';
 import { createFakeWebRuntime } from './support/web-runtime';
 
 describe('WebWorkbenchController', () => {
@@ -1171,6 +1175,86 @@ describe('WebWorkbenchController', () => {
     expect(() => controller.sessionSnapshot(session.id, oldCursor ?? undefined, 50, true)).toThrow(
       expect.objectContaining({ status: 409, code: 'transcript_cursor_stale' })
     );
+    await controller.shutdown();
+  });
+
+  test('reads a v0.3.2 cutover snapshot cold without creating an actor or changing facts', async () => {
+    const session = createSession(workspace, 'test-model');
+    appendSessionMessages(session.id, [
+      { role: 'user', content: 'legacy question', timestamp: 1 },
+      { role: 'assistant', content: 'legacy answer', timestamp: 2 },
+    ]);
+    const materialized = materializeLegacyThreadV1({
+      projectPath: workspace,
+      sessionId: session.id,
+    });
+    const store = new ThreadEventStore(
+      getProjectThreadsV2Dir(workspace),
+      materialized.plan.receipt.threadId
+    );
+    const legacyProjectionDigest = v032ProjectionDigest(materialized.plan.projection);
+    expect(legacyProjectionDigest).not.toBe(materialized.plan.projection.digest);
+    rewriteCutoverProjectionReceipt({
+      projectPath: workspace,
+      sessionId: session.id,
+      projectionDigest: legacyProjectionDigest,
+    });
+    const eventLogBefore = readFileSync(store.logPath);
+    const eventLogDigestBefore = createHash('sha256').update(eventLogBefore).digest('hex');
+    const createSessionRuntime = jest.fn(async cwd => createFakeWebRuntime(cwd));
+    const controller = await WebWorkbenchController.create({
+      cwd: workspace,
+      createRuntime: async cwd => createFakeWebRuntime(cwd),
+      createSessionRuntime,
+    });
+
+    const snapshot = controller.sessionSnapshot(
+      session.id,
+      undefined,
+      50,
+      true,
+      settingsContext(controller)
+    );
+
+    expect(snapshot).toMatchObject({
+      threadId: materialized.plan.receipt.threadId,
+      threadStatus: 'idle',
+      sessionRuntime: { phase: 'cold', resident: false },
+      runtime: { active: false, processing: false },
+      transcript: {
+        items: [
+          expect.objectContaining({ role: 'user', content: 'legacy question' }),
+          expect.objectContaining({ role: 'assistant', content: 'legacy answer' }),
+        ],
+      },
+    });
+    expect(snapshot.projectionDigest).toBe(materialized.plan.projection.digest);
+    expect(createSessionRuntime).not.toHaveBeenCalled();
+    const eventLogAfter = readFileSync(store.logPath);
+    expect(eventLogAfter).toEqual(eventLogBefore);
+    expect(eventLogAfter.byteLength).toBe(eventLogBefore.byteLength);
+    expect(createHash('sha256').update(eventLogAfter).digest('hex')).toBe(eventLogDigestBefore);
+
+    rewriteCutoverProjectionReceipt({
+      projectPath: workspace,
+      sessionId: session.id,
+      projectionDigest: 'f'.repeat(64),
+    });
+    expect(() =>
+      controller.sessionSnapshot(
+        session.id,
+        undefined,
+        50,
+        true,
+        settingsContext(controller)
+      )
+    ).toThrow(
+      expect.objectContaining({
+        code: 'ORION_THREAD_CUTOVER_INDEX_CORRUPT',
+      })
+    );
+    expect(createSessionRuntime).not.toHaveBeenCalled();
+    expect(readFileSync(store.logPath)).toEqual(eventLogBefore);
     await controller.shutdown();
   });
 

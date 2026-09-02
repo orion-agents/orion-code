@@ -10,7 +10,10 @@ import {
   threadEventStorePerformanceCountersV1,
 } from '../src/runtime/thread-event-store';
 import { digestRuntimeValue } from '../src/runtime/protocol/canonical';
-import { ThreadProjectionInvariantError } from '../src/runtime/thread-projection';
+import {
+  ThreadProjectionInvariantError,
+  threadProjectionDigestForVersionV1,
+} from '../src/runtime/thread-projection';
 
 describe('ThreadEventStore', () => {
   const roots: string[] = [];
@@ -352,6 +355,105 @@ describe('ThreadEventStore', () => {
     expect(reopened.verifyDurablePrefix(1, eventDigest, projection.digest)).toBe(true);
     expect(reopened.loadProjection()).toMatchObject({ cursor: 2, status: 'active' });
     expect(secondResumeScans).toBe(0);
+  });
+
+  test('accepts only exact known legacy projection digests for imported prefixes', () => {
+    const store = createStore();
+    store.appendDurable({ payload: { type: 'thread.started', data: {} } });
+    const replay = store.replay(0, 1);
+    const projection = store.loadProjection();
+    const eventDigest = digestRuntimeValue(replay.events);
+    const legacyProjectionDigest = threadProjectionDigestForVersionV1(projection, 1);
+
+    expect(legacyProjectionDigest).not.toBe(projection.digest);
+    expect(store.verifyDurablePrefix(1, eventDigest, legacyProjectionDigest)).toBe(true);
+    expect(store.capturePersistedCheckpointHead()?.verifiedPrefixes).toContainEqual({
+      cursor: 1,
+      eventDigest,
+      projectionDigest: legacyProjectionDigest,
+      projectionDigestVersion: 1,
+    });
+
+    let resumedScans = 0;
+    const resumed = new ThreadEventStore(store.rootDir, store.threadId, {
+      onLogScan: () => {
+        resumedScans += 1;
+      },
+    });
+    expect(resumed.verifyDurablePrefix(1, eventDigest, legacyProjectionDigest)).toBe(true);
+    expect(resumedScans).toBe(0);
+    expect(resumed.verifyDurablePrefix(1, eventDigest, 'f'.repeat(64))).toBe(false);
+  });
+
+  test('rebuilds a legacy projection before append and preserves diagnostic history', () => {
+    const store = createStore();
+    const receiptId = randomUUID();
+    const turnId = randomUUID();
+    const stepId = randomUUID();
+    const receiptContent = {
+      version: 1 as const,
+      requestId: receiptId,
+      threadId: store.threadId,
+      turnId,
+      stepId,
+    };
+    const receipt = { ...receiptContent, digest: digestRuntimeValue(receiptContent) };
+    store.appendDurable({
+      turnId,
+      stepId,
+      payload: {
+        type: 'capability.receipt',
+        data: {
+          receiptId,
+          digest: receipt.digest,
+          receipt: JSON.stringify(receipt),
+        },
+      },
+    });
+
+    const projection = store.loadProjection();
+    const {
+      digest: _digest,
+      diagnosticEvents: _diagnosticEvents,
+      compactEvents: _compactEvents,
+      ...legacyProjectionContent
+    } = projection;
+    void _digest;
+    void _diagnosticEvents;
+    void _compactEvents;
+    const legacyProjection = {
+      ...legacyProjectionContent,
+      digest: digestRuntimeValue(legacyProjectionContent),
+    };
+    writeFileSync(store.projectionPath, `${JSON.stringify(legacyProjection)}\n`);
+
+    const storedHead = JSON.parse(readFileSync(store.headPath, 'utf8')) as Record<string, unknown>;
+    const { digest: _headDigest, ...storedHeadContent } = storedHead;
+    void _headDigest;
+    const legacyHeadContent = {
+      ...storedHeadContent,
+      projectionDigest: legacyProjection.digest,
+    };
+    writeFileSync(
+      store.headPath,
+      `${JSON.stringify({
+        ...legacyHeadContent,
+        digest: digestRuntimeValue(legacyHeadContent),
+      })}\n`
+    );
+
+    let schemaUpgradeScans = 0;
+    const resumed = new ThreadEventStore(store.rootDir, store.threadId, {
+      onLogScan: () => {
+        schemaUpgradeScans += 1;
+      },
+    });
+    resumed.appendDurable({ payload: { type: 'thread.started', data: {} } });
+
+    const upgraded = resumed.loadProjection();
+    expect(schemaUpgradeScans).toBe(1);
+    expect(upgraded).toMatchObject({ cursor: 2, status: 'idle', compactEvents: [] });
+    expect(upgraded.diagnosticEvents?.latestCapability?.payload.type).toBe('capability.receipt');
   });
 
   test('marks orphaned items indeterminate and interrupts the active turn', () => {

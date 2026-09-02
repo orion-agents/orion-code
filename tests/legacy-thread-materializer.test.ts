@@ -19,6 +19,8 @@ import {
   type LegacyThreadMaterializationBoundaryV1,
 } from '../src/runtime/legacy-thread-materializer';
 import { ThreadEventStore } from '../src/runtime/thread-event-store';
+import { digestRuntimeValue } from '../src/runtime/protocol/canonical';
+import { threadProjectionDigestForVersionV1 } from '../src/runtime/thread-projection';
 import {
   getProjectSessionCompactPath,
   getProjectSessionGoalPath,
@@ -92,6 +94,7 @@ describe('legacy Thread materialization and atomic cutover', () => {
 
     expect(result.mode).toBe('cutover');
     expect(result.index).toMatchObject({ generation: 1 });
+    expect(result.index?.sessions[sessionId].projectionDigestVersion).toBe(2);
     expect(resolveSessionStorageV1(projectPath, sessionId)).toMatchObject({
       kind: 'thread',
       threadId: result.plan.receipt.threadId,
@@ -114,6 +117,65 @@ describe('legacy Thread materialization and atomic cutover', () => {
     expect(repeated.mode).toBe('already_cutover');
     expect(repeated.index?.generation).toBe(1);
     expect(loadThreadCutoverIndexV1(projectPath).generation).toBe(1);
+  });
+
+  test('opens and re-materializes an exact v0.3.2 cutover without rewriting its index', () => {
+    const sessionId = 'legacy-v032-cutover';
+    writeLegacySession(sessionId);
+    const result = materializeLegacyThreadV1({ projectPath, sessionId });
+    const indexPath = getProjectThreadsV2IndexPath(projectPath);
+    const legacyProjectionDigest = threadProjectionDigestForVersionV1(result.plan.projection, 1);
+    const storedIndex = JSON.parse(readFileSync(indexPath, 'utf8')) as {
+      version: 1;
+      generation: number;
+      sessions: Record<string, Record<string, unknown>>;
+      digest: string;
+    };
+    const {
+      projectionDigestVersion: _projectionDigestVersion,
+      ...legacyEntryContent
+    } = storedIndex.sessions[sessionId];
+    void _projectionDigestVersion;
+    const legacyEntry = {
+      ...legacyEntryContent,
+      projectionDigest: legacyProjectionDigest,
+    };
+    const legacyIndexContent = {
+      version: storedIndex.version,
+      generation: storedIndex.generation,
+      sessions: { ...storedIndex.sessions, [sessionId]: legacyEntry },
+    };
+    const legacyIndex = {
+      ...legacyIndexContent,
+      digest: digestRuntimeValue(legacyIndexContent),
+    };
+    writeFileSync(indexPath, `${JSON.stringify(legacyIndex)}\n`);
+
+    // Force the compatibility path to prove the immutable prefix from facts,
+    // rather than reusing a receipt created by this version.
+    const headPath = join(
+      getProjectThreadsV2Dir(projectPath),
+      `${result.plan.receipt.threadId}.head.v1.json`
+    );
+    const storedHead = JSON.parse(readFileSync(headPath, 'utf8')) as Record<string, unknown>;
+    const { digest: _headDigest, ...storedHeadContent } = storedHead;
+    void _headDigest;
+    const headWithoutPrefixes = { ...storedHeadContent, verifiedPrefixes: [] };
+    writeFileSync(
+      headPath,
+      `${JSON.stringify({
+        ...headWithoutPrefixes,
+        digest: digestRuntimeValue(headWithoutPrefixes),
+      })}\n`
+    );
+
+    expect(resolveSessionStorageV1(projectPath, sessionId)).toMatchObject({
+      kind: 'thread',
+      threadId: result.plan.receipt.threadId,
+    });
+    const repeated = materializeLegacyThreadV1({ projectPath, sessionId });
+    expect(repeated.mode).toBe('already_cutover');
+    expect(readFileSync(indexPath, 'utf8')).toBe(`${JSON.stringify(legacyIndex)}\n`);
   });
 
   test('source recheck prevents cutover after legacy data changes', () => {

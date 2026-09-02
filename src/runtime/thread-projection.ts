@@ -4,6 +4,14 @@ import type { CompactRuntimeEventV1 } from './compact-transaction';
 
 export type ThreadProjectionStatusV1 = 'new' | 'active' | 'idle';
 export type TurnProjectionStatusV1 = 'active' | 'completed' | 'failed' | 'interrupted';
+/**
+ * Version of the canonical content included in a Thread projection digest.
+ *
+ * Version 1 predates head-only diagnostic and compact lifecycle fields.
+ * Version 2 covers the complete current projection shape.
+ */
+export type ThreadProjectionDigestVersionV1 = 1 | 2;
+export const CURRENT_THREAD_PROJECTION_DIGEST_VERSION_V1: ThreadProjectionDigestVersionV1 = 2;
 export type ItemProjectionStatusV1 =
   | 'started'
   | 'completed'
@@ -330,6 +338,56 @@ export function verifyThreadProjectionDigest(projection: ThreadProjectionV1): bo
   const { digest: _digest, ...content } = projection;
   void _digest;
   return digestRuntimeValue(content) === projection.digest;
+}
+
+/**
+ * Compute one explicitly versioned digest without weakening projection-file
+ * integrity. This is used only for immutable cutover-prefix compatibility.
+ */
+export function threadProjectionDigestForVersionV1(
+  projection: ThreadProjectionV1,
+  version: ThreadProjectionDigestVersionV1
+): string {
+  const {
+    digest: _digest,
+    diagnosticEvents: _diagnosticEvents,
+    compactEvents: _compactEvents,
+    ...legacyContent
+  } = projection;
+  void _digest;
+  if (version === 1) return digestRuntimeValue(legacyContent);
+  const content = {
+    ...legacyContent,
+    diagnosticEvents: projection.diagnosticEvents ?? {},
+    compactEvents: projection.compactEvents ?? [],
+  };
+  return digestRuntimeValue(content);
+}
+
+/** Resolve an exact known digest scheme; missing metadata is inferred safely. */
+export function resolveThreadProjectionDigestVersionV1(
+  projection: ThreadProjectionV1,
+  digest: string,
+  requestedVersion?: ThreadProjectionDigestVersionV1
+): ThreadProjectionDigestVersionV1 | undefined {
+  if (requestedVersion !== undefined) {
+    if (requestedVersion !== 1 && requestedVersion !== 2) return undefined;
+    return threadProjectionDigestForVersionV1(projection, requestedVersion) === digest
+      ? requestedVersion
+      : undefined;
+  }
+  for (const version of [
+    CURRENT_THREAD_PROJECTION_DIGEST_VERSION_V1,
+    1,
+  ] as const) {
+    if (threadProjectionDigestForVersionV1(projection, version) === digest) return version;
+  }
+  return undefined;
+}
+
+/** Older persisted projections must be rebuilt before incremental advance. */
+export function hasCurrentThreadProjectionShapeV1(projection: ThreadProjectionV1): boolean {
+  return projection.diagnosticEvents !== undefined && projection.compactEvents !== undefined;
 }
 
 function startTurn(state: MutableThreadProjectionV1, event: RuntimeEventEnvelopeV1): void {
