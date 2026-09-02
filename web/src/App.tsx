@@ -21,7 +21,7 @@ import {
   type WorkbenchLayoutPreferenceV2,
   type WorkPanelId,
 } from './state/layout-preferences';
-import type { WebSessionSummaryV1 } from './types';
+import { activeSessionSnapshotSync, type WebSessionSummaryV1 } from './types';
 import { themeColorForAppearance } from './themes/theme-color';
 import { useWorkbench } from './useWorkbench';
 
@@ -59,6 +59,7 @@ export function App() {
   const theme = appearance?.sections.appearance.theme.effectiveValue;
   const motion = appearance?.sections.appearance.motion.effectiveValue;
   const uiStyle = appearance?.sections.appearance.style.effectiveValue ?? 'orion-blocksmith';
+  const sessionSync = activeSessionSnapshotSync(state);
 
   const updateProjectNavigationPreference = useCallback(
     (patch: Partial<WorkbenchLayoutPreferenceV2['projectNavigation']>) => {
@@ -454,10 +455,20 @@ export function App() {
                 onClick={() => void actions.recoverSession()}
                 disabled={Boolean(state.pendingAction)}
               >
-                恢复
+                重建连接
               </button>
             ) : null}
-            {state.connection !== 'replay-required' ? (
+            {state.notice.domain === 'session-snapshot' && sessionSync.status === 'failed' ? (
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => void actions.recoverSession()}
+              >
+                重试同步
+              </button>
+            ) : null}
+            {state.connection !== 'replay-required' &&
+            state.notice.domain !== 'session-snapshot' ? (
               <button
                 type="button"
                 className="icon-button"

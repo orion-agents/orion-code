@@ -394,8 +394,7 @@ export function ProjectNavigator({
                       const active = project.active && session.id === state.activeSessionId;
                       const runtime = state.sessionRuntimeById[session.id];
                       const runtimeStatus = sessionRuntimeStatus(runtime);
-                      const sessionLocked =
-                        operationLocked || (!project.active && state.processing);
+                      const sessionLocked = !project.active && workspaceTransitionLocked;
                       return (
                         <div
                           key={session.id}
@@ -618,11 +617,11 @@ function relativeTime(value: string): string {
 }
 
 function connectionLabel(connection: WorkbenchState['connection']): string {
-  if (connection === 'live') return '本地 Runtime 已连接';
-  if (connection === 'offline') return '离线';
-  if (connection === 'replay-required') return '需要恢复';
-  if (connection === 'closed') return 'Host 已关闭';
-  return connection === 'connecting' ? '正在连接' : '正在重连';
+  if (connection === 'live') return '本地 Web Host 已连接';
+  if (connection === 'offline') return '浏览器离线';
+  if (connection === 'replay-required') return 'Web Host 事件流需要恢复';
+  if (connection === 'closed') return '本地 Web Host 已关闭';
+  return connection === 'connecting' ? '正在连接本地 Web Host' : '正在重连本地 Web Host';
 }
 
 function sessionRuntimeStatus(runtime?: WebSessionRuntimeSummaryV1): {

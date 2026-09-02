@@ -42,6 +42,7 @@ const MAX_GOAL_EVIDENCE = 256;
 const MAX_SESSION_PROJECTIONS = 8;
 const MAX_SESSION_PROJECTION_BYTES = 8 * 1024 * 1024;
 const MAX_SESSION_RUNTIME_SUMMARIES = 64;
+const MAX_SESSION_SYNC_ENTRIES = 64;
 
 export type WorkbenchAction =
   | {
@@ -67,8 +68,19 @@ export type WorkbenchAction =
     }
   | { readonly type: 'event_received'; readonly envelope: WebEventEnvelopeV1 }
   | {
+      readonly type: 'session_snapshot_started';
+      readonly sessionId: string;
+      readonly requestId: number;
+      readonly cached: boolean;
+      readonly contextRevision: string;
+      readonly workspaceId: string;
+    }
+  | {
       readonly type: 'session_snapshot_loaded';
       readonly snapshot: WebSessionSnapshotV1;
+      readonly requestId?: number;
+      readonly contextRevision?: string;
+      readonly workspaceId?: string;
       /**
        * A snapshot cursor may establish a new SSE baseline only while the event
        * stream is paused. Live Session switches leave the stream in charge of
@@ -137,6 +149,9 @@ export type WorkbenchAction =
       readonly type: 'snapshot_failed';
       readonly sessionId: string | null;
       readonly detail: string;
+      readonly requestId?: number;
+      readonly contextRevision?: string;
+      readonly workspaceId?: string;
     }
   | { readonly type: 'reset_session_view'; readonly activeSessionId: string | null }
   | { readonly type: 'recovering' };
@@ -148,6 +163,7 @@ export function workbenchReducer(
   switch (action.type) {
     case 'baseline_loaded': {
       const base =
+        state.workspaceId !== action.bootstrap.workspaceId ||
         state.activeSessionId !== action.bootstrap.activeSessionId
           ? clearSessionProjection(state)
           : state;
@@ -173,6 +189,17 @@ export function workbenchReducer(
         workspaceNextCursor: action.workspaces.nextCursor,
         sessionNextCursor: action.sessionNextCursor,
         activeSessionId: action.bootstrap.activeSessionId,
+        sessionSync: action.bootstrap.activeSessionId
+          ? {
+              ...base.sessionSync,
+              [action.bootstrap.activeSessionId]: {
+                status: base.sessionProjectionById[action.bootstrap.activeSessionId]
+                  ? 'refreshing'
+                  : 'loading',
+                requestId: null,
+              },
+            }
+          : base.sessionSync,
         settings: action.settings,
         diagnostics: action.diagnostics,
         skills: action.skills,
@@ -181,12 +208,13 @@ export function workbenchReducer(
         mcpNextCursor: action.mcpNextCursor,
         toolDetails: action.toolDetails,
         toolDetailNextCursor: action.toolDetailNextCursor,
+        notice: base.notice?.domain === 'session-snapshot' ? null : base.notice,
         processing: Boolean(action.diagnostics.processing),
         mode,
         statusMessage: action.bootstrap.configured
-          ? 'Runtime 已就绪'
+          ? '本地 Web Host 已就绪'
           : '模型尚未配置，任务提交已停用',
-        announcement: action.bootstrap.configured ? 'Orion Runtime 已就绪' : 'Orion 尚未配置模型',
+        announcement: action.bootstrap.configured ? '本地 Web Host 已就绪' : 'Orion 尚未配置模型',
       };
     }
     case 'boot_failed':
@@ -207,11 +235,33 @@ export function workbenchReducer(
       };
     case 'event_received':
       return reduceEnvelope(state, action.envelope);
-    case 'session_snapshot_loaded':
-      if (state.activeSessionId !== action.snapshot.session.id) {
+    case 'session_snapshot_started':
+      if (
+        state.contextRevision !== action.contextRevision ||
+        state.workspaceId !== action.workspaceId
+      ) {
         return state;
       }
-      return applySessionSnapshot(state, action.snapshot, action.advanceEventCursor !== false);
+      return setSessionSnapshotSync(state, action.sessionId, {
+        status: action.cached ? 'refreshing' : 'loading',
+        requestId: action.requestId,
+      });
+    case 'session_snapshot_loaded': {
+      const sessionId = action.snapshot.session.id;
+      if (!snapshotContextMatches(state, action.contextRevision, action.workspaceId)) return state;
+      if (!snapshotRequestMatches(state, sessionId, action.requestId)) return state;
+      if (state.activeSessionId !== sessionId) {
+        if (action.requestId === undefined) return state;
+        return markSessionSnapshotReady(
+          cacheBackgroundSessionSnapshot(state, action.snapshot),
+          sessionId
+        );
+      }
+      return markSessionSnapshotReady(
+        applySessionSnapshot(state, action.snapshot, action.advanceEventCursor !== false),
+        sessionId
+      );
+    }
     case 'composer_loaded':
       if (
         action.composer.sessionId !== state.activeSessionId ||
@@ -391,38 +441,86 @@ export function workbenchReducer(
         permission: null,
         announcement: action.approved ? '工具权限已授予' : '工具请求已拒绝',
       };
-    case 'snapshot_failed':
-      if (action.sessionId && action.sessionId !== state.activeSessionId) return state;
+    case 'snapshot_failed': {
+      if (!snapshotContextMatches(state, action.contextRevision, action.workspaceId)) return state;
+      if (!action.sessionId) {
+        if (state.connection === 'replay-required') return state;
+        return {
+          ...state,
+          notice: {
+            id: action.requestId ?? state.lastCursor,
+            tone: 'warning',
+            title: '会话状态尚未同步',
+            detail: action.detail,
+          },
+          announcement: '会话状态尚未同步',
+        };
+      }
+      if (!snapshotRequestMatches(state, action.sessionId, action.requestId)) return state;
+      if (action.sessionId !== state.activeSessionId && action.requestId === undefined)
+        return state;
+      const failed = setSessionSnapshotSync(state, action.sessionId, {
+        status: 'failed',
+        requestId: action.requestId ?? state.sessionSync[action.sessionId]?.requestId ?? null,
+        error: action.detail,
+      });
+      if (action.sessionId !== state.activeSessionId) return failed;
+      if (state.connection === 'replay-required') return failed;
       return {
-        ...state,
-        connection: 'replay-required',
-        replayReason: action.detail,
+        ...failed,
+        statusMessage:
+          state.sessionSnapshot?.session.id === action.sessionId
+            ? '会话刷新失败，当前显示最近状态'
+            : '会话快照加载失败',
         notice: {
-          id: state.lastCursor,
+          id: action.requestId ?? state.lastCursor,
           tone: 'warning',
-          title: '会话状态尚未同步',
+          title: '会话快照尚未同步',
           detail: action.detail,
+          domain: 'session-snapshot',
+          sessionId: action.sessionId,
         },
-        announcement: '会话状态尚未同步，需要恢复后才能继续操作',
+        announcement: '当前会话快照尚未同步，写操作已暂停',
       };
+    }
     case 'reset_session_view':
       if (action.activeSessionId && state.sessionProjectionById[action.activeSessionId]) {
+        const sessionId = action.activeSessionId;
+        const restored = applySessionSnapshot(
+          { ...state, activeSessionId: sessionId },
+          state.sessionProjectionById[sessionId],
+          false
+        );
         return {
-          ...applySessionSnapshot(
-            { ...state, activeSessionId: action.activeSessionId },
-            state.sessionProjectionById[action.activeSessionId],
-            false
-          ),
+          ...setSessionSnapshotSync(restored, sessionId, {
+            status: 'refreshing',
+            requestId: state.sessionSync[sessionId]?.requestId ?? null,
+          }),
+          notice:
+            state.notice?.domain === 'session-snapshot' && state.notice.sessionId !== sessionId
+              ? null
+              : state.notice,
           statusMessage: '已显示最近会话状态，正在同步…',
           announcement: '已切换到缓存会话，正在同步最新状态',
         };
       }
-      return {
+      const cleared = {
         ...clearSessionProjection(state),
         activeSessionId: action.activeSessionId,
-        statusMessage: action.activeSessionId ? '正在恢复会话…' : '请选择会话',
-        announcement: action.activeSessionId ? '正在恢复会话' : '会话已清除',
+        notice:
+          state.notice?.domain === 'session-snapshot' &&
+          state.notice.sessionId !== action.activeSessionId
+            ? null
+            : state.notice,
+        statusMessage: action.activeSessionId ? '正在加载会话快照…' : '请选择会话',
+        announcement: action.activeSessionId ? '正在加载会话快照' : '会话已清除',
       };
+      return action.activeSessionId
+        ? setSessionSnapshotSync(cleared, action.activeSessionId, {
+            status: 'loading',
+            requestId: state.sessionSync[action.activeSessionId]?.requestId ?? null,
+          })
+        : cleared;
     case 'recovering':
       return {
         ...state,
@@ -447,6 +545,7 @@ function reduceEnvelope(state: WorkbenchState, envelope: WebEventEnvelopeV1): Wo
         tone: 'warning',
         title: '需要重新载入会话',
         detail: envelope.payload.reason,
+        domain: 'transport',
       },
       announcement: '事件历史已超出保留窗口，需要重新载入会话',
     };
@@ -991,9 +1090,7 @@ function applySessionSnapshot(
       plan: snapshot.plan?.body ?? null,
       recoveryDiagnostics: snapshot.recoveryDiagnostics,
     },
-    connection: state.connection === 'replay-required' ? 'connecting' : state.connection,
-    replayReason: undefined,
-    announcement: '会话状态已恢复',
+    announcement: '会话快照已同步',
   };
 }
 
@@ -1413,6 +1510,58 @@ function clearSessionProjection(state: WorkbenchState): WorkbenchState {
   };
 }
 
+function setSessionSnapshotSync(
+  state: WorkbenchState,
+  sessionId: string,
+  sync: WorkbenchState['sessionSync'][string]
+): WorkbenchState {
+  const sessionSync: Record<string, WorkbenchState['sessionSync'][string]> = {
+    ...state.sessionSync,
+  };
+  delete sessionSync[sessionId];
+  sessionSync[sessionId] = sync;
+  const overflow = Object.keys(sessionSync).length - MAX_SESSION_SYNC_ENTRIES;
+  if (overflow > 0) {
+    Object.keys(sessionSync)
+      .slice(0, overflow)
+      .forEach(id => delete sessionSync[id]);
+  }
+  return {
+    ...state,
+    sessionSync,
+  };
+}
+
+function markSessionSnapshotReady(state: WorkbenchState, sessionId: string): WorkbenchState {
+  const ready = setSessionSnapshotSync(state, sessionId, {
+    status: 'ready',
+    requestId: state.sessionSync[sessionId]?.requestId ?? null,
+  });
+  if (ready.notice?.domain !== 'session-snapshot' || ready.notice.sessionId !== sessionId) {
+    return ready;
+  }
+  return { ...ready, notice: null };
+}
+
+function snapshotRequestMatches(
+  state: WorkbenchState,
+  sessionId: string,
+  requestId?: number
+): boolean {
+  return requestId === undefined || state.sessionSync[sessionId]?.requestId === requestId;
+}
+
+function snapshotContextMatches(
+  state: WorkbenchState,
+  contextRevision?: string,
+  workspaceId?: string
+): boolean {
+  return (
+    (contextRevision === undefined || state.contextRevision === contextRevision) &&
+    (workspaceId === undefined || state.workspaceId === workspaceId)
+  );
+}
+
 function addGoalActivity(
   current: readonly GoalActivity[],
   type: string,
@@ -1466,10 +1615,12 @@ function isOnline(): boolean {
 }
 
 function connectionAnnouncement(phase: ConnectionPhase, attempt: number): string {
-  if (phase === 'live') return '实时连接已恢复';
-  if (phase === 'offline') return '网络已离线，Orion 将在恢复后重连';
-  if (phase === 'reconnecting') return `正在重新连接，第 ${Math.max(1, attempt)} 次尝试`;
-  if (phase === 'connecting') return '正在连接 Orion Runtime';
-  if (phase === 'replay-required') return '需要重新载入会话';
-  return 'Orion Web Host 已关闭';
+  if (phase === 'live') return '本地 Web Host 事件流已连接';
+  if (phase === 'offline') return '浏览器已离线，本地 Web Host 将在网络恢复后重连';
+  if (phase === 'reconnecting') {
+    return `正在重新连接本地 Web Host，第 ${Math.max(1, attempt)} 次尝试`;
+  }
+  if (phase === 'connecting') return '正在连接本地 Web Host';
+  if (phase === 'replay-required') return '本地 Web Host 事件历史需要重新载入';
+  return '本地 Web Host 已关闭';
 }

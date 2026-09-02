@@ -1,15 +1,17 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import type { WorkbenchActions } from '../useWorkbench';
-import type {
-  WebEditPreview,
-  WebResearch,
-  WebSubtask,
-  WebToolCall,
-  WebTranscriptEntry,
-  WorkbenchState,
+import {
+  activeSessionSnapshotSync,
+  isActiveSessionSnapshotReady,
+  type WebEditPreview,
+  type WebResearch,
+  type WebSubtask,
+  type WebToolCall,
+  type WebTranscriptEntry,
+  type WorkbenchState,
 } from '../types';
-import { Icon } from './Icon';
+import { Icon, type IconName } from './Icon';
 import { Markdown, safeJson, sanitizeDisplayText } from './Markdown';
 import { sessionTitle } from './WorkspaceRail';
 import { ComposerControlCenter } from './composer/ComposerControlCenter';
@@ -48,6 +50,7 @@ export function Conversation({
   composerInsertion,
 }: ConversationProps) {
   const activeSession = state.sessions.find(session => session.id === state.activeSessionId);
+  const snapshotSync = activeSessionSnapshotSync(state);
   const allTimeline = useMemo(
     () => buildTimeline(state),
     [state.edits, state.research, state.subtasks, state.tools, state.transcript]
@@ -206,6 +209,19 @@ export function Conversation({
               detail="Orion 会在当前工作区运行，并沿用 CLI/TUI 的权限与持久化状态。"
               action="创建会话"
               onAction={onCreateSession}
+            />
+          ) : snapshotSync.status === 'failed' && timeline.length === 0 ? (
+            <EmptyConversation
+              icon="warning"
+              title="会话快照加载失败"
+              detail={snapshotSync.error ?? '请重试当前会话快照。'}
+            />
+          ) : (snapshotSync.status === 'loading' || snapshotSync.status === 'refreshing') &&
+            timeline.length === 0 ? (
+            <EmptyConversation
+              icon="refresh"
+              title="正在同步会话"
+              detail="本地 Web Host 正在读取最近的会话快照。"
             />
           ) : timeline.length === 0 ? (
             <EmptyConversation
@@ -543,7 +559,10 @@ function ApprovalCard({
     previousRequest.current = request.id;
     cardRef.current?.focus();
   }, [request.id]);
-  const disabled = Boolean(state.pendingAction) || state.connection !== 'live';
+  const disabled =
+    Boolean(state.pendingAction) ||
+    state.connection !== 'live' ||
+    !isActiveSessionSnapshotReady(state);
   return (
     <section
       ref={cardRef}
@@ -614,7 +633,10 @@ function QueueDock({
   readonly state: WorkbenchState;
   readonly actions: WorkbenchActions;
 }) {
-  const disabled = Boolean(state.pendingAction) || state.connection !== 'live';
+  const disabled =
+    Boolean(state.pendingAction) ||
+    state.connection !== 'live' ||
+    !isActiveSessionSnapshotReady(state);
   return (
     <details className="queue-dock">
       <summary>
@@ -745,7 +767,7 @@ function EmptyConversation({
   action,
   onAction,
 }: {
-  readonly icon: 'workspace' | 'spark';
+  readonly icon: IconName;
   readonly title: string;
   readonly detail: string;
   readonly action?: string;

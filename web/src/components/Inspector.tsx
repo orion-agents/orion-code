@@ -8,7 +8,12 @@ import {
 } from 'react';
 
 import type { WorkbenchActions } from '../useWorkbench';
-import type { WebToolCall, WorkbenchState } from '../types';
+import {
+  activeSessionSnapshotSync,
+  isActiveSessionSnapshotReady,
+  type WebToolCall,
+  type WorkbenchState,
+} from '../types';
 import { Icon } from './Icon';
 import { Markdown, safeJson, sanitizeDisplayText } from './Markdown';
 
@@ -108,7 +113,8 @@ function GoalPanel({
   const plan =
     state.plan?.body ?? (typeof state.diagnostics?.plan === 'string' ? state.diagnostics.plan : '');
   const pending = Boolean(state.pendingAction);
-  const commandBlocked = pending || state.connection !== 'live';
+  const commandBlocked =
+    pending || state.connection !== 'live' || !isActiveSessionSnapshotReady(state);
   if (!goal) {
     return (
       <div className="inspector-stack">
@@ -712,6 +718,7 @@ function DiagnosticsPanel({
   readonly actions: WorkbenchActions;
 }) {
   const diagnostics = state.diagnostics;
+  const snapshotSync = activeSessionSnapshotSync(state);
   return (
     <div className="inspector-stack">
       <div className="diagnostics-toolbar">
@@ -751,6 +758,7 @@ function DiagnosticsPanel({
           />
           <DiagnosticRow label="事件游标" value={`${state.lastCursor}`} />
           <DiagnosticRow label="事件 UUID" value={state.lastEventId?.slice(0, 12) ?? '—'} />
+          <DiagnosticRow label="会话快照" value={snapshotSync.status} />
           <DiagnosticRow label="保留事件" value={`${diagnostics?.eventStream?.retained ?? '—'}`} />
         </dl>
       </section>
@@ -832,9 +840,9 @@ function formatClock(value: string): string {
 }
 
 function connectionTitle(value: WorkbenchState['connection']): string {
-  if (value === 'live') return '实时连接正常';
+  if (value === 'live') return '本地 Web Host 连接正常';
   if (value === 'offline') return '浏览器离线';
-  if (value === 'replay-required') return '需要恢复会话';
-  if (value === 'closed') return 'Host 已关闭';
-  return value === 'connecting' ? '正在连接' : '正在重新连接';
+  if (value === 'replay-required') return 'Web Host 事件流需要恢复';
+  if (value === 'closed') return '本地 Web Host 已关闭';
+  return value === 'connecting' ? '正在连接本地 Web Host' : '正在重新连接本地 Web Host';
 }

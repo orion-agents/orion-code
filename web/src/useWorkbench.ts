@@ -20,6 +20,7 @@ import type {
   WebGitLogPageV1,
   WebGitStatusV1,
   WebReviewSnapshotV1,
+  WebSessionSnapshotV1,
   WebTerminalCreateResultV1,
   WebTerminalMetadataV1,
   WebToolDetailPageV1,
@@ -37,12 +38,29 @@ import type {
   WebSettingsDocumentV1,
   WebSettingsMutationResultV1,
 } from './settings/types';
-import { initialWorkbenchState, type DiagnosticsSnapshot, type WorkbenchState } from './types';
+import {
+  initialWorkbenchState,
+  isActiveSessionSnapshotReady,
+  type DiagnosticsSnapshot,
+  type WorkbenchState,
+} from './types';
 import { upsertSessionSummary } from './state/session-collection';
 import { removeComposerDraftsForWorkspace } from './state/composer-drafts';
 import { selectPreferredForegroundSession } from './state/foreground-session';
 
 export type WorkbenchAgentMode = 'interactive' | 'plan' | 'auto';
+
+interface SessionSnapshotLoadOptions {
+  readonly force?: boolean;
+}
+
+interface InFlightSessionSnapshot {
+  readonly requestId: number;
+  readonly promise: Promise<WebSessionSnapshotV1>;
+}
+
+const SESSION_PREFETCH_LIMIT = 7;
+const SESSION_PREFETCH_CONCURRENCY = 2;
 
 type ComposerActionInputV1 = WebComposerActionV1 extends infer Action
   ? Action extends WebComposerActionV1
@@ -147,6 +165,9 @@ export function useWorkbench(): UseWorkbenchResult {
   const resourceGeneration = useRef(0);
   const metadataRefreshSequence = useRef(new Map<string, number>());
   const metadataRefreshOrdinal = useRef(0);
+  const snapshotRequestOrdinal = useRef(0);
+  const snapshotRequests = useRef(new Map<string, InFlightSessionSnapshot>());
+  const cancelSessionPrefetch = useRef<() => void>(() => undefined);
   const baselineStarted = useRef(false);
   stateRef.current = state;
 
@@ -159,26 +180,68 @@ export function useWorkbench(): UseWorkbenchResult {
   );
 
   const loadSessionSnapshot = useCallback(
-    async (sessionId: string, context = requireContextGuard(stateRef.current)) => {
-      try {
-        const snapshot = await api.sessionSnapshot(sessionId, context);
-        if (snapshot.session.id !== sessionId) {
-          throw new WebApiError('Host 返回了其他会话的快照。', 502);
-        }
-        dispatch({
-          type: 'session_snapshot_loaded',
-          snapshot,
-          // HTTP snapshots and the SSE stream share one Host-global cursor.
-          // While a stream is active, advancing from the snapshot could skip a
-          // control event that is already in flight. A paused stream, however,
-          // needs the snapshot cursor as its next replay baseline.
-          advanceEventCursor: streamRef.current === null,
+    (
+      sessionId: string,
+      context = requireContextGuard(stateRef.current),
+      options: SessionSnapshotLoadOptions = {}
+    ): Promise<WebSessionSnapshotV1> => {
+      const requestKey = `${context.workspaceId}:${context.expectedContextRevision}:${sessionId}`;
+      const existing = snapshotRequests.current.get(requestKey);
+      if (existing && !options.force) return existing.promise;
+
+      const requestId = ++snapshotRequestOrdinal.current;
+      dispatch({
+        type: 'session_snapshot_started',
+        sessionId,
+        requestId,
+        cached: Boolean(stateRef.current.sessionProjectionById[sessionId]),
+        contextRevision: context.expectedContextRevision,
+        workspaceId: context.workspaceId,
+      });
+
+      const promise = api
+        .sessionSnapshot(sessionId, context)
+        .then(snapshot => {
+          assertSessionSnapshotIdentity(snapshot, sessionId, context);
+          dispatch({
+            type: 'session_snapshot_loaded',
+            snapshot,
+            requestId,
+            contextRevision: context.expectedContextRevision,
+            workspaceId: context.workspaceId,
+            // HTTP snapshots and the SSE stream share one Host-global cursor.
+            // While a stream is active, advancing from the snapshot could skip a
+            // control event that is already in flight. A paused stream, however,
+            // needs the snapshot cursor as its next replay baseline.
+            advanceEventCursor: streamRef.current === null,
+          });
+          return snapshot;
+        })
+        .catch(error => {
+          const detail = errorMessage(error);
+          dispatch({
+            type: 'snapshot_failed',
+            sessionId,
+            detail,
+            requestId,
+            contextRevision: context.expectedContextRevision,
+            workspaceId: context.workspaceId,
+          });
+          throw new WebApiError(
+            detail,
+            error instanceof WebApiError ? error.status : 503,
+            'session_snapshot_sync_failed',
+            error instanceof WebApiError ? error.type : undefined
+          );
+        })
+        .finally(() => {
+          if (snapshotRequests.current.get(requestKey)?.requestId === requestId) {
+            snapshotRequests.current.delete(requestKey);
+          }
         });
-        return snapshot;
-      } catch (error) {
-        dispatch({ type: 'snapshot_failed', sessionId, detail: errorMessage(error) });
-        throw error;
-      }
+
+      snapshotRequests.current.set(requestKey, { requestId, promise });
+      return promise;
     },
     [api]
   );
@@ -211,7 +274,10 @@ export function useWorkbench(): UseWorkbenchResult {
       const sessionResult = foregroundSessionId
         ? await api
             .sessionSnapshot(foregroundSessionId, context)
-            .then(snapshot => ({ snapshot, error: undefined }))
+            .then(snapshot => {
+              assertSessionSnapshotIdentity(snapshot, foregroundSessionId, context);
+              return { snapshot, error: undefined };
+            })
             .catch(error => ({ snapshot: null, error }))
         : { snapshot: null, error: undefined };
       const settings = await migrateLegacyAppearance(
@@ -237,24 +303,35 @@ export function useWorkbench(): UseWorkbenchResult {
         toolDetailNextCursor: null,
       });
       if (sessionResult.snapshot) {
-        if (sessionResult.snapshot.session.id === foregroundSessionId) {
-          dispatch({ type: 'session_snapshot_loaded', snapshot: sessionResult.snapshot });
-        } else {
-          dispatch({
-            type: 'snapshot_failed',
-            sessionId: foregroundSessionId,
-            detail: '活动会话已在其他页面发生变化，请恢复当前会话。',
-          });
-        }
+        dispatch({
+          type: 'session_snapshot_loaded',
+          snapshot: sessionResult.snapshot,
+          contextRevision: context.expectedContextRevision,
+          workspaceId: context.workspaceId,
+        });
       }
       if (sessionResult.error) {
         dispatch({
           type: 'snapshot_failed',
           sessionId: foregroundSessionId,
           detail: errorMessage(sessionResult.error),
+          contextRevision: context.expectedContextRevision,
+          workspaceId: context.workspaceId,
         });
-        showError(dispatch, '会话快照加载失败', sessionResult.error, 'warning');
       }
+
+      cancelSessionPrefetch.current();
+      const prefetchIds = sessions.sessions
+        .map(session => session.id)
+        .filter(sessionId => sessionId !== foregroundSessionId)
+        .slice(0, SESSION_PREFETCH_LIMIT);
+      cancelSessionPrefetch.current = scheduleIdleTask(() => {
+        if (generation !== resourceGeneration.current) return;
+        void runWithConcurrency(prefetchIds, SESSION_PREFETCH_CONCURRENCY, async sessionId => {
+          if (generation !== resourceGeneration.current) return;
+          await loadSessionSnapshot(sessionId, context).catch(() => undefined);
+        });
+      });
 
       void api
         .workspaceProjectSummary(bootstrap.workspaceId, context)
@@ -292,7 +369,7 @@ export function useWorkbench(): UseWorkbenchResult {
     } catch (error) {
       throw error;
     }
-  }, [api, settingsMirror]);
+  }, [api, loadSessionSnapshot, settingsMirror]);
 
   const loadBaseline = useCallback(async () => {
     let lastError: unknown;
@@ -323,6 +400,13 @@ export function useWorkbench(): UseWorkbenchResult {
       active = false;
     };
   }, [loadBaseline]);
+
+  useEffect(
+    () => () => {
+      cancelSessionPrefetch.current();
+    },
+    []
+  );
 
   const hasBootstrap = state.bootstrap !== null;
   useEffect(() => {
@@ -372,7 +456,7 @@ export function useWorkbench(): UseWorkbenchResult {
           notice: {
             id: Date.now(),
             tone: 'error',
-            title: '收到无法识别的 Runtime 事件',
+            title: '收到无法识别的 Web Host 事件流消息',
             detail: message,
           },
         }),
@@ -418,9 +502,7 @@ export function useWorkbench(): UseWorkbenchResult {
     if (state.sessionSnapshot?.session.id === state.activeSessionId) {
       return;
     }
-    void loadSessionSnapshot(state.activeSessionId).catch(error =>
-      showError(dispatch, '会话刷新失败', error)
-    );
+    void loadSessionSnapshot(state.activeSessionId).catch(() => undefined);
   }, [
     loadSessionSnapshot,
     state.activeSessionId,
@@ -438,7 +520,9 @@ export function useWorkbench(): UseWorkbenchResult {
       try {
         return await operation();
       } catch (error) {
-        showError(dispatch, `${label}失败`, error);
+        if (!isSessionSynchronizationError(error)) {
+          showError(dispatch, `${label}失败`, error);
+        }
         throw error;
       } finally {
         if (operationSequence.current === sequence) {
@@ -464,7 +548,7 @@ export function useWorkbench(): UseWorkbenchResult {
       runOperation(label, async () => {
         if (stateRef.current.connection !== 'live') {
           throw new WebApiError(
-            '会话连接尚未同步，请恢复连接后重试。',
+            '本地 Web Host 连接尚未就绪，请在连接恢复后重试。',
             409,
             'session_not_synchronized'
           );
@@ -474,9 +558,9 @@ export function useWorkbench(): UseWorkbenchResult {
           throw new WebApiError('当前没有可接收命令的活动会话。', 409, 'active_session_changed');
         }
         const snapshot = stateRef.current.sessionSnapshot;
-        if (!snapshot || snapshot.session.id !== expectedSessionId) {
+        if (!snapshot || !isActiveSessionSnapshotReady(stateRef.current)) {
           throw new WebApiError(
-            '会话 Runtime 状态尚未同步，请刷新后重试。',
+            '当前会话快照尚未同步，请刷新后重试。',
             409,
             'session_runtime_revision_conflict'
           );
@@ -504,7 +588,15 @@ export function useWorkbench(): UseWorkbenchResult {
               type: 'snapshot_failed',
               sessionId: expectedSessionId,
               detail: error.message,
+              contextRevision: stateRef.current.contextRevision,
+              workspaceId: stateRef.current.workspaceId,
             });
+            throw new WebApiError(
+              error.message,
+              error.status,
+              'session_runtime_revision_conflict',
+              error.type
+            );
           }
           throw error;
         }
@@ -520,6 +612,7 @@ export function useWorkbench(): UseWorkbenchResult {
         if (
           current.connection !== 'live' ||
           !current.activeSessionId ||
+          !isActiveSessionSnapshotReady(current) ||
           !composer ||
           composer.sessionId !== current.activeSessionId
         ) {
@@ -554,7 +647,15 @@ export function useWorkbench(): UseWorkbenchResult {
               type: 'snapshot_failed',
               sessionId: current.activeSessionId,
               detail: error.message,
+              contextRevision: current.contextRevision,
+              workspaceId: current.workspaceId,
             });
+            throw new WebApiError(
+              error.message,
+              error.status,
+              'composer_control_conflict',
+              error.type
+            );
           }
           throw error;
         }
@@ -741,19 +842,25 @@ export function useWorkbench(): UseWorkbenchResult {
     [api, runOperation]
   );
 
-  const recoverSession = useCallback(
-    () =>
-      runOperation('恢复会话', async () => {
-        pauseEventStream();
-        dispatch({ type: 'recovering' });
-        try {
-          await loadBaseline();
-        } finally {
-          resumeEventStream();
-        }
-      }),
-    [loadBaseline, pauseEventStream, resumeEventStream, runOperation]
-  );
+  const recoverSession = useCallback(async () => {
+    const current = stateRef.current;
+    if (current.connection !== 'replay-required') {
+      if (!current.activeSessionId) return;
+      await loadSessionSnapshot(current.activeSessionId, requireContextGuard(current), {
+        force: true,
+      });
+      return;
+    }
+    await runOperation('恢复本地 Web Host 事件流', async () => {
+      pauseEventStream();
+      dispatch({ type: 'recovering' });
+      try {
+        await loadBaseline();
+      } finally {
+        resumeEventStream();
+      }
+    });
+  }, [loadBaseline, loadSessionSnapshot, pauseEventStream, resumeEventStream, runOperation]);
 
   const switchWorkspace = useCallback(
     (path: string) =>
@@ -774,18 +881,21 @@ export function useWorkbench(): UseWorkbenchResult {
   const selectSession = useCallback(
     (sessionId: string) => {
       const current = stateRef.current;
-      if (current.activeSessionId === sessionId && current.sessionSnapshot) {
+      if (
+        current.activeSessionId === sessionId &&
+        current.sessionSnapshot &&
+        current.sessionSync[sessionId]?.status === 'ready'
+      ) {
         return Promise.resolve();
       }
       const context = requireContextGuard(current);
-      const select = async () => {
+      return (async () => {
         rememberForegroundSession(context.workspaceId, sessionId);
         dispatch({ type: 'reset_session_view', activeSessionId: sessionId });
         await loadSessionSnapshot(sessionId, context);
-      };
-      return current.sessionProjectionById[sessionId] ? select() : runOperation('切换会话', select);
+      })();
     },
-    [loadSessionSnapshot, runOperation]
+    [loadSessionSnapshot]
   );
 
   const activateContext = useCallback(
@@ -929,7 +1039,9 @@ export function useWorkbench(): UseWorkbenchResult {
           pauseEventStream();
           dispatch({ type: 'recovering' });
           try {
-            await loadSessionSnapshot(sessionId);
+            await loadSessionSnapshot(sessionId, requireContextGuard(stateRef.current), {
+              force: true,
+            });
           } finally {
             resumeEventStream();
           }
@@ -1106,7 +1218,7 @@ export function useWorkbench(): UseWorkbenchResult {
         const context = requireContextGuard(stateRef.current);
         const [diagnostics] = await Promise.all([
           api.diagnostics(context),
-          sessionId ? loadSessionSnapshot(sessionId) : Promise.resolve(),
+          sessionId ? loadSessionSnapshot(sessionId, context, { force: true }) : Promise.resolve(),
         ]);
         if (generation !== resourceGeneration.current) return;
         dispatch({ type: 'diagnostics_loaded', diagnostics });
@@ -1404,6 +1516,28 @@ function requireContextGuard(
   };
 }
 
+function assertSessionSnapshotIdentity(
+  snapshot: WebSessionSnapshotV1,
+  sessionId: string,
+  context: WebContextGuardV1
+): void {
+  if (
+    snapshot.session.id === sessionId &&
+    snapshot.sessionRuntime.sessionId === sessionId &&
+    snapshot.sessionRuntime.workspaceId === context.workspaceId &&
+    snapshot.composer.sessionId === sessionId &&
+    snapshot.composer.workspaceId === context.workspaceId &&
+    snapshot.composer.contextRevision === context.expectedContextRevision
+  ) {
+    return;
+  }
+  throw new WebApiError(
+    'Host 返回的会话快照身份与当前项目上下文不一致。',
+    502,
+    'session_snapshot_identity_mismatch'
+  );
+}
+
 const WEB_VIEW_ID_KEY = 'orion.web.view-id.v1';
 const WEB_FOREGROUND_PREFIX = 'orion.web.foreground-session.v1:';
 
@@ -1494,6 +1628,17 @@ function isCollectionCursorStale(error: unknown): boolean {
   return error instanceof WebApiError && error.code === 'collection_cursor_stale';
 }
 
+function isSessionSynchronizationError(error: unknown): boolean {
+  return (
+    error instanceof WebApiError &&
+    [
+      'composer_control_conflict',
+      'session_runtime_revision_conflict',
+      'session_snapshot_sync_failed',
+    ].includes(error.code ?? '')
+  );
+}
+
 function isBaselineRetryable(error: unknown): boolean {
   return (
     error instanceof WebApiError &&
@@ -1507,6 +1652,34 @@ function waitForBaselineRetry(delayMs: number): Promise<void> {
   return new Promise(resolve => {
     globalThis.setTimeout(resolve, delayMs);
   });
+}
+
+function scheduleIdleTask(task: () => void): () => void {
+  if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+    const handle = window.requestIdleCallback(task, { timeout: 1_500 });
+    return () => window.cancelIdleCallback(handle);
+  }
+  const handle = globalThis.setTimeout(task, 150);
+  return () => globalThis.clearTimeout(handle);
+}
+
+async function runWithConcurrency<T>(
+  items: readonly T[],
+  concurrency: number,
+  work: (item: T) => Promise<void>
+): Promise<void> {
+  let nextIndex = 0;
+  const workers = Array.from(
+    { length: Math.min(Math.max(1, concurrency), items.length) },
+    async () => {
+      while (nextIndex < items.length) {
+        const item = items[nextIndex];
+        nextIndex += 1;
+        if (item !== undefined) await work(item);
+      }
+    }
+  );
+  await Promise.all(workers);
 }
 
 function needsSessionSnapshotRefresh(envelope: import('./types').WebEventEnvelopeV1): boolean {

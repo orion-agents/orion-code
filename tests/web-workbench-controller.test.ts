@@ -1241,13 +1241,7 @@ describe('WebWorkbenchController', () => {
       projectionDigest: 'f'.repeat(64),
     });
     expect(() =>
-      controller.sessionSnapshot(
-        session.id,
-        undefined,
-        50,
-        true,
-        settingsContext(controller)
-      )
+      controller.sessionSnapshot(session.id, undefined, 50, true, settingsContext(controller))
     ).toThrow(
       expect.objectContaining({
         code: 'ORION_THREAD_CUTOVER_INDEX_CORRUPT',

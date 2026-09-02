@@ -530,7 +530,7 @@ export class OrionWebApi {
           handlers.onEvent(envelope);
         } catch (error) {
           handlers.onProtocolError?.(
-            error instanceof Error ? error.message : '无法解析 Runtime 事件。'
+            error instanceof Error ? error.message : '无法解析 Web Host 事件流消息。'
           );
         }
       });
@@ -656,7 +656,7 @@ function parseEnvelope(raw: string): WebEventEnvelopeV1 {
     ].includes(String(value.type)) ||
     !isRecord(value.payload)
   ) {
-    throw new Error('Runtime 事件不符合 Web protocol v1。');
+    throw new Error('Web Host 事件流消息不符合 Web protocol v1。');
   }
   if (value.type === 'runtime_event') {
     const runtimeValue = value.payload.value;
@@ -665,7 +665,7 @@ function parseEnvelope(raw: string): WebEventEnvelopeV1 {
       typeof value.payload.eventType !== 'string' ||
       runtimeValue.type !== value.payload.eventType
     ) {
-      throw new Error('Runtime 事件判别字段不一致。');
+      throw new Error('Web Host 事件流消息判别字段不一致。');
     }
   }
   if (

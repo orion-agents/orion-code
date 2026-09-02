@@ -291,11 +291,21 @@ export type ConnectionPhase =
   | 'replay-required'
   | 'closed';
 
+export type SessionSnapshotSyncPhase = 'idle' | 'loading' | 'refreshing' | 'ready' | 'failed';
+
+export interface SessionSnapshotSyncState {
+  readonly status: SessionSnapshotSyncPhase;
+  readonly requestId: number | null;
+  readonly error?: string;
+}
+
 export interface WorkbenchNotice {
   readonly id: number;
   readonly tone: 'info' | 'warning' | 'error' | 'success';
   readonly title: string;
   readonly detail?: string;
+  readonly domain?: 'session-snapshot' | 'transport';
+  readonly sessionId?: string;
 }
 
 export interface WorkspaceResourceEpochs {
@@ -324,6 +334,7 @@ export interface WorkbenchState {
   readonly workspaceNextCursor: string | null;
   readonly sessionNextCursor: string | null;
   readonly activeSessionId: string | null;
+  readonly sessionSync: Readonly<Record<string, SessionSnapshotSyncState>>;
   readonly sessionProjectionById: Readonly<Record<string, WebSessionSnapshotV1>>;
   readonly sessionRuntimeById: Readonly<Record<string, WebSessionRuntimeSummaryV1>>;
   readonly transcript: readonly WebTranscriptEntry[];
@@ -378,6 +389,7 @@ export const initialWorkbenchState: WorkbenchState = {
   workspaceNextCursor: null,
   sessionNextCursor: null,
   activeSessionId: null,
+  sessionSync: {},
   sessionProjectionById: {},
   sessionRuntimeById: {},
   transcript: [],
@@ -387,7 +399,7 @@ export const initialWorkbenchState: WorkbenchState = {
   research: [],
   permission: null,
   processing: false,
-  statusMessage: '正在连接 Orion Runtime…',
+  statusMessage: '正在连接本地 Web Host…',
   mode: { baseMode: 'interactive', pendingBaseMode: null },
   effort: null,
   queue: { items: [], limit: 16 },
@@ -420,3 +432,22 @@ export const initialWorkbenchState: WorkbenchState = {
   notice: null,
   announcement: '',
 };
+
+const IDLE_SESSION_SNAPSHOT_SYNC: SessionSnapshotSyncState = Object.freeze({
+  status: 'idle',
+  requestId: null,
+});
+
+export function activeSessionSnapshotSync(state: WorkbenchState): SessionSnapshotSyncState {
+  return state.activeSessionId
+    ? (state.sessionSync[state.activeSessionId] ?? IDLE_SESSION_SNAPSHOT_SYNC)
+    : IDLE_SESSION_SNAPSHOT_SYNC;
+}
+
+export function isActiveSessionSnapshotReady(state: WorkbenchState): boolean {
+  return Boolean(
+    state.activeSessionId &&
+    state.sessionSnapshot?.session.id === state.activeSessionId &&
+    activeSessionSnapshotSync(state).status === 'ready'
+  );
+}

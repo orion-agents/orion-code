@@ -20,7 +20,7 @@ import {
   saveComposerDraft,
 } from '../../state/composer-drafts';
 import { WebApiError } from '../../api';
-import type { WorkbenchState } from '../../types';
+import { isActiveSessionSnapshotReady, type WorkbenchState } from '../../types';
 import type { WorkbenchActions } from '../../useWorkbench';
 import { Icon } from '../Icon';
 
@@ -56,7 +56,11 @@ export function ComposerControlCenter({ state, actions, insertion }: ComposerCon
   const activeKeyRef = useRef(activeKey);
   activeKeyRef.current = activeKey;
   const draftKey = `${draftState.workspaceId}:${draftState.sessionId}`;
-  const disabled = !sessionId || !state.bootstrap?.configured || state.connection !== 'live';
+  const disabled =
+    !sessionId ||
+    !state.bootstrap?.configured ||
+    state.connection !== 'live' ||
+    !isActiveSessionSnapshotReady(state);
   const pending = Boolean(state.pendingAction);
   const sessionTurnQueued = state.sessionSnapshot?.sessionRuntime.phase === 'queued';
   const controlsReady = !disabled && !pending;
@@ -867,7 +871,10 @@ function PlanReviewCard({
   const review = state.composer!.planReview!;
   const [continuing, setContinuing] = useState(false);
   const [feedback, setFeedback] = useState('');
-  const disabled = Boolean(state.pendingAction) || state.connection !== 'live';
+  const disabled =
+    Boolean(state.pendingAction) ||
+    state.connection !== 'live' ||
+    !isActiveSessionSnapshotReady(state);
   return (
     <section className="plan-review-card" aria-labelledby="plan-review-title">
       <div>
