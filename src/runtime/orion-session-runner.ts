@@ -47,6 +47,7 @@ export class OrionSessionRunnerV1 implements AgentRuntimeRunnerV1 {
   private transition: Promise<ActiveSessionRuntimeV1> | undefined;
   private readonly backgroundDrains = new WeakMap<ActiveSessionRuntimeV1, Promise<void>>();
   private closed = false;
+  private closeFlight?: Promise<void>;
 
   constructor(private readonly options: OrionSessionRunnerOptionsV1) {}
 
@@ -147,9 +148,14 @@ export class OrionSessionRunnerV1 implements AgentRuntimeRunnerV1 {
     this.active?.adapter.interrupt(reason);
   }
 
-  async close(reason = 'session runner closed'): Promise<void> {
-    if (this.closed) return;
+  close(reason = 'session runner closed'): Promise<void> {
+    if (this.closeFlight) return this.closeFlight;
     this.closed = true;
+    this.closeFlight = this.performClose(reason);
+    return this.closeFlight;
+  }
+
+  private async performClose(reason: string): Promise<void> {
     const transitioning = this.transition;
     if (transitioning) {
       try {
@@ -208,7 +214,13 @@ export class OrionSessionRunnerV1 implements AgentRuntimeRunnerV1 {
     if (!active) return;
     active.disposeObserver?.();
     active.adapter.close(reason);
-    await active.runtime.close(reason);
+    const report = await active.runtime.close(reason);
+    if (report.timedOut || report.leaseTimedOut || report.errors.length > 0) {
+      throw new Error(
+        `Orion Session Runtime cleanup was incomplete (${report.errors.length} error(s), ` +
+          `timedOut=${report.timedOut}, leaseTimedOut=${report.leaseTimedOut}).`
+      );
+    }
   }
 
   private async drainUntilIdle(active: ActiveSessionRuntimeV1): Promise<void> {

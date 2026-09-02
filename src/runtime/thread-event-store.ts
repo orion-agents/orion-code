@@ -27,10 +27,7 @@ import {
   verifyThreadProjectionDigest,
   type ThreadProjectionV1,
 } from './thread-projection';
-import {
-  advanceThreadSessionIndexV1,
-  type ThreadSessionIndexHeadV1,
-} from './thread-session-index';
+import { advanceThreadSessionIndexV1, type ThreadSessionIndexHeadV1 } from './thread-session-index';
 import type {
   CompactAuthoritativeSourceV1,
   CompactCheckpointCommitReceiptV1,
@@ -54,6 +51,18 @@ export interface ThreadEventReplayV1 {
   readonly nextCursor: number;
   readonly hasMore: boolean;
 }
+
+export type ThreadEventReplayReasonV1 =
+  | 'direct'
+  | 'capability_receipt_journal'
+  | 'durable_tool_receipt'
+  | 'legacy_materializer'
+  | 'runtime_diagnostics_legacy'
+  | 'subagent_receipt_journal'
+  | 'thread_session_view'
+  | 'turn_commit_journal'
+  | 'ui_gap_recovery'
+  | 'ui_initial_history';
 
 export interface ThreadEventCommitV1 {
   readonly events: readonly RuntimeEventEnvelopeV1[];
@@ -174,6 +183,13 @@ export interface ThreadEventStoreOptionsV1 {
   }) => void;
 }
 
+export interface ThreadEventStorePerformanceCountersV1 {
+  readonly logScans: number;
+  readonly bytesScanned: number;
+  readonly eventsScanned: number;
+  readonly scanReasons: Readonly<Record<string, number>>;
+}
+
 interface StoredThreadEventRecordV1 {
   readonly version: 1;
   readonly previousHash: string | null;
@@ -224,6 +240,20 @@ export class ThreadEventStoreError extends Error {
 const DEFAULT_MAX_LOG_BYTES = 128 * 1024 * 1024;
 const DEFAULT_MAX_REPLAY_EVENTS = 10_000;
 const DEFAULT_LOCK_WAIT_MS = 10_000;
+const threadEventStorePerformance = {
+  logScans: 0,
+  bytesScanned: 0,
+  eventsScanned: 0,
+  scanReasons: {} as Record<string, number>,
+};
+
+/** Process-local monotonic read counters for diagnostics and switch budgets. */
+export function threadEventStorePerformanceCountersV1(): ThreadEventStorePerformanceCountersV1 {
+  return Object.freeze({
+    ...threadEventStorePerformance,
+    scanReasons: Object.freeze({ ...threadEventStorePerformance.scanReasons }),
+  });
+}
 
 /**
  * Append-only durable fact store for a single Thread.
@@ -415,7 +445,11 @@ export class ThreadEventStore {
     return deepFreeze(event);
   }
 
-  replay(cursor = 0, limit = this.maxReplayEvents): ThreadEventReplayV1 {
+  replay(
+    cursor = 0,
+    limit = this.maxReplayEvents,
+    reason: ThreadEventReplayReasonV1 = 'direct'
+  ): ThreadEventReplayV1 {
     if (!Number.isSafeInteger(cursor) || cursor < 0) {
       throw new ThreadEventStoreError(
         'ORION_THREAD_EVENT_CURSOR',
@@ -431,7 +465,7 @@ export class ThreadEventStore {
     }
 
     return this.withLogLock(() => {
-      const scan = requireVerifiedScan(this.loadVerifiedHead(true));
+      const scan = requireVerifiedScan(this.loadVerifiedHead(true, `replay:${reason}`));
       const lastSeq = scan.events.length;
       if (cursor > lastSeq) {
         throw new ThreadEventStoreError(
@@ -456,11 +490,7 @@ export class ThreadEventStore {
    * exact log identity/projection checkpoint remains current. Internal append
    * carries the proof forward because the hash-chained prefix cannot change.
    */
-  verifyDurablePrefix(
-    cursor: number,
-    eventDigest: string,
-    projectionDigest: string
-  ): boolean {
+  verifyDurablePrefix(cursor: number, eventDigest: string, projectionDigest: string): boolean {
     if (
       !Number.isSafeInteger(cursor) ||
       cursor <= 0 ||
@@ -475,7 +505,7 @@ export class ThreadEventStore {
       const expected = { cursor, eventDigest, projectionDigest };
       if (head.verifiedPrefixes.some(prefix => sameVerifiedPrefix(prefix, expected))) return true;
 
-      head = this.loadVerifiedHead(true);
+      head = this.loadVerifiedHead(true, 'verify_durable_prefix');
       const scan = requireVerifiedScan(head);
       const events = scan.events.slice(0, cursor);
       if (
@@ -606,12 +636,12 @@ export class ThreadEventStore {
    */
   loadAuthoritativeModelHistory(): readonly unknown[] | undefined {
     return this.withLogLock(() => {
-      const scan = requireVerifiedScan(this.loadVerifiedHead(true));
+      const head = this.loadVerifiedHead();
       const state = readCompactState(this.compactStatePath, this.threadId);
       if (state) this.assertCompactCheckpoint(state);
-      const turnState = readLatestDurableTurnState(scan.events, this.threadId);
+      const turnState = readLatestDurableTurnStateFromProjection(head.projection);
       if (!state && !turnState) return undefined;
-      return resolveCompactAuthority(scan.events, state, this.threadId).history;
+      return resolveCompactAuthorityState(turnState, state).history;
     });
   }
 
@@ -622,7 +652,7 @@ export class ThreadEventStore {
   captureCompactSource(turnId: string): CompactAuthoritativeSourceV1 {
     return this.withLogLock(() => {
       ensurePrivateDirectory(this.rootDir);
-      const head = this.loadVerifiedHead(true);
+      const head = this.loadVerifiedHead(true, 'capture_compact_source');
       const scan = requireVerifiedScan(head);
       const { projection } = head;
       assertActiveMaintenanceTurn(projection, turnId);
@@ -662,7 +692,7 @@ export class ThreadEventStore {
       validateCompactCommitInput(input, this.threadId);
 
       input.onBoundary('before_cas_recheck');
-      const head = this.loadVerifiedHead(true);
+      const head = this.loadVerifiedHead(true, 'compact_cas');
       const scan = requireVerifiedScan(head);
       const { projection } = head;
       const eventsAfterAnchor = scan.events.slice(input.expectedEventAnchor.cursor);
@@ -749,7 +779,9 @@ export class ThreadEventStore {
 
   listCompactEvents(): readonly RuntimeEventEnvelopeV1<CompactRuntimeEventV1>[] {
     return this.withLogLock(() => {
-      const scan = requireVerifiedScan(this.loadVerifiedHead(true));
+      const projection = this.loadVerifiedHead().projection;
+      if (projection.compactEvents) return projection.compactEvents;
+      const scan = requireVerifiedScan(this.loadVerifiedHead(true, 'legacy_compact_projection'));
       return deepFreeze(
         scan.events.filter(
           (event): event is RuntimeEventEnvelopeV1<CompactRuntimeEventV1> =>
@@ -811,7 +843,7 @@ export class ThreadEventStore {
    * projection still match. Callers that need historical events explicitly
    * request a scan; cursor/projection/append paths stay O(head + projection).
    */
-  private loadVerifiedHead(requireScan = false): CachedThreadHeadV1 {
+  private loadVerifiedHead(requireScan = false, scanReason = 'unspecified'): CachedThreadHeadV1 {
     ensurePrivateDirectory(this.rootDir);
     const logIdentity = readFileIdentity(this.logPath);
     if (
@@ -837,6 +869,11 @@ export class ThreadEventStore {
     }
 
     const scan = scanThreadEventLog(this.logPath, this.threadId, this.maxLogBytes);
+    threadEventStorePerformance.logScans += 1;
+    threadEventStorePerformance.bytesScanned += scan.safeByteLength + scan.discardedTailBytes;
+    threadEventStorePerformance.eventsScanned += scan.events.length;
+    threadEventStorePerformance.scanReasons[scanReason] =
+      (threadEventStorePerformance.scanReasons[scanReason] ?? 0) + 1;
     this.onLogScan?.({
       threadId: this.threadId,
       bytes: scan.safeByteLength + scan.discardedTailBytes,
@@ -1065,10 +1102,10 @@ function projectionFileMatches(path: string, expected: ThreadProjectionV1): bool
   const projection = readProjection(path);
   return Boolean(
     projection &&
-      projection.threadId === expected.threadId &&
-      projection.cursor === expected.cursor &&
-      projection.digest === expected.digest &&
-      verifyThreadProjectionDigest(projection)
+    projection.threadId === expected.threadId &&
+    projection.cursor === expected.cursor &&
+    projection.digest === expected.digest &&
+    verifyThreadProjectionDigest(projection)
   );
 }
 
@@ -1234,10 +1271,7 @@ function isStoredVerifiedPrefix(value: unknown, headCursor: number): boolean {
   );
 }
 
-function sameVerifiedPrefix(
-  left: ThreadVerifiedPrefixV1,
-  right: ThreadVerifiedPrefixV1
-): boolean {
+function sameVerifiedPrefix(left: ThreadVerifiedPrefixV1, right: ThreadVerifiedPrefixV1): boolean {
   return (
     left.cursor === right.cursor &&
     left.eventDigest === right.eventDigest &&
@@ -1371,6 +1405,19 @@ function resolveCompactAuthority(
   readonly taskContextRevision: number;
 } {
   const turnState = readLatestDurableTurnState(events, threadId);
+  return resolveCompactAuthorityState(turnState, compactState);
+}
+
+function resolveCompactAuthorityState(
+  turnState: DurableTurnStateV1 | null,
+  compactState: StoredCompactStateV1 | null
+): {
+  readonly history: readonly unknown[];
+  readonly historyDigest: string;
+  readonly taskContext: unknown;
+  readonly taskContextDigest: string;
+  readonly taskContextRevision: number;
+} {
   if (!turnState && !compactState) {
     throw new ThreadEventStoreError(
       'ORION_THREAD_COMPACT_INVALID',
@@ -1400,6 +1447,17 @@ function resolveCompactAuthority(
   });
 }
 
+function readLatestDurableTurnStateFromProjection(
+  projection: ThreadProjectionV1
+): DurableTurnStateV1 | null {
+  const commit = Object.values(projection.turns)
+    .map(turn => turn.commit)
+    .filter((value): value is NonNullable<typeof value> => Boolean(value))
+    .sort((left, right) => left.seq - right.seq)
+    .at(-1);
+  return commit ? parseDurableTurnState(commit.receipt, commit.seq, projection.threadId) : null;
+}
+
 function readLatestDurableTurnState(
   events: readonly RuntimeEventEnvelopeV1[],
   threadId: string
@@ -1408,9 +1466,17 @@ function readLatestDurableTurnState(
     .reverse()
     .find(candidate => candidate.payload.type === 'turn.committed');
   if (!event || event.payload.type !== 'turn.committed') return null;
+  return parseDurableTurnState(event.payload.data.receipt, event.seq, threadId);
+}
+
+function parseDurableTurnState(
+  serializedReceipt: string,
+  eventSeq: number,
+  threadId: string
+): DurableTurnStateV1 {
   let receipt: Record<string, unknown>;
   try {
-    receipt = JSON.parse(event.payload.data.receipt) as Record<string, unknown>;
+    receipt = JSON.parse(serializedReceipt) as Record<string, unknown>;
   } catch {
     throw compactCorrupt('TurnCommitV1 receipt is not valid JSON');
   }
@@ -1445,7 +1511,7 @@ function readLatestDurableTurnState(
     throw compactCorrupt('TurnCommitV1 history or TaskContext digest changed');
   }
   return deepFreeze({
-    eventSeq: event.seq,
+    eventSeq,
     history: structuredClone(history),
     historyDigest: receipt.historyDigest,
     taskContext: structuredClone(taskContext),

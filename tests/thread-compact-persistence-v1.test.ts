@@ -12,7 +12,10 @@ import {
 import { digestRuntimeValue } from '../src/runtime/protocol/canonical';
 import { createTaskContextService } from '../src/runtime/task-context-service';
 import { ThreadCompactTransactionPersistenceV1 } from '../src/runtime/thread-compact-persistence';
-import { ThreadEventStore } from '../src/runtime/thread-event-store';
+import {
+  ThreadEventStore,
+  threadEventStorePerformanceCountersV1,
+} from '../src/runtime/thread-event-store';
 import { ThreadTurnCommitJournalV1 } from '../src/runtime/turn-commit';
 
 describe('ThreadCompactTransactionPersistenceV1', () => {
@@ -46,6 +49,17 @@ describe('ThreadCompactTransactionPersistenceV1', () => {
       'compact.started',
       'compact.completed',
     ]);
+
+    const countersBefore = threadEventStorePerformanceCountersV1();
+    const reopened = new ThreadEventStore(fixture.store.rootDir, fixture.store.threadId);
+    expect(reopened.listCompactEvents().map(event => event.payload.type)).toEqual([
+      'compact.started',
+      'compact.completed',
+    ]);
+    expect(reopened.loadAuthoritativeModelHistory()).toEqual(nextHistory);
+    const countersAfter = threadEventStorePerformanceCountersV1();
+    expect(countersAfter.logScans - countersBefore.logScans).toBe(0);
+    expect(countersAfter.bytesScanned - countersBefore.bytesScanned).toBe(0);
   });
 
   test('cursor drift fails closed and leaves the old model-visible history authoritative', async () => {

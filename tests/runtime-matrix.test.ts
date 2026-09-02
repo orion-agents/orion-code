@@ -14,6 +14,8 @@ import {
   WEB_E2E_WEB31_SCENARIOS_V1,
   WEB_E2E_WEB32_CRITICAL_SCENARIOS_V1,
   WEB_E2E_WEB32_SCENARIOS_V1,
+  WEB_E2E_WEB33_CRITICAL_SCENARIOS_V1,
+  WEB_E2E_WEB33_SCENARIOS_V1,
 } from '../src/runtime/release-receipts';
 import { parseGateEvidenceArgumentsV1 } from '../scripts/release/gate-evidence';
 import { parseAssembleReleaseArgumentsV1 } from '../scripts/release/assemble-release-receipt';
@@ -28,7 +30,7 @@ const NODE_VERSION_BY_MAJOR = {
 } as const;
 
 function artifact(options: { dirty?: boolean; version?: string } = {}) {
-  const version = options.version ?? '0.3.2';
+  const version = options.version ?? '0.3.3';
   return createTarballArtifactReceiptV1({
     version: 1,
     kind: 'orion.tarball-artifact',
@@ -223,6 +225,35 @@ describe('v0.3.x release receipts', () => {
     expect(() => webE2EScenarioIdFromTitle('WEB32-P0-01 and WEB32-P0-02')).toThrow('exactly one');
   });
 
+  test('recognizes the WEB33 theme and multi-session journeys with a frozen critical subset', () => {
+    const expected = [
+      ...Array.from({ length: 12 }, (_, index) => `WEB33-P0-${String(index + 1).padStart(2, '0')}`),
+      ...Array.from({ length: 9 }, (_, index) => `WEB33-P0-${String(index + 16).padStart(2, '0')}`),
+    ];
+
+    expect(WEB_E2E_WEB33_SCENARIOS_V1).toEqual(expected);
+    expect(WEB_E2E_FULL_SCENARIOS_V1).toEqual(expect.arrayContaining(expected));
+    expect(WEB_E2E_WEB33_CRITICAL_SCENARIOS_V1).toEqual([
+      'WEB33-P0-01',
+      'WEB33-P0-03',
+      'WEB33-P0-08',
+      'WEB33-P0-10',
+      'WEB33-P0-12',
+      'WEB33-P0-16',
+      'WEB33-P0-17',
+      'WEB33-P0-18',
+      'WEB33-P0-20',
+      'WEB33-P0-21',
+      'WEB33-P0-23',
+      'WEB33-P0-24',
+    ]);
+    expect(WEB_E2E_CRITICAL_SCENARIOS_V1).toEqual(
+      expect.arrayContaining(WEB_E2E_WEB33_CRITICAL_SCENARIOS_V1)
+    );
+    expect(webE2EScenarioIdFromTitle('WEB33-P0-23 shell geometry')).toBe('WEB33-P0-23');
+    expect(() => webE2EScenarioIdFromTitle('WEB33-P0-23 and WEB33-P0-24')).toThrow('exactly one');
+  });
+
   test('accepts only declared Node majors at or above their supported floor', () => {
     for (const [major, version] of Object.entries(NODE_VERSION_BY_MAJOR)) {
       expect(() => assertSupportedReleaseNodeVersionV1(version, Number(major))).not.toThrow();
@@ -287,7 +318,7 @@ describe('v0.3.x release receipts', () => {
       kind: 'orion.gate-evidence' as const,
       createdAt: '2026-08-26T00:00:00.000Z',
       gateId: 'full-tests',
-      source: { gitSha: GIT_SHA, packageVersion: '0.3.2' },
+      source: { gitSha: GIT_SHA, packageVersion: '0.3.3' },
       commandDigest: '4'.repeat(64),
       outputDigest: '5'.repeat(64),
       durationMs: 123,
@@ -378,7 +409,7 @@ describe('v0.3.x release receipts', () => {
     expect(receipt.decision).toBe('NO_GO');
   });
 
-  test('fails closed for skipped Settings/WEB31/WEB32 coverage, duplicate runs, or secrets', () => {
+  test('fails closed for skipped versioned Web coverage, duplicate runs, or secrets', () => {
     const packaged = artifact();
     const create = (
       primaryRuns: ReturnType<typeof webRun>[],
@@ -410,12 +441,17 @@ describe('v0.3.x release receipts', () => {
       ...runtimeRuns[2],
       scenarioIds: runtimeRuns[2].scenarioIds.filter(id => id !== 'WEB32-P0-09'),
     };
+    const skippedWeb33 = {
+      ...runtimeRuns[0],
+      scenarioIds: runtimeRuns[0].scenarioIds.filter(id => id !== 'WEB33-P0-23'),
+    };
     const duplicate = { ...primary[1], runId: primary[0].runId };
     const leaked = { ...runtimeRuns[2], secretScanFindings: 1 };
 
     expect(create(primary, [skipped, runtimeRuns[1], runtimeRuns[2]]).decision).toBe('NO_GO');
     expect(create(primary, [runtimeRuns[0], skippedWeb31, runtimeRuns[2]]).decision).toBe('NO_GO');
     expect(create(primary, [runtimeRuns[0], runtimeRuns[1], skippedWeb32]).decision).toBe('NO_GO');
+    expect(create(primary, [skippedWeb33, runtimeRuns[1], runtimeRuns[2]]).decision).toBe('NO_GO');
     expect(create([primary[0], duplicate, primary[2]], runtimeRuns).decision).toBe('NO_GO');
     expect(create(primary, [runtimeRuns[0], runtimeRuns[1], leaked]).decision).toBe('NO_GO');
   });

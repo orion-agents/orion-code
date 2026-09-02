@@ -58,7 +58,7 @@ describe('SettingsCoordinatorV1', () => {
         defaultModel: 'configured-model',
         defaultEffort: 'low',
         toolConfirmation: 'deny',
-        web: { appearance: { theme: 'dark' } },
+        web: { appearance: { style: 'classic', theme: 'dark' } },
         projects: { '/repo/packages/web': { defaultEffort: 'high' } },
       })
     );
@@ -72,13 +72,21 @@ describe('SettingsCoordinatorV1', () => {
     });
 
     expect(document).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       state: 'ready',
       writable: true,
       hasDocument: true,
       workspace: '/repo/packages/web',
       sections: {
         appearance: {
+          style: {
+            effectiveValue: 'classic',
+            explicitValue: 'classic',
+            source: 'global',
+            scope: 'global',
+            applies: 'live',
+            overridden: false,
+          },
           theme: {
             effectiveValue: 'dark',
             explicitValue: 'dark',
@@ -120,6 +128,46 @@ describe('SettingsCoordinatorV1', () => {
     expect(document.revision).toMatch(/^hmac-sha256:[a-f0-9]{64}$/);
     expect(Object.isFrozen(document)).toBe(true);
     expect(Object.isFrozen(document.sections.appearance.theme)).toBe(true);
+  });
+
+  test('defaults to Blocksmith and persists visual style independently from light/dark theme', async () => {
+    const coordinator = create();
+    const initial = coordinator.describe();
+    expect(initial).toMatchObject({
+      schemaVersion: 2,
+      sections: {
+        appearance: {
+          style: {
+            effectiveValue: 'orion-blocksmith',
+            inheritedValue: 'orion-blocksmith',
+            source: 'internal',
+          },
+          theme: { effectiveValue: 'system' },
+        },
+      },
+    });
+
+    const updated = await coordinator.update({
+      expectedRevision: initial.revision,
+      operations: [
+        { op: 'set', key: 'appearance.style', value: 'classic' },
+        { op: 'set', key: 'appearance.theme', value: 'light' },
+      ],
+    });
+    expect(updated.appliedKeys).toEqual(['appearance.style', 'appearance.theme']);
+    expect(updated.document.sections.appearance).toMatchObject({
+      style: { effectiveValue: 'classic', explicitValue: 'classic' },
+      theme: { effectiveValue: 'light', explicitValue: 'light' },
+    });
+
+    const reset = await coordinator.update({
+      expectedRevision: updated.revision,
+      operations: [{ op: 'unset', key: 'appearance.style' }],
+    });
+    expect(reset.document.sections.appearance).toMatchObject({
+      style: { effectiveValue: 'orion-blocksmith', inheritedValue: 'orion-blocksmith' },
+      theme: { effectiveValue: 'light', explicitValue: 'light' },
+    });
   });
 
   test('projects the model catalog and credential readiness without returning secret values or env names', () => {
@@ -359,6 +407,44 @@ describe('SettingsCoordinatorV1', () => {
     expect(readFileSync(documentPath, 'utf8')).toBe(original);
     expect(coordinator.describe().revision).toBe(revision);
     expect(invalidations.at(-1)).toMatchObject({ reason: 'local-write', state: 'ready' });
+  });
+
+  test('fails closed when runtime compensation cannot restore the committed Settings state', async () => {
+    const original = '{ "schemaVersion": 1, "web": { "appearance": { "theme": "light" } } }\n';
+    writeFileSync(documentPath, original);
+    const invalidations: SettingsInvalidationV1[] = [];
+    const coordinator = create({
+      onInvalidated: event => invalidations.push(event),
+      runtimeApply: () => {
+        throw new SettingsCoordinatorError(
+          503,
+          'settings_recovery_required',
+          'controlled compensation failure'
+        );
+      },
+    });
+    const revision = coordinator.describe().revision;
+
+    await expect(
+      coordinator.update({
+        expectedRevision: revision,
+        operations: [{ op: 'set', key: 'appearance.theme', value: 'dark' }],
+      })
+    ).rejects.toMatchObject({ status: 503, code: 'settings_recovery_required' });
+
+    expect(readFileSync(documentPath, 'utf8')).toBe(original);
+    expect(coordinator.describe()).toMatchObject({
+      state: 'unavailable',
+      writable: false,
+      diagnostic: { code: 'settings_recovery_required' },
+    });
+    expect(invalidations.at(-1)).toMatchObject({ reason: 'local-write', state: 'invalid' });
+    await expect(
+      coordinator.update({
+        expectedRevision: revision,
+        operations: [{ op: 'set', key: 'appearance.theme', value: 'system' }],
+      })
+    ).rejects.toMatchObject({ status: 503, code: 'settings_recovery_required' });
   });
 
   test('fails recovery closed instead of overwriting a third-party edit after apply failure', async () => {

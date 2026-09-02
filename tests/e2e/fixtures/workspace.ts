@@ -44,6 +44,7 @@ export interface WorkspaceFixtureConfig {
   readonly projects?: Readonly<Record<string, { readonly defaultEffort?: string }>>;
   readonly web?: {
     readonly appearance?: {
+      readonly style?: 'classic' | 'orion-blocksmith';
       readonly theme?: 'system' | 'light' | 'dark';
       readonly motion?: 'system' | 'reduced';
     };

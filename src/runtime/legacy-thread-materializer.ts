@@ -719,7 +719,7 @@ function materializeFacts(
   if (cursor > plan.events.length) {
     throw diverged(`Existing Thread has ${cursor} events, expected ${plan.events.length}`);
   }
-  const existing = cursor === 0 ? [] : store.replay(0, cursor).events;
+  const existing = cursor === 0 ? [] : store.replay(0, cursor, 'legacy_materializer').events;
   for (let index = 0; index < existing.length; index += 1) {
     if (canonicalRuntimeJson(existing[index]) !== canonicalRuntimeJson(plan.events[index])) {
       throw diverged(`Existing Thread diverges from import plan at seq ${index + 1}`);
@@ -735,7 +735,7 @@ function verifyMaterializedStore(
   store: ThreadEventStore,
   plan: LegacyThreadMaterializationPlanV1
 ): void {
-  const replay = store.replay(0, Math.max(1, plan.events.length));
+  const replay = store.replay(0, Math.max(1, plan.events.length), 'legacy_materializer');
   if (
     replay.hasMore ||
     replay.events.length !== plan.events.length ||
@@ -751,13 +751,7 @@ function verifyMaterializedStore(
   ) {
     throw diverged('Materialized projection does not match replay projection digest');
   }
-  if (
-    !store.verifyDurablePrefix(
-      plan.events.length,
-      plan.eventDigest,
-      plan.projection.digest
-    )
-  ) {
+  if (!store.verifyDurablePrefix(plan.events.length, plan.eventDigest, plan.projection.digest)) {
     throw diverged('Materialized Thread prefix could not be sealed');
   }
 }

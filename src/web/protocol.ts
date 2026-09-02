@@ -22,6 +22,7 @@ import type {
   WebGitStatusV1,
 } from './git-read-model-service';
 import type { WebReviewSnapshotV1, WebReviewVerificationV1 } from './review-service';
+import type { WebSessionRuntimeSummaryV1 } from './session-runtime-registry';
 import type {
   WebTerminalCreateResultV1,
   WebTerminalExitV1,
@@ -48,6 +49,7 @@ export type WebSettingsAppliesV1 = 'live' | 'next-logical-request' | 'new-sessio
 export type WebSettingsStateV1 = 'ready' | 'invalid' | 'read-only' | 'unavailable';
 export type WebThemePreferenceV1 = 'system' | 'light' | 'dark';
 export type WebMotionPreferenceV1 = 'system' | 'reduced';
+export type WebUiStylePreferenceV1 = 'classic' | 'orion-blocksmith';
 export type WebEffortPreferenceV1 =
   | 'auto'
   | 'none'
@@ -78,7 +80,7 @@ export interface WebCredentialSlotViewV1 {
 }
 
 export interface WebSettingsDocumentV1 {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly revision: string;
   readonly state: WebSettingsStateV1;
   readonly writable: boolean;
@@ -86,6 +88,7 @@ export interface WebSettingsDocumentV1 {
   readonly workspace: string;
   readonly sections: {
     readonly appearance: {
+      readonly style: WebSettingsFieldViewV1<WebUiStylePreferenceV1>;
       readonly theme: WebSettingsFieldViewV1<WebThemePreferenceV1>;
       readonly motion: WebSettingsFieldViewV1<WebMotionPreferenceV1>;
     };
@@ -111,6 +114,7 @@ export interface WebSettingsDocumentV1 {
 export type WebSettingsSnapshotV1 = WebSettingsDocumentV1;
 
 export type WebSettingsKeyV1 =
+  | 'appearance.style'
   | 'appearance.theme'
   | 'appearance.motion'
   | 'defaults.model'
@@ -118,6 +122,12 @@ export type WebSettingsKeyV1 =
   | 'permissions.toolConfirmation';
 
 export type WebSettingsOperationV1 =
+  | {
+      readonly op: 'set';
+      readonly key: 'appearance.style';
+      readonly value: WebUiStylePreferenceV1;
+    }
+  | { readonly op: 'unset'; readonly key: 'appearance.style' }
   | { readonly op: 'set'; readonly key: 'appearance.theme'; readonly value: WebThemePreferenceV1 }
   | { readonly op: 'unset'; readonly key: 'appearance.theme' }
   | { readonly op: 'set'; readonly key: 'appearance.motion'; readonly value: WebMotionPreferenceV1 }
@@ -227,6 +237,7 @@ export interface WebComposerControlStateV1 {
   readonly sessionId: string;
   readonly contextRevision: string;
   readonly controlRevision: string;
+  readonly sessionRuntime: WebSessionRuntimeSummaryV1;
   readonly processing: boolean;
   readonly mode: {
     readonly baseMode: 'interactive' | 'plan' | 'auto';
@@ -260,6 +271,7 @@ interface WebComposerActionBaseV1 {
   readonly workspaceId: string;
   readonly expectedContextRevision: string;
   readonly expectedSessionId: string;
+  readonly expectedSessionRuntimeRevision: string;
   readonly expectedControlRevision: string;
 }
 
@@ -316,6 +328,7 @@ export interface WebComposerActionResultV1 {
 export interface WebSessionSnapshotV1 {
   readonly apiVersion: 1;
   readonly session: WebSessionSummaryV1;
+  readonly sessionRuntime: WebSessionRuntimeSummaryV1;
   readonly threadId: string | null;
   readonly threadCursor: number;
   readonly eventCursor: number;
@@ -479,6 +492,7 @@ export interface WebSessionSummaryV1 {
 
 export type WebCommandTypeV1 =
   | 'submit'
+  | 'cancel_queued_turn'
   | 'queue_followup'
   | 'remove_followup'
   | 'clear_followups'
@@ -491,9 +505,13 @@ export type WebCommandTypeV1 =
 
 export interface WebCommandV1 {
   readonly requestId: string;
+  readonly workspaceId: string;
+  readonly expectedContextRevision: string;
   readonly expectedSessionId: string;
+  readonly expectedSessionRuntimeRevision: string;
   readonly type: WebCommandTypeV1;
   readonly text?: string;
+  readonly queueId?: string;
   readonly itemId?: string;
   readonly requestPermissionId?: string;
   readonly approved?: boolean;
@@ -508,6 +526,9 @@ export interface WebCommandV1 {
 export interface WebCommandResultV1 {
   readonly requestId: string;
   readonly result: string;
+  readonly sessionRuntime: WebSessionRuntimeSummaryV1;
+  readonly queueId?: string;
+  readonly queuePosition?: number;
   readonly detail?: string;
   readonly contextReceipt?: {
     readonly manifestDigest: string;
@@ -526,6 +547,19 @@ export interface WebSettingsMutationResultV1 {
   readonly revision: string;
   readonly appliedKeys: readonly WebSettingsKeyV1[];
   readonly settings: WebSettingsDocumentV1;
+}
+
+export type WebWorkspaceMutationPhaseV1 =
+  | 'queued'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+export interface WebWorkspaceMutationStateV1 {
+  readonly callId: string;
+  readonly phase: WebWorkspaceMutationPhaseV1;
+  readonly queuePosition?: number;
 }
 
 export type WebWorkbenchEventV1 =
@@ -551,6 +585,11 @@ export type WebWorkbenchEventV1 =
       readonly reason: WebWorkspaceInvalidationReasonV1;
     }
   | { readonly type: 'composer_state_changed'; readonly state: WebComposerControlStateV1 }
+  | { readonly type: 'session_runtime_changed'; readonly runtime: WebSessionRuntimeSummaryV1 }
+  | {
+      readonly type: 'workspace_mutation_changed';
+      readonly state: WebWorkspaceMutationStateV1;
+    }
   | { readonly type: 'replay_reset'; readonly reason: string };
 
 interface WebEventEnvelopeBaseV1 {
@@ -615,6 +654,18 @@ export type WebEventEnvelopeV1 = WebEventEnvelopeBaseV1 &
         readonly sessionId: string;
         readonly durable: true;
         readonly payload: { readonly state: WebComposerControlStateV1 };
+      }
+    | {
+        readonly type: 'session_runtime_changed';
+        readonly sessionId: string;
+        readonly durable: true;
+        readonly payload: { readonly runtime: WebSessionRuntimeSummaryV1 };
+      }
+    | {
+        readonly type: 'workspace_mutation_changed';
+        readonly sessionId: string;
+        readonly durable: false;
+        readonly payload: { readonly state: WebWorkspaceMutationStateV1 };
       }
     | {
         readonly type: 'replay_reset';
@@ -701,6 +752,7 @@ export function parseWebComposerAction(value: unknown): WebComposerActionV1 {
     'workspaceId',
     'expectedContextRevision',
     'expectedSessionId',
+    'expectedSessionRuntimeRevision',
     'expectedControlRevision',
     'type',
   ] as const;
@@ -723,6 +775,10 @@ export function parseWebComposerAction(value: unknown): WebComposerActionV1 {
     'expectedContextRevision'
   );
   const expectedSessionId = requireUuidString(row.expectedSessionId, 'expectedSessionId');
+  const expectedSessionRuntimeRevision = requireUuidString(
+    row.expectedSessionRuntimeRevision,
+    'expectedSessionRuntimeRevision'
+  );
   const expectedControlRevision = requireUuidString(
     row.expectedControlRevision,
     'expectedControlRevision'
@@ -732,6 +788,7 @@ export function parseWebComposerAction(value: unknown): WebComposerActionV1 {
     workspaceId,
     expectedContextRevision,
     expectedSessionId,
+    expectedSessionRuntimeRevision,
     expectedControlRevision,
   } as const;
   switch (type) {
@@ -866,6 +923,7 @@ function parseSettingsOperation(value: unknown, index: number): WebSettingsOpera
   const row = requireRecord(value, `operations[${index}]`);
   const op = requireEnum(row.op, `operations[${index}].op`, ['set', 'unset'] as const);
   const key = requireEnum(row.key, `operations[${index}].key`, [
+    'appearance.style',
     'appearance.theme',
     'appearance.motion',
     'defaults.model',
@@ -878,6 +936,15 @@ function parseSettingsOperation(value: unknown, index: number): WebSettingsOpera
     throw new WebProtocolError(`operations[${index}].value is required for set`);
   }
   switch (key) {
+    case 'appearance.style':
+      return {
+        op,
+        key,
+        value: requireEnum(row.value, `operations[${index}].value`, [
+          'classic',
+          'orion-blocksmith',
+        ] as const),
+      };
     case 'appearance.theme':
       return {
         op,
@@ -928,9 +995,13 @@ export function parseWebCommand(value: unknown): WebCommandV1 {
   const row = requireRecord(value, 'Command body');
   assertOnlyKeys(row, [
     'requestId',
+    'workspaceId',
+    'expectedContextRevision',
     'expectedSessionId',
+    'expectedSessionRuntimeRevision',
     'type',
     'text',
+    'queueId',
     'itemId',
     'requestPermissionId',
     'approved',
@@ -942,9 +1013,20 @@ export function parseWebCommand(value: unknown): WebCommandV1 {
     'contextReferences',
   ]);
   const requestId = requireBoundedString(row.requestId, 'requestId', 128);
-  const expectedSessionId = requireBoundedString(row.expectedSessionId, 'expectedSessionId', 256);
+  if (!UUID_PATTERN.test(requestId)) throw new WebProtocolError('requestId must be a UUID');
+  const workspaceId = requireUuidString(row.workspaceId, 'workspaceId');
+  const expectedContextRevision = requireUuidString(
+    row.expectedContextRevision,
+    'expectedContextRevision'
+  );
+  const expectedSessionId = requireUuidString(row.expectedSessionId, 'expectedSessionId');
+  const expectedSessionRuntimeRevision = requireUuidString(
+    row.expectedSessionRuntimeRevision,
+    'expectedSessionRuntimeRevision'
+  );
   const type = requireEnum(row.type, 'type', [
     'submit',
+    'cancel_queued_turn',
     'queue_followup',
     'remove_followup',
     'clear_followups',
@@ -957,11 +1039,15 @@ export function parseWebCommand(value: unknown): WebCommandV1 {
   ] as const);
   const command: WebCommandV1 = {
     requestId,
+    workspaceId,
+    expectedContextRevision,
     expectedSessionId,
+    expectedSessionRuntimeRevision,
     type,
     ...(row.text === undefined
       ? {}
       : { text: requireBoundedString(row.text, 'text', WEB_MAX_BODY_BYTES) }),
+    ...(row.queueId === undefined ? {} : { queueId: requireUuidString(row.queueId, 'queueId') }),
     ...(row.itemId === undefined
       ? {}
       : { itemId: requireBoundedString(row.itemId, 'itemId', 256) }),
@@ -1022,6 +1108,8 @@ export function toAgentRuntimeInput(command: WebCommandV1): AgentRuntimeControll
   switch (command.type) {
     case 'submit':
       return { type: 'submit', text: command.text as string, source: 'programmatic' };
+    case 'cancel_queued_turn':
+      throw new WebProtocolError('cancel_queued_turn is handled by the Web Session registry');
     case 'queue_followup':
       return { type: 'queue_followup', text: command.text as string, source: 'programmatic' };
     case 'remove_followup':
@@ -1110,6 +1198,9 @@ function validateCommandFields(command: WebCommandV1): void {
   }
   if ((command.type === 'submit' || command.type === 'queue_followup') && !command.text?.trim()) {
     throw new WebProtocolError(`${command.type} requires non-empty text`);
+  }
+  if (command.type === 'cancel_queued_turn' && !command.queueId) {
+    throw new WebProtocolError('cancel_queued_turn requires queueId');
   }
   if (command.type === 'remove_followup' && !command.itemId) {
     throw new WebProtocolError('remove_followup requires itemId');

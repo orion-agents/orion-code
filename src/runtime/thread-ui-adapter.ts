@@ -240,7 +240,7 @@ export class ThreadUiAdapterV1 implements AgentRuntimeRunnerV1 {
 
   private replayInitialHistory(): void {
     while (this.cursorValue < this.initialReplayTarget) {
-      const replay = this.runtime.replay(this.cursorValue);
+      const replay = this.runtime.replay(this.cursorValue, undefined, 'ui_initial_history');
       const events = replay.events.filter(event => event.seq <= this.initialReplayTarget);
       if (events.length === 0) {
         throw new ThreadUiAdapterError(
@@ -261,7 +261,7 @@ export class ThreadUiAdapterV1 implements AgentRuntimeRunnerV1 {
       );
     }
     while (true) {
-      const replay = this.runtime.replay(this.cursorValue);
+      const replay = this.runtime.replay(this.cursorValue, undefined, 'ui_gap_recovery');
       for (const event of replay.events) {
         this.project(event);
         this.cursorValue = event.seq;

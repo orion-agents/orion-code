@@ -40,6 +40,12 @@ interface ProviderCooldown {
   reason: string;
 }
 
+function createGateAbortError(): Error {
+  const error = new Error('Provider request gate acquisition aborted.');
+  error.name = 'AbortError';
+  return error;
+}
+
 export class ProviderRequestGate {
   private readonly maxConcurrent: number;
   private activeCount = 0;
@@ -61,7 +67,7 @@ export class ProviderRequestGate {
    */
   acquire(request: GateRequest): Promise<GateLease> {
     if (request.abortSignal?.aborted) {
-      return Promise.reject(new Error('aborted'));
+      return Promise.reject(createGateAbortError());
     }
 
     return new Promise((resolve, reject) => {
@@ -71,7 +77,7 @@ export class ProviderRequestGate {
           const idx = this.waiters.indexOf(waiter);
           if (idx >= 0) {
             this.waiters.splice(idx, 1);
-            reject(new Error('aborted'));
+            reject(createGateAbortError());
             this.tryDispatch();
           }
           request.abortSignal?.removeEventListener('abort', onAbort);

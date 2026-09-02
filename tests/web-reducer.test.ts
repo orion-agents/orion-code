@@ -50,6 +50,54 @@ describe('Web Workbench reducer', () => {
     ]);
   });
 
+  test('projects a Session-owned Workspace write queue onto the matching tool card', () => {
+    const selected = workbenchReducer(initialWorkbenchState, {
+      type: 'reset_session_view',
+      activeSessionId: 'session-1',
+    });
+    const running = workbenchReducer(selected, {
+      type: 'event_received',
+      envelope: runtimeEnvelope(
+        {
+          type: 'tool_started',
+          event: {
+            callId: 'call-write',
+            name: 'write_file',
+            args: { path: 'fixture.txt' },
+            sequence: 1,
+          },
+        },
+        1
+      ),
+    });
+    const queuedEnvelope: WebEventEnvelopeV1 = {
+      apiVersion: 1,
+      eventId: '50000000-0000-4000-8000-000000000002',
+      cursor: 2,
+      sessionId: 'session-1',
+      threadId: null,
+      durable: false,
+      timestamp: new Date(2).toISOString(),
+      type: 'workspace_mutation_changed',
+      payload: {
+        state: { callId: 'call-write', phase: 'queued', queuePosition: 1 },
+      },
+    };
+
+    const queued = workbenchReducer(running, {
+      type: 'event_received',
+      envelope: queuedEnvelope,
+    });
+
+    expect(queued.tools).toEqual([
+      expect.objectContaining({
+        callId: 'call-write',
+        workspaceMutation: { phase: 'queued', queuePosition: 1 },
+      }),
+    ]);
+    expect(queued.announcement).toBe('工具 write_file 正在等待工作树写入');
+  });
+
   test('prepends an older transcript page without duplicating the cursor boundary', () => {
     const latest = snapshot(
       [
@@ -121,7 +169,37 @@ describe('Web Workbench reducer', () => {
     expect(stale.transcript).toEqual([]);
   });
 
-  test('ignores an inactive snapshot even when its session matches the current selection', () => {
+  test('ignores a stale snapshot failure after the selected Session changes', () => {
+    const selected = workbenchReducer(initialWorkbenchState, {
+      type: 'reset_session_view',
+      activeSessionId: 'session-2',
+    });
+    const stale = workbenchReducer(selected, {
+      type: 'snapshot_failed',
+      sessionId: 'session-1',
+      detail: 'stale failure',
+    });
+
+    expect(stale).toBe(selected);
+    expect(stale.connection).not.toBe('replay-required');
+  });
+
+  test('requires recovery when the selected Session snapshot fails', () => {
+    const selected = workbenchReducer(initialWorkbenchState, {
+      type: 'reset_session_view',
+      activeSessionId: 'session-2',
+    });
+    const failed = workbenchReducer(selected, {
+      type: 'snapshot_failed',
+      sessionId: 'session-2',
+      detail: 'matching failure',
+    });
+
+    expect(failed.connection).toBe('replay-required');
+    expect(failed.replayReason).toBe('matching failure');
+  });
+
+  test('accepts a cold snapshot for the browser-selected Session', () => {
     const selected = workbenchReducer(initialWorkbenchState, {
       type: 'reset_session_view',
       activeSessionId: 'session-1',
@@ -130,7 +208,22 @@ describe('Web Workbench reducer', () => {
     const inactiveSnapshot: WebSessionSnapshotV1 = {
       ...activeSnapshot,
       eventCursor: 20,
+      sessionRuntime: {
+        ...activeSnapshot.sessionRuntime,
+        phase: 'cold',
+        resident: false,
+        estimatedBytes: 0,
+      },
       runtime: { ...activeSnapshot.runtime, active: false },
+      composer: {
+        ...activeSnapshot.composer,
+        sessionRuntime: {
+          ...activeSnapshot.composer.sessionRuntime,
+          phase: 'cold',
+          resident: false,
+          estimatedBytes: 0,
+        },
+      },
       transcript: {
         items: [
           {
@@ -144,14 +237,37 @@ describe('Web Workbench reducer', () => {
       },
     };
 
-    const stale = workbenchReducer(selected, {
+    const restored = workbenchReducer(selected, {
       type: 'session_snapshot_loaded',
       snapshot: inactiveSnapshot,
     });
 
-    expect(stale).toBe(selected);
-    expect(stale.lastCursor).toBe(0);
-    expect(stale.transcript).toEqual([]);
+    expect(restored).not.toBe(selected);
+    expect(restored.lastCursor).toBe(20);
+    expect(restored.transcript).toEqual([
+      expect.objectContaining({ id: 'session-1:message:2', content: 'stale' }),
+    ]);
+    expect(restored.sessionSnapshot?.sessionRuntime).toMatchObject({
+      phase: 'cold',
+      resident: false,
+    });
+  });
+
+  test('bounds the browser Session projection cache by least-recently-loaded entries', () => {
+    let state = initialWorkbenchState;
+    for (let index = 0; index < 10; index += 1) {
+      const sessionId = `session-${index}`;
+      state = workbenchReducer(state, { type: 'reset_session_view', activeSessionId: sessionId });
+      state = workbenchReducer(state, {
+        type: 'session_snapshot_loaded',
+        snapshot: snapshotFor(sessionId, `content-${index}`),
+      });
+    }
+
+    expect(Object.keys(state.sessionProjectionById)).toEqual(
+      Array.from({ length: 8 }, (_, index) => `session-${index + 2}`)
+    );
+    expect(state.activeSessionId).toBe('session-9');
   });
 
   test('merges durable Goal and Plan metadata without replacing the live transcript', () => {
@@ -212,6 +328,156 @@ describe('Web Workbench reducer', () => {
       workspaceId: 'workspace-1',
     });
     expect(stale).toBe(merged);
+  });
+
+  test('caches a completed background Session snapshot without replacing the foreground view', () => {
+    const selected = {
+      ...workbenchReducer(initialWorkbenchState, {
+        type: 'reset_session_view' as const,
+        activeSessionId: 'session-1',
+      }),
+      contextRevision: 'context-1',
+      workspaceId: 'workspace-1',
+    };
+    const foreground = workbenchReducer(selected, {
+      type: 'session_snapshot_loaded',
+      snapshot: snapshotFor('session-1', 'foreground content'),
+    });
+    const backgroundSnapshot = {
+      ...snapshotFor('session-2', 'background completed content'),
+      session: {
+        ...snapshotFor('session-2', '').session,
+        messageCount: 2,
+      },
+      sessionRuntime: {
+        ...snapshotFor('session-2', '').sessionRuntime,
+        runtimeRevision: 'runtime-background-completed',
+        phase: 'idle' as const,
+      },
+    };
+
+    const cached = workbenchReducer(foreground, {
+      type: 'durable_session_metadata_loaded',
+      snapshot: backgroundSnapshot,
+      contextRevision: 'context-1',
+      workspaceId: 'workspace-1',
+    });
+
+    expect(cached.activeSessionId).toBe('session-1');
+    expect(cached.transcript.map(entry => entry.content)).toEqual(['foreground content']);
+    expect(cached.sessionProjectionById['session-2']?.transcript.items).toEqual([
+      expect.objectContaining({ content: 'background completed content' }),
+    ]);
+    expect(cached.sessionRuntimeById['session-2']).toMatchObject({
+      runtimeRevision: 'runtime-background-completed',
+      phase: 'idle',
+    });
+
+    const switched = workbenchReducer(cached, {
+      type: 'reset_session_view',
+      activeSessionId: 'session-2',
+    });
+    expect(switched.transcript.map(entry => entry.content)).toEqual([
+      'background completed content',
+    ]);
+  });
+
+  test('does not let a Host workbench state steal this tab foreground Session', () => {
+    const selected = workbenchReducer(initialWorkbenchState, {
+      type: 'reset_session_view',
+      activeSessionId: 'session-1',
+    });
+    const restored = workbenchReducer(selected, {
+      type: 'session_snapshot_loaded',
+      snapshot: snapshot([{ id: 'session-1:message:1', content: 'local foreground' }], null),
+    });
+    const contextual = {
+      ...restored,
+      workspaceId: '30000000-0000-4000-8000-000000000002',
+      workspace: '/workspace',
+    };
+
+    const received = workbenchReducer(contextual, {
+      type: 'event_received',
+      envelope: workbenchEnvelope('session-from-other-tab', 9),
+    });
+
+    expect(received.activeSessionId).toBe('session-1');
+    expect(received.transcript.map(entry => entry.content)).toEqual(['local foreground']);
+    expect(received.lastCursor).toBe(9);
+  });
+
+  test('keeps the live SSE cursor authoritative while switching Session projections', () => {
+    const workspaceId = '30000000-0000-4000-8000-000000000002';
+    const selected = {
+      ...workbenchReducer(initialWorkbenchState, {
+        type: 'reset_session_view' as const,
+        activeSessionId: 'session-1',
+      }),
+      workspaceId,
+      lastCursor: 5,
+    };
+    const switched = workbenchReducer(selected, {
+      type: 'session_snapshot_loaded',
+      snapshot: { ...snapshotFor('session-1', 'projection at cursor 10'), eventCursor: 10 },
+      advanceEventCursor: false,
+    });
+
+    expect(switched.lastCursor).toBe(5);
+
+    const invalidated = workbenchReducer(switched, {
+      type: 'event_received',
+      envelope: {
+        apiVersion: 1,
+        eventId: '40000000-0000-4000-8000-000000000010',
+        cursor: 8,
+        sessionId: null,
+        threadId: null,
+        durable: false,
+        timestamp: new Date(8).toISOString(),
+        type: 'workspace_resource_invalidated',
+        payload: {
+          workspaceId,
+          resources: ['files'],
+          reason: 'tool-finished',
+        },
+      },
+    });
+
+    expect(invalidated.lastCursor).toBe(8);
+    expect(invalidated.workspaceResourceEpochs[workspaceId]?.files).toBe(8);
+
+    const recovered = workbenchReducer(selected, {
+      type: 'session_snapshot_loaded',
+      snapshot: { ...snapshotFor('session-1', 'recovery baseline'), eventCursor: 10 },
+      advanceEventCursor: true,
+    });
+    expect(recovered.lastCursor).toBe(10);
+  });
+
+  test('does not advance the SSE cursor when restoring a cached Session projection', () => {
+    const background = {
+      ...snapshotFor('session-2', 'cached background'),
+      eventCursor: 50,
+    };
+    const cached = workbenchReducer(
+      { ...initialWorkbenchState, lastCursor: 7, workspaceId: 'workspace-1' },
+      {
+        type: 'durable_session_metadata_loaded',
+        snapshot: background,
+        contextRevision: initialWorkbenchState.contextRevision,
+        workspaceId: 'workspace-1',
+      }
+    );
+    const switched = workbenchReducer(cached, {
+      type: 'reset_session_view',
+      activeSessionId: 'session-2',
+    });
+
+    expect(switched.lastCursor).toBe(7);
+    expect(switched.transcript).toEqual([
+      expect.objectContaining({ content: 'cached background' }),
+    ]);
   });
 
   test('treats replay reset as a hard barrier until an active snapshot is accepted', () => {
@@ -394,6 +660,16 @@ function snapshot(
   entries: readonly { readonly id: string; readonly content: string }[],
   nextCursor: string | null
 ): WebSessionSnapshotV1 {
+  const sessionRuntime = {
+    workspaceId: 'workspace-1',
+    sessionId: 'session-1',
+    runtimeRevision: 'runtime-1',
+    phase: 'idle' as const,
+    pendingApprovalCount: 0,
+    resident: true,
+    estimatedBytes: 1,
+    updatedAt: new Date(1).toISOString(),
+  };
   return {
     apiVersion: 1,
     session: {
@@ -406,6 +682,7 @@ function snapshot(
       messageCount: 4,
       contextDigest: 'session-context-digest',
     },
+    sessionRuntime,
     threadId: 'thread-1',
     threadCursor: 8,
     eventCursor: 0,
@@ -439,6 +716,7 @@ function snapshot(
       sessionId: 'session-1',
       contextRevision: 'context-1',
       controlRevision: 'control-1',
+      sessionRuntime,
       processing: false,
       compactAvailable: true,
       mode: { baseMode: 'interactive', pendingBaseMode: null },
@@ -482,6 +760,17 @@ function sessionSummary(id: string, name: string): WebSessionSnapshotV1['session
     updatedAt: new Date(1).toISOString(),
     messageCount: 1,
     contextDigest: `context-${id}`,
+  };
+}
+
+function snapshotFor(sessionId: string, content: string): WebSessionSnapshotV1 {
+  const value = snapshot([{ id: `${sessionId}:message:1`, content }], null);
+  const sessionRuntime = { ...value.sessionRuntime, sessionId };
+  return {
+    ...value,
+    session: { ...value.session, id: sessionId, name: sessionId },
+    sessionRuntime,
+    composer: { ...value.composer, sessionId, sessionRuntime },
   };
 }
 

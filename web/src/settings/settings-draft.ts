@@ -138,6 +138,7 @@ export function controlValue<K extends SettingsKeyV1>(
 function controlValues(document: WebSettingsDocumentV1): SettingsValuesV1 {
   const effective = effectiveSettingsValues(document);
   return {
+    'appearance.style': controlValue(document, 'appearance.style') ?? effective['appearance.style'],
     'appearance.theme': controlValue(document, 'appearance.theme') ?? effective['appearance.theme'],
     'appearance.motion':
       controlValue(document, 'appearance.motion') ?? effective['appearance.motion'],

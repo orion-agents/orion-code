@@ -18,6 +18,7 @@ import {
   updateSessionThreadReadModel,
 } from '../services/session-storage';
 import { lookupProfile } from '../services/model-registry';
+import type { ProviderRequestGate } from '../services/provider-resilience/request-gate';
 import { estimateTokens } from '../utils/token-estimate';
 import { debugError } from '../utils/debug-log';
 import { getProjectThreadsV2Dir } from '../product/paths';
@@ -74,6 +75,7 @@ import {
   type AuthoritySnapshotV1,
   type ToolBindingV1,
   type ToolRiskMetadataV1,
+  type WorkspaceMutationCoordinatorV1,
 } from './step-snapshot';
 import type { SubagentThreadReceiptV1 } from './subagent-thread-runtime';
 import { createChildLlmConfig, createProductionSubagentRuntimeV1 } from './subagents/production';
@@ -102,6 +104,9 @@ export interface ProductOrionRuntimeOptionsV1 {
   readonly mcpDescriptors?: readonly McpServerDescriptorInputV1[];
   readonly mcpConnector?: McpConnectorV1;
   readonly approvalHandler?: FirstPartyApprovalHandlerV1;
+  readonly workspaceMutationCoordinator?: WorkspaceMutationCoordinatorV1;
+  /** Workspace-scoped provider concurrency/cooldown authority shared by root and child calls. */
+  readonly providerRequestGate?: ProviderRequestGate;
   /** Must create a distinct mutable provider client for every child request. */
   readonly createSubagentModelExecutor?: (input: {
     readonly role: SubagentRole;
@@ -203,6 +208,7 @@ export function createProductOrionRuntimeV1(
       connector: options.mcpConnector ?? INERT_MCP_CONNECTOR,
     } satisfies Omit<LazyMcpRuntimeOptions, 'signal'>,
     approvalHandler: options.approvalHandler,
+    workspaceMutationCoordinator: options.workspaceMutationCoordinator,
     ...(subagents ? { subagents } : {}),
     resolveCapabilityConfiguration: async (input, context) => {
       if (!promptState || promptState.turnId !== input.turnId) {
@@ -515,6 +521,7 @@ function createProductSubagentCompositionV1(
           modelLabel: model.modelId,
           rootObjectiveSummary: input.input,
           abortSignal: input.abortSignal,
+          sharedGate: options.providerRequestGate,
         });
         if (!bundle) {
           productionRuntime.close('subagent_turn_unavailable');

@@ -16,12 +16,16 @@ import type {
 } from './types';
 import { DEFAULT_PROVIDER_RESILIENCE_CONFIG } from './types';
 import { classifyProviderError } from './error-classifier';
+import type { GateLease, ProviderRequestGate } from './request-gate';
 import { incrementDiagnosticMetric } from '../../utils/observability';
 
 export class ProviderResilienceCoordinator {
   private readonly config: ProviderResilienceConfig;
 
-  constructor(config?: Partial<ProviderResilienceConfig>) {
+  constructor(
+    config?: Partial<ProviderResilienceConfig>,
+    private readonly requestGate?: ProviderRequestGate
+  ) {
     this.config = { ...DEFAULT_PROVIDER_RESILIENCE_CONFIG, ...config };
   }
 
@@ -79,8 +83,14 @@ export class ProviderResilienceCoordinator {
 
       const attemptRecord = this.startAttempt(ctx, attempt, diagnostics, currentModel);
       diagnostics.attempts.push(attemptRecord);
+      let gateLease: GateLease | undefined;
 
       try {
+        gateLease = await this.requestGate?.acquire({
+          priority: 0,
+          providerKey: ctx.providerKey,
+          ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
+        });
         const result = await transport(
           attempt,
           ctx.abortSignal,
@@ -108,6 +118,22 @@ export class ProviderResilienceCoordinator {
         attemptRecord.outcome = 'failed';
 
         const classification = classifyProviderError(error, attemptRecord.semanticDeltaSeen);
+        if (classification.kind === 'aborted') {
+          attemptRecord.outcome = 'aborted';
+          attemptRecord.failureKind = 'aborted';
+          attemptRecord.retryDisposition = 'fail_fast';
+          diagnostics.finalState = 'aborted';
+          incrementDiagnosticMetric('provider.failure.aborted');
+          incrementDiagnosticMetric('provider.request.aborted');
+          throw new ProviderRetryExhaustedError(diagnostics, 'aborted by signal', error);
+        }
+        if (classification.kind === 'rate_limit' && classification.retryAfterMs) {
+          this.requestGate?.enterCooldown(
+            ctx.providerKey,
+            Date.now() + classification.retryAfterMs,
+            `Provider rate limit; retry-after ${classification.retryAfterMs}ms`
+          );
+        }
         attemptRecord.failureKind = classification.kind;
         if (attemptRecord.semanticDeltaSeen && !attemptRecord.usage) {
           diagnostics.unknownBilledAttemptCount++;
@@ -193,6 +219,8 @@ export class ProviderResilienceCoordinator {
             incrementDiagnosticMetric('provider.cooldown');
             throw new ProviderRetryExhaustedError(diagnostics, 'provider cooldown active', error);
         }
+      } finally {
+        gateLease?.release();
       }
     }
 

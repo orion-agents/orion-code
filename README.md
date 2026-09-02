@@ -2,16 +2,16 @@
 
 Local-first, goal-driven coding agent for the terminal and browser.
 
-> v0.3.2 candidate — one Orion runtime with a resizable local Web Workbench, a Session-scoped
-> Composer Control Center and the existing TUI/terminal surfaces. Candidate source is not an npm
-> publication or Git tag.
+> v0.3.3 candidate — a bounded multi-Session Web Workbench, the built-in Orion Blocksmith theme
+> and the existing single-Session TUI/terminal surfaces. Candidate source is not an npm publication,
+> Git tag, or merge-ready release.
 
 [中文说明](README.zh-CN.md) ·
-[v0.3.2 Workbench plan](docs/plan/v0.3.2-web-workbench-layout-and-composer-plan.md) ·
-[v0.3.2 Web API](docs/architecture/v0.3.2-web-api.yaml) ·
+[v0.3.3 plan](docs/plan/v0.3.3-plan.md) ·
+[v0.3.3 Web API](docs/architecture/v0.3.3-web-api.yaml) ·
 [mode/permission contract](docs/architecture/agent-mode-permission-contract.md) ·
-[v0.3.2 E2E plan](docs/test/v0.3.2-web-workbench-e2e-plan.md) ·
-[v0.3.2 migration](docs/migration/v0.3.1-to-v0.3.2.md) ·
+[v0.3.3 E2E plan](docs/test/v0.3.3-web-workbench-e2e-plan.md) ·
+[v0.3.3 migration](docs/migration/v0.3.2-to-v0.3.3.md) ·
 [v0.3.0 Web plan](docs/plan/v0.3.0-web-workbench-plan.md) ·
 [Settings plan](docs/plan/v0.3.0-settings-integration-plan.md) ·
 [Node compatibility](docs/plan/v0.3.0-node-runtime-compatibility-plan.md) ·
@@ -20,11 +20,15 @@ Local-first, goal-driven coding agent for the terminal and browser.
 [Settings migration](docs/migration/v0.2.2-to-v0.3.0-settings.md) ·
 [real-state gallery](docs/assets/screenshots/v0.3.0-web/README.md)
 
-## What v0.3.2 includes
+## What v0.3.3 includes
 
-- **One runtime, two interactive surfaces.** `orion web` uses the same product bootstrap,
-  AgentRuntimeController, Session/Thread stores, ToolGateway, approvals, Goals, Plans, Skills and
-  MCP boundaries as the terminal product; the browser does not run a second agent loop.
+- **One execution spine, bounded Web Session actors.** Web Sessions use the same product bootstrap,
+  AgentRuntimeController, Session/Thread stores, ToolGateway, approvals, Goals, Plans, Skills and MCP
+  boundaries as the terminal product. Up to three Session turns may run concurrently with four
+  resident actors; the TUI and terminal surfaces keep their single-active-Session contract.
+- **Orion Blocksmith.** A bundled pixel-workshop style combines with system/light/dark themes without
+  remote assets, dynamic theme code or a second settings source. Classic remains available as an
+  explicit built-in style.
 - **Recoverable Web workbench.** The React workbench includes workspace/session navigation,
   transcript and tool activity, BUILD/PLAN/AUTO, follow-ups, interrupt, approvals, Goal/Plan,
   model/effort settings, Skills/MCP and diagnostics. Snapshots plus cursor replay repair refreshes
@@ -88,10 +92,10 @@ user extension boundaries.
 Node.js 22.12+, 24, and 26 are supported. Use Node 24 LTS for production or Node 26 Current for
 current development environments. Node 20 is upstream EOL and is no longer a v0.3 runtime.
 
-After the immutable `0.3.2` npm receipt exists:
+After the immutable `0.3.3` npm receipt exists:
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.2
+npm install -g @orion-agents/orion-code@0.3.3
 orion --version
 orion doctor
 ```
@@ -278,10 +282,10 @@ npm run test:web-e2e -- --grep @settings
 
 Release qualification additionally builds one exact tarball and installs that unchanged hash on
 Node 22/24/26 for package identity, native SQLite, TUI, terminal, print, Web, Goal, subagent, Skill,
-MCP, Compact, and resume journeys. WEB32-P0-01..12 additionally qualify the resizable project rail,
-Composer controls, Context, durable Plan review, queue/drafts and recovery/accessibility contract.
-See the [`v0.3.2 Workbench plan`](docs/plan/v0.3.2-web-workbench-layout-and-composer-plan.md) and
-[`v0.3.2 E2E qualification plan`](docs/test/v0.3.2-web-workbench-e2e-plan.md).
+MCP, Compact, and resume journeys. WEB33-P0-01..12 qualify the built-in appearance contract, while
+WEB33-P0-16..24 qualify parallel Session actors, foreground-local switching, bounded queues, the
+right rail and the single Settings entry. See the [`v0.3.3 plan`](docs/plan/v0.3.3-plan.md) and
+[`v0.3.3 E2E qualification plan`](docs/test/v0.3.3-web-workbench-e2e-plan.md).
 
 ## Security
 

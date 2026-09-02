@@ -17,7 +17,11 @@ import type { OrionRuntimeV1 } from '../runtime/orion-runtime-v1';
 import { digestRuntimeValue } from '../runtime/protocol/canonical';
 import { PlanReviewControlError } from '../runtime/plan-review';
 import type { RuntimeEventEnvelopeV1 } from '../runtime/protocol/runtime-protocol-v1';
-import { ThreadSessionIndexError } from '../runtime/thread-session-index';
+import { threadEventStorePerformanceCountersV1 } from '../runtime/thread-event-store';
+import {
+  ThreadSessionIndexError,
+  threadSessionIndexPerformanceCountersV1,
+} from '../runtime/thread-session-index';
 import {
   loadThreadSessionSnapshotPageV1,
   loadThreadSessionViewV1,
@@ -48,6 +52,10 @@ import { WebEventHub } from './event-hub';
 import { FileReadServiceV1 } from './file-read-service';
 import { GitReadModelServiceV1 } from './git-read-model-service';
 import {
+  WorkspaceMutationArbiterV1,
+  type WorkspaceMutationStateV1,
+} from './workspace-mutation-arbiter';
+import {
   WEB_API_VERSION,
   parseWebCommand,
   type WebComposerActionResultV1,
@@ -77,6 +85,12 @@ import {
   type WebWorkspaceInvalidationReasonV1,
 } from './protocol';
 import { ReviewServiceV1 } from './review-service';
+import {
+  WebSessionRuntimeRegistryError,
+  WebSessionRuntimeRegistryV1,
+  type WebSessionActorKeyV1,
+  type WebSessionRuntimeSummaryV1,
+} from './session-runtime-registry';
 import { TerminalManagerV1 } from './terminal-manager';
 
 export { WebWorkbenchError } from './errors';
@@ -92,19 +106,34 @@ interface CachedSessionView {
   readonly bytes: number;
 }
 
+interface WebWorkbenchSessionActorV1 {
+  readonly key: WebSessionActorKeyV1;
+  readonly runtime: OrionCodeUiRuntime;
+  readonly controller: AgentRuntimeController;
+  composerRevision: string;
+  composerAuthorityDigest?: string;
+  latestStatus: string;
+  suppressComposerEdges: number;
+  composerStoreUnsubscribe?: () => void;
+  composerControlsUnsubscribe?: () => void;
+  composerChangeTimer?: NodeJS.Timeout;
+}
+
 const SESSION_VIEW_CACHE_BYTES = 16 * 1024 * 1024;
 const MAX_MUTATION_RESULTS = 4_096;
 const MAX_CONTEXT_REFERENCE_BYTES = 64 * 1024;
 const MAX_CONTEXT_MANIFEST_BYTES = 256 * 1024;
+const CONTEXT_TRANSITION_MUTATIONS = new Set(['context.activate', 'workspace.activate']);
 
 export interface WebWorkbenchControllerOptions {
   readonly cwd: string;
   readonly eventHub?: WebEventHub;
   readonly createRuntime?: (cwd: string) => Promise<OrionCodeUiRuntime>;
+  readonly createSessionRuntime?: (cwd: string) => Promise<OrionCodeUiRuntime>;
   readonly workspaceRegistry?: WorkspaceRegistryV1;
 }
 
-/** Owns the sole runtime/controller pair exposed through the local Web host. */
+/** Owns the Workspace surface plus the bounded Web Session actor registry. */
 export class WebWorkbenchController {
   readonly eventHub: WebEventHub;
 
@@ -112,13 +141,19 @@ export class WebWorkbenchController {
   private runtimeValue!: OrionCodeUiRuntime;
   private controllerValue!: AgentRuntimeController;
   private activeOrionRuntime?: { readonly runtime: OrionRuntimeV1; readonly sessionId: string };
+  private readonly activeOrionRuntimes = new Map<string, OrionRuntimeV1>();
   private readonly createRuntime: (cwd: string) => Promise<OrionCodeUiRuntime>;
+  private readonly createSessionRuntime: (cwd: string) => Promise<OrionCodeUiRuntime>;
+  private sessionRegistry: WebSessionRuntimeRegistryV1<WebWorkbenchSessionActorV1>;
   private readonly workspaceRegistry: WorkspaceRegistryV1;
   readonly terminalManager: TerminalManagerV1;
   private readonly mutationResults = new Map<string, CachedMutationResult>();
   private readonly sessionViews = new Map<string, CachedSessionView>();
   private sessionViewBytes = 0;
   private readonly toolDetails = new FileToolDetailRepository();
+  private readonly workspaceMutations: WorkspaceMutationArbiterV1;
+  private readonly workspaceMutationOwners = new Map<string, WebSessionActorKeyV1>();
+  private readonly pendingWorkspaceMutationStates = new Map<string, WorkspaceMutationStateV1>();
   private fileService!: FileReadServiceV1;
   private gitService!: GitReadModelServiceV1;
   private reviewService!: ReviewServiceV1;
@@ -132,14 +167,19 @@ export class WebWorkbenchController {
   private suppressContextEdges = 0;
   private latestStatus = 'Ready';
   private transition: Promise<void> | undefined;
-  private sessionTransition = false;
+  private activeMutationCount = 0;
+  private contextTransitionReserved = false;
   private closed = false;
+  private shutdownResult?: Promise<void>;
   private workspaceWatchers: FSWatcher[] = [];
   private resourceInvalidationTimer?: NodeJS.Timeout;
 
   private constructor(options: WebWorkbenchControllerOptions) {
     this.workspaceValue = canonicalDirectory(options.cwd);
     this.eventHub = options.eventHub ?? new WebEventHub();
+    this.workspaceMutations = new WorkspaceMutationArbiterV1({
+      onStateChanged: state => this.emitWorkspaceMutationState(state),
+    });
     this.workspaceRegistry = options.workspaceRegistry ?? new WorkspaceRegistryV1();
     this.terminalManager = new TerminalManagerV1({
       resolveWorkspace: workspaceId => this.workspaceRegistry.find(workspaceId)?.canonicalPath,
@@ -158,6 +198,7 @@ export class WebWorkbenchController {
       (cwd =>
         createProductUiRuntime({
           cwd,
+          workspaceMutationCoordinator: this.workspaceMutations,
           shutdownReason: 'Orion Web Workbench shutdown',
           onActiveSessionRuntime: (runtime, sessionId, activation) =>
             this.observeThreadRuntime(runtime, sessionId, activation),
@@ -174,6 +215,19 @@ export class WebWorkbenchController {
             );
           },
         }));
+    this.createSessionRuntime =
+      options.createSessionRuntime ??
+      options.createRuntime ??
+      (cwd =>
+        createProductUiRuntime({
+          cwd,
+          workspaceRuntimeKernel: this.runtimeValue.workspaceRuntimeKernel,
+          workspaceMutationCoordinator: this.workspaceMutations,
+          shutdownReason: 'Orion Web Session actor shutdown',
+          onActiveSessionRuntime: (runtime, sessionId, activation) =>
+            this.observeThreadRuntime(runtime, sessionId, activation),
+        }));
+    this.sessionRegistry = this.createSessionRegistry();
   }
 
   static async create(options: WebWorkbenchControllerOptions): Promise<WebWorkbenchController> {
@@ -381,11 +435,12 @@ export class WebWorkbenchController {
     if (canonicalDirectory(session.projectPath) !== this.workspaceValue) {
       throw new WebWorkbenchError(409, 'Session belongs to another workspace.');
     }
-    const active = this.runtimeValue.getSession()?.id === session.id;
-    const activeProjection =
-      this.activeOrionRuntime?.sessionId === session.id
-        ? this.activeOrionRuntime.runtime.thread.getProjection()
-        : undefined;
+    const key = this.sessionActorKey(session);
+    const resident = this.sessionRegistry.residentActor(key);
+    const actor = resident?.actor;
+    const baseSessionRuntime = resident?.runtime ?? this.sessionRegistry.summary(key);
+    const active = actor !== undefined;
+    const activeProjection = this.activeOrionRuntimes.get(session.id)?.thread.getProjection();
     let indexedPage: ReturnType<typeof loadThreadSessionSnapshotPageV1>;
     if (tail) {
       try {
@@ -493,13 +548,29 @@ export class WebWorkbenchController {
           : [];
     const commits = commitProjections.map(commit => parseTurnCommitV1(commit.receipt));
     const latestCommit = commits.at(-1);
+    const latestProjectedTurn = activeProjection
+      ? Object.values(activeProjection.turns)
+          .sort((left, right) => left.startedSeq - right.startedSeq)
+          .at(-1)
+      : undefined;
+    const durableTerminal =
+      latestProjectedTurn?.status ?? indexedPage?.latestTurn?.status ?? latestCommit?.terminal;
+    const recoverableTerminalPhase =
+      durableTerminal === 'interrupted' || durableTerminal === 'failed'
+        ? durableTerminal
+        : undefined;
+    const sessionRuntime =
+      recoverableTerminalPhase &&
+      ['cold', 'idle', 'interrupted', 'failed'].includes(baseSessionRuntime.phase)
+        ? Object.freeze({ ...baseSessionRuntime, phase: recoverableTerminalPhase })
+        : baseSessionRuntime;
     const planCommit = [...commits].reverse().find(commit => commit.planReceipt);
     const plan = planCommit?.planReceipt
       ? pickPlanReceipt(parsePlanReceiptV1(planCommit.planReceipt))
       : null;
-    const state = this.runtimeValue.store.getSnapshot();
+    const state = (actor?.runtime ?? this.runtimeValue).store.getSnapshot();
     const pendingPermissions = active
-      ? this.controllerValue.getPendingPermissions().map(request => ({
+      ? actor.controller.getPendingPermissions().map(request => ({
           id: request.id,
           toolName: request.name,
           ...(request.reason ? { reason: request.reason } : {}),
@@ -517,9 +588,17 @@ export class WebWorkbenchController {
             state: JSON.parse(latestCommit.goalState) as unknown,
           }
         : null;
+    const projectedComposer = actor
+      ? this.projectActorComposerState(actor, session)
+      : this.projectComposerStateValue(session);
+    const composer =
+      projectedComposer.sessionRuntime.phase === sessionRuntime.phase
+        ? projectedComposer
+        : Object.freeze({ ...projectedComposer, sessionRuntime });
     const snapshot = Object.freeze({
       apiVersion: WEB_API_VERSION,
       session: projectSessionSummary(session),
+      sessionRuntime,
       threadId: activeProjection?.threadId ?? indexedPage?.threadId ?? view?.threadId ?? null,
       threadCursor: activeProjection?.cursor ?? indexedPage?.cursor ?? view?.cursor ?? 0,
       eventCursor: this.eventHub.snapshot().latest,
@@ -537,8 +616,8 @@ export class WebWorkbenchController {
         processing: active ? state.isProcessing : false,
         agentMode: state.agentMode,
         permissionMode: state.permissionMode,
-        status: this.latestStatus,
-        followups: active ? Object.freeze([...this.controllerValue.getFollowupQueue()]) : [],
+        status: actor?.latestStatus ?? 'Ready',
+        followups: active ? Object.freeze([...actor.controller.getFollowupQueue()]) : [],
         followupLimit: 16,
         contextUsage: active ? state.contextUsage : null,
         tokenUsage: active ? state.tokenUsage : null,
@@ -546,7 +625,7 @@ export class WebWorkbenchController {
       pendingApprovals: Object.freeze(pendingPermissions),
       goal,
       plan,
-      composer: this.projectComposerState(session, active),
+      composer,
       recoveryDiagnostics: indexedPage ? [] : (view?.diagnostics ?? []),
     });
     if (context) this.assertContextGuard(context);
@@ -555,37 +634,57 @@ export class WebWorkbenchController {
 
   composerState(sessionId: string, context?: WebContextGuardV1): WebComposerControlStateV1 {
     if (context) this.assertContextGuard(context);
-    this.assertCommandSession(sessionId);
     const session = requireSession(sessionId);
-    const state = this.projectComposerState(session, true);
+    this.assertSessionWorkspace(session);
+    const actor = this.sessionRegistry.residentActor(this.sessionActorKey(session))?.actor;
+    const state = actor
+      ? this.projectActorComposerState(actor, session)
+      : this.projectComposerStateValue(session);
     if (context) this.assertContextGuard(context);
     return state;
   }
 
-  private projectComposerState(session: SessionMeta, active: boolean): WebComposerControlStateV1 {
-    const state = this.projectComposerStateValue(session, active);
-    if (!active) return state;
+  sessionRuntimeSummary(sessionId: string): WebSessionRuntimeSummaryV1 {
+    const session = requireSession(sessionId);
+    this.assertSessionWorkspace(session);
+    return this.sessionRegistry.summary(this.sessionActorKey(session));
+  }
+
+  async waitForSessionIdle(sessionId: string): Promise<void> {
+    const session = requireSession(sessionId);
+    this.assertSessionWorkspace(session);
+    const actor = this.sessionRegistry.residentActor(this.sessionActorKey(session))?.actor;
+    await actor?.controller.waitForIdle();
+  }
+
+  private projectActorComposerState(
+    actor: WebWorkbenchSessionActorV1,
+    session: SessionMeta
+  ): WebComposerControlStateV1 {
+    const state = this.projectComposerStateValue(session, actor);
     // Durable Thread and Store authority can advance before the debounced SSE
     // observer runs. Keep every projected control state and its CAS token in
     // the same synchronous boundary so the UI never receives new controls
     // paired with an older revision.
     const authorityDigest = composerAuthorityDigest(state);
-    if (this.composerAuthorityDigest === undefined) {
-      this.composerAuthorityDigest = authorityDigest;
+    if (actor.composerAuthorityDigest === undefined) {
+      actor.composerAuthorityDigest = authorityDigest;
       return state;
     }
-    if (authorityDigest === this.composerAuthorityDigest) return state;
+    if (authorityDigest === actor.composerAuthorityDigest) return state;
 
-    this.bumpComposerRevision();
-    this.composerAuthorityDigest = authorityDigest;
-    return Object.freeze({ ...state, controlRevision: this.composerRevisionValue });
+    actor.composerRevision = randomUUID();
+    actor.composerAuthorityDigest = authorityDigest;
+    return Object.freeze({ ...state, controlRevision: actor.composerRevision });
   }
 
   private projectComposerStateValue(
     session: SessionMeta,
-    active: boolean
+    actor?: WebWorkbenchSessionActorV1
   ): WebComposerControlStateV1 {
-    const controls = this.runtimeValue.sessionComposerControls;
+    const runtimeOwner = actor?.runtime ?? this.runtimeValue;
+    const controller = actor?.controller;
+    const controls = runtimeOwner.sessionComposerControls;
     if (!controls) {
       throw new WebWorkbenchError(
         503,
@@ -594,31 +693,37 @@ export class WebWorkbenchController {
       );
     }
     const runtime = controls.describeSession(session);
-    const queue = active
-      ? this.controllerValue.getFollowupQueueSnapshot()
+    const queue = actor
+      ? actor.controller.getFollowupQueueSnapshot()
       : { items: [] as const, limit: 16 };
-    const projection =
-      active && this.activeOrionRuntime?.sessionId === session.id
-        ? this.activeOrionRuntime.runtime.thread.getProjection()
-        : undefined;
+    const projection = actor
+      ? this.activeOrionRuntimes.get(session.id)?.thread.getProjection()
+      : undefined;
     const review = projection?.planReview;
-    const workspace = this.activeWorkspaceEntry();
+    const workspaceId = this.workspaceRegistry
+      .list()
+      .find(entry => entry.canonicalPath === canonicalDirectory(session.projectPath))?.id;
+    if (!workspaceId) {
+      throw new WebWorkbenchError(404, 'Workspace was not found.', 'workspace_not_found');
+    }
+    const sessionRuntime = this.sessionRegistry.summary({ workspaceId, sessionId: session.id });
     return Object.freeze({
       apiVersion: WEB_API_VERSION,
-      workspaceId: workspace.id,
+      workspaceId,
       sessionId: session.id,
       contextRevision: this.contextRevisionValue,
-      controlRevision: this.composerRevisionValue,
+      controlRevision: actor?.composerRevision ?? sessionRuntime.runtimeRevision,
+      sessionRuntime,
       processing:
-        active &&
-        (this.runtimeValue.store.getSnapshot().isProcessing || Boolean(projection?.activeTurnId)),
-      mode: active
-        ? Object.freeze({ ...this.controllerValue.getAgentModeSnapshot() })
+        Boolean(actor) &&
+        (runtimeOwner.store.getSnapshot().isProcessing || Boolean(projection?.activeTurnId)),
+      mode: controller
+        ? Object.freeze({ ...controller.getAgentModeSnapshot() })
         : Object.freeze({ baseMode: 'interactive' as const, pendingBaseMode: null }),
       model: runtime.model,
       permission: runtime.permission,
       contextUsage: runtime.contextUsage,
-      compactAvailable: active && this.controllerValue.canCompactContext(),
+      compactAvailable: controller?.canCompactContext() ?? false,
       pending: runtime.pending,
       lastError: runtime.lastError,
       planReview: review
@@ -641,8 +746,10 @@ export class WebWorkbenchController {
 
   modelCatalog(sessionId: string, context?: WebContextGuardV1) {
     if (context) this.assertContextGuard(context);
-    this.assertCommandSession(sessionId);
-    const controls = this.runtimeValue.sessionComposerControls;
+    const session = requireSession(sessionId);
+    this.assertSessionWorkspace(session);
+    const actor = this.sessionRegistry.residentActor(this.sessionActorKey(session))?.actor;
+    const controls = (actor?.runtime ?? this.runtimeValue).sessionComposerControls;
     if (!controls) {
       throw new WebWorkbenchError(
         503,
@@ -657,8 +764,19 @@ export class WebWorkbenchController {
 
   async applyComposerAction(input: WebComposerActionV1): Promise<WebComposerActionResultV1> {
     this.assertContextGuard(input);
-    this.assertCommandSession(input.expectedSessionId);
-    const admittedState = this.composerState(input.expectedSessionId);
+    const session = requireSession(input.expectedSessionId);
+    this.assertSessionWorkspace(session);
+    const key = this.sessionActorKey(session);
+    const wasResident = this.sessionRegistry.summary(key).resident;
+    let actor: WebWorkbenchSessionActorV1;
+    try {
+      actor = (await this.sessionRegistry.ensureResident(key, input.expectedSessionRuntimeRevision))
+        .actor;
+    } catch (error) {
+      throw mapSessionRuntimeError(error);
+    }
+    if (!wasResident) actor.composerRevision = input.expectedControlRevision;
+    const admittedState = this.projectActorComposerState(actor, session);
     if (input.expectedControlRevision !== admittedState.controlRevision) {
       throw new WebWorkbenchError(
         409,
@@ -666,7 +784,7 @@ export class WebWorkbenchController {
         'composer_control_conflict'
       );
     }
-    const controls = this.runtimeValue.sessionComposerControls;
+    const controls = actor.runtime.sessionComposerControls;
     if (!controls) {
       throw new WebWorkbenchError(
         503,
@@ -679,11 +797,11 @@ export class WebWorkbenchController {
     let modelReceipt: WebComposerActionResultV1['modelReceipt'];
     let permissionReceipt: WebComposerActionResultV1['permissionReceipt'];
     let planReviewReceipt: WebComposerActionResultV1['planReviewReceipt'];
-    this.suppressComposerEdges += 1;
+    actor.suppressComposerEdges += 1;
     try {
       switch (input.type) {
         case 'set_agent_mode': {
-          const result = this.controllerValue.setAgentMode(input.mode);
+          const result = actor.controller.setAgentMode(input.mode);
           outcome =
             result.type === 'agent_mode_changed' && result.appliesFrom === 'next-logical-request'
               ? 'deferred'
@@ -707,7 +825,7 @@ export class WebWorkbenchController {
           outcome = modelReceipt.appliesFrom === 'next-logical-request' ? 'deferred' : 'applied';
           break;
         case 'compact_context': {
-          const result = await this.controllerValue.compactContext();
+          const result = await actor.controller.compactContext();
           if (result.status === 'rejected') {
             throw new WebWorkbenchError(409, 'Context compact was rejected.', 'runtime_busy');
           }
@@ -716,7 +834,7 @@ export class WebWorkbenchController {
         }
         case 'edit_queue_item':
           detail = JSON.stringify(
-            this.controllerValue.editFollowupQueueItem(
+            actor.controller.editFollowupQueueItem(
               input.itemId,
               input.expectedItemRevision,
               input.text
@@ -725,7 +843,7 @@ export class WebWorkbenchController {
           break;
         case 'move_queue_item':
           detail = JSON.stringify(
-            this.controllerValue.moveFollowupQueueItem(
+            actor.controller.moveFollowupQueueItem(
               input.itemId,
               input.expectedItemRevision,
               input.targetIndex
@@ -734,17 +852,17 @@ export class WebWorkbenchController {
           break;
         case 'remove_queue_item':
           detail = JSON.stringify(
-            this.controllerValue.removeFollowupQueueItem(input.itemId, input.expectedItemRevision)
+            actor.controller.removeFollowupQueueItem(input.itemId, input.expectedItemRevision)
           );
           break;
         case 'review_plan': {
-          planReviewReceipt = await this.controllerValue.reviewPlan({
+          planReviewReceipt = await actor.controller.reviewPlan({
             planDigest: input.planDigest,
             action: input.action,
             ...(input.feedback ? { feedback: input.feedback } : {}),
           });
-          if (input.action === 'approve') this.controllerValue.setAgentMode('interactive');
-          else if (input.action === 'continue') this.controllerValue.setAgentMode('plan');
+          if (input.action === 'approve') actor.controller.setAgentMode('interactive');
+          else if (input.action === 'continue') actor.controller.setAgentMode('plan');
           detail = JSON.stringify(planReviewReceipt.admission);
           break;
         }
@@ -752,18 +870,18 @@ export class WebWorkbenchController {
     } catch (error) {
       throw mapComposerControlError(error);
     } finally {
-      this.suppressComposerEdges -= 1;
+      actor.suppressComposerEdges -= 1;
     }
-    this.bumpComposerRevision();
-    const state = this.projectComposerStateValue(requireSession(input.expectedSessionId), true);
-    this.composerAuthorityDigest = composerAuthorityDigest(state);
+    actor.composerRevision = randomUUID();
+    const state = this.projectComposerStateValue(session, actor);
+    actor.composerAuthorityDigest = composerAuthorityDigest(state);
     this.eventHub.emit({ type: 'composer_state_changed', state }, true, {
       sessionId: input.expectedSessionId,
     });
     return Object.freeze({
       requestId: input.requestId,
       outcome,
-      controlRevision: this.composerRevisionValue,
+      controlRevision: actor.composerRevision,
       state,
       ...(modelReceipt ? { modelReceipt } : {}),
       ...(permissionReceipt ? { permissionReceipt } : {}),
@@ -934,58 +1052,33 @@ export class WebWorkbenchController {
   }
 
   async createSession(name?: string, context?: WebContextGuardV1): Promise<WebSessionSummaryV1> {
-    this.assertReadyForTransition('create a session');
     if (context) this.assertContextGuard(context);
-    this.sessionTransition = true;
-    try {
-      // A new Session inherits the durable default; an override on the currently
-      // active Session must never leak into the next Session.
-      const session = createSession(
-        this.workspaceValue,
-        this.settings().sections.defaults.model.effectiveValue
-      );
-      incrementSessionCount();
-      const named = name?.trim() ? (renameSession(session.id, name.trim()) ?? session) : session;
-      this.runtimeValue.setSession(named);
-      await this.runtimeValue.rebindSessionRuntime?.();
-      this.eventHub.emitRuntime({ type: 'transcript_clear' });
-      this.emitState();
-      return projectSessionSummary(named);
-    } finally {
-      this.sessionTransition = false;
-    }
+    // A new Session inherits the durable default; an override on another
+    // Session actor must never leak into it. Creation does not activate or
+    // close any actor; foreground selection belongs to the browser tab.
+    const session = createSession(
+      this.workspaceValue,
+      this.settings().sections.defaults.model.effectiveValue
+    );
+    incrementSessionCount();
+    const named = name?.trim() ? (renameSession(session.id, name.trim()) ?? session) : session;
+    this.sessionRegistry.summary(this.sessionActorKey(named));
+    return projectSessionSummary(named);
   }
 
   async activateSession(
     sessionId: string,
     context?: WebContextGuardV1
   ): Promise<WebCommandResultV1> {
-    this.assertReadyForTransition('switch sessions');
     if (context) this.assertContextGuard(context);
-    this.sessionTransition = true;
-    this.suppressContextEdges += 1;
-    let activated = false;
-    try {
-      const session = requireSession(sessionId);
-      if (canonicalDirectory(session.projectPath) !== this.workspaceValue) {
-        throw new WebWorkbenchError(409, 'Session belongs to another workspace.');
-      }
-      const result = this.controllerValue.handle({
-        type: 'select_session',
-        sessionId: session.id,
-        source: 'programmatic',
-      });
-      await this.controllerValue.waitForIdle();
-      if (this.runtimeValue.getSession()?.id !== session.id) {
-        throw new WebWorkbenchError(409, 'Session activation was rejected by the runtime.');
-      }
-      activated = true;
-      return { requestId: `activate:${session.id}`, result: result.type };
-    } finally {
-      this.suppressContextEdges -= 1;
-      this.sessionTransition = false;
-      if (activated) this.emitState();
-    }
+    const session = requireSession(sessionId);
+    this.assertSessionWorkspace(session);
+    const sessionRuntime = this.sessionRegistry.summary(this.sessionActorKey(session));
+    return {
+      requestId: `activate:${session.id}`,
+      result: 'foreground_session_selected',
+      sessionRuntime,
+    };
   }
 
   renameSession(sessionId: string, name: string, context?: WebContextGuardV1): WebSessionSummaryV1 {
@@ -1037,9 +1130,12 @@ export class WebWorkbenchController {
       );
     }
     const currentSessionId = this.runtimeValue.getSession()?.id ?? null;
-    if (targetWorkspace === this.workspaceValue && targetSession?.id === currentSessionId) return;
-    if (targetWorkspace === this.workspaceValue && !targetSession && currentSessionId === null)
+    if (targetWorkspace === this.workspaceValue) {
+      if (targetSession) this.sessionRegistry.summary(this.sessionActorKey(targetSession));
+      // Session foreground selection is browser-local. A same-Workspace
+      // selection never mutates the Host Context or any Session actor.
       return;
+    }
 
     this.assertReadyForTransition('activate a Context');
     const previousWorkspace = this.workspaceValue;
@@ -1052,16 +1148,18 @@ export class WebWorkbenchController {
         await previousController.stopActiveTurn();
         await previousController.waitForIdle();
         if (targetWorkspace !== previousWorkspace) {
+          await this.sessionRegistry.shutdown('Workspace Context changed');
           await previousRuntime.shutdown();
           await this.installRuntime(targetWorkspace, false);
+          this.sessionRegistry = this.createSessionRegistry();
         }
-        await this.restoreContextSession(targetSession?.id ?? null);
         this.workspaceRegistry.register(targetWorkspace, { activated: true });
       } catch (activationError) {
         try {
           if (targetWorkspace !== previousWorkspace) {
             if (this.runtimeValue !== previousRuntime) await this.runtimeValue.shutdown();
             await this.installRuntime(previousWorkspace, false);
+            this.sessionRegistry = this.createSessionRegistry();
           }
           await this.restoreContextSession(previousSessionId);
         } catch {
@@ -1088,9 +1186,27 @@ export class WebWorkbenchController {
   dispatch(raw: unknown): Promise<WebCommandResultV1> {
     const command = parseWebCommand(raw);
     return this.executeMutation(command.requestId, 'command', command, async () => {
-      this.assertCommandSession(command.expectedSessionId);
+      this.assertContextGuard(command);
+      const session = requireSession(command.expectedSessionId);
+      this.assertSessionWorkspace(session);
+      const key = this.sessionActorKey(session);
+      if (command.type === 'cancel_queued_turn') {
+        try {
+          const sessionRuntime = this.sessionRegistry.cancelQueued(
+            key,
+            command.queueId as string,
+            command.expectedSessionRuntimeRevision
+          );
+          return Object.freeze({
+            requestId: command.requestId,
+            result: 'session_turn_queue_cancelled',
+            sessionRuntime,
+          });
+        } catch (error) {
+          throw mapSessionRuntimeError(error);
+        }
+      }
       const resolved = await this.resolveCommandContext(command);
-      this.assertCommandSession(command.expectedSessionId);
       const runtimeInput =
         resolved && command.type === 'queue_followup'
           ? ({
@@ -1100,13 +1216,62 @@ export class WebWorkbenchController {
               source: 'programmatic',
             } as const)
           : toAgentRuntimeInput({ ...command, ...(resolved ? { text: resolved.text } : {}) });
-      const runtimeResult = this.controllerValue.handle(runtimeInput);
-      return Object.freeze({
-        requestId: command.requestId,
-        result: runtimeResult.type,
-        detail: JSON.stringify(runtimeResult),
-        ...(resolved ? { contextReceipt: resolved.receipt } : {}),
-      });
+      try {
+        if (command.type === 'submit') {
+          const admission = await this.sessionRegistry.admitTurn({
+            key,
+            expectedRuntimeRevision: command.expectedSessionRuntimeRevision,
+            start: async actor => {
+              const runtimeResult = actor.controller.handle(runtimeInput);
+              return {
+                accepted: runtimeResult,
+                settled: actor.controller.waitForIdle(),
+              };
+            },
+          });
+          if (admission.status === 'queued') {
+            return Object.freeze({
+              requestId: command.requestId,
+              result: 'session_turn_queued',
+              queueId: admission.queueId,
+              queuePosition: admission.queuePosition,
+              sessionRuntime: admission.runtime,
+              ...(resolved ? { contextReceipt: resolved.receipt } : {}),
+            });
+          }
+          return Object.freeze({
+            requestId: command.requestId,
+            result: admission.accepted.type,
+            detail: JSON.stringify(admission.accepted),
+            sessionRuntime: admission.runtime,
+            ...(resolved ? { contextReceipt: resolved.receipt } : {}),
+          });
+        }
+
+        const routed = await this.sessionRegistry.withActor(
+          key,
+          command.expectedSessionRuntimeRevision,
+          actor => {
+            const runtimeResult = actor.controller.handle(runtimeInput);
+            if (command.type === 'permission_decision') {
+              this.sessionRegistry.setPendingApprovalCount(
+                key,
+                actor.controller.getPendingPermissions().length
+              );
+            }
+            return runtimeResult;
+          }
+        );
+        return Object.freeze({
+          requestId: command.requestId,
+          result: routed.result.type,
+          detail: JSON.stringify(routed.result),
+          sessionRuntime: routed.runtime,
+          ...(resolved ? { contextReceipt: resolved.receipt } : {}),
+        });
+      } catch (error) {
+        throw mapSessionRuntimeError(error);
+      }
     });
   }
 
@@ -1380,10 +1545,22 @@ export class WebWorkbenchController {
         'mutation_capacity_exhausted'
       );
     }
-    const result = Promise.resolve().then(() => {
-      this.assertMutationAdmission();
-      return action();
-    });
+    const contextTransition = CONTEXT_TRANSITION_MUTATIONS.has(operation);
+    let result: Promise<T>;
+    try {
+      this.reserveMutation(contextTransition);
+      result = Promise.resolve()
+        .then(() => {
+          this.assertMutationAdmission();
+          return action();
+        })
+        .finally(() => this.releaseMutation(contextTransition));
+    } catch (error) {
+      // Mutation admission is part of the idempotent result contract. Cache a
+      // rejected Promise just like failures raised by the action so a retry of
+      // the same requestId cannot observe a different outcome.
+      result = Promise.reject(error);
+    }
     this.mutationResults.set(requestId, { fingerprint, result });
     return result;
   }
@@ -1416,9 +1593,14 @@ export class WebWorkbenchController {
       mcp: { servers: mcpServerIds(mcp) },
       harness,
       eventStream: this.eventHub.snapshot(),
+      workspaceKernel: this.runtimeValue.workspaceRuntimeKernel?.diagnostics() ?? null,
       performance: {
         files: this.fileService.performanceCounters(),
         git: this.gitService.performanceCounters(),
+        thread: {
+          eventStore: threadEventStorePerformanceCountersV1(),
+          sessionIndex: threadSessionIndexPerformanceCountersV1(),
+        },
       },
     };
     if (context) this.assertContextGuard(context);
@@ -1426,15 +1608,238 @@ export class WebWorkbenchController {
   }
 
   async shutdown(): Promise<void> {
-    if (this.closed) return;
+    if (this.shutdownResult) return this.shutdownResult;
     this.closed = true;
-    await this.controllerValue.stopActiveTurn();
-    await this.controllerValue.waitForIdle();
-    this.closeWorkspaceWatchers();
-    this.closeComposerObserver();
-    await this.terminalManager.shutdown();
-    await this.runtimeValue.shutdown();
-    this.eventHub.close();
+    this.shutdownResult = this.shutdownOwnedResources();
+    return this.shutdownResult;
+  }
+
+  private async shutdownOwnedResources(): Promise<void> {
+    const failures: unknown[] = [];
+    this.workspaceMutations.close('Orion Web Workbench shutdown');
+
+    try {
+      await this.sessionRegistry.shutdown('Orion Web Workbench shutdown');
+    } catch {
+      // The registry retains failed actor handles. Retry once after every
+      // actor received its first close attempt; a persistent failure remains
+      // an explicit Host shutdown error rather than an orphan hidden as GO.
+      try {
+        await this.sessionRegistry.shutdown('Orion Web Workbench shutdown retry');
+      } catch (retryError) {
+        failures.push(retryError);
+      }
+    }
+    await captureShutdownFailure(failures, () => this.controllerValue.stopActiveTurn());
+    await captureShutdownFailure(failures, () => this.controllerValue.waitForIdle());
+    try {
+      this.closeWorkspaceWatchers();
+      this.closeComposerObserver();
+    } catch (error) {
+      failures.push(error);
+    }
+    await captureShutdownFailure(failures, () => this.terminalManager.shutdown());
+    await captureShutdownFailure(failures, () => this.runtimeValue.shutdown());
+    try {
+      this.eventHub.close();
+    } catch (error) {
+      failures.push(error);
+    }
+    this.workspaceMutationOwners.clear();
+    this.pendingWorkspaceMutationStates.clear();
+    if (failures.length > 0) {
+      throw new WebWorkbenchError(
+        503,
+        `${failures.length} Web Workbench resource(s) could not be closed safely.`,
+        'workbench_shutdown_incomplete'
+      );
+    }
+  }
+
+  private createSessionRegistry(): WebSessionRuntimeRegistryV1<WebWorkbenchSessionActorV1> {
+    return new WebSessionRuntimeRegistryV1<WebWorkbenchSessionActorV1>({
+      maxRunningSessions: 3,
+      maxResidentSessionActors: 4,
+      createActor: key => this.createSessionActor(key),
+      initializeActor: actor => actor.runtime.rebindSessionRuntime?.() ?? Promise.resolve(),
+      closeActor: (actor, reason) => this.closeSessionActor(actor, reason),
+      estimateActorBytes: actor => estimateSessionActorBytes(actor),
+      onSummaryChanged: runtime => {
+        if (this.closed || this.suppressContextEdges > 0) return;
+        this.eventHub.emit({ type: 'session_runtime_changed', runtime }, true, {
+          sessionId: runtime.sessionId,
+        });
+      },
+    });
+  }
+
+  private async createSessionActor(key: WebSessionActorKeyV1): Promise<WebWorkbenchSessionActorV1> {
+    const workspace = this.workspaceRegistry.find(key.workspaceId);
+    if (!workspace) {
+      throw new WebWorkbenchError(404, 'Workspace was not found.', 'workspace_not_found');
+    }
+    const session = requireSession(key.sessionId);
+    if (canonicalDirectory(session.projectPath) !== workspace.canonicalPath) {
+      throw new WebWorkbenchError(
+        409,
+        'Session belongs to another Workspace.',
+        'session_workspace_conflict'
+      );
+    }
+    const runtime = await this.createSessionRuntime(workspace.canonicalPath);
+    runtime.setSession(session);
+    const actorRef: { current?: WebWorkbenchSessionActorV1 } = {};
+    const eventSink = {
+      emit: (event: AgentRuntimeEvent): string | void =>
+        this.emitSessionActorRuntimeEvent(key, runtime, actorRef.current, event),
+    };
+    const controller = new AgentRuntimeController({
+      runtime,
+      eventSink,
+      uiRenderer: 'web',
+      echoSubmittedInput: false,
+      useRuntimeToolPermissions: true,
+      uiCapabilities: {
+        structuredPickers: true,
+        inlineProgress: true,
+        suppressLegacyTokenMeta: true,
+        extraAssistantSpacing: true,
+        suppressAbortNotice: true,
+      },
+    });
+    const actor: WebWorkbenchSessionActorV1 = {
+      key: Object.freeze({ ...key }),
+      runtime,
+      controller,
+      composerRevision: randomUUID(),
+      latestStatus: 'Ready',
+      suppressComposerEdges: 0,
+    };
+    actorRef.current = actor;
+    actor.composerStoreUnsubscribe = runtime.store.subscribe(() =>
+      this.scheduleActorComposerStateChanged(actor as WebWorkbenchSessionActorV1)
+    );
+    actor.composerControlsUnsubscribe = runtime.sessionComposerControls?.subscribe(() =>
+      this.scheduleActorComposerStateChanged(actor as WebWorkbenchSessionActorV1)
+    );
+    return actor;
+  }
+
+  private async closeSessionActor(
+    actor: WebWorkbenchSessionActorV1,
+    _reason: string
+  ): Promise<void> {
+    if (actor.composerChangeTimer) clearTimeout(actor.composerChangeTimer);
+    actor.composerChangeTimer = undefined;
+    actor.composerStoreUnsubscribe?.();
+    actor.composerControlsUnsubscribe?.();
+    actor.composerStoreUnsubscribe = undefined;
+    actor.composerControlsUnsubscribe = undefined;
+    await actor.controller.stopActiveTurn();
+    await actor.controller.waitForIdle();
+    await actor.runtime.shutdown();
+    this.activeOrionRuntimes.delete(actor.key.sessionId);
+    for (const [invocationId, owner] of this.workspaceMutationOwners) {
+      if (owner.sessionId === actor.key.sessionId && owner.workspaceId === actor.key.workspaceId) {
+        this.workspaceMutationOwners.delete(invocationId);
+        this.pendingWorkspaceMutationStates.delete(invocationId);
+      }
+    }
+  }
+
+  private emitSessionActorRuntimeEvent(
+    key: WebSessionActorKeyV1,
+    runtime: OrionCodeUiRuntime,
+    actor: WebWorkbenchSessionActorV1 | undefined,
+    event: AgentRuntimeEvent
+  ): string | void {
+    if (event.type === 'status_changed' && actor) actor.latestStatus = event.message;
+    if (event.type === 'followup_queue_changed') {
+      if (actor && actor.suppressComposerEdges === 0) {
+        this.publishActorComposerState(actor);
+      }
+      return undefined;
+    }
+    if (event.type === 'tool_started') {
+      this.workspaceMutationOwners.set(event.event.callId, Object.freeze({ ...key }));
+    }
+    const thread = this.activeOrionRuntimes.get(key.sessionId)?.thread.getProjection().threadId;
+    const envelope = this.eventHub.emitRuntime(event, {
+      sessionId: key.sessionId,
+      ...(thread ? { threadId: thread } : {}),
+    });
+    if (event.type === 'tool_started') {
+      const pendingMutation = this.pendingWorkspaceMutationStates.get(event.event.callId);
+      if (pendingMutation) {
+        this.pendingWorkspaceMutationStates.delete(event.event.callId);
+        this.emitWorkspaceMutationState(pendingMutation);
+      }
+    }
+    if (event.type === 'permission_requested' && actor) {
+      this.sessionRegistry.setPendingApprovalCount(
+        key,
+        actor.controller.getPendingPermissions().length
+      );
+    }
+    if (event.type === 'tool_finished' && key.workspaceId === this.activeWorkspaceEntry().id) {
+      this.scheduleWorkspaceResourceInvalidation('tool-finished');
+    }
+    if (event.type === 'tool_finished') {
+      this.workspaceMutationOwners.delete(event.event.callId);
+      this.pendingWorkspaceMutationStates.delete(event.event.callId);
+    }
+    return event.type === 'transcript_append' ? `web-entry-${envelope.cursor}` : undefined;
+  }
+
+  private emitWorkspaceMutationState(state: WorkspaceMutationStateV1): void {
+    if (this.closed || this.suppressContextEdges > 0) return;
+    const owner = this.workspaceMutationOwners.get(state.invocationId);
+    if (!owner) {
+      if (state.phase === 'queued' || state.phase === 'running') {
+        this.pendingWorkspaceMutationStates.set(state.invocationId, Object.freeze({ ...state }));
+      } else {
+        this.pendingWorkspaceMutationStates.delete(state.invocationId);
+      }
+      return;
+    }
+    this.eventHub.emit(
+      {
+        type: 'workspace_mutation_changed',
+        state: {
+          callId: state.invocationId,
+          phase: state.phase,
+          ...(state.queuePosition === undefined ? {} : { queuePosition: state.queuePosition }),
+        },
+      },
+      false,
+      { sessionId: owner.sessionId }
+    );
+    if (['completed', 'failed', 'cancelled'].includes(state.phase)) {
+      this.workspaceMutationOwners.delete(state.invocationId);
+      this.pendingWorkspaceMutationStates.delete(state.invocationId);
+    }
+  }
+
+  private scheduleActorComposerStateChanged(actor: WebWorkbenchSessionActorV1): void {
+    if (this.closed || actor.suppressComposerEdges > 0) return;
+    if (actor.composerChangeTimer) clearTimeout(actor.composerChangeTimer);
+    actor.composerChangeTimer = setTimeout(() => {
+      actor.composerChangeTimer = undefined;
+      if (this.closed || actor.suppressComposerEdges > 0) return;
+      this.publishActorComposerState(actor);
+    }, 100);
+    actor.composerChangeTimer.unref();
+  }
+
+  private publishActorComposerState(actor: WebWorkbenchSessionActorV1): void {
+    try {
+      const state = this.projectActorComposerState(actor, requireSession(actor.key.sessionId));
+      this.eventHub.emit({ type: 'composer_state_changed', state }, true, {
+        sessionId: actor.key.sessionId,
+      });
+    } catch {
+      // A concurrent actor teardown publishes its final Runtime summary.
+    }
   }
 
   private async installRuntime(workspace: string, publishState = true): Promise<void> {
@@ -1524,7 +1929,7 @@ export class WebWorkbenchController {
     if (sessionId) {
       try {
         this.composerAuthorityDigest = composerAuthorityDigest(
-          this.projectComposerStateValue(requireSession(sessionId), true)
+          this.projectComposerStateValue(requireSession(sessionId))
         );
       } catch {
         this.composerAuthorityDigest = undefined;
@@ -1702,6 +2107,7 @@ export class WebWorkbenchController {
         this.rememberSessionView(sessionId, activation.view);
       }
       this.activeOrionRuntime = { runtime, sessionId };
+      this.activeOrionRuntimes.set(sessionId, runtime);
     } catch (error) {
       unsubscribe();
       throw error;
@@ -1709,6 +2115,9 @@ export class WebWorkbenchController {
     return () => {
       unsubscribe();
       if (this.activeOrionRuntime?.runtime === runtime) this.activeOrionRuntime = undefined;
+      if (this.activeOrionRuntimes.get(sessionId) === runtime) {
+        this.activeOrionRuntimes.delete(sessionId);
+      }
     };
   }
 
@@ -1760,7 +2169,7 @@ export class WebWorkbenchController {
 
   private assertReadyForTransition(operation: string): void {
     if (this.closed) throw new WebWorkbenchError(503, 'Web Workbench is closed.');
-    if (this.transition || this.sessionTransition) {
+    if (this.transition || this.activeMutationCount > 0) {
       throw new WebWorkbenchError(409, 'A workspace transition is running.', 'runtime_busy');
     }
     if (this.controllerValue.hasActiveTurn()) {
@@ -1770,13 +2179,48 @@ export class WebWorkbenchController {
         'runtime_busy'
       );
     }
+    const activeActor = this.sessionRegistry
+      .summaries()
+      .find(runtime =>
+        ['starting', 'queued', 'running', 'waiting_approval', 'stopping'].includes(runtime.phase)
+      );
+    if (activeActor) {
+      throw new WebWorkbenchError(
+        409,
+        `Cannot ${operation} while Session ${activeActor.sessionId} is ${activeActor.phase}.`,
+        'runtime_busy'
+      );
+    }
   }
 
   private assertMutationAdmission(): void {
     if (this.closed) throw new WebWorkbenchError(503, 'Web Workbench is closed.');
-    if (this.transition || this.sessionTransition) {
+    if (this.transition) {
       throw new WebWorkbenchError(409, 'A Context transition is running.', 'runtime_busy');
     }
+  }
+
+  private reserveMutation(contextTransition: boolean): void {
+    this.assertMutationAdmission();
+    if (contextTransition) {
+      if (this.contextTransitionReserved || this.activeMutationCount > 0) {
+        throw new WebWorkbenchError(409, 'Another mutation is still running.', 'runtime_busy');
+      }
+      this.contextTransitionReserved = true;
+      return;
+    }
+    if (this.contextTransitionReserved) {
+      throw new WebWorkbenchError(409, 'A Context transition is being admitted.', 'runtime_busy');
+    }
+    this.activeMutationCount += 1;
+  }
+
+  private releaseMutation(contextTransition: boolean): void {
+    if (contextTransition) {
+      this.contextTransitionReserved = false;
+      return;
+    }
+    this.activeMutationCount = Math.max(0, this.activeMutationCount - 1);
   }
 
   private assertContextGuard(context: WebContextGuardV1): void {
@@ -1795,7 +2239,7 @@ export class WebWorkbenchController {
 
   private assertCommandSession(expectedSessionId: string): void {
     if (this.closed) throw new WebWorkbenchError(503, 'Web Workbench is closed.');
-    if (this.transition || this.sessionTransition) {
+    if (this.transition) {
       throw new WebWorkbenchError(409, 'A Session transition is running.', 'runtime_busy');
     }
     if (this.runtimeValue.getSession()?.id !== expectedSessionId) {
@@ -1805,6 +2249,24 @@ export class WebWorkbenchController {
         'active_session_changed'
       );
     }
+  }
+
+  private assertSessionWorkspace(session: SessionMeta): void {
+    if (canonicalDirectory(session.projectPath) !== this.workspaceValue) {
+      throw new WebWorkbenchError(
+        409,
+        'Session belongs to another Workspace.',
+        'session_workspace_conflict'
+      );
+    }
+  }
+
+  private sessionActorKey(session: SessionMeta): WebSessionActorKeyV1 {
+    this.assertSessionWorkspace(session);
+    return Object.freeze({
+      workspaceId: this.activeWorkspaceEntry().id,
+      sessionId: session.id,
+    });
   }
 
   private assertSettingsAvailable(): void {
@@ -1851,6 +2313,14 @@ function mapWorkspaceRegistryError(error: unknown): WebWorkbenchError {
     return new WebWorkbenchError(status, error.message, error.code);
   }
   return new WebWorkbenchError(503, 'Workspace registry is unavailable.');
+}
+
+function mapSessionRuntimeError(error: unknown): WebWorkbenchError {
+  if (error instanceof WebWorkbenchError) return error;
+  if (error instanceof WebSessionRuntimeRegistryError) {
+    return new WebWorkbenchError(error.status, error.message, error.code);
+  }
+  throw error;
 }
 
 function mapSettingsError(error: unknown): WebWorkbenchError {
@@ -2130,6 +2600,28 @@ function decodePageCursor(cursor: string): number {
     return (parsed as { offset: number }).offset;
   } catch {
     throw new WebWorkbenchError(400, 'Page cursor is invalid.');
+  }
+}
+
+function estimateSessionActorBytes(actor: WebWorkbenchSessionActorV1): number {
+  try {
+    return Math.max(
+      256 * 1024,
+      Buffer.byteLength(JSON.stringify(actor.runtime.store.getSnapshot()), 'utf8')
+    );
+  } catch {
+    return 256 * 1024;
+  }
+}
+
+async function captureShutdownFailure(
+  failures: unknown[],
+  operation: () => void | Promise<void>
+): Promise<void> {
+  try {
+    await operation();
+  } catch (error) {
+    failures.push(error);
   }
 }
 

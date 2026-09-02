@@ -9,6 +9,7 @@ import {
   ThreadEventStore,
   type AppendRuntimeEventV1,
   type ThreadEventCommitV1,
+  type ThreadEventReplayReasonV1,
 } from './thread-event-store';
 import {
   createRuntimeId,
@@ -410,8 +411,8 @@ export class ThreadRuntimeV1 {
     return this.store.subscribeCommitted(listener);
   }
 
-  replay(cursor = 0, limit?: number) {
-    return this.store.replay(cursor, limit);
+  replay(cursor = 0, limit?: number, reason?: ThreadEventReplayReasonV1) {
+    return this.store.replay(cursor, limit, reason);
   }
 
   getProjection() {

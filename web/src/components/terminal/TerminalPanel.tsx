@@ -241,7 +241,7 @@ export function TerminalPanel({
     const themeObserver = new MutationObserver(syncTheme);
     themeObserver.observe(document.documentElement, {
       attributes: true,
-      attributeFilter: ['data-theme'],
+      attributeFilter: ['data-theme', 'data-ui-style'],
     });
     const colorScheme = window.matchMedia('(prefers-color-scheme: light)');
     colorScheme.addEventListener('change', syncTheme);
@@ -820,7 +820,27 @@ function terminalTheme() {
     foreground: style.getPropertyValue('--terminal-foreground').trim() || '#e8e9f0',
     cursor: style.getPropertyValue('--terminal-cursor').trim() || '#9d8cff',
     selectionBackground: style.getPropertyValue('--terminal-selection').trim() || '#3b3566',
+    black: terminalColor(style, '--terminal-black', '#1a1c22'),
+    red: terminalColor(style, '--terminal-red', '#d35f70'),
+    green: terminalColor(style, '--terminal-green', '#57b786'),
+    yellow: terminalColor(style, '--terminal-yellow', '#d6ad55'),
+    blue: terminalColor(style, '--terminal-blue', '#6798df'),
+    magenta: terminalColor(style, '--terminal-magenta', '#a982d6'),
+    cyan: terminalColor(style, '--terminal-cyan', '#4ebcb4'),
+    white: terminalColor(style, '--terminal-white', '#d8dbe5'),
+    brightBlack: terminalColor(style, '--terminal-bright-black', '#747b8c'),
+    brightRed: terminalColor(style, '--terminal-bright-red', '#ff8292'),
+    brightGreen: terminalColor(style, '--terminal-bright-green', '#72d9a5'),
+    brightYellow: terminalColor(style, '--terminal-bright-yellow', '#f4cf75'),
+    brightBlue: terminalColor(style, '--terminal-bright-blue', '#86b4ff'),
+    brightMagenta: terminalColor(style, '--terminal-bright-magenta', '#c59aef'),
+    brightCyan: terminalColor(style, '--terminal-bright-cyan', '#70ddd2'),
+    brightWhite: terminalColor(style, '--terminal-bright-white', '#f5f6fa'),
   };
+}
+
+function terminalColor(style: CSSStyleDeclaration, property: string, fallback: string): string {
+  return style.getPropertyValue(property).trim() || fallback;
 }
 
 function terminalStatus(status: string): string {

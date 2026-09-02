@@ -38,6 +38,7 @@ const DEFAULT_WATCH_DEBOUNCE_MS = 30;
 const DEFAULT_LOCK_WAIT_MS = 10_000;
 
 export type SettingsKeyV1 =
+  | 'appearance.style'
   | 'appearance.theme'
   | 'appearance.motion'
   | 'defaults.model'
@@ -46,6 +47,12 @@ export type SettingsKeyV1 =
   | 'permissions.toolConfirmation';
 
 export type SettingsOperationV1 =
+  | {
+      readonly op: 'set';
+      readonly key: 'appearance.style';
+      readonly value: 'classic' | 'orion-blocksmith';
+    }
+  | { readonly op: 'unset'; readonly key: 'appearance.style' }
   | {
       readonly op: 'set';
       readonly key: 'appearance.theme';
@@ -212,6 +219,7 @@ export function validateSettingsOperationsV1(
       invalidOperation();
     }
     if (
+      operation.key !== 'appearance.style' &&
       operation.key !== 'appearance.theme' &&
       operation.key !== 'appearance.motion' &&
       operation.key !== 'defaults.model' &&
@@ -228,6 +236,11 @@ export function validateSettingsOperationsV1(
       continue;
     }
     switch (operation.key) {
+      case 'appearance.style':
+        if (operation.value !== 'classic' && operation.value !== 'orion-blocksmith') {
+          invalidOperation();
+        }
+        break;
       case 'appearance.theme':
         if (
           operation.value !== 'system' &&
@@ -277,6 +290,20 @@ function applyOperations(
   const candidate = cloneDocument(source);
   for (const operation of operations) {
     switch (operation.key) {
+      case 'appearance.style': {
+        if (operation.op === 'set') {
+          const web = isRecord(candidate.web) ? candidate.web : {};
+          const appearance = isRecord(web.appearance) ? web.appearance : {};
+          appearance.style = operation.value;
+          web.appearance = appearance;
+          candidate.web = web;
+        } else if (isRecord(candidate.web) && isRecord(candidate.web.appearance)) {
+          delete candidate.web.appearance.style;
+          pruneEmptyObject(candidate.web, 'appearance');
+          pruneEmptyObject(candidate, 'web');
+        }
+        break;
+      }
       case 'appearance.theme': {
         if (operation.op === 'set') {
           const web = isRecord(candidate.web) ? candidate.web : {};

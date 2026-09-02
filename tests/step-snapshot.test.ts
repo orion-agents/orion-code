@@ -119,6 +119,7 @@ describe('StepSnapshotV1', () => {
       output: 'replacement',
     });
     const execution = await new ExecutionService().run({
+      invocationId: 'snapshot-execution-1',
       snapshot,
       toolName: 'read_file',
       args: { path: 'README.md' },
@@ -197,6 +198,7 @@ describe('StepSnapshotV1', () => {
         createBinding('exec_command', async () => ({ success: true, output })),
       ]);
       const execution = await new ExecutionService().run({
+        invocationId: 'snapshot-execution-2',
         snapshot,
         toolName: 'exec_command',
         args: { command: 'fixture' },
@@ -225,5 +227,45 @@ describe('StepSnapshotV1', () => {
       else process.env.ORION_CODE_CONFIG_DIR = previousConfigDir;
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  test('routes workspace-write execution through the shared mutation coordinator', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const snapshot = createSnapshot([
+      createBinding('write_file', async () => ({ success: true, output: 'written' }), {
+        risk: {
+          readOnly: false,
+          destructive: true,
+          fileEdit: true,
+          effect: 'workspace_write',
+          network: 'none',
+        },
+      }),
+    ]);
+    const execution = new ExecutionService({
+      runWorkspaceMutation: async (input, operation) => {
+        calls.push({ ...input, args: structuredClone(input.args) });
+        return operation();
+      },
+    });
+
+    await expect(
+      execution.run({
+        invocationId: 'workspace-write-invocation',
+        snapshot,
+        toolName: 'write_file',
+        args: { path: 'src/a.ts', content: 'next' },
+        context: { cwd: '/workspace', config: { name: 'test', mode: 'build' } },
+        enforcement: 'full',
+      })
+    ).resolves.toMatchObject({ terminal: 'completed', result: { output: 'written' } });
+    expect(calls).toEqual([
+      expect.objectContaining({
+        workspaceId: '/workspace',
+        invocationId: 'workspace-write-invocation',
+        toolName: 'write_file',
+        args: { path: 'src/a.ts', content: 'next' },
+      }),
+    ]);
   });
 });

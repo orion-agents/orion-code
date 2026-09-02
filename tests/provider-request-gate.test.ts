@@ -195,4 +195,95 @@ describe('ProviderResilienceCoordinator backoff', () => {
     expect(error.diagnostics.totalBackoffMs).toBe(150);
     expect(transport).toHaveBeenCalledTimes(3);
   });
+
+  it('shares one request budget across independent Session coordinators', async () => {
+    const gate = new ProviderRequestGate({ maxConcurrent: 1 });
+    const firstCoordinator = new ProviderResilienceCoordinator({ maxTotalAttempts: 1 }, gate);
+    const secondCoordinator = new ProviderResilienceCoordinator({ maxTotalAttempts: 1 }, gate);
+    const firstHeld = deferred<void>();
+    const firstStarted = deferred<void>();
+    const order: string[] = [];
+    const first = firstCoordinator.execute(
+      {
+        logicalRequestId: 'session-a',
+        operation: 'root_chat',
+        providerKey: 'provider-a',
+        requestedModel: 'model-a',
+      },
+      async () => {
+        order.push('a:start');
+        firstStarted.resolve();
+        await firstHeld.promise;
+        order.push('a:end');
+        return { response: 'a' };
+      }
+    );
+    await firstStarted.promise;
+
+    const second = secondCoordinator.execute(
+      {
+        logicalRequestId: 'session-b',
+        operation: 'root_chat',
+        providerKey: 'provider-a',
+        requestedModel: 'model-b',
+      },
+      async () => {
+        order.push('b:start');
+        return { response: 'b' };
+      }
+    );
+    await Promise.resolve();
+    expect(gate.snapshot()).toMatchObject({ activeCount: 1, waitingCount: 1 });
+    expect(order).toEqual(['a:start']);
+
+    firstHeld.resolve();
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      expect.objectContaining({ result: 'a' }),
+      expect.objectContaining({ result: 'b' }),
+    ]);
+    expect(order).toEqual(['a:start', 'a:end', 'b:start']);
+    expect(gate.snapshot()).toMatchObject({ activeCount: 0, waitingCount: 0 });
+  });
+
+  it('classifies an abort while queued at the shared gate as aborted, not failed-fast', async () => {
+    const gate = new ProviderRequestGate({ maxConcurrent: 1 });
+    const held = await gate.acquire(request(0));
+    const coordinator = new ProviderResilienceCoordinator({ maxTotalAttempts: 1 }, gate);
+    const abortController = new AbortController();
+    const transport = jest.fn();
+    const execution = coordinator.execute(
+      {
+        logicalRequestId: 'session-queued-abort',
+        operation: 'root_chat',
+        providerKey: 'provider-a',
+        requestedModel: 'model-a',
+        abortSignal: abortController.signal,
+      },
+      transport
+    );
+    await Promise.resolve();
+    expect(gate.snapshot()).toMatchObject({ activeCount: 1, waitingCount: 1 });
+
+    abortController.abort();
+    await expect(execution).rejects.toMatchObject({
+      diagnostics: {
+        finalState: 'aborted',
+        attempts: [expect.objectContaining({ outcome: 'aborted', failureKind: 'aborted' })],
+      },
+    });
+    expect(transport).not.toHaveBeenCalled();
+    expect(gate.snapshot()).toMatchObject({ activeCount: 1, waitingCount: 0 });
+    held.release();
+    expect(gate.snapshot().activeCount).toBe(0);
+  });
 });
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}

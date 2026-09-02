@@ -20,6 +20,8 @@ export const OPENAI_FIXTURE_PROMPTS = Object.freeze({
   mcpEcho: 'fixture:mcp-echo use the web_e2e MCP server fixture_echo tool',
   settingsProbe: 'fixture:settings-probe',
   estimatedUsage: 'fixture:estimated-usage',
+  parallelHold: 'fixture:parallel-hold',
+  parallelMutation: 'fixture:parallel-mutation',
 });
 
 export const OPENAI_FIXTURE_MARKERS = Object.freeze({
@@ -37,6 +39,8 @@ export const OPENAI_FIXTURE_MARKERS = Object.freeze({
   mcpEchoDone: 'WEB_E2E_MCP_ECHO_DONE',
   settingsProbeDone: 'WEB_E2E_SETTINGS_PROBE_DONE',
   estimatedUsageDone: 'WEB_E2E_ESTIMATED_USAGE_DONE',
+  parallelHeld: 'WEB_E2E_PARALLEL_HELD',
+  parallelMutationDone: 'WEB_E2E_PARALLEL_MUTATION_DONE',
   unknownScenario: 'WEB_E2E_UNKNOWN_SCENARIO',
 });
 
@@ -62,6 +66,8 @@ export type OpenAiFixtureScenario =
   | 'mcp-echo'
   | 'settings-probe'
   | 'estimated-usage'
+  | 'parallel-hold'
+  | 'parallel-mutation'
   | 'unknown';
 
 export interface OpenAiFixtureRequest {
@@ -467,6 +473,52 @@ function respondToScenario(
     case 'estimated-usage':
       finishTextWithoutUsage(state, response, request, OPENAI_FIXTURE_MARKERS.estimatedUsageDone);
       return;
+    case 'parallel-hold':
+      holdText(
+        state,
+        response,
+        request,
+        `${OPENAI_FIXTURE_MARKERS.parallelHeld}:${fixtureTag(request.lastUserText)}`
+      );
+      return;
+    case 'parallel-mutation': {
+      const tag = fixtureTag(request.lastUserText);
+      if (toolsAfterUser.length === 0) {
+        const program = [
+          "const fs=require('fs');",
+          `const tag=${JSON.stringify(tag)};`,
+          "const lock='.web33-mutation.lock';",
+          "const release='.web33-mutation-release';",
+          "try{fs.writeFileSync(lock,tag,{flag:'wx'});}",
+          "catch{fs.appendFileSync('web33-mutation-overlap.txt',tag+'\\n');process.exit(19);}",
+          "const finish=()=>{fs.appendFileSync('web33-mutation-order.txt',tag+'\\n');fs.unlinkSync(lock);};",
+          "if(tag==='mutation-a'){",
+          'const deadline=Date.now()+30000;',
+          'const timer=setInterval(()=>{',
+          'if(fs.existsSync(release)){clearInterval(timer);finish();fs.unlinkSync(release);}',
+          'else if(Date.now()>=deadline){clearInterval(timer);fs.unlinkSync(lock);process.exit(20);}',
+          '},50);',
+          '}else{setTimeout(finish,50);}',
+        ].join('');
+        finishToolCall(state, response, request, {
+          id: `call-web-e2e-parallel-mutation-${request.sequence}`,
+          name: 'exec_command',
+          args: {
+            command: `node -e ${JSON.stringify(program)}`,
+            timeout: 15_000,
+            maxOutput: 16_384,
+          },
+        });
+      } else {
+        finishText(
+          state,
+          response,
+          request,
+          `${OPENAI_FIXTURE_MARKERS.parallelMutationDone}:${tag}`
+        );
+      }
+      return;
+    }
     case 'unknown':
       finishText(state, response, request, OPENAI_FIXTURE_MARKERS.unknownScenario);
   }
@@ -621,7 +673,21 @@ function detectScenario(lastUserText: string, systemText = ''): OpenAiFixtureSce
   if (lastUserText.includes('fixture:mcp-echo')) return 'mcp-echo';
   if (lastUserText.includes('fixture:settings-probe')) return 'settings-probe';
   if (lastUserText.includes('fixture:estimated-usage')) return 'estimated-usage';
+  if (lastUserText.includes(OPENAI_FIXTURE_PROMPTS.parallelHold)) return 'parallel-hold';
+  if (lastUserText.includes(OPENAI_FIXTURE_PROMPTS.parallelMutation)) {
+    return 'parallel-mutation';
+  }
   return 'unknown';
+}
+
+function fixtureTag(prompt: string): string {
+  const value =
+    prompt
+      .split(':')
+      .at(-1)
+      ?.trim()
+      .replace(/[^A-Za-z0-9_-]+/gu, '-') ?? '';
+  return value.slice(0, 32) || 'untagged';
 }
 
 function isPlanMode(systemText: string): boolean {

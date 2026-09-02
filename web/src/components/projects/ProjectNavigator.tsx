@@ -8,7 +8,12 @@ import {
   type KeyboardEvent,
 } from 'react';
 
-import type { WebSessionSummaryV1, WebWorkspaceSummaryV1, WorkbenchState } from '../../types';
+import type {
+  WebSessionRuntimeSummaryV1,
+  WebSessionSummaryV1,
+  WebWorkspaceSummaryV1,
+  WorkbenchState,
+} from '../../types';
 import { PanelResizeHandle } from '../../layout/PanelResizeHandle';
 import {
   PROJECT_NAVIGATION_DEFAULT_WIDTH,
@@ -71,7 +76,8 @@ export function ProjectNavigator({
   );
   const deferredQuery = useDeferredValue(query.trim().toLocaleLowerCase());
   const closeRef = useRef<HTMLButtonElement>(null);
-  const transitionLocked = Boolean(state.pendingAction) || state.processing;
+  const operationLocked = Boolean(state.pendingAction);
+  const workspaceTransitionLocked = operationLocked || state.processing;
 
   useEffect(() => {
     if (drawerOpen) closeRef.current?.focus();
@@ -157,7 +163,7 @@ export function ProjectNavigator({
           aria-label="新建会话"
           title="新建会话"
           onClick={onCreateSession}
-          disabled={transitionLocked || !state.workspaceId}
+          disabled={operationLocked || !state.workspaceId}
         >
           <Icon name="add" size={18} />
         </button>
@@ -237,7 +243,7 @@ export function ProjectNavigator({
           aria-label="选择其他工作区"
           title="打开其他项目"
           onClick={onOpenWorkspaceDialog}
-          disabled={transitionLocked}
+          disabled={workspaceTransitionLocked}
         >
           <Icon name="add" />
         </button>
@@ -333,7 +339,7 @@ export function ProjectNavigator({
                     aria-label={`${project.pinnedOrder === undefined ? '置顶' : '取消置顶'}项目 ${project.label}`}
                     aria-pressed={project.pinnedOrder !== undefined}
                     onClick={() => onSetPinned(project.id, project.pinnedOrder === undefined)}
-                    disabled={transitionLocked}
+                    disabled={operationLocked}
                   >
                     <span aria-hidden="true">{project.pinnedOrder === undefined ? '○' : '●'}</span>
                   </button>
@@ -343,7 +349,7 @@ export function ProjectNavigator({
                       className="icon-button project-remove"
                       aria-label={`移除不可用项目 ${project.label}`}
                       onClick={() => onRemoveWorkspace(project.id)}
-                      disabled={transitionLocked}
+                      disabled={operationLocked}
                     >
                       <Icon name="close" size={13} />
                     </button>
@@ -352,7 +358,7 @@ export function ProjectNavigator({
                       type="button"
                       className="icon-button project-add-session"
                       aria-label={`在 ${project.label} 新建会话`}
-                      disabled={transitionLocked || !project.available || !project.active}
+                      disabled={operationLocked || !project.available || !project.active}
                       onClick={onCreateSession}
                       title={project.active ? '新建会话' : '先激活项目后新建会话'}
                     >
@@ -386,12 +392,10 @@ export function ProjectNavigator({
                     ) : null}
                     {sessions.map(session => {
                       const active = project.active && session.id === state.activeSessionId;
-                      const activeStatuses = active
-                        ? [
-                            ...(state.processing ? ['运行中'] : []),
-                            ...(state.permission ? ['等待审批'] : []),
-                          ]
-                        : [];
+                      const runtime = state.sessionRuntimeById[session.id];
+                      const runtimeStatus = sessionRuntimeStatus(runtime);
+                      const sessionLocked =
+                        operationLocked || (!project.active && state.processing);
                       return (
                         <div
                           key={session.id}
@@ -402,11 +406,11 @@ export function ProjectNavigator({
                             type="button"
                             className="project-session-main"
                             aria-current={active ? 'page' : undefined}
-                            aria-disabled={active || transitionLocked || !project.available}
+                            aria-disabled={active || sessionLocked || !project.available}
                             onClick={() => {
                               if (!active) onActivateContext(project.id, session.id);
                             }}
-                            disabled={transitionLocked || !project.available}
+                            disabled={sessionLocked || !project.available}
                             onKeyDown={event => {
                               if (event.key === 'ArrowLeft') {
                                 event.preventDefault();
@@ -417,7 +421,7 @@ export function ProjectNavigator({
                             }}
                           >
                             <span
-                              className={`session-state ${active && state.permission ? 'approval' : active && state.processing ? 'running' : active ? 'ready' : ''}`}
+                              className={`session-state ${runtimeStatus.tone}`}
                               aria-hidden="true"
                             />
                             <span>
@@ -425,9 +429,9 @@ export function ProjectNavigator({
                               <small>
                                 {relativeTime(session.updatedAt)} · {session.messageCount} 条
                               </small>
-                              {activeStatuses.length ? (
+                              {runtimeStatus.label ? (
                                 <small className="project-session-status">
-                                  {activeStatuses.join(' · ')}
+                                  {runtimeStatus.label}
                                 </small>
                               ) : null}
                             </span>
@@ -438,7 +442,7 @@ export function ProjectNavigator({
                               className="icon-button session-rename"
                               aria-label={`重命名会话 ${sessionTitle(session)}`}
                               onClick={() => onRenameSession(session)}
-                              disabled={transitionLocked}
+                              disabled={operationLocked}
                             >
                               <Icon name="edit" size={13} />
                             </button>
@@ -451,7 +455,7 @@ export function ProjectNavigator({
                         <button
                           type="button"
                           className="project-empty-session"
-                          disabled={transitionLocked || !project.available}
+                          disabled={workspaceTransitionLocked || !project.available}
                           onClick={() => onActivateContext(project.id, null)}
                         >
                           {deferredQuery ? '没有匹配会话' : '打开项目'}
@@ -520,7 +524,7 @@ export function ProjectNavigator({
         >
           <Icon name="settings" size={14} />
         </button>
-        <span className="version">v{state.bootstrap?.productVersion ?? '0.3.2'}</span>
+        <span className="version">v{state.bootstrap?.productVersion ?? '0.3.3'}</span>
       </footer>
       {resizable ? (
         <PanelResizeHandle
@@ -619,4 +623,27 @@ function connectionLabel(connection: WorkbenchState['connection']): string {
   if (connection === 'replay-required') return '需要恢复';
   if (connection === 'closed') return 'Host 已关闭';
   return connection === 'connecting' ? '正在连接' : '正在重连';
+}
+
+function sessionRuntimeStatus(runtime?: WebSessionRuntimeSummaryV1): {
+  readonly label: string;
+  readonly tone: string;
+} {
+  if (!runtime || runtime.phase === 'cold') return { label: '', tone: '' };
+  if (runtime.pendingApprovalCount > 0 || runtime.phase === 'waiting_approval') {
+    return { label: '等待审批', tone: 'approval' };
+  }
+  if (runtime.phase === 'running' || runtime.phase === 'starting') {
+    return { label: runtime.phase === 'starting' ? '正在启动' : '运行中', tone: 'running' };
+  }
+  if (runtime.phase === 'queued') {
+    return {
+      label: runtime.queuePosition ? `排队 ${runtime.queuePosition}` : '排队中',
+      tone: 'queued',
+    };
+  }
+  if (runtime.phase === 'failed') return { label: '失败', tone: 'failed' };
+  if (runtime.phase === 'interrupted') return { label: '已中断', tone: 'failed' };
+  if (runtime.phase === 'stopping') return { label: '正在停止', tone: 'running' };
+  return { label: '已就绪', tone: 'ready' };
 }

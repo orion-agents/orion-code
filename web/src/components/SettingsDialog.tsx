@@ -31,6 +31,7 @@ import {
   type SettingsSourceV1,
   type ThemePreference,
   type ToolConfirmationPreference,
+  type UiStylePreference,
   type WebSettingsDocumentV1,
 } from '../settings/types';
 import type { WorkbenchState } from '../types';
@@ -77,11 +78,13 @@ export function SettingsDialog({
   onGoToSessionControls,
 }: SettingsDialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
   const discardRef = useRef<HTMLButtonElement>(null);
   const focusBeforeDiscard = useRef<HTMLElement | null>(null);
   const observedRevision = useRef<string | null>(null);
   const wasOpen = useRef(false);
   const saveRequestId = useRef<string | null>(null);
+  const previousPhase = useRef(initialSettingsEditorState.phase);
   const [editor, dispatch] = useReducer(settingsEditorReducer, initialSettingsEditorState);
   const [confirmAllow, setConfirmAllow] = useState(false);
   const [allowAcknowledged, setAllowAcknowledged] = useState(false);
@@ -134,6 +137,14 @@ export function SettingsDialog({
   useEffect(() => {
     if (editor.confirmDiscard) discardRef.current?.focus();
   }, [editor.confirmDiscard]);
+
+  useEffect(() => {
+    const prior = previousPhase.current;
+    previousPhase.current = editor.phase;
+    if (!open || prior !== 'saving' || editor.phase !== 'success') return;
+    const active = documentActiveElement();
+    if (!dialogRef.current?.contains(active)) closeRef.current?.focus();
+  }, [editor.phase, open]);
 
   useEffect(() => {
     if (!open || document || state.settingsMirror.status === 'loading') return;
@@ -214,6 +225,7 @@ export function SettingsDialog({
       id="settings-dialog"
       ref={dialogRef}
       className="modal settings-modal"
+      aria-modal="true"
       aria-labelledby="settings-title"
       aria-describedby="settings-description"
       onCancel={event => {
@@ -230,6 +242,7 @@ export function SettingsDialog({
             <p id="settings-description">由本地 Host 读取、校验并原子保存。</p>
           </div>
           <button
+            ref={closeRef}
             type="button"
             className="icon-button"
             onClick={requestClose}
@@ -461,6 +474,7 @@ export function SettingsDialog({
 interface SectionProps {
   readonly document: WebSettingsDocumentV1;
   readonly draft: {
+    readonly 'appearance.style': UiStylePreference;
     readonly 'appearance.theme': ThemePreference;
     readonly 'appearance.motion': MotionPreference;
     readonly 'defaults.model': string;
@@ -474,6 +488,7 @@ interface SectionProps {
 }
 
 function GeneralSection({ document, draft, dirtyKeys, saving, onSet, onReset }: SectionProps) {
+  const style = document.sections.appearance.style;
   const theme = document.sections.appearance.theme;
   const motion = document.sections.appearance.motion;
   return (
@@ -481,6 +496,25 @@ function GeneralSection({ document, draft, dirtyKeys, saving, onSet, onReset }: 
       heading="通用"
       detail="外观偏好由 Host 保存，并在所有 Workbench 窗口保持一致。"
     >
+      <SettingField
+        id="settings-style"
+        label="视觉风格"
+        description="选择内置的方块工坊外观，或切回经典工作台。"
+        field={style}
+        dirty={dirtyKeys.includes('appearance.style')}
+        onReset={() => onReset('appearance.style')}
+        disabled={saving || !canWrite(document, style)}
+      >
+        <select
+          id="settings-style"
+          value={draft['appearance.style']}
+          disabled={saving || !canWrite(document, style)}
+          onChange={event => onSet('appearance.style', event.target.value as UiStylePreference)}
+        >
+          <option value="orion-blocksmith">方块工坊（内置，默认）</option>
+          <option value="classic">经典</option>
+        </select>
+      </SettingField>
       <SettingField
         id="settings-theme"
         label="主题"
@@ -501,6 +535,24 @@ function GeneralSection({ document, draft, dirtyKeys, saving, onSet, onReset }: 
           <option value="light">浅色</option>
         </select>
       </SettingField>
+      <figure
+        className="appearance-preview"
+        data-preview-style={draft['appearance.style']}
+        data-preview-theme={draft['appearance.theme']}
+        aria-label={`外观预览：${
+          draft['appearance.style'] === 'orion-blocksmith' ? '方块工坊' : '经典工作台'
+        }，${themePreferenceLabel(draft['appearance.theme'])}`}
+      >
+        <div className="appearance-preview-frame" aria-hidden="true">
+          <span className="appearance-preview-rail" />
+          <span className="appearance-preview-main">
+            <i />
+            <i />
+          </span>
+          <span className="appearance-preview-panel" />
+        </div>
+        <figcaption>纯 CSS 预览 · 均为内置外观，不支持安装或卸载。</figcaption>
+      </figure>
       <SettingField
         id="settings-motion"
         label="动效"
@@ -522,6 +574,12 @@ function GeneralSection({ document, draft, dirtyKeys, saving, onSet, onReset }: 
       </SettingField>
     </SettingsSection>
   );
+}
+
+function themePreferenceLabel(theme: ThemePreference): string {
+  if (theme === 'light') return '浅色';
+  if (theme === 'dark') return '深色';
+  return '跟随系统';
 }
 
 function ModelsSection({
@@ -1127,6 +1185,7 @@ function blockedReasonLabel(reason: string): string {
 }
 
 function settingKeyLabel(key: SettingsKeyV1): string {
+  if (key === 'appearance.style') return '视觉风格';
   if (key === 'appearance.theme') return '主题';
   if (key === 'appearance.motion') return '动效';
   if (key === 'defaults.model') return '默认模型';

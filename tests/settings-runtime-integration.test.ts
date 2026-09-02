@@ -7,8 +7,13 @@ import { Store } from '../src/framework/store';
 import { createProductUiRuntime } from '../src/runtime/product-bootstrap';
 import type { OrionRuntimeV1 } from '../src/runtime/orion-runtime-v1';
 import type { UiEventSink } from '../src/runtime/ui-events';
+import {
+  WorkspaceRuntimeKernelV1,
+  type WorkspaceSettingsRuntimeParticipantV1,
+} from '../src/runtime/workspace-runtime-kernel';
 import { loadConfig } from '../src/services/config';
 import { loadGlobalConfig, updateGlobalConfig } from '../src/services/global-config';
+import { SettingsCoordinatorV1 } from '../src/services/settings-coordinator';
 import {
   createSession,
   loadSessionMeta,
@@ -318,6 +323,162 @@ describe('Settings runtime integration', () => {
       source: 'global',
     });
     await runtime.shutdown();
+  });
+
+  it('shares one Workspace kernel, Settings watcher, model pool, and provider gate across Session runtimes', async () => {
+    writeRuntimeConfig({ globalEffort: 'low' });
+    const workspaceRuntime = await createProductUiRuntime({ cwd: root });
+    const kernel = workspaceRuntime.workspaceRuntimeKernel;
+    expect(kernel).toBeDefined();
+    const sessionRuntime = await createProductUiRuntime({
+      cwd: root,
+      workspaceRuntimeKernel: kernel!,
+    });
+    const releaseBusyProbe = sessionRuntime.bindSettingsRuntimeIdleProbe!(() => false);
+
+    try {
+      expect(sessionRuntime.workspaceRuntimeKernel).toBe(kernel);
+      expect(sessionRuntime.settingsCoordinator).toBe(workspaceRuntime.settingsCoordinator);
+      expect(sessionRuntime.config.modelClientPool).toBe(workspaceRuntime.config.modelClientPool);
+      expect(sessionRuntime.llm?.resilience).toBe(workspaceRuntime.llm?.resilience);
+      expect(kernel!.diagnostics()).toMatchObject({
+        participantCount: 2,
+        ownerReleased: false,
+        closed: false,
+      });
+
+      const before = workspaceRuntime.describeSettings!();
+      expect(before.sections.defaults.effort).toMatchObject({
+        writable: false,
+        blockedReason: 'runtime_busy',
+      });
+      await workspaceRuntime.updateSettings!({
+        requestId: 'test:workspace-kernel:default-model',
+        expectedRevision: before.revision,
+        operations: [{ op: 'set', key: 'defaults.model', value: 'alternate' }],
+      });
+      expect(workspaceRuntime.config.model).toBe('alternate');
+      expect(sessionRuntime.config.model).toBe('alternate');
+
+      await expect(
+        workspaceRuntime.updateSettings!({
+          requestId: 'test:workspace-kernel:busy-effort',
+          expectedRevision: workspaceRuntime.describeSettings!().revision,
+          operations: [{ op: 'set', key: 'defaults.effort', value: 'high' }],
+        })
+      ).rejects.toMatchObject({ status: 409, code: 'runtime_busy' });
+    } finally {
+      releaseBusyProbe();
+      await sessionRuntime.shutdown();
+      expect(kernel!.diagnostics()).toMatchObject({ participantCount: 1, closed: false });
+      await workspaceRuntime.shutdown();
+    }
+
+    expect(kernel!.diagnostics()).toMatchObject({
+      participantCount: 0,
+      ownerReleased: true,
+      closed: true,
+    });
+  });
+
+  it('does not turn a failed product shutdown into success on retry', async () => {
+    writeRuntimeConfig({});
+    const runtime = await createProductUiRuntime({ cwd: root });
+    const runner = runtime.createAgentRunner!(createUiEvents(), {
+      approvalHandler: async () => false,
+    });
+    const close = jest
+      .spyOn(runner, 'close')
+      .mockRejectedValue(new Error('controlled close failure'));
+
+    const first = runtime.shutdown();
+    const retry = runtime.shutdown();
+    expect(retry).toBe(first);
+    await expect(first).rejects.toThrow('controlled close failure');
+    await expect(retry).rejects.toThrow('controlled close failure');
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(runtime.workspaceRuntimeKernel?.diagnostics()).toMatchObject({
+      participantCount: 0,
+      ownerReleased: true,
+      closed: true,
+    });
+  });
+
+  it('fails Workspace Settings recovery closed when an actor compensation fails', async () => {
+    writeRuntimeConfig({ globalEffort: 'low' });
+    const runtime = await createProductUiRuntime({ cwd: root });
+    const kernel = runtime.workspaceRuntimeKernel!;
+    const participant = (
+      runtimeApply: WorkspaceSettingsRuntimeParticipantV1['runtimeApply']
+    ): WorkspaceSettingsRuntimeParticipantV1 => ({
+      runtimeIdle: () => true,
+      runtimePrepare: () => undefined,
+      runtimeApply,
+    });
+    const releaseCompensationFailure = kernel.registerSettingsRuntime(
+      participant(() => () => {
+        throw new Error('controlled actor compensation failure');
+      })
+    );
+    const releaseApplyFailure = kernel.registerSettingsRuntime(
+      participant(() => {
+        throw new Error('controlled later actor apply failure');
+      })
+    );
+
+    try {
+      const before = runtime.describeSettings!();
+      await expect(
+        runtime.updateSettings!({
+          requestId: 'test:workspace-kernel:compensation-failure',
+          expectedRevision: before.revision,
+          operations: [{ op: 'set', key: 'appearance.theme', value: 'dark' }],
+        })
+      ).rejects.toMatchObject({ status: 503, code: 'settings_recovery_required' });
+      expect(runtime.describeSettings!()).toMatchObject({
+        state: 'unavailable',
+        writable: false,
+        diagnostic: { code: 'settings_recovery_required' },
+      });
+    } finally {
+      releaseApplyFailure();
+      releaseCompensationFailure();
+      await runtime.shutdown();
+    }
+  });
+
+  it('releases a newly owned Workspace kernel when product bootstrap fails', async () => {
+    writeRuntimeConfig({ globalEffort: 'low' });
+    let capturedKernel: WorkspaceRuntimeKernelV1 | undefined;
+    const originalRegister = WorkspaceRuntimeKernelV1.prototype.registerSettingsRuntime;
+    const registerSpy = jest
+      .spyOn(WorkspaceRuntimeKernelV1.prototype, 'registerSettingsRuntime')
+      .mockImplementation(function (
+        this: WorkspaceRuntimeKernelV1,
+        participant: WorkspaceSettingsRuntimeParticipantV1
+      ) {
+        capturedKernel = this;
+        return originalRegister.call(this, participant);
+      });
+    const describeSpy = jest
+      .spyOn(SettingsCoordinatorV1.prototype, 'describe')
+      .mockImplementationOnce(() => {
+        throw new Error('controlled bootstrap failure');
+      });
+
+    try {
+      await expect(createProductUiRuntime({ cwd: root })).rejects.toThrow(
+        'controlled bootstrap failure'
+      );
+      expect(capturedKernel?.diagnostics()).toMatchObject({
+        participantCount: 0,
+        ownerReleased: true,
+        closed: true,
+      });
+    } finally {
+      describeSpy.mockRestore();
+      registerSpy.mockRestore();
+    }
   });
 
   function writeRuntimeConfig(options: {

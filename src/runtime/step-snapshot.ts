@@ -1,9 +1,5 @@
 import type { ToolContext, ToolInputJSONSchema, ToolResult } from '../framework/tool';
-import {
-  ARTIFACT_THRESHOLD,
-  storeArtifact,
-  truncateForContext,
-} from '../core/tool-artifacts';
+import { ARTIFACT_THRESHOLD, storeArtifact, truncateForContext } from '../core/tool-artifacts';
 import { digestRuntimeValue } from './protocol/canonical';
 import { isRuntimeId } from './protocol/runtime-protocol-v1';
 
@@ -262,12 +258,26 @@ export class ToolRouterSnapshotV1 {
 }
 
 export interface BoundToolExecutionRequestV1 {
+  readonly invocationId: string;
   readonly snapshot: StepSnapshotV1;
   readonly toolName: string;
   readonly args: Record<string, unknown>;
   readonly context: ToolContext;
   readonly enforcement: 'full' | 'partial' | 'none';
   readonly abortSignal?: AbortSignal;
+}
+
+export interface WorkspaceMutationCoordinatorV1 {
+  runWorkspaceMutation<T>(
+    input: {
+      readonly workspaceId: string;
+      readonly invocationId: string;
+      readonly toolName: string;
+      readonly args: Readonly<Record<string, unknown>>;
+      readonly abortSignal?: AbortSignal;
+    },
+    operation: () => T | Promise<T>
+  ): Promise<T>;
 }
 
 export interface BoundToolExecutionResultV1 {
@@ -278,6 +288,8 @@ export interface BoundToolExecutionResultV1 {
 
 /** The only runtime primitive allowed to call a frozen concrete tool executor. */
 export class ExecutionService {
+  constructor(private readonly workspaceMutations?: WorkspaceMutationCoordinatorV1) {}
+
   async run(request: BoundToolExecutionRequestV1): Promise<BoundToolExecutionResultV1> {
     const startedAt = Date.now();
     request.snapshot.toolRouter.assertIntegrity();
@@ -309,12 +321,27 @@ export class ExecutionService {
     );
     timeout.unref?.();
     try {
-      const result = await request.snapshot.toolRouter.executeBound(
-        EXECUTION_SERVICE_TOKEN,
-        request.toolName,
-        structuredClone(request.args),
-        { ...request.context, abortSignal: timeoutController.signal }
-      );
+      const execute = () =>
+        request.snapshot.toolRouter.executeBound(
+          EXECUTION_SERVICE_TOKEN,
+          request.toolName,
+          structuredClone(request.args),
+          { ...request.context, abortSignal: timeoutController.signal }
+        );
+      const descriptor = request.snapshot.toolRouter.resolveDescriptor(request.toolName);
+      const result =
+        descriptor?.risk.effect === 'workspace_write' && this.workspaceMutations
+          ? await this.workspaceMutations.runWorkspaceMutation(
+              {
+                workspaceId: request.snapshot.authority.projectRoot,
+                invocationId: request.invocationId,
+                toolName: request.toolName,
+                args: request.args,
+                abortSignal: timeoutController.signal,
+              },
+              execute
+            )
+          : await execute();
       const presented = persistLargeToolOutput(request.context.cwd, request.toolName, result);
       return {
         terminal: timeoutController.signal.aborted

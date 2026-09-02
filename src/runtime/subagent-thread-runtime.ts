@@ -1050,7 +1050,7 @@ function replayAllEvents(store: ThreadEventStore): readonly RuntimeEventEnvelope
   const events: RuntimeEventEnvelopeV1[] = [];
   let cursor = 0;
   while (true) {
-    const page = store.replay(cursor);
+    const page = store.replay(cursor, undefined, 'subagent_receipt_journal');
     events.push(...page.events);
     if (!page.hasMore) return events;
     if (page.nextCursor <= cursor) parentDrift('Parent event replay cursor did not advance.');

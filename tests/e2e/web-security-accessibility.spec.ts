@@ -9,6 +9,7 @@ import {
   collapseInspector,
   createSession,
   openInspector,
+  openSessionNavigation,
   waitForWorkbenchReady,
   workbenchUi,
 } from './fixtures/ui';
@@ -338,6 +339,7 @@ test('E2E-P0-08 Host attacks fail closed while real-CSP UI remains keyboard and 
   await expect(ui.inspectorDialog).toBeHidden();
   await expect(ui.inspectorButton).toBeFocused();
 
+  await openSessionNavigation(page);
   await ui.settingsButton.focus();
   await ui.settingsButton.press('Enter');
   await expect(ui.settingsDialog).toBeVisible();

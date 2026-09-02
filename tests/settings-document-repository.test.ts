@@ -148,6 +148,7 @@ describe('SettingsDocumentRepository', () => {
     expect(missing).toMatchObject({ state: 'ready', hasDocument: false });
 
     const persisted = repository.persist('/workspace', missing.revision, [
+      { op: 'set', key: 'appearance.style', value: 'classic' },
       { op: 'set', key: 'appearance.theme', value: 'dark' },
     ]);
 
@@ -155,7 +156,7 @@ describe('SettingsDocumentRepository', () => {
     expect(mode(documentPath)).toBe(0o600);
     expect(JSON.parse(readFileSync(documentPath, 'utf8'))).toEqual({
       schemaVersion: 1,
-      web: { appearance: { theme: 'dark' } },
+      web: { appearance: { style: 'classic', theme: 'dark' } },
     });
 
     const keyHex = readFileSync(revisionKeyPath).toString('hex');
