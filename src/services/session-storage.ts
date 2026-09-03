@@ -140,6 +140,10 @@ export interface SessionMeta {
   lastCompactAt?: number;
   /** Optional human-readable name */
   name?: string;
+  /** v0.3.7 — Optional user-assigned tags shown in the project rail (max 8, each ≤ 32 chars). */
+  tags?: string[];
+  /** v0.3.7 — Set when the session is archived; archived sessions are hidden from default listings. */
+  archivedAt?: number;
   /** Git branch at session creation/resume time */
   gitBranch?: string;
   /** token 数 */
@@ -3087,34 +3091,54 @@ function sessionMessageToModelMessage(message: SessionMessage): Message {
 }
 
 /**
- * 列出所有会话
+ * 列出所有会话（不含已归档）
  */
 export function listSessions(limit?: number): SessionMeta[] {
-  const sessions = sortSessionsNewestFirst(Object.values(loadOrRebuildSessionCatalog().sessions));
+  const sessions = sortSessionsNewestFirst(
+    Object.values(loadOrRebuildSessionCatalog().sessions).filter(session => !session.archivedAt)
+  );
   return limit ? sessions.slice(0, limit) : sessions;
 }
 
 /**
  * Count catalogued Sessions by their canonical project identity without
  * sorting or touching every project directory. This is the lightweight read
- * model used by project pickers and other collection summaries.
+ * model used by project pickers and other collection summaries. Archived
+ * Sessions are excluded so the picker count matches the default listing.
  */
 export function countSessionsByProject(): ReadonlyMap<string, number> {
   const counts = new Map<string, number>();
   for (const session of Object.values(loadOrRebuildSessionCatalog().sessions)) {
+    if (session.archivedAt) continue;
     counts.set(session.projectPath, (counts.get(session.projectPath) ?? 0) + 1);
   }
   return counts;
 }
 
 /**
- * List sessions for a single canonical project.
+ * List sessions for a single canonical project (default listings exclude
+ * archived sessions).
  */
 export function listProjectSessions(projectPath: string, limit?: number): SessionMeta[] {
   const canonicalProjectPath = resolveProjectPath(projectPath);
   const sessions = sortSessionsNewestFirst(
     Object.values(loadOrRebuildSessionCatalog().sessions).filter(
-      session => session.projectPath === canonicalProjectPath
+      session => session.projectPath === canonicalProjectPath && !session.archivedAt
+    )
+  );
+  return limit ? sessions.slice(0, limit) : sessions;
+}
+
+/**
+ * Archived sessions of a single project, newest archive first. Backed by the
+ * same catalog so `restoreSession`/`deleteSession` keep the two listings in
+ * sync.
+ */
+export function listArchivedProjectSessions(projectPath: string, limit?: number): SessionMeta[] {
+  const canonicalProjectPath = resolveProjectPath(projectPath);
+  const sessions = sortSessionsNewestFirst(
+    Object.values(loadOrRebuildSessionCatalog().sessions).filter(
+      session => session.projectPath === canonicalProjectPath && (session.archivedAt ?? 0) > 0
     )
   );
   return limit ? sessions.slice(0, limit) : sessions;
@@ -3187,6 +3211,54 @@ export function renameSession(sessionId: string, name: string): SessionMeta | nu
   const trimmed = name.trim();
   return mutateSessionMeta(sessionId, session => {
     session.name = trimmed || undefined;
+    session.updatedAt = Date.now();
+    session.updatedAtIso = new Date(session.updatedAt).toISOString();
+  });
+}
+
+export const SESSION_TAG_LIMIT = 8;
+export const SESSION_TAG_MAX_LENGTH = 32;
+
+/** Normalize user-supplied tags: trim, drop empties, cap length and count, dedupe. */
+export function normalizeSessionTags(tags: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const raw of tags) {
+    const tag = raw.trim().slice(0, SESSION_TAG_MAX_LENGTH);
+    if (!tag || seen.has(tag)) continue;
+    seen.add(tag);
+    normalized.push(tag);
+    if (normalized.length >= SESSION_TAG_LIMIT) break;
+  }
+  return normalized;
+}
+
+/**
+ * Replace the user-assigned tag set. An empty result clears tags entirely.
+ * Returns `null` when the session no longer exists.
+ */
+export function setSessionTags(sessionId: string, tags: readonly string[]): SessionMeta | null {
+  const normalized = normalizeSessionTags(tags);
+  return mutateSessionMeta(sessionId, session => {
+    session.tags = normalized.length > 0 ? normalized : undefined;
+    session.updatedAt = Date.now();
+    session.updatedAtIso = new Date(session.updatedAt).toISOString();
+  });
+}
+
+/** Soft-delete: keeps every file but hides the session from default listings. */
+export function archiveSession(sessionId: string): SessionMeta | null {
+  return mutateSessionMeta(sessionId, session => {
+    session.archivedAt = Date.now();
+    session.updatedAt = session.archivedAt;
+    session.updatedAtIso = new Date(session.updatedAt).toISOString();
+  });
+}
+
+/** Bring an archived session back into the default listings. */
+export function restoreSession(sessionId: string): SessionMeta | null {
+  return mutateSessionMeta(sessionId, session => {
+    delete session.archivedAt;
     session.updatedAt = Date.now();
     session.updatedAtIso = new Date(session.updatedAt).toISOString();
   });

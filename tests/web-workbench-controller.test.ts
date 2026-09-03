@@ -1,5 +1,13 @@
 import { createHash, randomUUID } from 'crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -1124,9 +1132,7 @@ describe('WebWorkbenchController', () => {
     });
 
     const before = await controller.diagnostics();
-    const beforeSession = before.session as
-      | WebSessionActivityDiagnostics
-      | undefined;
+    const beforeSession = before.session as WebSessionActivityDiagnostics | undefined;
     expect(beforeSession).toMatchObject({
       snapshotRequests: 0,
       snapshotFailures: 0,
@@ -1134,9 +1140,7 @@ describe('WebWorkbenchController', () => {
     });
     expect(beforeSession?.controlPlaneInstalls).toBeGreaterThanOrEqual(1);
 
-    expect(controller.sessionSnapshot(session.id, undefined, 50, true).session.id).toBe(
-      session.id
-    );
+    expect(controller.sessionSnapshot(session.id, undefined, 50, true).session.id).toBe(session.id);
     // An unknown Session fails the request; the failure itself is counted but
     // must not allocate an actor or touch the control plane.
     expect(() => controller.sessionSnapshot('missing-session', undefined, 50, true)).toThrow();
@@ -1378,9 +1382,9 @@ describe('WebWorkbenchController', () => {
       text: 'A_RUNNING_TURN',
     });
     expect(startedA).toMatchObject({ result: 'started', sessionRuntime: { phase: 'running' } });
-    const createdAfterA = ((await controller.diagnostics()).session as
-      | WebSessionActivityDiagnostics
-      | undefined)?.actors.actorsCreated;
+    const createdAfterA = (
+      (await controller.diagnostics()).session as WebSessionActivityDiagnostics | undefined
+    )?.actors.actorsCreated;
 
     // Switching to B while A's actor is still running must neither be blocked
     // (the old gate rejected every active Session actor) nor tear A down.
@@ -1501,3 +1505,107 @@ async function waitForCondition(condition: jest.Mock, attempts = 100): Promise<v
   }
   throw new Error('Timed out waiting for the test condition.');
 }
+
+describe('session tags / archive / delete (v0.3.7)', () => {
+  let lifecycleWorkspace: string;
+  beforeEach(() => {
+    lifecycleWorkspace = mkdtempSync(join(tmpdir(), 'orion-v037-controller-'));
+  });
+  afterEach(() => {
+    rmSync(lifecycleWorkspace, { recursive: true, force: true });
+  });
+
+  async function freshController() {
+    const controller = await WebWorkbenchController.create({
+      cwd: lifecycleWorkspace,
+      createRuntime: async cwd => createFakeWebRuntime(cwd),
+    });
+    const session = await controller.createSession('v037 lifecycle');
+    const baseline = controller.bootstrap('nonce');
+    const guard = {
+      workspaceId: baseline.workspaceId,
+      expectedContextRevision: baseline.contextRevision,
+    };
+    return { controller, session, guard };
+  }
+
+  test('setSessionTags rejects malformed tag sets before touching storage', async () => {
+    const { controller, session, guard } = await freshController();
+    await expect(
+      controller.setSessionTags(session.id, ['ok', 42 as unknown as string], guard)
+    ).rejects.toMatchObject({ code: 'invalid_tags' });
+    await expect(
+      controller.setSessionTags(
+        session.id,
+        Array.from({ length: 9 }, (_, index) => `tag-${index}`),
+        guard
+      )
+    ).rejects.toMatchObject({ code: 'invalid_tags' });
+    await expect(
+      controller.setSessionTags(session.id, ['x'.repeat(33)], guard)
+    ).rejects.toMatchObject({ code: 'invalid_tags' });
+    await controller.shutdown();
+  });
+
+  test('setSessionTags persists normalized tags into the summary', async () => {
+    const { controller, session, guard } = await freshController();
+    const updated = controller.setSessionTags(session.id, [' bug ', 'bug', '前端'], guard);
+    expect(updated.tags).toEqual(['bug', '前端']);
+    const cleared = controller.setSessionTags(session.id, [], guard);
+    expect(cleared.tags).toBeUndefined();
+    await controller.shutdown();
+  });
+
+  test('archive -> hidden from default list -> restore brings it back', async () => {
+    const { controller, session, guard } = await freshController();
+    const archived = controller.archiveSession(session.id, guard);
+    expect(archived.id).toBe(session.id);
+    const list = controller.listWorkspaceSessions(guard.workspaceId, guard);
+    expect(list.some(item => item.id === session.id)).toBe(false);
+    const archivedList = controller.listArchivedWorkspaceSessions(guard.workspaceId, guard);
+    expect(archivedList.some(item => item.id === session.id)).toBe(true);
+    const restored = controller.restoreSession(session.id, guard);
+    expect(restored.id).toBe(session.id);
+    expect(
+      controller
+        .listWorkspaceSessions(guard.workspaceId, guard)
+        .some(item => item.id === session.id)
+    ).toBe(true);
+    await controller.shutdown();
+  });
+
+  test('delete refuses a session with a resident actor, then succeeds when cold', async () => {
+    const { controller, session, guard } = await freshController();
+    await controller.activateSession(session.id, guard);
+    await expect(controller.deleteSession(session.id, guard)).rejects.toMatchObject({
+      code: 'session_busy',
+    });
+    await controller.shutdown();
+  });
+
+  test('session lifecycle mutations reject foreign workspace guards', async () => {
+    const { controller, session } = await freshController();
+    const foreign = {
+      workspaceId: randomUUID(),
+      expectedContextRevision: 'stale',
+    };
+    await expect(controller.setSessionTags(session.id, ['x'], foreign)).rejects.toThrow();
+    await expect(controller.archiveSession(session.id, foreign)).rejects.toThrow();
+    await expect(controller.deleteSession(session.id, foreign)).rejects.toThrow();
+    await controller.shutdown();
+  });
+
+  test('lifecycle mutations 404 on unknown sessions', async () => {
+    const { controller, guard } = await freshController();
+    await expect(controller.setSessionTags('missing', ['x'], guard)).rejects.toMatchObject({
+      code: 'session_not_found',
+    });
+    await expect(controller.archiveSession('missing', guard)).rejects.toMatchObject({
+      code: 'session_not_found',
+    });
+    await expect(controller.deleteSession('missing', guard)).rejects.toMatchObject({
+      code: 'session_not_found',
+    });
+    await controller.shutdown();
+  });
+});

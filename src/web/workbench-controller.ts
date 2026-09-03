@@ -44,13 +44,21 @@ import {
   type SettingsInvalidationV1,
 } from '../services/settings-coordinator';
 import {
+  SESSION_TAG_LIMIT,
+  SESSION_TAG_MAX_LENGTH,
+  archiveSession,
   countSessionsByProject,
   createSession,
+  deleteSession,
   listProjectSessions,
   listSessions,
+  listArchivedProjectSessions,
   loadSessionMeta,
+  normalizeSessionTags,
   renameSession,
+  restoreSession,
   readSessionMessages,
+  setSessionTags,
   type SessionMeta,
 } from '../services/session-storage';
 import { WorkspaceRegistryError, WorkspaceRegistryV1 } from '../services/workspace-registry';
@@ -376,6 +384,28 @@ export class WebWorkbenchController {
     }
     const result = Object.freeze(
       listProjectSessions(entry.canonicalPath).map(projectSessionSummary)
+    );
+    if (context) this.assertContextGuard(context);
+    return result;
+  }
+
+  /** Archived sessions of a Workspace (v0.3.7), newest archive first. */
+  listArchivedWorkspaceSessions(
+    workspaceId: string,
+    context?: WebContextGuardV1
+  ): readonly WebSessionSummaryV1[] {
+    if (context) this.assertContextGuard(context);
+    const entry = this.workspaceRegistry.find(workspaceId);
+    if (!entry) {
+      throw new WebWorkbenchError(404, 'Workspace was not found.', 'workspace_not_found');
+    }
+    try {
+      canonicalDirectory(entry.canonicalPath);
+    } catch {
+      throw new WebWorkbenchError(409, 'Workspace is unavailable.', 'workspace_unavailable');
+    }
+    const result = Object.freeze(
+      listArchivedProjectSessions(entry.canonicalPath).map(projectSessionSummary)
     );
     if (context) this.assertContextGuard(context);
     return result;
@@ -1162,6 +1192,107 @@ export class WebWorkbenchController {
     const updated = renameSession(session.id, normalizedName);
     if (!updated) throw new WebWorkbenchError(404, 'Session no longer exists.');
     return projectSessionSummary(updated);
+  }
+
+  setSessionTags(
+    sessionId: string,
+    tags: unknown,
+    context?: WebContextGuardV1
+  ): WebSessionSummaryV1 {
+    if (context) this.assertContextGuard(context);
+    const session = requireSession(sessionId);
+    this.assertSessionWorkspace(session);
+    if (!Array.isArray(tags)) {
+      throw new WebWorkbenchError(400, 'Tags must be an array of strings.', 'invalid_tags');
+    }
+    if (tags.length > SESSION_TAG_LIMIT) {
+      throw new WebWorkbenchError(
+        400,
+        `A session can have at most ${SESSION_TAG_LIMIT} tags.`,
+        'invalid_tags'
+      );
+    }
+    for (const raw of tags) {
+      if (typeof raw !== 'string' || !raw.trim()) {
+        throw new WebWorkbenchError(400, 'Every tag must be a non-empty string.', 'invalid_tags');
+      }
+      if (raw.trim().length > SESSION_TAG_MAX_LENGTH) {
+        throw new WebWorkbenchError(
+          400,
+          `Each tag is limited to ${SESSION_TAG_MAX_LENGTH} characters.`,
+          'invalid_tags'
+        );
+      }
+    }
+    const updated = setSessionTags(session.id, normalizeSessionTags(tags as string[]));
+    if (!updated) throw new WebWorkbenchError(404, 'Session no longer exists.');
+    return projectSessionSummary(updated);
+  }
+
+  archiveSession(sessionId: string, context?: WebContextGuardV1): WebSessionSummaryV1 {
+    if (context) this.assertContextGuard(context);
+    const session = requireSession(sessionId);
+    this.assertSessionWorkspace(session);
+    this.assertSessionNotBusy(session);
+    const updated = archiveSession(session.id);
+    if (!updated) throw new WebWorkbenchError(404, 'Session no longer exists.');
+    return projectSessionSummary(updated);
+  }
+
+  restoreSession(sessionId: string, context?: WebContextGuardV1): WebSessionSummaryV1 {
+    if (context) this.assertContextGuard(context);
+    const session = requireSession(sessionId);
+    this.assertSessionWorkspace(session);
+    const updated = restoreSession(session.id);
+    if (!updated) throw new WebWorkbenchError(404, 'Session no longer exists.');
+    return projectSessionSummary(updated);
+  }
+
+  deleteSession(sessionId: string, context?: WebContextGuardV1): { readonly deleted: boolean } {
+    if (context) this.assertContextGuard(context);
+    const session = requireSession(sessionId);
+    this.assertSessionWorkspace(session);
+    this.assertSessionHasNoActor(session);
+    const removed = deleteSession(session.id);
+    if (!removed) {
+      throw new WebWorkbenchError(
+        409,
+        'Session files could not be fully removed; nothing was deleted.',
+        'session_delete_failed'
+      );
+    }
+    return { deleted: true };
+  }
+
+  /**
+   * A busy Session (starting / queued / running / waiting approval / stopping)
+   * must not be archived or deleted while its actor is doing work.
+   */
+  private assertSessionNotBusy(session: SessionMeta): void {
+    const runtime = this.sessionRegistry.summary(this.sessionActorKey(session));
+    const busy = new Set(['starting', 'queued', 'running', 'waiting_approval', 'stopping']);
+    if (busy.has(runtime.phase)) {
+      throw new WebWorkbenchError(
+        409,
+        'Session is busy; stop it before archiving or deleting.',
+        'session_busy'
+      );
+    }
+  }
+
+  /**
+   * Deletion removes files under the Session while a resident actor may still
+   * hold them open — require that no actor exists at all (phase 'cold').
+   */
+  private assertSessionHasNoActor(session: SessionMeta): void {
+    const resident = this.sessionRegistry.residentActor(this.sessionActorKey(session));
+    if (resident) {
+      throw new WebWorkbenchError(
+        409,
+        'Session has an active runtime; stop it before deleting.',
+        'session_busy'
+      );
+    }
   }
 
   async switchWorkspace(path: string, context: WebContextGuardV1): Promise<void> {

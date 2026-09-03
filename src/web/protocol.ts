@@ -482,6 +482,8 @@ export interface WebSessionSummaryV1 {
   readonly id: string;
   readonly projectPath: string;
   readonly name?: string;
+  /** v0.3.7 — User-assigned tags (optional, sorted as stored). */
+  readonly tags?: readonly string[];
   readonly model: string;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -1183,6 +1185,7 @@ export function projectSessionSummary(session: SessionMeta): WebSessionSummaryV1
         messageCount: session.messageCount ?? 0,
       }),
     ...(session.taskSummary ? { taskSummary: session.taskSummary } : {}),
+    ...(session.tags && session.tags.length > 0 ? { tags: Object.freeze([...session.tags]) } : {}),
     ...(session.activeGoalId ? { activeGoalId: session.activeGoalId } : {}),
     ...(session.activeGoalObjective ? { activeGoalObjective: session.activeGoalObjective } : {}),
   });
