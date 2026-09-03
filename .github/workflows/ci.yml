@@ -49,6 +49,10 @@ jobs:
         if: ${{ matrix.node-version == '22' }}
         run: npm run lint
 
+      - name: Format check
+        if: ${{ matrix.node-version == '22' }}
+        run: npm run format:check
+
       - name: Build
         run: npm run build
 
@@ -97,6 +101,11 @@ jobs:
 
       - name: tsc --noEmit
         run: npx tsc --noEmit
+
+      - name: E2E TypeScript check
+        # Standalone type-check of the Playwright specs and E2E runners
+        # (tests/e2e + scripts/e2e) that the root tsconfig excludes.
+        run: npm run typecheck:e2e
 
   harness-gates:
     name: Lean Harness benchmark and confluence

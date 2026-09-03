@@ -1,4 +1,5 @@
 import { allowExpectedNetworkFailures, test, expect } from './fixtures/test';
+import { readRepositoryVersion } from './fixtures/package-version';
 import { relative, resolve } from 'path';
 import {
   activeSessionButton,
@@ -7,17 +8,18 @@ import {
   workbenchUi,
 } from './fixtures/ui';
 
-test('E2E-P0-01 packaged Host renders v0.3.3 and persists a renamed session', async ({
+test('E2E-P0-01 packaged Host renders the repository version and persists a renamed session', async ({
   artifactState,
   evidence,
   host,
   page,
 }, testInfo) => {
+  const expectedVersion = readRepositoryVersion(artifactState.repositoryRoot);
   // Session activation deliberately replaces the EventSource; Chrome reports the old stream aborted.
   allowExpectedNetworkFailures(testInfo, 3);
   expect(artifactState.artifact.receipt.package).toMatchObject({
     name: '@orion-agents/orion-code',
-    version: '0.3.3',
+    version: expectedVersion,
   });
   expect(host.host).toBe('127.0.0.1');
   const homeKey = process.platform === 'win32' ? 'USERPROFILE' : 'HOME';
@@ -35,17 +37,23 @@ test('E2E-P0-01 packaged Host renders v0.3.3 and persists a renamed session', as
     const response = await fetch('/api/v1/health', { cache: 'no-store' });
     return { status: response.status, body: await response.json() };
   });
-  expect(health).toEqual({ status: 200, body: { ok: true, version: '0.3.3' } });
+  expect(health).toEqual({ status: 200, body: { ok: true, version: expectedVersion } });
 
   const bootstrap = await page.evaluate(async () => {
     const response = await fetch('/api/v1/bootstrap', { cache: 'no-store' });
     return response.json();
   });
-  expect(bootstrap).toMatchObject({ apiVersion: 1, productVersion: '0.3.3', configured: true });
+  expect(bootstrap).toMatchObject({
+    apiVersion: 1,
+    productVersion: expectedVersion,
+    configured: true,
+  });
   expect(bootstrap.nonce).toEqual(expect.any(String));
   expect(JSON.stringify(bootstrap)).not.toContain('orion-web-e2e-test-only');
 
-  await expect(workbenchUi(page).workspaceRail.getByText('v0.3.3', { exact: true })).toBeVisible();
+  await expect(
+    workbenchUi(page).workspaceRail.getByText(`v${expectedVersion}`, { exact: true })
+  ).toBeVisible();
   await createSession(page);
   await renameActiveSession(page, 'Packaged Browser Session');
   await expect(await activeSessionButton(page)).toContainText('Packaged Browser Session');

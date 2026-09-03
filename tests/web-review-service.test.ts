@@ -49,6 +49,7 @@ describe('ReviewServiceV1', () => {
       repositoryRevision: 'repository-revision',
       isRepository: true,
       clean: false,
+      totalChangedFiles: 1,
       stagedCount: 1,
       unstagedCount: 1,
       untrackedCount: 0,
@@ -73,6 +74,37 @@ describe('ReviewServiceV1', () => {
     });
     expect(snapshot.revision).toMatch(/^[0-9a-f]{64}$/u);
     await expect(service.snapshot()).resolves.toMatchObject({ revision: snapshot.revision });
+  });
+
+  test('separates the authoritative total from the bounded visible Review page', async () => {
+    const visible = Array.from(
+      { length: 2_000 },
+      (_, index): WebGitFileV1 =>
+        Object.freeze({
+          fileId: `git_file_${index}`,
+          path: `generated/file-${index.toString().padStart(4, '0')}.ts`,
+          indexStatus: ' ',
+          worktreeStatus: '?',
+        })
+    );
+    const git = fakeGit(
+      gitStatus({
+        untracked: Object.freeze(visible),
+        totalFiles: 2_001,
+        truncated: true,
+        nextCursor: 'next-status',
+      })
+    );
+    const service = new ReviewServiceV1(git, async () => []);
+
+    const snapshot = await service.snapshot();
+
+    expect(snapshot.totalChangedFiles).toBe(2_001);
+    expect(snapshot.changedFiles).toHaveLength(2_000);
+    expect(snapshot.untrackedCount).toBe(2_000);
+    expect(snapshot.truncated).toBe(true);
+    expect(git.status).toHaveBeenCalledTimes(1);
+    expect(git.status).toHaveBeenCalledWith({ pageSize: 2_000 });
   });
 
   test('binds the Review revision to the authoritative receipt references', async () => {

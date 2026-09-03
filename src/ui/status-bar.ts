@@ -38,13 +38,14 @@ export function renderStatusBar(stats: StatusBarStats): string {
     `Orion Code`,
     `${ACCENT(stats.model)}`,
     `${formatTokens(stats.tokens)}`,
-    `${formatCtx(stats.ctxPercent)}`,  // 添加 ctxPercent 显示
+    `${formatCtx(stats.ctxPercent)}`, // 添加 ctxPercent 显示
   ];
 
   if (stats.mcpTotal > 0) {
-    const mcpStatus = stats.mcpConnected === stats.mcpTotal
-      ? SUCCESS(`${stats.mcpConnected}/${stats.mcpTotal}`)
-      : `${stats.mcpConnected}/${stats.mcpTotal}`;
+    const mcpStatus =
+      stats.mcpConnected === stats.mcpTotal
+        ? SUCCESS(`${stats.mcpConnected}/${stats.mcpTotal}`)
+        : `${stats.mcpConnected}/${stats.mcpTotal}`;
     parts.push(`MCP ${mcpStatus}`);
   }
 
@@ -70,11 +71,11 @@ export function updateStatusBarDisplay(stats: StatusBarStats): void {
   const bar = renderStatusBar(stats);
 
   // 保存光标位置，上移一行，清除，写入状态栏
-  process.stdout.write('\x1b[s');     // 保存
-  process.stdout.write('\x1b[A');     // 上移
-  process.stdout.write('\x1b[2K');    // 清除
-  process.stdout.write('\r' + bar);   // 写入
-  process.stdout.write('\x1b[u');     // 恢复
+  process.stdout.write('\x1b[s'); // 保存
+  process.stdout.write('\x1b[A'); // 上移
+  process.stdout.write('\x1b[2K'); // 清除
+  process.stdout.write('\r' + bar); // 写入
+  process.stdout.write('\x1b[u'); // 恢复
 }
 
 /**
@@ -104,7 +105,7 @@ function formatTokens(tokens: number): string {
 function formatCtx(percent: number): string {
   if (percent === 0) return '';
   if (percent >= 80) {
-    return WARN(`${percent}% ctx`);  // 高占用时警告色
+    return WARN(`${percent}% ctx`); // 高占用时警告色
   }
   return DIM(`${percent}% ctx`);
 }

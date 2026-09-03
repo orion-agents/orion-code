@@ -116,8 +116,7 @@ export class TurnController {
 
   registerExitIntent(now = Date.now()): boolean {
     const shouldExit =
-      this.lastExitIntentAt > 0 &&
-      now - this.lastExitIntentAt <= this.exitConfirmWindowMs;
+      this.lastExitIntentAt > 0 && now - this.lastExitIntentAt <= this.exitConfirmWindowMs;
 
     this.lastExitIntentAt = shouldExit ? 0 : now;
     return shouldExit;
@@ -127,4 +126,3 @@ export class TurnController {
     this.lastExitIntentAt = 0;
   }
 }
-

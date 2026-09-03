@@ -44,10 +44,12 @@ const REQUIRED_PACKAGE_ENTRIES = [
   'docs/migration/v0.3.0-to-v0.3.1.md',
   'docs/migration/v0.3.1-to-v0.3.2.md',
   'docs/migration/v0.3.2-to-v0.3.3.md',
+  'docs/migration/v0.3.3-to-v0.3.4.md',
   'docs/architecture/v0.3.0-web-api.yaml',
   'docs/architecture/v0.3.1-web-api.yaml',
   'docs/architecture/v0.3.2-web-api.yaml',
   'docs/architecture/v0.3.3-web-api.yaml',
+  'docs/architecture/v0.3.4-stabilization-contract.md',
   'docs/architecture/agent-mode-permission-contract.md',
   'docs/plan/v0.2.0-dsh-harness-redesign-plan.md',
   'docs/plan/v0.2.0-release-checklist.md',
@@ -57,9 +59,11 @@ const REQUIRED_PACKAGE_ENTRIES = [
   'docs/plan/v0.3.1-web-workbench-professional-shell-plan.md',
   'docs/plan/v0.3.2-web-workbench-layout-and-composer-plan.md',
   'docs/plan/v0.3.3-plan.md',
+  'docs/plan/v0.3.4-stabilization-plan.md',
   'docs/test/v0.3.1-web-workbench-e2e-plan.md',
   'docs/test/v0.3.2-web-workbench-e2e-plan.md',
   'docs/test/v0.3.3-web-workbench-e2e-plan.md',
+  'docs/test/v0.3.4-stabilization-e2e-plan.md',
   'LICENSE',
   'README.md',
   'README.zh-CN.md',
@@ -119,6 +123,32 @@ function run(command, args, extraOptions) {
 function localBin(name) {
   const binary = join(projectRoot, 'node_modules', '.bin', name);
   return existsSync(binary) ? binary : null;
+}
+
+function installExactTgzWithoutLifecycleScripts(installDir, tarballPath) {
+  return run('npm', [
+    'install',
+    '--prefix',
+    installDir,
+    '--no-audit',
+    '--no-fund',
+    '--package-lock=false',
+    '--ignore-scripts',
+    tarballPath,
+  ]);
+}
+
+function installExactTgzWithConsumerLifecycleScripts(installDir, tarballPath) {
+  return run('npm', [
+    'install',
+    '--prefix',
+    installDir,
+    '--no-audit',
+    '--no-fund',
+    '--package-lock=false',
+    '--ignore-scripts=false',
+    tarballPath,
+  ]);
 }
 
 function readJson(relativePath) {
@@ -201,14 +231,36 @@ function checkVersionConsistency() {
       );
     }
   }
+  // A release may live on a topic branch (`codex/vX.Y.Z`) or run inside CI on
+  // a detached HEAD where `git branch --show-current` is empty. Consider the
+  // local branch plus the pull-request head ref (`GITHUB_HEAD_REF`) and the
+  // expanded push ref (`GITHUB_REF`) so the release gate still pins the
+  // manifest version to the branch under review.
   const branch = run('git', ['branch', '--show-current']).stdout.trim();
-  const releaseBranchVersion = branch.match(/^v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/)?.[1];
-  if (releaseBranchVersion) {
-    checked.push(`release-branch=${branch}`);
-    if (version !== releaseBranchVersion) {
-      mismatches.push(
-        `release branch ${branch}: package.json version expected ${releaseBranchVersion}, found ${version}`
-      );
+  const releaseRefCandidates = [
+    branch,
+    process.env.GITHUB_HEAD_REF ?? '',
+    (process.env.GITHUB_REF ?? '').replace(/^refs\/heads\//, ''),
+  ]
+    .map(candidate => candidate.trim())
+    .filter(Boolean);
+  const releaseBranchMatches = [];
+  for (const candidate of releaseRefCandidates) {
+    const candidateVersion = candidate.match(
+      /^(?:codex\/)?v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/
+    )?.[1];
+    if (candidateVersion) {
+      releaseBranchMatches.push({ candidate, candidateVersion });
+    }
+  }
+  if (releaseBranchMatches.length > 0) {
+    checked.push(`release-branch=${releaseBranchMatches.map(match => match.candidate).join('|')}`);
+    for (const { candidate, candidateVersion } of releaseBranchMatches) {
+      if (version !== candidateVersion) {
+        mismatches.push(
+          `release branch ${candidate}: package.json version expected ${candidateVersion}, found ${version}`
+        );
+      }
     }
   }
 
@@ -746,23 +798,65 @@ function checkPack() {
     );
   }
 
-  const installDir = join(packDir, 'install');
-  const install = run('npm', [
-    'install',
-    '--prefix',
-    installDir,
-    '--no-audit',
-    '--no-fund',
-    '--package-lock=false',
-    tarballPath,
-  ]);
+  // Phase 1 is an exact-tgz extraction/install boundary. It must never execute package or
+  // dependency lifecycle scripts. Validate the safely extracted identity before authorizing the
+  // separate consumer-realism phase below.
+  const safeInstallDir = join(packDir, 'safe-install');
+  const safeInstall = installExactTgzWithoutLifecycleScripts(safeInstallDir, tarballPath);
+  if (safeInstall.code !== 0) {
+    rmSync(packDir, { recursive: true, force: true });
+    return record(
+      'pack',
+      'npm package artifact',
+      STATUS.FAIL,
+      `safe exact-tgz install with lifecycle scripts disabled failed: ${`${safeInstall.stdout}${safeInstall.stderr}`
+        .trim()
+        .slice(-1500)}`
+    );
+  }
+  const safelyInstalledPackage = join(
+    safeInstallDir,
+    'node_modules',
+    '@orion-agents',
+    'orion-code'
+  );
+  let safeManifest;
+  try {
+    safeManifest = JSON.parse(readFileSync(join(safelyInstalledPackage, 'package.json'), 'utf8'));
+  } catch (error) {
+    rmSync(packDir, { recursive: true, force: true });
+    return record(
+      'pack',
+      'npm package artifact',
+      STATUS.FAIL,
+      `safe exact-tgz manifest is unavailable: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+  if (
+    safeManifest.name !== tarball.name ||
+    safeManifest.version !== tarball.version ||
+    !existsSync(join(safelyInstalledPackage, 'npm-shrinkwrap.json'))
+  ) {
+    rmSync(packDir, { recursive: true, force: true });
+    return record(
+      'pack',
+      'npm package artifact',
+      STATUS.FAIL,
+      'safe exact-tgz identity mismatch before consumer lifecycle authorization'
+    );
+  }
+
+  // Phase 2 intentionally runs lifecycle scripts in a different prefix. Native and Web probes
+  // are evidence for this consumer-realism install only; Phase 1 never claims native readiness.
+  const installDir = join(packDir, 'consumer-install');
+  const install = installExactTgzWithConsumerLifecycleScripts(installDir, tarballPath);
   if (install.code !== 0) {
     rmSync(packDir, { recursive: true, force: true });
     return record(
       'pack',
       'npm package artifact',
       STATUS.FAIL,
-      `clean tarball install failed: ${`${install.stdout}${install.stderr}`.trim().slice(-1500)}`
+      `consumer lifecycle install failed: ${`${install.stdout}${install.stderr}`.trim().slice(-1500)}`
     );
   }
 
@@ -830,7 +924,8 @@ function checkPack() {
     'pack',
     'npm package artifact',
     STATUS.PASS,
-    `${detail} · sha256 ${tarballSha256} · clean install/version/help/native/Web ok`
+    `${detail} · sha256 ${tarballSha256} · safe exact-tgz install lifecycle=disabled · ` +
+      'consumer lifecycle install/version/help/native/Web ok'
   );
 }
 
@@ -895,4 +990,9 @@ function main() {
   process.exit(report());
 }
 
-main();
+module.exports = {
+  installExactTgzWithoutLifecycleScripts,
+  installExactTgzWithConsumerLifecycleScripts,
+};
+
+if (require.main === module) main();

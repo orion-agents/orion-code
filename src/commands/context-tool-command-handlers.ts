@@ -274,11 +274,7 @@ async function showHarness(ctx: CommandContext, args: string = ''): Promise<Comm
     },
   };
   const result = (): CommandResult => ({ success: true, output: lines.join('\n') });
-  const tokens = args
-    .trim()
-    .toLowerCase()
-    .split(/\s+/u)
-    .filter(Boolean);
+  const tokens = args.trim().toLowerCase().split(/\s+/u).filter(Boolean);
   const explain = tokens[0] === 'explain';
   const json = tokens.includes('--json');
   if (tokens.some(token => token !== 'explain' && token !== '--json')) {

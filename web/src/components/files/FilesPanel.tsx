@@ -136,7 +136,7 @@ export function FilesPanel({
     request = contentRequestRef.current + 1
   ) => {
     if (generation !== generationRef.current) return;
-    if (!node.readable || node.sensitive || node.kind === 'directory') return;
+    if (!node.readable || node.sensitive || isDirectoryLike(node)) return;
     contentRequestRef.current = request;
     setSelected(node);
     setContentError('');
@@ -394,7 +394,7 @@ function DirectoryTree({
               onToggle={onToggle}
               onSelect={onSelect}
             />
-            {node.kind === 'directory' && open ? (
+            {isDirectoryLike(node) && open ? (
               <DirectoryTree
                 parentId={node.id}
                 depth={depth + 1}
@@ -440,17 +440,18 @@ function FileRow({
   readonly onSelect: (node: WebFileNodeV1) => void;
 }) {
   const blocked = node.sensitive || !node.readable;
+  const directoryLike = isDirectoryLike(node);
   return (
     <button
       type="button"
       className={`file-node ${selected ? 'selected' : ''} ${blocked ? 'blocked' : ''}`}
       style={{ paddingInlineStart: `${8 + depth * 15}px` }}
-      aria-expanded={node.kind === 'directory' ? expanded : undefined}
-      aria-label={`${fileKindLabel(node.kind)} ${node.name}${blocked ? '，不可读取' : ''}${gitLabels.length ? `，Git ${gitLabels.join('、')}` : ''}`}
-      onClick={() => (node.kind === 'directory' ? onToggle(node.id) : onSelect(node))}
+      aria-expanded={directoryLike ? expanded : undefined}
+      aria-label={`${fileKindLabel(node)} ${node.name}${blocked ? '，不可读取' : ''}${gitLabels.length ? `，Git ${gitLabels.join('、')}` : ''}`}
+      onClick={() => (directoryLike ? onToggle(node.id) : onSelect(node))}
       disabled={blocked}
     >
-      <Icon name={node.kind === 'directory' ? 'workspace' : 'code'} size={14} />
+      <Icon name={directoryLike ? 'workspace' : 'code'} size={14} />
       <span>{node.name}</span>
       {node.kind === 'symlink' ? <small>链接</small> : null}
       {node.sensitive ? <small>敏感</small> : null}
@@ -463,10 +464,14 @@ function FileRow({
   );
 }
 
-function fileKindLabel(kind: WebFileNodeV1['kind']): string {
-  if (kind === 'directory') return '目录';
-  if (kind === 'symlink') return '符号链接';
+function fileKindLabel(node: WebFileNodeV1): string {
+  if (node.kind === 'directory') return '目录';
+  if (node.kind === 'symlink') return node.targetKind === 'directory' ? '符号链接目录' : '符号链接';
   return '文件';
+}
+
+function isDirectoryLike(node: WebFileNodeV1): boolean {
+  return node.kind === 'directory' || (node.kind === 'symlink' && node.targetKind === 'directory');
 }
 
 function mergeNodes(

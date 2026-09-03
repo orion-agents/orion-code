@@ -1,12 +1,20 @@
-import { randomUUID } from 'crypto';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { createHash, randomUUID } from 'crypto';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { request as httpRequest } from 'http';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import WebSocket from 'ws';
 
+import { getProjectThreadsV2Dir } from '../src/product/paths';
+import { materializeLegacyThreadV1 } from '../src/runtime/legacy-thread-materializer';
+import { ThreadEventStore } from '../src/runtime/thread-event-store';
+import { appendSessionMessages } from '../src/services/session-storage';
 import { startOrionWebServer, type OrionWebServerHandle } from '../src/web/server';
 import { WebWorkbenchController } from '../src/web/workbench-controller';
+import {
+  rewriteCutoverProjectionReceipt,
+  v032ProjectionDigest,
+} from './support/thread-projection-compat';
 import { createFakeWebRuntime } from './support/web-runtime';
 
 describe('Orion local Web host', () => {
@@ -129,6 +137,50 @@ describe('Orion local Web host', () => {
     expect((sessions as { items: unknown[] }).items).toHaveLength(1);
   });
 
+  test('rejects missing, non-string and blank Session names without changing the durable name', async () => {
+    const context = await activeContext(handle);
+    const created = await fetch(`${handle.url}/api/v1/sessions`, {
+      method: 'POST',
+      headers: mutationHeaders(handle),
+      body: JSON.stringify({ requestId: randomUUID(), name: 'Original name', ...context }),
+    });
+    const createdBody = (await created.json()) as { session: { id: string; name?: string } };
+    expect(created.status).toBe(201);
+    expect(createdBody.session.name).toBe('Original name');
+
+    for (const name of [undefined, null, 7, '', '   ']) {
+      const response = await fetch(
+        `${handle.url}/api/v1/sessions/${encodeURIComponent(createdBody.session.id)}`,
+        {
+          method: 'PATCH',
+          headers: mutationHeaders(handle),
+          body: JSON.stringify({ requestId: randomUUID(), name, ...context }),
+        }
+      );
+      expect(response.status).toBe(400);
+    }
+
+    const unchanged = (await (
+      await fetch(guardedUrl(handle, '/api/v1/sessions', context))
+    ).json()) as { items: Array<{ id: string; name?: string }> };
+    expect(unchanged.items).toContainEqual(
+      expect.objectContaining({ id: createdBody.session.id, name: 'Original name' })
+    );
+
+    const renamed = await fetch(
+      `${handle.url}/api/v1/sessions/${encodeURIComponent(createdBody.session.id)}`,
+      {
+        method: 'PATCH',
+        headers: mutationHeaders(handle),
+        body: JSON.stringify({ requestId: randomUUID(), name: '  Normalized name  ', ...context }),
+      }
+    );
+    expect(renamed.status).toBe(200);
+    await expect(renamed.json()).resolves.toMatchObject({
+      session: { id: createdBody.session.id, name: 'Normalized name' },
+    });
+  });
+
   test('serves an omitted-tail recovery snapshot through the bounded latest-page path', async () => {
     const context = await activeContext(handle);
     const created = await fetch(`${handle.url}/api/v1/sessions`, {
@@ -146,6 +198,86 @@ describe('Orion local Web host', () => {
 
     expect(response.status).toBe(200);
     expect(snapshot).toHaveBeenCalledWith(createdBody.session.id, undefined, 50, true, context);
+  });
+
+  test('serves a v0.3.2 cutover cold and redacts a forged projection receipt', async () => {
+    const context = await activeContext(handle);
+    const created = await fetch(`${handle.url}/api/v1/sessions`, {
+      method: 'POST',
+      headers: mutationHeaders(handle),
+      body: JSON.stringify({ requestId: randomUUID(), name: 'v0.3.2 cutover', ...context }),
+    });
+    const createdBody = (await created.json()) as { session: { id: string } };
+    expect(created.status).toBe(201);
+    appendSessionMessages(createdBody.session.id, [
+      { role: 'user', content: 'legacy HTTP question', timestamp: 1 },
+      { role: 'assistant', content: 'legacy HTTP answer', timestamp: 2 },
+    ]);
+    const materialized = materializeLegacyThreadV1({
+      projectPath: workspace,
+      sessionId: createdBody.session.id,
+    });
+    const store = new ThreadEventStore(
+      getProjectThreadsV2Dir(workspace),
+      materialized.plan.receipt.threadId
+    );
+    const legacyProjectionDigest = v032ProjectionDigest(materialized.plan.projection);
+    rewriteCutoverProjectionReceipt({
+      projectPath: workspace,
+      sessionId: createdBody.session.id,
+      projectionDigest: legacyProjectionDigest,
+    });
+    const eventLogBefore = readFileSync(store.logPath);
+    const eventLogDigestBefore = createHash('sha256').update(eventLogBefore).digest('hex');
+    const snapshotUrl = guardedUrl(
+      handle,
+      `/api/v1/sessions/${createdBody.session.id}/snapshot`,
+      context
+    );
+
+    const response = await fetch(snapshotUrl);
+    const snapshot = (await response.json()) as {
+      sessionRuntime: { phase: string; resident: boolean };
+      runtime: { active: boolean; processing: boolean };
+      transcript: { items: Array<{ content: string }> };
+    };
+    expect(response.status).toBe(200);
+    expect(snapshot).toMatchObject({
+      sessionRuntime: { phase: 'cold', resident: false },
+      runtime: { active: false, processing: false },
+      transcript: {
+        items: [
+          expect.objectContaining({ content: 'legacy HTTP question' }),
+          expect.objectContaining({ content: 'legacy HTTP answer' }),
+        ],
+      },
+    });
+    expect(readFileSync(store.logPath)).toEqual(eventLogBefore);
+
+    rewriteCutoverProjectionReceipt({
+      projectPath: workspace,
+      sessionId: createdBody.session.id,
+      projectionDigest: 'f'.repeat(64),
+    });
+    const failed = await fetch(snapshotUrl);
+    const problem = (await failed.json()) as Record<string, unknown>;
+    expect(failed.status).toBe(500);
+    expect(failed.headers.get('content-type')).toBe('application/problem+json; charset=utf-8');
+    expect(problem).toEqual({
+      type: 'https://orioncode.dev/problems/web_internal_error',
+      title: 'Internal server error',
+      status: 500,
+      code: 'web_internal_error',
+      detail: 'The local Web Workbench request failed.',
+    });
+    const serializedProblem = JSON.stringify(problem);
+    expect(serializedProblem).not.toContain(workspace);
+    expect(serializedProblem).not.toContain(materialized.plan.receipt.threadId);
+    expect(serializedProblem).not.toContain(createdBody.session.id);
+    const eventLogAfter = readFileSync(store.logPath);
+    expect(eventLogAfter).toEqual(eventLogBefore);
+    expect(eventLogAfter.byteLength).toBe(eventLogBefore.byteLength);
+    expect(createHash('sha256').update(eventLogAfter).digest('hex')).toBe(eventLogDigestBefore);
   });
 
   test('rejects a continuation cursor after the Session collection revision changes', async () => {
@@ -338,6 +470,9 @@ describe('Orion local Web host', () => {
 
   test('rejects a stale tab Session create with zero cross-Workspace side effects', async () => {
     const staleContext = await activeContext(handle);
+    const staleSettings = (await (await fetch(`${handle.url}/api/v1/settings`)).json()) as {
+      revision: string;
+    };
     const secondWorkspace = join(root, 'second-workspace');
     mkdirSync(secondWorkspace);
     const switched = await fetch(`${handle.url}/api/v1/workspaces/activate`, {
@@ -363,6 +498,25 @@ describe('Orion local Web host', () => {
       code: 'context_revision_conflict',
     });
 
+    const staleSettingsWrite = await fetch(`${handle.url}/api/v1/settings`, {
+      method: 'PATCH',
+      headers: mutationHeaders(handle),
+      body: JSON.stringify({
+        requestId: randomUUID(),
+        ...staleContext,
+        expectedRevision: staleSettings.revision,
+        operations: [{ op: 'set', key: 'defaults.effort', value: 'high' }],
+      }),
+    });
+    expect(staleSettingsWrite.status).toBe(409);
+    await expect(staleSettingsWrite.json()).resolves.toMatchObject({
+      code: 'context_revision_conflict',
+    });
+    const currentSettings = (await (await fetch(`${handle.url}/api/v1/settings`)).json()) as {
+      sections: { defaults: { effort: { explicitValue?: string } } };
+    };
+    expect(currentSettings.sections.defaults.effort).not.toHaveProperty('explicitValue');
+
     const sessions = await fetch(guardedUrl(handle, '/api/v1/sessions', active));
     expect(sessions.status).toBe(200);
     await expect(sessions.json()).resolves.toMatchObject({ items: [] });
@@ -387,6 +541,7 @@ describe('Orion local Web host', () => {
   });
 
   test('applies one atomic Settings batch, replays it exactly and rejects stale CAS', async () => {
+    const context = await activeContext(handle);
     const beforeResponse = await fetch(`${handle.url}/api/v1/settings`);
     const before = (await beforeResponse.json()) as {
       revision: string;
@@ -397,6 +552,7 @@ describe('Orion local Web host', () => {
     const requestId = randomUUID();
     const body = JSON.stringify({
       requestId,
+      ...context,
       expectedRevision: before.revision,
       operations: [
         { op: 'set', key: 'appearance.theme', value: 'dark' },
@@ -444,6 +600,7 @@ describe('Orion local Web host', () => {
       headers: mutationHeaders(handle),
       body: JSON.stringify({
         requestId,
+        ...context,
         expectedRevision: before.revision,
         operations: [{ op: 'set', key: 'appearance.theme', value: 'light' }],
       }),
@@ -459,6 +616,7 @@ describe('Orion local Web host', () => {
       headers: mutationHeaders(handle),
       body: JSON.stringify({
         requestId: randomUUID(),
+        ...context,
         expectedRevision: before.revision,
         operations: [{ op: 'set', key: 'appearance.theme', value: 'light' }],
       }),

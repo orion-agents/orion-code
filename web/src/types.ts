@@ -108,6 +108,16 @@ export interface WorkspaceSessionsState {
   readonly error?: string;
 }
 
+/**
+ * v0.3.7 — Archived sessions of the active Workspace, backed by the same page
+ * shape as `WorkspaceSessionsState`. `ownerWorkspaceId` records which Workspace
+ * the cached rows belong to so a rail switch never shows another project's
+ * archive while the new one is loading.
+ */
+export interface ArchivedSessionsState extends WorkspaceSessionsState {
+  readonly ownerWorkspaceId: string;
+}
+
 export interface WebTranscriptEntry {
   readonly id: string;
   readonly role: ProtocolTranscriptEntry['role'];
@@ -256,6 +266,19 @@ export interface DiagnosticsSnapshot extends Record<string, unknown> {
     readonly retained?: number;
     readonly replayResets?: number;
   };
+  readonly session?: {
+    readonly snapshotRequests: number;
+    readonly snapshotFailures: number;
+    readonly snapshotTotalMs: number;
+    readonly snapshotLastMs: number;
+    readonly controlPlaneInstalls: number;
+    readonly controlPlaneShutdowns: number;
+    readonly actors: {
+      readonly actorsCreated: number;
+      readonly actorsClosed: number;
+      readonly actorsEvicted: number;
+    };
+  };
   readonly performance?: {
     readonly files?: {
       readonly readOperations: number;
@@ -291,11 +314,21 @@ export type ConnectionPhase =
   | 'replay-required'
   | 'closed';
 
+export type SessionSnapshotSyncPhase = 'idle' | 'loading' | 'refreshing' | 'ready' | 'failed';
+
+export interface SessionSnapshotSyncState {
+  readonly status: SessionSnapshotSyncPhase;
+  readonly requestId: number | null;
+  readonly error?: string;
+}
+
 export interface WorkbenchNotice {
   readonly id: number;
   readonly tone: 'info' | 'warning' | 'error' | 'success';
   readonly title: string;
   readonly detail?: string;
+  readonly domain?: 'session-snapshot' | 'transport';
+  readonly sessionId?: string;
 }
 
 export interface WorkspaceResourceEpochs {
@@ -319,11 +352,23 @@ export interface WorkbenchState {
   readonly workspaces: readonly WebWorkspaceSummaryV1[];
   readonly sessions: readonly WebSessionSummaryV1[];
   readonly workspaceSessions: Readonly<Record<string, WorkspaceSessionsState>>;
+  /** v0.3.7 — Archived sessions of the active Workspace (shown in the rail). */
+  readonly archivedSessions: ArchivedSessionsState;
   readonly workspaceProjectSummaries: Readonly<Record<string, WebWorkspaceProjectSummaryV1>>;
   readonly workspaceResourceEpochs: Readonly<Record<string, WorkspaceResourceEpochs>>;
   readonly workspaceNextCursor: string | null;
   readonly sessionNextCursor: string | null;
   readonly activeSessionId: string | null;
+  readonly sessionSync: Readonly<Record<string, SessionSnapshotSyncState>>;
+  /** Browser-local cumulative counters for Session switching diagnostics.
+   * Distinct from Host `diagnostics.session`: this tracks foreground switches
+   * and cache-hit renders, which only the browser can observe. */
+  readonly clientTelemetry: {
+    readonly sessionSwitches: number;
+    readonly snapshotCacheHits: number;
+    readonly snapshotLoads: number;
+    readonly snapshotFailures: number;
+  };
   readonly sessionProjectionById: Readonly<Record<string, WebSessionSnapshotV1>>;
   readonly sessionRuntimeById: Readonly<Record<string, WebSessionRuntimeSummaryV1>>;
   readonly transcript: readonly WebTranscriptEntry[];
@@ -373,11 +418,19 @@ export const initialWorkbenchState: WorkbenchState = {
   workspaces: [],
   sessions: [],
   workspaceSessions: {},
+  archivedSessions: { status: 'idle', items: [], nextCursor: null, ownerWorkspaceId: '' },
   workspaceProjectSummaries: {},
   workspaceResourceEpochs: {},
   workspaceNextCursor: null,
   sessionNextCursor: null,
   activeSessionId: null,
+  sessionSync: {},
+  clientTelemetry: {
+    sessionSwitches: 0,
+    snapshotCacheHits: 0,
+    snapshotLoads: 0,
+    snapshotFailures: 0,
+  },
   sessionProjectionById: {},
   sessionRuntimeById: {},
   transcript: [],
@@ -387,7 +440,7 @@ export const initialWorkbenchState: WorkbenchState = {
   research: [],
   permission: null,
   processing: false,
-  statusMessage: '正在连接 Orion Runtime…',
+  statusMessage: '正在连接本地 Web Host…',
   mode: { baseMode: 'interactive', pendingBaseMode: null },
   effort: null,
   queue: { items: [], limit: 16 },
@@ -420,3 +473,22 @@ export const initialWorkbenchState: WorkbenchState = {
   notice: null,
   announcement: '',
 };
+
+const IDLE_SESSION_SNAPSHOT_SYNC: SessionSnapshotSyncState = Object.freeze({
+  status: 'idle',
+  requestId: null,
+});
+
+export function activeSessionSnapshotSync(state: WorkbenchState): SessionSnapshotSyncState {
+  return state.activeSessionId
+    ? (state.sessionSync[state.activeSessionId] ?? IDLE_SESSION_SNAPSHOT_SYNC)
+    : IDLE_SESSION_SNAPSHOT_SYNC;
+}
+
+export function isActiveSessionSnapshotReady(state: WorkbenchState): boolean {
+  return Boolean(
+    state.activeSessionId &&
+    state.sessionSnapshot?.session.id === state.activeSessionId &&
+    activeSessionSnapshotSync(state).status === 'ready'
+  );
+}

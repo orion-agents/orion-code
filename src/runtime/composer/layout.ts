@@ -62,7 +62,10 @@ export function splitByVisualWidth(text: string, maxWidth: number): string[] {
   return chunks;
 }
 
-function splitByVisualWidthWithOffsets(text: string, maxWidth: number): Array<{ content: string; start: number; end: number }> {
+function splitByVisualWidthWithOffsets(
+  text: string,
+  maxWidth: number
+): Array<{ content: string; start: number; end: number }> {
   if (text.length === 0) return [{ content: '', start: 0, end: 0 }];
 
   const chunks: Array<{ content: string; start: number; end: number }> = [];
@@ -117,12 +120,13 @@ export function getPromptInputViewport(
   const rowLimit = Math.max(1, maxRows);
   const showHiddenIndicator = allLines.length > rowLimit && rowLimit > 1;
   const visibleInputRows = showHiddenIndicator ? rowLimit - 1 : rowLimit;
-  const start = allLines.length <= visibleInputRows
-    ? 0
-    : Math.min(
-      Math.max(0, layout.cursorLineIndex - visibleInputRows + 1),
-      allLines.length - visibleInputRows
-    );
+  const start =
+    allLines.length <= visibleInputRows
+      ? 0
+      : Math.min(
+          Math.max(0, layout.cursorLineIndex - visibleInputRows + 1),
+          allLines.length - visibleInputRows
+        );
   const lines = allLines.slice(start, start + visibleInputRows);
   const indicatorRows = showHiddenIndicator ? 1 : 0;
   const cursorLineIndex = indicatorRows + Math.max(0, layout.cursorLineIndex - start);
@@ -167,7 +171,11 @@ function buildPromptVisualLines(
         chunkEnd: chunk.end,
       };
 
-      if (cursorInThisLine && clampedCursor - lineStart >= chunk.start && clampedCursor - lineStart <= chunk.end) {
+      if (
+        cursorInThisLine &&
+        clampedCursor - lineStart >= chunk.start &&
+        clampedCursor - lineStart <= chunk.end
+      ) {
         cursorLineIndex = visualLines.length;
         const cursorInChunk = Math.max(0, clampedCursor - lineStart - chunk.start);
         cursorColumn = 5 + stringWidth(chunk.content.slice(0, cursorInChunk));
@@ -209,15 +217,19 @@ export function formatPromptVisualLine(
   let content = visualLine.content;
 
   if (options.showCursor) {
-    const requestedOffset = Math.min(Math.max(0, options.cursorOffset ?? content.length), content.length);
+    const requestedOffset = Math.min(
+      Math.max(0, options.cursorOffset ?? content.length),
+      content.length
+    );
     const offset = floorGraphemeBoundary(content, requestedOffset);
     const before = content.slice(0, offset);
     const after = content.slice(offset);
     const beforeWithCursor = `${before}${PROMPT_CURSOR_GLYPH}`;
 
-    content = stringWidth(beforeWithCursor) >= maxContentWidth
-      ? `${takeVisualWidth(before, maxContentWidth - stringWidth(PROMPT_CURSOR_GLYPH))}${PROMPT_CURSOR_GLYPH}`
-      : `${beforeWithCursor}${takeVisualWidth(after, maxContentWidth - stringWidth(beforeWithCursor))}`;
+    content =
+      stringWidth(beforeWithCursor) >= maxContentWidth
+        ? `${takeVisualWidth(before, maxContentWidth - stringWidth(PROMPT_CURSOR_GLYPH))}${PROMPT_CURSOR_GLYPH}`
+        : `${beforeWithCursor}${takeVisualWidth(after, maxContentWidth - stringWidth(beforeWithCursor))}`;
   }
 
   const raw = `${prefix}${content}`;

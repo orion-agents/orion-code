@@ -122,8 +122,10 @@ export class DiagnosticTracker {
       currentCount: this.currentDiagnostics.length,
       newCount: this.newDiagnostics.length,
       resolvedCount: this.resolvedDiagnostics.length,
-      errorCount: this.currentDiagnostics.filter(d => d.severity === DiagnosticSeverity.Error).length,
-      warningCount: this.currentDiagnostics.filter(d => d.severity === DiagnosticSeverity.Warning).length,
+      errorCount: this.currentDiagnostics.filter(d => d.severity === DiagnosticSeverity.Error)
+        .length,
+      warningCount: this.currentDiagnostics.filter(d => d.severity === DiagnosticSeverity.Warning)
+        .length,
     };
   }
 

@@ -185,7 +185,9 @@ export class StreamMarkdownRenderer {
     // Ordered list
     const orderedMatch = line.match(/^(\s*)(\d+)\.\s+(.*)$/);
     if (orderedMatch) {
-      return orderedMatch[1] + CYAN(orderedMatch[2] + '.') + ' ' + this.renderInline(orderedMatch[3]);
+      return (
+        orderedMatch[1] + CYAN(orderedMatch[2] + '.') + ' ' + this.renderInline(orderedMatch[3])
+      );
     }
 
     return this.renderInline(line);

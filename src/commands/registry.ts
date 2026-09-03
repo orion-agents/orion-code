@@ -469,10 +469,7 @@ export function registerBuiltinCommands(definitions: SlashCommand[]): Registered
   for (const command of registered) {
     if (ids.has(command.id)) throw new Error(`Duplicate command id: ${command.id}`);
     ids.add(command.id);
-    for (const value of [
-      command.name,
-      ...(command.aliases ?? []),
-    ]) {
+    for (const value of [command.name, ...(command.aliases ?? [])]) {
       const normalized = value.toLowerCase();
       const owner = names.get(normalized);
       if (owner) throw new Error(`Command name collision: ${value} (${owner}, ${command.id})`);

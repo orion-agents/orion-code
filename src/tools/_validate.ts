@@ -9,11 +9,7 @@ export class ToolArgError extends Error {
   }
 }
 
-export function requireString(
-  args: Record<string, unknown>,
-  key: string,
-  tool: string,
-): string {
+export function requireString(args: Record<string, unknown>, key: string, tool: string): string {
   const v = args[key];
   if (typeof v !== 'string' || !v) {
     throw new ToolArgError(tool, key, 'must be a non-empty string');
@@ -26,7 +22,7 @@ export function requireNumber(
   key: string,
   tool: string,
   min?: number,
-  max?: number,
+  max?: number
 ): number {
   const v = args[key];
   if (typeof v !== 'number') {
@@ -41,10 +37,7 @@ export function requireNumber(
   return v;
 }
 
-export function optionalString(
-  args: Record<string, unknown>,
-  key: string,
-): string | undefined {
+export function optionalString(args: Record<string, unknown>, key: string): string | undefined {
   const v = args[key];
   if (v === undefined || v === null) return undefined;
   if (typeof v !== 'string') {
@@ -53,10 +46,7 @@ export function optionalString(
   return v;
 }
 
-export function optionalNumber(
-  args: Record<string, unknown>,
-  key: string,
-): number | undefined {
+export function optionalNumber(args: Record<string, unknown>, key: string): number | undefined {
   const v = args[key];
   if (v === undefined || v === null) return undefined;
   if (typeof v !== 'number') return undefined;

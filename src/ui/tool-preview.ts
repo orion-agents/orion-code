@@ -65,7 +65,11 @@ export function renderToolCard(tool: ToolPreview): string {
   }
 
   if (tool.result.split('\n').length > 6) {
-    lines.push(DIM('│ ') + DIM(`... ${tool.result.split('\n').length - 6} more lines`).padEnd(maxWidth - 4) + DIM(' │'));
+    lines.push(
+      DIM('│ ') +
+        DIM(`... ${tool.result.split('\n').length - 6} more lines`).padEnd(maxWidth - 4) +
+        DIM(' │')
+    );
   }
 
   // 底部
@@ -77,7 +81,12 @@ export function renderToolCard(tool: ToolPreview): string {
 /**
  * 渲染紧凑工具行（用于单行显示）
  */
-export function renderToolLine(name: string, args: Record<string, unknown>, success: boolean, duration?: number): string {
+export function renderToolLine(
+  name: string,
+  args: Record<string, unknown>,
+  success: boolean,
+  duration?: number
+): string {
   const icon = success ? SUCCESS('✓') : ERROR('✗');
   const argsStr = compactArgs(args);
   const timeStr = duration !== undefined ? ` ${duration}ms` : '';
@@ -94,7 +103,9 @@ export function renderDiffPreview(diff: DiffPreview): string {
 
   // 标题
   const title = `Edit: ${diff.file}`;
-  lines.push(DIM('┌─ ') + ACCENT(title) + DIM(' ') + '─'.repeat(maxWidth - title.length - 5) + DIM('┐'));
+  lines.push(
+    DIM('┌─ ') + ACCENT(title) + DIM(' ') + '─'.repeat(maxWidth - title.length - 5) + DIM('┐')
+  );
 
   // 删除行
   for (const old of diff.oldLines) {
@@ -123,7 +134,13 @@ export function renderReadPreview(path: string, content: string, success: boolea
 
   const icon = success ? SUCCESS('📖') : ERROR('📖');
   const title = `${icon} Read: ${path}`;
-  lines.push(DIM('┌─ ') + title.slice(0, maxWidth - 5) + DIM(' ') + '─'.repeat(Math.max(0, maxWidth - title.length - 5)) + DIM('┐'));
+  lines.push(
+    DIM('┌─ ') +
+      title.slice(0, maxWidth - 5) +
+      DIM(' ') +
+      '─'.repeat(Math.max(0, maxWidth - title.length - 5)) +
+      DIM('┐')
+  );
 
   if (success && content) {
     const contentLines = content.split('\n').slice(0, 8);
@@ -133,7 +150,11 @@ export function renderReadPreview(path: string, content: string, success: boolea
     }
 
     if (content.split('\n').length > 8) {
-      lines.push(DIM('│ ') + DIM(`... ${content.split('\n').length - 8} more lines`).padEnd(maxWidth - 4) + DIM(' │'));
+      lines.push(
+        DIM('│ ') +
+          DIM(`... ${content.split('\n').length - 8} more lines`).padEnd(maxWidth - 4) +
+          DIM(' │')
+      );
     }
   }
 

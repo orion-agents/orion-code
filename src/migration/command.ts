@@ -54,9 +54,13 @@ export function handleMigrateCommand(ctx: CommandContext, args: string = ''): Co
     console.log(`Dry run complete. ${result.manifest.copiedFiles} files would be migrated.`);
     console.log(`Source: ${result.manifest.sourceRoot}`);
     console.log(`Target: ${result.manifest.targetRoot}`);
-    console.log(`Files: ${result.manifest.sourceSnapshot.fileCount} files, ${formatBytes(result.manifest.sourceSnapshot.totalBytes)}`);
+    console.log(
+      `Files: ${result.manifest.sourceSnapshot.fileCount} files, ${formatBytes(result.manifest.sourceSnapshot.totalBytes)}`
+    );
     if (!confirmed) {
-      console.log('No files were written. Run /migrate openhorse --yes to execute this exact migration.');
+      console.log(
+        'No files were written. Run /migrate openhorse --yes to execute this exact migration.'
+      );
     }
     if (result.manifest.renamedFiles.length > 0) {
       console.log('\nRenamed files:');
@@ -73,10 +77,7 @@ export function handleMigrateCommand(ctx: CommandContext, args: string = ''): Co
   return { success: result.success };
 }
 
-export function handleMigrateProjectCommand(
-  ctx: CommandContext,
-  args: string = '',
-): CommandResult {
+export function handleMigrateProjectCommand(ctx: CommandContext, args: string = ''): CommandResult {
   const trimmed = args.trim();
   const flags = new Set(trimmed.split(/\s+/).filter(f => f.startsWith('--')));
 

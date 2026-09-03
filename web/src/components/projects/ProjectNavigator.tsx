@@ -15,6 +15,7 @@ import type {
   WorkbenchState,
 } from '../../types';
 import { PanelResizeHandle } from '../../layout/PanelResizeHandle';
+import { SessionRowMenu } from './SessionRowMenu';
 import {
   PROJECT_NAVIGATION_DEFAULT_WIDTH,
   PROJECT_NAVIGATION_MAX_WIDTH,
@@ -30,6 +31,8 @@ export interface ProjectNavigatorProps {
   readonly dockVisible: boolean;
   readonly collapsed: boolean;
   readonly resizable: boolean;
+  /** Live dock width in px, used for the resize separator's `aria-valuenow`. */
+  readonly width?: number;
   readonly onCloseDrawer: () => void;
   readonly onExpand: () => void;
   readonly onCollapse: () => void;
@@ -43,6 +46,14 @@ export interface ProjectNavigatorProps {
   readonly onRemoveWorkspace: (workspaceId: string) => void;
   readonly onRefreshSummary: (workspaceId: string) => void;
   readonly onRenameSession: (session: WebSessionSummaryV1) => void;
+  /** v0.3.7 — Open the tag editor for a Session. */
+  readonly onSessionTags: (session: WebSessionSummaryV1) => void;
+  /** v0.3.7 — Archive a Session (soft delete; shown in the archived section). */
+  readonly onArchiveSession: (session: WebSessionSummaryV1) => void;
+  /** v0.3.7 — Open the delete confirmation for a Session. */
+  readonly onDeleteSession: (session: WebSessionSummaryV1) => void;
+  /** v0.3.7 — Restore an archived Session. */
+  readonly onRestoreSession: (session: WebSessionSummaryV1) => void;
   readonly onWidthPreview: (width: number) => void;
   readonly onWidthCommit: (width: number) => void;
 }
@@ -53,6 +64,7 @@ export function ProjectNavigator({
   dockVisible,
   collapsed,
   resizable,
+  width,
   onCloseDrawer,
   onExpand,
   onCollapse,
@@ -66,6 +78,10 @@ export function ProjectNavigator({
   onRemoveWorkspace,
   onRefreshSummary,
   onRenameSession,
+  onSessionTags,
+  onArchiveSession,
+  onDeleteSession,
+  onRestoreSession,
   onWidthPreview,
   onWidthCommit,
 }: ProjectNavigatorProps) {
@@ -197,7 +213,7 @@ export function ProjectNavigator({
 
   return (
     <aside
-      id="workspace-rail"
+      id="project-navigation"
       className={`workspace-rail project-navigator ${drawerOpen ? 'drawer-open' : ''}`}
       aria-label="项目与会话"
       hidden={!dockVisible}
@@ -368,112 +384,187 @@ export function ProjectNavigator({
                 </div>
 
                 {open ? (
-                  <div
-                    id={`project-${project.id}-sessions`}
-                    className="project-sessions"
-                    role="list"
-                    aria-label={`${project.label} 的会话`}
-                  >
-                    {sessionState?.status === 'loading' && !sessionState.items.length ? (
-                      <p className="project-loading" role="listitem">
-                        正在加载会话…
-                      </p>
-                    ) : null}
-                    {sessionState?.status === 'error' ? (
-                      <div role="listitem">
-                        <button
-                          type="button"
-                          className="project-load-error"
-                          onClick={() => onLoadWorkspaceSessions(project.id)}
-                        >
-                          加载失败，重试
-                        </button>
-                      </div>
-                    ) : null}
-                    {sessions.map(session => {
-                      const active = project.active && session.id === state.activeSessionId;
-                      const runtime = state.sessionRuntimeById[session.id];
-                      const runtimeStatus = sessionRuntimeStatus(runtime);
-                      const sessionLocked =
-                        operationLocked || (!project.active && state.processing);
-                      return (
-                        <div
-                          key={session.id}
-                          className={`project-session-row ${active ? 'active' : ''}`}
-                          role="listitem"
-                        >
+                  <Fragment>
+                    <div
+                      id={`project-${project.id}-sessions`}
+                      className="project-sessions"
+                      role="list"
+                      aria-label={`${project.label} 的会话`}
+                    >
+                      {sessionState?.status === 'loading' && !sessionState.items.length ? (
+                        <p className="project-loading" role="listitem">
+                          正在加载会话…
+                        </p>
+                      ) : null}
+                      {sessionState?.status === 'error' ? (
+                        <div role="listitem">
                           <button
                             type="button"
-                            className="project-session-main"
-                            aria-current={active ? 'page' : undefined}
-                            aria-disabled={active || sessionLocked || !project.available}
-                            onClick={() => {
-                              if (!active) onActivateContext(project.id, session.id);
-                            }}
-                            disabled={sessionLocked || !project.available}
-                            onKeyDown={event => {
-                              if (event.key === 'ArrowLeft') {
-                                event.preventDefault();
-                                document.getElementById(`project-${project.id}`)?.focus();
-                                return;
-                              }
-                              moveTreeFocus(event);
-                            }}
+                            className="project-load-error"
+                            onClick={() => onLoadWorkspaceSessions(project.id)}
                           >
-                            <span
-                              className={`session-state ${runtimeStatus.tone}`}
-                              aria-hidden="true"
-                            />
-                            <span>
-                              <strong>{sessionTitle(session)}</strong>
-                              <small>
-                                {relativeTime(session.updatedAt)} · {session.messageCount} 条
-                              </small>
-                              {runtimeStatus.label ? (
-                                <small className="project-session-status">
-                                  {runtimeStatus.label}
-                                </small>
-                              ) : null}
-                            </span>
+                            加载失败，重试
                           </button>
-                          {project.active ? (
+                        </div>
+                      ) : null}
+                      {sessions.map(session => {
+                        const active = project.active && session.id === state.activeSessionId;
+                        const runtime = state.sessionRuntimeById[session.id];
+                        const runtimeStatus = sessionRuntimeStatus(runtime);
+                        const sessionLocked = !project.active && workspaceTransitionLocked;
+                        const busy = sessionIsBusy(runtime?.phase);
+                        const sessionTags = session.tags ?? [];
+                        return (
+                          <div
+                            key={session.id}
+                            className={`project-session-row ${active ? 'active' : ''}`}
+                            role="listitem"
+                          >
                             <button
                               type="button"
-                              className="icon-button session-rename"
-                              aria-label={`重命名会话 ${sessionTitle(session)}`}
-                              onClick={() => onRenameSession(session)}
-                              disabled={operationLocked}
+                              className="project-session-main"
+                              aria-current={active ? 'page' : undefined}
+                              aria-disabled={active || sessionLocked || !project.available}
+                              onClick={() => {
+                                if (!active) onActivateContext(project.id, session.id);
+                              }}
+                              disabled={sessionLocked || !project.available}
+                              onKeyDown={event => {
+                                if (event.key === 'ArrowLeft') {
+                                  event.preventDefault();
+                                  document.getElementById(`project-${project.id}`)?.focus();
+                                  return;
+                                }
+                                moveTreeFocus(event);
+                              }}
                             >
-                              <Icon name="edit" size={13} />
+                              <span
+                                className={`session-state ${runtimeStatus.tone}`}
+                                aria-hidden="true"
+                              />
+                              <span>
+                                <strong>{sessionTitle(session)}</strong>
+                                <small>
+                                  {relativeTime(session.updatedAt)} · {session.messageCount} 条
+                                </small>
+                                {sessionTags.length > 0 ? (
+                                  <small className="project-session-tags" aria-label="会话标签">
+                                    {sessionTags.slice(0, 3).map(tag => (
+                                      <span className="session-tag-badge" key={tag}>
+                                        {tag}
+                                      </span>
+                                    ))}
+                                    {sessionTags.length > 3 ? (
+                                      <span className="session-tag-more">
+                                        +{sessionTags.length - 3}
+                                      </span>
+                                    ) : null}
+                                  </small>
+                                ) : null}
+                                {runtimeStatus.label ? (
+                                  <small className="project-session-status">
+                                    {runtimeStatus.label}
+                                  </small>
+                                ) : null}
+                              </span>
                             </button>
-                          ) : null}
+                            {project.active ? (
+                              <SessionRowMenu
+                                label={`会话 ${sessionTitle(session)} 操作`}
+                                disabled={operationLocked}
+                                items={[
+                                  {
+                                    id: 'rename',
+                                    label: '重命名…',
+                                    onSelect: () => onRenameSession(session),
+                                  },
+                                  {
+                                    id: 'tags',
+                                    label: '管理标签…',
+                                    onSelect: () => onSessionTags(session),
+                                  },
+                                  {
+                                    id: 'archive',
+                                    label: '归档',
+                                    disabled: busy,
+                                    hint: busy ? '会话运行中' : undefined,
+                                    onSelect: () => onArchiveSession(session),
+                                  },
+                                  {
+                                    id: 'delete',
+                                    label: '删除…',
+                                    danger: true,
+                                    disabled: busy,
+                                    hint: busy ? '会话运行中' : undefined,
+                                    onSelect: () => onDeleteSession(session),
+                                  },
+                                ]}
+                              />
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                      {sessionState?.status === 'ready' && !sessions.length ? (
+                        <div role="listitem">
+                          <button
+                            type="button"
+                            className="project-empty-session"
+                            disabled={workspaceTransitionLocked || !project.available}
+                            onClick={() => onActivateContext(project.id, null)}
+                          >
+                            {deferredQuery ? '没有匹配会话' : '打开项目'}
+                          </button>
                         </div>
-                      );
-                    })}
-                    {sessionState?.status === 'ready' && !sessions.length ? (
-                      <div role="listitem">
-                        <button
-                          type="button"
-                          className="project-empty-session"
-                          disabled={workspaceTransitionLocked || !project.available}
-                          onClick={() => onActivateContext(project.id, null)}
-                        >
-                          {deferredQuery ? '没有匹配会话' : '打开项目'}
-                        </button>
-                      </div>
+                      ) : null}
+                      {sessionState?.nextCursor ? (
+                        <div role="listitem">
+                          <button
+                            type="button"
+                            className="text-button project-load-more"
+                            onClick={() => onLoadWorkspaceSessions(project.id, true)}
+                          >
+                            加载更多会话
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+                    {project.active &&
+                    (state.archivedSessions.items.length > 0 ||
+                      state.archivedSessions.status === 'loading') ? (
+                      <details className="archived-section">
+                        <summary>
+                          已归档（{state.archivedSessions.items.length}
+                          {state.archivedSessions.status === 'loading' ? '…' : ''}）
+                        </summary>
+                        <div className="archived-list" role="list" aria-label="已归档会话">
+                          {state.archivedSessions.items.map(archived => (
+                            <div key={archived.id} className="archived-row" role="listitem">
+                              <span className="archived-copy">
+                                <strong>{sessionTitle(archived)}</strong>
+                                <small>{relativeTime(archived.updatedAt)}</small>
+                              </span>
+                              <button
+                                type="button"
+                                className="text-button"
+                                disabled={operationLocked}
+                                onClick={() => onRestoreSession(archived)}
+                              >
+                                还原
+                              </button>
+                              <button
+                                type="button"
+                                className="text-button archived-delete"
+                                disabled={operationLocked}
+                                onClick={() => onDeleteSession(archived)}
+                              >
+                                删除
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </details>
                     ) : null}
-                    {sessionState?.nextCursor ? (
-                      <div role="listitem">
-                        <button
-                          type="button"
-                          className="text-button project-load-more"
-                          onClick={() => onLoadWorkspaceSessions(project.id, true)}
-                        >
-                          加载更多会话
-                        </button>
-                      </div>
-                    ) : null}
-                  </div>
+                  </Fragment>
                 ) : null}
               </section>
             </Fragment>
@@ -515,7 +606,7 @@ export function ProjectNavigator({
 
       <footer className="rail-footer">
         <span className={`connection-dot ${state.connection}`} aria-hidden="true" />
-        <span>{connectionLabel(state.connection)}</span>
+        <span title={connectionTitle(state.connection)}>{connectionLabel(state.connection)}</span>
         <button
           type="button"
           className="icon-button rail-settings"
@@ -524,7 +615,9 @@ export function ProjectNavigator({
         >
           <Icon name="settings" size={14} />
         </button>
-        <span className="version">v{state.bootstrap?.productVersion ?? '0.3.3'}</span>
+        {state.bootstrap?.productVersion ? (
+          <span className="version">v{state.bootstrap.productVersion}</span>
+        ) : null}
       </footer>
       {resizable ? (
         <PanelResizeHandle
@@ -532,7 +625,9 @@ export function ProjectNavigator({
           minWidth={PROJECT_NAVIGATION_MIN_WIDTH}
           maxWidth={PROJECT_NAVIGATION_MAX_WIDTH}
           defaultWidth={PROJECT_NAVIGATION_DEFAULT_WIDTH}
-          label="拖动调整项目导航宽度"
+          label="拖动或按方向键调整项目导航宽度"
+          width={width}
+          controls="workspace-rail"
           onPreview={onWidthPreview}
           onCommit={onWidthCommit}
         />
@@ -618,11 +713,20 @@ function relativeTime(value: string): string {
 }
 
 function connectionLabel(connection: WorkbenchState['connection']): string {
-  if (connection === 'live') return '本地 Runtime 已连接';
+  if (connection === 'live') return '已连接';
   if (connection === 'offline') return '离线';
-  if (connection === 'replay-required') return '需要恢复';
-  if (connection === 'closed') return 'Host 已关闭';
-  return connection === 'connecting' ? '正在连接' : '正在重连';
+  if (connection === 'replay-required') return '事件流需恢复';
+  if (connection === 'closed') return '已关闭';
+  return connection === 'connecting' ? '正在连接…' : '正在重连…';
+}
+
+/** Full sentence for the footer tooltip; the rail only shows the short label. */
+function connectionTitle(connection: WorkbenchState['connection']): string {
+  if (connection === 'live') return '本地 Web Host 已连接';
+  if (connection === 'offline') return '浏览器离线';
+  if (connection === 'replay-required') return 'Web Host 事件流需要恢复';
+  if (connection === 'closed') return '本地 Web Host 已关闭';
+  return connection === 'connecting' ? '正在连接本地 Web Host' : '正在重连本地 Web Host';
 }
 
 function sessionRuntimeStatus(runtime?: WebSessionRuntimeSummaryV1): {
@@ -646,4 +750,17 @@ function sessionRuntimeStatus(runtime?: WebSessionRuntimeSummaryV1): {
   if (runtime.phase === 'interrupted') return { label: '已中断', tone: 'failed' };
   if (runtime.phase === 'stopping') return { label: '正在停止', tone: 'running' };
   return { label: '已就绪', tone: 'ready' };
+}
+
+/** Phases during which a Session must not be archived or deleted. */
+const BUSY_RUNTIME_PHASES = new Set([
+  'starting',
+  'queued',
+  'running',
+  'waiting_approval',
+  'stopping',
+]);
+
+function sessionIsBusy(phase?: WebSessionRuntimeSummaryV1['phase']): boolean {
+  return phase ? BUSY_RUNTIME_PHASES.has(phase) : false;
 }

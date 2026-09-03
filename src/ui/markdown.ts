@@ -71,12 +71,12 @@ function initRenderer(): void {
 export function renderMarkdown(text: string, maxWidth = DEFAULT_MAX_WIDTH): string {
   // 检测 TTY
   if (!process.stdout.isTTY) {
-    return text;  // 非 TTY 返回原始 Markdown（用于 pipe 到文件）
+    return text; // 非 TTY 返回原始 Markdown（用于 pipe 到文件）
   }
 
   // 检测 NO_COLOR
   if (process.env.NO_COLOR) {
-    return stripMarkdownSyntax(text);  // 去除 Markdown 符号，输出纯文本
+    return stripMarkdownSyntax(text); // 去除 Markdown 符号，输出纯文本
   }
 
   // 尝试使用 marked-terminal
@@ -159,9 +159,12 @@ export function renderMarkdownFallback(text: string, maxWidth = DEFAULT_MAX_WIDT
       const level = headingMatch[1].length;
       const headingText = headingMatch[2].trim();
       const prefix = '  '.repeat(level - 1);
-      const styled = level <= 2 ? BOLD(CYAN(prefix + ' ' + headingText))
-        : level <= 4 ? BOLD(CYAN(prefix + headingText))
-        : BOLD(DIM(headingText));
+      const styled =
+        level <= 2
+          ? BOLD(CYAN(prefix + ' ' + headingText))
+          : level <= 4
+            ? BOLD(CYAN(prefix + headingText))
+            : BOLD(DIM(headingText));
       result.push(styled);
       result.push(DIM('─'.repeat(Math.min(headingText.length + prefix.length + 2, maxWidth - 2))));
       i++;

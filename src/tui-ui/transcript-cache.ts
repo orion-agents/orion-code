@@ -33,12 +33,12 @@ export class TranscriptLayoutCache {
     revision: number,
     generation: number,
     width: number,
-    themeId = 'default',
+    themeId = 'default'
   ): StyledRow[] | null {
     if (
-      generation !== this.lastGeneration
-      || width !== this.lastWidth
-      || themeId !== this.lastThemeId
+      generation !== this.lastGeneration ||
+      width !== this.lastWidth ||
+      themeId !== this.lastThemeId
     ) {
       this.invalidate(generation, width, themeId);
       return null;
@@ -58,12 +58,12 @@ export class TranscriptLayoutCache {
     rows: StyledRow[],
     generation: number,
     width: number,
-    themeId = 'default',
+    themeId = 'default'
   ): void {
     if (
-      generation !== this.lastGeneration
-      || width !== this.lastWidth
-      || themeId !== this.lastThemeId
+      generation !== this.lastGeneration ||
+      width !== this.lastWidth ||
+      themeId !== this.lastThemeId
     ) {
       this.invalidate(generation, width, themeId);
     }

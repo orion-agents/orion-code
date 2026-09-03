@@ -543,6 +543,7 @@ async function startFrameMeasurement(page: Page, durationMs: number): Promise<vo
     const state = {
       startedAt: performance.now(),
       completedAt: 0,
+      frameCount: 0,
       intervals: [] as number[],
       previousAt: 0,
     };
@@ -551,6 +552,7 @@ async function startFrameMeasurement(page: Page, durationMs: number): Promise<vo
       value: state,
     });
     const tick = (now: number) => {
+      state.frameCount += 1;
       if (state.previousAt > 0) state.intervals.push(now - state.previousAt);
       state.previousAt = now;
       if (now - state.startedAt >= duration) {
@@ -582,6 +584,7 @@ async function finishFrameMeasurement(page: Page): Promise<FrameMetrics> {
         __orionFrameMeasurement?: {
           readonly startedAt: number;
           readonly completedAt: number;
+          readonly frameCount: number;
           readonly intervals: readonly number[];
         };
       }
@@ -591,7 +594,10 @@ async function finishFrameMeasurement(page: Page): Promise<FrameMetrics> {
     }
     const intervals = [...state.intervals].sort((left, right) => left - right);
     return {
-      framesPerSecond: (state.intervals.length * 1_000) / (state.completedAt - state.startedAt),
+      // Count rendered callbacks, not only the intervals between callbacks. The
+      // elapsed window includes the first callback, so using intervals alone
+      // systematically under-reports one frame for every measurement window.
+      framesPerSecond: (state.frameCount * 1_000) / (state.completedAt - state.startedAt),
       p95IntervalMs: intervals[Math.max(0, Math.ceil(intervals.length * 0.95) - 1)] ?? 0,
     };
   });

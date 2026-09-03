@@ -12,8 +12,12 @@ import {
   listProjectDurableToolReceiptRefsV1,
 } from '../runtime/durable-tool-receipt-reader';
 import { loadFirstPartyMcpConfigurationV1 } from '../runtime/mcp';
-import { createProductUiRuntime } from '../runtime/product-bootstrap';
+import {
+  createProductUiRuntime,
+  createWorkspaceRuntimeKernelV1,
+} from '../runtime/product-bootstrap';
 import type { OrionRuntimeV1 } from '../runtime/orion-runtime-v1';
+import type { WorkspaceRuntimeKernelV1 } from '../runtime/workspace-runtime-kernel';
 import { digestRuntimeValue } from '../runtime/protocol/canonical';
 import { PlanReviewControlError } from '../runtime/plan-review';
 import type { RuntimeEventEnvelopeV1 } from '../runtime/protocol/runtime-protocol-v1';
@@ -28,22 +32,33 @@ import {
   type ThreadSessionRuntimeActivationV1,
   type ThreadSessionViewV1,
 } from '../runtime/thread-session-view';
-import type { ThreadProjectionV1 } from '../runtime/thread-projection';
+import type { PlanReviewProjectionV1, ThreadProjectionV1 } from '../runtime/thread-projection';
 import { FileToolDetailRepository } from '../runtime/tool-detail-repository';
 import { parsePlanReceiptV1, parseTurnCommitV1 } from '../runtime/turn-commit';
 import { SessionComposerControlError } from '../runtime/session-composer-control';
 import type { OrionCodeUiRuntime } from '../runtime/ui-events';
 import { incrementSessionCount } from '../services/global-config';
 import { redactTraceText } from '../services/redaction';
-import { SettingsCoordinatorError } from '../services/settings-coordinator';
 import {
+  SettingsCoordinatorError,
+  type SettingsInvalidationV1,
+} from '../services/settings-coordinator';
+import {
+  SESSION_TAG_LIMIT,
+  SESSION_TAG_MAX_LENGTH,
+  archiveSession,
   countSessionsByProject,
   createSession,
+  deleteSession,
   listProjectSessions,
   listSessions,
+  listArchivedProjectSessions,
   loadSessionMeta,
+  normalizeSessionTags,
   renameSession,
+  restoreSession,
   readSessionMessages,
+  setSessionTags,
   type SessionMeta,
 } from '../services/session-storage';
 import { WorkspaceRegistryError, WorkspaceRegistryV1 } from '../services/workspace-registry';
@@ -145,6 +160,13 @@ export class WebWorkbenchController {
   private readonly createRuntime: (cwd: string) => Promise<OrionCodeUiRuntime>;
   private readonly createSessionRuntime: (cwd: string) => Promise<OrionCodeUiRuntime>;
   private sessionRegistry: WebSessionRuntimeRegistryV1<WebWorkbenchSessionActorV1>;
+  /**
+   * Workspace-scoped shared kernels owned by this Host. Control planes and
+   * Session actors both borrow from this pool, so a Workspace Context switch
+   * never tears down kernels that resident actors still reference. The pool is
+   * released only during Host shutdown.
+   */
+  private readonly workspaceKernels = new Map<string, WorkspaceRuntimeKernelV1>();
   private readonly workspaceRegistry: WorkspaceRegistryV1;
   readonly terminalManager: TerminalManagerV1;
   private readonly mutationResults = new Map<string, CachedMutationResult>();
@@ -171,6 +193,20 @@ export class WebWorkbenchController {
   private contextTransitionReserved = false;
   private closed = false;
   private shutdownResult?: Promise<void>;
+  /**
+   * Host-observed Web activity counters. Exposed through diagnostics() so E2E
+   * and the diagnostics panel can prove that a pure Session selection issues
+   * no control-plane reinstall (controlPlaneInstalls delta 0) and that
+   * snapshots stay bounded and fast (snapshotTotalMs / snapshotLastMs).
+   */
+  private readonly sessionActivity = {
+    snapshotRequests: 0,
+    snapshotFailures: 0,
+    snapshotTotalMs: 0,
+    snapshotLastMs: 0,
+    controlPlaneInstalls: 0,
+    controlPlaneShutdowns: 0,
+  };
   private workspaceWatchers: FSWatcher[] = [];
   private resourceInvalidationTimer?: NodeJS.Timeout;
 
@@ -198,6 +234,10 @@ export class WebWorkbenchController {
       (cwd =>
         createProductUiRuntime({
           cwd,
+          // Borrow the workspace kernel from the Host-owned pool so the
+          // control plane shares config/Tool/MCP/Settings services with the
+          // resident Session actors of the same Workspace.
+          workspaceRuntimeKernel: this.workspaceKernelFor(cwd),
           workspaceMutationCoordinator: this.workspaceMutations,
           shutdownReason: 'Orion Web Workbench shutdown',
           onActiveSessionRuntime: (runtime, sessionId, activation) =>
@@ -221,7 +261,9 @@ export class WebWorkbenchController {
       (cwd =>
         createProductUiRuntime({
           cwd,
-          workspaceRuntimeKernel: this.runtimeValue.workspaceRuntimeKernel,
+          // Session actors must keep the kernel of the Workspace they were
+          // created for, never the currently active control plane's kernel.
+          workspaceRuntimeKernel: this.workspaceKernelFor(cwd),
           workspaceMutationCoordinator: this.workspaceMutations,
           shutdownReason: 'Orion Web Session actor shutdown',
           onActiveSessionRuntime: (runtime, sessionId, activation) =>
@@ -347,6 +389,28 @@ export class WebWorkbenchController {
     return result;
   }
 
+  /** Archived sessions of a Workspace (v0.3.7), newest archive first. */
+  listArchivedWorkspaceSessions(
+    workspaceId: string,
+    context?: WebContextGuardV1
+  ): readonly WebSessionSummaryV1[] {
+    if (context) this.assertContextGuard(context);
+    const entry = this.workspaceRegistry.find(workspaceId);
+    if (!entry) {
+      throw new WebWorkbenchError(404, 'Workspace was not found.', 'workspace_not_found');
+    }
+    try {
+      canonicalDirectory(entry.canonicalPath);
+    } catch {
+      throw new WebWorkbenchError(409, 'Workspace is unavailable.', 'workspace_unavailable');
+    }
+    const result = Object.freeze(
+      listArchivedProjectSessions(entry.canonicalPath).map(projectSessionSummary)
+    );
+    if (context) this.assertContextGuard(context);
+    return result;
+  }
+
   async workspaceProjectSummary(
     workspaceId: string,
     context?: WebContextGuardV1
@@ -424,6 +488,24 @@ export class WebWorkbenchController {
   }
 
   sessionSnapshot(
+    sessionId: string,
+    cursor?: string,
+    pageSize = 50,
+    tail = false,
+    context?: WebContextGuardV1
+  ): WebSessionSnapshotV1 {
+    const startedAt = Date.now();
+    try {
+      const snapshot = this.snapshotSessionV1(sessionId, cursor, pageSize, tail, context);
+      this.recordSessionSnapshotActivity(startedAt);
+      return snapshot;
+    } catch (error) {
+      this.recordSessionSnapshotActivity(startedAt, true);
+      throw error;
+    }
+  }
+
+  private snapshotSessionV1(
     sessionId: string,
     cursor?: string,
     pageSize = 50,
@@ -590,7 +672,7 @@ export class WebWorkbenchController {
         : null;
     const projectedComposer = actor
       ? this.projectActorComposerState(actor, session)
-      : this.projectComposerStateValue(session);
+      : this.projectComposerStateValue(session, undefined, indexedPage?.planReview);
     const composer =
       projectedComposer.sessionRuntime.phase === sessionRuntime.phase
         ? projectedComposer
@@ -630,6 +712,14 @@ export class WebWorkbenchController {
     });
     if (context) this.assertContextGuard(context);
     return snapshot;
+  }
+
+  private recordSessionSnapshotActivity(startedAt: number, failed = false): void {
+    const elapsedMs = Date.now() - startedAt;
+    this.sessionActivity.snapshotRequests += 1;
+    if (failed) this.sessionActivity.snapshotFailures += 1;
+    this.sessionActivity.snapshotTotalMs += elapsedMs;
+    this.sessionActivity.snapshotLastMs = elapsedMs;
   }
 
   composerState(sessionId: string, context?: WebContextGuardV1): WebComposerControlStateV1 {
@@ -680,7 +770,8 @@ export class WebWorkbenchController {
 
   private projectComposerStateValue(
     session: SessionMeta,
-    actor?: WebWorkbenchSessionActorV1
+    actor?: WebWorkbenchSessionActorV1,
+    indexedPlanReview?: PlanReviewProjectionV1
   ): WebComposerControlStateV1 {
     const runtimeOwner = actor?.runtime ?? this.runtimeValue;
     const controller = actor?.controller;
@@ -699,7 +790,7 @@ export class WebWorkbenchController {
     const projection = actor
       ? this.activeOrionRuntimes.get(session.id)?.thread.getProjection()
       : undefined;
-    const review = projection?.planReview;
+    const review = projection?.planReview ?? indexedPlanReview;
     const workspaceId = this.workspaceRegistry
       .list()
       .find(entry => entry.canonicalPath === canonicalDirectory(session.projectPath))?.id;
@@ -775,8 +866,16 @@ export class WebWorkbenchController {
     } catch (error) {
       throw mapSessionRuntimeError(error);
     }
+    const actorSession = actor.runtime.getSession();
+    if (!actorSession || actorSession.id !== input.expectedSessionId) {
+      throw new WebWorkbenchError(
+        503,
+        'Session actor is not bound to the expected Session.',
+        'session_unavailable'
+      );
+    }
     if (!wasResident) actor.composerRevision = input.expectedControlRevision;
-    const admittedState = this.projectActorComposerState(actor, session);
+    const admittedState = this.projectActorComposerState(actor, actorSession);
     if (input.expectedControlRevision !== admittedState.controlRevision) {
       throw new WebWorkbenchError(
         409,
@@ -873,7 +972,7 @@ export class WebWorkbenchController {
       actor.suppressComposerEdges -= 1;
     }
     actor.composerRevision = randomUUID();
-    const state = this.projectComposerStateValue(session, actor);
+    const state = this.projectComposerStateValue(actorSession, actor);
     actor.composerAuthorityDigest = composerAuthorityDigest(state);
     this.eventHub.emit({ type: 'composer_state_changed', state }, true, {
       sessionId: input.expectedSessionId,
@@ -1087,10 +1186,113 @@ export class WebWorkbenchController {
     if (canonicalDirectory(session.projectPath) !== this.workspaceValue) {
       throw new WebWorkbenchError(409, 'Session belongs to another workspace.');
     }
-    if (name.length > 120) throw new WebWorkbenchError(400, 'Session name is too long.');
-    const updated = renameSession(session.id, name);
+    const normalizedName = name.trim();
+    if (!normalizedName) throw new WebWorkbenchError(400, 'Session name is required.');
+    if (normalizedName.length > 120) throw new WebWorkbenchError(400, 'Session name is too long.');
+    const updated = renameSession(session.id, normalizedName);
     if (!updated) throw new WebWorkbenchError(404, 'Session no longer exists.');
     return projectSessionSummary(updated);
+  }
+
+  setSessionTags(
+    sessionId: string,
+    tags: unknown,
+    context?: WebContextGuardV1
+  ): WebSessionSummaryV1 {
+    if (context) this.assertContextGuard(context);
+    const session = requireSession(sessionId);
+    this.assertSessionWorkspace(session);
+    if (!Array.isArray(tags)) {
+      throw new WebWorkbenchError(400, 'Tags must be an array of strings.', 'invalid_tags');
+    }
+    if (tags.length > SESSION_TAG_LIMIT) {
+      throw new WebWorkbenchError(
+        400,
+        `A session can have at most ${SESSION_TAG_LIMIT} tags.`,
+        'invalid_tags'
+      );
+    }
+    for (const raw of tags) {
+      if (typeof raw !== 'string' || !raw.trim()) {
+        throw new WebWorkbenchError(400, 'Every tag must be a non-empty string.', 'invalid_tags');
+      }
+      if (raw.trim().length > SESSION_TAG_MAX_LENGTH) {
+        throw new WebWorkbenchError(
+          400,
+          `Each tag is limited to ${SESSION_TAG_MAX_LENGTH} characters.`,
+          'invalid_tags'
+        );
+      }
+    }
+    const updated = setSessionTags(session.id, normalizeSessionTags(tags as string[]));
+    if (!updated) throw new WebWorkbenchError(404, 'Session no longer exists.');
+    return projectSessionSummary(updated);
+  }
+
+  archiveSession(sessionId: string, context?: WebContextGuardV1): WebSessionSummaryV1 {
+    if (context) this.assertContextGuard(context);
+    const session = requireSession(sessionId);
+    this.assertSessionWorkspace(session);
+    this.assertSessionNotBusy(session);
+    const updated = archiveSession(session.id);
+    if (!updated) throw new WebWorkbenchError(404, 'Session no longer exists.');
+    return projectSessionSummary(updated);
+  }
+
+  restoreSession(sessionId: string, context?: WebContextGuardV1): WebSessionSummaryV1 {
+    if (context) this.assertContextGuard(context);
+    const session = requireSession(sessionId);
+    this.assertSessionWorkspace(session);
+    const updated = restoreSession(session.id);
+    if (!updated) throw new WebWorkbenchError(404, 'Session no longer exists.');
+    return projectSessionSummary(updated);
+  }
+
+  deleteSession(sessionId: string, context?: WebContextGuardV1): { readonly deleted: boolean } {
+    if (context) this.assertContextGuard(context);
+    const session = requireSession(sessionId);
+    this.assertSessionWorkspace(session);
+    this.assertSessionHasNoActor(session);
+    const removed = deleteSession(session.id);
+    if (!removed) {
+      throw new WebWorkbenchError(
+        409,
+        'Session files could not be fully removed; nothing was deleted.',
+        'session_delete_failed'
+      );
+    }
+    return { deleted: true };
+  }
+
+  /**
+   * A busy Session (starting / queued / running / waiting approval / stopping)
+   * must not be archived or deleted while its actor is doing work.
+   */
+  private assertSessionNotBusy(session: SessionMeta): void {
+    const runtime = this.sessionRegistry.summary(this.sessionActorKey(session));
+    const busy = new Set(['starting', 'queued', 'running', 'waiting_approval', 'stopping']);
+    if (busy.has(runtime.phase)) {
+      throw new WebWorkbenchError(
+        409,
+        'Session is busy; stop it before archiving or deleting.',
+        'session_busy'
+      );
+    }
+  }
+
+  /**
+   * Deletion removes files under the Session while a resident actor may still
+   * hold them open — require that no actor exists at all (phase 'cold').
+   */
+  private assertSessionHasNoActor(session: SessionMeta): void {
+    const resident = this.sessionRegistry.residentActor(this.sessionActorKey(session));
+    if (resident) {
+      throw new WebWorkbenchError(
+        409,
+        'Session has an active runtime; stop it before deleting.',
+        'session_busy'
+      );
+    }
   }
 
   async switchWorkspace(path: string, context: WebContextGuardV1): Promise<void> {
@@ -1148,18 +1350,28 @@ export class WebWorkbenchController {
         await previousController.stopActiveTurn();
         await previousController.waitForIdle();
         if (targetWorkspace !== previousWorkspace) {
-          await this.sessionRegistry.shutdown('Workspace Context changed');
-          await previousRuntime.shutdown();
+          // Detach the control-plane foreground first: releasing the previous
+          // control plane must not end a Session that a resident actor of that
+          // Workspace is still driving.
+          await this.restoreContextSession(null);
+          // P1-A runtime ownership: the Host-level Session registry and its
+          // resident actors are preserved across a Workspace Context switch.
+          // Only the active control plane is swapped. Both control planes
+          // borrowed their Workspace kernel from the shared pool, so releasing
+          // the previous one never tears down kernels that running Session
+          // actors of that Workspace still reference. Install the target
+          // control plane first, then release the previous one's mutable state.
           await this.installRuntime(targetWorkspace, false);
-          this.sessionRegistry = this.createSessionRegistry();
+          await previousRuntime.shutdown();
         }
         this.workspaceRegistry.register(targetWorkspace, { activated: true });
       } catch (activationError) {
         try {
-          if (targetWorkspace !== previousWorkspace) {
-            if (this.runtimeValue !== previousRuntime) await this.runtimeValue.shutdown();
+          if (this.runtimeValue !== previousRuntime) {
+            // The target control plane installed but a later step failed; tear
+            // it down and reinstall the previous Workspace's control plane.
+            await this.runtimeValue.shutdown();
             await this.installRuntime(previousWorkspace, false);
-            this.sessionRegistry = this.createSessionRegistry();
           }
           await this.restoreContextSession(previousSessionId);
         } catch {
@@ -1218,6 +1430,30 @@ export class WebWorkbenchController {
           : toAgentRuntimeInput({ ...command, ...(resolved ? { text: resolved.text } : {}) });
       try {
         if (command.type === 'submit') {
+          const currentRuntime = this.sessionRegistry.summary(key);
+          if (['running', 'waiting_approval'].includes(currentRuntime.phase)) {
+            const routed = await this.sessionRegistry.withActor(
+              key,
+              command.expectedSessionRuntimeRevision,
+              actor => {
+                if (!actor.controller.hasActiveTurn()) {
+                  throw new WebSessionRuntimeRegistryError(
+                    409,
+                    'session_runtime_revision_conflict',
+                    'The Session turn ended before steering was admitted.'
+                  );
+                }
+                return actor.controller.handle(runtimeInput);
+              }
+            );
+            return Object.freeze({
+              requestId: command.requestId,
+              result: routed.result.type,
+              detail: JSON.stringify(routed.result),
+              sessionRuntime: routed.runtime,
+              ...(resolved ? { contextReceipt: resolved.receipt } : {}),
+            });
+          }
           const admission = await this.sessionRegistry.admitTurn({
             key,
             expectedRuntimeRevision: command.expectedSessionRuntimeRevision,
@@ -1471,6 +1707,7 @@ export class WebWorkbenchController {
   async updateSettings(
     input: WebSettingsUpdateRequestV1
   ): Promise<Omit<WebSettingsMutationResultV1, 'requestId'>> {
+    this.assertContextGuard(input);
     this.assertSettingsAvailable();
     const update = this.runtimeValue.updateSettings;
     if (!update) {
@@ -1594,6 +1831,10 @@ export class WebWorkbenchController {
       harness,
       eventStream: this.eventHub.snapshot(),
       workspaceKernel: this.runtimeValue.workspaceRuntimeKernel?.diagnostics() ?? null,
+      session: {
+        ...this.sessionActivity,
+        actors: this.sessionRegistry.stats(),
+      },
       performance: {
         files: this.fileService.performanceCounters(),
         git: this.gitService.performanceCounters(),
@@ -1616,6 +1857,7 @@ export class WebWorkbenchController {
 
   private async shutdownOwnedResources(): Promise<void> {
     const failures: unknown[] = [];
+    this.sessionActivity.controlPlaneShutdowns += 1;
     this.workspaceMutations.close('Orion Web Workbench shutdown');
 
     try {
@@ -1647,6 +1889,7 @@ export class WebWorkbenchController {
     }
     this.workspaceMutationOwners.clear();
     this.pendingWorkspaceMutationStates.clear();
+    this.releaseWorkspaceKernels();
     if (failures.length > 0) {
       throw new WebWorkbenchError(
         503,
@@ -1654,6 +1897,61 @@ export class WebWorkbenchController {
         'workbench_shutdown_incomplete'
       );
     }
+  }
+
+  /**
+   * Return the workspace kernel for `cwd`, creating and pooling one on first
+   * use. Control planes and Session actors borrow the same kernel instance per
+   * canonical Workspace; the pool is released only when the Host shuts down.
+   */
+  private workspaceKernelFor(cwd: string): WorkspaceRuntimeKernelV1 {
+    const canonical = canonicalDirectory(cwd);
+    const existing = this.workspaceKernels.get(canonical);
+    if (existing && !existing.diagnostics().closed) return existing;
+    if (existing) this.workspaceKernels.delete(canonical);
+    const kernel = createWorkspaceRuntimeKernelV1({
+      cwd: canonical,
+      onSettingsInvalidated: event => this.onWorkspaceKernelSettingsInvalidated(canonical, event),
+    });
+    this.workspaceKernels.set(canonical, kernel);
+    return kernel;
+  }
+
+  /**
+   * Settings invalidations from pooled kernels are only forwarded while their
+   * Workspace is the active Context. A background Workspace's coordinator
+   * keeps watching its own durable file; its next activation publishes a fresh
+   * Settings document through `emitSettingsWorkspaceChange()`.
+   */
+  private onWorkspaceKernelSettingsInvalidated(
+    kernelWorkspace: string,
+    event: SettingsInvalidationV1
+  ): void {
+    if (this.suppressContextEdges > 0) return;
+    if (kernelWorkspace !== this.workspaceValue) return;
+    this.eventHub.emit(
+      {
+        type: 'settings_invalidated',
+        revision: event.revision,
+        reason: event.reason,
+        state: event.state,
+      },
+      false
+    );
+  }
+
+  /**
+   * Release the Host owner seat on every pooled kernel. Runtime shutdowns have
+   * already disposed their Settings participants (actors first, then the
+   * active control plane), so an unowned kernel with zero participants closes
+   * its Settings coordinator here. A kernel that still has a running actor
+   * participant survives until that actor actually terminates.
+   */
+  private releaseWorkspaceKernels(): void {
+    for (const kernel of this.workspaceKernels.values()) {
+      kernel.releaseOwner();
+    }
+    this.workspaceKernels.clear();
   }
 
   private createSessionRegistry(): WebSessionRuntimeRegistryV1<WebWorkbenchSessionActorV1> {
@@ -1843,6 +2141,10 @@ export class WebWorkbenchController {
   }
 
   private async installRuntime(workspace: string, publishState = true): Promise<void> {
+    // Every control-plane install reloads the Workspace catalog, provider
+    // wiring, Skills and MCP adapters, so this counter proxies "catalog
+    // reload" for the runtime-ownership diagnostics matrix.
+    this.sessionActivity.controlPlaneInstalls += 1;
     this.closeComposerObserver();
     const runtime = await this.createRuntime(workspace);
     this.closeWorkspaceWatchers();
@@ -2179,18 +2481,9 @@ export class WebWorkbenchController {
         'runtime_busy'
       );
     }
-    const activeActor = this.sessionRegistry
-      .summaries()
-      .find(runtime =>
-        ['starting', 'queued', 'running', 'waiting_approval', 'stopping'].includes(runtime.phase)
-      );
-    if (activeActor) {
-      throw new WebWorkbenchError(
-        409,
-        `Cannot ${operation} while Session ${activeActor.sessionId} is ${activeActor.phase}.`,
-        'runtime_busy'
-      );
-    }
+    // P1-A: Session actors are scoped to their own Workspace and survive a
+    // Context switch (WEB35-P0-08/09), so an active actor in a non-target
+    // Workspace must not block switching the active control plane.
   }
 
   private assertMutationAdmission(): void {

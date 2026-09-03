@@ -3,13 +3,15 @@ import { truncateVisible, visualWidth } from './text';
 
 const NO_COLOR = process.env.NO_COLOR !== undefined || process.env.TERM === 'dumb';
 
-const colorize = NO_COLOR ? {
-  accent: (s: string) => s,
-  dim: (s: string) => s,
-} : {
-  accent: chalk.hex('#00D4AA'),
-  dim: chalk.dim,
-};
+const colorize = NO_COLOR
+  ? {
+      accent: (s: string) => s,
+      dim: (s: string) => s,
+    }
+  : {
+      accent: chalk.hex('#00D4AA'),
+      dim: chalk.dim,
+    };
 
 const INPUT_BG = '\x1b[48;2;56;56;56m';
 const INPUT_FG = '\x1b[38;2;226;232;240m';
@@ -49,7 +51,9 @@ export function renderFramedInputFrame(options: FramedInputFrameOptions): Framed
     const prefix = index === 0 ? firstPrompt : continuationPrompt;
     return renderInputLine(truncateVisible(prefix + line, inputWidth));
   });
-  const statusLine = options.statusText ? renderInputStatusLine(inputWidth, options.statusText) : undefined;
+  const statusLine = options.statusText
+    ? renderInputStatusLine(inputWidth, options.statusText)
+    : undefined;
 
   const rowSpans = logicalLines.map((line, index) => {
     const prefix = index === 0 ? firstPrompt : continuationPrompt;

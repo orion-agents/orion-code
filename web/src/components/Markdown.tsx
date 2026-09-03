@@ -37,7 +37,9 @@ function renderBlocks(source: string): ReactNode[] {
     }
     const heading = line.match(/^(#{1,6})\s+(.+)$/);
     if (heading) {
-      const level = Math.min(6, heading[1].length + 1);
+      // Heading level maps 1:1 to the markdown syntax: `#` → <h1>, `##` → <h2>.
+      // The previous `+ 1` shifted every level down (and level 1 fell through to <h6>).
+      const level = Math.min(6, heading[1].length);
       blocks.push(
         createHeading(level, inlineMarkdown(heading[2], `heading-${index}`), `heading-${index}`)
       );
@@ -78,6 +80,22 @@ function renderBlocks(source: string): ReactNode[] {
       );
       continue;
     }
+    const headerCells = parseTableRow(line);
+    if (headerCells && headerCells.length >= 1 && index + 1 < lines.length) {
+      const alignments = parseTableSeparator(lines[index + 1]);
+      if (alignments && alignments.length === headerCells.length) {
+        const rows: string[][] = [headerCells];
+        index += 2;
+        while (index < lines.length) {
+          const row = parseTableRow(lines[index]);
+          if (!row || row.length !== headerCells.length) break;
+          rows.push(row);
+          index += 1;
+        }
+        blocks.push(renderTable(rows, alignments, `table-${index}`));
+        continue;
+      }
+    }
     const paragraph = [line.trim()];
     index += 1;
     while (index < lines.length && lines[index].trim() && !startsBlock(lines[index])) {
@@ -96,7 +114,70 @@ function startsBlock(line: string): boolean {
     /^\s*```/.test(line) ||
     /^(#{1,6})\s+/.test(line) ||
     /^\s*>\s?/.test(line) ||
-    /^\s*(?:[-*+] |\d+[.)] )/.test(line)
+    /^\s*(?:[-*+] |\d+[.)] )/.test(line) ||
+    parseTableRow(line) !== null
+  );
+}
+
+type TableAlignment = 'left' | 'center' | 'right';
+
+function parseTableRow(line: string): string[] | null {
+  if (!line.includes('|')) return null;
+  const cells = line.split('|');
+  const leadingBlank = cells[0].trim() === '';
+  const trailingBlank = cells[cells.length - 1].trim() === '';
+  const trimmed = leadingBlank && trailingBlank ? cells.slice(1, -1) : cells;
+  if (trimmed.length === 0) return null;
+  return trimmed.map(cell => cell.trim());
+}
+
+function parseTableSeparator(line: string): TableAlignment[] | null {
+  if (!line.includes('|') && !/[-:]/.test(line)) return null;
+  let cells = line.split('|').map(cell => cell.trim());
+  if (cells.length >= 2 && cells[0] === '' && cells[cells.length - 1] === '') {
+    cells = cells.slice(1, -1);
+  }
+  if (cells.length < 1) return null;
+  const alignments: TableAlignment[] = [];
+  for (const cell of cells) {
+    if (cell === '') return null;
+    if (!/^:?-+:?$/.test(cell)) return null;
+    const startsColon = cell.startsWith(':');
+    const endsColon = cell.endsWith(':');
+    if (startsColon && endsColon) alignments.push('center');
+    else if (endsColon) alignments.push('right');
+    else alignments.push('left');
+  }
+  return alignments;
+}
+
+function renderTable(rows: string[][], alignments: TableAlignment[], key: string): ReactNode {
+  const [header, ...body] = rows;
+  const cellStyle = (alignment: TableAlignment): { textAlign: TableAlignment } | undefined =>
+    alignment === 'left' ? undefined : { textAlign: alignment };
+  return (
+    <table key={key} className="markdown-table">
+      <thead>
+        <tr>
+          {header.map((cell, ci) => (
+            <th key={`th-${ci}`} style={cellStyle(alignments[ci])}>
+              {inlineMarkdown(cell, `${key}-th-${ci}`)}
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {body.map((row, ri) => (
+          <tr key={`tr-${ri}`}>
+            {row.map((cell, ci) => (
+              <td key={`td-${ri}-${ci}`} style={cellStyle(alignments[ci])}>
+                {inlineMarkdown(cell, `${key}-td-${ri}-${ci}`)}
+              </td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 
@@ -148,6 +229,7 @@ function safeLink(value: string): boolean {
 }
 
 function createHeading(level: number, children: ReactNode, key: string): ReactNode {
+  if (level === 1) return <h1 key={key}>{children}</h1>;
   if (level === 2) return <h2 key={key}>{children}</h2>;
   if (level === 3) return <h3 key={key}>{children}</h3>;
   if (level === 4) return <h4 key={key}>{children}</h4>;

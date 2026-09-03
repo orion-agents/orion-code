@@ -65,9 +65,8 @@ export class SubagentProviderGate {
   constructor(options: ProviderGateOptions) {
     const maxConcurrent = Number(options.maxConcurrent);
     // N12: guard against NaN/undefined/negative — clamp to 1 as safe minimum.
-    this.maxConcurrent = Number.isFinite(maxConcurrent) && maxConcurrent >= 1
-      ? Math.floor(maxConcurrent)
-      : 1;
+    this.maxConcurrent =
+      Number.isFinite(maxConcurrent) && maxConcurrent >= 1 ? Math.floor(maxConcurrent) : 1;
     this.now = options.now ?? (() => Date.now());
     this.scheduleTimer = options.scheduleTimer ?? defaultScheduleTimer;
     this.sharedGate = options.sharedGate ?? null;
@@ -97,7 +96,11 @@ export class SubagentProviderGate {
     }
     // v0.2.26: bridge cooldown to the shared gate so root/compact also respect it.
     if (this.sharedGate) {
-      this.sharedGate.enterCooldown('subagents', until, `Subagent 429/rate-limit, retry-after ${retryAfterMs}ms`);
+      this.sharedGate.enterCooldown(
+        'subagents',
+        until,
+        `Subagent 429/rate-limit, retry-after ${retryAfterMs}ms`
+      );
     }
   }
 
@@ -214,7 +217,12 @@ export class SubagentProviderGate {
 function defaultScheduleTimer(fn: () => void, ms: number): { clear(): void } {
   const handle = setTimeout(fn, ms);
   // Don't keep the event loop alive solely for a cooldown wake.
-  if (typeof handle === 'object' && handle && 'unref' in handle && typeof handle.unref === 'function') {
+  if (
+    typeof handle === 'object' &&
+    handle &&
+    'unref' in handle &&
+    typeof handle.unref === 'function'
+  ) {
     (handle as NodeJS.Timeout).unref();
   }
   return {

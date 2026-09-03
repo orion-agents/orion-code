@@ -1,14 +1,12 @@
-import {
-  useEffect,
-  useId,
-  useMemo,
-  useState,
-  type FormEvent,
-  type KeyboardEvent,
-} from 'react';
+import { useEffect, useId, useMemo, useState, type FormEvent, type KeyboardEvent } from 'react';
 
 import type { WorkbenchActions } from '../useWorkbench';
-import type { WebToolCall, WorkbenchState } from '../types';
+import {
+  activeSessionSnapshotSync,
+  isActiveSessionSnapshotReady,
+  type WebToolCall,
+  type WorkbenchState,
+} from '../types';
 import { Icon } from './Icon';
 import { Markdown, safeJson, sanitizeDisplayText } from './Markdown';
 
@@ -59,40 +57,35 @@ export function AgentPanel({ state, actions, tab, onTabChange }: AgentPanelProps
 
   return (
     <div className="agent-panel">
-        <div
-          className="inspector-tabs"
-          role="tablist"
-          aria-label="详情类别"
-          onKeyDown={onTabKeyDown}
-        >
-          {TABS.map(item => (
-            <button
-              id={`${panelId}-tab-${item.id}`}
-              key={item.id}
-              type="button"
-              role="tab"
-              aria-selected={tab === item.id}
-              aria-controls={`${panelId}-panel`}
-              tabIndex={tab === item.id ? 0 : -1}
-              onClick={() => onTabChange(item.id)}
-            >
-              <Icon name={item.icon} size={15} />
-              <span>{item.label}</span>
-            </button>
-          ))}
-        </div>
-        <div
-          id={`${panelId}-panel`}
-          className="inspector-body"
-          role="tabpanel"
-          aria-labelledby={`${panelId}-tab-${tab}`}
-          tabIndex={0}
-        >
-          {tab === 'goal' ? <GoalPanel state={state} actions={actions} /> : null}
-          {tab === 'activity' ? <ActivityPanel state={state} actions={actions} /> : null}
-          {tab === 'integrations' ? <IntegrationsPanel state={state} actions={actions} /> : null}
-          {tab === 'diagnostics' ? <DiagnosticsPanel state={state} actions={actions} /> : null}
-        </div>
+      <div className="inspector-tabs" role="tablist" aria-label="详情类别" onKeyDown={onTabKeyDown}>
+        {TABS.map(item => (
+          <button
+            id={`${panelId}-tab-${item.id}`}
+            key={item.id}
+            type="button"
+            role="tab"
+            aria-selected={tab === item.id}
+            aria-controls={`${panelId}-panel`}
+            tabIndex={tab === item.id ? 0 : -1}
+            onClick={() => onTabChange(item.id)}
+          >
+            <Icon name={item.icon} size={15} />
+            <span>{item.label}</span>
+          </button>
+        ))}
+      </div>
+      <div
+        id={`${panelId}-panel`}
+        className="inspector-body"
+        role="tabpanel"
+        aria-labelledby={`${panelId}-tab-${tab}`}
+        tabIndex={0}
+      >
+        {tab === 'goal' ? <GoalPanel state={state} actions={actions} /> : null}
+        {tab === 'activity' ? <ActivityPanel state={state} actions={actions} /> : null}
+        {tab === 'integrations' ? <IntegrationsPanel state={state} actions={actions} /> : null}
+        {tab === 'diagnostics' ? <DiagnosticsPanel state={state} actions={actions} /> : null}
+      </div>
     </div>
   );
 }
@@ -108,7 +101,8 @@ function GoalPanel({
   const plan =
     state.plan?.body ?? (typeof state.diagnostics?.plan === 'string' ? state.diagnostics.plan : '');
   const pending = Boolean(state.pendingAction);
-  const commandBlocked = pending || state.connection !== 'live';
+  const commandBlocked =
+    pending || state.connection !== 'live' || !isActiveSessionSnapshotReady(state);
   if (!goal) {
     return (
       <div className="inspector-stack">
@@ -712,6 +706,7 @@ function DiagnosticsPanel({
   readonly actions: WorkbenchActions;
 }) {
   const diagnostics = state.diagnostics;
+  const snapshotSync = activeSessionSnapshotSync(state);
   return (
     <div className="inspector-stack">
       <div className="diagnostics-toolbar">
@@ -751,7 +746,44 @@ function DiagnosticsPanel({
           />
           <DiagnosticRow label="事件游标" value={`${state.lastCursor}`} />
           <DiagnosticRow label="事件 UUID" value={state.lastEventId?.slice(0, 12) ?? '—'} />
+          <DiagnosticRow label="会话快照" value={snapshotSync.status} />
           <DiagnosticRow label="保留事件" value={`${diagnostics?.eventStream?.retained ?? '—'}`} />
+          <DiagnosticRow
+            label="快照请求"
+            value={
+              diagnostics?.session
+                ? `${diagnostics.session.snapshotRequests} 次 / 失败 ${diagnostics.session.snapshotFailures}`
+                : '—'
+            }
+          />
+          <DiagnosticRow
+            label="快照时延"
+            value={
+              diagnostics?.session
+                ? `${diagnostics.session.snapshotLastMs} ms（累计 ${diagnostics.session.snapshotTotalMs} ms）`
+                : '—'
+            }
+          />
+          <DiagnosticRow
+            label="Session actor"
+            value={
+              diagnostics?.session
+                ? `${diagnostics.session.actors.actorsCreated} 分配 / ${diagnostics.session.actors.actorsEvicted} LRU 驱逐`
+                : '—'
+            }
+          />
+          <DiagnosticRow
+            label="control plane"
+            value={
+              diagnostics?.session
+                ? `${diagnostics.session.controlPlaneInstalls} 次装载 / ${diagnostics.session.controlPlaneShutdowns} 次关闭`
+                : '—'
+            }
+          />
+          <DiagnosticRow
+            label="浏览器切换"
+            value={`${state.clientTelemetry.sessionSwitches} 次 / 缓存命中 ${state.clientTelemetry.snapshotCacheHits} / 加载 ${state.clientTelemetry.snapshotLoads}`}
+          />
         </dl>
       </section>
       {diagnostics?.contextUsage ? (
@@ -832,9 +864,9 @@ function formatClock(value: string): string {
 }
 
 function connectionTitle(value: WorkbenchState['connection']): string {
-  if (value === 'live') return '实时连接正常';
+  if (value === 'live') return '本地 Web Host 连接正常';
   if (value === 'offline') return '浏览器离线';
-  if (value === 'replay-required') return '需要恢复会话';
-  if (value === 'closed') return 'Host 已关闭';
-  return value === 'connecting' ? '正在连接' : '正在重新连接';
+  if (value === 'replay-required') return 'Web Host 事件流需要恢复';
+  if (value === 'closed') return '本地 Web Host 已关闭';
+  return value === 'connecting' ? '正在连接本地 Web Host' : '正在重新连接本地 Web Host';
 }

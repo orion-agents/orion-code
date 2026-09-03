@@ -38,7 +38,8 @@ function parseGitignore(cwd: string): string[] {
   if (existsSync(gitignorePath)) {
     try {
       const content = readFileSync(gitignorePath, 'utf-8');
-      const lines = content.split('\n')
+      const lines = content
+        .split('\n')
         .map(line => line.trim())
         .filter(line => line && !line.startsWith('#'));
 
@@ -86,12 +87,17 @@ function isIgnored(path: string, ignorePatterns: string[]): boolean {
  * @param cwd 当前工作目录
  * @returns 匹配的文件列表（默认最多 20 个）
  */
-export function matchFiles(query: string, cwd: string, options: FileMatchOptions = {}): FileMatch[] {
+export function matchFiles(
+  query: string,
+  cwd: string,
+  options: FileMatchOptions = {}
+): FileMatch[] {
   const ignorePatterns = parseGitignore(cwd);
   const results: FileMatch[] = [];
-  const limit = typeof options.limit === 'number' && Number.isFinite(options.limit) && options.limit > 0
-    ? Math.floor(options.limit)
-    : 20;
+  const limit =
+    typeof options.limit === 'number' && Number.isFinite(options.limit) && options.limit > 0
+      ? Math.floor(options.limit)
+      : 20;
   const caseSensitive = options.caseSensitive ?? false;
 
   try {
@@ -108,9 +114,7 @@ export function matchFiles(query: string, cwd: string, options: FileMatchOptions
     const entries = readdirSync(dirPath);
 
     for (const entry of entries) {
-      const entryPath = parts.length > 1
-        ? parts.slice(0, -1).join('/') + '/' + entry
-        : entry;
+      const entryPath = parts.length > 1 ? parts.slice(0, -1).join('/') + '/' + entry : entry;
 
       // 过滤
       const comparableEntry = caseSensitive ? entry : entry.toLowerCase();

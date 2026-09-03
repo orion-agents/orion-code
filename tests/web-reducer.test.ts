@@ -2,10 +2,21 @@
 
 import type { AgentRuntimeEvent } from '../src/runtime/agent-runtime-protocol';
 import type { WebEventEnvelopeV1, WebSessionSnapshotV1 } from '../src/web/protocol';
-import { initialWorkbenchState } from '../web/src/types';
+import {
+  activeSessionSnapshotSync,
+  initialWorkbenchState,
+  isActiveSessionSnapshotReady,
+} from '../web/src/types';
 import { workbenchReducer } from '../web/src/reducer';
 
 describe('Web Workbench reducer', () => {
+  test('starts with an idle Session snapshot state', () => {
+    expect(activeSessionSnapshotSync(initialWorkbenchState)).toEqual({
+      status: 'idle',
+      requestId: null,
+    });
+  });
+
   test('keeps an approval pending when the matching invocation starts', () => {
     const permission = runtimeEnvelope(
       {
@@ -184,19 +195,299 @@ describe('Web Workbench reducer', () => {
     expect(stale.connection).not.toBe('replay-required');
   });
 
-  test('requires recovery when the selected Session snapshot fails', () => {
-    const selected = workbenchReducer(initialWorkbenchState, {
-      type: 'reset_session_view',
-      activeSessionId: 'session-2',
-    });
+  test('keeps the Web Host live when the selected Session snapshot fails', () => {
+    const selected = workbenchReducer(
+      { ...initialWorkbenchState, connection: 'live' },
+      {
+        type: 'reset_session_view',
+        activeSessionId: 'session-2',
+      }
+    );
     const failed = workbenchReducer(selected, {
       type: 'snapshot_failed',
       sessionId: 'session-2',
       detail: 'matching failure',
     });
 
-    expect(failed.connection).toBe('replay-required');
-    expect(failed.replayReason).toBe('matching failure');
+    expect(failed.connection).toBe('live');
+    expect(failed.replayReason).toBeUndefined();
+    expect(failed.sessionSync['session-2']).toEqual({
+      status: 'failed',
+      requestId: null,
+      error: 'matching failure',
+    });
+    expect(failed.notice).toMatchObject({
+      domain: 'session-snapshot',
+      sessionId: 'session-2',
+    });
+    expect(isActiveSessionSnapshotReady(failed)).toBe(false);
+  });
+
+  test('tracks cold loads and cached refreshes as separate Session snapshot phases', () => {
+    const cold = workbenchReducer(initialWorkbenchState, {
+      type: 'reset_session_view',
+      activeSessionId: 'session-1',
+    });
+    expect(cold.sessionSync['session-1']?.status).toBe('loading');
+
+    const ready = workbenchReducer(cold, {
+      type: 'session_snapshot_loaded',
+      snapshot: snapshotFor('session-1', 'cached content'),
+    });
+    const cached = workbenchReducer(ready, {
+      type: 'reset_session_view',
+      activeSessionId: 'session-1',
+    });
+    expect(cached.sessionSync['session-1']?.status).toBe('refreshing');
+    expect(cached.transcript.map(entry => entry.content)).toEqual(['cached content']);
+    expect(isActiveSessionSnapshotReady(cached)).toBe(false);
+  });
+
+  test('clears only the matching Session snapshot error after a successful retry', () => {
+    const selected = workbenchReducer(
+      {
+        ...initialWorkbenchState,
+        connection: 'live',
+        contextRevision: 'context-1',
+        workspaceId: 'workspace-1',
+      },
+      { type: 'reset_session_view', activeSessionId: 'session-1' }
+    );
+    const started = workbenchReducer(selected, {
+      type: 'session_snapshot_started',
+      sessionId: 'session-1',
+      requestId: 1,
+      cached: false,
+      contextRevision: 'context-1',
+      workspaceId: 'workspace-1',
+    });
+    const failed = workbenchReducer(started, {
+      type: 'snapshot_failed',
+      sessionId: 'session-1',
+      requestId: 1,
+      contextRevision: 'context-1',
+      workspaceId: 'workspace-1',
+      detail: 'temporary failure',
+    });
+    const retrying = workbenchReducer(failed, {
+      type: 'session_snapshot_started',
+      sessionId: 'session-1',
+      requestId: 2,
+      cached: false,
+      contextRevision: 'context-1',
+      workspaceId: 'workspace-1',
+    });
+    const restored = workbenchReducer(retrying, {
+      type: 'session_snapshot_loaded',
+      snapshot: snapshotFor('session-1', 'restored'),
+      requestId: 2,
+      contextRevision: 'context-1',
+      workspaceId: 'workspace-1',
+    });
+
+    expect(restored.connection).toBe('live');
+    expect(restored.sessionSync['session-1']).toEqual({ status: 'ready', requestId: 2 });
+    expect(restored.notice).toBeNull();
+    expect(restored.transcript.map(entry => entry.content)).toEqual(['restored']);
+    expect(isActiveSessionSnapshotReady(restored)).toBe(true);
+  });
+
+  test('ignores an older response for the same Session request sequence', () => {
+    const contextual = {
+      ...initialWorkbenchState,
+      connection: 'live' as const,
+      contextRevision: 'context-1',
+      workspaceId: 'workspace-1',
+    };
+    const selected = workbenchReducer(contextual, {
+      type: 'reset_session_view',
+      activeSessionId: 'session-1',
+    });
+    const first = workbenchReducer(selected, {
+      type: 'session_snapshot_started',
+      sessionId: 'session-1',
+      requestId: 1,
+      cached: false,
+      contextRevision: 'context-1',
+      workspaceId: 'workspace-1',
+    });
+    const second = workbenchReducer(first, {
+      type: 'session_snapshot_started',
+      sessionId: 'session-1',
+      requestId: 2,
+      cached: false,
+      contextRevision: 'context-1',
+      workspaceId: 'workspace-1',
+    });
+    const stale = workbenchReducer(second, {
+      type: 'session_snapshot_loaded',
+      snapshot: snapshotFor('session-1', 'stale'),
+      requestId: 1,
+      contextRevision: 'context-1',
+      workspaceId: 'workspace-1',
+    });
+    const latest = workbenchReducer(stale, {
+      type: 'session_snapshot_loaded',
+      snapshot: snapshotFor('session-1', 'latest'),
+      requestId: 2,
+      contextRevision: 'context-1',
+      workspaceId: 'workspace-1',
+    });
+
+    expect(stale).toBe(second);
+    expect(latest.transcript.map(entry => entry.content)).toEqual(['latest']);
+    expect(latest.sessionSync['session-1']).toEqual({ status: 'ready', requestId: 2 });
+  });
+
+  test('tracks Session switch, cache-hit, load and failure client telemetry', () => {
+    const contextual = {
+      ...initialWorkbenchState,
+      connection: 'live' as const,
+      contextRevision: 'context-1',
+      workspaceId: 'workspace-1',
+    };
+    const cold = workbenchReducer(contextual, {
+      type: 'reset_session_view',
+      activeSessionId: 'session-1',
+    });
+    expect(cold.clientTelemetry).toEqual({
+      sessionSwitches: 1,
+      snapshotCacheHits: 0,
+      snapshotLoads: 0,
+      snapshotFailures: 0,
+    });
+
+    const started = workbenchReducer(cold, {
+      type: 'session_snapshot_started',
+      sessionId: 'session-1',
+      requestId: 1,
+      cached: false,
+      contextRevision: 'context-1',
+      workspaceId: 'workspace-1',
+    });
+    expect(started.clientTelemetry.snapshotLoads).toBe(1);
+
+    const failed = workbenchReducer(started, {
+      type: 'snapshot_failed',
+      sessionId: 'session-1',
+      requestId: 1,
+      contextRevision: 'context-1',
+      workspaceId: 'workspace-1',
+      detail: 'temporary failure',
+    });
+    expect(failed.clientTelemetry.snapshotFailures).toBe(1);
+
+    // Cache a background Session, then switch to it: a switch plus a cache hit,
+    // and the cached transcript renders without clearing.
+    const backgroundStarted = workbenchReducer(failed, {
+      type: 'session_snapshot_started',
+      sessionId: 'session-2',
+      requestId: 2,
+      cached: true,
+      contextRevision: 'context-1',
+      workspaceId: 'workspace-1',
+    });
+    const backgroundCached = workbenchReducer(backgroundStarted, {
+      type: 'session_snapshot_loaded',
+      snapshot: snapshotFor('session-2', 'cached content'),
+      requestId: 2,
+      contextRevision: 'context-1',
+      workspaceId: 'workspace-1',
+    });
+    const warm = workbenchReducer(backgroundCached, {
+      type: 'reset_session_view',
+      activeSessionId: 'session-2',
+    });
+    expect(warm.clientTelemetry).toEqual({
+      sessionSwitches: 2,
+      snapshotCacheHits: 1,
+      snapshotLoads: 2, // foreground session-1 load + background session-2 prefetch
+      snapshotFailures: 1,
+    });
+    expect(warm.transcript.map(entry => entry.content)).toEqual(['cached content']);
+    expect(warm.sessionSync['session-2']?.status).toBe('refreshing');
+  });
+
+  test('caches a completed non-foreground snapshot without replacing the selected Session', () => {
+    const contextual = {
+      ...initialWorkbenchState,
+      connection: 'live' as const,
+      contextRevision: 'context-1',
+      workspaceId: 'workspace-1',
+    };
+    const selected = workbenchReducer(contextual, {
+      type: 'reset_session_view',
+      activeSessionId: 'session-2',
+    });
+    const foreground = workbenchReducer(selected, {
+      type: 'session_snapshot_loaded',
+      snapshot: snapshotFor('session-2', 'foreground'),
+    });
+    const loadingBackground = workbenchReducer(foreground, {
+      type: 'session_snapshot_started',
+      sessionId: 'session-1',
+      requestId: 3,
+      cached: false,
+      contextRevision: 'context-1',
+      workspaceId: 'workspace-1',
+    });
+    const completed = workbenchReducer(loadingBackground, {
+      type: 'session_snapshot_loaded',
+      snapshot: snapshotFor('session-1', 'prefetched'),
+      requestId: 3,
+      contextRevision: 'context-1',
+      workspaceId: 'workspace-1',
+    });
+
+    expect(completed.activeSessionId).toBe('session-2');
+    expect(completed.transcript.map(entry => entry.content)).toEqual(['foreground']);
+    expect(completed.sessionProjectionById['session-1']?.transcript.items).toEqual([
+      expect.objectContaining({ content: 'prefetched' }),
+    ]);
+    expect(completed.sessionSync['session-1']).toEqual({ status: 'ready', requestId: 3 });
+  });
+
+  test('keeps a background prefetch failure local to that Session', () => {
+    const contextual = {
+      ...initialWorkbenchState,
+      connection: 'live' as const,
+      contextRevision: 'context-1',
+      workspaceId: 'workspace-1',
+    };
+    const selected = workbenchReducer(contextual, {
+      type: 'reset_session_view',
+      activeSessionId: 'session-2',
+    });
+    const foreground = workbenchReducer(selected, {
+      type: 'session_snapshot_loaded',
+      snapshot: snapshotFor('session-2', 'foreground'),
+    });
+    const loadingBackground = workbenchReducer(foreground, {
+      type: 'session_snapshot_started',
+      sessionId: 'session-1',
+      requestId: 4,
+      cached: false,
+      contextRevision: 'context-1',
+      workspaceId: 'workspace-1',
+    });
+    const failed = workbenchReducer(loadingBackground, {
+      type: 'snapshot_failed',
+      sessionId: 'session-1',
+      requestId: 4,
+      contextRevision: 'context-1',
+      workspaceId: 'workspace-1',
+      detail: 'prefetch failed',
+    });
+
+    expect(failed.connection).toBe('live');
+    expect(failed.activeSessionId).toBe('session-2');
+    expect(failed.transcript.map(entry => entry.content)).toEqual(['foreground']);
+    expect(failed.notice).toBeNull();
+    expect(failed.sessionSync['session-1']).toEqual({
+      status: 'failed',
+      requestId: 4,
+      error: 'prefetch failed',
+    });
   });
 
   test('accepts a cold snapshot for the browser-selected Session', () => {
@@ -328,6 +619,51 @@ describe('Web Workbench reducer', () => {
       workspaceId: 'workspace-1',
     });
     expect(stale).toBe(merged);
+  });
+
+  test('advances the active snapshot Runtime revision with Composer state', () => {
+    const selected = {
+      ...workbenchReducer(initialWorkbenchState, {
+        type: 'reset_session_view' as const,
+        activeSessionId: 'session-1',
+      }),
+      contextRevision: 'context-1',
+      workspaceId: 'workspace-1',
+    };
+    const restored = workbenchReducer(selected, {
+      type: 'session_snapshot_loaded',
+      snapshot: snapshot([], null),
+    });
+    const sessionRuntime = {
+      ...restored.sessionSnapshot!.sessionRuntime,
+      runtimeRevision: 'runtime-2',
+    };
+    const composer = {
+      ...restored.composer!,
+      controlRevision: 'control-2',
+      sessionRuntime,
+    };
+    const envelope: WebEventEnvelopeV1 = {
+      apiVersion: 1,
+      eventId: '60000000-0000-4000-8000-000000000002',
+      cursor: 2,
+      sessionId: 'session-1',
+      threadId: null,
+      durable: true,
+      timestamp: new Date(2).toISOString(),
+      type: 'composer_state_changed',
+      payload: { state: composer },
+    };
+
+    const advanced = workbenchReducer(restored, { type: 'event_received', envelope });
+
+    expect(advanced.composer?.sessionRuntime.runtimeRevision).toBe('runtime-2');
+    expect(advanced.sessionSnapshot?.sessionRuntime.runtimeRevision).toBe('runtime-2');
+    expect(advanced.sessionSnapshot?.composer.controlRevision).toBe('control-2');
+    expect(advanced.sessionRuntimeById['session-1']?.runtimeRevision).toBe('runtime-2');
+    expect(advanced.sessionProjectionById['session-1']?.sessionRuntime.runtimeRevision).toBe(
+      'runtime-2'
+    );
   });
 
   test('caches a completed background Session snapshot without replacing the foreground view', () => {
@@ -480,7 +816,7 @@ describe('Web Workbench reducer', () => {
     ]);
   });
 
-  test('treats replay reset as a hard barrier until an active snapshot is accepted', () => {
+  test('treats replay reset as a hard barrier until recovery reconnects the Web Host stream', () => {
     const selected = workbenchReducer(initialWorkbenchState, {
       type: 'reset_session_view',
       activeSessionId: 'session-1',
@@ -514,13 +850,30 @@ describe('Web Workbench reducer', () => {
     expect(afterLive.replayReason).toBe('retained history expired');
 
     const recoveredSnapshot = { ...snapshot([], null), eventCursor: 13 };
-    const recovered = workbenchReducer(afterLive, {
+    const snapshotWhileBlocked = workbenchReducer(afterLive, {
+      type: 'session_snapshot_loaded',
+      snapshot: recoveredSnapshot,
+    });
+    expect(snapshotWhileBlocked.connection).toBe('replay-required');
+    expect(snapshotWhileBlocked.replayReason).toBe('retained history expired');
+
+    const recovering = workbenchReducer(snapshotWhileBlocked, { type: 'recovering' });
+    expect(recovering.connection).toBe('connecting');
+    expect(recovering.replayReason).toBeUndefined();
+
+    const recovered = workbenchReducer(recovering, {
       type: 'session_snapshot_loaded',
       snapshot: recoveredSnapshot,
     });
     expect(recovered.connection).toBe('connecting');
     expect(recovered.lastCursor).toBe(13);
-    expect(recovered.replayReason).toBeUndefined();
+
+    const live = workbenchReducer(recovered, {
+      type: 'connection_changed',
+      phase: 'live',
+      attempt: 0,
+    });
+    expect(live.connection).toBe('live');
   });
 
   test('ignores session events when no session is selected while advancing the stream cursor', () => {

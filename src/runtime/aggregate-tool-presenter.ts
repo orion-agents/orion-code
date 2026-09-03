@@ -1,9 +1,6 @@
 /** Schema-guarded presentation for known aggregate tool results. */
 
-import {
-  tryParseAggregateOutput,
-  type ToolAggregateView,
-} from './tool-output-presentation';
+import { tryParseAggregateOutput, type ToolAggregateView } from './tool-output-presentation';
 import { redactTraceText } from '../services/redaction';
 
 export interface PresentAggregateResult {
@@ -19,7 +16,7 @@ export interface PresentAggregateResult {
 export function presentAggregateToolResult(
   toolName: string,
   rawOutput: string,
-  outputBytes: number,
+  outputBytes: number
 ): PresentAggregateResult | null {
   const view = tryParseAggregateOutput(toolName, rawOutput);
   if (!view) return null;

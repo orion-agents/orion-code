@@ -28,6 +28,7 @@ export interface WebReviewSnapshotV1 {
   readonly isRepository: boolean;
   readonly clean: boolean;
   readonly changedFiles: readonly WebGitFileV1[];
+  readonly totalChangedFiles: number;
   readonly stagedCount: number;
   readonly unstagedCount: number;
   readonly untrackedCount: number;
@@ -86,6 +87,7 @@ export class ReviewServiceV1 {
       isRepository: status.isRepository,
       clean: status.clean,
       changedFiles: Object.freeze(changedFiles),
+      totalChangedFiles: status.totalFiles,
       stagedCount: status.staged.length,
       unstagedCount: status.unstaged.length,
       untrackedCount: status.untracked.length,

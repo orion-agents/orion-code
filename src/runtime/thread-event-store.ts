@@ -23,8 +23,12 @@ import {
 } from './protocol/runtime-protocol-v1';
 import {
   advanceThreadProjection,
+  CURRENT_THREAD_PROJECTION_DIGEST_VERSION_V1,
+  hasCurrentThreadProjectionShapeV1,
   projectThreadEvents,
+  resolveThreadProjectionDigestVersionV1,
   verifyThreadProjectionDigest,
+  type ThreadProjectionDigestVersionV1,
   type ThreadProjectionV1,
 } from './thread-projection';
 import { advanceThreadSessionIndexV1, type ThreadSessionIndexHeadV1 } from './thread-session-index';
@@ -57,6 +61,7 @@ export type ThreadEventReplayReasonV1 =
   | 'capability_receipt_journal'
   | 'durable_tool_receipt'
   | 'legacy_materializer'
+  | 'projection_schema_upgrade'
   | 'runtime_diagnostics_legacy'
   | 'subagent_receipt_journal'
   | 'thread_session_view'
@@ -97,6 +102,8 @@ export interface ThreadVerifiedPrefixV1 {
   readonly cursor: number;
   readonly eventDigest: string;
   readonly projectionDigest: string;
+  /** Missing on receipts written before projection digests were versioned. */
+  readonly projectionDigestVersion?: ThreadProjectionDigestVersionV1;
 }
 
 /**
@@ -317,7 +324,12 @@ export class ThreadEventStore {
     }
     const commit = this.withLogLock(() => {
       ensurePrivateDirectory(this.rootDir);
-      const head = this.loadVerifiedHead();
+      let head = this.loadVerifiedHead();
+      if (!hasCurrentThreadProjectionShapeV1(head.projection)) {
+        // An older projection cannot be incrementally advanced because it did
+        // not retain all diagnostic/compact history. Rebuild from facts once.
+        head = this.loadVerifiedHead(true, 'projection_schema_upgrade');
+      }
       if (head.discardedTailBytes > 0) truncateSync(this.logPath, head.safeByteLength);
 
       let seq = head.projection.cursor;
@@ -490,7 +502,12 @@ export class ThreadEventStore {
    * exact log identity/projection checkpoint remains current. Internal append
    * carries the proof forward because the hash-chained prefix cannot change.
    */
-  verifyDurablePrefix(cursor: number, eventDigest: string, projectionDigest: string): boolean {
+  verifyDurablePrefix(
+    cursor: number,
+    eventDigest: string,
+    projectionDigest: string,
+    projectionDigestVersion?: ThreadProjectionDigestVersionV1
+  ): boolean {
     if (
       !Number.isSafeInteger(cursor) ||
       cursor <= 0 ||
@@ -502,26 +519,39 @@ export class ThreadEventStore {
     return this.withLogLock(() => {
       let head = this.loadVerifiedHead();
       if (cursor > head.projection.cursor) return false;
-      const expected = { cursor, eventDigest, projectionDigest };
+      const expected = { cursor, eventDigest, projectionDigest, projectionDigestVersion };
       if (head.verifiedPrefixes.some(prefix => sameVerifiedPrefix(prefix, expected))) return true;
 
       head = this.loadVerifiedHead(true, 'verify_durable_prefix');
       const scan = requireVerifiedScan(head);
       const events = scan.events.slice(0, cursor);
+      const resolvedProjectionDigestVersion = resolveThreadProjectionDigestVersionV1(
+        projectThreadEvents(this.threadId, events),
+        projectionDigest,
+        projectionDigestVersion
+      );
       if (
         events.length !== cursor ||
         digestRuntimeValue(events) !== eventDigest ||
-        projectThreadEvents(this.threadId, events).digest !== projectionDigest
+        resolvedProjectionDigestVersion === undefined
       ) {
         return false;
       }
 
+      const verified = {
+        cursor,
+        eventDigest,
+        projectionDigest,
+        projectionDigestVersion: resolvedProjectionDigestVersion,
+      };
+
       const next: CachedThreadHeadV1 = {
         ...head,
         generation: head.generation + 1,
-        verifiedPrefixes: [...head.verifiedPrefixes, expected].sort(
-          (left, right) => left.cursor - right.cursor
-        ),
+        verifiedPrefixes: [
+          ...head.verifiedPrefixes.filter(prefix => prefix.cursor !== cursor),
+          verified,
+        ].sort((left, right) => left.cursor - right.cursor),
       };
       this.cachedHead = next;
       this.tryPersistVerifiedHead(next);
@@ -1229,7 +1259,11 @@ function retainVerifiedPrefixes(
     const events = scan.events.slice(0, prefix.cursor);
     return (
       digestRuntimeValue(events) === prefix.eventDigest &&
-      projectThreadEvents(threadId, events).digest === prefix.projectionDigest
+      resolveThreadProjectionDigestVersionV1(
+        projectThreadEvents(threadId, events),
+        prefix.projectionDigest,
+        prefix.projectionDigestVersion
+      ) !== undefined
     );
   });
 }
@@ -1267,7 +1301,10 @@ function isStoredVerifiedPrefix(value: unknown, headCursor: number): boolean {
     (value.cursor as number) > 0 &&
     (value.cursor as number) <= headCursor &&
     isSha256(value.eventDigest) &&
-    isSha256(value.projectionDigest)
+    isSha256(value.projectionDigest) &&
+    (value.projectionDigestVersion === undefined ||
+      value.projectionDigestVersion === 1 ||
+      value.projectionDigestVersion === CURRENT_THREAD_PROJECTION_DIGEST_VERSION_V1)
   );
 }
 
@@ -1275,7 +1312,10 @@ function sameVerifiedPrefix(left: ThreadVerifiedPrefixV1, right: ThreadVerifiedP
   return (
     left.cursor === right.cursor &&
     left.eventDigest === right.eventDigest &&
-    left.projectionDigest === right.projectionDigest
+    left.projectionDigest === right.projectionDigest &&
+    (left.projectionDigestVersion === right.projectionDigestVersion ||
+      left.projectionDigestVersion === undefined ||
+      right.projectionDigestVersion === undefined)
   );
 }
 

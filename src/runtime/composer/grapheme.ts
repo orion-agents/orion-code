@@ -31,7 +31,7 @@ export function segmentGraphemes(value: string): GraphemeSegment[] {
   }
 
   const segments: GraphemeSegment[] = [];
-  for (let index = 0; index < value.length;) {
+  for (let index = 0; index < value.length; ) {
     const codePoint = value.codePointAt(index);
     const segment = codePoint === undefined ? '' : String.fromCodePoint(codePoint);
     if (!segment) break;

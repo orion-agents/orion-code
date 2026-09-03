@@ -1,21 +1,48 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import type { WorkbenchActions } from '../useWorkbench';
-import type {
-  WebEditPreview,
-  WebResearch,
-  WebSubtask,
-  WebToolCall,
-  WebTranscriptEntry,
-  WorkbenchState,
+import type { ThemePreference } from '../settings/types';
+import {
+  activeSessionSnapshotSync,
+  isActiveSessionSnapshotReady,
+  type WebEditPreview,
+  type WebResearch,
+  type WebSubtask,
+  type WebToolCall,
+  type WebTranscriptEntry,
+  type WorkbenchState,
 } from '../types';
-import { Icon } from './Icon';
+import { Icon, type IconName } from './Icon';
 import { Markdown, safeJson, sanitizeDisplayText } from './Markdown';
 import { sessionTitle } from './WorkspaceRail';
+import { StateDot } from './StateDot';
 import { ComposerControlCenter } from './composer/ComposerControlCenter';
 
 const INITIAL_TIMELINE_WINDOW = 320;
 const TIMELINE_PAGE = 300;
+
+/** Theme cycling: system -> light -> dark -> system (order matters). */
+const THEME_CYCLE_ORDER: readonly ThemePreference[] = ['system', 'light', 'dark'];
+const THEME_ICON: Record<ThemePreference, IconName> = {
+  system: 'monitor',
+  light: 'sun',
+  dark: 'moon',
+};
+const THEME_LABEL: Record<ThemePreference, string> = {
+  system: '跟随系统',
+  light: '浅色',
+  dark: '深色',
+};
+
+function themeCycleInfo(preference: ThemePreference | undefined): {
+  readonly current: ThemePreference;
+  readonly next: ThemePreference;
+} {
+  const current = preference ?? 'system';
+  const index = THEME_CYCLE_ORDER.indexOf(current);
+  const next = THEME_CYCLE_ORDER[(index + 1) % THEME_CYCLE_ORDER.length];
+  return { current, next };
+}
 
 export interface ConversationProps {
   readonly state: WorkbenchState;
@@ -26,6 +53,10 @@ export interface ConversationProps {
   readonly onToggleInspector: () => void;
   readonly onRevealSettings: () => void;
   readonly onCreateSession: () => void;
+  /** v0.3.6 shell shortcuts: theme cycling and the keyboard reference. */
+  readonly themePreference: ThemePreference | undefined;
+  readonly onCycleTheme: () => void;
+  readonly onShowShortcuts: () => void;
   readonly composerInsertion: { readonly id: number; readonly text: string } | null;
 }
 
@@ -45,9 +76,13 @@ export function Conversation({
   onToggleInspector,
   onRevealSettings,
   onCreateSession,
+  themePreference,
+  onCycleTheme,
+  onShowShortcuts,
   composerInsertion,
 }: ConversationProps) {
   const activeSession = state.sessions.find(session => session.id === state.activeSessionId);
+  const snapshotSync = activeSessionSnapshotSync(state);
   const allTimeline = useMemo(
     () => buildTimeline(state),
     [state.edits, state.research, state.subtasks, state.tools, state.transcript]
@@ -124,6 +159,8 @@ export function Conversation({
     viewport.scrollTo({ top: viewport.scrollHeight, behavior: 'smooth' });
   };
 
+  const themeCycle = themeCycleInfo(themePreference);
+
   return (
     <main className="conversation-column" id="main-content">
       <header className="conversation-header">
@@ -150,6 +187,22 @@ export function Conversation({
           </p>
         </div>
         <div className="header-actions">
+          <button
+            type="button"
+            className="icon-button theme-cycle-button"
+            onClick={onCycleTheme}
+            aria-label={`主题：${THEME_LABEL[themeCycle.current]}，点击切换为${THEME_LABEL[themeCycle.next]}`}
+          >
+            <Icon name={THEME_ICON[themeCycle.current]} />
+          </button>
+          <button
+            type="button"
+            className="icon-button shortcut-help-button"
+            onClick={onShowShortcuts}
+            aria-label="键盘快捷键帮助"
+          >
+            <Icon name="keyboard" />
+          </button>
           <button
             type="button"
             className="icon-button inspector-toggle"
@@ -206,6 +259,19 @@ export function Conversation({
               detail="Orion 会在当前工作区运行，并沿用 CLI/TUI 的权限与持久化状态。"
               action="创建会话"
               onAction={onCreateSession}
+            />
+          ) : snapshotSync.status === 'failed' && timeline.length === 0 ? (
+            <EmptyConversation
+              icon="warning"
+              title="会话快照加载失败"
+              detail={snapshotSync.error ?? '请重试当前会话快照。'}
+            />
+          ) : (snapshotSync.status === 'loading' || snapshotSync.status === 'refreshing') &&
+            timeline.length === 0 ? (
+            <EmptyConversation
+              icon="refresh"
+              title="正在同步会话"
+              detail="本地 Web Host 正在读取最近的会话快照。"
             />
           ) : timeline.length === 0 ? (
             <EmptyConversation
@@ -294,7 +360,7 @@ function TranscriptCard({ entry }: { readonly entry: WebTranscriptEntry }) {
     return (
       <details className="reasoning-card">
         <summary>
-          <span className={`state-dot ${entry.live ? 'running' : 'ready'}`} aria-hidden="true" />
+          <StateDot state={entry.live ? 'running' : 'ready'} describe={false} />
           <span>{entry.live ? '正在分析' : entry.title || '推理摘要'}</span>
           <span className="reasoning-hint">展开查看 Runtime 提供的摘要</span>
         </summary>
@@ -515,7 +581,7 @@ function ResearchCard({ research }: { readonly research: WebResearch }) {
         <ul className="source-list">
           {research.sources.map(source => (
             <li key={source.id}>
-              <span className={`state-dot state-${source.status}`} aria-hidden="true" />
+              <StateDot state={source.status} />
               <span>{source.title || source.location || source.id}</span>
               <small>
                 {source.provider} · {source.status}
@@ -528,7 +594,7 @@ function ResearchCard({ research }: { readonly research: WebResearch }) {
   );
 }
 
-function ApprovalCard({
+export function ApprovalCard({
   state,
   actions,
 }: {
@@ -543,7 +609,10 @@ function ApprovalCard({
     previousRequest.current = request.id;
     cardRef.current?.focus();
   }, [request.id]);
-  const disabled = Boolean(state.pendingAction) || state.connection !== 'live';
+  const disabled =
+    Boolean(state.pendingAction) ||
+    state.connection !== 'live' ||
+    !isActiveSessionSnapshotReady(state);
   return (
     <section
       ref={cardRef}
@@ -614,7 +683,10 @@ function QueueDock({
   readonly state: WorkbenchState;
   readonly actions: WorkbenchActions;
 }) {
-  const disabled = Boolean(state.pendingAction) || state.connection !== 'live';
+  const disabled =
+    Boolean(state.pendingAction) ||
+    state.connection !== 'live' ||
+    !isActiveSessionSnapshotReady(state);
   return (
     <details className="queue-dock">
       <summary>
@@ -745,7 +817,7 @@ function EmptyConversation({
   action,
   onAction,
 }: {
-  readonly icon: 'workspace' | 'spark';
+  readonly icon: IconName;
   readonly title: string;
   readonly detail: string;
   readonly action?: string;

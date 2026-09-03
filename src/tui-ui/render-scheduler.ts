@@ -42,12 +42,13 @@ const STREAM_FRAME_MS = 1000 / STREAM_FPS; // ~33.3ms
 
 export function createTuiRenderScheduler(
   paint: () => void,
-  deps?: Partial<TuiRenderSchedulerDeps>,
+  deps?: Partial<TuiRenderSchedulerDeps>
 ): TuiRenderScheduler {
   const now = deps?.now ?? (() => Date.now());
   const queueMicrotaskFn = deps?.queueMicrotask ?? queueMicrotask;
   const setTimeoutFn = deps?.setTimeout ?? ((cb: () => void, ms: number) => setTimeout(cb, ms));
-  const clearTimeoutFn = deps?.clearTimeout ?? ((timer: unknown) => clearTimeout(timer as NodeJS.Timeout));
+  const clearTimeoutFn =
+    deps?.clearTimeout ?? ((timer: unknown) => clearTimeout(timer as NodeJS.Timeout));
 
   let pendingImmediate = false;
   let pendingStreamTimer: unknown = null;

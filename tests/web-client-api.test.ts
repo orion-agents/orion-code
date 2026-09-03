@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 
-import { OrionWebApi } from '../web/src/api';
+import { OrionWebApi, WebApiError } from '../web/src/api';
 
 type Listener = EventListenerOrEventListenerObject;
 
@@ -215,6 +215,47 @@ describe('OrionWebApi collection pagination', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     expect(String(fetchSpy.mock.calls[1]?.[0])).toBe(
       '/api/v1/sessions?expectedContextRevision=10000000-0000-4000-8000-000000000001&workspaceId=20000000-0000-4000-8000-000000000002&pageSize=100&cursor=session-cursor-1'
+    );
+  });
+});
+
+describe('OrionWebApi problem details', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  test('preserves the stable redacted problem identity for a failed Session snapshot', async () => {
+    const problem = {
+      type: 'https://orioncode.dev/problems/web_internal_error',
+      title: 'Internal server error',
+      status: 500,
+      code: 'web_internal_error',
+      detail: 'The local Web Workbench request failed.',
+    };
+    const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify(problem), {
+        status: 500,
+        headers: { 'Content-Type': 'application/problem+json; charset=utf-8' },
+      })
+    );
+    const api = new OrionWebApi();
+    const sessionId = '30000000-0000-4000-8000-000000000003';
+    const context = {
+      expectedContextRevision: '10000000-0000-4000-8000-000000000001',
+      workspaceId: '20000000-0000-4000-8000-000000000002',
+    };
+
+    await expect(api.sessionSnapshot(sessionId, context)).rejects.toEqual(
+      expect.objectContaining<WebApiError>({
+        name: 'WebApiError',
+        message: 'The local Web Workbench request failed.',
+        status: 500,
+        code: 'web_internal_error',
+        type: 'https://orioncode.dev/problems/web_internal_error',
+      })
+    );
+    expect(String(fetchSpy.mock.calls[0]?.[0])).toBe(
+      `/api/v1/sessions/${sessionId}/snapshot?expectedContextRevision=${context.expectedContextRevision}&workspaceId=${context.workspaceId}&pageSize=50&tail=1`
     );
   });
 });

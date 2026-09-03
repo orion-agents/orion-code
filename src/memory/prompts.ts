@@ -4,9 +4,12 @@
  * Build system prompt sections for memory system.
  */
 
-
 import { loadAllMemories, loadMemoryIndex } from './storage';
-import { MEMORY_TYPES_SECTION, MEMORY_EXCLUSIONS_SECTION, MEMORY_FRONTMATTER_EXAMPLE } from './types';
+import {
+  MEMORY_TYPES_SECTION,
+  MEMORY_EXCLUSIONS_SECTION,
+  MEMORY_FRONTMATTER_EXAMPLE,
+} from './types';
 
 // ============================================================================
 // Memory Prompt Building
@@ -24,7 +27,7 @@ export function buildMemoryPrompt(): string {
     'This directory already exists — write to it directly with the Write tool.',
     '',
     'You should build up this memory system over time so that future conversations',
-    'can have a complete picture of who the user is, how they\'d like to collaborate,',
+    "can have a complete picture of who the user is, how they'd like to collaborate,",
     'what behaviors to avoid or repeat, and the context behind the work.',
     '',
     'If the user explicitly asks you to remember something, save it immediately.',

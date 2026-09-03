@@ -2,11 +2,21 @@
 
 Local-first, goal-driven coding agent for the terminal and browser.
 
-> v0.3.3 candidate — a bounded multi-Session Web Workbench, the built-in Orion Blocksmith theme
-> and the existing single-Session TUI/terminal surfaces. Candidate source is not an npm publication,
+> v0.3.7 candidate — a left project-rail interaction release on top of the v0.3.6 work:
+> shortened connection copy, a keyboard-reachable per-Session overflow menu
+> (rename / tags / archive / delete with confirmation), persisted Session tags with
+> rail badges, an archived-Session section with restore, and a friendlier
+> "打开或新增项目" workspace dialog. Candidate source is not an npm publication,
 > Git tag, or merge-ready release.
 
 [中文说明](README.zh-CN.md) ·
+[v0.3.7 plan](docs/plan/v0.3.7-left-rail-improvement-plan.md) ·
+[v0.3.6 plan](docs/plan/v0.3.6-plan.md) ·
+[v0.3.5 plan](docs/plan/v0.3.5-plan.md) ·
+[v0.3.4 stabilization plan](docs/plan/v0.3.4-stabilization-plan.md) ·
+[v0.3.4 contract](docs/architecture/v0.3.4-stabilization-contract.md) ·
+[v0.3.4 E2E plan](docs/test/v0.3.4-stabilization-e2e-plan.md) ·
+[v0.3.4 migration](docs/migration/v0.3.3-to-v0.3.4.md) ·
 [v0.3.3 plan](docs/plan/v0.3.3-plan.md) ·
 [v0.3.3 Web API](docs/architecture/v0.3.3-web-api.yaml) ·
 [mode/permission contract](docs/architecture/agent-mode-permission-contract.md) ·
@@ -19,6 +29,73 @@ Local-first, goal-driven coding agent for the terminal and browser.
 [Migration guide](docs/migration/v0.2.2-to-v0.3.0.md) ·
 [Settings migration](docs/migration/v0.2.2-to-v0.3.0-settings.md) ·
 [real-state gallery](docs/assets/screenshots/v0.3.0-web/README.md)
+
+## What v0.3.7 changes
+
+- **Left rail status copy** is shortened (已连接 / 离线 / …) with full sentences on hover.
+- **Per-Session overflow menu** replaces the rename icon — 重命名… / 管理标签… / 归档 /
+  删除…, fully keyboard navigable, deleting requires an explicit confirmation dialog.
+- **Session tags**: up to 8 persisted tags per Session, edited as chips and shown as
+  badges on rows; archive hides a Session (all files kept) into a rail 已归档 section
+  with one-click restore.
+- **Workspace dialog** rework: "打开或新增项目" with suggested workspaces, a collapsible
+  "其他工作区" list and busy/validation feedback.
+
+## What v0.3.6 changes
+
+- **A component-rendering contract layer.** Six `.test.tsx` suites (89 cases) assert the web
+  workbench UI through `renderToStaticMarkup` — no jsdom needed — pinning Markdown tables and
+  headings, status dots, the shortcut help dialog, the diff viewer, the permission card and the
+  resize separator keyboard contract.
+- **Keyboard-reachable resize separators.** Project navigation and work-panel splitters expose
+  full separator semantics (`aria-valuenow`/`aria-valuetext`) and answer ←/→ (±2%, Shift ±10%),
+  Home/End and Enter/Space from the keyboard.
+- **Status without colour alone.** A shared `StateDot` adds a shape channel (`data-tone`) and a
+  screen-reader label to every status dot — reasoning, research sources, review evidence and the
+  work-panel rail.
+- **Single-source shortcut help.** `⌘/` opens a help dialog rendered from the same binding table
+  the live handlers match against.
+- **Theme cycle in the header.** One click walks system → light → dark and persists through the
+  settings document; light tokens stay consolidated in the blocksmith token sheet.
+- **Stacked notifications.** Toasts queue instead of overwriting, auto-dismiss after 5s unless
+  error/recovery, and grade `aria-live` by severity.
+
+## What v0.3.5 changes
+
+- **Session snapshot state is its own machine.** A failed HTTP snapshot marks only the foreground
+  Session `failed` and never flips the live SSE into `replay-required`; Composer and command gates
+  require both a live transport and a ready foreground Session snapshot.
+- **Instant Session switching.** A cached projection renders synchronously, a bounded tail snapshot
+  refreshes it in the background, the most recent Sessions are prefetched after a baseline, and stale
+  responses can never overwrite the browser-local foreground.
+- **Runtime ownership across Workspaces.** The Host-level Session actor registry is created once per
+  Host. A Workspace Context switch swaps only the active control plane; Session actors of other
+  Workspaces keep running on the Workspace kernel they were created with, and only Host shutdown
+  closes every actor and kernel. Failed switches roll back without rebuilding the registry.
+- **Provable runtime ownership.** Host and browser diagnostics count Session snapshot requests,
+  latency and failures, Session switches and cache hits, and actor allocation/eviction/closure — so a
+  pure selection provably allocates zero Session Runtimes.
+- **Release hygiene.** Version identity moves to 0.3.5; `release:check` understands `codex/vX.Y.Z`
+  and `GITHUB_HEAD_REF`; the Web rail no longer hardcodes a fallback version.
+
+This branch also carries the merged [v0.3.4 stabilization](#what-v034-stabilizes) below.
+
+## What v0.3.4 stabilizes
+
+- **Context-bound writes.** Settings mutations now carry the active Workspace and Context revision;
+  stale tabs fail with no write or Runtime apply. Blank Session renames and busy slash commands also
+  fail without corrupting durable or active-turn state.
+- **One sensitive-data boundary.** Structured credentials, URL userinfo, canonical file targets,
+  Git diff paths, tool artifacts and concurrent command output are checked and redacted before they
+  reach browser or evidence surfaces.
+- **Deterministic Terminal transport.** Split surrogate pairs, browser write backpressure and
+  reconnect races preserve complete Unicode and the required replay, live-tail, exit and close
+  order.
+- **Honest durable/read projections.** Tool receipt and journal facts must validate as a pair;
+  symbolic links expose an effective target kind without losing lexical identity, and Review
+  distinguishes total changed files from its bounded visible page.
+- **Fail-closed release proof.** Failed live canaries, duplicate runtime evidence and lifecycle
+  scripts hidden inside a supposedly safe package-install stage are release blockers.
 
 ## What v0.3.3 includes
 
@@ -92,10 +169,10 @@ user extension boundaries.
 Node.js 22.12+, 24, and 26 are supported. Use Node 24 LTS for production or Node 26 Current for
 current development environments. Node 20 is upstream EOL and is no longer a v0.3 runtime.
 
-After the immutable `0.3.3` npm receipt exists:
+After the immutable `0.3.5` npm receipt exists:
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.3
+npm install -g @orion-agents/orion-code@0.3.7
 orion --version
 orion doctor
 ```
@@ -285,7 +362,10 @@ Node 22/24/26 for package identity, native SQLite, TUI, terminal, print, Web, Go
 MCP, Compact, and resume journeys. WEB33-P0-01..12 qualify the built-in appearance contract, while
 WEB33-P0-16..24 qualify parallel Session actors, foreground-local switching, bounded queues, the
 right rail and the single Settings entry. See the [`v0.3.3 plan`](docs/plan/v0.3.3-plan.md) and
-[`v0.3.3 E2E qualification plan`](docs/test/v0.3.3-web-workbench-e2e-plan.md).
+[`v0.3.3 E2E qualification plan`](docs/test/v0.3.3-web-workbench-e2e-plan.md). The security and
+stabilization delta is defined by the
+[`v0.3.4 test plan`](docs/test/v0.3.4-stabilization-e2e-plan.md), which does not treat source gates
+as release evidence.
 
 ## Security
 

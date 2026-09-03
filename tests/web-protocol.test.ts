@@ -166,10 +166,14 @@ describe('Web protocol v1', () => {
 
   test('parses one bounded atomic Settings batch and rejects duplicate or loose operations', () => {
     const requestId = randomUUID();
+    const workspaceId = randomUUID();
+    const expectedContextRevision = randomUUID();
     const expectedRevision = `hmac-sha256:${'a'.repeat(64)}`;
     expect(
       parseWebSettingsUpdate({
         requestId,
+        workspaceId,
+        expectedContextRevision,
         expectedRevision,
         operations: [
           { op: 'set', key: 'appearance.style', value: 'orion-blocksmith' },
@@ -180,6 +184,8 @@ describe('Web protocol v1', () => {
       })
     ).toEqual({
       requestId,
+      workspaceId,
+      expectedContextRevision,
       expectedRevision,
       operations: [
         { op: 'set', key: 'appearance.style', value: 'orion-blocksmith' },
@@ -192,6 +198,8 @@ describe('Web protocol v1', () => {
     expect(() =>
       parseWebSettingsUpdate({
         requestId,
+        workspaceId,
+        expectedContextRevision,
         expectedRevision,
         operations: [
           { op: 'set', key: 'appearance.theme', value: 'light' },
@@ -202,6 +210,8 @@ describe('Web protocol v1', () => {
     expect(() =>
       parseWebSettingsUpdate({
         requestId,
+        workspaceId,
+        expectedContextRevision,
         expectedRevision,
         operations: [{ op: 'unset', key: 'appearance.theme', value: 'dark' }],
       })
@@ -209,6 +219,8 @@ describe('Web protocol v1', () => {
     try {
       parseWebSettingsUpdate({
         requestId,
+        workspaceId,
+        expectedContextRevision,
         expectedRevision: '1',
         operations: [{ op: 'set', key: 'appearance.theme', value: 'dark' }],
       });
@@ -216,6 +228,13 @@ describe('Web protocol v1', () => {
     } catch (error) {
       expect(error).toMatchObject({ code: 'settings_invalid_operation' });
     }
+    expect(() =>
+      parseWebSettingsUpdate({
+        requestId,
+        expectedRevision,
+        operations: [{ op: 'set', key: 'appearance.theme', value: 'dark' }],
+      })
+    ).toThrow('workspaceId must be a non-empty string');
   });
 
   test('keeps the advanced Settings action pathless and UUID-bound', () => {

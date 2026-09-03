@@ -18,10 +18,7 @@ interface ComposerDraftDocumentV1 {
   readonly entries: readonly ComposerDraftV1[];
 }
 
-export function loadComposerDraft(
-  workspaceId: string,
-  sessionId: string
-): ComposerDraftV1 | null {
+export function loadComposerDraft(workspaceId: string, sessionId: string): ComposerDraftV1 | null {
   return (
     readDocument().entries.find(
       entry => entry.workspaceId === workspaceId && entry.sessionId === sessionId
@@ -32,7 +29,11 @@ export function loadComposerDraft(
 export function saveComposerDraft(input: Omit<ComposerDraftV1, 'updatedAt'>): void {
   const storage = browserSessionStorage();
   if (!storage) return;
-  const entry = Object.freeze({ ...input, references: [...input.references], updatedAt: Date.now() });
+  const entry = Object.freeze({
+    ...input,
+    references: [...input.references],
+    updatedAt: Date.now(),
+  });
   if (encodedBytes(entry) > MAX_DRAFT_BYTES) {
     throw new Error(`Composer draft exceeds ${MAX_DRAFT_BYTES} bytes.`);
   }
@@ -68,7 +69,9 @@ function readDocument(): ComposerDraftDocumentV1 {
   const storage = browserSessionStorage();
   if (!storage) return { version: 1, entries: [] };
   try {
-    const parsed = JSON.parse(storage.getItem(STORAGE_KEY) ?? '') as Partial<ComposerDraftDocumentV1>;
+    const parsed = JSON.parse(
+      storage.getItem(STORAGE_KEY) ?? ''
+    ) as Partial<ComposerDraftDocumentV1>;
     if (parsed.version !== 1 || !Array.isArray(parsed.entries)) return { version: 1, entries: [] };
     return {
       version: 1,

@@ -1,9 +1,4 @@
-import {
-  diffTuiFrames,
-  renderStyledFrameRow,
-  type TuiFrame,
-  type TuiFrameDiff,
-} from './frame';
+import { diffTuiFrames, renderStyledFrameRow, type TuiFrame, type TuiFrameDiff } from './frame';
 import { encodeStyleToSgr, SGR_RESET, shouldSuppressColor } from './style';
 
 export interface TuiTerminalRenderResult {

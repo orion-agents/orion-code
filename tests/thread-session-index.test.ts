@@ -16,6 +16,7 @@ import {
   ThreadSessionIndexError,
   type ThreadSessionIndexHeadV1,
 } from '../src/runtime/thread-session-index';
+import type { PlanReviewProjectionV1 } from '../src/runtime/thread-projection';
 
 describe('ThreadSessionIndexV1', () => {
   const roots: string[] = [];
@@ -85,6 +86,38 @@ describe('ThreadSessionIndexV1', () => {
     expect(countersAfter.manifestReads - countersBefore.manifestReads).toBeGreaterThanOrEqual(2);
     expect(countersAfter.pageReads - countersBefore.pageReads).toBeGreaterThanOrEqual(2);
     expect(countersAfter.bytesRead - countersBefore.bytesRead).toBeGreaterThan(0);
+  });
+
+  test('binds the durable Plan review projection into the cold-session manifest', () => {
+    const root = mkdtempSync(join(tmpdir(), 'orion-thread-session-index-'));
+    roots.push(root);
+    const store = new ThreadEventStore(root, randomUUID());
+    store.appendDurable({ payload: { type: 'thread.started', data: {} } });
+    const projection = store.loadProjection();
+    const planReview = {
+      reviewId: randomUUID(),
+      revision: randomUUID(),
+      planDigest: 'a'.repeat(64),
+      planReceiptDigest: 'b'.repeat(64),
+      status: 'awaiting_review',
+      createdAt: 1,
+      createdModel: 'model-test',
+      returnMode: 'build',
+      requestedSeq: 1,
+    } satisfies PlanReviewProjectionV1;
+    const head = indexHead(store.captureReadModelHead());
+
+    buildThreadSessionIndexV1({
+      rootDir: root,
+      threadId: store.threadId,
+      projection: { ...projection, planReview },
+      events: store.replay(0, projection.cursor).events,
+      head,
+    });
+
+    expect(loadThreadSessionIndexManifestV1(root, store.threadId, head)?.planReview).toEqual(
+      planReview
+    );
   });
 
   test('advances the manifest after durable commits and rejects an old revision cursor', () => {

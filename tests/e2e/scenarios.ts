@@ -40,7 +40,7 @@ export const WEB31_REQUIRED_EVIDENCE_FACTS_V1: Readonly<
     { key: 'web31.lazy_session_page', equals: true },
     { key: 'web31.zero_session_project', equals: true },
     { key: 'web31.project_pin_search', equals: true },
-    { key: 'web31.session_status_badges', equals: 'running,approval' },
+    { key: 'web31.session_status_badges', equals: 'approval' },
     { key: 'web31.scale_projects', equals: 100 },
     { key: 'web31.scale_sessions_per_project', equals: 200 },
     { key: 'web31.project_dom_nodes', minimum: 1 },

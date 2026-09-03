@@ -148,20 +148,25 @@ export class AutoFixRunner {
   // ============================================================================
 
   private async runCommand(command: string): Promise<{ success: boolean; output: string }> {
-    return new Promise((resolve) => {
+    return new Promise(resolve => {
       const [cmd, ...args] = command.split(' ');
 
-      execFile(cmd, args, {
-        cwd: this.projectPath,
-        timeout: this.config.timeout,
-        maxBuffer: 1024 * 1024,
-      }, (error, stdout, stderr) => {
-        const output = stdout.toString() + stderr.toString();
-        resolve({
-          success: !error,
-          output,
-        });
-      });
+      execFile(
+        cmd,
+        args,
+        {
+          cwd: this.projectPath,
+          timeout: this.config.timeout,
+          maxBuffer: 1024 * 1024,
+        },
+        (error, stdout, stderr) => {
+          const output = stdout.toString() + stderr.toString();
+          resolve({
+            success: !error,
+            output,
+          });
+        }
+      );
     });
   }
 
@@ -243,7 +248,7 @@ export class AutoFixRunner {
       }
     }
 
-    return errors.slice(0, 10);  // 限制数量
+    return errors.slice(0, 10); // 限制数量
   }
 }
 

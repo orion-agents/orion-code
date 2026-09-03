@@ -115,7 +115,7 @@ export class AuthService {
     atomicWriteFileSync(
       this.configPath,
       JSON.stringify(this.config, null, 2),
-      CREDENTIAL_WRITE_OPTS  // 0600，仅用户可读写；原子写避免半截文件
+      CREDENTIAL_WRITE_OPTS // 0600，仅用户可读写；原子写避免半截文件
     );
   }
 
@@ -298,10 +298,7 @@ function loadOrCreateKey(): Buffer {
 function encryptMap(plain: Record<string, string>, key: Buffer): string {
   const iv = randomBytes(12);
   const cipher = createCipheriv('aes-256-gcm', key, iv);
-  const ciphertext = Buffer.concat([
-    cipher.update(JSON.stringify(plain), 'utf-8'),
-    cipher.final(),
-  ]);
+  const ciphertext = Buffer.concat([cipher.update(JSON.stringify(plain), 'utf-8'), cipher.final()]);
   const blob: EncryptedBlob = {
     v: 1,
     iv: iv.toString('base64'),
@@ -315,11 +312,7 @@ function decryptMap(blob: string, key: Buffer): Record<string, string> | null {
   try {
     const parsed = JSON.parse(blob) as EncryptedBlob;
     if (parsed.v !== 1) return null;
-    const decipher = createDecipheriv(
-      'aes-256-gcm',
-      key,
-      Buffer.from(parsed.iv, 'base64'),
-    );
+    const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(parsed.iv, 'base64'));
     decipher.setAuthTag(Buffer.from(parsed.tag, 'base64'));
     const plaintext = Buffer.concat([
       decipher.update(Buffer.from(parsed.data, 'base64')),

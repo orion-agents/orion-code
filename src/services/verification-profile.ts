@@ -131,7 +131,9 @@ export function formatVerificationGateNotice(summary: VerificationSummary): stri
   if (summary.skippedReason) {
     lines.push(`Reason: ${summary.skippedReason}`);
   }
-  lines.push('Next action: run the missing checks, fix failures, or explicitly explain why verification is skipped.');
+  lines.push(
+    'Next action: run the missing checks, fix failures, or explicitly explain why verification is skipped.'
+  );
   return lines.join('\n');
 }
 
@@ -158,9 +160,9 @@ function readPackageScripts(cwd: string): Record<string, string> {
 
 function hasUsefulScript(scripts: Record<string, string>, name: string): boolean {
   const script = scripts[name];
-  return typeof script === 'string'
-    && script.trim().length > 0
-    && !/no test specified/i.test(script);
+  return (
+    typeof script === 'string' && script.trim().length > 0 && !/no test specified/i.test(script)
+  );
 }
 
 function normalizeCommand(command: string): string {
@@ -169,13 +171,15 @@ function normalizeCommand(command: string): string {
 
 export function isVerificationCommand(command: string): boolean {
   const normalized = normalizeCommand(command);
-  return /(^|\s)(npm|pnpm|yarn|bun)\s+(run\s+)?(build|test|lint|check)\b/i.test(normalized)
-    || /(^|\s)(npm|pnpm|yarn|bun)\s+run\s+prepublishOnly\b/i.test(normalized)
-    || /(^|\s)(jest|vitest|mocha|ava|tsc|eslint)\b/i.test(normalized)
-    || /(^|\s)(pytest|ruff|mypy|pyright|ty)\b/i.test(normalized)
-    || /^uv\s+run\s+(pytest|ruff|mypy|pyright|ty)\b/i.test(normalized)
-    || /^cargo\s+(test|clippy|check)\b/i.test(normalized)
-    || /^go\s+test\b/i.test(normalized);
+  return (
+    /(^|\s)(npm|pnpm|yarn|bun)\s+(run\s+)?(build|test|lint|check)\b/i.test(normalized) ||
+    /(^|\s)(npm|pnpm|yarn|bun)\s+run\s+prepublishOnly\b/i.test(normalized) ||
+    /(^|\s)(jest|vitest|mocha|ava|tsc|eslint)\b/i.test(normalized) ||
+    /(^|\s)(pytest|ruff|mypy|pyright|ty)\b/i.test(normalized) ||
+    /^uv\s+run\s+(pytest|ruff|mypy|pyright|ty)\b/i.test(normalized) ||
+    /^cargo\s+(test|clippy|check)\b/i.test(normalized) ||
+    /^go\s+test\b/i.test(normalized)
+  );
 }
 
 export function collectVerificationCommandResult(params: {
@@ -186,7 +190,8 @@ export function collectVerificationCommandResult(params: {
   error?: string;
 }): VerificationCommandResult | null {
   if (params.toolName !== 'exec_command') return null;
-  const command = typeof params.args.command === 'string' ? normalizeCommand(params.args.command) : '';
+  const command =
+    typeof params.args.command === 'string' ? normalizeCommand(params.args.command) : '';
   if (!command || !isVerificationCommand(command)) return null;
   return {
     command,
@@ -224,7 +229,7 @@ function passedCommandCoversExpected(passed: string, expected: string): boolean 
 
 export function summarizeVerificationState(
   profile: VerificationProfile,
-  results: VerificationCommandResult[],
+  results: VerificationCommandResult[]
 ): VerificationSummary {
   // `results` is a turn-scoped accumulator, not a per-command state map. Fold
   // it down to the *latest* outcome per normalized command before deriving the
@@ -245,8 +250,8 @@ export function summarizeVerificationState(
     .filter(([, result]) => !result.success)
     .map(([command]) => command);
   const expectedCommands = profile.commands.map(normalizeCommand);
-  const missingCommands = expectedCommands.filter(command =>
-    !passedCommands.some(passed => passedCommandCoversExpected(passed, command))
+  const missingCommands = expectedCommands.filter(
+    command => !passedCommands.some(passed => passedCommandCoversExpected(passed, command))
   );
 
   let skippedReason: string | undefined;
@@ -272,9 +277,10 @@ export function summarizeVerificationState(
     passedCommands,
     failedCommands,
     missingCommands,
-    claimAllowed: !profile.required
-      || expectedCommands.length === 0
-      || (missingCommands.length === 0 && failedCommands.length === 0),
+    claimAllowed:
+      !profile.required ||
+      expectedCommands.length === 0 ||
+      (missingCommands.length === 0 && failedCommands.length === 0),
     skippedReason,
   };
 }
@@ -290,10 +296,7 @@ function nodeCommands(cwd: string): string[] {
 
 function pythonCommands(cwd: string): string[] {
   if (existsSync(join(cwd, 'pyproject.toml'))) {
-    return [
-      'uv run pytest',
-      'uv run ruff check .',
-    ];
+    return ['uv run pytest', 'uv run ruff check .'];
   }
   if (existsSync(join(cwd, 'pytest.ini')) || existsSync(join(cwd, 'tests'))) {
     return ['pytest'];
@@ -301,7 +304,10 @@ function pythonCommands(cwd: string): string[] {
   return [];
 }
 
-export function selectVerificationProfile(cwd: string, changedFiles: string[]): VerificationProfile {
+export function selectVerificationProfile(
+  cwd: string,
+  changedFiles: string[]
+): VerificationProfile {
   const files = [...new Set(changedFiles)].sort();
   if (files.length === 0) {
     return {
@@ -313,7 +319,9 @@ export function selectVerificationProfile(cwd: string, changedFiles: string[]): 
     };
   }
 
-  const docsOnly = files.every(file => /\.(md|mdx|txt|rst)$/i.test(file) || file.startsWith('docs/'));
+  const docsOnly = files.every(
+    file => /\.(md|mdx|txt|rst)$/i.test(file) || file.startsWith('docs/')
+  );
   if (docsOnly) {
     return {
       profile: 'docs',
@@ -324,9 +332,10 @@ export function selectVerificationProfile(cwd: string, changedFiles: string[]): 
     };
   }
 
-  const nodeLike = existsSync(join(cwd, 'package.json'))
-    && (hasAnyExtension(files, ['.ts', '.tsx', '.js', '.jsx', '.json'])
-      || hasAnyPath(files, ['src', 'tests', 'bin']));
+  const nodeLike =
+    existsSync(join(cwd, 'package.json')) &&
+    (hasAnyExtension(files, ['.ts', '.tsx', '.js', '.jsx', '.json']) ||
+      hasAnyPath(files, ['src', 'tests', 'bin']));
   if (nodeLike) {
     const commands = nodeCommands(cwd);
     return {
@@ -334,14 +343,16 @@ export function selectVerificationProfile(cwd: string, changedFiles: string[]): 
       required: true,
       commands,
       changedFiles: files,
-      reason: commands.length > 0
-        ? 'Node/TypeScript project changes detected from package.json and changed file paths.'
-        : 'Node/TypeScript project changes detected, but no build/test/lint scripts are configured.',
+      reason:
+        commands.length > 0
+          ? 'Node/TypeScript project changes detected from package.json and changed file paths.'
+          : 'Node/TypeScript project changes detected, but no build/test/lint scripts are configured.',
     };
   }
 
-  const pythonLike = (existsSync(join(cwd, 'pyproject.toml')) || existsSync(join(cwd, 'pytest.ini')))
-    && hasAnyExtension(files, ['.py', '.toml']);
+  const pythonLike =
+    (existsSync(join(cwd, 'pyproject.toml')) || existsSync(join(cwd, 'pytest.ini'))) &&
+    hasAnyExtension(files, ['.py', '.toml']);
   if (pythonLike) {
     const commands = pythonCommands(cwd);
     return {
@@ -349,9 +360,10 @@ export function selectVerificationProfile(cwd: string, changedFiles: string[]): 
       required: true,
       commands,
       changedFiles: files,
-      reason: commands.length > 0
-        ? 'Python project changes detected from project files and changed file paths.'
-        : 'Python project changes detected, but no known test command was inferred.',
+      reason:
+        commands.length > 0
+          ? 'Python project changes detected from project files and changed file paths.'
+          : 'Python project changes detected, but no known test command was inferred.',
     };
   }
 

@@ -155,6 +155,37 @@ describe('ToolDetailRepository', () => {
       }
     });
 
+    it('does not expose X-prefixed JSON credentials through the browser-safe derivative', async () => {
+      const { getProjectArtifactsDir } = require('../src/services/config-dir');
+      const artifactDir = getProjectArtifactsDir(projectDir);
+      mkdirSync(artifactDir, { recursive: true });
+      const marker = 'SYNTHETIC_X_CLIENT_SECRET_9f4d2c8a';
+      const raw = JSON.stringify({ 'x-client-secret': marker, safe: 'visible' });
+      const safe = redactTraceText(raw);
+      writeFileSync(join(artifactDir, 'json-secret.txt'), raw, 'utf8');
+      writeFileSync(
+        join(artifactDir, `json-secret.txt${TOOL_ARTIFACT_WEB_SAFE_SUFFIX}`),
+        safe,
+        'utf8'
+      );
+
+      const page = await repo.read(
+        {
+          callId: 'call_json_secret',
+          sequence: 1,
+          artifactId: 'json-secret',
+          outputBytes: Buffer.byteLength(raw),
+        },
+        { offsetBytes: 0, limitBytes: 1024 },
+        projectDir
+      );
+
+      expect(page.redacted).toBe(true);
+      expect(page.content).not.toContain(marker);
+      expect(page.content).toContain('[REDACTED_SECRET]');
+      expect(page.content).toContain('visible');
+    });
+
     it('refuses a browser-safe derivative that is a symbolic link', async () => {
       const { getProjectArtifactsDir } = require('../src/services/config-dir');
       const artifactDir = getProjectArtifactsDir(projectDir);

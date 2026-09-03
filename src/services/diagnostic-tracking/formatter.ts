@@ -24,12 +24,13 @@ export function formatDiagnostic(diagnostic: Diagnostic): string {
   };
 
   const color = severityColor[diagnostic.severity] || INFO;
-  const severityLabel = {
-    [DiagnosticSeverity.Error]: 'E',
-    [DiagnosticSeverity.Warning]: 'W',
-    [DiagnosticSeverity.Information]: 'I',
-    [DiagnosticSeverity.Hint]: 'H',
-  }[diagnostic.severity] || '?';
+  const severityLabel =
+    {
+      [DiagnosticSeverity.Error]: 'E',
+      [DiagnosticSeverity.Warning]: 'W',
+      [DiagnosticSeverity.Information]: 'I',
+      [DiagnosticSeverity.Hint]: 'H',
+    }[diagnostic.severity] || '?';
 
   const file = FILE(diagnostic.file);
   const line = diagnostic.line;

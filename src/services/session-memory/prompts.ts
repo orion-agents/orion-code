@@ -63,9 +63,7 @@ Format as JSON.`;
 /**
  * 生成上下文压缩提示
  */
-export function generateContextCompressionPrompt(
-  oldMessages: string
-): string {
+export function generateContextCompressionPrompt(oldMessages: string): string {
   return `Summarize the following conversation history into a concise summary that preserves key context:
 
 ${oldMessages}

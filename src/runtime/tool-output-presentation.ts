@@ -91,11 +91,7 @@ export const DEFAULT_TOOL_OUTPUT_POLICY: ResolvedToolOutputPolicy = {
 // Known noisy aggregate tool names — always collapsed.
 // ============================================================================
 
-const ALWAYS_COLLAPSE_TOOLS = new Set([
-  'batch_read',
-  'batch_write',
-  'batch_edit',
-]);
+const ALWAYS_COLLAPSE_TOOLS = new Set(['batch_read', 'batch_write', 'batch_edit']);
 
 // ============================================================================
 // Presentation
@@ -188,7 +184,16 @@ function computeAdaptiveView(input: {
   detailRef: ToolOutputDetailRef;
   policy: ResolvedToolOutputPolicy;
 }): ToolOutputView {
-  const { toolName, success, defaultSummary, sanitized, outputBytes, outputLines, detailRef, policy } = input;
+  const {
+    toolName,
+    success,
+    defaultSummary,
+    sanitized,
+    outputBytes,
+    outputLines,
+    detailRef,
+    policy,
+  } = input;
 
   // Empty output.
   if (!sanitized || outputBytes === 0) {
@@ -353,7 +358,7 @@ export interface AggregateBatchReadResult {
 export function tryParseAggregateOutput(
   toolName: string,
   rawOutput: string,
-  detailRef?: ToolOutputDetailRef,
+  detailRef?: ToolOutputDetailRef
 ): ToolAggregateView | null {
   if (toolName === 'batch_read') {
     return parseBatchReadOutput(rawOutput, detailRef);
@@ -366,7 +371,7 @@ export function tryParseAggregateOutput(
 
 function parseBatchReadOutput(
   rawOutput: string,
-  parentDetailRef?: ToolOutputDetailRef,
+  parentDetailRef?: ToolOutputDetailRef
 ): ToolAggregateView | null {
   try {
     const parsed = JSON.parse(rawOutput);
@@ -389,9 +394,10 @@ function parseBatchReadOutput(
           state: skipped ? 'skipped' : success ? 'success' : 'error',
           target: target ? redactTraceText(target) : undefined,
           summary: redactTraceText(String(step.summary ?? summarizeOutput(output))),
-          outputBytes: typeof step.outputBytes === 'number'
-            ? step.outputBytes
-            : Buffer.byteLength(output, 'utf8'),
+          outputBytes:
+            typeof step.outputBytes === 'number'
+              ? step.outputBytes
+              : Buffer.byteLength(output, 'utf8'),
           detailRef: parentDetailRef,
         };
       }
@@ -417,7 +423,7 @@ function parseBatchReadOutput(
 
 function parseSubtaskBatchOutput(
   rawOutput: string,
-  parentDetailRef?: ToolOutputDetailRef,
+  parentDetailRef?: ToolOutputDetailRef
 ): ToolAggregateView | null {
   try {
     const parsed = JSON.parse(rawOutput) as unknown;
@@ -425,11 +431,12 @@ function parseSubtaskBatchOutput(
     const steps: ToolOutputStepSummary[] = parsed.results.map((value, index) => {
       const result = isRecord(value) ? value : {};
       const status = String(result.status ?? 'completed');
-      const state: ToolOutputStepSummary['state'] = status === 'skipped'
-        ? 'skipped'
-        : status === 'completed' || status === 'success'
-          ? 'success'
-          : 'error';
+      const state: ToolOutputStepSummary['state'] =
+        status === 'skipped'
+          ? 'skipped'
+          : status === 'completed' || status === 'success'
+            ? 'success'
+            : 'error';
       const summary = typeof result.summary === 'string' ? result.summary : status;
       return {
         index: index + 1,
@@ -466,5 +473,11 @@ function firstString(...values: unknown[]): string | undefined {
 }
 
 function summarizeOutput(output: string): string {
-  return output.split(/\r?\n/u).find(line => line.trim())?.trim().slice(0, 160) ?? '';
+  return (
+    output
+      .split(/\r?\n/u)
+      .find(line => line.trim())
+      ?.trim()
+      .slice(0, 160) ?? ''
+  );
 }

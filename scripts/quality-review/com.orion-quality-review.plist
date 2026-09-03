@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.orion.quality-review</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>/bin/bash</string>
+      <string>/Users/hope/ai-project/orion-code/scripts/quality-review/rotate-orion-review.sh</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>QUALITY_REVIEW_BRANCH</key>
+      <string>v0.3.1</string>
+      <key>QUALITY_REVIEW_NODE_BIN</key>
+      <string>/Users/hope/.nvm/versions/node/v22.22.3/bin</string>
+      <key>QUALITY_REVIEW_INTERVAL_SECONDS</key>
+      <string>1800</string>
+    </dict>
+
+    <key>StartInterval</key>
+    <integer>1800</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/hope/ai-project/orion-code</string>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/orion-quality-review.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/orion-quality-review.err.log</string>
+  </dict>
+</plist>

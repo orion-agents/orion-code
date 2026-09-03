@@ -8,7 +8,7 @@ import type {
   WebComposerActionResultV1,
   WebComposerControlStateV1,
 } from '../../src/web/protocol';
-import { activeSessionSnapshot } from './fixtures/api';
+import { activeSessionSnapshot, foregroundSessionId } from './fixtures/api';
 import {
   OPENAI_FIXTURE_ALTERNATE_MODEL,
   OPENAI_FIXTURE_FILES,
@@ -160,6 +160,7 @@ test('WEB32-P0-06 model and effort selection performs real compact and rolls inv
 }, testInfo) => {
   const finishSseTransitionEvidence = observeSessionSseTransition(page);
   await createSession(page, { name: 'WEB32 models' });
+  const sessionId = await foregroundSessionId(page);
   const ui = workbenchUi(page);
   await ui.modelButton.click();
   const modelMenu = page.getByRole('menu', { name: '会话模型' });
@@ -211,15 +212,15 @@ test('WEB32-P0-06 model and effort selection performs real compact and rolls inv
   expect(wired.reasoningEffort).toBe('high');
   await waitForIdle(page);
 
-  const beforeRejected = await hostComposerState(host.url);
-  const rejected = await hostComposerAction(host.url, beforeRejected.bootstrap, {
-    ...controlGuard(beforeRejected.bootstrap, beforeRejected.state),
+  const beforeRejected = await hostComposerState(host.url, sessionId);
+  const rejected = await hostComposerAction(host.url, beforeRejected.bootstrap, sessionId, {
+    ...controlGuard(beforeRejected.bootstrap, beforeRejected.state, sessionId),
     type: 'select_model',
     modelId: 'model-that-does-not-exist',
   });
   expect(rejected.status).toBe(422);
   expect(problemCode(rejected.body)).toBe('model_unavailable');
-  const afterRejected = await hostComposerState(host.url);
+  const afterRejected = await hostComposerState(host.url, sessionId);
   expect(afterRejected.state.model.modelId).toBe(OPENAI_FIXTURE_ALTERNATE_MODEL);
   expect(afterRejected.state.controlRevision).toBe(beforeRejected.state.controlRevision);
 
@@ -409,7 +410,10 @@ async function waitForDurableReceipts(
   return durableToolReceipts(await capturedSseEvents(page));
 }
 
-async function hostComposerState(hostUrl: string): Promise<{
+async function hostComposerState(
+  hostUrl: string,
+  sessionId: string
+): Promise<{
   readonly bootstrap: WebBootstrapV1;
   readonly state: WebComposerControlStateV1;
 }> {
@@ -417,13 +421,12 @@ async function hostComposerState(hostUrl: string): Promise<{
     headers: { Accept: 'application/json' },
   });
   const bootstrap = (await bootstrapResponse.json()) as WebBootstrapV1;
-  if (!bootstrap.activeSessionId) throw new Error('No active Session for Composer control probe.');
   const query = new URLSearchParams({
     workspaceId: bootstrap.workspaceId,
     expectedContextRevision: bootstrap.contextRevision,
   });
   const response = await fetch(
-    `${hostUrl}/api/v1/sessions/${encodeURIComponent(bootstrap.activeSessionId)}/composer-state?${query.toString()}`,
+    `${hostUrl}/api/v1/sessions/${encodeURIComponent(sessionId)}/composer-state?${query.toString()}`,
     { headers: { Accept: 'application/json' } }
   );
   if (!response.ok) throw new Error(`Composer state failed with HTTP ${response.status}.`);
@@ -433,11 +436,11 @@ async function hostComposerState(hostUrl: string): Promise<{
 async function hostComposerAction(
   hostUrl: string,
   bootstrap: WebBootstrapV1,
+  sessionId: string,
   body: Readonly<Record<string, unknown>>
 ): Promise<{ readonly status: number; readonly body: unknown }> {
-  if (!bootstrap.activeSessionId) throw new Error('No active Session for Composer action probe.');
   const response = await fetch(
-    `${hostUrl}/api/v1/sessions/${encodeURIComponent(bootstrap.activeSessionId)}/composer-actions`,
+    `${hostUrl}/api/v1/sessions/${encodeURIComponent(sessionId)}/composer-actions`,
     {
       method: 'POST',
       headers: {
@@ -453,12 +456,16 @@ async function hostComposerAction(
   return { status: response.status, body: text ? (JSON.parse(text) as unknown) : null };
 }
 
-function controlGuard(bootstrap: WebBootstrapV1, state: WebComposerControlStateV1) {
-  if (!bootstrap.activeSessionId) throw new Error('No active Session for control guard.');
+function controlGuard(
+  bootstrap: WebBootstrapV1,
+  state: WebComposerControlStateV1,
+  sessionId: string
+) {
   return {
     workspaceId: bootstrap.workspaceId,
     expectedContextRevision: bootstrap.contextRevision,
-    expectedSessionId: bootstrap.activeSessionId,
+    expectedSessionId: sessionId,
+    expectedSessionRuntimeRevision: state.sessionRuntime.runtimeRevision,
     expectedControlRevision: state.controlRevision,
   };
 }

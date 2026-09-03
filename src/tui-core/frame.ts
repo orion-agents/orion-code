@@ -37,7 +37,13 @@ export function createTuiFrame(width: number, height: number): TuiFrame {
   };
 }
 
-export function writeFrameText(frame: TuiFrame, row: number, column: number, text: string, style: TuiStyle = DEFAULT_STYLE): void {
+export function writeFrameText(
+  frame: TuiFrame,
+  row: number,
+  column: number,
+  text: string,
+  style: TuiStyle = DEFAULT_STYLE
+): void {
   let y = clamp(row, 0, frame.height - 1);
   let x = clamp(column, 0, frame.width - 1);
   const normalizedStyle = style === DEFAULT_STYLE ? DEFAULT_STYLE : normalizeStyle(style);
@@ -76,9 +82,7 @@ export function setFrameCursor(frame: TuiFrame, row: number, column: number, vis
 }
 
 export function renderFrameRows(frame: TuiFrame): string[] {
-  return frame.rows.map(row => row
-    .map(cell => cell.width === 0 ? '' : cell.char)
-    .join(''));
+  return frame.rows.map(row => row.map(cell => (cell.width === 0 ? '' : cell.char)).join(''));
 }
 
 export function diffTuiFrames(previous: TuiFrame | null, next: TuiFrame): TuiFrameDiff {
@@ -100,9 +104,9 @@ export function diffTuiFrames(previous: TuiFrame | null, next: TuiFrame): TuiFra
   return {
     changedRows,
     cursorChanged:
-      previous.cursor.row !== next.cursor.row
-      || previous.cursor.column !== next.cursor.column
-      || previous.cursor.visible !== next.cursor.visible,
+      previous.cursor.row !== next.cursor.row ||
+      previous.cursor.column !== next.cursor.column ||
+      previous.cursor.visible !== next.cursor.visible,
   };
 }
 
@@ -118,7 +122,11 @@ function rowsDifferent(prev: TuiCell[], next: TuiCell[]): boolean {
 }
 
 function createEmptyRow(width: number): TuiCell[] {
-  return Array.from({ length: width }, () => ({ char: ' ', width: 1 as const, style: DEFAULT_STYLE }));
+  return Array.from({ length: width }, () => ({
+    char: ' ',
+    width: 1 as const,
+    style: DEFAULT_STYLE,
+  }));
 }
 
 function charWidth(char: string): 0 | 1 | 2 {

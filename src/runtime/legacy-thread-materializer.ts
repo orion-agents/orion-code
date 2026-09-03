@@ -28,8 +28,11 @@ import {
   type ThreadCheckpointHeadV1,
 } from './thread-event-store';
 import {
+  CURRENT_THREAD_PROJECTION_DIGEST_VERSION_V1,
   projectThreadEvents,
+  resolveThreadProjectionDigestVersionV1,
   verifyThreadProjectionDigest,
+  type ThreadProjectionDigestVersionV1,
   type ThreadProjectionV1,
 } from './thread-projection';
 
@@ -67,6 +70,8 @@ export interface ThreadCutoverIndexEntryV1 {
   readonly importDigest: string;
   readonly eventDigest: string;
   readonly projectionDigest: string;
+  /** Missing on v0.3.2 cutover entries; inferred against exact known schemes. */
+  readonly projectionDigestVersion?: ThreadProjectionDigestVersionV1;
   readonly cursor: number;
   readonly eventLogFile: string;
   readonly projectionFile: string;
@@ -203,7 +208,7 @@ export function materializeLegacyThreadV1(
     const existing = current.sessions[options.sessionId];
     const entry = createIndexEntry(options.sessionId, store, plan);
     if (existing) {
-      if (canonicalRuntimeJson(existing) !== canonicalRuntimeJson(entry)) {
+      if (!sameCutoverEntry(existing, entry, plan.projection)) {
         throw new LegacyThreadMaterializationError(
           'ORION_THREAD_CUTOVER_CONFLICT',
           `Session ${options.sessionId} already points at a different v2 Thread`
@@ -266,7 +271,10 @@ export function openSessionCheckpointStorageV1(
       prefix =>
         prefix.cursor === entry.cursor &&
         prefix.eventDigest === entry.eventDigest &&
-        prefix.projectionDigest === entry.projectionDigest
+        prefix.projectionDigest === entry.projectionDigest &&
+        (entry.projectionDigestVersion === undefined ||
+          prefix.projectionDigestVersion === undefined ||
+          prefix.projectionDigestVersion === entry.projectionDigestVersion)
     )
   ) {
     return undefined;
@@ -324,7 +332,8 @@ export function openSessionStorageV1(
   const prefixVerified = store.verifyDurablePrefix(
     entry.cursor,
     entry.eventDigest,
-    entry.projectionDigest
+    entry.projectionDigest,
+    entry.projectionDigestVersion
   );
   // The cutover receipt seals the imported prefix, not the forever-changing
   // head of a live Thread. loadProjection() independently verifies/rebuilds the
@@ -778,6 +787,7 @@ function createIndexEntry(
     importDigest: plan.receipt.importDigest,
     eventDigest: plan.eventDigest,
     projectionDigest: plan.projection.digest,
+    projectionDigestVersion: CURRENT_THREAD_PROJECTION_DIGEST_VERSION_V1,
     cursor: plan.events.length,
     eventLogFile: basename(store.logPath),
     projectionFile: basename(store.projectionPath),
@@ -786,6 +796,33 @@ function createIndexEntry(
     ),
     cutoverAt: plan.receipt.sourceTimestamp,
   };
+}
+
+function sameCutoverEntry(
+  existing: ThreadCutoverIndexEntryV1,
+  next: ThreadCutoverIndexEntryV1,
+  projection: ThreadProjectionV1
+): boolean {
+  const {
+    projectionDigest: existingProjectionDigest,
+    projectionDigestVersion: existingProjectionDigestVersion,
+    ...existingIdentity
+  } = existing;
+  const {
+    projectionDigest: _nextProjectionDigest,
+    projectionDigestVersion: _nextProjectionDigestVersion,
+    ...nextIdentity
+  } = next;
+  void _nextProjectionDigest;
+  void _nextProjectionDigestVersion;
+  return (
+    canonicalRuntimeJson(existingIdentity) === canonicalRuntimeJson(nextIdentity) &&
+    resolveThreadProjectionDigestVersionV1(
+      projection,
+      existingProjectionDigest,
+      existingProjectionDigestVersion
+    ) !== undefined
+  );
 }
 
 function assertSourceUnchanged(

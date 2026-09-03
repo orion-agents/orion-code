@@ -182,6 +182,22 @@ async function handleRequest(context: RequestContext): Promise<void> {
     );
     return;
   }
+  const archivedSessionsMatch = path.match(/^\/workspaces\/([^/]+)\/sessions\/archived$/);
+  if (method === 'GET' && archivedSessionsMatch) {
+    const workspaceId = safeDecodePathSegment(archivedSessionsMatch[1]);
+    const contextGuard = requireContextGuardQuery(url);
+    sendJson(
+      response,
+      200,
+      collectionPage(
+        url,
+        `workspace-sessions-archived-${workspaceId}`,
+        context.workbench.listArchivedWorkspaceSessions(workspaceId, contextGuard),
+        session => session.id
+      )
+    );
+    return;
+  }
   const workspaceSummaryMatch = path.match(/^\/workspaces\/([^/]+)\/summary$/);
   if (method === 'GET' && workspaceSummaryMatch) {
     const workspaceId = requireUuid(safeDecodePathSegment(workspaceSummaryMatch[1]), 'workspaceId');
@@ -417,7 +433,7 @@ async function handleRequest(context: RequestContext): Promise<void> {
     assertOnlyKeys(body, ['requestId', 'name', 'expectedContextRevision', 'workspaceId']);
     const requestId = requireUuid(body.requestId, 'requestId');
     const contextGuard = requireContextGuardRecord(body);
-    const name = typeof body.name === 'string' ? body.name : '';
+    const name = requireText(body.name, 'name', 120);
     const sessionId = safeDecodePathSegment(sessionMatch[1]);
     const result = await context.workbench.executeMutation(
       requestId,
@@ -431,6 +447,93 @@ async function handleRequest(context: RequestContext): Promise<void> {
     sendJson(response, 200, result);
     return;
   }
+
+  // v0.3.7 — Session tags / archive / restore / delete. One mutation family:
+  // every body carries a requestId so the idempotency ledger dedupes retries.
+  const sessionTagsMatch = path.match(/^\/sessions\/([^/]+)\/tags$/);
+  if (method === 'POST' && sessionTagsMatch) {
+    assertMutation(request, context.nonce, context.origin);
+    const body = requireRecord(await readJson(request), 'Session tags request');
+    assertOnlyKeys(body, ['requestId', 'tags', 'expectedContextRevision', 'workspaceId']);
+    const requestId = requireUuid(body.requestId, 'requestId');
+    const contextGuard = requireContextGuardRecord(body);
+    const sessionId = safeDecodePathSegment(sessionTagsMatch[1]);
+    const result = await context.workbench.executeMutation(
+      requestId,
+      'session.tags',
+      { sessionId, tags: body.tags, ...contextGuard },
+      () => ({
+        requestId,
+        session: context.workbench.setSessionTags(sessionId, body.tags, contextGuard),
+      })
+    );
+    sendJson(response, 200, result);
+    return;
+  }
+
+  const sessionArchiveMatch = path.match(/^\/sessions\/([^/]+)\/archive$/);
+  if (method === 'POST' && sessionArchiveMatch) {
+    assertMutation(request, context.nonce, context.origin);
+    const body = requireRecord(await readJson(request), 'Session archive request');
+    assertOnlyKeys(body, ['requestId', 'expectedContextRevision', 'workspaceId']);
+    const requestId = requireUuid(body.requestId, 'requestId');
+    const contextGuard = requireContextGuardRecord(body);
+    const sessionId = safeDecodePathSegment(sessionArchiveMatch[1]);
+    const result = await context.workbench.executeMutation(
+      requestId,
+      'session.archive',
+      { sessionId, ...contextGuard },
+      () => ({
+        requestId,
+        session: context.workbench.archiveSession(sessionId, contextGuard),
+      })
+    );
+    sendJson(response, 200, result);
+    return;
+  }
+
+  const sessionRestoreMatch = path.match(/^\/sessions\/([^/]+)\/restore$/);
+  if (method === 'POST' && sessionRestoreMatch) {
+    assertMutation(request, context.nonce, context.origin);
+    const body = requireRecord(await readJson(request), 'Session restore request');
+    assertOnlyKeys(body, ['requestId', 'expectedContextRevision', 'workspaceId']);
+    const requestId = requireUuid(body.requestId, 'requestId');
+    const contextGuard = requireContextGuardRecord(body);
+    const sessionId = safeDecodePathSegment(sessionRestoreMatch[1]);
+    const result = await context.workbench.executeMutation(
+      requestId,
+      'session.restore',
+      { sessionId, ...contextGuard },
+      () => ({
+        requestId,
+        session: context.workbench.restoreSession(sessionId, contextGuard),
+      })
+    );
+    sendJson(response, 200, result);
+    return;
+  }
+
+  const sessionDeleteMatch = path.match(/^\/sessions\/([^/]+)$/);
+  if (method === 'DELETE' && sessionDeleteMatch) {
+    assertMutation(request, context.nonce, context.origin);
+    const body = requireRecord(await readJson(request), 'Session delete request');
+    assertOnlyKeys(body, ['requestId', 'expectedContextRevision', 'workspaceId']);
+    const requestId = requireUuid(body.requestId, 'requestId');
+    const contextGuard = requireContextGuardRecord(body);
+    const sessionId = safeDecodePathSegment(sessionDeleteMatch[1]);
+    const result = await context.workbench.executeMutation(
+      requestId,
+      'session.delete',
+      { sessionId, ...contextGuard },
+      () => ({
+        requestId,
+        deleted: context.workbench.deleteSession(sessionId, contextGuard).deleted,
+      })
+    );
+    sendJson(response, 200, result);
+    return;
+  }
+
   if (method === 'POST' && path === '/commands') {
     assertMutation(request, context.nonce, context.origin);
     sendJson(response, 202, await context.workbench.dispatch(await readJson(request)));
@@ -446,7 +549,12 @@ async function handleRequest(context: RequestContext): Promise<void> {
     const result = await context.workbench.executeMutation(
       body.requestId,
       'settings.update',
-      { expectedRevision: body.expectedRevision, operations: body.operations },
+      {
+        workspaceId: body.workspaceId,
+        expectedContextRevision: body.expectedContextRevision,
+        expectedRevision: body.expectedRevision,
+        operations: body.operations,
+      },
       async () => ({ requestId: body.requestId, ...(await context.workbench.updateSettings(body)) })
     );
     sendJson(response, 200, result);

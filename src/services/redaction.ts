@@ -8,6 +8,10 @@
  * table-driven test is what stops the next format from silently leaking.
  */
 const SECRET_PATTERNS: Array<[RegExp, string]> = [
+  // Redact URL userinfo before generic `token:` / `secret:` rules can consume
+  // only the password tail and make the complete credential boundary
+  // unrecognizable (issue #234).
+  [/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi, '$1[REDACTED_CREDENTIAL]@'],
   [
     /\b((?:GH_TOKEN|GITHUB_TOKEN|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN)\s*=\s*)(["']?)[^\s"',;]+/gi,
     '$1$2[REDACTED_SECRET]',
@@ -41,7 +45,6 @@ const SECRET_PATTERNS: Array<[RegExp, string]> = [
     /(["'](?:token|client[_-]?secret|private[_-]?key|secret[_-]?key|signing[_-]?key|encryption[_-]?key|session[_-]?key|db[_-]?password|credential[_-]?value|account[_-]?key|connection[_-]?string|database[_-]?url|dsn|pwd|auth)["']\s*:\s*)(["'])(?:[^"']+)(["'])/gi,
     '$1$2[REDACTED_SECRET]$3',
   ],
-  [/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/:@]+:[^\s/@]+@/gi, '$1[REDACTED_CREDENTIAL]@'],
   [
     /\b((?:OPENAI_API_KEY|DASHSCOPE_API_KEY|ANTHROPIC_API_KEY|XAI_API_KEY)\s*=\s*)(["']?)[^\s"',;]+/g,
     '$1$2[REDACTED_SECRET]',
@@ -115,8 +118,29 @@ export function isSensitiveFilePath(path: string): boolean {
 }
 
 export function redactTraceText(text: string): string {
-  return SECRET_PATTERNS.reduce(
+  const labelRedacted = SECRET_PATTERNS.reduce(
     (current, [pattern, replacement]) => current.replace(pattern, replacement),
     text
+  );
+  return redactStructuredSecretFields(labelRedacted);
+}
+
+function redactStructuredSecretFields(text: string): string {
+  const doubleQuoted = text.replace(
+    /("((?:\\.|[^"\\])*)"\s*:\s*)"(?:\\.|[^"\\])*"/gu,
+    (match, prefix: string, encodedKey: string) => {
+      let key = encodedKey;
+      try {
+        key = JSON.parse(`"${encodedKey}"`) as string;
+      } catch {
+        // Keep the literal key for JSON-like diagnostic output.
+      }
+      return isSensitiveFieldName(key) ? `${prefix}"[REDACTED_SECRET]"` : match;
+    }
+  );
+  return doubleQuoted.replace(
+    /('((?:\\.|[^'\\])*)'\s*:\s*)'(?:\\.|[^'\\])*'/gu,
+    (match, prefix: string, key: string) =>
+      isSensitiveFieldName(key) ? `${prefix}'[REDACTED_SECRET]'` : match
   );
 }

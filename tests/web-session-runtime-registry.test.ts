@@ -46,6 +46,60 @@ describe('WebSessionRuntimeRegistryV1', () => {
     expect(harness.registry.runningCount).toBe(0);
   });
 
+  it('counts actor allocations, LRU evictions and closes in stats()', async () => {
+    const harness = createHarness({ maxRunningSessions: 1, maxResidentSessionActors: 1 });
+    const a = key('A');
+    const b = key('B');
+
+    expect(harness.registry.stats()).toEqual({
+      actorsCreated: 0,
+      actorsClosed: 0,
+      actorsEvicted: 0,
+    });
+
+    // Running A allocates the first resident actor.
+    const aTerminal = deferred<void>();
+    const aRevision = harness.registry.summary(a).runtimeRevision;
+    await harness.registry.admitTurn({
+      key: a,
+      expectedRuntimeRevision: aRevision,
+      start: async () => ({ accepted: 'started', settled: aTerminal.promise }),
+    });
+    expect(harness.registry.stats()).toEqual({
+      actorsCreated: 1,
+      actorsClosed: 0,
+      actorsEvicted: 0,
+    });
+
+    // With A idle and the resident budget full, admitting B evicts A by LRU
+    // before allocating B.
+    aTerminal.resolve();
+    await flushPromises();
+    expect(harness.registry.summary(a).phase).toBe('idle');
+    const bTerminal = deferred<void>();
+    const bRevision = harness.registry.summary(b).runtimeRevision;
+    await harness.registry.admitTurn({
+      key: b,
+      expectedRuntimeRevision: bRevision,
+      start: async () => ({ accepted: 'started', settled: bTerminal.promise }),
+    });
+    expect(harness.registry.stats()).toEqual({
+      actorsCreated: 2,
+      actorsClosed: 1,
+      actorsEvicted: 1,
+    });
+
+    // Shutdown closes the remaining resident actor.
+    bTerminal.resolve();
+    await flushPromises();
+    await harness.registry.shutdown('test end');
+    expect(harness.registry.stats()).toEqual({
+      actorsCreated: 2,
+      actorsClosed: 2,
+      actorsEvicted: 1,
+    });
+  });
+
   it('serializes same-Session admission so concurrent retries cannot start two turns', async () => {
     const harness = createHarness({ maxRunningSessions: 3, maxResidentSessionActors: 4 });
     const actorKey = key('same');

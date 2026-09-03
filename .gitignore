@@ -1,4 +1,5 @@
 # Dependencies
+node_modules
 node_modules/
 
 # Build / generated output
@@ -65,3 +66,4 @@ assets/
 
 # Local runtime artifacts
 events.append
+.quality-review/

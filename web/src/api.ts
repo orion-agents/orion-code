@@ -454,6 +454,66 @@ export class OrionWebApi {
     return result.session;
   }
 
+  async updateSessionTags(
+    sessionId: string,
+    tags: readonly string[],
+    context: WebContextGuardV1
+  ): Promise<WebSessionSummaryV1> {
+    const result = await this.mutate<WebSessionMutationResultV1>(
+      `/sessions/${encodeURIComponent(sessionId)}/tags`,
+      'POST',
+      { requestId: requestId(), tags: [...tags], ...context }
+    );
+    return result.session;
+  }
+
+  async archiveSession(
+    sessionId: string,
+    context: WebContextGuardV1
+  ): Promise<WebSessionSummaryV1> {
+    const result = await this.mutate<WebSessionMutationResultV1>(
+      `/sessions/${encodeURIComponent(sessionId)}/archive`,
+      'POST',
+      { requestId: requestId(), ...context }
+    );
+    return result.session;
+  }
+
+  async restoreSession(
+    sessionId: string,
+    context: WebContextGuardV1
+  ): Promise<WebSessionSummaryV1> {
+    const result = await this.mutate<WebSessionMutationResultV1>(
+      `/sessions/${encodeURIComponent(sessionId)}/restore`,
+      'POST',
+      { requestId: requestId(), ...context }
+    );
+    return result.session;
+  }
+
+  async deleteSession(sessionId: string, context: WebContextGuardV1): Promise<void> {
+    await this.mutate<{ readonly requestId: string; readonly deleted: boolean }>(
+      `/sessions/${encodeURIComponent(sessionId)}`,
+      'DELETE',
+      { requestId: requestId(), ...context }
+    );
+  }
+
+  async listArchivedWorkspaceSessions(
+    workspaceId: string,
+    context: WebContextGuardV1,
+    cursor?: string
+  ): Promise<{
+    readonly sessions: readonly WebSessionSummaryV1[];
+    readonly nextCursor: string | null;
+  }> {
+    const page = await this.collectionPage<WebSessionSummaryV1>(
+      withContext(`/workspaces/${encodeURIComponent(workspaceId)}/sessions/archived`, context),
+      cursor
+    );
+    return { sessions: page.items, nextCursor: page.nextCursor };
+  }
+
   command(command: Omit<WebCommandV1, 'requestId'>): Promise<WebCommandResultV1> {
     return this.mutate('/commands', 'POST', { ...command, requestId: requestId() });
   }
@@ -461,11 +521,13 @@ export class OrionWebApi {
   async updateSettings(
     expectedRevision: string,
     operations: readonly SettingsOperationV1[],
+    context: WebContextGuardV1,
     stableRequestId = requestId()
   ): Promise<WebSettingsMutationResultV1> {
     const result = await this.mutate<unknown>('/settings', 'PATCH', {
       operations,
       expectedRevision,
+      ...context,
       requestId: stableRequestId,
     });
     const parsed = parseSettingsMutationResult(result);
@@ -528,7 +590,7 @@ export class OrionWebApi {
           handlers.onEvent(envelope);
         } catch (error) {
           handlers.onProtocolError?.(
-            error instanceof Error ? error.message : '无法解析 Runtime 事件。'
+            error instanceof Error ? error.message : '无法解析 Web Host 事件流消息。'
           );
         }
       });
@@ -654,7 +716,7 @@ function parseEnvelope(raw: string): WebEventEnvelopeV1 {
     ].includes(String(value.type)) ||
     !isRecord(value.payload)
   ) {
-    throw new Error('Runtime 事件不符合 Web protocol v1。');
+    throw new Error('Web Host 事件流消息不符合 Web protocol v1。');
   }
   if (value.type === 'runtime_event') {
     const runtimeValue = value.payload.value;
@@ -663,7 +725,7 @@ function parseEnvelope(raw: string): WebEventEnvelopeV1 {
       typeof value.payload.eventType !== 'string' ||
       runtimeValue.type !== value.payload.eventType
     ) {
-      throw new Error('Runtime 事件判别字段不一致。');
+      throw new Error('Web Host 事件流消息判别字段不一致。');
     }
   }
   if (

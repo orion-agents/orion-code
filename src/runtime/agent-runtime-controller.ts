@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'async_hooks';
 import { randomUUID } from 'crypto';
 import { findCommand, getVisibleCommands } from '../commands';
 import { parseInput } from '../commands/parser';
@@ -494,22 +495,7 @@ export class AgentRuntimeController {
 
     if (parsedInput.isCommand) {
       const command = findCommand(parsedInput.name) as RegisteredSlashCommand;
-      this.activeRun = this.runCommand(command, parsedInput.args)
-        .catch(error => this.handleRunLoopError(error))
-        .finally(() => {
-          this.activeRun = null;
-        });
-      return { type: 'command_handled' };
-    }
-
-    if (this.turnController.hasActiveTurn()) {
-      const parsed = parseInput(submitted);
-      if (parsed.isCommand) {
-        const command = findCommand(parsed.name);
-        if (!command) {
-          this.emitStatus(`Unknown command /${parsed.name}; active turn continues.`);
-          return { type: 'command_ignored' };
-        }
+      if (this.turnController.hasActiveTurn()) {
         if (command.busyPolicy === 'reject-busy') {
           this.emitStatus(`/${command.name} rejected: an agent turn is active.`);
           return { type: 'command_rejected_busy', commandId: command.id };
@@ -528,6 +514,16 @@ export class AgentRuntimeController {
         return { type: 'command_queued', commandId: command.id };
       }
 
+      const run = this.runCommand(command, parsedInput.args)
+        .catch(error => this.handleCommandError(command, error))
+        .finally(() => {
+          if (this.activeRun === run) this.activeRun = null;
+        });
+      this.activeRun = run;
+      return { type: 'command_handled' };
+    }
+
+    if (this.turnController.hasActiveTurn()) {
       this.turnController.clearExitIntent();
       this.turnController.requestRevision(submitted);
       // v0.1.3 (G1): echo the incremental input to the transcript immediately,
@@ -915,6 +911,20 @@ export class AgentRuntimeController {
     this.options.afterTurnLoop?.();
   }
 
+  private handleCommandError(command: RegisteredSlashCommand, error: unknown): void {
+    const message = sanitizeTerminalText(
+      redactTraceText(error instanceof Error ? error.message : String(error))
+    );
+    this.emitAppend({
+      role: 'error',
+      title: `/${command.name}`,
+      content: message,
+      errorLayer: 'runtime',
+      command: commandIdentity(command, false),
+    });
+    this.emitStatus(`/${command.name} failed; the active turn state was not changed.`);
+  }
+
   private async synchronizeSettingsAtLogicalBoundary(): Promise<void> {
     const synchronize = this.options.runtime.synchronizeSettings;
     if (!synchronize) return;
@@ -1300,34 +1310,92 @@ function commandIdentity(command: RegisteredSlashCommand, success: boolean) {
 async function captureCommandOutput(
   execute: () => CommandResult | Promise<CommandResult>
 ): Promise<{ result: CommandResult; output: string }> {
-  const lines: string[] = [];
-  const originalLog = console.log;
-  const originalError = console.error;
-  const originalWarn = console.warn;
-  const capture = (...values: unknown[]): void => {
-    const line = values
-      .map(value => {
-        if (typeof value === 'string') return value;
-        try {
-          return JSON.stringify(value);
-        } catch {
-          return String(value);
-        }
-      })
-      .join(' ');
-    lines.push(sanitizeTerminalText(line));
-  };
-
-  console.log = capture;
-  console.error = capture;
-  console.warn = capture;
+  const capture: CommandOutputCapture = { active: true, lines: [] };
+  acquireCommandConsoleBridge();
   try {
-    return { result: await execute(), output: lines.join('\n').trim() };
+    const result = await commandOutputCaptureStorage.run(capture, execute);
+    return { result, output: capture.lines.join('\n').trim() };
   } finally {
-    console.log = originalLog;
-    console.error = originalError;
-    console.warn = originalWarn;
+    capture.active = false;
+    releaseCommandConsoleBridge();
   }
+}
+
+type CommandConsoleMethodName = 'log' | 'error' | 'warn';
+
+interface CommandConsoleMethods {
+  readonly log: typeof console.log;
+  readonly error: typeof console.error;
+  readonly warn: typeof console.warn;
+}
+
+interface CommandOutputCapture {
+  active: boolean;
+  readonly lines: string[];
+}
+
+const commandOutputCaptureStorage = new AsyncLocalStorage<CommandOutputCapture>();
+let commandConsoleBridgeReferences = 0;
+let commandConsoleOriginalMethods: CommandConsoleMethods | undefined;
+
+const commandConsoleBridge: CommandConsoleMethods = {
+  log: (...values: unknown[]) => routeCommandConsole('log', values),
+  error: (...values: unknown[]) => routeCommandConsole('error', values),
+  warn: (...values: unknown[]) => routeCommandConsole('warn', values),
+};
+
+function acquireCommandConsoleBridge(): void {
+  if (commandConsoleBridgeReferences === 0) {
+    commandConsoleOriginalMethods = {
+      log: originalConsoleMethod('log'),
+      error: originalConsoleMethod('error'),
+      warn: originalConsoleMethod('warn'),
+    };
+    console.log = commandConsoleBridge.log;
+    console.error = commandConsoleBridge.error;
+    console.warn = commandConsoleBridge.warn;
+  }
+  commandConsoleBridgeReferences += 1;
+}
+
+function releaseCommandConsoleBridge(): void {
+  commandConsoleBridgeReferences = Math.max(0, commandConsoleBridgeReferences - 1);
+  if (commandConsoleBridgeReferences !== 0 || !commandConsoleOriginalMethods) return;
+  if (console.log === commandConsoleBridge.log) console.log = commandConsoleOriginalMethods.log;
+  if (console.error === commandConsoleBridge.error)
+    console.error = commandConsoleOriginalMethods.error;
+  if (console.warn === commandConsoleBridge.warn) console.warn = commandConsoleOriginalMethods.warn;
+}
+
+function originalConsoleMethod(method: CommandConsoleMethodName): typeof console.log {
+  const current = console[method];
+  if (current !== commandConsoleBridge[method] || !commandConsoleOriginalMethods) return current;
+  return commandConsoleOriginalMethods[method];
+}
+
+function routeCommandConsole(method: CommandConsoleMethodName, values: readonly unknown[]): void {
+  const capture = commandOutputCaptureStorage.getStore();
+  if (capture?.active) {
+    capture.lines.push(sanitizeTerminalText(redactTraceText(formatConsoleValues(values))));
+    return;
+  }
+  const original = commandConsoleOriginalMethods?.[method];
+  if (original && original !== commandConsoleBridge[method]) {
+    Reflect.apply(original, console, values);
+  }
+}
+
+function formatConsoleValues(values: readonly unknown[]): string {
+  return values
+    .map(value => {
+      if (typeof value === 'string') return value;
+      try {
+        return JSON.stringify(value) ?? String(value);
+      } catch {
+        return String(value);
+      }
+    })
+    .join(' ');
 }
 
 function projectFollowupQueueItem(item: QueuedFollowupItem): FollowupQueueItem {

@@ -1,5 +1,13 @@
-import { randomUUID } from 'crypto';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { createHash, randomUUID } from 'crypto';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -13,13 +21,32 @@ import { materializeLegacyThreadV1 } from '../src/runtime/legacy-thread-material
 import { ThreadEventStore } from '../src/runtime/thread-event-store';
 import { loadThreadSessionViewV1 } from '../src/runtime/thread-session-view';
 import { createContextUsageSnapshot } from '../src/services/model-context';
+import { buildRegistry } from '../src/services/model-registry';
 import { WebEventHub } from '../src/web/event-hub';
 import {
   pageCollectionItems,
   pageItems,
   WebWorkbenchController,
 } from '../src/web/workbench-controller';
+import {
+  rewriteCutoverProjectionReceipt,
+  v032ProjectionDigest,
+} from './support/thread-projection-compat';
 import { createFakeWebRuntime } from './support/web-runtime';
+
+interface WebSessionActivityDiagnostics {
+  readonly snapshotRequests: number;
+  readonly snapshotFailures: number;
+  readonly snapshotTotalMs: number;
+  readonly snapshotLastMs: number;
+  readonly controlPlaneInstalls: number;
+  readonly controlPlaneShutdowns: number;
+  readonly actors: {
+    readonly actorsCreated: number;
+    readonly actorsClosed: number;
+    readonly actorsEvicted: number;
+  };
+}
 
 describe('WebWorkbenchController', () => {
   let workspace: string;
@@ -311,6 +338,48 @@ describe('WebWorkbenchController', () => {
     await controller.shutdown();
   });
 
+  test('routes a running Session submit to steering without admitting another turn', async () => {
+    let releaseTurn!: () => void;
+    const activeTurn = new Promise<void>(resolve => {
+      releaseTurn = resolve;
+    });
+    const runInput = jest.fn(() => activeTurn);
+    const actorRuntime = createFakeWebRuntime(workspace);
+    actorRuntime.createAgentRunner = () => ({ runInput });
+    const controller = await WebWorkbenchController.create({
+      cwd: workspace,
+      createRuntime: async () => createFakeWebRuntime(workspace),
+      createSessionRuntime: async () => actorRuntime,
+    });
+    const session = await controller.createSession('steering target');
+
+    const started = await controller.dispatch({
+      requestId: randomUUID(),
+      ...sessionCommandTarget(controller, session.id),
+      type: 'submit',
+      text: 'hold the active turn',
+    });
+    expect(started).toMatchObject({ result: 'started', sessionRuntime: { phase: 'running' } });
+
+    const steered = await controller.dispatch({
+      requestId: randomUUID(),
+      ...sessionCommandTarget(controller, session.id),
+      type: 'submit',
+      text: 'revise the active turn',
+    });
+
+    expect(steered).toMatchObject({
+      result: 'revision_requested',
+      sessionRuntime: { phase: 'running' },
+    });
+    expect(runInput).toHaveBeenCalledTimes(1);
+    expect(controller.sessionRuntimeSummary(session.id).phase).toBe('running');
+
+    releaseTurn();
+    await controller.waitForSessionIdle(session.id);
+    await controller.shutdown();
+  });
+
   test('exposes the fourth Session turn as a cancellable FIFO admission', async () => {
     const releases: Array<() => void> = [];
     const actorRuntimes = Array.from({ length: 4 }, () => {
@@ -379,6 +448,7 @@ describe('WebWorkbenchController', () => {
     const before = controller.settings();
     const after = await controller.updateSettings({
       requestId: '7f88f043-4f90-4eca-8d35-224a6123cda2',
+      ...settingsContext(controller),
       expectedRevision: before.revision,
       operations: [{ op: 'set', key: 'permissions.toolConfirmation', value: 'deny' }],
     });
@@ -389,6 +459,7 @@ describe('WebWorkbenchController', () => {
     await expect(
       controller.updateSettings({
         requestId: 'b4c1ae96-4ef6-49d6-9998-52ed314cc503',
+        ...settingsContext(controller),
         expectedRevision: before.revision,
         operations: [{ op: 'set', key: 'permissions.toolConfirmation', value: 'allow' }],
       })
@@ -406,6 +477,7 @@ describe('WebWorkbenchController', () => {
 
     const changed = await controller.updateSettings({
       requestId: '85ca501f-3d3f-431a-a4c8-fbd26df5872f',
+      ...settingsContext(controller),
       expectedRevision: before.revision,
       operations: [{ op: 'set', key: 'defaults.model', value: 'next-model' }],
     });
@@ -416,6 +488,42 @@ describe('WebWorkbenchController', () => {
 
     const second = await controller.createSession('second');
     expect(loadSessionMeta(second.id)?.model).toBe('next-model');
+    await controller.shutdown();
+  });
+
+  test('rejects a delayed Settings write after the active workspace changes', async () => {
+    const secondary = join(workspace, 'secondary');
+    mkdirSync(secondary);
+    const updates = new Map<string, jest.Mock>();
+    const controller = await WebWorkbenchController.create({
+      cwd: workspace,
+      createRuntime: async cwd => {
+        const runtime = createFakeWebRuntime(cwd);
+        const update = jest.fn(runtime.updateSettings);
+        runtime.updateSettings = update;
+        updates.set(cwd, update);
+        return runtime;
+      },
+    });
+    const before = controller.settings();
+    const initialWorkspace = controller.workspace;
+    const staleContext = settingsContext(controller);
+
+    await controller.switchWorkspace(secondary, staleContext);
+    const targetWorkspace = controller.workspace;
+    expect(targetWorkspace).not.toBe(initialWorkspace);
+    await expect(
+      controller.updateSettings({
+        requestId: randomUUID(),
+        ...staleContext,
+        expectedRevision: before.revision,
+        operations: [{ op: 'set', key: 'defaults.effort', value: 'high' }],
+      })
+    ).rejects.toMatchObject({ status: 409, code: 'context_revision_conflict' });
+
+    expect(updates.get(initialWorkspace)).toHaveBeenCalledTimes(0);
+    expect(updates.get(targetWorkspace)).toHaveBeenCalledTimes(0);
+    expect(controller.settings().sections.defaults.effort.explicitValue).toBeUndefined();
     await controller.shutdown();
   });
 
@@ -473,6 +581,132 @@ describe('WebWorkbenchController', () => {
         mode: 'interactive',
       })
     ).rejects.toMatchObject({ status: 409, code: 'composer_control_conflict' });
+    await controller.shutdown();
+  });
+
+  test('projects canonical Session preferences after cold and resident Composer actions', async () => {
+    const actorRuntime = createFakeWebRuntime(workspace);
+    const built = buildRegistry({
+      providers: [
+        {
+          id: 'test',
+          baseUrl: 'https://example.invalid/v1',
+          apiKey: 'test-key',
+          protocol: 'openai-completions',
+        },
+      ],
+      models: [
+        {
+          id: 'test-model',
+          provider: 'test',
+          model: 'test-model',
+          reasoningCapability: {
+            kind: 'effort-level',
+            supportedLevels: ['low', 'high'],
+            defaultLevel: 'low',
+            adapter: 'openai-chat-reasoning-effort',
+            source: 'config',
+          },
+        },
+        {
+          id: 'next-model',
+          provider: 'test',
+          model: 'next-model',
+          reasoningCapability: {
+            kind: 'effort-level',
+            supportedLevels: ['low', 'high'],
+            defaultLevel: 'low',
+            adapter: 'openai-chat-reasoning-effort',
+            source: 'config',
+          },
+        },
+      ],
+      defaultModel: 'test-model',
+    });
+    if (!built.registry) throw new Error('Composer model registry fixture failed.');
+    actorRuntime.config.modelRegistry = built.registry;
+    const eventHub = new WebEventHub();
+    const emit = jest.spyOn(eventHub, 'emit');
+    const controller = await WebWorkbenchController.create({
+      cwd: workspace,
+      eventHub,
+      createRuntime: async cwd => createFakeWebRuntime(cwd),
+      createSessionRuntime: async () => actorRuntime,
+    });
+    const session = await controller.createSession('canonical Composer Session');
+    const baseline = controller.bootstrap('canonical-composer');
+    const guard = {
+      workspaceId: baseline.workspaceId,
+      expectedContextRevision: baseline.contextRevision,
+    };
+    const cold = controller.composerState(session.id, guard);
+    expect(cold.sessionRuntime).toMatchObject({ phase: 'cold', resident: false });
+
+    const selected = await controller.applyComposerAction({
+      requestId: randomUUID(),
+      ...guard,
+      expectedSessionId: session.id,
+      expectedSessionRuntimeRevision: cold.sessionRuntime.runtimeRevision,
+      expectedControlRevision: cold.controlRevision,
+      type: 'select_model',
+      modelId: 'next-model',
+      effort: 'high',
+    });
+
+    expect(selected).toMatchObject({
+      outcome: 'applied',
+      state: {
+        sessionId: session.id,
+        sessionRuntime: { resident: true },
+        model: {
+          modelId: 'next-model',
+          effort: { requested: 'high', effective: 'high' },
+        },
+      },
+    });
+    expect(loadSessionMeta(session.id)).toMatchObject({
+      model: 'next-model',
+      effortPreference: 'high',
+    });
+
+    const permission = await controller.applyComposerAction({
+      requestId: randomUUID(),
+      ...guard,
+      expectedSessionId: session.id,
+      expectedSessionRuntimeRevision: selected.state.sessionRuntime.runtimeRevision,
+      expectedControlRevision: selected.state.controlRevision,
+      type: 'set_permission_override',
+      value: 'allow',
+    });
+
+    expect(permission.state).toMatchObject({
+      model: {
+        modelId: 'next-model',
+        effort: { requested: 'high', effective: 'high' },
+      },
+      permission: { effective: 'allow', override: 'allow', source: 'session' },
+    });
+    expect(loadSessionMeta(session.id)).toMatchObject({
+      model: 'next-model',
+      effortPreference: 'high',
+      toolConfirmationOverride: 'allow',
+    });
+    expect(controller.composerState(session.id, guard)).toMatchObject({
+      controlRevision: permission.state.controlRevision,
+      model: {
+        modelId: 'next-model',
+        effort: { requested: 'high', effective: 'high' },
+      },
+      permission: { effective: 'allow', override: 'allow', source: 'session' },
+    });
+    const latestComposerEvent = emit.mock.calls
+      .map(call => call[0])
+      .filter(event => event.type === 'composer_state_changed')
+      .at(-1);
+    expect(latestComposerEvent).toEqual({
+      type: 'composer_state_changed',
+      state: permission.state,
+    });
     await controller.shutdown();
   });
 
@@ -889,6 +1123,41 @@ describe('WebWorkbenchController', () => {
     await controller.shutdown();
   });
 
+  test('counts snapshot activity and proves cold reads allocate no Session actor', async () => {
+    const session = createSession(workspace, 'test-model');
+    appendSessionMessages(session.id, [{ role: 'user', content: 'hello', timestamp: 1 }]);
+    const controller = await WebWorkbenchController.create({
+      cwd: workspace,
+      createRuntime: async cwd => createFakeWebRuntime(cwd),
+    });
+
+    const before = await controller.diagnostics();
+    const beforeSession = before.session as WebSessionActivityDiagnostics | undefined;
+    expect(beforeSession).toMatchObject({
+      snapshotRequests: 0,
+      snapshotFailures: 0,
+      actors: { actorsCreated: 0, actorsClosed: 0, actorsEvicted: 0 },
+    });
+    expect(beforeSession?.controlPlaneInstalls).toBeGreaterThanOrEqual(1);
+
+    expect(controller.sessionSnapshot(session.id, undefined, 50, true).session.id).toBe(session.id);
+    // An unknown Session fails the request; the failure itself is counted but
+    // must not allocate an actor or touch the control plane.
+    expect(() => controller.sessionSnapshot('missing-session', undefined, 50, true)).toThrow();
+
+    const after = await controller.diagnostics();
+    const afterSession = after.session as WebSessionActivityDiagnostics | undefined;
+    expect(afterSession).toMatchObject({
+      snapshotRequests: 2,
+      snapshotFailures: 1,
+      actors: { actorsCreated: 0, actorsClosed: 0, actorsEvicted: 0 },
+    });
+    expect(afterSession?.snapshotTotalMs ?? 0).toBeGreaterThanOrEqual(
+      afterSession?.snapshotLastMs ?? 0
+    );
+    await controller.shutdown();
+  });
+
   test('serves v2 transcript pages without reopening the full projection and stales old cursors', async () => {
     const session = createSession(workspace, 'test-model');
     appendSessionMessages(
@@ -966,6 +1235,80 @@ describe('WebWorkbenchController', () => {
     await controller.shutdown();
   });
 
+  test('reads a v0.3.2 cutover snapshot cold without creating an actor or changing facts', async () => {
+    const session = createSession(workspace, 'test-model');
+    appendSessionMessages(session.id, [
+      { role: 'user', content: 'legacy question', timestamp: 1 },
+      { role: 'assistant', content: 'legacy answer', timestamp: 2 },
+    ]);
+    const materialized = materializeLegacyThreadV1({
+      projectPath: workspace,
+      sessionId: session.id,
+    });
+    const store = new ThreadEventStore(
+      getProjectThreadsV2Dir(workspace),
+      materialized.plan.receipt.threadId
+    );
+    const legacyProjectionDigest = v032ProjectionDigest(materialized.plan.projection);
+    expect(legacyProjectionDigest).not.toBe(materialized.plan.projection.digest);
+    rewriteCutoverProjectionReceipt({
+      projectPath: workspace,
+      sessionId: session.id,
+      projectionDigest: legacyProjectionDigest,
+    });
+    const eventLogBefore = readFileSync(store.logPath);
+    const eventLogDigestBefore = createHash('sha256').update(eventLogBefore).digest('hex');
+    const createSessionRuntime = jest.fn(async cwd => createFakeWebRuntime(cwd));
+    const controller = await WebWorkbenchController.create({
+      cwd: workspace,
+      createRuntime: async cwd => createFakeWebRuntime(cwd),
+      createSessionRuntime,
+    });
+
+    const snapshot = controller.sessionSnapshot(
+      session.id,
+      undefined,
+      50,
+      true,
+      settingsContext(controller)
+    );
+
+    expect(snapshot).toMatchObject({
+      threadId: materialized.plan.receipt.threadId,
+      threadStatus: 'idle',
+      sessionRuntime: { phase: 'cold', resident: false },
+      runtime: { active: false, processing: false },
+      transcript: {
+        items: [
+          expect.objectContaining({ role: 'user', content: 'legacy question' }),
+          expect.objectContaining({ role: 'assistant', content: 'legacy answer' }),
+        ],
+      },
+    });
+    expect(snapshot.projectionDigest).toBe(materialized.plan.projection.digest);
+    expect(createSessionRuntime).not.toHaveBeenCalled();
+    const eventLogAfter = readFileSync(store.logPath);
+    expect(eventLogAfter).toEqual(eventLogBefore);
+    expect(eventLogAfter.byteLength).toBe(eventLogBefore.byteLength);
+    expect(createHash('sha256').update(eventLogAfter).digest('hex')).toBe(eventLogDigestBefore);
+
+    rewriteCutoverProjectionReceipt({
+      projectPath: workspace,
+      sessionId: session.id,
+      projectionDigest: 'f'.repeat(64),
+    });
+    expect(() =>
+      controller.sessionSnapshot(session.id, undefined, 50, true, settingsContext(controller))
+    ).toThrow(
+      expect.objectContaining({
+        code: 'ORION_THREAD_CUTOVER_INDEX_CORRUPT',
+      })
+    );
+    expect(createSessionRuntime).not.toHaveBeenCalled();
+    expect(readFileSync(store.logPath)).toEqual(eventLogBefore);
+    await controller.shutdown();
+  });
+
   test('projects a recovered durable interruption instead of reporting the actor idle', async () => {
     const session = createSession(workspace, 'test-model');
     appendSessionMessages(session.id, [
@@ -1006,6 +1349,135 @@ describe('WebWorkbenchController', () => {
     expect(snapshot.runtime.processing).toBe(false);
     await controller.shutdown();
   });
+
+  test('keeps a running Session actor alive across a Workspace switch and back (WEB35-P0-08/09)', async () => {
+    const secondary = join(workspace, 'secondary');
+    mkdirSync(secondary);
+    const releases: Array<() => void> = [];
+    const heldTurn = () => new Promise<void>(resolve => releases.push(resolve));
+    const runInputA = jest.fn(() => heldTurn());
+    const runInputB = jest.fn(() => heldTurn());
+    const actorRuntimeA = createFakeWebRuntime(workspace);
+    actorRuntimeA.createAgentRunner = () => ({ runInput: runInputA });
+    const actorRuntimeB = createFakeWebRuntime(secondary);
+    actorRuntimeB.createAgentRunner = () => ({ runInput: runInputB });
+    const actorRuntimes = [actorRuntimeA, actorRuntimeB];
+    const controller = await WebWorkbenchController.create({
+      cwd: workspace,
+      createRuntime: async cwd => createFakeWebRuntime(cwd),
+      createSessionRuntime: async () => {
+        const runtime = actorRuntimes.shift();
+        if (!runtime) throw new Error('Unexpected extra Session actor.');
+        return runtime;
+      },
+    });
+
+    // A runs a turn in the primary Workspace.
+    const sessionA = await controller.createSession('A running session');
+    const primaryContext = settingsContext(controller);
+    const startedA = await controller.dispatch({
+      requestId: randomUUID(),
+      ...sessionCommandTarget(controller, sessionA.id),
+      type: 'submit',
+      text: 'A_RUNNING_TURN',
+    });
+    expect(startedA).toMatchObject({ result: 'started', sessionRuntime: { phase: 'running' } });
+    const createdAfterA = (
+      (await controller.diagnostics()).session as WebSessionActivityDiagnostics | undefined
+    )?.actors.actorsCreated;
+
+    // Switching to B while A's actor is still running must neither be blocked
+    // (the old gate rejected every active Session actor) nor tear A down.
+    await controller.switchWorkspace(secondary, primaryContext);
+    expect(controller.workspace).toBe(realpathSync(secondary));
+    expect(actorRuntimeA.shutdown).not.toHaveBeenCalled();
+    expect(
+      ((await controller.diagnostics()).session as WebSessionActivityDiagnostics | undefined)
+        ?.actors.actorsCreated
+    ).toBe(createdAfterA);
+
+    // B can submit its own turn concurrently while A is still running.
+    const sessionB = await controller.createSession('B concurrent turn');
+    const startedB = await controller.dispatch({
+      requestId: randomUUID(),
+      ...sessionCommandTarget(controller, sessionB.id),
+      type: 'submit',
+      text: 'B_RUNNING_TURN',
+    });
+    expect(startedB).toMatchObject({ result: 'started', sessionRuntime: { phase: 'running' } });
+    expect(runInputB).toHaveBeenCalledTimes(1);
+
+    // Release both turns; each Session settles in its own Workspace context.
+    expect(releases).toHaveLength(2);
+    for (const release of releases) release();
+    await controller.waitForSessionIdle(sessionB.id);
+    expect(controller.sessionRuntimeSummary(sessionB.id)).toMatchObject({
+      phase: 'idle',
+      resident: true,
+    });
+
+    // Returning to A recovers the original actor: resident, idle, and not
+    // re-created by the Context round-trip.
+    const secondaryContext = settingsContext(controller);
+    await controller.switchWorkspace(workspace, secondaryContext);
+    expect(controller.workspace).toBe(realpathSync(workspace));
+    await controller.waitForSessionIdle(sessionA.id);
+    expect(controller.sessionRuntimeSummary(sessionA.id)).toMatchObject({
+      phase: 'idle',
+      resident: true,
+    });
+    expect(
+      ((await controller.diagnostics()).session as WebSessionActivityDiagnostics | undefined)
+        ?.actors.actorsCreated
+    ).toBe((createdAfterA ?? 0) + 1);
+
+    // Host shutdown is the single point that closes every Workspace's actors.
+    await controller.shutdown();
+    expect(actorRuntimeA.shutdown).toHaveBeenCalledTimes(1);
+    expect(actorRuntimeB.shutdown).toHaveBeenCalledTimes(1);
+  });
+
+  test('preserves resident Session actors when a Workspace switch fails and rolls back', async () => {
+    const secondary = join(workspace, 'secondary');
+    mkdirSync(secondary);
+    const actorRuntime = createFakeWebRuntime(workspace);
+    actorRuntime.createAgentRunner = () => ({ runInput: jest.fn(async () => undefined) });
+    let installs = 0;
+    const controller = await WebWorkbenchController.create({
+      cwd: workspace,
+      createRuntime: async cwd => {
+        installs += 1;
+        if (installs > 1) throw new Error('secondary control plane install exploded');
+        return createFakeWebRuntime(cwd);
+      },
+      createSessionRuntime: async () => actorRuntime,
+    });
+    const session = await controller.createSession('rollback survivor');
+    await controller.dispatch({
+      requestId: randomUUID(),
+      ...sessionCommandTarget(controller, session.id),
+      type: 'submit',
+      text: 'finish before rollback',
+    });
+    await controller.waitForSessionIdle(session.id);
+    const residentRevision = controller.sessionRuntimeSummary(session.id).runtimeRevision;
+    const primaryContext = settingsContext(controller);
+
+    await expect(controller.switchWorkspace(secondary, primaryContext)).rejects.toThrow(
+      'secondary control plane install exploded'
+    );
+
+    // The failed activation restores the previous Context without rebuilding
+    // the Session registry: the resident actor is still the same one.
+    expect(controller.workspace).toBe(realpathSync(workspace));
+    expect(controller.sessionRuntimeSummary(session.id)).toMatchObject({
+      phase: 'idle',
+      resident: true,
+    });
+    expect(controller.sessionRuntimeSummary(session.id).runtimeRevision).toBe(residentRevision);
+    await controller.shutdown();
+    expect(actorRuntime.shutdown).toHaveBeenCalledTimes(1);
+  });
 });
 
 function sessionCommandTarget(controller: WebWorkbenchController, sessionId: string) {
@@ -1018,6 +1490,14 @@ function sessionCommandTarget(controller: WebWorkbenchController, sessionId: str
   } as const;
 }
 
+function settingsContext(controller: WebWorkbenchController) {
+  const bootstrap = controller.bootstrap('settings-context');
+  return {
+    workspaceId: bootstrap.workspaceId,
+    expectedContextRevision: bootstrap.contextRevision,
+  } as const;
+}
+
 async function waitForCondition(condition: jest.Mock, attempts = 100): Promise<void> {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (condition.mock.calls.length > 0) return;
@@ -1025,3 +1505,107 @@ async function waitForCondition(condition: jest.Mock, attempts = 100): Promise<v
   }
   throw new Error('Timed out waiting for the test condition.');
 }
+
+describe('session tags / archive / delete (v0.3.7)', () => {
+  let lifecycleWorkspace: string;
+  beforeEach(() => {
+    lifecycleWorkspace = mkdtempSync(join(tmpdir(), 'orion-v037-controller-'));
+  });
+  afterEach(() => {
+    rmSync(lifecycleWorkspace, { recursive: true, force: true });
+  });
+
+  async function freshController() {
+    const controller = await WebWorkbenchController.create({
+      cwd: lifecycleWorkspace,
+      createRuntime: async cwd => createFakeWebRuntime(cwd),
+    });
+    const session = await controller.createSession('v037 lifecycle');
+    const baseline = controller.bootstrap('nonce');
+    const guard = {
+      workspaceId: baseline.workspaceId,
+      expectedContextRevision: baseline.contextRevision,
+    };
+    return { controller, session, guard };
+  }
+
+  test('setSessionTags rejects malformed tag sets before touching storage', async () => {
+    const { controller, session, guard } = await freshController();
+    await expect(
+      controller.setSessionTags(session.id, ['ok', 42 as unknown as string], guard)
+    ).rejects.toMatchObject({ code: 'invalid_tags' });
+    await expect(
+      controller.setSessionTags(
+        session.id,
+        Array.from({ length: 9 }, (_, index) => `tag-${index}`),
+        guard
+      )
+    ).rejects.toMatchObject({ code: 'invalid_tags' });
+    await expect(
+      controller.setSessionTags(session.id, ['x'.repeat(33)], guard)
+    ).rejects.toMatchObject({ code: 'invalid_tags' });
+    await controller.shutdown();
+  });
+
+  test('setSessionTags persists normalized tags into the summary', async () => {
+    const { controller, session, guard } = await freshController();
+    const updated = controller.setSessionTags(session.id, [' bug ', 'bug', '前端'], guard);
+    expect(updated.tags).toEqual(['bug', '前端']);
+    const cleared = controller.setSessionTags(session.id, [], guard);
+    expect(cleared.tags).toBeUndefined();
+    await controller.shutdown();
+  });
+
+  test('archive -> hidden from default list -> restore brings it back', async () => {
+    const { controller, session, guard } = await freshController();
+    const archived = controller.archiveSession(session.id, guard);
+    expect(archived.id).toBe(session.id);
+    const list = controller.listWorkspaceSessions(guard.workspaceId, guard);
+    expect(list.some(item => item.id === session.id)).toBe(false);
+    const archivedList = controller.listArchivedWorkspaceSessions(guard.workspaceId, guard);
+    expect(archivedList.some(item => item.id === session.id)).toBe(true);
+    const restored = controller.restoreSession(session.id, guard);
+    expect(restored.id).toBe(session.id);
+    expect(
+      controller
+        .listWorkspaceSessions(guard.workspaceId, guard)
+        .some(item => item.id === session.id)
+    ).toBe(true);
+    await controller.shutdown();
+  });
+
+  test('delete refuses a session with a resident actor, then succeeds when cold', async () => {
+    const { controller, session, guard } = await freshController();
+    await controller.activateSession(session.id, guard);
+    await expect(controller.deleteSession(session.id, guard)).rejects.toMatchObject({
+      code: 'session_busy',
+    });
+    await controller.shutdown();
+  });
+
+  test('session lifecycle mutations reject foreign workspace guards', async () => {
+    const { controller, session } = await freshController();
+    const foreign = {
+      workspaceId: randomUUID(),
+      expectedContextRevision: 'stale',
+    };
+    await expect(controller.setSessionTags(session.id, ['x'], foreign)).rejects.toThrow();
+    await expect(controller.archiveSession(session.id, foreign)).rejects.toThrow();
+    await expect(controller.deleteSession(session.id, foreign)).rejects.toThrow();
+    await controller.shutdown();
+  });
+
+  test('lifecycle mutations 404 on unknown sessions', async () => {
+    const { controller, guard } = await freshController();
+    await expect(controller.setSessionTags('missing', ['x'], guard)).rejects.toMatchObject({
+      code: 'session_not_found',
+    });
+    await expect(controller.archiveSession('missing', guard)).rejects.toMatchObject({
+      code: 'session_not_found',
+    });
+    await expect(controller.deleteSession('missing', guard)).rejects.toMatchObject({
+      code: 'session_not_found',
+    });
+    await controller.shutdown();
+  });
+});

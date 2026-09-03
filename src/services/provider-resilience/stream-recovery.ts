@@ -26,16 +26,14 @@ export interface StreamOverlapResult {
 export function reconcileStreamOverlap(
   previousText: string,
   recoveryText: string,
-  maxWindow = 2048,
+  maxWindow = 2048
 ): StreamOverlapResult {
   if (!previousText || !recoveryText) {
     return { suffix: recoveryText, overlapFound: false, overlapText: '' };
   }
 
   // Only look at the tail of previousText within maxWindow.
-  const tail = previousText.length > maxWindow
-    ? previousText.slice(-maxWindow)
-    : previousText;
+  const tail = previousText.length > maxWindow ? previousText.slice(-maxWindow) : previousText;
 
   // Find longest suffix-prefix match.
   let bestLen = 0;
@@ -106,7 +104,11 @@ export function isPartialToolCall(state: {
     // Incomplete if name is missing or arguments are empty/malformed.
     if (!call.name || !call.arguments || call.arguments === '{}') return true;
     // Try to parse — if it fails, it's partial.
-    try { JSON.parse(call.arguments); } catch { return true; }
+    try {
+      JSON.parse(call.arguments);
+    } catch {
+      return true;
+    }
   }
   return false;
 }

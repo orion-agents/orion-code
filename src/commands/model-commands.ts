@@ -1,12 +1,7 @@
 /** Command definitions extracted from the stable slash-command registry. */
 
 import type { SlashCommand } from './types';
-import {
-  handleModel,
-  handlePermissions,
-  handleEffort,
-  showConfig,
-} from './model-command-handlers';
+import { handleModel, handlePermissions, handleEffort, showConfig } from './model-command-handlers';
 
 export const MODEL_COMMANDS: SlashCommand[] = [
   {

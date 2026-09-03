@@ -17,8 +17,4 @@ export {
   isDiagnosticEqual,
 } from './types';
 
-export {
-  formatDiagnostic,
-  formatDiagnostics,
-  formatDiagnosticSummary,
-} from './formatter';
+export { formatDiagnostic, formatDiagnostics, formatDiagnosticSummary } from './formatter';

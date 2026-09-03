@@ -97,12 +97,24 @@ function unquoteGitPath(path: string): string {
 
     flushBytes();
     switch (escaped) {
-      case 'n': out.push('\n'); break;
-      case 't': out.push('\t'); break;
-      case 'r': out.push('\r'); break;
-      case '"': out.push('"'); break;
-      case '\\': out.push('\\'); break;
-      default: out.push(escaped); break;
+      case 'n':
+        out.push('\n');
+        break;
+      case 't':
+        out.push('\t');
+        break;
+      case 'r':
+        out.push('\r');
+        break;
+      case '"':
+        out.push('"');
+        break;
+      case '\\':
+        out.push('\\');
+        break;
+      default:
+        out.push(escaped);
+        break;
     }
     i += 1;
   }
@@ -114,22 +126,28 @@ function unquoteGitPath(path: string): string {
 function parseNameStatus(output: string): WorkspaceDiffFile[] {
   if (!output.trim()) return [];
 
-  return output.split('\n')
+  return output
+    .split('\n')
     .filter(Boolean)
     .map(line => {
       const parts = line.split('\t');
       const status = parts[0] || '?';
-      const rawPath = parts.length > 2 ? `${parts[1]} -> ${parts[2]}` : parts[1] || line.slice(status.length).trim();
-      const path = parts.length > 2
-        ? `${unquoteGitPath(parts[1])} -> ${unquoteGitPath(parts[2])}`
-        : unquoteGitPath(rawPath);
+      const rawPath =
+        parts.length > 2
+          ? `${parts[1]} -> ${parts[2]}`
+          : parts[1] || line.slice(status.length).trim();
+      const path =
+        parts.length > 2
+          ? `${unquoteGitPath(parts[1])} -> ${unquoteGitPath(parts[2])}`
+          : unquoteGitPath(rawPath);
       return { status, path };
     });
 }
 
 function parseUntracked(output: string): WorkspaceDiffFile[] {
   if (!output.trim()) return [];
-  return output.split('\n')
+  return output
+    .split('\n')
     .filter(Boolean)
     .map(path => ({ status: '??', path: unquoteGitPath(path) }));
 }
@@ -156,7 +174,8 @@ export function collectWorkspaceDiff(options: WorkspaceDiffOptions = {}): Worksp
     };
   }
 
-  const branch = tryGit(['branch', '--show-current'], root) || tryGit(['rev-parse', '--short', 'HEAD'], root);
+  const branch =
+    tryGit(['branch', '--show-current'], root) || tryGit(['rev-parse', '--short', 'HEAD'], root);
   const head = tryGit(['log', '--oneline', '-1'], root);
   const staged = parseNameStatus(tryGit(['diff', '--cached', '--name-status'], root));
   const unstaged = parseNameStatus(tryGit(['diff', '--name-status'], root));
@@ -191,7 +210,10 @@ function formatFileList(title: string, files: WorkspaceDiffFile[], maxFiles: num
   return lines;
 }
 
-export function formatWorkspaceDiff(report: WorkspaceDiffReport, options: { maxFiles?: number } = {}): string {
+export function formatWorkspaceDiff(
+  report: WorkspaceDiffReport,
+  options: { maxFiles?: number } = {}
+): string {
   const maxFiles = options.maxFiles ?? 40;
 
   if (!report.isGitRepo) {
@@ -201,7 +223,9 @@ export function formatWorkspaceDiff(report: WorkspaceDiffReport, options: { maxF
       `CWD      ${report.cwd}`,
       'Status   not a git repository',
       report.error ? `Error    ${report.error}` : '',
-    ].filter(Boolean).join('\n');
+    ]
+      .filter(Boolean)
+      .join('\n');
   }
 
   const lines: string[] = [

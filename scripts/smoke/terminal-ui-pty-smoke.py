@@ -254,8 +254,12 @@ def wait_for_screen_update(
     visible = ""
     while time.time() < deadline:
         visible = sync_screen()
-        compact = visible.replace(" ", "")
-        if required in compact and forbidden not in compact:
+        # Redraws during streaming can leave an older prompt in terminal
+        # scrollback. Verify a currently visible editor row has the updated
+        # buffer instead of rejecting a correct redraw because a historical
+        # row still contains the pre-edit text.
+        compact_lines = [line.replace(" ", "") for line in visible.splitlines()]
+        if any(required in line and forbidden not in line for line in compact_lines):
             return visible
         time.sleep(0.05)
     raise AssertionError(
@@ -755,11 +759,24 @@ def main() -> int:
         if deny_path.exists():
             raise AssertionError("Denied write_file confirmation still created the target file")
 
+        context_cursor = len(strip_ansi(b"".join(output).decode("utf-8", errors="replace")))
         os.write(master, f"check referenced context @{CONTEXT_FIXTURE}\r".encode("utf-8"))
-        wait_for(master, output, "context-fixture-seen", timeout=10)
+        context_cursor = wait_for_after(
+            master, output, "context-fixture-seen", context_cursor, timeout=10
+        )
         plain_after_context = strip_ansi(b"".join(output).decode("utf-8", errors="replace"))
         if "context-fixture-missing" in plain_after_context:
             raise AssertionError("@file or AGENTS.md context did not reach the model request")
+        # The streamed text arrives before the Runtime durably commits the turn.
+        # Wait for the completion receipt emitted after this request so /resume
+        # cannot race the still-active logical turn on slower Node/runtime lines.
+        wait_for_after(
+            master,
+            output,
+            '"finishReason":"completed"',
+            context_cursor,
+            timeout=10,
+        )
 
         os.write(master, b"/resume\r")
         wait_for(master, output, "Pick a Session", timeout=8)

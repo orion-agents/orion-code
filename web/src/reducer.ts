@@ -42,6 +42,7 @@ const MAX_GOAL_EVIDENCE = 256;
 const MAX_SESSION_PROJECTIONS = 8;
 const MAX_SESSION_PROJECTION_BYTES = 8 * 1024 * 1024;
 const MAX_SESSION_RUNTIME_SUMMARIES = 64;
+const MAX_SESSION_SYNC_ENTRIES = 64;
 
 export type WorkbenchAction =
   | {
@@ -67,8 +68,19 @@ export type WorkbenchAction =
     }
   | { readonly type: 'event_received'; readonly envelope: WebEventEnvelopeV1 }
   | {
+      readonly type: 'session_snapshot_started';
+      readonly sessionId: string;
+      readonly requestId: number;
+      readonly cached: boolean;
+      readonly contextRevision: string;
+      readonly workspaceId: string;
+    }
+  | {
       readonly type: 'session_snapshot_loaded';
       readonly snapshot: WebSessionSnapshotV1;
+      readonly requestId?: number;
+      readonly contextRevision?: string;
+      readonly workspaceId?: string;
       /**
        * A snapshot cursor may establish a new SSE baseline only while the event
        * stream is paused. Live Session switches leave the stream in charge of
@@ -109,6 +121,25 @@ export type WorkbenchAction =
       readonly workspaceId: string;
       readonly detail: string;
     }
+  // v0.3.7 — Session tag / archive / delete mutations keep the rail listings
+  // (active workspace + archived section) in sync with the host.
+  | { readonly type: 'session_updated'; readonly session: WebSessionSummaryV1 }
+  | { readonly type: 'session_archived'; readonly session: WebSessionSummaryV1 }
+  | { readonly type: 'session_restored'; readonly session: WebSessionSummaryV1 }
+  | { readonly type: 'session_deleted'; readonly sessionId: string }
+  | { readonly type: 'archived_sessions_loading'; readonly workspaceId: string }
+  | {
+      readonly type: 'archived_sessions_loaded';
+      readonly workspaceId: string;
+      readonly sessions: readonly WebSessionSummaryV1[];
+      readonly nextCursor: string | null;
+      readonly append?: boolean;
+    }
+  | {
+      readonly type: 'archived_sessions_failed';
+      readonly workspaceId: string;
+      readonly detail: string;
+    }
   | {
       readonly type: 'workspace_project_summary_loaded';
       readonly summary: WebWorkspaceProjectSummaryV1;
@@ -137,6 +168,9 @@ export type WorkbenchAction =
       readonly type: 'snapshot_failed';
       readonly sessionId: string | null;
       readonly detail: string;
+      readonly requestId?: number;
+      readonly contextRevision?: string;
+      readonly workspaceId?: string;
     }
   | { readonly type: 'reset_session_view'; readonly activeSessionId: string | null }
   | { readonly type: 'recovering' };
@@ -148,6 +182,7 @@ export function workbenchReducer(
   switch (action.type) {
     case 'baseline_loaded': {
       const base =
+        state.workspaceId !== action.bootstrap.workspaceId ||
         state.activeSessionId !== action.bootstrap.activeSessionId
           ? clearSessionProjection(state)
           : state;
@@ -173,6 +208,17 @@ export function workbenchReducer(
         workspaceNextCursor: action.workspaces.nextCursor,
         sessionNextCursor: action.sessionNextCursor,
         activeSessionId: action.bootstrap.activeSessionId,
+        sessionSync: action.bootstrap.activeSessionId
+          ? {
+              ...base.sessionSync,
+              [action.bootstrap.activeSessionId]: {
+                status: base.sessionProjectionById[action.bootstrap.activeSessionId]
+                  ? 'refreshing'
+                  : 'loading',
+                requestId: null,
+              },
+            }
+          : base.sessionSync,
         settings: action.settings,
         diagnostics: action.diagnostics,
         skills: action.skills,
@@ -181,12 +227,13 @@ export function workbenchReducer(
         mcpNextCursor: action.mcpNextCursor,
         toolDetails: action.toolDetails,
         toolDetailNextCursor: action.toolDetailNextCursor,
+        notice: base.notice?.domain === 'session-snapshot' ? null : base.notice,
         processing: Boolean(action.diagnostics.processing),
         mode,
         statusMessage: action.bootstrap.configured
-          ? 'Runtime 已就绪'
+          ? '本地 Web Host 已就绪'
           : '模型尚未配置，任务提交已停用',
-        announcement: action.bootstrap.configured ? 'Orion Runtime 已就绪' : 'Orion 尚未配置模型',
+        announcement: action.bootstrap.configured ? '本地 Web Host 已就绪' : 'Orion 尚未配置模型',
       };
     }
     case 'boot_failed':
@@ -207,11 +254,36 @@ export function workbenchReducer(
       };
     case 'event_received':
       return reduceEnvelope(state, action.envelope);
-    case 'session_snapshot_loaded':
-      if (state.activeSessionId !== action.snapshot.session.id) {
+    case 'session_snapshot_started':
+      if (
+        state.contextRevision !== action.contextRevision ||
+        state.workspaceId !== action.workspaceId
+      ) {
         return state;
       }
-      return applySessionSnapshot(state, action.snapshot, action.advanceEventCursor !== false);
+      return withTelemetry(
+        setSessionSnapshotSync(state, action.sessionId, {
+          status: action.cached ? 'refreshing' : 'loading',
+          requestId: action.requestId,
+        }),
+        { snapshotLoads: 1 }
+      );
+    case 'session_snapshot_loaded': {
+      const sessionId = action.snapshot.session.id;
+      if (!snapshotContextMatches(state, action.contextRevision, action.workspaceId)) return state;
+      if (!snapshotRequestMatches(state, sessionId, action.requestId)) return state;
+      if (state.activeSessionId !== sessionId) {
+        if (action.requestId === undefined) return state;
+        return markSessionSnapshotReady(
+          cacheBackgroundSessionSnapshot(state, action.snapshot),
+          sessionId
+        );
+      }
+      return markSessionSnapshotReady(
+        applySessionSnapshot(state, action.snapshot, action.advanceEventCursor !== false),
+        sessionId
+      );
+    }
     case 'composer_loaded':
       if (
         action.composer.sessionId !== state.activeSessionId ||
@@ -333,6 +405,96 @@ export function workbenchReducer(
           },
         },
       };
+
+    // v0.3.7 — Session lifecycle mirrors. `session_updated` carries the
+    // refreshed summary (tags), the other three move rows between the main and
+    // the archived listing without a full refetch.
+    case 'session_updated': {
+      const main = updateActiveSessionList(state, list => replaceOrPrepend(list, action.session));
+      return main;
+    }
+    case 'session_archived': {
+      const without = withoutSession(state, action.session.id);
+      const archivedHas = state.archivedSessions.items.some(s => s.id === action.session.id);
+      return {
+        ...without,
+        archivedSessions: archivedHas
+          ? without.archivedSessions
+          : {
+              ...without.archivedSessions,
+              status: 'ready',
+              items: [action.session, ...without.archivedSessions.items],
+            },
+      };
+    }
+    case 'session_restored': {
+      const main = updateActiveSessionList(state, list => [
+        action.session,
+        ...list.filter(item => item.id !== action.session.id),
+      ]);
+      return {
+        ...main,
+        archivedSessions: {
+          ...main.archivedSessions,
+          items: main.archivedSessions.items.filter(s => s.id !== action.session.id),
+        },
+      };
+    }
+    case 'session_deleted': {
+      const runtimeById = { ...state.sessionRuntimeById };
+      delete runtimeById[action.sessionId];
+      return {
+        ...withoutSession(state, action.sessionId),
+        sessionRuntimeById: runtimeById,
+        archivedSessions: {
+          ...state.archivedSessions,
+          items: state.archivedSessions.items.filter(s => s.id !== action.sessionId),
+        },
+      };
+    }
+    case 'archived_sessions_loading':
+      // Guard against cross-workspace races: only the foreground workspace may
+      // write the single archived copy, and stale rows from another workspace
+      // are dropped immediately instead of flashing during the load.
+      if (action.workspaceId !== state.workspaceId) return state;
+      return {
+        ...state,
+        archivedSessions: {
+          status: 'loading',
+          items:
+            state.archivedSessions.ownerWorkspaceId === action.workspaceId
+              ? state.archivedSessions.items
+              : [],
+          nextCursor: state.archivedSessions.nextCursor,
+          ownerWorkspaceId: state.archivedSessions.ownerWorkspaceId,
+        },
+      };
+    case 'archived_sessions_loaded': {
+      if (action.workspaceId !== state.workspaceId) return state;
+      const items = action.append
+        ? mergeByKey(state.archivedSessions.items, action.sessions, session => session.id)
+        : action.sessions;
+      return {
+        ...state,
+        archivedSessions: {
+          status: 'ready',
+          items,
+          nextCursor: action.nextCursor,
+          ownerWorkspaceId: action.workspaceId,
+        },
+      };
+    }
+    case 'archived_sessions_failed':
+      if (action.workspaceId !== state.workspaceId) return state;
+      return {
+        ...state,
+        archivedSessions: {
+          ...state.archivedSessions,
+          status: 'error',
+          error: action.detail,
+        },
+      };
+
     case 'workspace_project_summary_loaded':
       return {
         ...state,
@@ -391,38 +553,103 @@ export function workbenchReducer(
         permission: null,
         announcement: action.approved ? '工具权限已授予' : '工具请求已拒绝',
       };
-    case 'snapshot_failed':
-      if (action.sessionId && action.sessionId !== state.activeSessionId) return state;
-      return {
-        ...state,
-        connection: 'replay-required',
-        replayReason: action.detail,
-        notice: {
-          id: state.lastCursor,
-          tone: 'warning',
-          title: '会话状态尚未同步',
-          detail: action.detail,
-        },
-        announcement: '会话状态尚未同步，需要恢复后才能继续操作',
-      };
-    case 'reset_session_view':
-      if (action.activeSessionId && state.sessionProjectionById[action.activeSessionId]) {
+    case 'snapshot_failed': {
+      if (!snapshotContextMatches(state, action.contextRevision, action.workspaceId)) return state;
+      if (!action.sessionId) {
+        if (state.connection === 'replay-required') return state;
         return {
-          ...applySessionSnapshot(
-            { ...state, activeSessionId: action.activeSessionId },
-            state.sessionProjectionById[action.activeSessionId],
-            false
-          ),
-          statusMessage: '已显示最近会话状态，正在同步…',
-          announcement: '已切换到缓存会话，正在同步最新状态',
+          ...state,
+          notice: {
+            id: action.requestId ?? state.lastCursor,
+            tone: 'warning',
+            title: '会话状态尚未同步',
+            detail: action.detail,
+          },
+          announcement: '会话状态尚未同步',
         };
       }
+      if (!snapshotRequestMatches(state, action.sessionId, action.requestId)) return state;
+      if (action.sessionId !== state.activeSessionId && action.requestId === undefined)
+        return state;
+      const failed = withTelemetry(
+        setSessionSnapshotSync(state, action.sessionId, {
+          status: 'failed',
+          requestId: action.requestId ?? state.sessionSync[action.sessionId]?.requestId ?? null,
+          error: action.detail,
+        }),
+        { snapshotFailures: 1 }
+      );
+      if (action.sessionId !== state.activeSessionId) return failed;
+      if (state.connection === 'replay-required') return failed;
       return {
+        ...failed,
+        statusMessage:
+          state.sessionSnapshot?.session.id === action.sessionId
+            ? '会话刷新失败，当前显示最近状态'
+            : '会话快照加载失败',
+        notice: {
+          id: action.requestId ?? state.lastCursor,
+          tone: 'warning',
+          title: '会话快照尚未同步',
+          detail: action.detail,
+          domain: 'session-snapshot',
+          sessionId: action.sessionId,
+        },
+        announcement: '当前会话快照尚未同步，写操作已暂停',
+      };
+    }
+    case 'reset_session_view': {
+      const switching =
+        Boolean(action.activeSessionId) && action.activeSessionId !== state.activeSessionId;
+      const cached = Boolean(
+        action.activeSessionId && state.sessionProjectionById[action.activeSessionId]
+      );
+      const telemetry = {
+        ...(switching ? { sessionSwitches: 1 } : {}),
+        ...(cached ? { snapshotCacheHits: 1 } : {}),
+      };
+      if (action.activeSessionId && state.sessionProjectionById[action.activeSessionId]) {
+        const sessionId = action.activeSessionId;
+        const restored = applySessionSnapshot(
+          { ...state, activeSessionId: sessionId },
+          state.sessionProjectionById[sessionId],
+          false
+        );
+        return withTelemetry(
+          {
+            ...setSessionSnapshotSync(restored, sessionId, {
+              status: 'refreshing',
+              requestId: state.sessionSync[sessionId]?.requestId ?? null,
+            }),
+            notice:
+              state.notice?.domain === 'session-snapshot' && state.notice.sessionId !== sessionId
+                ? null
+                : state.notice,
+            statusMessage: '已显示最近会话状态，正在同步…',
+            announcement: '已切换到缓存会话，正在同步最新状态',
+          },
+          telemetry
+        );
+      }
+      const cleared = {
         ...clearSessionProjection(state),
         activeSessionId: action.activeSessionId,
-        statusMessage: action.activeSessionId ? '正在恢复会话…' : '请选择会话',
-        announcement: action.activeSessionId ? '正在恢复会话' : '会话已清除',
+        notice:
+          state.notice?.domain === 'session-snapshot' &&
+          state.notice.sessionId !== action.activeSessionId
+            ? null
+            : state.notice,
+        statusMessage: action.activeSessionId ? '正在加载会话快照…' : '请选择会话',
+        announcement: action.activeSessionId ? '正在加载会话快照' : '会话已清除',
       };
+      const synced = action.activeSessionId
+        ? setSessionSnapshotSync(cleared, action.activeSessionId, {
+            status: 'loading',
+            requestId: state.sessionSync[action.activeSessionId]?.requestId ?? null,
+          })
+        : cleared;
+      return withTelemetry(synced, telemetry);
+    }
     case 'recovering':
       return {
         ...state,
@@ -447,6 +674,7 @@ function reduceEnvelope(state: WorkbenchState, envelope: WebEventEnvelopeV1): Wo
         tone: 'warning',
         title: '需要重新载入会话',
         detail: envelope.payload.reason,
+        domain: 'transport',
       },
       announcement: '事件历史已超出保留窗口，需要重新载入会话',
     };
@@ -991,9 +1219,7 @@ function applySessionSnapshot(
       plan: snapshot.plan?.body ?? null,
       recoveryDiagnostics: snapshot.recoveryDiagnostics,
     },
-    connection: state.connection === 'replay-required' ? 'connecting' : state.connection,
-    replayReason: undefined,
-    announcement: '会话状态已恢复',
+    announcement: '会话快照已同步',
   };
 }
 
@@ -1028,9 +1254,27 @@ function applyComposerState(
   state: WorkbenchState,
   composer: WebComposerControlStateV1
 ): WorkbenchState {
+  const cached = state.sessionProjectionById[composer.sessionId];
+  const sessionProjectionById = cached
+    ? cacheSessionProjection(state.sessionProjectionById, {
+        ...cached,
+        sessionRuntime: composer.sessionRuntime,
+        composer,
+      })
+    : state.sessionProjectionById;
   return {
     ...state,
     composer,
+    sessionSnapshot:
+      state.sessionSnapshot?.session.id === composer.sessionId
+        ? {
+            ...state.sessionSnapshot,
+            sessionRuntime: composer.sessionRuntime,
+            composer,
+          }
+        : state.sessionSnapshot,
+    sessionProjectionById,
+    sessionRuntimeById: cacheRuntimeSummary(state.sessionRuntimeById, composer.sessionRuntime),
     processing: composer.processing,
     mode: composer.mode,
     queue: {
@@ -1159,6 +1403,74 @@ function mergeByKey<T>(
   const merged = new Map(current.map(value => [keyOf(value), value]));
   for (const value of incoming) merged.set(keyOf(value), value);
   return [...merged.values()];
+}
+
+/** Prepend `session` when new; replace in place when already listed. */
+function replaceOrPrepend(
+  items: readonly WebSessionSummaryV1[],
+  session: WebSessionSummaryV1
+): readonly WebSessionSummaryV1[] {
+  const index = items.findIndex(item => item.id === session.id);
+  if (index < 0) return [session, ...items];
+  const next = [...items];
+  next[index] = session;
+  return next;
+}
+
+/** Drop `sessionId` from the active workspace main listing (sessions + workspaceSessions). */
+function withoutSession(state: WorkbenchState, sessionId: string): WorkbenchState {
+  const active = state.workspaceId;
+  const activeList = active ? state.workspaceSessions[active] : undefined;
+  const mainItems = (activeList?.items ?? state.sessions).filter(
+    session => session.id !== sessionId
+  );
+  return {
+    ...state,
+    sessions: active ? mainItems : state.sessions,
+    workspaceSessions: active
+      ? {
+          ...state.workspaceSessions,
+          [active]: {
+            status: (activeList?.status ?? 'ready') === 'error' ? 'error' : 'ready',
+            items: mainItems,
+            nextCursor: activeList?.nextCursor ?? null,
+            error: activeList?.error,
+          },
+        }
+      : state.workspaceSessions,
+  };
+}
+
+/** Apply a mutation to the active workspace main listing (mirrors both mirrors). */
+function updateActiveSessionList(
+  state: WorkbenchState,
+  mutate: (items: readonly WebSessionSummaryV1[]) => readonly WebSessionSummaryV1[]
+): WorkbenchState {
+  const active = state.workspaceId;
+  const activeList = active ? state.workspaceSessions[active] : undefined;
+  const base = activeList?.items ?? state.sessions;
+  const items = mutate(base);
+  const status =
+    activeList?.status === 'error'
+      ? 'error'
+      : activeList?.status === 'loading'
+        ? 'loading'
+        : 'ready';
+  return {
+    ...state,
+    sessions: active ? items : state.sessions,
+    workspaceSessions: active
+      ? {
+          ...state.workspaceSessions,
+          [active]: {
+            status,
+            items,
+            nextCursor: activeList?.nextCursor ?? null,
+            error: activeList?.error,
+          },
+        }
+      : state.workspaceSessions,
+  };
 }
 
 function reduceGoalEvent(
@@ -1395,6 +1707,72 @@ function clearSessionProjection(state: WorkbenchState): WorkbenchState {
   };
 }
 
+function setSessionSnapshotSync(
+  state: WorkbenchState,
+  sessionId: string,
+  sync: WorkbenchState['sessionSync'][string]
+): WorkbenchState {
+  const sessionSync: Record<string, WorkbenchState['sessionSync'][string]> = {
+    ...state.sessionSync,
+  };
+  delete sessionSync[sessionId];
+  sessionSync[sessionId] = sync;
+  const overflow = Object.keys(sessionSync).length - MAX_SESSION_SYNC_ENTRIES;
+  if (overflow > 0) {
+    Object.keys(sessionSync)
+      .filter(id => id !== state.activeSessionId && id !== sessionId)
+      .slice(0, overflow)
+      .forEach(id => delete sessionSync[id]);
+  }
+  return {
+    ...state,
+    sessionSync,
+  };
+}
+
+function withTelemetry(
+  state: WorkbenchState,
+  delta: Partial<WorkbenchState['clientTelemetry']>
+): WorkbenchState {
+  const clientTelemetry: WorkbenchState['clientTelemetry'] = {
+    sessionSwitches: state.clientTelemetry.sessionSwitches + (delta.sessionSwitches ?? 0),
+    snapshotCacheHits: state.clientTelemetry.snapshotCacheHits + (delta.snapshotCacheHits ?? 0),
+    snapshotLoads: state.clientTelemetry.snapshotLoads + (delta.snapshotLoads ?? 0),
+    snapshotFailures: state.clientTelemetry.snapshotFailures + (delta.snapshotFailures ?? 0),
+  };
+  return { ...state, clientTelemetry };
+}
+
+function markSessionSnapshotReady(state: WorkbenchState, sessionId: string): WorkbenchState {
+  const ready = setSessionSnapshotSync(state, sessionId, {
+    status: 'ready',
+    requestId: state.sessionSync[sessionId]?.requestId ?? null,
+  });
+  if (ready.notice?.domain !== 'session-snapshot' || ready.notice.sessionId !== sessionId) {
+    return ready;
+  }
+  return { ...ready, notice: null };
+}
+
+function snapshotRequestMatches(
+  state: WorkbenchState,
+  sessionId: string,
+  requestId?: number
+): boolean {
+  return requestId === undefined || state.sessionSync[sessionId]?.requestId === requestId;
+}
+
+function snapshotContextMatches(
+  state: WorkbenchState,
+  contextRevision?: string,
+  workspaceId?: string
+): boolean {
+  return (
+    (contextRevision === undefined || state.contextRevision === contextRevision) &&
+    (workspaceId === undefined || state.workspaceId === workspaceId)
+  );
+}
+
 function addGoalActivity(
   current: readonly GoalActivity[],
   type: string,
@@ -1448,10 +1826,12 @@ function isOnline(): boolean {
 }
 
 function connectionAnnouncement(phase: ConnectionPhase, attempt: number): string {
-  if (phase === 'live') return '实时连接已恢复';
-  if (phase === 'offline') return '网络已离线，Orion 将在恢复后重连';
-  if (phase === 'reconnecting') return `正在重新连接，第 ${Math.max(1, attempt)} 次尝试`;
-  if (phase === 'connecting') return '正在连接 Orion Runtime';
-  if (phase === 'replay-required') return '需要重新载入会话';
-  return 'Orion Web Host 已关闭';
+  if (phase === 'live') return '本地 Web Host 事件流已连接';
+  if (phase === 'offline') return '浏览器已离线，本地 Web Host 将在网络恢复后重连';
+  if (phase === 'reconnecting') {
+    return `正在重新连接本地 Web Host，第 ${Math.max(1, attempt)} 次尝试`;
+  }
+  if (phase === 'connecting') return '正在连接本地 Web Host';
+  if (phase === 'replay-required') return '本地 Web Host 事件历史需要重新载入';
+  return '本地 Web Host 已关闭';
 }

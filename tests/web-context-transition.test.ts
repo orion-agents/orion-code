@@ -190,10 +190,12 @@ describe('Web Context transition', () => {
     expect(
       emit.mock.calls.map(call => call[0]).filter(event => event.type === 'runtime_event')
     ).toEqual([]);
+    // P1-A: when installing the target control plane fails, the previous control
+    // plane is still live (this.runtimeValue was never replaced), so the rollback
+    // restores the previous foreground without reinstantiating its Runtime.
     expect(createRuntime.mock.calls.map(call => call[0])).toEqual([
       firstWorkspace,
       failingWorkspace,
-      firstWorkspace,
     ]);
     await controller.shutdown();
   });
@@ -304,7 +306,7 @@ describe('Web Context transition', () => {
     await controller.shutdown();
   });
 
-  test('does not tear down background Session actors when switching Workspace', async () => {
+  test('keeps a running Session actor alive across a Workspace Context switch (WEB35-P0-08/09)', async () => {
     const session = createSession(firstWorkspace, 'test-model');
     const actorRuntime = createFakeWebRuntime(firstWorkspace);
     const turn = deferred<void>();
@@ -316,6 +318,7 @@ describe('Web Context transition', () => {
       createSessionRuntime: async () => actorRuntime,
     });
     const bootstrap = controller.bootstrap('nonce');
+    const firstEntry = registry.list().find(entry => entry.canonicalPath === firstWorkspace)!;
     const secondEntry = registry.list().find(entry => entry.canonicalPath === secondWorkspace)!;
     await controller.dispatch({
       requestId: randomUUID(),
@@ -328,28 +331,51 @@ describe('Web Context transition', () => {
     });
     expect(controller.sessionRuntimeSummary(session.id).phase).toBe('running');
 
-    await expect(
-      controller.activateContext({
-        expectedContextRevision: controller.contextRevision,
-        workspaceId: secondEntry.id,
-        sessionId: null,
-      })
-    ).rejects.toMatchObject({ status: 409, code: 'runtime_busy' });
-    expect(controller.workspace).toBe(firstWorkspace);
-    expect(controller.sessionRuntimeSummary(session.id).phase).toBe('running');
-    expect(actorRuntime.shutdown).not.toHaveBeenCalled();
-
-    turn.resolve();
-    await controller.waitForSessionIdle(session.id);
+    // P1-A: a running Session actor of the previous Workspace no longer blocks
+    // the Context switch (WEB35-P0-08/09). Only the active control plane swaps;
+    // the actor keeps running on the Workspace kernel it was created with.
     await controller.activateContext({
       expectedContextRevision: controller.contextRevision,
       workspaceId: secondEntry.id,
       sessionId: null,
     });
     expect(controller.workspace).toBe(secondWorkspace);
+    expect(actorRuntime.shutdown).not.toHaveBeenCalled();
+    // Session summaries are scoped to the active Workspace; the first-Workspace
+    // actor is observable again after switching back below.
+
+    turn.resolve();
+    await controller.activateContext({
+      expectedContextRevision: controller.contextRevision,
+      workspaceId: firstEntry.id,
+      sessionId: null,
+    });
+    expect(controller.workspace).toBe(firstWorkspace);
+    // The resident actor instance survived both switches: no rebuild, same
+    // runtime, and its turn completed to idle.
+    await waitForCondition(
+      () => controller.sessionRuntimeSummary(session.id).phase === 'idle',
+      'first-Workspace Session actor to become idle'
+    );
+    expect(actorRuntime.shutdown).not.toHaveBeenCalled();
     await controller.shutdown();
+    expect(actorRuntime.shutdown).toHaveBeenCalledTimes(1);
   });
 });
+
+async function waitForCondition(
+  condition: () => boolean,
+  label: string,
+  timeoutMs = 5_000
+): Promise<void> {
+  const startedAt = Date.now();
+  while (!condition()) {
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new Error(`Timed out waiting for ${label}.`);
+    }
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+}
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;

@@ -1,6 +1,9 @@
-// Feed xterm one bounded 3KiB parser entry per animation frame. The frame boundary
-// preserves paint opportunities while avoiding repeated write-buffer callbacks for
-// the same budget. A single entry is small enough to parse within the frame budget.
+// Warm xterm with smaller parser entries before settling at the sustained budget. The
+// first two seconds of a cold burst include parser/JIT/renderer setup and benefit from
+// more paint opportunities; the steady-state budget still drains 10MiB within the
+// responsiveness gate without dropping or coalescing terminal output.
+const DEFAULT_WARMUP_CHUNK_CHARACTERS = 1 * 1024;
+const DEFAULT_WARMUP_FRAMES = 120;
 const DEFAULT_RENDER_CHUNK_CHARACTERS = 3 * 1024;
 const DEFAULT_IN_FLIGHT_CHARACTERS = 3 * 1024;
 
@@ -38,9 +41,12 @@ export class TerminalWriteQueue {
   private readonly cancelTask: (handle: number) => void;
   private readonly maxChunkCharacters: number;
   private readonly maxInFlightCharacters: number;
+  private readonly warmupChunkCharacters: number;
   private scheduledTask: number | null = null;
   private inFlightCharacters = 0;
+  private submissionFrames = 0;
   private flushing = false;
+  private waitingForCapacity = false;
   private disposed = false;
 
   constructor(options: TerminalWriteQueueOptions) {
@@ -57,6 +63,10 @@ export class TerminalWriteQueue {
       this.maxChunkCharacters,
       Math.floor(options.maxInFlightCharacters ?? DEFAULT_IN_FLIGHT_CHARACTERS)
     );
+    this.warmupChunkCharacters =
+      options.maxChunkCharacters === undefined && options.maxInFlightCharacters === undefined
+        ? Math.min(this.maxChunkCharacters, DEFAULT_WARMUP_CHUNK_CHARACTERS)
+        : this.maxInFlightCharacters;
   }
 
   enqueue(
@@ -64,6 +74,7 @@ export class TerminalWriteQueue {
     options: { readonly sequence?: number; readonly onCommitted?: () => void } = {}
   ) {
     if (this.disposed) return;
+    if (this.pending.length === 0 && this.inFlightCharacters === 0) this.submissionFrames = 0;
     this.pending.push({ data, offset: 0, pendingChunks: 0, ...options });
     this.requestFlush();
   }
@@ -85,6 +96,7 @@ export class TerminalWriteQueue {
       this.flushing ||
       this.pending.length === 0 ||
       this.inFlightCharacters >= this.maxInFlightCharacters ||
+      this.waitingForCapacity ||
       this.scheduledTask !== null
     ) {
       return;
@@ -108,11 +120,15 @@ export class TerminalWriteQueue {
     }
     this.flushing = true;
     let submittedCharacters = 0;
+    const frameBudget =
+      this.submissionFrames < DEFAULT_WARMUP_FRAMES
+        ? this.warmupChunkCharacters
+        : this.maxInFlightCharacters;
     try {
       while (
         this.pending.length > 0 &&
         this.inFlightCharacters < this.maxInFlightCharacters &&
-        submittedCharacters < this.maxInFlightCharacters
+        submittedCharacters < frameBudget
       ) {
         const current = this.pending[0];
         if (current.offset >= current.data.length) {
@@ -124,10 +140,17 @@ export class TerminalWriteQueue {
         const capacity = Math.min(
           this.maxChunkCharacters,
           this.maxInFlightCharacters - this.inFlightCharacters,
-          this.maxInFlightCharacters - submittedCharacters
+          frameBudget - submittedCharacters
         );
         const end = safeTerminalChunkEnd(current.data, current.offset, capacity);
-        if (end <= current.offset) break;
+        if (end <= current.offset) {
+          // The only non-progressing boundary is a surrogate pair that needs
+          // more capacity than remains in the current xterm pipeline. Waiting
+          // for an acknowledgement avoids reposting an animation frame that
+          // cannot submit any new work.
+          this.waitingForCapacity = true;
+          break;
+        }
         const data = current.data.slice(current.offset, end);
         current.offset = end;
         current.pendingChunks += 1;
@@ -149,6 +172,7 @@ export class TerminalWriteQueue {
     } finally {
       this.flushing = false;
     }
+    if (submittedCharacters > 0) this.submissionFrames += 1;
     this.commitReady();
     this.requestFlush();
   }
@@ -157,6 +181,7 @@ export class TerminalWriteQueue {
     entry.pendingChunks = Math.max(0, entry.pendingChunks - 1);
     this.inFlightCharacters = Math.max(0, this.inFlightCharacters - characters);
     if (this.disposed) return;
+    this.waitingForCapacity = false;
     this.commitReady();
     this.requestFlush();
   }

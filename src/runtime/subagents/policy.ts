@@ -77,7 +77,7 @@ export interface PolicyContext {
  */
 export function canonicalizeScopePaths(
   rootCwd: string,
-  paths: readonly string[] | undefined,
+  paths: readonly string[] | undefined
 ): { ok: true; paths: string[] } | { ok: false; reason: 'scope_escape'; path: string } {
   if (!paths || paths.length === 0) return { ok: true, paths: [] };
 
@@ -141,10 +141,7 @@ function isObjectiveBounded(objective: string): boolean {
  * Evaluate a `subtask` request against the policy. This is the single
  * deterministic gate every request must pass before any child is queued.
  */
-export function evaluateSubtaskPolicy(
-  request: SubtaskRequest,
-  ctx: PolicyContext,
-): PolicyVerdict {
+export function evaluateSubtaskPolicy(request: SubtaskRequest, ctx: PolicyContext): PolicyVerdict {
   if (ctx.parentAborted) return reject('parent_aborted');
   if (ctx.hasPendingPermission) return reject('pending_permission');
   if (ctx.depth !== 0) return reject('not_root_depth');
@@ -167,8 +164,10 @@ export function evaluateSubtaskPolicy(
   // only applies when the model proposes delegation unbidden.
   if (ctx.config.mode === 'auto' && tasks.length === 1) {
     if (!meetsAutoEligibility(ctx.rootObjective, tasks)) {
-      return reject('not_eligible_for_delegation',
-        'auto mode requires at least 2 independent investigation directions or a review+test-investigate combination');
+      return reject(
+        'not_eligible_for_delegation',
+        'auto mode requires at least 2 independent investigation directions or a review+test-investigate combination'
+      );
     }
   }
 
@@ -180,12 +179,18 @@ export function evaluateSubtaskPolicy(
   // Concurrency: a parallel batch must fit within maxParallel alongside running children.
   if (request.execution === 'parallel') {
     if (ctx.runningChildren > 0 && ctx.runningChildren + tasks.length > ctx.config.maxParallel) {
-      return reject('concurrency_limit', `${ctx.runningChildren}+${tasks.length} > ${ctx.config.maxParallel}`);
+      return reject(
+        'concurrency_limit',
+        `${ctx.runningChildren}+${tasks.length} > ${ctx.config.maxParallel}`
+      );
     }
   }
 
   if (ctx.remainingModelRequests < tasks.length) {
-    return reject('budget_exhausted', `need >=${tasks.length} requests, have ${ctx.remainingModelRequests}`);
+    return reject(
+      'budget_exhausted',
+      `need >=${tasks.length} requests, have ${ctx.remainingModelRequests}`
+    );
   }
 
   if (!ctx.providerCanReserve(tasks.length)) {
@@ -226,17 +231,25 @@ export function clampSubagentConfig(config: SubagentConfig): SubagentConfig {
   const clamp = (value: number, bounds: { min: number; max: number }) =>
     Math.max(bounds.min, Math.min(bounds.max, Math.floor(value) || bounds.min));
   const roles: SubagentRole[] = Array.from(new Set(config.roles)).filter(r =>
-    (['research', 'review', 'test-investigate'] as SubagentRole[]).includes(r),
+    (['research', 'review', 'test-investigate'] as SubagentRole[]).includes(r)
   ) as SubagentRole[];
   const clampedRoles = roles.length > 0 ? roles : DEFAULT_ROLES;
-  const mode: SubagentMode = ['off', 'explicit', 'auto'].includes(config.mode) ? config.mode : 'auto';
+  const mode: SubagentMode = ['off', 'explicit', 'auto'].includes(config.mode)
+    ? config.mode
+    : 'auto';
   return {
     mode,
     maxParallel: clamp(config.maxParallel, SUBAGENT_LIMITS.maxParallel),
     maxTasksPerTurn: clamp(config.maxTasksPerTurn, SUBAGENT_LIMITS.maxTasksPerTurn),
     maxTurnsPerTask: clamp(config.maxTurnsPerTask, SUBAGENT_LIMITS.maxTurnsPerTask),
-    maxModelRequestsPerTask: clamp(config.maxModelRequestsPerTask, SUBAGENT_LIMITS.maxModelRequestsPerTask),
-    maxModelRequestsPerTurn: clamp(config.maxModelRequestsPerTurn, SUBAGENT_LIMITS.maxModelRequestsPerTurn),
+    maxModelRequestsPerTask: clamp(
+      config.maxModelRequestsPerTask,
+      SUBAGENT_LIMITS.maxModelRequestsPerTask
+    ),
+    maxModelRequestsPerTurn: clamp(
+      config.maxModelRequestsPerTurn,
+      SUBAGENT_LIMITS.maxModelRequestsPerTurn
+    ),
     maxToolCallsPerTask: clamp(config.maxToolCallsPerTask, SUBAGENT_LIMITS.maxToolCallsPerTask),
     timeoutMs: clamp(config.timeoutMs, SUBAGENT_LIMITS.timeoutMs),
     roles: clampedRoles,
@@ -259,10 +272,7 @@ const DEFAULT_ROLES: SubagentRole[] = ['research', 'review', 'test-investigate']
  *
  * @returns true if the task meets the minimum eligibility bar.
  */
-function meetsAutoEligibility(
-  rootObjective: string,
-  tasks: SubtaskPacket[],
-): boolean {
+function meetsAutoEligibility(rootObjective: string, tasks: SubtaskPacket[]): boolean {
   if (tasks.length >= 2) return true;
 
   const task = tasks[0];
@@ -293,9 +303,14 @@ function hasMultipleInvestigationDirections(objective: string): boolean {
   const lower = objective.toLowerCase();
   // Conjunctions that signal multiple independent directions.
   const multiMarkers = [
-    / and /, /, and /, / or /,
-    / both /, / each /,
-    / parallel/, /separately/, /independently/,
+    / and /,
+    /, and /,
+    / or /,
+    / both /,
+    / each /,
+    / parallel/,
+    /separately/,
+    /independently/,
     / respectively/,
     // CJK: multiple items or separation
     /(和|与|以及|分别|并行|独立|同时)/,

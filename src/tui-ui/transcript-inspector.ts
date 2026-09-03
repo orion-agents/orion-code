@@ -31,20 +31,17 @@ export class TranscriptInspectorController {
 
   constructor(
     private readonly repository: ToolDetailRepository,
-    private readonly projectPath: string,
+    private readonly projectPath: string
   ) {}
 
   view(entries: TuiToolDetailSummary[], inspector: ToolInspectorState): ToolInspectorViewModel {
     const query = inspector.searchQuery.trim().toLowerCase();
     const filtered = query
-      ? entries.filter(entry => [
-        entry.toolName,
-        entry.callId,
-        entry.summary,
-        this.details.get(entry.callId)?.content,
-      ]
-        .filter(Boolean)
-        .some(value => String(value).toLowerCase().includes(query)))
+      ? entries.filter(entry =>
+          [entry.toolName, entry.callId, entry.summary, this.details.get(entry.callId)?.content]
+            .filter(Boolean)
+            .some(value => String(value).toLowerCase().includes(query))
+        )
       : entries;
     const selectedIndex = Math.max(0, Math.min(filtered.length - 1, inspector.selectedIndex));
     const selected = filtered[selectedIndex];
@@ -66,7 +63,7 @@ export class TranscriptInspectorController {
     if (append && offsetBytes === undefined) return;
     const generation = ++this.requestGeneration;
     this.details.set(entry.callId, {
-      content: append ? current?.content ?? '' : '',
+      content: append ? (current?.content ?? '') : '',
       totalBytes: current?.totalBytes ?? entry.outputBytes,
       nextOffsetBytes: current?.nextOffsetBytes,
       redacted: current?.redacted ?? false,
@@ -74,12 +71,16 @@ export class TranscriptInspectorController {
     });
     try {
       const page = entry.artifactId
-        ? await this.repository.read({
-          callId: entry.callId,
-          sequence: entry.sequence,
-          artifactId: entry.artifactId,
-          outputBytes: entry.outputBytes,
-        }, { offsetBytes: offsetBytes ?? 0, limitBytes: DETAIL_PAGE_BYTES }, this.projectPath)
+        ? await this.repository.read(
+            {
+              callId: entry.callId,
+              sequence: entry.sequence,
+              artifactId: entry.artifactId,
+              outputBytes: entry.outputBytes,
+            },
+            { offsetBytes: offsetBytes ?? 0, limitBytes: DETAIL_PAGE_BYTES },
+            this.projectPath
+          )
         : unavailablePage(entry);
       if (generation !== this.requestGeneration) return;
       this.details.set(entry.callId, {
@@ -92,7 +93,7 @@ export class TranscriptInspectorController {
     } catch (error) {
       if (generation !== this.requestGeneration) return;
       this.details.set(entry.callId, {
-        content: append ? current?.content ?? '' : '',
+        content: append ? (current?.content ?? '') : '',
         totalBytes: current?.totalBytes ?? entry.outputBytes,
         redacted: current?.redacted ?? false,
         loading: false,
@@ -109,12 +110,16 @@ export class TranscriptInspectorController {
     }
     let offsetBytes = 0;
     while (true) {
-      const page = await this.repository.read({
-        callId: entry.callId,
-        sequence: entry.sequence,
-        artifactId: entry.artifactId,
-        outputBytes: entry.outputBytes,
-      }, { offsetBytes, limitBytes: DETAIL_PAGE_BYTES }, this.projectPath);
+      const page = await this.repository.read(
+        {
+          callId: entry.callId,
+          sequence: entry.sequence,
+          artifactId: entry.artifactId,
+          outputBytes: entry.outputBytes,
+        },
+        { offsetBytes, limitBytes: DETAIL_PAGE_BYTES },
+        this.projectPath
+      );
       yield page;
       if (page.nextOffsetBytes === undefined || page.nextOffsetBytes <= offsetBytes) return;
       offsetBytes = page.nextOffsetBytes;

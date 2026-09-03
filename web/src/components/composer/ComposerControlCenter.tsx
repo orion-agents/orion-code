@@ -20,7 +20,7 @@ import {
   saveComposerDraft,
 } from '../../state/composer-drafts';
 import { WebApiError } from '../../api';
-import type { WorkbenchState } from '../../types';
+import { isActiveSessionSnapshotReady, type WorkbenchState } from '../../types';
 import type { WorkbenchActions } from '../../useWorkbench';
 import { Icon } from '../Icon';
 
@@ -56,7 +56,11 @@ export function ComposerControlCenter({ state, actions, insertion }: ComposerCon
   const activeKeyRef = useRef(activeKey);
   activeKeyRef.current = activeKey;
   const draftKey = `${draftState.workspaceId}:${draftState.sessionId}`;
-  const disabled = !sessionId || !state.bootstrap?.configured || state.connection !== 'live';
+  const disabled =
+    !sessionId ||
+    !state.bootstrap?.configured ||
+    state.connection !== 'live' ||
+    !isActiveSessionSnapshotReady(state);
   const pending = Boolean(state.pendingAction);
   const sessionTurnQueued = state.sessionSnapshot?.sessionRuntime.phase === 'queued';
   const controlsReady = !disabled && !pending;
@@ -283,26 +287,16 @@ export function ComposerControlCenter({ state, actions, insertion }: ComposerCon
             </button>
           </div>
         </div>
-        <div className="composer-footline">
-          <span>Shift+Enter 换行</span>
-          {references.length > 0 ? <span>{references.length} 个 Context 引用</span> : null}
-          {draftError ? (
-            <span role="alert">{draftError}</span>
-          ) : state.composer?.lastError ? (
-            <span role="alert">{state.composer.lastError.message}</span>
-          ) : (
-            <span>此标签页草稿</span>
-          )}
-          {draft || references.length > 0 ? (
-            <button
-              type="button"
-              className="composer-clear-draft"
-              onClick={() => setDraftState({ workspaceId, sessionId, text: '', references: [] })}
-            >
-              清除草稿
-            </button>
-          ) : null}
-        </div>
+        {references.length > 0 || draftError || state.composer?.lastError ? (
+          <div className="composer-footline">
+            {references.length > 0 ? <span>{references.length} 个 Context 引用</span> : null}
+            {draftError ? (
+              <span role="alert">{draftError}</span>
+            ) : state.composer?.lastError ? (
+              <span role="alert">{state.composer.lastError.message}</span>
+            ) : null}
+          </div>
+        ) : null}
       </form>
       {riskSelection ? (
         <RiskConfirmation
@@ -667,10 +661,10 @@ function ContextLauncher({
     setLoading(true);
     setError('');
     try {
-      if (node.kind === 'directory') {
+      if (isDirectoryLike(node)) {
         const page = await actions.listFiles(node.id);
         add({ kind: 'folder', id: node.id, label: node.name, revision: page.revision });
-      } else if (node.kind === 'file') {
+      } else if (isFileLike(node)) {
         const page = await actions.readFileContent(node.id);
         if (page.binary || page.sensitive) throw new Error('该文件不能加入模型 Context。');
         add({ kind: 'file', id: node.id, label: node.name, revision: page.revision });
@@ -688,7 +682,9 @@ function ContextLauncher({
       add({
         kind: 'review',
         id: 'working-tree',
-        label: `Review · ${review.changedFiles.length} files`,
+        label: review.truncated
+          ? `Review · ${review.totalChangedFiles} files · ${review.changedFiles.length} visible`
+          : `Review · ${review.totalChangedFiles} files`,
         gitRevision: review.repositoryRevision,
       });
     } catch (reason) {
@@ -775,7 +771,7 @@ function ContextLauncher({
                 <MenuAction
                   key={file.id}
                   label={file.name}
-                  detail={file.kind === 'directory' ? '目录' : `${file.sizeBytes ?? 0} bytes`}
+                  detail={isDirectoryLike(file) ? '目录' : `${file.sizeBytes ?? 0} bytes`}
                   onClick={() => void addFile(file)}
                 />
               ))
@@ -865,7 +861,10 @@ function PlanReviewCard({
   const review = state.composer!.planReview!;
   const [continuing, setContinuing] = useState(false);
   const [feedback, setFeedback] = useState('');
-  const disabled = Boolean(state.pendingAction) || state.connection !== 'live';
+  const disabled =
+    Boolean(state.pendingAction) ||
+    state.connection !== 'live' ||
+    !isActiveSessionSnapshotReady(state);
   return (
     <section className="plan-review-card" aria-labelledby="plan-review-title">
       <div>
@@ -1222,6 +1221,12 @@ function permissionControlLabel(state: WorkbenchState): string {
 }
 function effortLabel(value: string): string {
   return value === 'auto' ? 'Effort 自动' : `Effort ${value}`;
+}
+function isDirectoryLike(node: WebFileNodeV1): boolean {
+  return node.kind === 'directory' || (node.kind === 'symlink' && node.targetKind === 'directory');
+}
+function isFileLike(node: WebFileNodeV1): boolean {
+  return node.kind === 'file' || (node.kind === 'symlink' && node.targetKind === 'file');
 }
 function contextKindLabel(kind: WebContextReferenceV1['kind']): string {
   return kind === 'file'

@@ -19,9 +19,9 @@ export interface RelevantMemoryResult {
 }
 
 export interface KeywordMatchOptions {
-  maxResults?: number;      // 最大返回数量，默认 5
-  minScore?: number;        // 最小相似度阈值，默认 0.1
-  caseSensitive?: boolean;  // 是否大小写敏感，默认 false
+  maxResults?: number; // 最大返回数量，默认 5
+  minScore?: number; // 最小相似度阈值，默认 0.1
+  caseSensitive?: boolean; // 是否大小写敏感，默认 false
 }
 
 // ============================================================================
@@ -51,20 +51,128 @@ export function extractKeywords(text: string, preserveCase: boolean = false): st
 
   // 去除常见停用词
   const stopWords = new Set([
-    'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
-    'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'were', 'been',
-    'be', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would',
-    'could', 'should', 'may', 'might', 'must', 'can', 'this', 'that',
-    'these', 'those', 'it', 'its', 'they', 'them', 'their', 'we', 'our',
-    'you', 'your', 'he', 'him', 'his', 'she', 'her', 'i', 'me', 'my',
-    'not', 'no', 'yes', 'all', 'any', 'some', 'each', 'every', 'both',
-    'few', 'many', 'more', 'most', 'other', 'another', 'such', 'only',
-    'own', 'same', 'so', 'than', 'too', 'very', 'just', 'also', 'now',
-    'then', 'here', 'there', 'when', 'where', 'why', 'how', 'what', 'which',
-    'who', 'whom', 'whose', 'if', 'else', 'then', 'because', 'since',
-    'although', 'though', 'while', 'during', 'before', 'after', 'until',
-    'above', 'below', 'between', 'under', 'over', 'out', 'into', 'onto',
-    'about', 'against', 'through', 'across', 'along', 'around', 'again',
+    'the',
+    'a',
+    'an',
+    'and',
+    'or',
+    'but',
+    'in',
+    'on',
+    'at',
+    'to',
+    'for',
+    'of',
+    'with',
+    'by',
+    'from',
+    'as',
+    'is',
+    'was',
+    'are',
+    'were',
+    'been',
+    'be',
+    'have',
+    'has',
+    'had',
+    'do',
+    'does',
+    'did',
+    'will',
+    'would',
+    'could',
+    'should',
+    'may',
+    'might',
+    'must',
+    'can',
+    'this',
+    'that',
+    'these',
+    'those',
+    'it',
+    'its',
+    'they',
+    'them',
+    'their',
+    'we',
+    'our',
+    'you',
+    'your',
+    'he',
+    'him',
+    'his',
+    'she',
+    'her',
+    'i',
+    'me',
+    'my',
+    'not',
+    'no',
+    'yes',
+    'all',
+    'any',
+    'some',
+    'each',
+    'every',
+    'both',
+    'few',
+    'many',
+    'more',
+    'most',
+    'other',
+    'another',
+    'such',
+    'only',
+    'own',
+    'same',
+    'so',
+    'than',
+    'too',
+    'very',
+    'just',
+    'also',
+    'now',
+    'then',
+    'here',
+    'there',
+    'when',
+    'where',
+    'why',
+    'how',
+    'what',
+    'which',
+    'who',
+    'whom',
+    'whose',
+    'if',
+    'else',
+    'then',
+    'because',
+    'since',
+    'although',
+    'though',
+    'while',
+    'during',
+    'before',
+    'after',
+    'until',
+    'above',
+    'below',
+    'between',
+    'under',
+    'over',
+    'out',
+    'into',
+    'onto',
+    'about',
+    'against',
+    'through',
+    'across',
+    'along',
+    'around',
+    'again',
   ]);
 
   // 停用词过滤始终大小写不敏感，否则 preserveCase 模式下 "The"/"And" 会漏过。
@@ -109,7 +217,11 @@ export function calculateKeywordMatch(
       const compareMk = caseSensitive ? mk : mk.toLowerCase();
 
       // 精确匹配或部分匹配（包含关系）
-      if (compareMk === compareQk || compareMk.includes(compareQk) || compareQk.includes(compareMk)) {
+      if (
+        compareMk === compareQk ||
+        compareMk.includes(compareQk) ||
+        compareQk.includes(compareMk)
+      ) {
         matchedKeywords.push(qk);
         matchCount++;
         break;

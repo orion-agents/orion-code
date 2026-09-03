@@ -6,7 +6,10 @@ module.exports = {
   // files that no test imports. Limiting roots to tests silently dropped those
   // files from the coverage denominator.
   roots: ['<rootDir>/tests', '<rootDir>/src'],
-  testMatch: ['**/*.test.ts'],
+  // `.test.tsx` hosts the component-rendering contract layer (see docs/plan/v0.3.6-plan.md
+  // §4.1): it asserts on `react-dom/server.renderToStaticMarkup` output, so it needs no
+  // jsdom and no @testing-library/react.
+  testMatch: ['**/*.test.ts', '**/*.test.tsx'],
   // Keep coverage denominators honest: files that tests never import must still
   // appear in the report instead of being silently excluded.
   collectCoverageFrom: ['<rootDir>/src/**/*.{ts,tsx}'],
@@ -32,7 +35,7 @@ module.exports = {
           skipLibCheck: true,
           forceConsistentCasingInFileNames: true,
           resolveJsonModule: true,
-          jsx: 'react',
+          jsx: 'react-jsx',
           types: ['jest', 'node'],
         },
       },

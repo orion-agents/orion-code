@@ -22,6 +22,167 @@ which is **not** a pass.
 
 ## [Unreleased]
 
+## [0.3.7] — CANDIDATE
+
+> **Status: candidate.** This work is isolated on the codex/v0.3.7 worktree (left project
+> rail interaction quality). It is not merged, tagged or published to npm.
+
+### Added
+
+- Session **tags**: up to 8 user-assigned tags per Session (each ≤ 32 chars), persisted on
+  the Session record (`SessionMeta.tags`), projected into `WebSessionSummaryV1.tags`,
+  managed from a new "管理标签…" dialog (chip add via Enter/comma, per-chip remove) and
+  rendered as small badges on rail rows. Host endpoint `POST /sessions/:id/tags`.
+- Session **archive / restore**: soft delete via `SessionMeta.archivedAt` that keeps every
+  file, hides the Session from default listings and counts, and surfaces it under a new
+  "已归档" rail section with a 还原 action (`POST /sessions/:id/archive|restore`;
+  `GET /workspaces/:id/sessions/archived`).
+- Session **delete** from the web workbench: destructive confirmation dialog (explicit
+  "永久删除" guard, 不可恢复 copy) wired to the existing storage `deleteSession` through a
+  new `DELETE /sessions/:id` endpoint; refuse-while-busy checks in the controller.
+- The rail rename affordance becomes a general **overflow menu** (`SessionRowMenu`,
+  keyboard navigable ↑↓/Home/End/Esc with focus restore) hosting 重命名… / 管理标签… /
+  归档 / 删除… so future per-Session actions have a stable home.
+
+### Changed
+
+- Active-workspace session listings (`listProjectSessions`, `listSessions`,
+  `countSessionsByProject`) exclude archived Sessions by default.
+- Rail footer status copy is shortened to 已连接 / 离线 / … with full sentences moved to a
+  tooltip (`connectionTitle`); the collapsed rail dot keeps an accessible short label.
+- Project tag chips, archived-section rows and the two new dialogs ship with their own
+  styles; stale `.session-rename`/`.session-row` rules were removed.
+
+### Fixed
+
+- Rename failures are no longer silent: `RenameDialog` surfaces the server error inline
+  (`field-error`) instead of closing without feedback.
+- Session-row menu hint ids are instance-unique (`useId`) so `aria-describedby` can never
+  point at another row's hint.
+- The archived rail listing is bound to its owning Workspace: switching projects drops stale
+  foreign archive rows immediately and never flashes another project's archive while loading;
+  `session_deleted` also clears the stale runtime projection.
+
+### Tests
+
+- New contract suites: `web-reducer-session-lifecycle` (14, incl. owner-binding + runtime
+  cleanup regression), `web-ui-SessionDialogs` (7), `web-ui-SessionRowMenu` (3),
+  `web-ui-WorkspaceDialog` (6), `session-storage-tags-archive` (5, incl. delete),
+  plus controller-level guards (tags validation / archive-restore / delete-while-busy /
+  foreign-workspace rejection / 404) in `web-workbench-controller.test.ts`; `web-ui-*` now
+  112 cases green. E2E: `web-v037-session-lifecycle.spec.ts` (archive/restore, delete-confirm,
+  tags round-trip) runs in CI.
+
+
+## [0.3.6] — CANDIDATE
+
+> **Status: candidate.** This work is isolated on the codex/v0.3.6 worktree (pure web
+> workbench interaction quality). It is not merged, tagged or published to npm.
+
+### Added
+
+- Component rendering contract layer for the web workbench: six `.test.tsx` suites
+  (89 cases) assert on `react-dom/server.renderToStaticMarkup` output without jsdom —
+  Markdown / StateDot / ShortcutHelp / DiffViewer / ApprovalCard / PanelResize.
+- `StateDot` status indicator that never relies on colour alone (WCAG 1.4.1): every dot
+  carries a shape channel via `data-tone` (square / circle / pulsing ring / hollow ring /
+  triangle) plus a visually-hidden text label for assistive tech; applied to reasoning,
+  research sources, review evidence and the work-panel rail.
+- Single-source keyboard binding table (`shortcuts.ts`) plus a `⌘/` shortcut help dialog
+  rendered from it, so the panel cannot drift from the live bindings; `matchesShortcut`
+  now resolves `Esc` → `Escape` so the help vocabulary matches real key events.
+- Header theme-cycle button (system → light → dark, persisted through the settings
+  document); the `SettingsDialog` entry stays intact.
+- Stacked notification toasts (P1-C): multiple notices queue without overwriting, each
+  non-recoverable non-error notice auto-dismisses after 5s, error / recovery notices stay
+  until acted on, and `aria-live` is graded (alert for errors, status otherwise).
+
+### Changed
+
+- `PanelResizeHandle` is keyboard reachable with full separator semantics: `role=separator`
+  with live `aria-valuenow`/`aria-valuetext`, ←/→ steps of 2% (Shift 10%), Home/End jump,
+  Enter/Space reset to default; stepping logic is extracted as pure functions.
+- Notification region becomes a stacked container (`.workbench-notice-stack`); cards slide
+  in on `opacity`/`transform` only and the whole stack is inert while drawers are open.
+- Icon set gains `sun` / `moon` / `monitor` / `keyboard` glyphs.
+
+### Fixed
+
+- Markdown heading off-by-one: `##` renders as `<h2>` (was `<h3>`), a lone `#` no longer
+  collapses to `<h6>`; >6 hashes stay a plain paragraph per GFM.
+
+
+## [0.3.5] — CANDIDATE
+
+> **Status: candidate.** This work is isolated on the codex/v0.3.5 worktree. It is not
+> merged, tagged or published to npm, and exact-artifact qualification remains a separate gate.
+
+### Added
+
+- Version thread projection digests so v0.3.2/v0.3.3 cutover receipts keep verifying while new
+  projections carry the full diagnostic/compact shape; forged digests fail closed.
+- Session snapshot sync state is decoupled from the Host transport: a Session snapshot failure
+  can no longer flip the live SSE to `replay-required`; Composer and command gates require both
+  transport live and the foreground Session snapshot ready.
+- Host and browser diagnostics counters for Session switches, snapshot cache hits/loads/latency,
+  and Session actor allocation/eviction/closure, so "pure selection allocates no Runtime" is
+  provable from counters instead of prose.
+- Runtime ownership across Workspace Context switches: the Host-level Session registry is created
+  once and preserved; control planes and Session actors borrow per-Workspace shared kernels, and
+  only Host shutdown closes every actor and kernel.
+
+### Changed
+
+- Instant Session switching renders a cached projection immediately, refreshes with a bounded
+  tail snapshot in the background, and prefetches the most recent Sessions after a baseline.
+- Version and release hygiene: package identity moves to 0.3.5, `release:check` recognizes
+  `codex/vX.Y.Z` and `GITHUB_HEAD_REF` release branches, and the Web rail no longer falls back to
+  a hardcoded version string.
+
+### Fixed
+
+- Workspace Context activation no longer shuts down resident Session actors of other Workspaces
+  or requires every actor to be idle before switching the active control plane.
+- A failed Context activation restores the previous control plane without rebuilding the Session
+  registry, so resident actors and their Runtime revisions survive the rollback.
+
+## [0.3.4] — CANDIDATE
+
+> **Status: candidate.** This stabilization work is isolated on the v0.3.4 worktree. It is not
+> merged, tagged or published to npm, and exact-artifact qualification remains a separate gate.
+
+### Changed
+
+- Bind Settings writes to the active Workspace and Context revision in addition to the Settings
+  document revision, so a stale browser tab cannot apply a valid patch to another Workspace.
+- Preserve lexical symbolic-link identity while projecting a contained target as a file or
+  directory, and expose the true changed-file total separately from the bounded Review page.
+- Split exact-tgz qualification into a script-disabled identity stage and a separate lifecycle-
+  enabled consumer/native stage.
+
+### Fixed
+
+- Keep split terminal surrogate pairs intact across delayed PTY callbacks, wait for browser write
+  capacity without animation-frame spin, and drain reconnect data in replay, live-tail, exit order.
+- Reject blank Session renames without changing durable metadata, and keep active-turn state intact
+  when a busy-rejected slash command fails.
+- Isolate concurrent command transcript capture so interleaved output cannot cross Sessions or
+  leave the process-wide console bridge installed.
+- Project cold and resident Composer model, Effort and permission changes from the actor Runtime's
+  canonical Session instead of a pre-actor metadata copy.
+- Detect binary content on every file page, render contained directory symlinks as expandable and
+  label Review truncation against the true repository total.
+
+### Security
+
+- Redact URL userinfo and structured sensitive keys before browser/evidence projection; evaluate
+  file aliases plus canonical targets and block sensitive current or rename-source Git diffs before
+  starting a content process.
+- Require matching, canonical-digest-verified terminal receipts and durable receipt facts before a
+  modern tool result can project success.
+- Fail release qualification for a failed live canary or duplicated runtime run and manifest
+  evidence instead of accepting a structurally complete but non-independent matrix.
+
 ## [0.3.3] — CANDIDATE
 
 > **Status: candidate.** The implementation and local qualification remain isolated on the v0.3.3

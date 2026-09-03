@@ -50,10 +50,7 @@ export function shouldTriggerAutoFix(
 /**
  * AutoFix Hook 处理器
  */
-export async function autoFixHook(
-  event: QueryEvent,
-  triggers: AutoFixTrigger[]
-): Promise<void> {
+export async function autoFixHook(event: QueryEvent, triggers: AutoFixTrigger[]): Promise<void> {
   if (event.type !== 'tool_result') {
     return;
   }
