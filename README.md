@@ -2,12 +2,10 @@
 
 Local-first, goal-driven coding agent for the terminal and browser.
 
-> v0.3.7 candidate — a left project-rail interaction release on top of the v0.3.6 work:
-> shortened connection copy, a keyboard-reachable per-Session overflow menu
-> (rename / tags / archive / delete with confirmation), persisted Session tags with
-> rail badges, an archived-Session section with restore, and a friendlier
-> "打开或新增项目" workspace dialog. Candidate source is not an npm publication,
-> Git tag, or merge-ready release.
+> v0.3.8 candidate — a regression-and-hardening sweep on top of the shipped v0.3.7:
+> removes dead tool code, audits repository hygiene, and re-verifies the release
+> receipt contract end to end. Candidate source is not an npm publication, Git tag,
+> or merge-ready release.
 
 [中文说明](README.zh-CN.md) ·
 [v0.3.7 plan](docs/plan/v0.3.7-left-rail-improvement-plan.md) ·
@@ -172,7 +170,7 @@ current development environments. Node 20 is upstream EOL and is no longer a v0.
 After the immutable `0.3.5` npm receipt exists:
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.7
+npm install -g @orion-agents/orion-code@0.3.8
 orion --version
 orion doctor
 ```

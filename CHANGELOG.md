@@ -22,10 +22,28 @@ which is **not** a pass.
 
 ## [Unreleased]
 
-## [0.3.7] — CANDIDATE
+## [0.3.8] — CANDIDATE
 
-> **Status: candidate.** This work is isolated on the codex/v0.3.7 worktree (left project
-> rail interaction quality). It is not merged, tagged or published to npm.
+> **Status: candidate.** Regression-and-hardening sweep isolated on the codex/v0.3.8
+> worktree. It is not merged, tagged or published to npm.
+
+### Fixed
+
+- Remove dead `src/tools/todo.ts` (never registered in tool descriptors).
+- Delivery-status hygiene: mark `[0.3.7]` as npm-published and `[0.3.6]` as merged.
+
+### Regression sweep
+
+- Full Jest sweep over 309 suites: 308 pass / 1 sandbox-only failure remains in the
+  excluded-heavy baseline; the `goals/*` `tsconfig` exclusion was investigated and
+  **kept** — it is part of the ArchitectureConfluence release-receipt contract
+  (`harness-confluence` asserts `compilerExcludes`), not stale debt.
+- No new regressions against the shipped v0.3.7 baseline.
+
+## [0.3.7] — NPM-PUBLISHED
+
+> **Status: npm-published.** Merged into `main` via PR #245 and published to npm as
+> `@orion-agents/orion-code@0.3.7`; a git tag / GitHub release has not been cut yet.
 
 ### Added
 
@@ -74,10 +92,10 @@ which is **not** a pass.
   tags round-trip) runs in CI.
 
 
-## [0.3.6] — CANDIDATE
+## [0.3.6] — MERGED
 
-> **Status: candidate.** This work is isolated on the codex/v0.3.6 worktree (pure web
-> workbench interaction quality). It is not merged, tagged or published to npm.
+> **Status: merged.** Delivered as part of v0.3.7 (PR #245): the v0.3.6 worktree content
+> was carried forward and shipped in `@orion-agents/orion-code@0.3.7`; no standalone tag.
 
 ### Added
 
