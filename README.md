@@ -2,12 +2,16 @@
 
 Local-first, goal-driven coding agent for the terminal and browser.
 
-> v0.3.5 candidate — a Session-continuity and runtime-ownership fix for the v0.3.x multi-Session
-> Web Workbench: snapshot state is decoupled from the transport, Session switches are instant, and
-> a Workspace Context switch no longer tears down Session actors of other Workspaces. Candidate
-> source is not an npm publication, Git tag, or merge-ready release.
+> v0.3.7 candidate — a left project-rail interaction release on top of the v0.3.6 work:
+> shortened connection copy, a keyboard-reachable per-Session overflow menu
+> (rename / tags / archive / delete with confirmation), persisted Session tags with
+> rail badges, an archived-Session section with restore, and a friendlier
+> "打开或新增项目" workspace dialog. Candidate source is not an npm publication,
+> Git tag, or merge-ready release.
 
 [中文说明](README.zh-CN.md) ·
+[v0.3.7 plan](docs/plan/v0.3.7-left-rail-improvement-plan.md) ·
+[v0.3.6 plan](docs/plan/v0.3.6-plan.md) ·
 [v0.3.5 plan](docs/plan/v0.3.5-plan.md) ·
 [v0.3.4 stabilization plan](docs/plan/v0.3.4-stabilization-plan.md) ·
 [v0.3.4 contract](docs/architecture/v0.3.4-stabilization-contract.md) ·
@@ -25,6 +29,36 @@ Local-first, goal-driven coding agent for the terminal and browser.
 [Migration guide](docs/migration/v0.2.2-to-v0.3.0.md) ·
 [Settings migration](docs/migration/v0.2.2-to-v0.3.0-settings.md) ·
 [real-state gallery](docs/assets/screenshots/v0.3.0-web/README.md)
+
+## What v0.3.7 changes
+
+- **Left rail status copy** is shortened (已连接 / 离线 / …) with full sentences on hover.
+- **Per-Session overflow menu** replaces the rename icon — 重命名… / 管理标签… / 归档 /
+  删除…, fully keyboard navigable, deleting requires an explicit confirmation dialog.
+- **Session tags**: up to 8 persisted tags per Session, edited as chips and shown as
+  badges on rows; archive hides a Session (all files kept) into a rail 已归档 section
+  with one-click restore.
+- **Workspace dialog** rework: "打开或新增项目" with suggested workspaces, a collapsible
+  "其他工作区" list and busy/validation feedback.
+
+## What v0.3.6 changes
+
+- **A component-rendering contract layer.** Six `.test.tsx` suites (89 cases) assert the web
+  workbench UI through `renderToStaticMarkup` — no jsdom needed — pinning Markdown tables and
+  headings, status dots, the shortcut help dialog, the diff viewer, the permission card and the
+  resize separator keyboard contract.
+- **Keyboard-reachable resize separators.** Project navigation and work-panel splitters expose
+  full separator semantics (`aria-valuenow`/`aria-valuetext`) and answer ←/→ (±2%, Shift ±10%),
+  Home/End and Enter/Space from the keyboard.
+- **Status without colour alone.** A shared `StateDot` adds a shape channel (`data-tone`) and a
+  screen-reader label to every status dot — reasoning, research sources, review evidence and the
+  work-panel rail.
+- **Single-source shortcut help.** `⌘/` opens a help dialog rendered from the same binding table
+  the live handlers match against.
+- **Theme cycle in the header.** One click walks system → light → dark and persists through the
+  settings document; light tokens stay consolidated in the blocksmith token sheet.
+- **Stacked notifications.** Toasts queue instead of overwriting, auto-dismiss after 5s unless
+  error/recovery, and grade `aria-live` by severity.
 
 ## What v0.3.5 changes
 
@@ -138,7 +172,7 @@ current development environments. Node 20 is upstream EOL and is no longer a v0.
 After the immutable `0.3.5` npm receipt exists:
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.5
+npm install -g @orion-agents/orion-code@0.3.7
 orion --version
 orion doctor
 ```
