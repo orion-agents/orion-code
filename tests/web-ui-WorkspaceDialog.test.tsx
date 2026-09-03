@@ -6,9 +6,16 @@ import * as React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 import { WorkspaceDialog } from '../web/src/components/Dialogs';
-import { initialWorkbenchState, type WebWorkspaceSummaryV1, type WorkbenchState } from '../web/src/types';
+import {
+  initialWorkbenchState,
+  type WebWorkspaceSummaryV1,
+  type WorkbenchState,
+} from '../web/src/types';
 
-function workspace(id: string, overrides: Partial<WebWorkspaceSummaryV1> = {}): WebWorkspaceSummaryV1 {
+function workspace(
+  id: string,
+  overrides: Partial<WebWorkspaceSummaryV1> = {}
+): WebWorkspaceSummaryV1 {
   return {
     id,
     path: `/tmp/${id}`,
