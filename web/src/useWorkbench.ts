@@ -95,6 +95,11 @@ export interface WorkbenchActions {
   activateSession(sessionId: string): Promise<void>;
   loadOlderTranscript(): Promise<void>;
   renameSession(sessionId: string, name: string): Promise<void>;
+  updateSessionTags(sessionId: string, tags: readonly string[]): Promise<void>;
+  archiveSession(sessionId: string): Promise<void>;
+  restoreSession(sessionId: string): Promise<void>;
+  deleteSession(sessionId: string): Promise<void>;
+  loadArchivedWorkspaceSessions(workspaceId: string, append?: boolean): Promise<void>;
   submit(
     text: string,
     contextReferences?: readonly WebContextReferenceV1[]
@@ -1068,6 +1073,78 @@ export function useWorkbench(): UseWorkbenchResult {
     [api, runOperation]
   );
 
+  const updateSessionTags = useCallback(
+    (sessionId: string, tags: readonly string[]) =>
+      runOperation('更新会话标签', async () => {
+        const updated = await api.updateSessionTags(
+          sessionId,
+          tags,
+          requireContextGuard(stateRef.current)
+        );
+        dispatch({ type: 'session_updated', session: updated });
+      }),
+    [api, runOperation]
+  );
+
+  const archiveSession = useCallback(
+    (sessionId: string) =>
+      runOperation('归档会话', async () => {
+        const archived = await api.archiveSession(sessionId, requireContextGuard(stateRef.current));
+        dispatch({ type: 'session_archived', session: archived });
+      }),
+    [api, runOperation]
+  );
+
+  const restoreSession = useCallback(
+    (sessionId: string) =>
+      runOperation('还原会话', async () => {
+        const restored = await api.restoreSession(sessionId, requireContextGuard(stateRef.current));
+        dispatch({ type: 'session_restored', session: restored });
+      }),
+    [api, runOperation]
+  );
+
+  const deleteSession = useCallback(
+    (sessionId: string) =>
+      runOperation('删除会话', async () => {
+        await api.deleteSession(sessionId, requireContextGuard(stateRef.current));
+        dispatch({ type: 'session_deleted', sessionId });
+      }),
+    [api, runOperation]
+  );
+
+  const loadArchivedWorkspaceSessions = useCallback(
+    async (workspaceId: string, append = false) => {
+      const context = requireContextGuard(stateRef.current);
+      const current = stateRef.current.archivedSessions;
+      const cursor = append ? current?.nextCursor : undefined;
+      if (append && !cursor) return;
+      dispatch({ type: 'archived_sessions_loading', workspaceId });
+      try {
+        const result = await api.listArchivedWorkspaceSessions(
+          workspaceId,
+          context,
+          cursor ?? undefined
+        );
+        dispatch({
+          type: 'archived_sessions_loaded',
+          workspaceId,
+          sessions: result.sessions,
+          nextCursor: result.nextCursor,
+          append,
+        });
+      } catch (error) {
+        dispatch({
+          type: 'archived_sessions_failed',
+          workspaceId,
+          detail: errorMessage(error),
+        });
+        throw error;
+      }
+    },
+    [api]
+  );
+
   const submit = useCallback(
     (text: string, contextReferences?: readonly WebContextReferenceV1[]) =>
       sendCommand('提交任务', { type: 'submit', text, contextReferences }),
@@ -1364,6 +1441,11 @@ export function useWorkbench(): UseWorkbenchResult {
       activateSession,
       loadOlderTranscript,
       renameSession,
+      updateSessionTags,
+      archiveSession,
+      restoreSession,
+      deleteSession,
+      loadArchivedWorkspaceSessions,
       submit,
       queue,
       removeQueued,
@@ -1435,6 +1517,11 @@ export function useWorkbench(): UseWorkbenchResult {
       removeQueued,
       removeWorkspace,
       renameSession,
+      restoreSession,
+      updateSessionTags,
+      archiveSession,
+      deleteSession,
+      loadArchivedWorkspaceSessions,
       retryBoot,
       setMode,
       setPermissionOverride,

@@ -8,11 +8,20 @@ import {
 } from 'react';
 
 import { Conversation } from './components/Conversation';
-import { RenameDialog, WorkspaceDialog } from './components/Dialogs';
+import {
+  ConfirmDeleteSessionDialog,
+  RenameDialog,
+  SessionTagsDialog,
+  WorkspaceDialog,
+} from './components/Dialogs';
 import { Icon } from './components/Icon';
 import { SettingsDialog } from './components/SettingsDialog';
+import { ShortcutHelpDialog } from './components/ShortcutHelpDialog';
 import { ProjectNavigator } from './components/projects/ProjectNavigator';
 import { WorkPanelDock } from './layout/WorkPanelDock';
+import { requestId } from './api';
+import { findShortcut, matchesShortcut } from './shortcuts';
+import type { ThemePreference } from './settings/types';
 import {
   computeWorkbenchColumns,
   loadWorkbenchLayoutPreference,
@@ -21,9 +30,117 @@ import {
   type WorkbenchLayoutPreferenceV2,
   type WorkPanelId,
 } from './state/layout-preferences';
-import { activeSessionSnapshotSync, type WebSessionSummaryV1 } from './types';
+import { activeSessionSnapshotSync, type WebSessionSummaryV1, type WorkbenchNotice } from './types';
 import { themeColorForAppearance } from './themes/theme-color';
 import { useWorkbench } from './useWorkbench';
+
+/** 通知堆叠上限：超出后丢弃最旧条目，避免遮挡整个工作区。 */
+const NOTICE_STACK_LIMIT = 4;
+/** 非关键通知自动消失时长（P1-C）。 */
+const NOTICE_AUTO_DISMISS_MS = 5000;
+
+export interface QueuedNotice {
+  readonly uid: number;
+  readonly notice: WorkbenchNotice;
+}
+
+/**
+ * 自动消失策略：需用户恢复操作（重连/重试快照）或 error 级通知保持，
+ * 其余（info / success / warning）5s 后自动消失。
+ */
+export function noticeAutoDismissDelayMs(
+  notice: WorkbenchNotice,
+  recoveryNeeded: boolean
+): number | null {
+  if (recoveryNeeded) return null;
+  if (notice.tone === 'error') return null;
+  return NOTICE_AUTO_DISMISS_MS;
+}
+
+interface NoticeCardProps {
+  readonly uid: number;
+  readonly notice: WorkbenchNotice;
+  /** 连接层需要“重建连接”（connection === 'replay-required'）。 */
+  readonly reconnectNeeded: boolean;
+  /** 会话快照域需要“重试同步”（session-snapshot 且 sync failed）。 */
+  readonly snapshotRetryNeeded: boolean;
+  readonly pendingAction: boolean;
+  readonly onDismiss: (uid: number) => void;
+  readonly onRecover: (uid: number) => void;
+}
+
+function WorkbenchNoticeCard({
+  uid,
+  notice,
+  reconnectNeeded,
+  snapshotRetryNeeded,
+  pendingAction,
+  onDismiss,
+  onRecover,
+}: NoticeCardProps) {
+  const recoveryNeeded = reconnectNeeded || snapshotRetryNeeded;
+  const dismissable = !recoveryNeeded;
+  const dismissRef = useRef(onDismiss);
+  useEffect(() => {
+    dismissRef.current = onDismiss;
+  }, [onDismiss]);
+
+  const delay = noticeAutoDismissDelayMs(notice, recoveryNeeded);
+  useEffect(() => {
+    if (delay === null) return undefined;
+    const timer = window.setTimeout(() => dismissRef.current(uid), delay);
+    return () => window.clearTimeout(timer);
+  }, [delay, uid]);
+
+  const titleId = `notice-${uid}`;
+  const iconName =
+    notice.tone === 'success' ? 'check' : notice.tone === 'info' ? 'info' : 'warning';
+  return (
+    <aside
+      className={`workbench-notice notice-${notice.tone}`}
+      role={notice.tone === 'error' ? 'alert' : 'status'}
+      aria-labelledby={titleId}
+    >
+      <span className="notice-icon" aria-hidden="true">
+        <Icon name={iconName} size={17} />
+      </span>
+      <div>
+        <strong id={titleId}>{notice.title}</strong>
+        {notice.detail ? <p>{notice.detail}</p> : null}
+      </div>
+      {reconnectNeeded ? (
+        <button
+          type="button"
+          className="secondary-button"
+          onClick={() => onRecover(uid)}
+          disabled={pendingAction}
+        >
+          重建连接
+        </button>
+      ) : null}
+      {snapshotRetryNeeded ? (
+        <button
+          type="button"
+          className="secondary-button"
+          onClick={() => onRecover(uid)}
+          disabled={pendingAction}
+        >
+          重试同步
+        </button>
+      ) : null}
+      {dismissable ? (
+        <button
+          type="button"
+          className="icon-button"
+          onClick={() => onDismiss(uid)}
+          aria-label="关闭通知"
+        >
+          <Icon name="close" size={15} />
+        </button>
+      ) : null}
+    </aside>
+  );
+}
 
 export function App() {
   const { state, actions } = useWorkbench();
@@ -33,6 +150,13 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState<WebSessionSummaryV1 | null>(null);
+  const [sessionTagsTarget, setSessionTagsTarget] = useState<WebSessionSummaryV1 | null>(null);
+  const [sessionDeleteTarget, setSessionDeleteTarget] = useState<WebSessionSummaryV1 | null>(null);
+  const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
+  const [noticeQueue, setNoticeQueue] = useState<readonly QueuedNotice[]>([]);
+  const noticeSeq = useRef(0);
+  const storeNoticeRef = useRef(state.notice);
+  const lastEnqueuedNoticeId = useRef<number | null>(null);
   const [composerInsertion, setComposerInsertion] = useState<{
     readonly id: number;
     readonly text: string;
@@ -60,6 +184,20 @@ export function App() {
   const motion = appearance?.sections.appearance.motion.effectiveValue;
   const uiStyle = appearance?.sections.appearance.style.effectiveValue ?? 'orion-blocksmith';
   const sessionSync = activeSessionSnapshotSync(state);
+
+  const cycleTheme = useCallback(() => {
+    if (!state.workspace) return;
+    const revision = appearance?.revision;
+    if (!revision) return;
+    const current = appearance?.sections.appearance.theme.effectiveValue ?? 'system';
+    const next: ThemePreference =
+      current === 'system' ? 'light' : current === 'light' ? 'dark' : 'system';
+    actions
+      .updateSettings(revision, [{ op: 'set', key: 'appearance.theme', value: next }], requestId())
+      .catch(error => {
+        console.warn('[theme] 主题切换写入失败', error);
+      });
+  }, [actions, appearance, state.workspace]);
 
   const updateProjectNavigationPreference = useCallback(
     (patch: Partial<WorkbenchLayoutPreferenceV2['projectNavigation']>) => {
@@ -148,6 +286,53 @@ export function App() {
     document.documentElement.dataset.uiStyle = uiStyle;
   }, [motion, theme, uiStyle]);
 
+  // P1-C: 通知堆叠 —— 观察 store 单条 notice，按 id 去重入队。
+  useEffect(() => {
+    storeNoticeRef.current = state.notice;
+    const current = state.notice;
+    if (!current) return;
+    if (lastEnqueuedNoticeId.current === current.id) return;
+    lastEnqueuedNoticeId.current = current.id;
+    setNoticeQueue(prev =>
+      prev.some(entry => entry.notice.id === current.id)
+        ? prev
+        : [...prev, { uid: ++noticeSeq.current, notice: current }].slice(-NOTICE_STACK_LIMIT)
+    );
+  }, [state.notice]);
+
+  // v0.3.7: eagerly load the archived listing once the foreground workspace
+  // session list is ready, so the rail archive section opens without a hitch.
+  useEffect(() => {
+    const workspaceId = state.workspaceId;
+    if (!workspaceId) return;
+    const sessions = state.workspaceSessions[workspaceId];
+    const archived = state.archivedSessions;
+    if (sessions?.status !== 'ready') return;
+    if (archived.ownerWorkspaceId === workspaceId && archived.status !== 'idle') return;
+    void actions.loadArchivedWorkspaceSessions(workspaceId);
+  }, [actions, state.archivedSessions, state.workspaceId, state.workspaceSessions]);
+
+  const dismissQueuedNotice = useCallback(
+    (uid: number) => {
+      const entry = noticeQueue.find(item => item.uid === uid);
+      if (!entry) return;
+      if (storeNoticeRef.current?.id === entry.notice.id) void actions.dismissNotice();
+      setNoticeQueue(prev => prev.filter(item => item.uid !== uid));
+    },
+    [actions, noticeQueue]
+  );
+
+  const recoverQueuedNotice = useCallback(
+    (uid: number) => {
+      const entry = noticeQueue.find(item => item.uid === uid);
+      if (!entry) return;
+      if (storeNoticeRef.current?.id === entry.notice.id) void actions.dismissNotice();
+      setNoticeQueue(prev => prev.filter(item => item.uid !== uid));
+      void actions.recoverSession();
+    },
+    [actions, noticeQueue]
+  );
+
   useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: light)');
     const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
@@ -176,32 +361,35 @@ export function App() {
 
   useEffect(() => {
     const onShortcut = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey) return;
-      if (event.code !== 'KeyB') return;
-      event.preventDefault();
-      if (navigationOverlay) {
-        if (navigationOpen) {
-          closeDrawers();
+      const toggleNavigation = findShortcut('toggle-project-navigation');
+      if (toggleNavigation && matchesShortcut(event, toggleNavigation.tokens)) {
+        event.preventDefault();
+        if (navigationOverlay) {
+          if (navigationOpen) {
+            closeDrawers();
+            return;
+          }
+          rememberDrawerTrigger();
+          setPanelOverlayOpen(false);
+          setNavigationOpen(true);
           return;
         }
-        rememberDrawerTrigger();
-        setPanelOverlayOpen(false);
-        setNavigationOpen(true);
-        return;
-      }
-      const next = !layoutPreference.projectNavigation.expanded;
-      const restoreToggleFocus = Boolean(
-        !next && document.activeElement?.closest('.workspace-rail')
-      );
-      updateProjectNavigationPreference({ expanded: next });
-      if (next) focusProjectSearch();
-      else if (restoreToggleFocus) {
-        requestAnimationFrame(() => {
-          const railToggle = document.querySelector<HTMLButtonElement>(
-            '.project-navigator-collapsed [aria-label="展开项目导航"]'
-          );
-          (railToggle ?? document.querySelector<HTMLButtonElement>('.mobile-nav-toggle'))?.focus();
-        });
+        const next = !layoutPreference.projectNavigation.expanded;
+        const restoreToggleFocus = Boolean(
+          !next && document.activeElement?.closest('.workspace-rail')
+        );
+        updateProjectNavigationPreference({ expanded: next });
+        if (next) focusProjectSearch();
+        else if (restoreToggleFocus) {
+          requestAnimationFrame(() => {
+            const railToggle = document.querySelector<HTMLButtonElement>(
+              '.project-navigator-collapsed [aria-label="展开项目导航"]'
+            );
+            (
+              railToggle ?? document.querySelector<HTMLButtonElement>('.mobile-nav-toggle')
+            )?.focus();
+          });
+        }
       }
     };
     window.addEventListener('keydown', onShortcut);
@@ -216,12 +404,26 @@ export function App() {
     updateProjectNavigationPreference,
   ]);
 
+  // `Mod+/` toggles the shortcut reference. Bound at the window level so it works
+  // regardless of which region currently owns focus (including the composer).
+  useEffect(() => {
+    const helpShortcut = findShortcut('open-shortcut-help');
+    if (!helpShortcut) return undefined;
+    const onShortcut = (event: KeyboardEvent) => {
+      if (!matchesShortcut(event, helpShortcut.tokens)) return;
+      event.preventDefault();
+      setShortcutHelpOpen(open => !open);
+    };
+    window.addEventListener('keydown', onShortcut);
+    return () => window.removeEventListener('keydown', onShortcut);
+  }, []);
+
   useEffect(() => {
     if (!drawersOpen) return undefined;
     const main = document.querySelector<HTMLElement>('.conversation-column');
     const rail = document.querySelector<HTMLElement>('.workspace-rail');
     const inspector = document.querySelector<HTMLElement>('.work-panel');
-    const notice = document.querySelector<HTMLElement>('.workbench-notice');
+    const notice = document.querySelector<HTMLElement>('.workbench-notice-stack');
     const skipLink = document.querySelector<HTMLElement>('.skip-link');
     if (main) main.inert = true;
     if (rail) rail.inert = panelModalOpen;
@@ -297,6 +499,7 @@ export function App() {
           dockVisible
           collapsed={columns.projectNavigation.mode === 'rail'}
           resizable={columns.projectNavigation.mode === 'dock'}
+          width={columns.projectNavigation.widthPx}
           onCloseDrawer={closeDrawers}
           onExpand={() => {
             if (navigationOverlay) {
@@ -331,6 +534,10 @@ export function App() {
           onRemoveWorkspace={workspaceId => void actions.removeWorkspace(workspaceId)}
           onRefreshSummary={workspaceId => void actions.refreshWorkspaceProjectSummary(workspaceId)}
           onRenameSession={setRenameTarget}
+          onSessionTags={setSessionTagsTarget}
+          onArchiveSession={session => void actions.archiveSession(session.id)}
+          onDeleteSession={setSessionDeleteTarget}
+          onRestoreSession={session => void actions.restoreSession(session.id)}
           onWidthPreview={width => {
             const preview = computeWorkbenchColumns(shellWidth, {
               ...layoutPreference,
@@ -376,6 +583,9 @@ export function App() {
           }}
           onRevealSettings={focusProjectSettings}
           onCreateSession={createSession}
+          themePreference={theme}
+          onCycleTheme={cycleTheme}
+          onShowShortcuts={() => setShortcutHelpOpen(true)}
           composerInsertion={composerInsertion}
         />
 
@@ -407,6 +617,7 @@ export function App() {
             );
           }}
           onWidthCommit={width => updatePanelPreference({ widthPx: width })}
+          width={columns.workPanel.widthPx}
           onSendToComposer={text => {
             setComposerInsertion({ id: Date.now(), text });
             if (panelOverlay) closeDrawers();
@@ -426,59 +637,23 @@ export function App() {
           />
         ) : null}
 
-        {state.notice ? (
-          <aside
-            className={`workbench-notice notice-${state.notice.tone}`}
-            role={state.notice.tone === 'error' ? 'alert' : 'status'}
-            aria-labelledby={`notice-${state.notice.id}`}
-          >
-            <span className="notice-icon">
-              <Icon
-                name={
-                  state.notice.tone === 'success'
-                    ? 'check'
-                    : state.notice.tone === 'info'
-                      ? 'info'
-                      : 'warning'
+        {noticeQueue.length > 0 ? (
+          <div className="workbench-notice-stack" aria-live="polite">
+            {noticeQueue.map(entry => (
+              <WorkbenchNoticeCard
+                key={entry.uid}
+                uid={entry.uid}
+                notice={entry.notice}
+                reconnectNeeded={state.connection === 'replay-required'}
+                snapshotRetryNeeded={
+                  entry.notice.domain === 'session-snapshot' && sessionSync.status === 'failed'
                 }
-                size={17}
+                pendingAction={Boolean(state.pendingAction)}
+                onDismiss={dismissQueuedNotice}
+                onRecover={recoverQueuedNotice}
               />
-            </span>
-            <div>
-              <strong id={`notice-${state.notice.id}`}>{state.notice.title}</strong>
-              {state.notice.detail ? <p>{state.notice.detail}</p> : null}
-            </div>
-            {state.connection === 'replay-required' ? (
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={() => void actions.recoverSession()}
-                disabled={Boolean(state.pendingAction)}
-              >
-                重建连接
-              </button>
-            ) : null}
-            {state.notice.domain === 'session-snapshot' && sessionSync.status === 'failed' ? (
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={() => void actions.recoverSession()}
-              >
-                重试同步
-              </button>
-            ) : null}
-            {state.connection !== 'replay-required' &&
-            state.notice.domain !== 'session-snapshot' ? (
-              <button
-                type="button"
-                className="icon-button"
-                onClick={actions.dismissNotice}
-                aria-label="关闭通知"
-              >
-                <Icon name="close" size={15} />
-              </button>
-            ) : null}
-          </aside>
+            ))}
+          </div>
         ) : null}
 
         {state.boot !== 'ready' ? (
@@ -538,6 +713,21 @@ export function App() {
         pending={Boolean(state.pendingAction)}
         onRename={actions.renameSession}
       />
+      <SessionTagsDialog
+        open={Boolean(sessionTagsTarget)}
+        onClose={() => setSessionTagsTarget(null)}
+        session={sessionTagsTarget}
+        pending={Boolean(state.pendingAction)}
+        onSave={actions.updateSessionTags}
+      />
+      <ConfirmDeleteSessionDialog
+        open={Boolean(sessionDeleteTarget)}
+        onClose={() => setSessionDeleteTarget(null)}
+        session={sessionDeleteTarget}
+        pending={Boolean(state.pendingAction)}
+        onConfirm={actions.deleteSession}
+      />
+      <ShortcutHelpDialog open={shortcutHelpOpen} onClose={() => setShortcutHelpOpen(false)} />
     </>
   );
 }

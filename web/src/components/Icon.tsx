@@ -14,7 +14,10 @@ export type IconName =
   | 'edit'
   | 'goal'
   | 'info'
+  | 'keyboard'
   | 'menu'
+  | 'monitor'
+  | 'moon'
   | 'more'
   | 'pause'
   | 'refresh'
@@ -23,6 +26,7 @@ export type IconName =
   | 'sidebar'
   | 'spark'
   | 'stop'
+  | 'sun'
   | 'terminal'
   | 'trash'
   | 'warning'
@@ -100,7 +104,20 @@ const paths: Record<IconName, JSX.Element> = {
       <path d="M12 11v5M12 8h.01" />
     </>
   ),
+  keyboard: (
+    <>
+      <rect x="2" y="6" width="20" height="12" rx="2" />
+      <path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M18 14h.01M9.5 14.5h5" />
+    </>
+  ),
   menu: <path d="M4 7h16M4 12h16M4 17h16" />,
+  monitor: (
+    <>
+      <rect x="2" y="3" width="20" height="14" rx="2" />
+      <path d="M8 21h8M12 17v4" />
+    </>
+  ),
+  moon: <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" />,
   more: (
     <>
       <circle cx="5" cy="12" r="1" fill="currentColor" stroke="none" />
@@ -132,6 +149,12 @@ const paths: Record<IconName, JSX.Element> = {
     <path d="m12 3 1.5 5.5L19 10l-5.5 1.5L12 17l-1.5-5.5L5 10l5.5-1.5ZM19 16l.7 2.3L22 19l-2.3.7L19 22l-.7-2.3L16 19l2.3-.7Z" />
   ),
   stop: <rect x="6" y="6" width="12" height="12" rx="2" />,
+  sun: (
+    <>
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+    </>
+  ),
   terminal: <path d="m5 7 4 4-4 4M11 16h8" />,
   trash: (
     <>

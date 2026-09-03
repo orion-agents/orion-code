@@ -454,6 +454,66 @@ export class OrionWebApi {
     return result.session;
   }
 
+  async updateSessionTags(
+    sessionId: string,
+    tags: readonly string[],
+    context: WebContextGuardV1
+  ): Promise<WebSessionSummaryV1> {
+    const result = await this.mutate<WebSessionMutationResultV1>(
+      `/sessions/${encodeURIComponent(sessionId)}/tags`,
+      'POST',
+      { requestId: requestId(), tags: [...tags], ...context }
+    );
+    return result.session;
+  }
+
+  async archiveSession(
+    sessionId: string,
+    context: WebContextGuardV1
+  ): Promise<WebSessionSummaryV1> {
+    const result = await this.mutate<WebSessionMutationResultV1>(
+      `/sessions/${encodeURIComponent(sessionId)}/archive`,
+      'POST',
+      { requestId: requestId(), ...context }
+    );
+    return result.session;
+  }
+
+  async restoreSession(
+    sessionId: string,
+    context: WebContextGuardV1
+  ): Promise<WebSessionSummaryV1> {
+    const result = await this.mutate<WebSessionMutationResultV1>(
+      `/sessions/${encodeURIComponent(sessionId)}/restore`,
+      'POST',
+      { requestId: requestId(), ...context }
+    );
+    return result.session;
+  }
+
+  async deleteSession(sessionId: string, context: WebContextGuardV1): Promise<void> {
+    await this.mutate<{ readonly requestId: string; readonly deleted: boolean }>(
+      `/sessions/${encodeURIComponent(sessionId)}`,
+      'DELETE',
+      { requestId: requestId(), ...context }
+    );
+  }
+
+  async listArchivedWorkspaceSessions(
+    workspaceId: string,
+    context: WebContextGuardV1,
+    cursor?: string
+  ): Promise<{
+    readonly sessions: readonly WebSessionSummaryV1[];
+    readonly nextCursor: string | null;
+  }> {
+    const page = await this.collectionPage<WebSessionSummaryV1>(
+      withContext(`/workspaces/${encodeURIComponent(workspaceId)}/sessions/archived`, context),
+      cursor
+    );
+    return { sessions: page.items, nextCursor: page.nextCursor };
+  }
+
   command(command: Omit<WebCommandV1, 'requestId'>): Promise<WebCommandResultV1> {
     return this.mutate('/commands', 'POST', { ...command, requestId: requestId() });
   }

@@ -15,9 +15,14 @@ test('WEB32-P0-01 left project rail pointer resize, reset, collapse and persiste
   const handle = page.locator('.panel-resize-handle-left');
   await expect(rail).toBeVisible();
   await expect(handle).toBeVisible();
-  await expect(handle).toHaveAttribute('aria-hidden', 'true');
-  await expect(handle).not.toHaveAttribute('role', 'separator');
-  expect(await handle.evaluate(element => (element as HTMLElement).tabIndex)).toBe(-1);
+  // v0.3.6 P0-B: the separator is now keyboard-reachable and announces itself.
+  await expect(handle).toHaveAttribute('role', 'separator');
+  await expect(handle).toHaveAttribute('aria-orientation', 'vertical');
+  await expect(handle).toHaveAttribute('aria-valuemin', '0');
+  await expect(handle).toHaveAttribute('aria-valuemax', '100');
+  await expect(handle).toHaveAttribute('aria-valuetext', /像素/u);
+  await expect(handle).not.toHaveAttribute('aria-hidden');
+  expect(await handle.evaluate(element => (element as HTMLElement).tabIndex)).toBe(0);
   await expectElementWidth(rail, 280);
 
   await dragLeftRailToRequestedWidth(page, handle, 100);
@@ -49,6 +54,7 @@ test('WEB32-P0-01 left project rail pointer resize, reset, collapse and persiste
   });
   evidence.recordFact('screenshot.left-project-rail', basename(screenshotName));
   evidence.recordFact('web32.left_resize_input', 'mouse-pointer');
+  evidence.recordFact('web36.left_separator_keyboard_reachable', true);
   evidence.recordFact('web32.left_resize_min_px', 240);
   evidence.recordFact('web32.left_resize_default_px', 280);
   evidence.recordFact('web32.left_resize_max_px', 480);

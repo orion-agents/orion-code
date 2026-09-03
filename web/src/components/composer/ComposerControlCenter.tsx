@@ -287,26 +287,16 @@ export function ComposerControlCenter({ state, actions, insertion }: ComposerCon
             </button>
           </div>
         </div>
-        <div className="composer-footline">
-          <span>Shift+Enter 换行</span>
-          {references.length > 0 ? <span>{references.length} 个 Context 引用</span> : null}
-          {draftError ? (
-            <span role="alert">{draftError}</span>
-          ) : state.composer?.lastError ? (
-            <span role="alert">{state.composer.lastError.message}</span>
-          ) : (
-            <span>此标签页草稿</span>
-          )}
-          {draft || references.length > 0 ? (
-            <button
-              type="button"
-              className="composer-clear-draft"
-              onClick={() => setDraftState({ workspaceId, sessionId, text: '', references: [] })}
-            >
-              清除草稿
-            </button>
-          ) : null}
-        </div>
+        {references.length > 0 || draftError || state.composer?.lastError ? (
+          <div className="composer-footline">
+            {references.length > 0 ? <span>{references.length} 个 Context 引用</span> : null}
+            {draftError ? (
+              <span role="alert">{draftError}</span>
+            ) : state.composer?.lastError ? (
+              <span role="alert">{state.composer.lastError.message}</span>
+            ) : null}
+          </div>
+        ) : null}
       </form>
       {riskSelection ? (
         <RiskConfirmation

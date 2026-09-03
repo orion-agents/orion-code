@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import type { WorkbenchActions } from '../useWorkbench';
+import type { ThemePreference } from '../settings/types';
 import {
   activeSessionSnapshotSync,
   isActiveSessionSnapshotReady,
@@ -14,10 +15,34 @@ import {
 import { Icon, type IconName } from './Icon';
 import { Markdown, safeJson, sanitizeDisplayText } from './Markdown';
 import { sessionTitle } from './WorkspaceRail';
+import { StateDot } from './StateDot';
 import { ComposerControlCenter } from './composer/ComposerControlCenter';
 
 const INITIAL_TIMELINE_WINDOW = 320;
 const TIMELINE_PAGE = 300;
+
+/** Theme cycling: system -> light -> dark -> system (order matters). */
+const THEME_CYCLE_ORDER: readonly ThemePreference[] = ['system', 'light', 'dark'];
+const THEME_ICON: Record<ThemePreference, IconName> = {
+  system: 'monitor',
+  light: 'sun',
+  dark: 'moon',
+};
+const THEME_LABEL: Record<ThemePreference, string> = {
+  system: '跟随系统',
+  light: '浅色',
+  dark: '深色',
+};
+
+function themeCycleInfo(preference: ThemePreference | undefined): {
+  readonly current: ThemePreference;
+  readonly next: ThemePreference;
+} {
+  const current = preference ?? 'system';
+  const index = THEME_CYCLE_ORDER.indexOf(current);
+  const next = THEME_CYCLE_ORDER[(index + 1) % THEME_CYCLE_ORDER.length];
+  return { current, next };
+}
 
 export interface ConversationProps {
   readonly state: WorkbenchState;
@@ -28,6 +53,10 @@ export interface ConversationProps {
   readonly onToggleInspector: () => void;
   readonly onRevealSettings: () => void;
   readonly onCreateSession: () => void;
+  /** v0.3.6 shell shortcuts: theme cycling and the keyboard reference. */
+  readonly themePreference: ThemePreference | undefined;
+  readonly onCycleTheme: () => void;
+  readonly onShowShortcuts: () => void;
   readonly composerInsertion: { readonly id: number; readonly text: string } | null;
 }
 
@@ -47,6 +76,9 @@ export function Conversation({
   onToggleInspector,
   onRevealSettings,
   onCreateSession,
+  themePreference,
+  onCycleTheme,
+  onShowShortcuts,
   composerInsertion,
 }: ConversationProps) {
   const activeSession = state.sessions.find(session => session.id === state.activeSessionId);
@@ -127,6 +159,8 @@ export function Conversation({
     viewport.scrollTo({ top: viewport.scrollHeight, behavior: 'smooth' });
   };
 
+  const themeCycle = themeCycleInfo(themePreference);
+
   return (
     <main className="conversation-column" id="main-content">
       <header className="conversation-header">
@@ -153,6 +187,22 @@ export function Conversation({
           </p>
         </div>
         <div className="header-actions">
+          <button
+            type="button"
+            className="icon-button theme-cycle-button"
+            onClick={onCycleTheme}
+            aria-label={`主题：${THEME_LABEL[themeCycle.current]}，点击切换为${THEME_LABEL[themeCycle.next]}`}
+          >
+            <Icon name={THEME_ICON[themeCycle.current]} />
+          </button>
+          <button
+            type="button"
+            className="icon-button shortcut-help-button"
+            onClick={onShowShortcuts}
+            aria-label="键盘快捷键帮助"
+          >
+            <Icon name="keyboard" />
+          </button>
           <button
             type="button"
             className="icon-button inspector-toggle"
@@ -310,7 +360,7 @@ function TranscriptCard({ entry }: { readonly entry: WebTranscriptEntry }) {
     return (
       <details className="reasoning-card">
         <summary>
-          <span className={`state-dot ${entry.live ? 'running' : 'ready'}`} aria-hidden="true" />
+          <StateDot state={entry.live ? 'running' : 'ready'} describe={false} />
           <span>{entry.live ? '正在分析' : entry.title || '推理摘要'}</span>
           <span className="reasoning-hint">展开查看 Runtime 提供的摘要</span>
         </summary>
@@ -531,7 +581,7 @@ function ResearchCard({ research }: { readonly research: WebResearch }) {
         <ul className="source-list">
           {research.sources.map(source => (
             <li key={source.id}>
-              <span className={`state-dot state-${source.status}`} aria-hidden="true" />
+              <StateDot state={source.status} />
               <span>{source.title || source.location || source.id}</span>
               <small>
                 {source.provider} · {source.status}
@@ -544,7 +594,7 @@ function ResearchCard({ research }: { readonly research: WebResearch }) {
   );
 }
 
-function ApprovalCard({
+export function ApprovalCard({
   state,
   actions,
 }: {

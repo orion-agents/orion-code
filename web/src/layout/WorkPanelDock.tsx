@@ -2,10 +2,14 @@ import { lazy, Suspense, useEffect, useId, useRef, type KeyboardEvent } from 're
 
 import { AgentPanel, type AgentPanelTab } from '../components/Inspector';
 import { Icon, type IconName } from '../components/Icon';
+import { StateDot } from '../components/StateDot';
 import type { WorkbenchState } from '../types';
 import type { WorkbenchActions } from '../useWorkbench';
 import type { WorkPanelId } from '../state/layout-preferences';
+import { findShortcut, matchesShortcut } from '../shortcuts';
 import { WorkPanelResizeHandle } from './WorkPanelResizeHandle';
+
+type WorkPanelMode = 'dock' | 'overlay';
 
 const TerminalPanel = lazy(() =>
   import('../components/terminal/TerminalPanel').then(module => ({ default: module.TerminalPanel }))
@@ -20,7 +24,13 @@ const ReviewPanel = lazy(() =>
   import('../components/review/ReviewPanel').then(module => ({ default: module.ReviewPanel }))
 );
 
-type WorkPanelMode = 'dock' | 'overlay';
+const PANEL_SHORTCUT_IDS = [
+  'focus-work-panel-1',
+  'focus-work-panel-2',
+  'focus-work-panel-3',
+  'focus-work-panel-4',
+  'focus-work-panel-5',
+] as const;
 
 const PANELS: ReadonlyArray<{
   readonly id: WorkPanelId;
@@ -47,6 +57,8 @@ export interface WorkPanelDockProps {
   readonly onAgentPanelChange: (panel: AgentPanelTab) => void;
   readonly onWidthPreview: (width: number) => void;
   readonly onWidthCommit: (width: number) => void;
+  /** Live dock width in px, used for the resize separator's `aria-valuenow`. */
+  readonly width: number;
   readonly onSendToComposer: (text: string) => void;
 }
 
@@ -63,6 +75,7 @@ export function WorkPanelDock({
   onAgentPanelChange,
   onWidthPreview,
   onWidthCommit,
+  width,
   onSendToComposer,
 }: WorkPanelDockProps) {
   const surfaceRef = useRef<HTMLElement>(null);
@@ -112,9 +125,9 @@ export function WorkPanelDock({
   }, [activePanel, expanded, mode, tabsId]);
 
   useEffect(() => {
+    const togglePanel = findShortcut('toggle-work-panel');
     const onShortcut = (event: globalThis.KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey) || !event.shiftKey || event.altKey) return;
-      if (event.code === 'KeyB') {
+      if (togglePanel && matchesShortcut(event, togglePanel.tokens)) {
         event.preventDefault();
         if (expanded) onCollapse();
         else {
@@ -123,8 +136,10 @@ export function WorkPanelDock({
         }
         return;
       }
-      const digit = /^Digit([1-5])$/u.exec(event.code)?.[1];
-      const index = Number(digit) - 1;
+      const index = PANEL_SHORTCUT_IDS.findIndex(id => {
+        const binding = findShortcut(id);
+        return binding ? matchesShortcut(event, binding.tokens) : false;
+      });
       const panel = PANELS[index];
       if (!panel) return;
       event.preventDefault();
@@ -184,7 +199,7 @@ export function WorkPanelDock({
       onKeyDownCapture={onSurfaceKeyDown}
     >
       {mode === 'dock' && expanded ? (
-        <WorkPanelResizeHandle onPreview={onWidthPreview} onCommit={onWidthCommit} />
+        <WorkPanelResizeHandle width={width} onPreview={onWidthPreview} onCommit={onWidthCommit} />
       ) : null}
       {!expanded && mode === 'dock' ? (
         <nav className="work-panel-rail" aria-label="工作面板快捷入口">
@@ -214,7 +229,7 @@ export function WorkPanelDock({
             >
               <Icon name={item.icon} size={17} />
               {item.id === 'terminal' && state.processing ? (
-                <span className="rail-status-dot" />
+                <StateDot state="running" className="rail-status-dot" describe={false} />
               ) : null}
             </button>
           ))}

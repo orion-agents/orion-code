@@ -180,8 +180,9 @@ test('E2E-P0-08 Host attacks fail closed while real-CSP UI remains keyboard and 
   expect(await ui.main.evaluate(element => (element as HTMLElement).inert)).toBe(false);
   const resizeHandle = page.locator('.work-panel-resize-handle');
   await expect(resizeHandle).toBeVisible();
-  await expect(resizeHandle).not.toHaveAttribute('role', 'separator');
-  expect(await resizeHandle.getAttribute('tabindex')).toBeNull();
+  // v0.3.6 P0-B: the splitter is an announced, keyboard-reachable separator.
+  await expect(resizeHandle).toHaveAttribute('role', 'separator');
+  expect(await resizeHandle.getAttribute('tabindex')).toBe('0');
   const dragToWidth = async (width: number) => {
     const box = await resizeHandle.boundingBox();
     if (!box) throw new Error('Work Panel resize handle has no pointer bounds.');

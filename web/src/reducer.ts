@@ -121,6 +121,25 @@ export type WorkbenchAction =
       readonly workspaceId: string;
       readonly detail: string;
     }
+  // v0.3.7 — Session tag / archive / delete mutations keep the rail listings
+  // (active workspace + archived section) in sync with the host.
+  | { readonly type: 'session_updated'; readonly session: WebSessionSummaryV1 }
+  | { readonly type: 'session_archived'; readonly session: WebSessionSummaryV1 }
+  | { readonly type: 'session_restored'; readonly session: WebSessionSummaryV1 }
+  | { readonly type: 'session_deleted'; readonly sessionId: string }
+  | { readonly type: 'archived_sessions_loading'; readonly workspaceId: string }
+  | {
+      readonly type: 'archived_sessions_loaded';
+      readonly workspaceId: string;
+      readonly sessions: readonly WebSessionSummaryV1[];
+      readonly nextCursor: string | null;
+      readonly append?: boolean;
+    }
+  | {
+      readonly type: 'archived_sessions_failed';
+      readonly workspaceId: string;
+      readonly detail: string;
+    }
   | {
       readonly type: 'workspace_project_summary_loaded';
       readonly summary: WebWorkspaceProjectSummaryV1;
@@ -386,6 +405,96 @@ export function workbenchReducer(
           },
         },
       };
+
+    // v0.3.7 — Session lifecycle mirrors. `session_updated` carries the
+    // refreshed summary (tags), the other three move rows between the main and
+    // the archived listing without a full refetch.
+    case 'session_updated': {
+      const main = updateActiveSessionList(state, list => replaceOrPrepend(list, action.session));
+      return main;
+    }
+    case 'session_archived': {
+      const without = withoutSession(state, action.session.id);
+      const archivedHas = state.archivedSessions.items.some(s => s.id === action.session.id);
+      return {
+        ...without,
+        archivedSessions: archivedHas
+          ? without.archivedSessions
+          : {
+              ...without.archivedSessions,
+              status: 'ready',
+              items: [action.session, ...without.archivedSessions.items],
+            },
+      };
+    }
+    case 'session_restored': {
+      const main = updateActiveSessionList(state, list => [
+        action.session,
+        ...list.filter(item => item.id !== action.session.id),
+      ]);
+      return {
+        ...main,
+        archivedSessions: {
+          ...main.archivedSessions,
+          items: main.archivedSessions.items.filter(s => s.id !== action.session.id),
+        },
+      };
+    }
+    case 'session_deleted': {
+      const runtimeById = { ...state.sessionRuntimeById };
+      delete runtimeById[action.sessionId];
+      return {
+        ...withoutSession(state, action.sessionId),
+        sessionRuntimeById: runtimeById,
+        archivedSessions: {
+          ...state.archivedSessions,
+          items: state.archivedSessions.items.filter(s => s.id !== action.sessionId),
+        },
+      };
+    }
+    case 'archived_sessions_loading':
+      // Guard against cross-workspace races: only the foreground workspace may
+      // write the single archived copy, and stale rows from another workspace
+      // are dropped immediately instead of flashing during the load.
+      if (action.workspaceId !== state.workspaceId) return state;
+      return {
+        ...state,
+        archivedSessions: {
+          status: 'loading',
+          items:
+            state.archivedSessions.ownerWorkspaceId === action.workspaceId
+              ? state.archivedSessions.items
+              : [],
+          nextCursor: state.archivedSessions.nextCursor,
+          ownerWorkspaceId: state.archivedSessions.ownerWorkspaceId,
+        },
+      };
+    case 'archived_sessions_loaded': {
+      if (action.workspaceId !== state.workspaceId) return state;
+      const items = action.append
+        ? mergeByKey(state.archivedSessions.items, action.sessions, session => session.id)
+        : action.sessions;
+      return {
+        ...state,
+        archivedSessions: {
+          status: 'ready',
+          items,
+          nextCursor: action.nextCursor,
+          ownerWorkspaceId: action.workspaceId,
+        },
+      };
+    }
+    case 'archived_sessions_failed':
+      if (action.workspaceId !== state.workspaceId) return state;
+      return {
+        ...state,
+        archivedSessions: {
+          ...state.archivedSessions,
+          status: 'error',
+          error: action.detail,
+        },
+      };
+
     case 'workspace_project_summary_loaded':
       return {
         ...state,
@@ -1294,6 +1403,74 @@ function mergeByKey<T>(
   const merged = new Map(current.map(value => [keyOf(value), value]));
   for (const value of incoming) merged.set(keyOf(value), value);
   return [...merged.values()];
+}
+
+/** Prepend `session` when new; replace in place when already listed. */
+function replaceOrPrepend(
+  items: readonly WebSessionSummaryV1[],
+  session: WebSessionSummaryV1
+): readonly WebSessionSummaryV1[] {
+  const index = items.findIndex(item => item.id === session.id);
+  if (index < 0) return [session, ...items];
+  const next = [...items];
+  next[index] = session;
+  return next;
+}
+
+/** Drop `sessionId` from the active workspace main listing (sessions + workspaceSessions). */
+function withoutSession(state: WorkbenchState, sessionId: string): WorkbenchState {
+  const active = state.workspaceId;
+  const activeList = active ? state.workspaceSessions[active] : undefined;
+  const mainItems = (activeList?.items ?? state.sessions).filter(
+    session => session.id !== sessionId
+  );
+  return {
+    ...state,
+    sessions: active ? mainItems : state.sessions,
+    workspaceSessions: active
+      ? {
+          ...state.workspaceSessions,
+          [active]: {
+            status: (activeList?.status ?? 'ready') === 'error' ? 'error' : 'ready',
+            items: mainItems,
+            nextCursor: activeList?.nextCursor ?? null,
+            error: activeList?.error,
+          },
+        }
+      : state.workspaceSessions,
+  };
+}
+
+/** Apply a mutation to the active workspace main listing (mirrors both mirrors). */
+function updateActiveSessionList(
+  state: WorkbenchState,
+  mutate: (items: readonly WebSessionSummaryV1[]) => readonly WebSessionSummaryV1[]
+): WorkbenchState {
+  const active = state.workspaceId;
+  const activeList = active ? state.workspaceSessions[active] : undefined;
+  const base = activeList?.items ?? state.sessions;
+  const items = mutate(base);
+  const status =
+    activeList?.status === 'error'
+      ? 'error'
+      : activeList?.status === 'loading'
+        ? 'loading'
+        : 'ready';
+  return {
+    ...state,
+    sessions: active ? items : state.sessions,
+    workspaceSessions: active
+      ? {
+          ...state.workspaceSessions,
+          [active]: {
+            status,
+            items,
+            nextCursor: activeList?.nextCursor ?? null,
+            error: activeList?.error,
+          },
+        }
+      : state.workspaceSessions,
+  };
 }
 
 function reduceGoalEvent(

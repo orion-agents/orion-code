@@ -17,9 +17,11 @@ test('WEB31-P0-03 mouse pointer resizing clamps 320-720 and narrow layout preser
 
   const handle = page.locator('.work-panel-resize-handle');
   await expect(handle).toBeVisible();
-  await expect(handle).toHaveAttribute('aria-hidden', 'true');
-  await expect(handle).not.toHaveAttribute('role', 'separator');
-  expect(await handle.evaluate(element => (element as HTMLElement).tabIndex)).toBe(-1);
+  // v0.3.6 P0-B: separator semantics + keyboard reachability.
+  await expect(handle).toHaveAttribute('role', 'separator');
+  await expect(handle).toHaveAttribute('aria-orientation', 'vertical');
+  await expect(handle).not.toHaveAttribute('aria-hidden');
+  expect(await handle.evaluate(element => (element as HTMLElement).tabIndex)).toBe(0);
   await expectPanelWidth(ui.inspectorDock, 420);
 
   await dragPanelToRequestedWidth(page, handle, 100);

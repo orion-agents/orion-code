@@ -4,6 +4,7 @@ import { WebApiError } from '../../api';
 import type { WebGitDiffPageV1, WebGitFileV1, WebReviewSnapshotV1 } from '../../types';
 import type { WorkbenchActions } from '../../useWorkbench';
 import { Icon } from '../Icon';
+import { StateDot } from '../StateDot';
 import { DiffViewer } from '../git/DiffViewer';
 
 export function ReviewPanel({
@@ -180,7 +181,7 @@ export function ReviewPanel({
             {snapshot.verification.length ? (
               snapshot.verification.map(item => (
                 <article key={`${item.callId}:${item.toolName}`}>
-                  <span className={`state-dot state-${item.state}`} aria-hidden="true" />
+                  <StateDot state={item.state} />
                   <div>
                     <strong>{item.toolName}</strong>
                     <small>

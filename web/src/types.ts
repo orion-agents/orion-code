@@ -108,6 +108,16 @@ export interface WorkspaceSessionsState {
   readonly error?: string;
 }
 
+/**
+ * v0.3.7 — Archived sessions of the active Workspace, backed by the same page
+ * shape as `WorkspaceSessionsState`. `ownerWorkspaceId` records which Workspace
+ * the cached rows belong to so a rail switch never shows another project's
+ * archive while the new one is loading.
+ */
+export interface ArchivedSessionsState extends WorkspaceSessionsState {
+  readonly ownerWorkspaceId: string;
+}
+
 export interface WebTranscriptEntry {
   readonly id: string;
   readonly role: ProtocolTranscriptEntry['role'];
@@ -342,6 +352,8 @@ export interface WorkbenchState {
   readonly workspaces: readonly WebWorkspaceSummaryV1[];
   readonly sessions: readonly WebSessionSummaryV1[];
   readonly workspaceSessions: Readonly<Record<string, WorkspaceSessionsState>>;
+  /** v0.3.7 — Archived sessions of the active Workspace (shown in the rail). */
+  readonly archivedSessions: ArchivedSessionsState;
   readonly workspaceProjectSummaries: Readonly<Record<string, WebWorkspaceProjectSummaryV1>>;
   readonly workspaceResourceEpochs: Readonly<Record<string, WorkspaceResourceEpochs>>;
   readonly workspaceNextCursor: string | null;
@@ -406,6 +418,7 @@ export const initialWorkbenchState: WorkbenchState = {
   workspaces: [],
   sessions: [],
   workspaceSessions: {},
+  archivedSessions: { status: 'idle', items: [], nextCursor: null, ownerWorkspaceId: '' },
   workspaceProjectSummaries: {},
   workspaceResourceEpochs: {},
   workspaceNextCursor: null,
