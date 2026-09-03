@@ -116,3 +116,25 @@ describe('session delete (storage)', () => {
     expect(countSessionsByProject().get(projectFor('delete-session')) ?? 0).toBe(0);
   });
 });
+
+describe('session archive/restore idempotency (v0.3.8)', () => {
+  it('archiving twice keeps a single archived state with the latest timestamp', () => {
+    const session = createSession(projectFor('archive-twice'), 'test-model');
+    if (!session) return;
+    const first = archiveSession(session.id);
+    const second = archiveSession(session.id);
+    expect(second?.archivedAt).toBeGreaterThanOrEqual(first?.archivedAt ?? 0);
+    expect(listArchivedProjectSessions(projectFor('archive-twice'))).toHaveLength(1);
+  });
+
+  it('restoring a never-archived session is a safe no-op', () => {
+    const session = createSession(projectFor('restore-fresh'), 'test-model');
+    if (!session) return;
+    const restored = restoreSession(session.id);
+    expect(restored?.archivedAt).toBeUndefined();
+    expect(
+      listProjectSessions(projectFor('restore-fresh')).some(item => item.id === session.id)
+    ).toBe(true);
+    expect(listArchivedProjectSessions(projectFor('restore-fresh'))).toHaveLength(0);
+  });
+});
