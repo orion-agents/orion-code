@@ -31,6 +31,9 @@ which is **not** a pass.
 
 - Remove dead `src/tools/todo.ts` (never registered in tool descriptors).
 - Delivery-status hygiene: mark `[0.3.7]` as npm-published and `[0.3.6]` as merged.
+- Bring the component-rendering contract layer into the lint gate: the new
+  `web-ui-*`/reducer/storage test files join `npm run lint` (0 violations), so the
+  guard rails now cover the layer they protect.
 
 ### Regression sweep
 

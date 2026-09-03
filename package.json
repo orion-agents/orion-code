@@ -64,7 +64,7 @@
     "test:web-e2e:matrix": "ts-node --transpile-only scripts/e2e/run-web-e2e-matrix.ts",
     "test:coverage": "jest --coverage",
     "deps:check": "bash scripts/release/dep-health-check.sh",
-    "lint": "eslint src/ web/src/ scripts/smoke/web-workbench-browser.ts scripts/e2e/ tests/e2e/ playwright.config.ts",
+    "lint": "eslint src/ web/src/ scripts/smoke/web-workbench-browser.ts scripts/e2e/ tests/e2e/ tests/web-ui-*.tsx tests/web-reducer-session-lifecycle.test.ts tests/session-storage-tags-archive.test.ts playwright.config.ts",
     "format": "prettier --write src/ web/src/ scripts/smoke/web-workbench-browser.ts scripts/e2e/ tests/e2e/ playwright.config.ts",
     "format:check": "prettier --check src/ web/src/ scripts/smoke/web-workbench-browser.ts scripts/e2e/ tests/e2e/ playwright.config.ts",
     "release:check": "node scripts/release/release-check.js",
