@@ -2,9 +2,10 @@
 
 面向终端与浏览器、本地优先的目标驱动 Coding Agent。
 
-> v0.3.9 候选版本：对 OPEN issue 集的确定性 bug 清扫 + 原生后台 host 生命周期 ——
-> `orion web --background`（pidfile/日志）与 `orion web status|stop|restart` 管理。
-> Candidate 源码不代表已创建 npm 发布、Git tag 或达到可合并状态。
+> v0.3.10 候选版本：本地 Web host 默认端口改为 **4242**（M42，猎户座大星云），
+> 并新增一等生命周期管理：`orion web start|status|stop|restart` 管理脱离终端的
+> 后台 host（pidfile + 日志），`--background` 仍可用。Candidate 源码不代表已创建
+> npm 发布、Git tag 或达到可合并状态。
 
 [English](README.md) ·
 [v0.3.7 方案](docs/plan/v0.3.7-left-rail-improvement-plan.md) ·
@@ -101,7 +102,7 @@ Current。Node 20 已结束上游维护，不再属于 v0.3 Runtime 合同。
 当 npm 已存在不可变的 `0.3.4` 发布凭据后：
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.9
+npm install -g @orion-agents/orion-code@0.3.10
 orion --version
 orion doctor
 ```
@@ -184,6 +185,23 @@ Host 时会 abort 并 fail-closed。
 桌面左栏可在 240–480px 调整或折叠为 48px rail，右栏为 320–720px；均采用 IDE 式鼠标拖动且不提供
 键盘精细调宽。窄屏自动使用 drawer，且不覆盖桌面宽度偏好。文件、Git 和审阅保持只读；创建终端需要
 显式 user gesture，短期 ticket 与输出均不进入 Workbench SSE。
+
+#### 后台运行与管理（v0.3.10）
+
+Web Workbench 只绑定 **127.0.0.1**；默认端口为 **4242**（M42，猎户座大星云），避免与常用开发端口冲突。
+
+```bash
+orion web                          # 前台启动；打开 http://127.0.0.1:4242
+orion web --background             # 脱离终端的后台 host（pidfile + 日志）
+orion web start [--port N]         # 幂等后台启动
+orion web status  [--port N]       # 查看运行 pid/URL/workspace
+orion web restart [--port N]       # 重启
+orion web stop    [--port N]       # 优雅停止
+```
+
+pidfile 位于 `~/.orion-code/web-host.<port>.pid`，日志追加到 `~/.orion-code/logs/web-<port>.log`。后台化只涉及进程生命周期：审批/上下文版本/沙箱规则保持 fail-closed，host 绝不绑定局域网。
+
+macOS 需要崩溃自动重启与开机自启时，用 launchd LaunchAgent 托管**前台**命令（`orion web --no-open --port 4242 --cwd <dir>`，`RunAtLoad`+`KeepAlive`）——不要与 `--background` 混用，launchd 必须直接监管 host 进程。
 
 #### Host 管理的 Settings
 
