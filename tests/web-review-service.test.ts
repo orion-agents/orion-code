@@ -40,7 +40,7 @@ describe('ReviewServiceV1', () => {
         finishedAt: 1_700_000_000_000 - index,
       })
     );
-    const git = fakeGit(status);
+    const git = fakeGit([status, gitStatus({ totalFiles: 1 })]);
     const service = new ReviewServiceV1(git, async () => receipts);
 
     const snapshot = await service.snapshot();
@@ -54,7 +54,7 @@ describe('ReviewServiceV1', () => {
       unstagedCount: 1,
       untrackedCount: 0,
       conflictCount: 0,
-      truncated: true,
+      truncated: false,
     });
     expect(snapshot.changedFiles).toEqual([changedFile]);
     expect(snapshot.verification).toHaveLength(100);
@@ -76,7 +76,7 @@ describe('ReviewServiceV1', () => {
     await expect(service.snapshot()).resolves.toMatchObject({ revision: snapshot.revision });
   });
 
-  test('separates the authoritative total from the bounded visible Review page', async () => {
+  test('aggregates every Git status page for repositories larger than one page (issues #237/#228)', async () => {
     const visible = Array.from(
       { length: 2_000 },
       (_, index): WebGitFileV1 =>
@@ -87,24 +87,37 @@ describe('ReviewServiceV1', () => {
           worktreeStatus: '?',
         })
     );
-    const git = fakeGit(
+    const tail: WebGitFileV1 = Object.freeze({
+      fileId: 'git_file_2000',
+      path: 'generated/file-2000.ts',
+      indexStatus: ' ',
+      worktreeStatus: '?',
+    });
+    const git = fakeGit([
       gitStatus({
         untracked: Object.freeze(visible),
         totalFiles: 2_001,
         truncated: true,
         nextCursor: 'next-status',
-      })
-    );
+      }),
+      gitStatus({
+        untracked: Object.freeze([tail]),
+        totalFiles: 2_001,
+        truncated: false,
+        nextCursor: null,
+      }),
+    ]);
     const service = new ReviewServiceV1(git, async () => []);
 
     const snapshot = await service.snapshot();
 
     expect(snapshot.totalChangedFiles).toBe(2_001);
-    expect(snapshot.changedFiles).toHaveLength(2_000);
-    expect(snapshot.untrackedCount).toBe(2_000);
-    expect(snapshot.truncated).toBe(true);
-    expect(git.status).toHaveBeenCalledTimes(1);
-    expect(git.status).toHaveBeenCalledWith({ pageSize: 2_000 });
+    expect(snapshot.changedFiles).toHaveLength(2_001);
+    expect(snapshot.untrackedCount).toBe(2_001);
+    expect(snapshot.truncated).toBe(false);
+    expect(git.status).toHaveBeenCalledTimes(2);
+    expect(git.status).toHaveBeenNthCalledWith(1, { pageSize: 2_000 });
+    expect(git.status).toHaveBeenNthCalledWith(2, { cursor: 'next-status', pageSize: 2_000 });
   });
 
   test('binds the Review revision to the authoritative receipt references', async () => {
@@ -123,7 +136,7 @@ describe('ReviewServiceV1', () => {
       finishedAt: 1_700_000_000_000,
     };
     let receipts: readonly VerifiedDurableToolReceiptRefV1[] = [base];
-    const service = new ReviewServiceV1(fakeGit(gitStatus()), async () => receipts);
+    const service = new ReviewServiceV1(fakeGit([gitStatus()]), async () => receipts);
 
     const first = await service.snapshot();
     receipts = [{ ...base, receiptDigest: 'c'.repeat(64) }];
@@ -144,7 +157,7 @@ describe('ReviewServiceV1', () => {
       truncated: false,
     });
     const diff = jest.fn().mockResolvedValue(page);
-    const service = new ReviewServiceV1(fakeGit(gitStatus(), diff), async () => []);
+    const service = new ReviewServiceV1(fakeGit([gitStatus()], diff), async () => []);
 
     await expect(service.diff({ fileId: changedFile.fileId, lineLimit: 20 })).resolves.toBe(page);
     expect(diff).toHaveBeenCalledWith({ fileId: changedFile.fileId, lineLimit: 20 });
@@ -173,9 +186,16 @@ function gitStatus(overrides: Partial<WebGitStatusV1> = {}): WebGitStatusV1 {
   });
 }
 
-function fakeGit(status: WebGitStatusV1, diff = jest.fn()): GitReadModelServiceV1 {
-  return {
-    status: jest.fn().mockResolvedValue(status),
-    diff,
-  } as unknown as GitReadModelServiceV1;
+/**
+ * v0.3.9 — paging-aware Git fake: returns each page in turn, then an empty
+ * terminal page so ReviewServiceV1's page loop terminates.
+ */
+function fakeGit(pages: readonly WebGitStatusV1[], diff = jest.fn()): GitReadModelServiceV1 {
+  const queue = [...pages];
+  const status = jest.fn().mockImplementation(() => {
+    const next = queue.shift();
+    if (next) return Promise.resolve(next);
+    return Promise.resolve(gitStatus());
+  });
+  return { status, diff } as unknown as GitReadModelServiceV1;
 }
