@@ -7,9 +7,9 @@
 import { parseWebCliOptions } from '../src/web/cli-options';
 
 describe('orion web CLI options (issue #218)', () => {
-  it('defaults to open port 3080 on the current cwd', () => {
+  it('defaults to open port 4242 (M42) on the current cwd', () => {
     expect(parseWebCliOptions([])).toEqual({
-      port: 3080,
+      port: 4242,
       open: true,
       cwd: process.cwd(),
       background: false,
