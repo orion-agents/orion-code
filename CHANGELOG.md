@@ -22,6 +22,20 @@ which is **not** a pass.
 
 ## [Unreleased]
 
+## [0.3.9] — CANDIDATE
+
+> **Status: candidate.** Deterministic-bug fixes + background host lifecycle
+> (issue #247 S1/S2). Not merged, tagged or published to npm.
+
+### Added
+
+- `orion web --background`: starts the Web Workbench host detached from the
+  terminal, writes a pidfile (`~/.orion-code/web-host.<port>.pid`), redirects
+  logs to `~/.orion-code/logs/web-<port>.log` and prints URL/pid.
+- `orion web status|stop|restart [--port <number>]`: pidfile-based host
+  management without third-party supervisors. Still binds 127.0.0.1 and keeps
+  the fail-closed approval/context/sandbox semantics unchanged (issue #247).
+
 ## [0.3.7] — CANDIDATE
 
 > **Status: candidate.** This work is isolated on the codex/v0.3.7 worktree (left project
