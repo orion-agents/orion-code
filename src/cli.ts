@@ -26,7 +26,7 @@ import type { CommandContext } from './commands/types';
 import { PACKAGE_VERSION } from './product/version';
 import { runOrionWeb } from './web';
 import { hostDaemonStatus, stopBackgroundHost } from './web/host-daemon';
-import { parseWebCliOptions } from './web/cli-options';
+import { parseWebCliOptions, type WebCliOptions } from './web/cli-options';
 
 const BRAND = chalk.hex('#FF6B35');
 const ACCENT = chalk.hex('#00D4AA');
@@ -73,10 +73,21 @@ function showWebHelp(): void {
   console.log(
     '  --background      run detached in the background (pidfile + logs under ~/.orion-code)'
   );
+  console.log('orion web start [--port <number>] [--cwd <directory>] [--no-open]');
   console.log('orion web status [--port <number>]');
   console.log('orion web stop [--port <number>]');
   console.log('orion web restart [--port <number>]');
-  console.log('  Manage a background host started with --background.');
+  console.log('  Manage a background host started with --background (start starts one).');
+}
+
+function webBackgroundArgs(options: WebCliOptions): string[] {
+  return [
+    ...(options.open ? [] : ['--no-open']),
+    '--port',
+    String(options.port),
+    '--cwd',
+    options.cwd,
+  ];
 }
 
 async function manageBackgroundHost(command: 'status' | 'stop', args: string[]): Promise<void> {
@@ -198,6 +209,22 @@ async function main(): Promise<void> {
       return;
     }
     const rest = args.slice(1);
+    if (rest[0] === 'start') {
+      const startOptions = parseWebCliOptions(rest.slice(1));
+      const current = hostDaemonStatus(startOptions.port);
+      if (current.state === 'running') {
+        console.log(
+          `orion web is already running: ${current.pidfile.url} (pid ${current.pidfile.pid})`
+        );
+        return;
+      }
+      await runOrionWeb({
+        ...startOptions,
+        background: true,
+        backgroundArgs: webBackgroundArgs(startOptions),
+      });
+      return;
+    }
     if (rest[0] === 'status' || rest[0] === 'stop') {
       await manageBackgroundHost(rest[0], rest.slice(1));
       return;
@@ -208,25 +235,12 @@ async function main(): Promise<void> {
       await runOrionWeb({
         ...restartOptions,
         background: true,
-        backgroundArgs: [
-          ...(restartOptions.open ? [] : ['--no-open']),
-          '--port',
-          String(restartOptions.port),
-          '--cwd',
-          restartOptions.cwd,
-        ],
+        backgroundArgs: webBackgroundArgs(restartOptions),
       });
       return;
     }
     const options = parseWebCliOptions(rest);
-    const backgroundArgs = [
-      ...(options.open ? [] : ['--no-open']),
-      '--port',
-      String(options.port),
-      '--cwd',
-      options.cwd,
-    ];
-    await runOrionWeb({ ...options, backgroundArgs });
+    await runOrionWeb({ ...options, backgroundArgs: webBackgroundArgs(options) });
     return;
   }
   if (args[0] === 'migrate') {
