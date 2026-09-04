@@ -22,6 +22,30 @@ which is **not** a pass.
 
 ## [Unreleased]
 
+## [0.3.9] — CANDIDATE
+
+> **Status: candidate.** Deterministic-bug-fix release (issue sweep against the
+> v0.3.7 baseline). Not merged, tagged or published to npm.
+
+### Fixed
+
+- Issue-sweep triage: #222 (blank session rename), #223 (failed create leaves a
+  persisted active session), #234 (URL userinfo password starting with `token:`),
+  #238 (busy state-write clearing processing), #242 (stale Settings save into the
+  newly active workspace) were all already resolved on `main` — closed with
+  source evidence.
+- Web redaction now covers uppercase X-prefixed environment assignments
+  (`X_CLIENT_SECRET=…`, `CLIENT_SECRET=…`, `AUTH_TOKEN=…`) whose secret suffix
+  hides behind underscore word characters (issue #241).
+- Cmd/Ctrl+B can again open the Project Navigator at 761–799px: expanding the
+  navigation preference now resolves to a drawer and opens it explicitly instead
+  of leaving an invisible drawer (issue #226).
+
+### Tests
+
+- `redaction-xprefixed-env` suite: X-prefixed env values, bare uppercase
+  assignments, #234 userinfo regression, #241 JSON keys.
+
 ## [0.3.7] — CANDIDATE
 
 > **Status: candidate.** This work is isolated on the codex/v0.3.7 worktree (left project
