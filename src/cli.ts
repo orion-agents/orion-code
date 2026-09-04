@@ -25,6 +25,7 @@ import { handleMigrateCommand } from './migration/command';
 import type { CommandContext } from './commands/types';
 import { PACKAGE_VERSION } from './product/version';
 import { runOrionWeb } from './web';
+import { parseWebCliOptions } from './web/cli-options';
 
 const BRAND = chalk.hex('#FF6B35');
 const ACCENT = chalk.hex('#00D4AA');
@@ -63,44 +64,6 @@ function showCliHelp(): void {
     DIM('tui is the default product UI. terminal is the technical fallback; print is experimental.')
   );
   console.log();
-}
-
-interface WebCliOptions {
-  port: number;
-  open: boolean;
-  cwd: string;
-}
-
-function parseWebCliOptions(args: string[]): WebCliOptions {
-  let port = 3080;
-  let open = true;
-  let cwd = process.cwd();
-  for (let index = 0; index < args.length; index++) {
-    const argument = args[index];
-    if (argument === '--no-open') {
-      open = false;
-      continue;
-    }
-    if (argument === '--port' || argument.startsWith('--port=')) {
-      const portValue = argument === '--port' ? args[++index] : argument.slice('--port='.length);
-      if (!portValue || !/^\d+$/u.test(portValue)) {
-        throw new Error('--port must be an integer from 0 through 65535.');
-      }
-      port = Number(portValue);
-      if (!Number.isSafeInteger(port) || port < 0 || port > 65_535) {
-        throw new Error('--port must be an integer from 0 through 65535.');
-      }
-      continue;
-    }
-    if (argument === '--cwd' || argument.startsWith('--cwd=')) {
-      const cwdValue = argument === '--cwd' ? args[++index] : argument.slice('--cwd='.length);
-      if (!cwdValue?.trim()) throw new Error('--cwd requires a directory path.');
-      cwd = cwdValue;
-      continue;
-    }
-    throw new Error(`Unknown orion web option: ${argument}`);
-  }
-  return { port, open, cwd };
 }
 
 function showWebHelp(): void {
