@@ -25,6 +25,7 @@ import { handleMigrateCommand } from './migration/command';
 import type { CommandContext } from './commands/types';
 import { PACKAGE_VERSION } from './product/version';
 import { runOrionWeb } from './web';
+import { hostDaemonStatus, stopBackgroundHost } from './web/host-daemon';
 import { parseWebCliOptions } from './web/cli-options';
 
 const BRAND = chalk.hex('#FF6B35');
@@ -67,8 +68,38 @@ function showCliHelp(): void {
 }
 
 function showWebHelp(): void {
-  console.log('Usage: orion web [--port <number>] [--no-open] [--cwd <directory>]');
+  console.log('Usage: orion web [--port <number>] [--no-open] [--cwd <directory>] [--background]');
   console.log('Starts the local-only Web Workbench on 127.0.0.1.');
+  console.log(
+    '  --background      run detached in the background (pidfile + logs under ~/.orion-code)'
+  );
+  console.log('orion web status [--port <number>]');
+  console.log('orion web stop [--port <number>]');
+  console.log('orion web restart [--port <number>]');
+  console.log('  Manage a background host started with --background.');
+}
+
+async function manageBackgroundHost(command: 'status' | 'stop', args: string[]): Promise<void> {
+  const options = parseWebCliOptions(args);
+  const status = hostDaemonStatus(options.port);
+  if (command === 'status') {
+    if (status.state === 'running') {
+      console.log(`orion web is running: ${status.pidfile.url} (pid ${status.pidfile.pid})`);
+      console.log(
+        `workspace ${status.pidfile.workspace} · started ${new Date(status.pidfile.startedAt).toISOString()}`
+      );
+    } else if (status.state === 'stale') {
+      console.log(
+        `orion web is not running (stale pidfile for pid ${status.pid} on port ${status.port}).`
+      );
+    } else {
+      console.log(`orion web is not running on port ${options.port}.`);
+    }
+    return;
+  }
+  const result = await stopBackgroundHost(options.port);
+  if (result === 'stopped') console.log(`orion web on port ${options.port} stopped.`);
+  else console.log(`orion web was not running on port ${options.port}.`);
 }
 
 interface CliOptions {
@@ -166,7 +197,36 @@ async function main(): Promise<void> {
       showWebHelp();
       return;
     }
-    await runOrionWeb(parseWebCliOptions(args.slice(1)));
+    const rest = args.slice(1);
+    if (rest[0] === 'status' || rest[0] === 'stop') {
+      await manageBackgroundHost(rest[0], rest.slice(1));
+      return;
+    }
+    if (rest[0] === 'restart') {
+      await manageBackgroundHost('stop', rest.slice(1));
+      const restartOptions = parseWebCliOptions(rest.slice(1));
+      await runOrionWeb({
+        ...restartOptions,
+        background: true,
+        backgroundArgs: [
+          ...(restartOptions.open ? [] : ['--no-open']),
+          '--port',
+          String(restartOptions.port),
+          '--cwd',
+          restartOptions.cwd,
+        ],
+      });
+      return;
+    }
+    const options = parseWebCliOptions(rest);
+    const backgroundArgs = [
+      ...(options.open ? [] : ['--no-open']),
+      '--port',
+      String(options.port),
+      '--cwd',
+      options.cwd,
+    ];
+    await runOrionWeb({ ...options, backgroundArgs });
     return;
   }
   if (args[0] === 'migrate') {

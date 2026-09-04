@@ -2,10 +2,9 @@
 
 面向终端与浏览器、本地优先的目标驱动 Coding Agent。
 
-> v0.3.7 候选版本：左侧项目栏交互发布（基于 v0.3.6 之上）—— 状态文案精简、会话行键盘可达
-> 操作菜单（重命名 / 标签 / 归档 / 删除含确认）、可持久化会话标签与行内徽章、已归档会话区一键还原、
-> 以及更友好的「打开或新增项目」工作区对话框。Candidate 源码不代表已创建 npm 发布、Git tag 或达到
-> 可合并状态。
+> v0.3.9 候选版本：对 OPEN issue 集的确定性 bug 清扫 + 原生后台 host 生命周期 ——
+> `orion web --background`（pidfile/日志）与 `orion web status|stop|restart` 管理。
+> Candidate 源码不代表已创建 npm 发布、Git tag 或达到可合并状态。
 
 [English](README.md) ·
 [v0.3.7 方案](docs/plan/v0.3.7-left-rail-improvement-plan.md) ·
@@ -102,7 +101,7 @@ Current。Node 20 已结束上游维护，不再属于 v0.3 Runtime 合同。
 当 npm 已存在不可变的 `0.3.4` 发布凭据后：
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.7
+npm install -g @orion-agents/orion-code@0.3.9
 orion --version
 orion doctor
 ```

@@ -24,8 +24,19 @@ which is **not** a pass.
 
 ## [0.3.9] — CANDIDATE
 
-> **Status: candidate.** Deterministic-bug-fix release (issue sweep against the
-> v0.3.7 baseline). Not merged, tagged or published to npm.
+## [0.3.9] — CANDIDATE
+
+> **Status: candidate.** Deterministic-bug-fix release + background host lifecycle
+> (issue #247 S1/S2). Not merged, tagged or published to npm.
+
+### Added
+
+- `orion web --background`: starts the Web Workbench host detached from the
+  terminal, writes a pidfile (`~/.orion-code/web-host.<port>.pid`), redirects
+  logs to `~/.orion-code/logs/web-<port>.log` and prints URL/pid.
+- `orion web status|stop|restart [--port <number>]`: pidfile-based host
+  management without third-party supervisors. Still binds 127.0.0.1 and keeps
+  the fail-closed approval/context/sandbox semantics unchanged (issue #247).
 
 ### Fixed
 
@@ -97,7 +108,6 @@ which is **not** a pass.
   112 cases green. E2E: `web-v037-session-lifecycle.spec.ts` (archive/restore, delete-confirm,
   tags round-trip) runs in CI.
 
-
 ## [0.3.6] — CANDIDATE
 
 > **Status: candidate.** This work is isolated on the codex/v0.3.6 worktree (pure web
@@ -134,7 +144,6 @@ which is **not** a pass.
 
 - Markdown heading off-by-one: `##` renders as `<h2>` (was `<h3>`), a lone `#` no longer
   collapses to `<h6>`; >6 hashes stay a plain paragraph per GFM.
-
 
 ## [0.3.5] — CANDIDATE
 
