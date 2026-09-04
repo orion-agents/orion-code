@@ -253,3 +253,55 @@ describe('reducer archived owner-binding & runtime cleanup (v0.3.7 fixes)', () =
     expect(next.sessions.map(s => s.id)).toEqual(['s1']);
   });
 });
+
+describe('reducer lifecycle idempotency (v0.3.8)', () => {
+  it('archiving an already-archived session never duplicates the archived row', () => {
+    const state: WorkbenchState = {
+      ...seededState(),
+      archivedSessions: {
+        status: 'ready',
+        items: [summary('s2')],
+        nextCursor: null,
+        ownerWorkspaceId: WORKSPACE,
+      },
+    };
+    const next = reduce(state, { type: 'session_archived', session: summary('s2') });
+    expect(next.archivedSessions.items.map(s => s.id)).toEqual(['s2']);
+    expect(next.sessions.map(s => s.id)).toEqual(['s1']);
+  });
+
+  it('archiving a session that is not in the main listing is a safe no-op for the main list', () => {
+    const state: WorkbenchState = {
+      ...seededState(),
+      sessions: [summary('s1')],
+      workspaceSessions: {
+        [WORKSPACE]: { status: 'ready', items: [summary('s1')], nextCursor: null },
+      },
+    };
+    const next = reduce(state, { type: 'session_archived', session: summary('s-unknown') });
+    expect(next.sessions.map(s => s.id)).toEqual(['s1']);
+    expect(next.archivedSessions.items.map(s => s.id)).toEqual(['s-unknown']);
+  });
+
+  it('deleting an unknown session id is a safe no-op', () => {
+    const next = reduce(seededState(), { type: 'session_deleted', sessionId: 'nope' });
+    expect(next.sessions.map(s => s.id)).toEqual(['s2', 's1']);
+    expect(next.archivedSessions.items).toEqual([]);
+  });
+
+  it('restoring a session already in the main list moves it to the top without duplicating', () => {
+    const state: WorkbenchState = {
+      ...seededState(),
+      archivedSessions: {
+        status: 'ready',
+        items: [summary('s1', { name: '旧' })],
+        nextCursor: null,
+        ownerWorkspaceId: WORKSPACE,
+      },
+    };
+    const restored = summary('s1', { name: '旧' });
+    const next = reduce(state, { type: 'session_restored', session: restored });
+    expect(next.sessions.map(s => s.id)).toEqual(['s1', 's2']);
+    expect(next.archivedSessions.items).toEqual([]);
+  });
+});

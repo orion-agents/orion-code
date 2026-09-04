@@ -613,6 +613,7 @@ export function App() {
           mode={panelSurfaceOverlay ? 'overlay' : 'dock'}
           expanded={panelExpanded}
           activePanel={layoutPreference.workPanel.activePanel}
+          panelOrder={layoutPreference.workPanel.order}
           agentPanel={layoutPreference.workPanel.agentPanel}
           onExpand={() => {
             if (panelOverlay || panelDerivedRail) setPanelOverlayOpen(true);
