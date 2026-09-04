@@ -22,9 +22,10 @@ which is **not** a pass.
 
 ## [Unreleased]
 
-## [0.3.10] — CANDIDATE
+## [0.3.10] — NPM-PUBLISHED
 
-> **Status: candidate.** Not merged, tagged or published to npm.
+> **Status: npm-published.** `@orion-agents/orion-code@0.3.10` is available through the npm
+> registry (latest tag). Published 2026-09-04; git tag/release may lag.
 
 ### Added
 
