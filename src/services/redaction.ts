@@ -64,6 +64,14 @@ const SECRET_PATTERNS: Array<[RegExp, string]> = [
   // Anthropic / OpenAI-style long-lived keys that do not start with `sk-`.
   [/\bxai-[A-Za-z0-9]{16,}\b/g, '[REDACTED_SECRET]'],
   [/\bgsk_[A-Za-z0-9]{16,}\b/g, '[REDACTED_SECRET]'],
+  [
+    // Uppercase environment assignments with a secret-shaped suffix, e.g.
+    // `export X_CLIENT_SECRET=…` / `CLIENT_SECRET=…`. The generic lower-case
+    // field rules cannot match these because the underscore is a word
+    // character, so no boundary exists right before `client_secret` (issue #241).
+    /\b((?:[A-Z][A-Z0-9_]*_)?(?:CLIENT_SECRET|ACCESS_TOKEN|AUTH_TOKEN|SECRET_KEY|PRIVATE_KEY|SESSION_KEY|ENCRYPTION_KEY|DB_PASSWORD|API_KEY|API_TOKEN|CREDENTIALS?|SECRETS?)\s*=\s*)(["']?)[^\s"',;]+/gi,
+    '$1$2[REDACTED_SECRET]',
+  ],
   [/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, 'Bearer [REDACTED_SECRET]'],
 ];
 
