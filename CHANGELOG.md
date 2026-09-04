@@ -26,8 +26,9 @@ which is **not** a pass.
 
 ## [0.3.9] — CANDIDATE
 
-> **Status: candidate.** Deterministic-bug-fix release + background host lifecycle
-> (issue #247 S1/S2). Not merged, tagged or published to npm.
+> **Status: npm-published.** `@orion-agents/orion-code@0.3.9` is available through the npm
+> registry (latest tag); deterministic-bug-fix release + background host lifecycle
+> (issue #247 S1/S2). Published 2026-09-04; git tag/release may lag.
 
 ### Added
 
