@@ -17,6 +17,7 @@ import {
   type WebContextGuardV1,
 } from './protocol';
 import { WebWorkbenchError } from './errors';
+import { DEFAULT_WEB_PORT } from './cli-options';
 import { attachTerminalWebSocketServer } from './terminal-server';
 import { pageCollectionItems, WebWorkbenchController } from './workbench-controller';
 
@@ -44,7 +45,7 @@ const API_PREFIX = '/api/v1';
 export async function startOrionWebServer(
   options: OrionWebServerOptions
 ): Promise<OrionWebServerHandle> {
-  const requestedPort = options.port ?? 3080;
+  const requestedPort = options.port ?? DEFAULT_WEB_PORT;
   if (!Number.isSafeInteger(requestedPort) || requestedPort < 0 || requestedPort > 65_535) {
     throw new Error('Web port must be an integer from 0 through 65535.');
   }

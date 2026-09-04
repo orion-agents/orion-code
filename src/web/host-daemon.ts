@@ -9,7 +9,7 @@
  *
  * The pidfile shape is intentionally tiny and human-readable:
  *
- *   { "pid": 12345, "port": 3080, "url": "http://127.0.0.1:3080",
+ *   { "pid": 12345, "port": 4242, "url": "http://127.0.0.1:4242",
  *     "startedAt": 1725000000000, "workspace": "/abs/path" }
  */
 import { spawn, type ChildProcess } from 'child_process';

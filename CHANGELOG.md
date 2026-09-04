@@ -22,7 +22,20 @@ which is **not** a pass.
 
 ## [Unreleased]
 
-## [0.3.9] — CANDIDATE
+## [0.3.10] — NPM-PUBLISHED
+
+> **Status: npm-published.** `@orion-agents/orion-code@0.3.10` is available through the npm
+> registry (latest tag). Published 2026-09-04; git tag/release may lag.
+
+### Added
+
+- The local Web host defaults to port **4242** (M42, the Orion Nebula) instead of
+  the generic 3080; `DEFAULT_WEB_PORT` is the single source shared by
+  cli-options, launch and server.
+- `orion web start [--port N]`: idempotent background-host start (prints the URL
+  when already running); start/restart/`--background` share one arg builder.
+- README documents the background-host lifecycle (`start|status|stop|restart`,
+  pidfile/log locations) and the launchd foreground-supervision recipe.
 
 ## [0.3.9] — CANDIDATE
 

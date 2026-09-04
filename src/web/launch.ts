@@ -1,3 +1,4 @@
+import { DEFAULT_WEB_PORT } from './cli-options';
 import { execFile } from 'child_process';
 
 import { startOrionWebServer, type OrionWebServerHandle } from './server';
@@ -18,7 +19,7 @@ export async function runOrionWeb(options: RunOrionWebOptions): Promise<void> {
   const stdout = options.stdout ?? process.stdout;
   const stderr = options.stderr ?? process.stderr;
   const isDaemonChild = process.env[HOST_DAEMON_CHILD_ENV] === '1';
-  const port = options.port ?? 3080;
+  const port = options.port ?? DEFAULT_WEB_PORT;
   if (options.background && !isDaemonChild) {
     // Parent side: launch detached and wait for its pidfile, then print the URL.
     const { pidfile } = await spawnBackgroundHost({

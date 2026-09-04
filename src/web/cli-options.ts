@@ -3,7 +3,11 @@
  * grammar has a unit-testable surface — issue #218 regression coverage).
  */
 
-export const DEFAULT_WEB_PORT = 3080;
+/**
+ * M42 (Orion Nebula) — the local Web Workbench host binds this by default so
+ * `orion web` never collides with common dev-tool ports.
+ */
+export const DEFAULT_WEB_PORT = 4242;
 
 export interface WebCliOptions {
   readonly port: number;

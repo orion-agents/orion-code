@@ -2,10 +2,10 @@
 
 Local-first, goal-driven coding agent for the terminal and browser.
 
-> v0.3.9 candidate — deterministic-bug sweep over the open issue set plus a native
-> background-host lifecycle: `orion web --background` with pidfile/log management
-> (`orion web status|stop|restart`). Candidate source is not an npm publication,
-> Git tag, or merge-ready release.
+> v0.3.10 candidate — the local Web host now defaults to port 4242 (M42, the
+> Orion Nebula) with a first-class lifecycle: `orion web start|status|stop|restart`
+> manage a detached host (pidfile + logs), and `--background` stays supported.
+> Candidate source is not an npm publication, Git tag, or merge-ready release.
 
 [中文说明](README.zh-CN.md) ·
 [v0.3.7 plan](docs/plan/v0.3.7-left-rail-improvement-plan.md) ·
@@ -170,7 +170,7 @@ current development environments. Node 20 is upstream EOL and is no longer a v0.
 After the immutable `0.3.5` npm receipt exists:
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.9
+npm install -g @orion-agents/orion-code@0.3.10
 orion --version
 orion doctor
 ```
@@ -257,6 +257,30 @@ atomic, revision-guarded Context transition. The left dock is 240–480px or a 4
 320–720px. Both use IDE-style mouse drag where applicable and there is no keyboard fine resize.
 Narrow layouts use drawers without overwriting desktop widths. Files, Git and Review are read-only;
 terminal creation requires an explicit gesture and its ticket/output never enter Workbench SSE.
+
+#### Background host & lifecycle (v0.3.10)
+
+The Web Workbench binds **127.0.0.1 only**; the default port is **4242** (M42, the
+Orion Nebula) so it never collides with common dev-tool ports.
+
+```bash
+orion web                          # foreground; open http://127.0.0.1:4242
+orion web --background             # detached host (pidfile + logs, survives terminal exit)
+orion web start [--port N]         # idempotent background start
+orion web status  [--port N]       # running pid/URL/workspace or stale report
+orion web restart [--port N]       # stop + start
+orion web stop    [--port N]       # graceful SIGTERM stop
+```
+
+The pidfile lives at `~/.orion-code/web-host.<port>.pid` and logs append to
+`~/.orion-code/logs/web-<port>.log`. Backgrounding is a process-lifecycle feature
+only: approval, context-revision and sandbox rules stay fail-closed, and the host
+never binds beyond loopback.
+
+For crash-restart and login autostart on macOS, register the **foreground** command
+(`orion web --no-open --port 4242 --cwd <dir>`) in a launchd LaunchAgent
+(`RunAtLoad` + `KeepAlive`) — do not combine it with `--background`, because
+launchd must supervise the host process itself.
 
 #### Host-managed Settings
 
