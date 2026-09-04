@@ -22,6 +22,25 @@ which is **not** a pass.
 
 ## [Unreleased]
 
+## [0.3.11] — CANDIDATE
+
+> **Status: candidate.** Not merged, tagged or published to npm.
+
+### Added
+
+- The right work panel becomes a **vertical-rail menu** (v0.3.8-plan carried
+  forward): a persistent 48px icon rail replaces the expand-then-horizontal-tabs
+  flow; clicking an icon shows exactly that panel, re-clicking collapses back to
+  the rail, and Esc closes the content area (input/terminal/alertdialog
+  exempted). The rail carries terminal status badges (running/queued/approval/
+  failed), keyboard shortcuts (Cmd/Ctrl+Shift+1-5) jump directly without
+  toggling, and the terminal keeps its xterm session while resource panels
+  mount active-only. An optional user icon order is persisted in the layout
+  preference (`workPanel.order`).
+- Idempotency contract tests carried over from the v0.3.8 branch: reducer
+  archive/restore/delete no-op and no-duplicate cases; storage archive-twice
+  and restore-never-archived cases.
+
 ## [0.3.10] — NPM-PUBLISHED
 
 > **Status: npm-published.** `@orion-agents/orion-code@0.3.10` is available through the npm

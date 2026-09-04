@@ -2,9 +2,9 @@
 
 Local-first, goal-driven coding agent for the terminal and browser.
 
-> v0.3.10 candidate — the local Web host now defaults to port 4242 (M42, the
-> Orion Nebula) with a first-class lifecycle: `orion web start|status|stop|restart`
-> manage a detached host (pidfile + logs), and `--background` stays supported.
+> v0.3.11 candidate — the right work panel is a vertical-rail menu: a persistent
+> 48px icon rail shows exactly the panel you click (re-click collapses, Esc
+> closes), carries terminal status badges, and honors a persisted icon order.
 > Candidate source is not an npm publication, Git tag, or merge-ready release.
 
 [中文说明](README.zh-CN.md) ·
@@ -170,7 +170,7 @@ current development environments. Node 20 is upstream EOL and is no longer a v0.
 After the immutable `0.3.5` npm receipt exists:
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.10
+npm install -g @orion-agents/orion-code@0.3.11
 orion --version
 orion doctor
 ```
