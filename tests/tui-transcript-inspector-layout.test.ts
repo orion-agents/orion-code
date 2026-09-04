@@ -80,3 +80,24 @@ describe('TUI transcript Inspector layout', () => {
     expect(text).not.toContain('\x9f');
   });
 });
+
+describe('TUI Inspector terminal-control sanitization (issue #214)', () => {
+  it('never emits control sequences embedded in toolName', () => {
+    const escaped = view(true);
+    escaped.entries[0].toolName = 'evil\x1b[2Jtool';
+    escaped.selected = escaped.entries[0];
+    const text = frameText(escaped);
+    expect(text).not.toContain('\x1b');
+    expect(text).toContain('eviltool');
+  });
+
+  it('never emits control sequences embedded in a collapsed summary', () => {
+    const escaped = view(false);
+    escaped.entries[0].toolName = 'safe_tool';
+    escaped.entries[0].summary = 'sneaky\x1b[?25lsummary';
+    escaped.selected = escaped.entries[0];
+    const text = frameText(escaped);
+    expect(text).not.toContain('\x1b');
+    expect(text).toContain('sneakysummary');
+  });
+});
