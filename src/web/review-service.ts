@@ -5,6 +5,7 @@ import type {
   GitReadModelServiceV1,
   WebGitDiffPageV1,
   WebGitFileV1,
+  WebGitStatusV1,
 } from './git-read-model-service';
 
 export interface WebReviewVerificationV1 {
@@ -47,16 +48,28 @@ export class ReviewServiceV1 {
   ) {}
 
   async snapshot(): Promise<WebReviewSnapshotV1> {
-    const [status, receiptRefs] = await Promise.all([
-      this.git.status({ pageSize: 2_000 }),
+    // v0.3.9 #237/#228 — collect every Git status page. A repository with more
+    // than the single pageSize of changed files was silently truncated before;
+    // the review overview must aggregate all pages (bounded by a guard that
+    // keeps runaway repositories from looping forever).
+    const [receiptRefs, statusPages] = await Promise.all([
       this.listReceiptRefs(),
+      collectStatusPages((cursor: string | undefined) =>
+        this.git.status({ pageSize: 2_000, ...(cursor ? { cursor } : {}) })
+      ),
     ]);
-    const changedFiles = uniqueFiles([
-      ...status.conflicted,
-      ...status.staged,
-      ...status.unstaged,
-      ...status.untracked,
-    ]);
+    const status = statusPages.at(-1) ?? (await this.git.status({ pageSize: 2_000 }));
+    const conflicted: WebGitFileV1[] = [];
+    const staged: WebGitFileV1[] = [];
+    const unstaged: WebGitFileV1[] = [];
+    const untracked: WebGitFileV1[] = [];
+    for (const page of statusPages) {
+      conflicted.push(...page.conflicted);
+      staged.push(...page.staged);
+      unstaged.push(...page.unstaged);
+      untracked.push(...page.untracked);
+    }
+    const changedFiles = uniqueFiles([...conflicted, ...staged, ...unstaged, ...untracked]);
     const verification = receiptRefs.slice(0, 100).map(receipt =>
       Object.freeze({
         callId: receipt.callId,
@@ -88,11 +101,11 @@ export class ReviewServiceV1 {
       clean: status.clean,
       changedFiles: Object.freeze(changedFiles),
       totalChangedFiles: status.totalFiles,
-      stagedCount: status.staged.length,
-      unstagedCount: status.unstaged.length,
-      untrackedCount: status.untracked.length,
-      conflictCount: status.conflicted.length,
-      truncated: status.truncated,
+      stagedCount: staged.length,
+      unstagedCount: unstaged.length,
+      untrackedCount: untracked.length,
+      conflictCount: conflicted.length,
+      truncated: statusPages.at(-1)?.truncated ?? false,
       verification: Object.freeze(verification),
     });
   }
@@ -113,4 +126,25 @@ function uniqueFiles(files: readonly WebGitFileV1[]): WebGitFileV1[] {
   const byId = new Map<string, WebGitFileV1>();
   for (const file of files) byId.set(file.fileId, file);
   return [...byId.values()].sort((left, right) => left.path.localeCompare(right.path));
+}
+
+/**
+ * v0.3.9 #237/#228 — page through Git status until the snapshot is fully
+ * collected. The bounded guard (64 pages x 2_000 = 128k files) exists to stop
+ * runaway repositories from looping; a repository exceeding it stays marked
+ * truncated so the UI can still communicate the limit.
+ */
+async function collectStatusPages(
+  fetchPage: (cursor: string | undefined) => Promise<WebGitStatusV1>
+): Promise<readonly WebGitStatusV1[]> {
+  const pages: WebGitStatusV1[] = [];
+  let page = await fetchPage(undefined);
+  pages.push(page);
+  let guard = 0;
+  while (page.truncated && page.nextCursor && guard < 64) {
+    page = await fetchPage(page.nextCursor);
+    pages.push(page);
+    guard += 1;
+  }
+  return pages;
 }
