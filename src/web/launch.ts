@@ -1,11 +1,15 @@
 import { execFile } from 'child_process';
 
 import { startOrionWebServer, type OrionWebServerHandle } from './server';
+import { HOST_DAEMON_CHILD_ENV, spawnBackgroundHost, writeHostPidfile } from './host-daemon';
 
 export interface RunOrionWebOptions {
   readonly cwd: string;
   readonly port?: number;
   readonly open?: boolean;
+  readonly background?: boolean;
+  /** Full `orion web` arguments of the relaunched child (excludes --background). */
+  readonly backgroundArgs?: readonly string[];
   readonly stdout?: Pick<NodeJS.WriteStream, 'write'>;
   readonly stderr?: Pick<NodeJS.WriteStream, 'write'>;
 }
@@ -13,7 +17,30 @@ export interface RunOrionWebOptions {
 export async function runOrionWeb(options: RunOrionWebOptions): Promise<void> {
   const stdout = options.stdout ?? process.stdout;
   const stderr = options.stderr ?? process.stderr;
+  const isDaemonChild = process.env[HOST_DAEMON_CHILD_ENV] === '1';
+  const port = options.port ?? 3080;
+  if (options.background && !isDaemonChild) {
+    // Parent side: launch detached and wait for its pidfile, then print the URL.
+    const { pidfile } = await spawnBackgroundHost({
+      cwd: options.cwd,
+      port,
+      webArgs: options.backgroundArgs ?? [],
+    });
+    stdout.write(`Orion Code Web Workbench running in the background: ${pidfile.url}\n`);
+    stdout.write(`pid ${pidfile.pid} · logs ~/.orion-code/logs/web-${port}.log\n`);
+    stdout.write(`Manage it with: orion web status|stop [--port ${port}]\n`);
+    return;
+  }
   const handle = await startOrionWebServer({ cwd: options.cwd, port: options.port });
+  if (isDaemonChild) {
+    writeHostPidfile({
+      pid: process.pid,
+      port: handle.port,
+      url: handle.url,
+      workspace: handle.workbench.workspace,
+      startedAt: Date.now(),
+    });
+  }
   stdout.write(`Orion Code Web Workbench: ${handle.url}\n`);
   stdout.write(`Workspace: ${handle.workbench.workspace}\n`);
   if (options.open !== false) {
