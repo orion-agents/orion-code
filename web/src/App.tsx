@@ -378,6 +378,23 @@ export function App() {
         const restoreToggleFocus = Boolean(
           !next && document.activeElement?.closest('.workspace-rail')
         );
+        const nextNavigationColumns = computeWorkbenchColumns(shellWidth, {
+          ...layoutPreference,
+          projectNavigation: {
+            ...layoutPreference.projectNavigation,
+            expanded: next,
+          },
+        });
+        // v0.3.9 #226 — expanding the navigation preference can resolve to a
+        // drawer (761–799px and every sub-1180 viewport): open the drawer state
+        // explicitly instead of silently ending with an invisible drawer.
+        if (next && nextNavigationColumns.projectNavigation.mode === 'drawer') {
+          updateProjectNavigationPreference({ expanded: next });
+          rememberDrawerTrigger();
+          setPanelOverlayOpen(false);
+          setNavigationOpen(true);
+          return;
+        }
         updateProjectNavigationPreference({ expanded: next });
         if (next) focusProjectSearch();
         else if (restoreToggleFocus) {
@@ -399,8 +416,9 @@ export function App() {
     focusProjectSearch,
     navigationOpen,
     navigationOverlay,
-    layoutPreference.projectNavigation.expanded,
+    layoutPreference.projectNavigation,
     rememberDrawerTrigger,
+    shellWidth,
     updateProjectNavigationPreference,
   ]);
 
