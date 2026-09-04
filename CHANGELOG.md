@@ -57,7 +57,6 @@ which is **not** a pass.
 - `redaction-xprefixed-env` suite: X-prefixed env values, bare uppercase
   assignments, #234 userinfo regression, #241 JSON keys.
 
-
 ## [0.3.7] — CANDIDATE
 
 > **Status: candidate.** This work is isolated on the codex/v0.3.7 worktree (left project
@@ -109,7 +108,6 @@ which is **not** a pass.
   112 cases green. E2E: `web-v037-session-lifecycle.spec.ts` (archive/restore, delete-confirm,
   tags round-trip) runs in CI.
 
-
 ## [0.3.6] — CANDIDATE
 
 > **Status: candidate.** This work is isolated on the codex/v0.3.6 worktree (pure web
@@ -146,7 +144,6 @@ which is **not** a pass.
 
 - Markdown heading off-by-one: `##` renders as `<h2>` (was `<h3>`), a lone `#` no longer
   collapses to `<h6>`; >6 hashes stay a plain paragraph per GFM.
-
 
 ## [0.3.5] — CANDIDATE
 
