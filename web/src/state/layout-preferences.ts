@@ -12,6 +12,15 @@ export const LEGACY_WORK_PANEL_STORAGE_KEY = 'orion.web.work-panel.v1';
 
 export type WorkPanelId = 'agent' | 'review' | 'terminal' | 'files' | 'git';
 export type AgentPanelId = 'goal' | 'activity' | 'integrations' | 'diagnostics';
+
+/** v0.3.8 — Canonical panel order used when the stored preference has no order. */
+export const DEFAULT_WORK_PANEL_ORDER: readonly WorkPanelId[] = [
+  'agent',
+  'review',
+  'terminal',
+  'files',
+  'git',
+];
 export type WorkbenchColumnMode = 'dock' | 'rail' | 'drawer';
 
 export interface WorkbenchLayoutPreferenceV2 {
@@ -25,6 +34,8 @@ export interface WorkbenchLayoutPreferenceV2 {
     readonly widthPx: number;
     readonly activePanel: WorkPanelId;
     readonly agentPanel: AgentPanelId;
+    /** v0.3.8 — Optional user-chosen icon order in the vertical rail. */
+    readonly order?: readonly WorkPanelId[];
   };
 }
 
@@ -160,6 +171,7 @@ export function parseWorkbenchLayoutPreference(
         widthPx: clampStoredWorkPanelWidth(Number(workPanel.widthPx)),
         activePanel: isWorkPanel(workPanel.activePanel) ? workPanel.activePanel : 'agent',
         agentPanel: isAgentPanel(workPanel.agentPanel) ? workPanel.agentPanel : 'goal',
+        order: normalizeWorkPanelOrder(workPanel.order),
       },
     });
   } catch {
@@ -243,6 +255,21 @@ function browserEnvironment(): {
     };
   };
   return candidate.window ?? null;
+}
+
+/**
+ * v0.3.8 — Accept a stored icon order only when it is a full permutation of the
+ * five panels; anything shorter, duplicated or with unknown ids falls back to
+ * the canonical order.
+ */
+export function normalizeWorkPanelOrder(value: unknown): readonly WorkPanelId[] | undefined {
+  if (!Array.isArray(value) || value.length !== DEFAULT_WORK_PANEL_ORDER.length) return undefined;
+  const seen = new Set<string>();
+  for (const id of value) {
+    if (!isWorkPanel(id) || seen.has(id)) return undefined;
+    seen.add(id);
+  }
+  return Object.freeze([...value]) as readonly WorkPanelId[];
 }
 
 function isWorkPanel(value: unknown): value is WorkPanelId {

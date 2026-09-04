@@ -131,3 +131,37 @@ function makePreference(input: {
     },
   };
 }
+
+describe('work panel vertical-rail order (v0.3.8)', () => {
+  const base = (extra: Record<string, unknown> = {}): string =>
+    JSON.stringify({
+      schemaVersion: 2,
+      projectNavigation: { expanded: true, widthPx: 280 },
+      workPanel: { expanded: true, widthPx: 420, activePanel: 'review', agentPanel: 'goal', ...extra },
+    });
+
+  it('defaults to canonical order when the stored preference has no order', () => {
+    const parsed = parseWorkbenchLayoutPreference(base());
+    expect(parsed.workPanel.order).toBeUndefined();
+  });
+
+  it('accepts a full valid permutation', () => {
+    const parsed = parseWorkbenchLayoutPreference(
+      base({ order: ['terminal', 'review', 'git', 'files', 'agent'] })
+    );
+    expect(parsed.workPanel.order).toEqual(['terminal', 'review', 'git', 'files', 'agent']);
+  });
+
+  it('rejects orders that are partial, duplicated or contain unknown ids', () => {
+    const partial = parseWorkbenchLayoutPreference(base({ order: ['git', 'files'] }));
+    expect(partial.workPanel.order).toBeUndefined();
+    const duplicated = parseWorkbenchLayoutPreference(
+      base({ order: ['git', 'git', 'files', 'agent', 'review'] })
+    );
+    expect(duplicated.workPanel.order).toBeUndefined();
+    const unknown = parseWorkbenchLayoutPreference(
+      base({ order: ['git', 'nope', 'files', 'agent', 'review'] })
+    );
+    expect(unknown.workPanel.order).toBeUndefined();
+  });
+});

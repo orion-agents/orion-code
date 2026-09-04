@@ -5830,3 +5830,40 @@ html[data-panel-resizing] .workbench-shell {
 .confirm-delete-body strong {
   color: var(--text);
 }
+
+/* ============ v0.3.8 — vertical-rail work panel (S1–S4) ============ */
+.work-panel-dock-body {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  flex-direction: row;
+  overflow: hidden;
+}
+.work-panel-dock-body .work-panel-detail {
+  flex: 1 1 auto;
+  order: 1;
+}
+.work-panel-dock-body .work-panel-rail {
+  flex: 0 0 48px;
+  order: 2;
+  width: 48px;
+  border-left: 1px solid var(--border);
+}
+.work-panel-rail-overlay {
+  width: 100%;
+  flex: 0 0 auto;
+  flex-direction: row;
+  justify-content: flex-start;
+  overflow-x: auto;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.work-panel-rail-overlay .work-panel-rail-button {
+  width: 36px;
+  height: 32px;
+}
+.work-panel-rail-overlay .rail-status-dot {
+  top: 5px;
+  right: 5px;
+}

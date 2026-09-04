@@ -1,11 +1,11 @@
-import { lazy, Suspense, useEffect, useId, useRef, type KeyboardEvent } from 'react';
+import { lazy, Suspense, useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 
 import { AgentPanel, type AgentPanelTab } from '../components/Inspector';
 import { Icon, type IconName } from '../components/Icon';
 import { StateDot } from '../components/StateDot';
 import type { WorkbenchState } from '../types';
 import type { WorkbenchActions } from '../useWorkbench';
-import type { WorkPanelId } from '../state/layout-preferences';
+import { DEFAULT_WORK_PANEL_ORDER, type WorkPanelId } from '../state/layout-preferences';
 import { findShortcut, matchesShortcut } from '../shortcuts';
 import { WorkPanelResizeHandle } from './WorkPanelResizeHandle';
 
@@ -32,17 +32,34 @@ const PANEL_SHORTCUT_IDS = [
   'focus-work-panel-5',
 ] as const;
 
-const PANELS: ReadonlyArray<{
-  readonly id: WorkPanelId;
-  readonly label: string;
-  readonly icon: IconName;
-}> = [
-  { id: 'agent', label: 'Agent', icon: 'spark' },
-  { id: 'review', label: '审阅', icon: 'edit' },
-  { id: 'terminal', label: '终端', icon: 'terminal' },
-  { id: 'files', label: '文件', icon: 'workspace' },
-  { id: 'git', label: 'Git', icon: 'branch' },
-];
+const PANEL_META: Readonly<
+  Record<WorkPanelId, { readonly label: string; readonly icon: IconName }>
+> = Object.freeze({
+  agent: { label: 'Agent', icon: 'spark' },
+  review: { label: '审阅', icon: 'edit' },
+  terminal: { label: '终端', icon: 'terminal' },
+  files: { label: '文件', icon: 'workspace' },
+  git: { label: 'Git', icon: 'branch' },
+});
+
+/** v0.3.8 — Session phases that light up the terminal icon in the vertical rail. */
+const RAIL_ACTIVE_PHASES = new Set([
+  'starting',
+  'running',
+  'stopping',
+  'queued',
+  'waiting_approval',
+  'interrupted',
+  'failed',
+]);
+
+function railDotState(phase: string | undefined, processing: boolean): string | null {
+  if (!phase) return processing ? 'running' : null;
+  if (!RAIL_ACTIVE_PHASES.has(phase)) return null;
+  if (phase === 'failed' || phase === 'interrupted') return 'failed';
+  if (phase === 'queued' || phase === 'waiting_approval') return 'queued';
+  return 'running';
+}
 
 export interface WorkPanelDockProps {
   readonly state: WorkbenchState;
@@ -50,6 +67,8 @@ export interface WorkPanelDockProps {
   readonly mode: WorkPanelMode;
   readonly expanded: boolean;
   readonly activePanel: WorkPanelId;
+  /** v0.3.8 — Optional user-chosen vertical rail order (defaults to canonical). */
+  readonly panelOrder?: readonly WorkPanelId[];
   readonly agentPanel: AgentPanelTab;
   readonly onExpand: () => void;
   readonly onCollapse: () => void;
@@ -68,6 +87,7 @@ export function WorkPanelDock({
   mode,
   expanded,
   activePanel,
+  panelOrder,
   agentPanel,
   onExpand,
   onCollapse,
@@ -80,16 +100,33 @@ export function WorkPanelDock({
 }: WorkPanelDockProps) {
   const surfaceRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
+  const detailRef = useRef<HTMLDivElement>(null);
   const previousExpanded = useRef(expanded);
-  const focusPanelAfterExpand = useRef(false);
+  const contentIdBase = useId();
+  /** Panels ever opened (keeps the legacy keep-alive contract for the terminal). */
   const visitedPanels = useRef(new Set<WorkPanelId>([activePanel]));
   visitedPanels.current.add(activePanel);
-  const tabsId = useId();
+  // v0.3.8 S4 — differential recycling. The terminal is the only heavy
+  // interactive pane (host-backed xterm session): once opened it stays mounted.
+  // Pure resource panes unmount when deactivated and reload through their
+  // resource-epoch refresh on the next activation.
+  const mountedTerminal = useRef(
+    activePanel === 'terminal' || visitedPanels.current.has('terminal')
+  );
+  if (activePanel === 'terminal') mountedTerminal.current = true;
+  const [openedWithFocus, setOpenedWithFocus] = useState(false);
+
+  const orderedPanels =
+    panelOrder && panelOrder.length === DEFAULT_WORK_PANEL_ORDER.length
+      ? panelOrder
+      : DEFAULT_WORK_PANEL_ORDER;
   const resourceEpochs = state.workspaceResourceEpochs[state.workspaceId] ?? {
     files: 0,
     git: 0,
     review: 0,
   };
+  const foregroundPhase = state.sessionRuntimeById[state.activeSessionId ?? '']?.phase;
+  const terminalDotState = railDotState(foregroundPhase, state.processing);
 
   useEffect(() => {
     if (mode !== 'overlay' || !expanded) return undefined;
@@ -107,6 +144,8 @@ export function WorkPanelDock({
     return () => window.clearInterval(interval);
   }, [expanded, mode]);
 
+  // v0.3.8 S2 — focus hand-off: collapsing returns focus to the rail icon of
+  // the previously active panel; a freshly opened dock focuses the content.
   useEffect(() => {
     const wasExpanded = previousExpanded.current;
     previousExpanded.current = expanded;
@@ -119,10 +158,11 @@ export function WorkPanelDock({
       );
       return;
     }
-    if (!focusPanelAfterExpand.current) return;
-    focusPanelAfterExpand.current = false;
-    requestAnimationFrame(() => document.getElementById(`${tabsId}-${activePanel}`)?.focus());
-  }, [activePanel, expanded, mode, tabsId]);
+    if (openedWithFocus) {
+      setOpenedWithFocus(false);
+      requestAnimationFrame(() => detailRef.current?.focus());
+    }
+  }, [activePanel, expanded, mode, openedWithFocus]);
 
   useEffect(() => {
     const togglePanel = findShortcut('toggle-work-panel');
@@ -131,7 +171,7 @@ export function WorkPanelDock({
         event.preventDefault();
         if (expanded) onCollapse();
         else {
-          focusPanelAfterExpand.current = true;
+          setOpenedWithFocus(true);
           onExpand();
         }
         return;
@@ -140,23 +180,24 @@ export function WorkPanelDock({
         const binding = findShortcut(id);
         return binding ? matchesShortcut(event, binding.tokens) : false;
       });
-      const panel = PANELS[index];
+      const panel = orderedPanels[index];
       if (!panel) return;
       event.preventDefault();
-      focusPanelAfterExpand.current = true;
-      onPanelChange(panel.id);
-      onExpand();
+      if (expanded && activePanel === panel) return;
+      onPanelChange(panel);
+      if (!expanded) onExpand();
     };
     window.addEventListener('keydown', onShortcut);
     return () => window.removeEventListener('keydown', onShortcut);
-  }, [expanded, onCollapse, onExpand, onPanelChange]);
+  }, [expanded, mode, onCollapse, onExpand, onPanelChange]);
 
   const onSurfaceKeyDown = (event: KeyboardEvent<HTMLElement>) => {
     if (
       event.key === 'Escape' &&
-      mode === 'overlay' &&
       expanded &&
-      !(event.target as HTMLElement).closest('[role="alertdialog"], .terminal-host')
+      !(event.target as HTMLElement).closest(
+        '[role="alertdialog"], .terminal-host, input, textarea, [contenteditable]'
+      )
     ) {
       event.preventDefault();
       onCollapse();
@@ -179,11 +220,114 @@ export function WorkPanelDock({
     }
   };
 
-  const selectPanel = (panel: WorkPanelId) => {
-    if (!expanded) focusPanelAfterExpand.current = true;
+  /** v0.3.8 S2 — rail semantics: switch to the clicked panel, or collapse the
+   * content area again when the already-active icon is re-clicked. */
+  const activate = (panel: WorkPanelId) => {
+    if (mode === 'overlay') {
+      onPanelChange(panel);
+      if (!expanded) {
+        setOpenedWithFocus(true);
+        onExpand();
+      }
+      return;
+    }
+    if (expanded && activePanel === panel) {
+      onCollapse();
+      return;
+    }
+    if (!expanded) setOpenedWithFocus(true);
     onPanelChange(panel);
-    if (!expanded) onExpand();
+    onExpand();
   };
+
+  const rail = (overlay = false) => (
+    <nav
+      className={overlay ? 'work-panel-rail work-panel-rail-overlay' : 'work-panel-rail'}
+      aria-label="工作面板快捷入口"
+      aria-orientation={overlay ? 'horizontal' : 'vertical'}
+    >
+      {orderedPanels.map((id, index) => {
+        const meta = PANEL_META[id];
+        const isActive = activePanel === id;
+        return (
+          <button
+            key={id}
+            type="button"
+            className="work-panel-rail-button"
+            data-work-panel-id={id}
+            aria-label={`打开${meta.label}面板`}
+            aria-current={isActive ? 'page' : undefined}
+            title={`${meta.label} · ⌘⇧${index + 1}`}
+            onClick={() => activate(id)}
+          >
+            <Icon name={meta.icon} size={17} />
+            {id === 'terminal' && terminalDotState ? (
+              <StateDot state={terminalDotState} className="rail-status-dot" describe={false} />
+            ) : null}
+          </button>
+        );
+      })}
+    </nav>
+  );
+
+  const renderPane = (id: WorkPanelId) => (
+    <div
+      key={id}
+      id={`${contentIdBase}-${id}`}
+      className="work-panel-pane"
+      role="tabpanel"
+      aria-label={PANEL_META[id].label}
+      hidden={id !== activePanel}
+    >
+      {id === 'agent' ? (
+        <AgentPanel
+          state={state}
+          actions={actions}
+          tab={agentPanel}
+          onTabChange={onAgentPanelChange}
+        />
+      ) : null}
+      {id === 'review' ? (
+        <ReviewPanel
+          workspaceId={state.workspaceId}
+          refreshEpoch={resourceEpochs.review}
+          actions={actions}
+          onSendToComposer={onSendToComposer}
+        />
+      ) : null}
+      {id === 'terminal' ? (
+        <TerminalPanel
+          workspaceId={state.workspaceId}
+          workspacePath={state.workspace}
+          styleNonce={state.bootstrap?.nonce ?? ''}
+          available={Boolean(state.bootstrap?.capabilities.terminal)}
+          actions={actions}
+        />
+      ) : null}
+      {id === 'files' ? (
+        <FilesPanel
+          workspaceId={state.workspaceId}
+          refreshEpoch={resourceEpochs.files}
+          actions={actions}
+        />
+      ) : null}
+      {id === 'git' ? (
+        <GitPanel
+          workspaceId={state.workspaceId}
+          refreshEpoch={resourceEpochs.git}
+          actions={actions}
+          onSendToComposer={onSendToComposer}
+        />
+      ) : null}
+    </div>
+  );
+
+  // v0.3.8 S4 — mount set: the active pane plus the terminal once it has been
+  // opened (its xterm state lives on the host; remounting would drop the view).
+  const paneIds: WorkPanelId[] =
+    activePanel === 'terminal' || !mountedTerminal.current
+      ? [activePanel]
+      : [activePanel, 'terminal'];
 
   return (
     <aside
@@ -198,159 +342,76 @@ export function WorkPanelDock({
       tabIndex={mode === 'overlay' && expanded ? -1 : undefined}
       onKeyDownCapture={onSurfaceKeyDown}
     >
+      {mode === 'dock' ? (
+        <div className="work-panel-dock-body">
+          {expanded ? (
+            <section
+              ref={detailRef}
+              id="work-panel-detail"
+              className="work-panel-detail"
+              aria-label="工作面板内容"
+              tabIndex={-1}
+            >
+              <header className="work-panel-header">
+                <div>
+                  <span className="eyebrow">PROJECT WORKSPACE</span>
+                  <h2>{PANEL_META[activePanel].label}</h2>
+                </div>
+                <div className="work-panel-header-actions">
+                  <button
+                    type="button"
+                    className="icon-button"
+                    onClick={onCollapse}
+                    aria-label="收起工作面板"
+                    aria-controls="work-panel-detail"
+                    aria-expanded="true"
+                    title="收起（Esc）"
+                  >
+                    <Icon name="sidebar" />
+                  </button>
+                </div>
+              </header>
+              <div className="work-panel-content">
+                <Suspense fallback={<p className="resource-loading">正在加载工作面板…</p>}>
+                  {paneIds.map(id => renderPane(id))}
+                </Suspense>
+              </div>
+            </section>
+          ) : null}
+          {rail()}
+        </div>
+      ) : (
+        <div id="work-panel-detail" className="work-panel-detail" hidden={!expanded}>
+          <header className="work-panel-header">
+            <div>
+              <span className="eyebrow">PROJECT WORKSPACE</span>
+              <h2>{PANEL_META[activePanel].label}</h2>
+            </div>
+            <div className="work-panel-header-actions">
+              <button
+                ref={closeRef}
+                type="button"
+                className="icon-button"
+                onClick={onCollapse}
+                aria-label="关闭工作面板"
+                aria-controls="work-panel-detail"
+                aria-expanded="true"
+              >
+                <Icon name="close" />
+              </button>
+            </div>
+          </header>
+          {rail(true)}
+          <div className="work-panel-content">
+            <Suspense fallback={<p className="resource-loading">正在加载工作面板…</p>}>
+              {paneIds.map(id => renderPane(id))}
+            </Suspense>
+          </div>
+        </div>
+      )}
       {mode === 'dock' && expanded ? (
         <WorkPanelResizeHandle width={width} onPreview={onWidthPreview} onCommit={onWidthCommit} />
       ) : null}
-      {!expanded && mode === 'dock' ? (
-        <nav className="work-panel-rail" aria-label="工作面板快捷入口">
-          <button
-            type="button"
-            className="work-panel-rail-button"
-            aria-label="展开工作面板"
-            title="展开工作面板"
-            onClick={() => {
-              focusPanelAfterExpand.current = true;
-              onExpand();
-            }}
-          >
-            <Icon name="sidebar" />
-          </button>
-          <span className="work-panel-rail-divider" />
-          {PANELS.map(item => (
-            <button
-              key={item.id}
-              type="button"
-              className="work-panel-rail-button"
-              data-work-panel-id={item.id}
-              aria-label={`打开${item.label}面板`}
-              aria-current={activePanel === item.id ? 'page' : undefined}
-              title={`${item.label} · ⌘⇧${PANELS.indexOf(item) + 1}`}
-              onClick={() => selectPanel(item.id)}
-            >
-              <Icon name={item.icon} size={17} />
-              {item.id === 'terminal' && state.processing ? (
-                <StateDot state="running" className="rail-status-dot" describe={false} />
-              ) : null}
-            </button>
-          ))}
-        </nav>
-      ) : null}
-
-      <div id="work-panel-detail" className="work-panel-detail" hidden={!expanded}>
-        <header className="work-panel-header">
-          <div>
-            <span className="eyebrow">PROJECT WORKSPACE</span>
-            <h2>{PANELS.find(item => item.id === activePanel)?.label ?? 'Agent'}</h2>
-          </div>
-          <div className="work-panel-header-actions">
-            <button
-              ref={closeRef}
-              type="button"
-              className="icon-button"
-              onClick={onCollapse}
-              aria-label={mode === 'overlay' ? '关闭工作面板' : '折叠工作面板'}
-              aria-controls="work-panel-detail"
-              aria-expanded="true"
-            >
-              <Icon name={mode === 'overlay' ? 'close' : 'sidebar'} />
-            </button>
-          </div>
-        </header>
-
-        <div className="work-panel-tabs" role="tablist" aria-label="工作面板类别">
-          {PANELS.map(item => (
-            <button
-              key={item.id}
-              id={`${tabsId}-${item.id}`}
-              type="button"
-              role="tab"
-              aria-label={`${item.label}，快捷键 Command 或 Control 加 Shift 加 ${PANELS.indexOf(item) + 1}`}
-              aria-selected={activePanel === item.id}
-              aria-controls={`${tabsId}-${item.id}-content`}
-              tabIndex={activePanel === item.id ? 0 : -1}
-              title={`⌘/Ctrl+Shift+${PANELS.indexOf(item) + 1}`}
-              onClick={() => onPanelChange(item.id)}
-              onKeyDown={event => {
-                if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-                event.preventDefault();
-                const current = PANELS.findIndex(panel => panel.id === activePanel);
-                const next =
-                  event.key === 'Home'
-                    ? 0
-                    : event.key === 'End'
-                      ? PANELS.length - 1
-                      : (current + (event.key === 'ArrowRight' ? 1 : -1) + PANELS.length) %
-                        PANELS.length;
-                onPanelChange(PANELS[next].id);
-                requestAnimationFrame(() =>
-                  document.getElementById(`${tabsId}-${PANELS[next].id}`)?.focus()
-                );
-              }}
-            >
-              <Icon name={item.icon} size={15} />
-              <span>{item.label}</span>
-            </button>
-          ))}
-        </div>
-
-        <div className="work-panel-content">
-          <Suspense fallback={<p className="resource-loading">正在加载工作面板…</p>}>
-            {PANELS.map(item =>
-              visitedPanels.current.has(item.id) ? (
-                <div
-                  key={item.id}
-                  id={`${tabsId}-${item.id}-content`}
-                  className="work-panel-pane"
-                  role="tabpanel"
-                  aria-labelledby={`${tabsId}-${item.id}`}
-                  hidden={activePanel !== item.id}
-                >
-                  {item.id === 'agent' ? (
-                    <AgentPanel
-                      state={state}
-                      actions={actions}
-                      tab={agentPanel}
-                      onTabChange={onAgentPanelChange}
-                    />
-                  ) : null}
-                  {item.id === 'review' ? (
-                    <ReviewPanel
-                      workspaceId={state.workspaceId}
-                      refreshEpoch={resourceEpochs.review}
-                      actions={actions}
-                      onSendToComposer={onSendToComposer}
-                    />
-                  ) : null}
-                  {item.id === 'terminal' ? (
-                    <TerminalPanel
-                      workspaceId={state.workspaceId}
-                      workspacePath={state.workspace}
-                      styleNonce={state.bootstrap?.nonce ?? ''}
-                      available={Boolean(state.bootstrap?.capabilities.terminal)}
-                      actions={actions}
-                    />
-                  ) : null}
-                  {item.id === 'files' ? (
-                    <FilesPanel
-                      workspaceId={state.workspaceId}
-                      refreshEpoch={resourceEpochs.files}
-                      actions={actions}
-                    />
-                  ) : null}
-                  {item.id === 'git' ? (
-                    <GitPanel
-                      workspaceId={state.workspaceId}
-                      refreshEpoch={resourceEpochs.git}
-                      actions={actions}
-                      onSendToComposer={onSendToComposer}
-                    />
-                  ) : null}
-                </div>
-              ) : null
-            )}
-          </Suspense>
-        </div>
-      </div>
     </aside>
   );
 }
