@@ -22,6 +22,25 @@ which is **not** a pass.
 
 ## [Unreleased]
 
+## [0.3.12] — CANDIDATE
+
+> **Status: candidate.** Wide Right Workspace + repository-truth + guarded Git
+> mutations (plan docs/plan/v0.3.12-plan.md). Not merged, tagged or published.
+
+### Added
+
+- Wide Right Workspace logic layer: five-panel registry, per-workspace layout
+  preferences (schema v3), pure dock/rail/drawer geometry with 320px
+  conversation minimum and 360/560/960/max snap points.
+- Repository snapshot store shared by Git/Review/Files decorations
+  (coalescing, one-shot invalidation, revision-stale detection).
+- Progressive Review verification paging (GET /review/verification).
+- Guarded Git stage/unstage/commit (POST /git/*) with host-resolved file ids,
+  repository-revision CAS and an explicit user-gesture header.
+- Bounded workspace search (GET /files/search; name/content scopes).
+- Context V2 file_range references (revision-bound, line-extracted, budgeted).
+- E2E: rail-panel scenario ids on the allowlist; real-conversation smoke spec.
+
 ## [0.3.11] — NPM-PUBLISHED
 
 > **Status: npm-published.** `@orion-agents/orion-code@0.3.11` is available through the npm
