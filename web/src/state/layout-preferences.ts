@@ -272,7 +272,7 @@ export function normalizeWorkPanelOrder(value: unknown): readonly WorkPanelId[] 
   return Object.freeze([...value]) as readonly WorkPanelId[];
 }
 
-function isWorkPanel(value: unknown): value is WorkPanelId {
+export function isWorkPanel(value: unknown): value is WorkPanelId {
   return ['agent', 'review', 'terminal', 'files', 'git'].includes(String(value));
 }
 
