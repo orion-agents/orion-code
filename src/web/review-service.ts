@@ -70,22 +70,7 @@ export class ReviewServiceV1 {
       untracked.push(...page.untracked);
     }
     const changedFiles = uniqueFiles([...conflicted, ...staged, ...unstaged, ...untracked]);
-    const verification = receiptRefs.slice(0, 100).map(receipt =>
-      Object.freeze({
-        callId: receipt.callId,
-        sessionId: receipt.sessionId,
-        threadId: receipt.threadId,
-        sequence: receipt.sequence,
-        toolName: receipt.toolName,
-        state: reviewState(receipt),
-        terminal: receipt.terminal,
-        success: receipt.success,
-        outputBytes: receipt.outputBytes,
-        hasArtifact: receipt.hasArtifact,
-        executionPolicyDigest: receipt.executionPolicyDigest,
-        receiptDigest: receipt.receiptDigest,
-      })
-    );
+    const verification = this.projectVerification(receiptRefs.slice(0, 100));
     const revision = createHash('sha256')
       .update(
         JSON.stringify({
@@ -108,6 +93,53 @@ export class ReviewServiceV1 {
       truncated: statusPages.at(-1)?.truncated ?? false,
       verification: Object.freeze(verification),
     });
+  }
+
+  /**
+   * v0.3.12 S2 — progressive verification evidence. The Review summary loads
+   * first; receipts page in behind it, optionally filtered to one session.
+   */
+  async verificationPage(input: {
+    readonly sessionId?: string;
+    readonly cursor?: number;
+    readonly pageSize?: number;
+  }): Promise<{
+    readonly items: readonly WebReviewVerificationV1[];
+    readonly nextCursor: number | null;
+    readonly totalForSession: number;
+  }> {
+    const refs = await this.listReceiptRefs();
+    const filtered = input.sessionId ? refs.filter(ref => ref.sessionId === input.sessionId) : refs;
+    const offset = Math.max(0, Math.min(filtered.length, Math.trunc(input.cursor ?? 0)));
+    const pageSize = Math.max(1, Math.min(100, Math.trunc(input.pageSize ?? 25)));
+    const page = filtered.slice(offset, offset + pageSize);
+    const nextCursor = offset + page.length < filtered.length ? offset + page.length : null;
+    return Object.freeze({
+      items: Object.freeze(this.projectVerification(page)),
+      nextCursor,
+      totalForSession: filtered.length,
+    });
+  }
+
+  private projectVerification(
+    refs: readonly VerifiedDurableToolReceiptRefV1[]
+  ): WebReviewVerificationV1[] {
+    return refs.map(receipt =>
+      Object.freeze({
+        callId: receipt.callId,
+        sessionId: receipt.sessionId,
+        threadId: receipt.threadId,
+        sequence: receipt.sequence,
+        toolName: receipt.toolName,
+        state: reviewState(receipt),
+        terminal: receipt.terminal,
+        success: receipt.success,
+        outputBytes: receipt.outputBytes,
+        hasArtifact: receipt.hasArtifact,
+        executionPolicyDigest: receipt.executionPolicyDigest,
+        receiptDigest: receipt.receiptDigest,
+      })
+    );
   }
 
   diff(input: Parameters<GitReadModelServiceV1['diff']>[0]): Promise<WebGitDiffPageV1> {

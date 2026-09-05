@@ -730,6 +730,19 @@ async function handleRequest(context: RequestContext): Promise<void> {
     );
     return;
   }
+  if (method === 'GET' && path === '/review/verification') {
+    const contextGuard = requireContextGuardQuery(url);
+    const sessionId = url.searchParams.get('sessionId') ?? undefined;
+    const cursorValue = url.searchParams.get('cursor');
+    const cursor = cursorValue === null ? undefined : Number(cursorValue);
+    const pageSize = boundedInteger(url.searchParams.get('pageSize'), 25, 1, 100);
+    sendJson(
+      response,
+      200,
+      await context.workbench.reviewVerificationPage(contextGuard, { sessionId, cursor, pageSize })
+    );
+    return;
+  }
   if (method === 'GET' && path === '/review') {
     sendJson(response, 200, await context.workbench.review(requireContextGuardQuery(url)));
     return;

@@ -1202,6 +1202,14 @@ export class WebWorkbenchController {
     return typeof node.rootRevision === 'function' ? node.rootRevision() : '';
   }
 
+  async reviewVerificationPage(
+    context: WebContextGuardV1,
+    input: { readonly sessionId?: string; readonly cursor?: number; readonly pageSize?: number }
+  ) {
+    this.assertContextGuard(context);
+    return this.reviewService.verificationPage(input);
+  }
+
   async gitLog(context: WebContextGuardV1, input: Parameters<GitReadModelServiceV1['log']>[0]) {
     this.assertContextGuard(context);
     const result = await this.gitService.log(input);
