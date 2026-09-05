@@ -33,7 +33,9 @@ test('WEB33-P0-15 real conversation turn streams an assistant message into the t
 
   // The user echo and at least one assistant article coexist, and the composer
   // returns to an idle, sendable state after the turn.
-  await expect(page.getByRole('article', { name: '你' }).filter({ hasText: promptText })).toBeVisible();
+  await expect(
+    page.getByRole('article', { name: '你' }).filter({ hasText: promptText })
+  ).toBeVisible();
   await expect(ui.composer).toBeEnabled({ timeout: 60_000 });
 
   const transcript = ui.transcript;
