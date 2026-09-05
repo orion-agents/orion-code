@@ -199,6 +199,14 @@ export type WebContextReferenceV1 =
       readonly revision: string;
     }
   | {
+      readonly kind: 'file_range';
+      readonly id: string;
+      readonly label: string;
+      readonly revision: string;
+      readonly startLine: number;
+      readonly endLine: number;
+    }
+  | {
       readonly kind: 'folder';
       readonly id: string;
       readonly label: string;
@@ -1251,6 +1259,7 @@ function parseContextReferences(value: unknown): readonly WebContextReferenceV1[
       const row = requireRecord(entry, `contextReferences[${index}]`);
       const kind = requireEnum(row.kind, `contextReferences[${index}].kind`, [
         'file',
+        'file_range',
         'folder',
         'review',
         'session',
@@ -1262,6 +1271,26 @@ function parseContextReferences(value: unknown): readonly WebContextReferenceV1[
       }
       seen.add(`${kind}:${id}`);
       const label = requireBoundedString(row.label, `contextReferences[${index}].label`, 200);
+      if (kind === 'file_range') {
+        assertOnlyKeys(
+          row,
+          ['kind', 'id', 'label', 'revision', 'startLine', 'endLine'],
+          'Context reference'
+        );
+        const startLine = requireLineNumber(row.startLine, `contextReferences[${index}].startLine`);
+        const endLine = requireLineNumber(row.endLine, `contextReferences[${index}].endLine`);
+        if (endLine < startLine) {
+          throw new WebProtocolError('file_range endLine must not precede startLine');
+        }
+        return Object.freeze({
+          kind,
+          id,
+          label,
+          revision: requireBoundedString(row.revision, `contextReferences[${index}].revision`, 256),
+          startLine,
+          endLine,
+        });
+      }
       if (kind === 'file' || kind === 'folder') {
         assertOnlyKeys(row, ['kind', 'id', 'label', 'revision'], 'Context reference');
         return Object.freeze({
@@ -1310,6 +1339,18 @@ function assertOnlyKeys(
   const allowed = new Set(keys);
   const unknown = Object.keys(row).find(key => !allowed.has(key));
   if (unknown) throw new WebProtocolError(`Unknown ${subject} field: ${unknown}`);
+}
+
+function requireLineNumber(value: unknown, name: string): number {
+  if (
+    typeof value !== 'number' ||
+    !Number.isSafeInteger(value) ||
+    value < 1 ||
+    value > 100_000_000
+  ) {
+    throw new WebProtocolError(`${name} must be an integer line number from 1 through 100000000`);
+  }
+  return value;
 }
 
 function requireBoundedString(value: unknown, name: string, maxLength: number): string {

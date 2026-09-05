@@ -63,6 +63,7 @@ import {
 } from '../services/session-storage';
 import { WorkspaceRegistryError, WorkspaceRegistryV1 } from '../services/workspace-registry';
 import { WebWorkbenchError } from './errors';
+import { enforceContextBudget, extractLineRange } from './context-text';
 import { WebEventHub } from './event-hub';
 import { FileReadServiceV1 } from './file-read-service';
 import { GitReadModelServiceV1 } from './git-read-model-service';
@@ -1700,6 +1701,34 @@ export class WebWorkbenchController {
           revision: page.revision,
           content: this.sanitizeContextText(page.content),
           truncated: page.nextCursor !== null,
+        };
+      }
+      case 'file_range': {
+        const page = this.fileService.readContent({
+          fileId: reference.id,
+          limitBytes: MAX_CONTEXT_REFERENCE_BYTES,
+        });
+        if (page.revision !== reference.revision) {
+          throw new WebWorkbenchError(409, 'Referenced file changed.', 'context_reference_stale');
+        }
+        if (page.binary || page.content === undefined) {
+          throw new WebWorkbenchError(
+            403,
+            'Binary files cannot be added to model Context.',
+            'context_reference_forbidden'
+          );
+        }
+        const extracted = extractLineRange(page.content, reference.startLine, reference.endLine);
+        const budgeted = enforceContextBudget(extracted.text, MAX_CONTEXT_REFERENCE_BYTES);
+        return {
+          kind: 'file_range',
+          id: reference.id,
+          label: `${this.sanitizeContextText(page.name)}:${reference.startLine}-${reference.endLine}`,
+          revision: page.revision,
+          startLine: reference.startLine,
+          endLine: reference.endLine,
+          content: this.sanitizeContextText(budgeted.text),
+          truncated: budgeted.truncated || page.nextCursor !== null || extracted.clampedAtEnd,
         };
       }
       case 'folder': {
