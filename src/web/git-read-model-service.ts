@@ -421,6 +421,62 @@ export class GitReadModelServiceV1 {
     return id;
   }
 
+  /** v0.3.12 S3 — guarded stage: paths are host-resolved file ids only. */
+  async stagePaths(paths: readonly string[]): Promise<{ readonly repositoryRevision: string }> {
+    assertSafeGitPaths(paths);
+    if (paths.length === 0) throw new Error('stage requires at least one path.');
+    await this.mutate(['add', '--', ...paths]);
+    return { repositoryRevision: await this.revisionAfterMutation() };
+  }
+
+  async unstagePaths(paths: readonly string[]): Promise<{ readonly repositoryRevision: string }> {
+    assertSafeGitPaths(paths);
+    if (paths.length === 0) throw new Error('unstage requires at least one path.');
+    await this.mutate(['reset', '-q', '--', ...paths]);
+    return { repositoryRevision: await this.revisionAfterMutation() };
+  }
+
+  async commit(
+    message: string
+  ): Promise<{ readonly repositoryRevision: string; readonly commitSha: string }> {
+    const trimmed = message.trim();
+    if (!trimmed || trimmed.length > 2000 || /[\x00-\x1f]/.test(trimmed)) {
+      throw new Error('A valid commit message is required.');
+    }
+    const root = await this.requireRepositoryRoot();
+    const porcelain = (await this.runGit(['status', '--porcelain=v1'], root)).trim();
+    const stagedLines = porcelain
+      .split('\n')
+      .filter(line => line.length > 1 && line[0] !== ' ' && line[0] !== '?' && line[0] !== '!');
+    if (stagedLines.length === 0) {
+      throw new Error('Nothing is staged to commit.');
+    }
+    await this.mutate(['commit', '-m', trimmed]);
+    const sha = (await this.runGit(['rev-parse', 'HEAD'], root)).trim();
+    return { repositoryRevision: await this.revisionAfterMutation(), commitSha: sha };
+  }
+
+  private async mutate(args: readonly string[]): Promise<void> {
+    const root = await this.requireRepositoryRoot();
+    const output = await this.runGit(args, root);
+    if (output) {
+      // Warnings on stderr are not captured by runGit; treat non-empty as unexpected.
+    }
+  }
+
+  private async requireRepositoryRoot(): Promise<string> {
+    const snapshot = await this.capture();
+    if (!snapshot.isRepository || !snapshot.root) {
+      throw new Error('Git repository is unavailable.');
+    }
+    return snapshot.root;
+  }
+
+  private async revisionAfterMutation(): Promise<string> {
+    const root = await this.requireRepositoryRoot();
+    return this.runGit(['rev-parse', 'HEAD'], root).then(value => value.trim());
+  }
+
   private runGit(args: readonly string[], cwd: string): Promise<string> {
     return new Promise((resolvePromise, reject) => {
       this.performance.processCount += 1;
@@ -823,6 +879,23 @@ function streamGitLines(input: {
       resolvePromise(!paginationStopped);
     });
   });
+}
+
+function assertSafeGitPaths(paths: readonly string[]): void {
+  for (const path of paths) {
+    if (
+      typeof path !== 'string' ||
+      path.length === 0 ||
+      path.length > 4096 ||
+      path.includes('\0') ||
+      path.startsWith('-') ||
+      path.includes('/../') ||
+      path === '..' ||
+      path.startsWith('../')
+    ) {
+      throw new Error(`Unsafe Git path rejected: ${JSON.stringify(path)}`);
+    }
+  }
 }
 
 function gitEnvironment(): NodeJS.ProcessEnv {
