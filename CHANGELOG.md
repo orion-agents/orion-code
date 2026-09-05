@@ -35,7 +35,7 @@ which is **not** a pass.
 - Repository snapshot store shared by Git/Review/Files decorations
   (coalescing, one-shot invalidation, revision-stale detection).
 - Progressive Review verification paging (GET /review/verification).
-- Guarded Git stage/unstage/commit (POST /git/*) with host-resolved file ids,
+- Guarded Git stage/unstage/commit (POST /git/\*) with host-resolved file ids,
   repository-revision CAS and an explicit user-gesture header.
 - Bounded workspace search (GET /files/search; name/content scopes).
 - Context V2 file_range references (revision-bound, line-extracted, budgeted).
