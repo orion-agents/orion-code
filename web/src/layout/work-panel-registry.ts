@@ -1,21 +1,13 @@
-/**
- * v0.3.12 S1 — single source of truth for the five right-side panels.
- *
- * `WorkPanelDock` and friends used to hard-code panel order/labels/icons in a
- * few places. Everything a rail / detail surface / keyboard shortcut needs is
- * declared once here so five panels stay in exactly one registry.
- */
 import type { WorkPanelId } from '../state/layout-preferences';
 import { isWorkPanel } from '../state/layout-preferences';
+import type { IconName } from '../components/Icon';
 
 export interface WorkPanelRegistration {
   readonly id: WorkPanelId;
-  /** i18n message key or literal label used by rail tooltips and headers. */
-  readonly labelKey: string;
+  /** Human label used by rail tooltips, headers and aria-labels. */
+  readonly label: string;
   /** Icon name understood by the shared `<Icon>` component. */
-  readonly icon: string;
-  /** Keyboard shortcut token, matched like other `findShortcut` entries. */
-  readonly shortcutId: string;
+  readonly icon: IconName;
   /**
    * 'task' panels supervise the agent session; 'resource' panels show
    * repository/runtime state. Resources mount active-only and unmount their DOM
@@ -32,8 +24,32 @@ export const WORK_PANEL_ORDER: readonly WorkPanelId[] = [
   'git',
 ];
 
+const PANEL_META: Readonly<
+  Record<
+    WorkPanelId,
+    { readonly label: string; readonly icon: IconName; readonly kind: 'task' | 'resource' }
+  >
+> = Object.freeze({
+  agent: { label: 'Agent', icon: 'spark', kind: 'task' },
+  review: { label: '审阅', icon: 'edit', kind: 'resource' },
+  terminal: { label: '终端', icon: 'terminal', kind: 'resource' },
+  files: { label: '文件', icon: 'workspace', kind: 'resource' },
+  git: { label: 'Git', icon: 'branch', kind: 'resource' },
+});
+
 export const WORK_PANEL_REGISTRY: ReadonlyMap<WorkPanelId, WorkPanelRegistration> = new Map(
-  WORK_PANEL_ORDER.map(id => [id, Object.freeze(registrationFor(id)) as WorkPanelRegistration])
+  WORK_PANEL_ORDER.map(id => {
+    const meta = PANEL_META[id];
+    return [
+      id,
+      Object.freeze({
+        id,
+        label: meta.label,
+        icon: meta.icon,
+        kind: meta.kind,
+      }) as WorkPanelRegistration,
+    ];
+  })
 );
 
 export function workPanelRegistration(id: WorkPanelId): WorkPanelRegistration {
@@ -49,49 +65,4 @@ export function workPanelById(value: unknown): WorkPanelRegistration | null {
 
 export function isResourcePanel(id: WorkPanelId): boolean {
   return workPanelRegistration(id).kind === 'resource';
-}
-
-function registrationFor(id: WorkPanelId): WorkPanelRegistration {
-  switch (id) {
-    case 'agent':
-      return {
-        id,
-        labelKey: 'panel.agent',
-        icon: 'sparkles',
-        shortcutId: 'focus-agent-panel',
-        kind: 'task',
-      };
-    case 'review':
-      return {
-        id,
-        labelKey: 'panel.review',
-        icon: 'check-circle',
-        shortcutId: 'focus-review-panel',
-        kind: 'resource',
-      };
-    case 'terminal':
-      return {
-        id,
-        labelKey: 'panel.terminal',
-        icon: 'terminal',
-        shortcutId: 'focus-terminal-panel',
-        kind: 'resource',
-      };
-    case 'files':
-      return {
-        id,
-        labelKey: 'panel.files',
-        icon: 'folder',
-        shortcutId: 'focus-files-panel',
-        kind: 'resource',
-      };
-    case 'git':
-      return {
-        id,
-        labelKey: 'panel.git',
-        icon: 'git-branch',
-        shortcutId: 'focus-git-panel',
-        kind: 'resource',
-      };
-  }
 }

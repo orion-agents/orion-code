@@ -32,15 +32,19 @@ const PANEL_SHORTCUT_IDS = [
   'focus-work-panel-5',
 ] as const;
 
+// v0.3.12 S1 — panel metadata comes from the single registry; no local copies.
+import { WORK_PANEL_REGISTRY } from './work-panel-registry';
+
 const PANEL_META: Readonly<
   Record<WorkPanelId, { readonly label: string; readonly icon: IconName }>
-> = Object.freeze({
-  agent: { label: 'Agent', icon: 'spark' },
-  review: { label: '审阅', icon: 'edit' },
-  terminal: { label: '终端', icon: 'terminal' },
-  files: { label: '文件', icon: 'workspace' },
-  git: { label: 'Git', icon: 'branch' },
-});
+> = Object.freeze(
+  Object.fromEntries(
+    [...WORK_PANEL_REGISTRY].map(([id, registration]) => [
+      id,
+      { label: registration.label, icon: registration.icon },
+    ])
+  ) as Record<WorkPanelId, { readonly label: string; readonly icon: IconName }>
+);
 
 /** v0.3.8 — Session phases that light up the terminal icon in the vertical rail. */
 const RAIL_ACTIVE_PHASES = new Set([
