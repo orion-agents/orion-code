@@ -7,6 +7,7 @@ import { mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
+import { isHostPortTaken } from '../src/web/host-daemon';
 import {
   hostLogsDirectory,
   hostPidfilePath,
@@ -51,5 +52,17 @@ describe('web host daemon (issue #247 S1/S2)', () => {
   it('probes process liveness without killing the target', () => {
     expect(isProcessAlive(process.pid)).toBe(true);
     expect(isProcessAlive(2_147_483_647)).toBe(false);
+  });
+});
+
+describe('web host daemon — port-occupied guard (v0.3.12 UX)', () => {
+  it('detects a listener on 127.0.0.1 and reports free ports as false', async () => {
+    const { createServer } = require('net');
+    const server = createServer(() => undefined);
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
+    const address = server.address() as { port: number };
+    expect(await isHostPortTaken(address.port)).toBe(true);
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    expect(await isHostPortTaken(address.port)).toBe(false);
   });
 });
