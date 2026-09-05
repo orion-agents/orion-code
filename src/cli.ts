@@ -25,7 +25,7 @@ import { handleMigrateCommand } from './migration/command';
 import type { CommandContext } from './commands/types';
 import { PACKAGE_VERSION } from './product/version';
 import { runOrionWeb } from './web';
-import { hostDaemonStatus, stopBackgroundHost } from './web/host-daemon';
+import { hostDaemonStatus, isHostPortTaken, stopBackgroundHost } from './web/host-daemon';
 import { parseWebCliOptions, type WebCliOptions } from './web/cli-options';
 
 const BRAND = chalk.hex('#FF6B35');
@@ -99,7 +99,25 @@ async function manageBackgroundHost(command: 'status' | 'stop', args: string[]):
       console.log(
         `workspace ${status.pidfile.workspace} · started ${new Date(status.pidfile.startedAt).toISOString()}`
       );
-    } else if (status.state === 'stale') {
+      return;
+    }
+    // No pidfile-owned host, or a stale one. A live listener on the port means
+    // an externally managed host (e.g. a launchd LaunchAgent) is serving it —
+    // report that instead of a confusing 'not running'.
+    if (await isHostPortTaken(options.port)) {
+      console.log(
+        `Port ${options.port} is being served by an externally managed Orion host ` +
+          `(e.g. a launchd LaunchAgent such as ai.orion-code.web). It is not owned ` +
+          `by \`orion web status/stop\`; inspect it with \`launchctl list | grep orion\`.`
+      );
+      if (status.state === 'stale') {
+        console.log(
+          `Note: the pidfile for the former pid ${status.pid} is stale and can be removed safely.`
+        );
+      }
+      return;
+    }
+    if (status.state === 'stale') {
       console.log(
         `orion web is not running (stale pidfile for pid ${status.pid} on port ${status.port}).`
       );
