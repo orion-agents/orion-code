@@ -15,6 +15,7 @@ import type {
   WebModelCatalogPageV1,
   WebPageV1,
   WebReviewSnapshotV1,
+  WebReviewVerificationV1,
   WebSessionMutationResultV1,
   WebSessionSnapshotV1,
   WebSessionSummaryV1,
@@ -371,6 +372,98 @@ export class OrionWebApi {
     return new WebSocket(
       `${protocol}//${location.host}${API_ROOT}/terminals/${encodeURIComponent(terminalId)}/stream`,
       'orion-terminal-v1'
+    );
+  }
+
+  /**
+   * v0.3.12 — bounded workspace search. Scope is either `name` or `content`;
+   * the Host enforces ignore/sensitive/out-of-root and scan budgets.
+   */
+  async searchFiles(
+    context: WebContextGuardV1,
+    query: string,
+    scope: 'name' | 'content',
+    limit = 50
+  ): Promise<{
+    readonly revision: string;
+    readonly items: readonly {
+      readonly id: string;
+      readonly name: string;
+      readonly path: string;
+    }[];
+    readonly truncated: boolean;
+  }> {
+    const params = new URLSearchParams({
+      q: query.slice(0, 200),
+      scope,
+      limit: String(limit),
+    });
+    appendContext(params, context);
+    return this.query(`/files/search?${params.toString()}`);
+  }
+
+  /** v0.3.12 — progressive Review verification evidence (summary stays first). */
+  async reviewVerificationPage(
+    context: WebContextGuardV1,
+    input: {
+      readonly sessionId?: string;
+      readonly cursor?: number;
+      readonly pageSize?: number;
+    } = {}
+  ): Promise<{
+    readonly items: readonly WebReviewVerificationV1[];
+    readonly nextCursor: number | null;
+    readonly totalForSession: number;
+  }> {
+    const params = new URLSearchParams();
+    appendContext(params, context);
+    if (input.sessionId) params.set('sessionId', input.sessionId);
+    if (input.cursor !== undefined) params.set('cursor', String(input.cursor));
+    if (input.pageSize !== undefined) params.set('pageSize', String(input.pageSize));
+    return this.query(`/review/verification?${params.toString()}`);
+  }
+
+  /** v0.3.12 — guarded stage/unstage/commit (Host resolves ids; CAS on revision). */
+  gitStage(
+    context: WebContextGuardV1,
+    fileIds: readonly string[],
+    expectedRepositoryRevision: string
+  ): Promise<{ readonly repositoryRevision: string; readonly requestId: string }> {
+    return this.mutate(
+      '/git/stage',
+      'POST',
+      { ...context, fileIds, expectedRepositoryRevision, requestId: requestId() },
+      { 'X-Orion-User-Gesture': 'git-mutation-v1' }
+    );
+  }
+
+  gitUnstage(
+    context: WebContextGuardV1,
+    fileIds: readonly string[],
+    expectedRepositoryRevision: string
+  ): Promise<{ readonly repositoryRevision: string; readonly requestId: string }> {
+    return this.mutate(
+      '/git/unstage',
+      'POST',
+      { ...context, fileIds, expectedRepositoryRevision, requestId: requestId() },
+      { 'X-Orion-User-Gesture': 'git-mutation-v1' }
+    );
+  }
+
+  gitCommit(
+    context: WebContextGuardV1,
+    message: string,
+    expectedRepositoryRevision: string
+  ): Promise<{
+    readonly repositoryRevision: string;
+    readonly commitSha: string;
+    readonly requestId: string;
+  }> {
+    return this.mutate(
+      '/git/commit',
+      'POST',
+      { ...context, message, expectedRepositoryRevision, requestId: requestId() },
+      { 'X-Orion-User-Gesture': 'git-mutation-v1' }
     );
   }
 
