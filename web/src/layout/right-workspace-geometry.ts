@@ -73,7 +73,9 @@ export function snapDetailWidth(requestedWidth: number, maxWidth: number): numbe
       best = candidate;
     }
   }
-  return Math.max(DETAIL_MIN_WIDTH, best);
+  // best never exceeds maxWidth (maxWidth is itself a candidate), and a
+  // maxWidth >= 360 always admits DETAIL_MIN_WIDTH, so no extra floor is safe.
+  return best;
 }
 
 export function computeRightWorkspaceGeometry(

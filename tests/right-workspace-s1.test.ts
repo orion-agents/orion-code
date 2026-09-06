@@ -94,7 +94,8 @@ describe('right-workspace geometry (v0.3.12 S1)', () => {
     expect(snapDetailWidth(1000, 1500)).toBe(960);
     expect(snapDetailWidth(200, 1500)).toBe(360);
     expect(snapDetailWidth(500, 900)).toBe(560);
-    expect(snapDetailWidth(200, 300)).toBe(DETAIL_MIN_WIDTH);
+    // maxWidth below the 360 minimum can only return maxWidth (plan-v2 S1.5).
+    expect(snapDetailWidth(200, 300)).toBe(300);
   });
 
   test('rail-only when expanded but the dockable area is unusable', () => {
@@ -225,5 +226,13 @@ describe('wide desktop columns (v0.3.12 S1 component feed)', () => {
     expect(columns.workPanel.mode).toBe('rail');
     expect(columns.workPanel.widthPx).toBe(48);
     expect(columns.conversationWidthPx).toBeGreaterThan(1000);
+  });
+});
+
+describe('snap boundary fixes (v0.3.12 plan-v2 S1.5)', () => {
+  test('snap never exceeds maxWidth when no snap point fits', () => {
+    expect(snapDetailWidth(360, 200)).toBe(200);
+    expect(snapDetailWidth(960, 0)).toBe(0);
+    expect(snapDetailWidth(700, 320)).toBe(320);
   });
 });
