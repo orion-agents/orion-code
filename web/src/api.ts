@@ -428,7 +428,7 @@ export class OrionWebApi {
     context: WebContextGuardV1,
     fileIds: readonly string[],
     expectedRepositoryRevision: string
-  ): Promise<{ readonly repositoryRevision: string; readonly requestId: string }> {
+  ): Promise<{ readonly repositoryRevision: string }> {
     return this.mutate(
       '/git/stage',
       'POST',
@@ -441,7 +441,7 @@ export class OrionWebApi {
     context: WebContextGuardV1,
     fileIds: readonly string[],
     expectedRepositoryRevision: string
-  ): Promise<{ readonly repositoryRevision: string; readonly requestId: string }> {
+  ): Promise<{ readonly repositoryRevision: string }> {
     return this.mutate(
       '/git/unstage',
       'POST',
