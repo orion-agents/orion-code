@@ -181,7 +181,7 @@ describe('wide desktop columns (v0.3.12 S1 component feed)', () => {
       workExpanded: true,
       workDetailWidthPx: 960,
     });
-    expect(columns.navigation.mode).toBe('dock');
+    expect(columns.projectNavigation.mode).toBe('dock');
     expect(columns.workPanel.mode).toBe('dock');
     // 960 cannot fit at 1440 with a 280px nav (max dockable = 792): clamp to max.
     expect(columns.workPanel.widthPx).toBe(maxDockableDetailWidth(1440 - 280) + 48);
@@ -196,7 +196,7 @@ describe('wide desktop columns (v0.3.12 S1 component feed)', () => {
       workExpanded: true,
       workDetailWidthPx: 1200,
     });
-    expect(columns.navigation.mode).toBe('rail');
+    expect(columns.projectNavigation.mode).toBe('rail');
     expect(columns.workPanel.mode).toBe('dock');
     expect(columns.conversationWidthPx).toBeGreaterThanOrEqual(320);
   });
@@ -210,7 +210,7 @@ describe('wide desktop columns (v0.3.12 S1 component feed)', () => {
       workExpanded: true,
       workDetailWidthPx: 900,
     });
-    expect(columns.navigation.mode).toBe('rail');
+    expect(columns.projectNavigation.mode).toBe('rail');
     expect(columns.workPanel.mode).toBe('dock');
     expect(columns.conversationWidthPx).toBeGreaterThanOrEqual(320);
   });

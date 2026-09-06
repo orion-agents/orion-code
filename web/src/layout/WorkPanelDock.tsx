@@ -82,6 +82,8 @@ export interface WorkPanelDockProps {
   readonly onWidthCommit: (width: number) => void;
   /** Live dock width in px, used for the resize separator's `aria-valuenow`. */
   readonly width: number;
+  /** v0.3.12 — per-viewport dock width ceiling (detail + rail). */
+  readonly maxWidthPx?: number;
   readonly onSendToComposer: (text: string) => void;
 }
 
@@ -100,6 +102,7 @@ export function WorkPanelDock({
   onWidthPreview,
   onWidthCommit,
   width,
+  maxWidthPx,
   onSendToComposer,
 }: WorkPanelDockProps) {
   const surfaceRef = useRef<HTMLElement>(null);
@@ -414,7 +417,12 @@ export function WorkPanelDock({
         </div>
       )}
       {mode === 'dock' && expanded ? (
-        <WorkPanelResizeHandle width={width} onPreview={onWidthPreview} onCommit={onWidthCommit} />
+        <WorkPanelResizeHandle
+          width={width}
+          maxWidth={maxWidthPx}
+          onPreview={onWidthPreview}
+          onCommit={onWidthCommit}
+        />
       ) : null}
     </aside>
   );

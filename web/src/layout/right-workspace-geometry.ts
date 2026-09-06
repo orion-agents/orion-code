@@ -161,7 +161,7 @@ export function computeRightWorkspaceGeometry(
  * width is the full dock column (detail + rail) matching WorkbenchColumnsV1.
  */
 export interface WideDesktopColumns {
-  readonly navigation: { readonly mode: 'dock' | 'rail'; readonly widthPx: number };
+  readonly projectNavigation: { readonly mode: 'dock' | 'rail'; readonly widthPx: number };
   readonly conversationWidthPx: number;
   readonly workPanel: {
     readonly mode: 'dock' | 'rail' | 'drawer';
@@ -202,7 +202,7 @@ export function computeWideDesktopColumns(input: {
   if (concedeNavigation) {
     right = withoutNavigation;
     return Object.freeze({
-      navigation: Object.freeze({ mode: 'rail', widthPx: WORK_PANEL_RAIL_WIDTH }),
+      projectNavigation: Object.freeze({ mode: 'rail', widthPx: WORK_PANEL_RAIL_WIDTH }),
       conversationWidthPx: right.conversationWidthPx,
       workPanel: Object.freeze({
         mode: right.mode,
@@ -212,7 +212,7 @@ export function computeWideDesktopColumns(input: {
     });
   }
   return Object.freeze({
-    navigation: Object.freeze({
+    projectNavigation: Object.freeze({
       mode: input.navigationExpanded ? 'dock' : 'rail',
       widthPx: navWidth,
     }),

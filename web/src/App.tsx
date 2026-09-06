@@ -26,10 +26,15 @@ import {
   computeWorkbenchColumns,
   loadWorkbenchLayoutPreference,
   saveWorkbenchLayoutPreference,
+  WORK_PANEL_RAIL_WIDTH,
   type AgentPanelId,
   type WorkbenchLayoutPreferenceV2,
   type WorkPanelId,
 } from './state/layout-preferences';
+import {
+  computeWideDesktopColumns,
+  maxDockableDetailWidth,
+} from './layout/right-workspace-geometry';
 import { activeSessionSnapshotSync, type WebSessionSummaryV1, type WorkbenchNotice } from './types';
 import { themeColorForAppearance } from './themes/theme-color';
 import { useWorkbench } from './useWorkbench';
@@ -166,7 +171,21 @@ export function App() {
   const restoreProjectSettingsFocus = useRef(false);
   const shellRef = useRef<HTMLDivElement>(null);
   const shellWidth = useElementWidth(shellRef);
-  const columns = computeWorkbenchColumns(shellWidth, layoutPreference);
+  // v0.3.12 — desktop width uses the wide Right Workspace solver; the v2
+  // solver still owns narrow/compact drawer behaviour below 1180px.
+  const useWideDesktopColumns = shellWidth > 1180;
+  const columns = useWideDesktopColumns
+    ? computeWideDesktopColumns({
+        containerWidth: shellWidth,
+        navigationExpanded: layoutPreference.projectNavigation.expanded,
+        navigationWidthPx: layoutPreference.projectNavigation.widthPx,
+        workExpanded: layoutPreference.workPanel.expanded,
+        workDetailWidthPx: Math.max(
+          360,
+          layoutPreference.workPanel.widthPx - WORK_PANEL_RAIL_WIDTH
+        ),
+      })
+    : computeWorkbenchColumns(shellWidth, layoutPreference);
   const navigationOverlay = columns.projectNavigation.mode === 'drawer';
   const panelOverlay = columns.workPanel.mode === 'drawer';
   const panelDerivedRail = columns.workPanel.mode === 'rail' && layoutPreference.workPanel.expanded;
@@ -626,10 +645,18 @@ export function App() {
           onPanelChange={(activePanel: WorkPanelId) => updatePanelPreference({ activePanel })}
           onAgentPanelChange={(agentPanel: AgentPanelId) => updatePanelPreference({ agentPanel })}
           onWidthPreview={width => {
-            const preview = computeWorkbenchColumns(shellWidth, {
-              ...layoutPreference,
-              workPanel: { ...layoutPreference.workPanel, widthPx: width },
-            });
+            const preview = useWideDesktopColumns
+              ? computeWideDesktopColumns({
+                  containerWidth: shellWidth,
+                  navigationExpanded: layoutPreference.projectNavigation.expanded,
+                  navigationWidthPx: layoutPreference.projectNavigation.widthPx,
+                  workExpanded: true,
+                  workDetailWidthPx: Math.max(360, width - WORK_PANEL_RAIL_WIDTH),
+                })
+              : computeWorkbenchColumns(shellWidth, {
+                  ...layoutPreference,
+                  workPanel: { ...layoutPreference.workPanel, widthPx: width },
+                });
             shellRef.current?.style.setProperty(
               '--work-panel-width',
               `${preview.workPanel.widthPx}px`
@@ -637,6 +664,16 @@ export function App() {
           }}
           onWidthCommit={width => updatePanelPreference({ widthPx: width })}
           width={columns.workPanel.widthPx}
+          maxWidthPx={
+            useWideDesktopColumns
+              ? maxDockableDetailWidth(
+                  shellWidth -
+                    (layoutPreference.projectNavigation.expanded
+                      ? layoutPreference.projectNavigation.widthPx
+                      : WORK_PANEL_RAIL_WIDTH)
+                ) + WORK_PANEL_RAIL_WIDTH
+              : undefined
+          }
           onSendToComposer={text => {
             setComposerInsertion({ id: Date.now(), text });
             if (panelOverlay) closeDrawers();
