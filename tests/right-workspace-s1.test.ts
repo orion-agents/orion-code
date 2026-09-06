@@ -168,3 +168,62 @@ describe('per-workspace preferences v3 (v0.3.12 S1)', () => {
     expect(parseRightWorkspaceV3('garbage')).toBeNull();
   });
 });
+
+import { computeWideDesktopColumns } from '../web/src/layout/right-workspace-geometry';
+
+describe('wide desktop columns (v0.3.12 S1 component feed)', () => {
+  test('1440px docks a 960px detail request and keeps conversation >= 320px', () => {
+    const columns = computeWideDesktopColumns({
+      containerWidth: 1440,
+      navigationExpanded: true,
+      navigationWidthPx: 280,
+      workExpanded: true,
+      workDetailWidthPx: 960,
+    });
+    expect(columns.navigation.mode).toBe('dock');
+    expect(columns.workPanel.mode).toBe('dock');
+    // 960 cannot fit at 1440 with a 280px nav (max dockable = 792): clamp to max.
+    expect(columns.workPanel.widthPx).toBe(maxDockableDetailWidth(1440 - 280) + 48);
+    expect(columns.conversationWidthPx).toBeGreaterThanOrEqual(320);
+  });
+
+  test('collapsed navigation frees room for an even wider detail surface', () => {
+    const columns = computeWideDesktopColumns({
+      containerWidth: 1440,
+      navigationExpanded: false,
+      navigationWidthPx: 280,
+      workExpanded: true,
+      workDetailWidthPx: 1200,
+    });
+    expect(columns.navigation.mode).toBe('rail');
+    expect(columns.workPanel.mode).toBe('dock');
+    expect(columns.conversationWidthPx).toBeGreaterThanOrEqual(320);
+  });
+
+  test('left navigation concedes to a rail when the conversation would drop below 320px', () => {
+    // A narrow-ish wide screen: a 480px nav + a huge detail cannot coexist.
+    const columns = computeWideDesktopColumns({
+      containerWidth: 1080,
+      navigationExpanded: true,
+      navigationWidthPx: 480,
+      workExpanded: true,
+      workDetailWidthPx: 900,
+    });
+    expect(columns.navigation.mode).toBe('rail');
+    expect(columns.workPanel.mode).toBe('dock');
+    expect(columns.conversationWidthPx).toBeGreaterThanOrEqual(320);
+  });
+
+  test('collapsed work panel stays rail-only and hands width to the conversation', () => {
+    const columns = computeWideDesktopColumns({
+      containerWidth: 1440,
+      navigationExpanded: true,
+      navigationWidthPx: 280,
+      workExpanded: false,
+      workDetailWidthPx: 560,
+    });
+    expect(columns.workPanel.mode).toBe('rail');
+    expect(columns.workPanel.widthPx).toBe(48);
+    expect(columns.conversationWidthPx).toBeGreaterThan(1000);
+  });
+});

@@ -151,6 +151,78 @@ export function computeRightWorkspaceGeometry(
   });
 }
 
+/**
+ * v0.3.12 — desktop column layout that lets the Right Workspace grow wide.
+ * The conversation keeps a 320px minimum; when the left navigation would push
+ * the conversation below it, the navigation concedes to its 48px rail first.
+ * Work detail width is the stored detail (excludes rail); the returned work
+ * width is the full dock column (detail + rail) matching WorkbenchColumnsV1.
+ */
+export interface WideDesktopColumns {
+  readonly navigation: { readonly mode: 'dock' | 'rail'; readonly widthPx: number };
+  readonly conversationWidthPx: number;
+  readonly workPanel: {
+    readonly mode: 'dock' | 'rail' | 'drawer';
+    readonly widthPx: number;
+  };
+}
+
+export function computeWideDesktopColumns(input: {
+  readonly containerWidth: number;
+  readonly navigationExpanded: boolean;
+  readonly navigationWidthPx: number;
+  readonly workExpanded: boolean;
+  readonly workDetailWidthPx: number;
+}): WideDesktopColumns {
+  const container = finiteWidth(input.containerWidth);
+  const navWidth = input.navigationExpanded
+    ? Math.max(240, Math.min(480, Math.round(input.navigationWidthPx)))
+    : WORK_PANEL_RAIL_WIDTH;
+  let right = computeRightWorkspaceGeometry({
+    containerWidth: container,
+    leftWidthPx: navWidth,
+    expanded: input.workExpanded,
+    storedDetailWidthPx: input.workDetailWidthPx,
+  });
+  const withoutNavigation = computeRightWorkspaceGeometry({
+    containerWidth: container,
+    leftWidthPx: WORK_PANEL_RAIL_WIDTH,
+    expanded: input.workExpanded,
+    storedDetailWidthPx: input.workDetailWidthPx,
+  });
+  // Left navigation concedes to its rail whenever the docked work surface would
+  // (a) push the conversation below its 320px minimum, or (b) be unable to
+  // dock at all while folding the navigation would let it dock.
+  const concedeNavigation =
+    input.navigationExpanded &&
+    ((right.mode === 'dock' && right.conversationWidthPx < CONVERSATION_SAFETY_MIN_WIDTH) ||
+      (right.mode !== 'dock' && withoutNavigation.mode === 'dock'));
+  if (concedeNavigation) {
+    right = withoutNavigation;
+    return Object.freeze({
+      navigation: Object.freeze({ mode: 'rail', widthPx: WORK_PANEL_RAIL_WIDTH }),
+      conversationWidthPx: right.conversationWidthPx,
+      workPanel: Object.freeze({
+        mode: right.mode,
+        widthPx:
+          right.mode === 'dock' ? right.detailWidthPx + WORK_PANEL_RAIL_WIDTH : right.detailWidthPx,
+      }),
+    });
+  }
+  return Object.freeze({
+    navigation: Object.freeze({
+      mode: input.navigationExpanded ? 'dock' : 'rail',
+      widthPx: navWidth,
+    }),
+    conversationWidthPx: right.conversationWidthPx,
+    workPanel: Object.freeze({
+      mode: right.mode,
+      widthPx:
+        right.mode === 'dock' ? right.detailWidthPx + WORK_PANEL_RAIL_WIDTH : right.detailWidthPx,
+    }),
+  });
+}
+
 export const DETAIL_SNAP_POINTS: readonly number[] = [
   DETAIL_MIN_WIDTH,
   DETAIL_DEFAULT_WIDTH,
