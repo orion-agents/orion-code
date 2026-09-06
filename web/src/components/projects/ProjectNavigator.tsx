@@ -606,7 +606,13 @@ export function ProjectNavigator({
 
       <footer className="rail-footer">
         <span className={`connection-dot ${state.connection}`} aria-hidden="true" />
-        <span title={connectionTitle(state.connection)}>{connectionLabel(state.connection)}</span>
+        <span
+          data-testid="runtime-connection-state"
+          data-state={state.connection}
+          title={connectionTitle(state.connection)}
+        >
+          {connectionLabel(state.connection)}
+        </span>
         <button
           type="button"
           className="icon-button rail-settings"

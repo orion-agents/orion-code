@@ -59,7 +59,9 @@ test('E2E-P0-01 packaged Host renders the repository version and persists a rena
   await expect(await activeSessionButton(page)).toContainText('Packaged Browser Session');
 
   await page.reload({ waitUntil: 'domcontentloaded' });
-  await expect(page.getByText('本地 Runtime 已连接', { exact: true })).toBeVisible();
+  await expect(
+    page.locator('[data-testid="runtime-connection-state"][data-state="live"]')
+  ).toBeVisible();
   await expect(await activeSessionButton(page)).toContainText('Packaged Browser Session');
   await expect(workbenchUi(page).composer).toBeEnabled();
 
