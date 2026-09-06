@@ -4397,6 +4397,24 @@ html[data-panel-resizing] .workbench-shell {
   grid-template-columns: minmax(150px, 0.42fr) minmax(0, 1fr);
 }
 
+/* v0.3.12 — Files & Review flip their columns: content on the left, the
+   directory/review list on the right (Git keeps list-left). The list column
+   keeps its tinted surface and moves its divider to the left edge. */
+.files-layout,
+.review-layout {
+  grid-template-columns: minmax(0, 1fr) minmax(150px, 0.42fr);
+}
+.files-layout .file-tree,
+.review-layout .review-files {
+  grid-column: 2;
+  border-right: 0;
+  border-left: 1px solid var(--border);
+}
+.files-layout .file-preview,
+.review-layout .review-diff {
+  grid-column: 1;
+}
+
 .file-tree,
 .git-changes,
 .review-files {
@@ -5869,4 +5887,13 @@ html[data-panel-resizing] .workbench-shell {
 .work-panel-rail-overlay .rail-status-dot {
   top: 5px;
   right: 5px;
+}
+
+@container (max-width: 360px) {
+  .files-layout .file-tree,
+  .files-layout .file-preview,
+  .review-layout .review-files,
+  .review-layout .review-diff {
+    grid-column: auto;
+  }
 }
