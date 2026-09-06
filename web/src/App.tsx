@@ -19,6 +19,7 @@ import { SettingsDialog } from './components/SettingsDialog';
 import { ShortcutHelpDialog } from './components/ShortcutHelpDialog';
 import { ProjectNavigator } from './components/projects/ProjectNavigator';
 import { WorkPanelDock } from './layout/WorkPanelDock';
+import { usePerWorkspaceWorkPanel } from './usePerWorkspaceWorkPanel';
 import { requestId } from './api';
 import { findShortcut, matchesShortcut } from './shortcuts';
 import type { ThemePreference } from './settings/types';
@@ -151,6 +152,10 @@ export function App() {
   const { state, actions } = useWorkbench();
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [layoutPreference, setLayoutPreference] = useState(loadWorkbenchLayoutPreference);
+  // v0.3.12 S1.2 — per-workspace work-panel preference (schema v3). The v2
+  // workPanel block stays only as the migration seed and the rail `order`.
+  const { value: workPanelPreference, update: updatePerWorkspaceWorkPanel } =
+    usePerWorkspaceWorkPanel(state.workspaceId, layoutPreference.workPanel);
   const [panelOverlayOpen, setPanelOverlayOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
@@ -179,16 +184,13 @@ export function App() {
         containerWidth: shellWidth,
         navigationExpanded: layoutPreference.projectNavigation.expanded,
         navigationWidthPx: layoutPreference.projectNavigation.widthPx,
-        workExpanded: layoutPreference.workPanel.expanded,
-        workDetailWidthPx: Math.max(
-          360,
-          layoutPreference.workPanel.widthPx - WORK_PANEL_RAIL_WIDTH
-        ),
+        workExpanded: workPanelPreference.expanded,
+        workDetailWidthPx: workPanelPreference.detailWidthPx,
       })
     : computeWorkbenchColumns(shellWidth, layoutPreference);
   const navigationOverlay = columns.projectNavigation.mode === 'drawer';
   const panelOverlay = columns.workPanel.mode === 'drawer';
-  const panelDerivedRail = columns.workPanel.mode === 'rail' && layoutPreference.workPanel.expanded;
+  const panelDerivedRail = columns.workPanel.mode === 'rail' && workPanelPreference.expanded;
   const panelSurfaceOverlay = panelOverlay || (panelDerivedRail && panelOverlayOpen);
   const panelExpanded =
     panelOverlay || panelDerivedRail ? panelOverlayOpen : columns.workPanel.mode === 'dock';
@@ -232,18 +234,19 @@ export function App() {
     []
   );
 
+  // v0.3.12 S1.2 — v2-shaped patches (incl. legacy widthPx total width) are
+  // translated into the per-workspace v3 detail width and persisted there.
   const updatePanelPreference = useCallback(
     (patch: Partial<WorkbenchLayoutPreferenceV2['workPanel']>) => {
-      setLayoutPreference(current => {
-        const next: WorkbenchLayoutPreferenceV2 = {
-          ...current,
-          workPanel: { ...current.workPanel, ...patch },
-        };
-        saveWorkbenchLayoutPreference(next);
-        return next;
+      updatePerWorkspaceWorkPanel({
+        ...patch,
+        detailWidthPx:
+          patch.widthPx === undefined
+            ? undefined
+            : Math.max(360, patch.widthPx - WORK_PANEL_RAIL_WIDTH),
       });
     },
-    []
+    [updatePerWorkspaceWorkPanel]
   );
 
   const rememberDrawerTrigger = useCallback(() => {
@@ -525,7 +528,7 @@ export function App() {
             '--project-navigation-width': `${columns.projectNavigation.widthPx}px`,
             '--project-navigation-preferred-width': `${layoutPreference.projectNavigation.widthPx}px`,
             '--work-panel-width': `${columns.workPanel.widthPx}px`,
-            '--work-panel-preferred-width': `${layoutPreference.workPanel.widthPx}px`,
+            '--work-panel-preferred-width': `${workPanelPreference.detailWidthPx + WORK_PANEL_RAIL_WIDTH}px`,
           } as CSSProperties
         }
         aria-busy={state.boot === 'loading'}
@@ -616,7 +619,7 @@ export function App() {
               setPanelOverlayOpen(true);
               return;
             }
-            updatePanelPreference({ expanded: !layoutPreference.workPanel.expanded });
+            updatePanelPreference({ expanded: !workPanelPreference.expanded });
           }}
           onRevealSettings={focusProjectSettings}
           onCreateSession={createSession}
@@ -631,9 +634,9 @@ export function App() {
           actions={actions}
           mode={panelSurfaceOverlay ? 'overlay' : 'dock'}
           expanded={panelExpanded}
-          activePanel={layoutPreference.workPanel.activePanel}
+          activePanel={workPanelPreference.activePanel}
           panelOrder={layoutPreference.workPanel.order}
-          agentPanel={layoutPreference.workPanel.agentPanel}
+          agentPanel={workPanelPreference.agentPanel}
           onExpand={() => {
             if (panelOverlay || panelDerivedRail) setPanelOverlayOpen(true);
             else updatePanelPreference({ expanded: true });

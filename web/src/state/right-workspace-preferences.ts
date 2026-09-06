@@ -156,9 +156,26 @@ export function sanitizeDetailWidth(width: number): number {
 }
 
 export function toTaskSubview(value: unknown): TaskSubviewId {
-  return ['overview', 'activity', 'capabilities', 'diagnostics'].includes(String(value))
-    ? (String(value) as TaskSubviewId)
-    : 'overview';
+  const text = String(value);
+  // v2 Agent tab aliases migrate onto the v3 task subview vocabulary.
+  if (text === 'goal' || text === 'overview') return 'overview';
+  if (text === 'activity') return 'activity';
+  if (text === 'integrations' || text === 'capabilities') return 'capabilities';
+  if (text === 'diagnostics') return 'diagnostics';
+  return 'overview';
+}
+
+export function taskSubviewToAgentTab(subview: TaskSubviewId): string {
+  switch (subview) {
+    case 'overview':
+      return 'goal';
+    case 'activity':
+      return 'activity';
+    case 'capabilities':
+      return 'integrations';
+    case 'diagnostics':
+      return 'diagnostics';
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

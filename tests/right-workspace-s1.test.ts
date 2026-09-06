@@ -236,3 +236,15 @@ describe('snap boundary fixes (v0.3.12 plan-v2 S1.5)', () => {
     expect(snapDetailWidth(700, 320)).toBe(320);
   });
 });
+
+describe('v2 agent tab -> v3 task subview migration aliases (plan-v2 S1.2)', () => {
+  test('maps legacy tabs onto the v3 vocabulary losslessly', () => {
+    const { migrateWorkPanelV2ToV3, taskSubviewToAgentTab } =
+      require('../web/src/state/right-workspace-preferences') as typeof import('../web/src/state/right-workspace-preferences');
+    expect(migrateWorkPanelV2ToV3({ agentPanel: 'goal' }).taskSubview).toBe('overview');
+    expect(migrateWorkPanelV2ToV3({ agentPanel: 'integrations' }).taskSubview).toBe('capabilities');
+    expect(migrateWorkPanelV2ToV3({ agentPanel: 'diagnostics' }).taskSubview).toBe('diagnostics');
+    expect(taskSubviewToAgentTab('overview')).toBe('goal');
+    expect(taskSubviewToAgentTab('capabilities')).toBe('integrations');
+  });
+});
