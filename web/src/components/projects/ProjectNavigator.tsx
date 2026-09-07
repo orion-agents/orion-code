@@ -161,9 +161,7 @@ export function ProjectNavigator({
         hidden={!dockVisible}
       >
         <div className="project-rail-brand" aria-hidden="true">
-          <span />
-          <span />
-          <span />
+          <OrionBrandMark size={22} />
         </div>
         <button
           type="button"
