@@ -22,11 +22,18 @@ which is **not** a pass.
 
 ## [Unreleased]
 
-## [0.3.12] — CANDIDATE
+## [0.3.13] — CANDIDATE
 
-> **Status: candidate.** Wide Right Workspace + repository-truth + guarded Git
-> mutations (plan docs/plan/v0.3.12-plan.md) plus the v0.3.13 follow-ups that
-> landed on this branch (plans v3/v4/v5). Not merged, tagged or published.
+> **Status: candidate.** Development baseline after v0.3.12 (version bump only;
+> no functional changes yet). Not merged, tagged or published.
+
+## [0.3.12] — NPM-PUBLISHED
+
+> **Status: npm-published.** `@orion-agents/orion-code@0.3.12` is available
+> through the npm registry (latest tag). Published 2026-09-07 via PR #252;
+> git tag/release may lag. Wide Right Workspace + repository-truth + guarded
+> Git mutations (v0.3.12-plan) plus resource split layout, conversation
+> history navigator and the unified brand mark (v0.3.13-plan v3/v4/v5).
 
 ### Added
 
