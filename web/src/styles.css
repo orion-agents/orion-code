@@ -446,34 +446,31 @@ p {
   gap: 10px;
 }
 
-.brand-mark,
-.boot-mark {
-  display: grid;
-  grid-template-columns: repeat(3, 4px);
-  align-items: end;
-  height: 23px;
-  gap: 3px;
+.orion-brand-mark {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
 }
 
-.brand-mark span,
-.boot-mark span {
+.orion-brand-mark svg {
   display: block;
-  width: 4px;
-  border-radius: 3px;
-  background: linear-gradient(180deg, var(--accent), var(--accent-2));
+  overflow: visible;
 }
 
-.brand-mark span:nth-child(1),
-.boot-mark span:nth-child(1) {
-  height: 13px;
+.orion-mark-stop-primary {
+  stop-color: var(--accent);
 }
-.brand-mark span:nth-child(2),
-.boot-mark span:nth-child(2) {
-  height: 22px;
+
+.orion-mark-stop-secondary {
+  stop-color: var(--accent-2);
 }
-.brand-mark span:nth-child(3),
-.boot-mark span:nth-child(3) {
-  height: 17px;
+
+/* The glyph must stay visible when the UA strips gradients. */
+@media (forced-colors: active) {
+  .orion-brand-mark .orion-mark-bar {
+    fill: CanvasText;
+  }
 }
 
 .brand-copy {
@@ -889,6 +886,9 @@ p {
   position: relative;
   display: grid;
   grid-area: conversation;
+  /* v0.3.13 — the history rail degrades on the actual column width, not the
+     viewport, so a wide workbench squeezing the conversation still downgrades. */
+  container-type: inline-size;
   grid-template-areas:
     'header'
     'banner'
@@ -993,8 +993,19 @@ p {
   font-size: 11px;
 }
 
-.transcript-viewport {
+.transcript-stage {
   grid-area: transcript;
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.transcript-viewport {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
@@ -1013,6 +1024,175 @@ p {
   padding: 0;
   list-style: none;
   gap: 15px;
+}
+
+/* v0.3.13 S2/S3 — conversation history navigator rail. The rail is an overlay
+   pinned to the viewport's left inside edge; it never scrolls with the
+   transcript and never creates a second scroll container. The message column
+   reserves a gutter via container queries below so cards never sit under the
+   rail. */
+.history-rail {
+  position: absolute;
+  z-index: 4;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 22px;
+  pointer-events: none;
+}
+
+.history-rail-inner {
+  display: flex;
+  position: relative;
+  height: 100%;
+  flex-direction: column;
+  pointer-events: auto;
+}
+
+.history-load-earlier {
+  flex: none;
+  width: 22px;
+  min-height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 0 8px 8px 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.2;
+  cursor: pointer;
+  writing-mode: vertical-rl;
+}
+
+.history-load-earlier:hover {
+  background: var(--surface-2);
+  color: var(--accent);
+}
+
+.history-load-earlier:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.history-slider {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  cursor: pointer;
+  touch-action: none;
+}
+
+.history-ticks {
+  position: absolute;
+  inset: 0;
+}
+
+.history-tick {
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  height: 3px;
+  margin-top: -1.5px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--text-2) 22%, transparent);
+}
+
+.history-tick-user,
+.history-tick-assistant {
+  background: color-mix(in srgb, var(--accent) 46%, transparent);
+}
+
+.history-tick-error {
+  background: color-mix(in srgb, var(--danger) 62%, transparent);
+}
+
+.history-viewport-marker {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 75%, transparent);
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+}
+
+.history-active-dot {
+  position: absolute;
+  left: -1px;
+  width: 8px;
+  height: 8px;
+  margin-top: -4px;
+  border: 2px solid var(--surface-raised);
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.history-tooltip {
+  position: absolute;
+  left: 30px;
+  max-width: 220px;
+  padding: 4px 8px;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface-raised);
+  box-shadow: var(--shadow);
+  color: var(--text-2);
+  font-size: 11px;
+  pointer-events: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transform: translateY(-50%);
+}
+
+html[data-history-scrubbing] .history-slider {
+  cursor: ns-resize;
+}
+
+html[data-history-scrubbing],
+html[data-history-scrubbing] * {
+  user-select: none !important;
+}
+
+.history-rail:focus-within .history-active-dot,
+.history-slider:focus-visible .history-active-dot {
+  outline: 2px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  outline-offset: 1px;
+}
+/* v0.3.13 S2/S3 — the history rail reserves a left gutter on wide
+   conversation columns; on compact columns it shrinks, on narrow columns it is
+   hidden entirely (the message column then uses the plain centring gutter). */
+@container (min-width: 761px) {
+  .history-rail {
+    width: 22px;
+  }
+  .transcript-content {
+    width: min(820px, calc(100% - 64px));
+  }
+}
+
+@container (min-width: 641px) and (max-width: 760px) {
+  .history-rail {
+    width: 18px;
+  }
+  .history-load-earlier {
+    display: none;
+  }
+  .history-tooltip {
+    display: none;
+  }
+  .transcript-content {
+    width: min(820px, calc(100% - 46px));
+  }
+}
+
+@container (max-width: 640px) {
+  .history-rail {
+    display: none;
+  }
+  .transcript-content {
+    width: min(820px, calc(100% - 34px));
+  }
 }
 .load-history {
   display: block;
@@ -3011,23 +3191,8 @@ p {
   background: var(--bg);
   text-align: center;
 }
-.boot-mark {
-  grid-template-columns: repeat(3, 6px);
-  height: 38px;
+.boot-screen .boot-mark {
   margin-bottom: 21px;
-  gap: 5px;
-}
-.boot-mark span {
-  width: 6px;
-}
-.boot-mark span:nth-child(1) {
-  height: 22px;
-}
-.boot-mark span:nth-child(2) {
-  height: 37px;
-}
-.boot-mark span:nth-child(3) {
-  height: 29px;
 }
 .boot-screen h1 {
   margin-bottom: 7px;
@@ -4387,42 +4552,58 @@ html[data-panel-resizing] .workbench-shell {
   position: relative;
 }
 
-.files-layout,
-.git-layout,
-.review-layout {
+/* v0.3.13 S2/S3 — Files/Git/Review share one content | splitter | navigator
+   shell. Content is on the left and absorbs the remaining width; the navigator
+   (tree / change list / review files) sits on the right and is sized by
+   --resource-navigator-width, clamped 160px..min(420px, 48%). The 12px middle
+   column is the drag handle. Named areas — never a bare grid-column — keep
+   every child in its own track on the same row. */
+.resource-split-layout {
   display: grid;
   min-width: 0;
   min-height: 0;
   flex: 1;
-  grid-template-columns: minmax(150px, 0.42fr) minmax(0, 1fr);
+  grid-template-columns:
+    minmax(0, 1fr) 12px
+    clamp(160px, var(--resource-navigator-width, 300px), min(420px, 48%));
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-areas: 'content splitter navigator';
 }
 
-/* v0.3.12 — Files & Review flip their columns: content on the left, the
-   directory/review list on the right (Git keeps list-left). The list column
-   keeps its tinted surface and moves its divider to the left edge. */
-.files-layout,
-.review-layout {
-  grid-template-columns: minmax(0, 1fr) minmax(150px, 0.42fr);
-}
-.files-layout .file-tree,
-.review-layout .review-files {
-  grid-column: 2;
-  border-right: 0;
-  border-left: 1px solid var(--border);
-}
-.files-layout .file-preview,
-.review-layout .review-diff {
-  grid-column: 1;
-}
-
-.file-tree,
-.git-changes,
-.review-files {
+.resource-split-content {
+  grid-area: content;
+  display: flex;
   min-width: 0;
+  min-height: 0;
+  flex-direction: column;
   overflow: auto;
-  border-right: 1px solid var(--border);
+  scrollbar-width: thin;
+}
+
+.resource-split-content > pre,
+.resource-split-content > .diff-viewer {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.resource-split-navigator {
+  grid-area: navigator;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  border-left: 1px solid var(--border);
   background: color-mix(in srgb, var(--surface-2) 55%, transparent);
   scrollbar-width: thin;
+}
+
+/* The shared .panel-resize-handle is absolutely positioned for the outer
+   workbench splitters; inside the shell it fills its own 12px grid track. */
+.resource-split-handle.panel-resize-handle {
+  grid-area: splitter;
+  position: relative;
+  inset: auto;
+  width: auto;
+  z-index: 2;
 }
 
 .file-node-list {
@@ -4480,15 +4661,6 @@ html[data-panel-resizing] .workbench-shell {
   white-space: nowrap;
 }
 
-.file-preview,
-.git-diff,
-.review-diff {
-  min-width: 0;
-  min-height: 0;
-  overflow: auto;
-  scrollbar-width: thin;
-}
-
 .file-preview > header,
 .diff-viewer > header {
   display: flex;
@@ -4515,9 +4687,7 @@ html[data-panel-resizing] .workbench-shell {
   white-space: nowrap;
 }
 
-.file-preview pre,
 .diff-lines {
-  min-height: calc(100% - 40px);
   margin: 0;
   padding: 12px;
   overflow: auto;
@@ -5133,19 +5303,9 @@ html[data-panel-resizing] .workbench-shell {
     max-width: 140px;
   }
 
-  .files-layout,
-  .git-layout,
-  .review-layout {
-    grid-template-columns: 1fr;
-    grid-template-rows: minmax(150px, 0.42fr) minmax(0, 1fr);
-  }
-
-  .file-tree,
-  .git-changes,
-  .review-files {
-    border-right: 0;
-    border-bottom: 1px solid var(--border);
-  }
+  /* v0.3.13 S3 — Git now lives on the shared .resource-split-layout shell;
+     its narrow single-column stack is handled by the 620px container query
+     below, so nothing Git-specific is needed at this width. */
 }
 
 .drawer-scrim {
@@ -5889,11 +6049,22 @@ html[data-panel-resizing] .workbench-shell {
   right: 5px;
 }
 
-@container (max-width: 360px) {
-  .files-layout .file-tree,
-  .files-layout .file-preview,
-  .review-layout .review-files,
-  .review-layout .review-diff {
-    grid-column: auto;
+@container (max-width: 620px) {
+  .resource-split-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(180px, 0.42fr) minmax(0, 1fr);
+    grid-template-areas:
+      'navigator'
+      'content';
+  }
+
+  .resource-split-navigator {
+    border-left: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  /* Single column: the drag handle is inert, hidden and unfocusable. */
+  .resource-split-handle {
+    display: none;
   }
 }

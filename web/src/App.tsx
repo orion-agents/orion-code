@@ -15,6 +15,7 @@ import {
   WorkspaceDialog,
 } from './components/Dialogs';
 import { Icon } from './components/Icon';
+import { OrionBrandMark } from './components/OrionBrandMark';
 import { SettingsDialog } from './components/SettingsDialog';
 import { ShortcutHelpDialog } from './components/ShortcutHelpDialog';
 import { ProjectNavigator } from './components/projects/ProjectNavigator';
@@ -154,8 +155,11 @@ export function App() {
   const [layoutPreference, setLayoutPreference] = useState(loadWorkbenchLayoutPreference);
   // v0.3.12 S1.2 — per-workspace work-panel preference (schema v3). The v2
   // workPanel block stays only as the migration seed and the rail `order`.
-  const { value: workPanelPreference, update: updatePerWorkspaceWorkPanel } =
-    usePerWorkspaceWorkPanel(state.workspaceId, layoutPreference.workPanel);
+  const {
+    value: workPanelPreference,
+    update: updatePerWorkspaceWorkPanel,
+    setResourceNavigatorWidth,
+  } = usePerWorkspaceWorkPanel(state.workspaceId, layoutPreference.workPanel);
   const [panelOverlayOpen, setPanelOverlayOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
@@ -684,6 +688,8 @@ export function App() {
               document.querySelector<HTMLElement>('#orion-composer')?.focus()
             );
           }}
+          resourceNavigatorWidths={workPanelPreference.resourceNavigatorWidthPx}
+          onResourceNavigatorWidthCommit={setResourceNavigatorWidth}
         />
 
         {drawersOpen ? (
@@ -717,11 +723,7 @@ export function App() {
 
         {state.boot !== 'ready' ? (
           <section className="boot-screen" role={state.boot === 'error' ? 'alert' : 'status'}>
-            <div className="boot-mark" aria-hidden="true">
-              <span />
-              <span />
-              <span />
-            </div>
+            <OrionBrandMark className="boot-mark" size={34} />
             {state.boot === 'loading' ? (
               <>
                 <h1>正在启动 Orion Workbench</h1>

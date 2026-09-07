@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { WebApiError } from '../../api';
 import type { WebFileNodeV1, WebGitStatusV1 } from '../../types';
 import type { WorkbenchActions } from '../../useWorkbench';
+import { ResourceSplitLayout } from '../../layout/ResourceSplitLayout';
 import { Icon } from '../Icon';
 import { sanitizeDisplayText } from '../Markdown';
 
@@ -20,10 +21,16 @@ export function FilesPanel({
   workspaceId,
   refreshEpoch,
   actions,
+  navigatorWidthPx,
+  onNavigatorWidthCommit,
 }: {
   readonly workspaceId: string;
   readonly refreshEpoch: number;
   readonly actions: WorkbenchActions;
+  /** v0.3.13 — per-workspace + per-panel navigator (tree) column width. */
+  readonly navigatorWidthPx: number;
+  /** v0.3.13 — persists one workspace/panel width on pointer-up / keyboard commit. */
+  readonly onNavigatorWidthCommit: (width: number) => void;
 }) {
   const [directories, setDirectories] = useState<Readonly<Record<string, DirectoryPage>>>({});
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set(['workspace-root']));
@@ -210,8 +217,17 @@ export function FilesPanel({
         </button>
       </div>
 
-      <div className="files-layout">
-        <section className="file-tree" aria-label="工作区文件">
+      <ResourceSplitLayout
+        panelId="files"
+        navigatorWidthPx={navigatorWidthPx}
+        onNavigatorWidthCommit={onNavigatorWidthCommit}
+        contentLabel="文件预览"
+        navigatorLabel="工作区文件"
+        handleLabel="调整文件目录宽度"
+        contentClassName="file-preview"
+        navigatorClassName="file-tree"
+      >
+        <>
           {gitDecorationNotice ? (
             <p className="resource-hint" role="status">
               {gitDecorationNotice}
@@ -248,9 +264,8 @@ export function FilesPanel({
               onLoadMore={parentId => void loadDirectory(parentId, true)}
             />
           )}
-        </section>
-
-        <section className="file-preview" aria-label="文件预览">
+        </>
+        <>
           {resourceNotice ? (
             <p className="resource-notice" role="status">
               {resourceNotice}
@@ -344,8 +359,8 @@ export function FilesPanel({
               <p>敏感文件、工作区外链接和二进制正文不会返回浏览器。</p>
             </div>
           )}
-        </section>
-      </div>
+        </>
+      </ResourceSplitLayout>
     </div>
   );
 }

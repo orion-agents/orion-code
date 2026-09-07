@@ -34,6 +34,7 @@ const PANEL_SHORTCUT_IDS = [
 
 // v0.3.12 S1 — panel metadata comes from the single registry; no local copies.
 import { WORK_PANEL_REGISTRY } from './work-panel-registry';
+import type { ResourceSplitPanelId } from '../state/right-workspace-preferences';
 
 const PANEL_META: Readonly<
   Record<WorkPanelId, { readonly label: string; readonly icon: IconName }>
@@ -85,6 +86,13 @@ export interface WorkPanelDockProps {
   /** v0.3.12 — per-viewport dock width ceiling (detail + rail). */
   readonly maxWidthPx?: number;
   readonly onSendToComposer: (text: string) => void;
+  /**
+   * v0.3.13 — per-panel navigator column widths for the current workspace,
+   * forwarded to the Files/Git/Review resource panels.
+   */
+  readonly resourceNavigatorWidths: Readonly<Record<ResourceSplitPanelId, number>>;
+  /** v0.3.13 — persists one workspace/panel navigator width on drag end. */
+  readonly onResourceNavigatorWidthCommit: (panel: ResourceSplitPanelId, width: number) => void;
 }
 
 export function WorkPanelDock({
@@ -104,6 +112,8 @@ export function WorkPanelDock({
   width,
   maxWidthPx,
   onSendToComposer,
+  resourceNavigatorWidths,
+  onResourceNavigatorWidthCommit,
 }: WorkPanelDockProps) {
   const surfaceRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -300,6 +310,8 @@ export function WorkPanelDock({
           refreshEpoch={resourceEpochs.review}
           actions={actions}
           onSendToComposer={onSendToComposer}
+          navigatorWidthPx={resourceNavigatorWidths.review}
+          onNavigatorWidthCommit={width => onResourceNavigatorWidthCommit('review', width)}
         />
       ) : null}
       {id === 'terminal' ? (
@@ -316,6 +328,8 @@ export function WorkPanelDock({
           workspaceId={state.workspaceId}
           refreshEpoch={resourceEpochs.files}
           actions={actions}
+          navigatorWidthPx={resourceNavigatorWidths.files}
+          onNavigatorWidthCommit={width => onResourceNavigatorWidthCommit('files', width)}
         />
       ) : null}
       {id === 'git' ? (
@@ -324,6 +338,8 @@ export function WorkPanelDock({
           refreshEpoch={resourceEpochs.git}
           actions={actions}
           onSendToComposer={onSendToComposer}
+          navigatorWidthPx={resourceNavigatorWidths.git}
+          onNavigatorWidthCommit={width => onResourceNavigatorWidthCommit('git', width)}
         />
       ) : null}
     </div>

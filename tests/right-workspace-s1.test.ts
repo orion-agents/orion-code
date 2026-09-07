@@ -10,9 +10,14 @@ import {
 import { WORK_PANEL_REGISTRY, workPanelRegistration } from '../web/src/layout/work-panel-registry';
 import {
   defaultWorkbenchLayoutPreferenceV3,
+  defaultPerWorkspacePreference,
+  defaultResourceNavigatorWidths,
+  clampResourceNavigatorWidth,
   migrateWorkPanelV2ToV3,
   parseRightWorkspaceV3,
+  resolveResourceNavigatorMaxWidth,
   resolveWorkPanelPreference,
+  withResourceNavigatorWidth,
   withWorkPanelPreference,
   type WorkbenchLayoutPreferenceV3,
 } from '../web/src/state/right-workspace-preferences';
@@ -129,7 +134,7 @@ describe('work panel registry (v0.3.12 S1)', () => {
   });
 });
 
-describe('per-workspace preferences v3 (v0.3.12 S1)', () => {
+describe('per-workspace preferences v4 (v0.3.12 S1 / v0.3.13 S1)', () => {
   test('migrates a v2 work panel into the fallback entry and keeps detail width', () => {
     const migrated = migrateWorkPanelV2ToV3({
       expanded: true,
@@ -139,6 +144,21 @@ describe('per-workspace preferences v3 (v0.3.12 S1)', () => {
     expect(migrated.activePanel).toBe('review');
     expect(migrated.detailWidthPx).toBeGreaterThanOrEqual(320);
     expect(migrated.expanded).toBe(true);
+    // v2 has no navigator widths: the v4 defaults apply for every panel.
+    expect(migrated.resourceNavigatorWidthPx).toEqual({
+      files: 300,
+      git: 300,
+      review: 300,
+    });
+  });
+
+  test('defaults carry the three 300px navigator widths', () => {
+    expect(defaultPerWorkspacePreference.resourceNavigatorWidthPx).toEqual(
+      defaultResourceNavigatorWidths
+    );
+    expect(defaultResourceNavigatorWidths.files).toBe(300);
+    expect(defaultResourceNavigatorWidths.git).toBe(300);
+    expect(defaultResourceNavigatorWidths.review).toBe(300);
   });
 
   test('resolves per-workspace state with fallback for unknown workspaces', () => {
@@ -148,25 +168,120 @@ describe('per-workspace preferences v3 (v0.3.12 S1)', () => {
       activePanel: 'git',
       detailWidthPx: 960,
       taskSubview: 'overview',
+      resourceNavigatorWidthPx: defaultResourceNavigatorWidths,
     });
     expect(resolveWorkPanelPreference(scoped, 'workspace-a').activePanel).toBe('git');
     expect(resolveWorkPanelPreference(scoped, 'workspace-b').activePanel).toBe('agent');
   });
 
-  test('round-trips a stored v3 value and rejects a v2 envelope', () => {
+  test('round-trips a stored v4 value and rejects a v2 envelope', () => {
     const base = defaultWorkbenchLayoutPreferenceV3();
     const scoped = withWorkPanelPreference(base, 'ws-1', {
       expanded: true,
       activePanel: 'files',
       detailWidthPx: 720,
       taskSubview: 'diagnostics',
+      resourceNavigatorWidthPx: defaultResourceNavigatorWidths,
     });
     const raw = JSON.stringify(scoped);
     const parsed = parseRightWorkspaceV3(raw) as WorkbenchLayoutPreferenceV3;
-    expect(parsed.schemaVersion).toBe(3);
+    expect(parsed.schemaVersion).toBe(4);
     expect(resolveWorkPanelPreference(parsed, 'ws-1').detailWidthPx).toBe(720);
     expect(parseRightWorkspaceV3(JSON.stringify({ schemaVersion: 2 }))).toBeNull();
     expect(parseRightWorkspaceV3('garbage')).toBeNull();
+  });
+
+  test('migrates a stored v3 envelope in place: navigator widths default to 300', () => {
+    // A v3-era envelope serialized before navigator widths existed.
+    const raw = JSON.stringify({
+      schemaVersion: 3,
+      projectNavigation: { expanded: true, widthPx: 280 },
+      workPanel: {
+        byWorkspace: {
+          'legacy-ws': {
+            expanded: true,
+            activePanel: 'git',
+            detailWidthPx: 720,
+            taskSubview: 'overview',
+          },
+        },
+        fallback: {
+          expanded: true,
+          activePanel: 'agent',
+          detailWidthPx: 560,
+          taskSubview: 'overview',
+        },
+      },
+    });
+    const parsed = parseRightWorkspaceV3(raw) as WorkbenchLayoutPreferenceV3;
+    expect(parsed.schemaVersion).toBe(4);
+    const entry = resolveWorkPanelPreference(parsed, 'legacy-ws');
+    expect(entry.detailWidthPx).toBe(720);
+    expect(entry.resourceNavigatorWidthPx).toEqual({
+      files: 300,
+      git: 300,
+      review: 300,
+    });
+  });
+
+  test('partial stored navigator records fill missing panels with defaults', () => {
+    const raw = JSON.stringify({
+      schemaVersion: 4,
+      projectNavigation: { expanded: true, widthPx: 280 },
+      workPanel: {
+        byWorkspace: {},
+        fallback: {
+          expanded: true,
+          activePanel: 'files',
+          detailWidthPx: 560,
+          taskSubview: 'overview',
+          resourceNavigatorWidthPx: { files: 220, git: 999 },
+        },
+      },
+    });
+    const parsed = parseRightWorkspaceV3(raw) as WorkbenchLayoutPreferenceV3;
+    const entry = resolveWorkPanelPreference(parsed, 'anything');
+    expect(entry.resourceNavigatorWidthPx).toEqual({ files: 220, git: 420, review: 300 });
+  });
+});
+
+describe('navigator width clamp + dynamic ceiling (v0.3.13 S1)', () => {
+  test('clamps stored navigator widths to the static [160, 420] range', () => {
+    expect(clampResourceNavigatorWidth(300)).toBe(300);
+    expect(clampResourceNavigatorWidth(50)).toBe(160);
+    expect(clampResourceNavigatorWidth(1000)).toBe(420);
+    expect(clampResourceNavigatorWidth(220.6)).toBe(221);
+    expect(clampResourceNavigatorWidth(Number.NaN)).toBe(300);
+    expect(clampResourceNavigatorWidth(Number.POSITIVE_INFINITY)).toBe(300);
+  });
+
+  test('dynamic ceiling never exceeds 420 and keeps content >= 280px', () => {
+    // 1000px split: 48% = 480 and 1000-280 = 720 → cap at 420.
+    expect(resolveResourceNavigatorMaxWidth(1000)).toBe(420);
+    // 600px split: 48% = 288, content keeps 312px.
+    expect(resolveResourceNavigatorMaxWidth(600)).toBe(288);
+    // 500px split: 48% = 240 but content must keep 280 → capped at 220.
+    expect(resolveResourceNavigatorMaxWidth(500)).toBe(220);
+    // Too narrow for two columns: floor at the 160px minimum.
+    expect(resolveResourceNavigatorMaxWidth(400)).toBe(160);
+    expect(resolveResourceNavigatorMaxWidth(Number.NaN)).toBe(160);
+  });
+
+  test('update helper writes only one panel of one workspace', () => {
+    const base = defaultWorkbenchLayoutPreferenceV3();
+    const withA = withResourceNavigatorWidth(base, 'ws-a', 'files', 200);
+    const filesA = resolveWorkPanelPreference(withA, 'ws-a').resourceNavigatorWidthPx;
+    expect(filesA.files).toBe(200);
+    expect(filesA.git).toBe(300);
+    expect(filesA.review).toBe(300);
+    // Other workspaces keep the untouched fallback defaults.
+    expect(resolveWorkPanelPreference(withA, 'ws-b').resourceNavigatorWidthPx.files).toBe(300);
+    // A second write to another panel does not disturb files.
+    const withReview = withResourceNavigatorWidth(withA, 'ws-a', 'review', 180);
+    const after = resolveWorkPanelPreference(withReview, 'ws-a').resourceNavigatorWidthPx;
+    expect(after.files).toBe(200);
+    expect(after.review).toBe(180);
+    expect(after.git).toBe(300);
   });
 });
 

@@ -3,7 +3,10 @@ import {
   useRef,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
+  type RefObject,
 } from 'react';
+
+export type PanelResizeScope = 'workbench' | 'resource-split';
 
 export interface PanelResizeHandleProps {
   readonly side: 'left' | 'right';
@@ -19,6 +22,20 @@ export interface PanelResizeHandleProps {
   readonly width?: number;
   /** Id of the region the separator resizes, for `aria-controls`. */
   readonly controls?: string;
+  /**
+   * v0.3.13 — measurement root for an inner (resource-split) separator. When
+   * provided, pointer x is interpreted against this element's box instead of
+   * the nearest `.workbench-shell`; with `side="right"` that distance is the
+   * navigator column width, exactly what the resource panels resize.
+   */
+  readonly boundsRef?: RefObject<HTMLElement | null>;
+  /**
+   * v0.3.13 — distinguishes the drag marker written to
+   * `document.documentElement.dataset.panelResizing`. `resource-split` keeps
+   * the shared `col-resize` cursor while staying distinguishable from the
+   * outer workbench splitters in CSS/DOM.
+   */
+  readonly resizingScope?: PanelResizeScope;
   readonly onPreview: (width: number) => void;
   readonly onCommit: (width: number) => void;
 }
@@ -30,6 +47,33 @@ export const KEYBOARD_STEP_RATIO_COARSE = 0.1;
 export function clampPanelWidth(width: number, minWidth: number, maxWidth: number): number {
   const finite = Number.isFinite(width) ? Math.round(width) : minWidth;
   return Math.min(maxWidth, Math.max(minWidth, finite));
+}
+
+export interface PointerResizeMeasurement {
+  readonly side: 'left' | 'right';
+  readonly clientX: number;
+  /** Measurement box — for the outer splitters the `.workbench-shell`, for an
+   * inner resource split the split root itself. */
+  readonly bounds: { readonly left: number; readonly right: number };
+  readonly minWidth: number;
+  readonly maxWidth: number;
+}
+
+/**
+ * Pure pointer → width resolver. `side="right"` measures from the right edge of
+ * the bounds box, which is exactly a right-hand navigator column's width; a
+ * caller-provided bounds box is what makes inner separators behave without
+ * inheriting the workbench-wide coordinate space.
+ */
+export function resolvePointerResizeWidth({
+  side,
+  clientX,
+  bounds,
+  minWidth,
+  maxWidth,
+}: PointerResizeMeasurement): number {
+  const raw = side === 'left' ? clientX - bounds.left : bounds.right - clientX;
+  return clampPanelWidth(raw, minWidth, maxWidth);
 }
 
 /** Normalised 0–100 position of `width` inside `[minWidth, maxWidth]`. */
@@ -83,6 +127,8 @@ export function PanelResizeHandle({
   label,
   width,
   controls,
+  boundsRef,
+  resizingScope = 'workbench',
   onPreview,
   onCommit,
 }: PanelResizeHandleProps) {
@@ -125,13 +171,15 @@ export function PanelResizeHandle({
   };
 
   const widthFromPointer = (event: ReactPointerEvent<HTMLDivElement>): number => {
-    const shell = event.currentTarget.closest('.workbench-shell');
-    const bounds = shell?.getBoundingClientRect() ?? {
-      left: 0,
-      right: window.innerWidth,
-    };
-    const raw = side === 'left' ? event.clientX - bounds.left : bounds.right - event.clientX;
-    return clampPanelWidth(raw, minWidth, maxWidth);
+    let bounds: { left: number; right: number };
+    if (boundsRef?.current) {
+      const rect = boundsRef.current.getBoundingClientRect();
+      bounds = { left: rect.left, right: rect.right };
+    } else {
+      const shell = event.currentTarget.closest('.workbench-shell');
+      bounds = shell?.getBoundingClientRect() ?? { left: 0, right: window.innerWidth };
+    }
+    return resolvePointerResizeWidth({ side, clientX: event.clientX, bounds, minWidth, maxWidth });
   };
 
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -139,7 +187,8 @@ export function PanelResizeHandle({
     event.preventDefault();
     pointerId.current = event.pointerId;
     event.currentTarget.setPointerCapture(event.pointerId);
-    document.documentElement.dataset.panelResizing = side;
+    const marker = resizingScope === 'resource-split' ? 'resource-split' : side;
+    document.documentElement.dataset.panelResizing = marker;
     emitPreview(widthFromPointer(event));
   };
 

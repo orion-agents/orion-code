@@ -14,11 +14,12 @@ import {
   defaultWorkbenchLayoutPreferenceV3,
   migrateWorkPanelV2ToV3,
   parseRightWorkspaceV3,
-  resolveWorkPanelPreference,
   RIGHT_WORKSPACE_STORAGE_KEY,
   taskSubviewToAgentTab,
   toTaskSubview,
+  withResourceNavigatorWidth,
   withWorkPanelPreference,
+  type ResourceSplitPanelId,
   type WorkbenchLayoutPreferenceV3,
   type WorkPanelPerWorkspacePreference,
 } from './state/right-workspace-preferences';
@@ -37,6 +38,12 @@ export interface PerWorkspaceWorkPanelValue {
   /** Detail surface width excluding the 48px rail. */
   readonly detailWidthPx: number;
   readonly workspaceId: string;
+  /**
+   * v0.3.13 — per-panel navigator column widths for the current workspace.
+   * Stored as the navigator width; the live drag preview never persists until
+   * the pointer is released.
+   */
+  readonly resourceNavigatorWidthPx: Readonly<Record<ResourceSplitPanelId, number>>;
 }
 
 export interface PerWorkspaceWorkPanelPatch {
@@ -84,22 +91,26 @@ function persist(value: WorkbenchLayoutPreferenceV3): void {
   }
 }
 
+export interface PerWorkspaceWorkPanelApi {
+  readonly value: PerWorkspaceWorkPanelValue;
+  readonly update: (patch: PerWorkspaceWorkPanelPatch) => void;
+  /**
+   * v0.3.13 — persist one panel's navigator column width for the current
+   * workspace only. Called on pointer-up / keyboard commit, never during a
+   * drag preview.
+   */
+  readonly setResourceNavigatorWidth: (panel: ResourceSplitPanelId, width: number) => void;
+}
+
 export function usePerWorkspaceWorkPanel(
   workspaceId: string | null,
   legacy: LegacyV2WorkPanel
-): {
-  readonly value: PerWorkspaceWorkPanelValue;
-  readonly update: (patch: PerWorkspaceWorkPanelPatch) => void;
-} {
+): PerWorkspaceWorkPanelApi {
   const [stored, setStored] = useState<WorkbenchLayoutPreferenceV3 | null>(loadStored);
 
   const effectiveWorkspaceId = workspaceId ?? '__fallback__';
-  const migratedSeed = useMemo(
-    () => migrateWorkPanelV2ToV3(legacy),
-    // legacy changes only at App mount (v2 layout loaded once).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    []
-  );
+  // legacy is the v2 layout read once at App mount, so the seed is computed once.
+  const migratedSeed = useMemo(() => migrateWorkPanelV2ToV3(legacy), []);
 
   const value = useMemo<PerWorkspaceWorkPanelValue>(() => {
     const entry =
@@ -112,6 +123,7 @@ export function usePerWorkspaceWorkPanel(
       activePanel: isWorkPanelId(entry.activePanel) ? entry.activePanel : 'agent',
       agentPanel: taskSubviewToAgentTab(entry.taskSubview) as AgentPanelId,
       detailWidthPx: entry.detailWidthPx,
+      resourceNavigatorWidthPx: entry.resourceNavigatorWidthPx,
     };
   }, [stored, effectiveWorkspaceId, migratedSeed]);
 
@@ -128,6 +140,9 @@ export function usePerWorkspaceWorkPanel(
           activePanel: patch.activePanel ?? previous.activePanel,
           detailWidthPx: patch.detailWidthPx ?? previous.detailWidthPx,
           taskSubview: patch.agentPanel ? toTaskSubview(patch.agentPanel) : previous.taskSubview,
+          // v0.3.13 — a drag/detail patch must carry the per-panel navigator
+          // widths through; they are only written by setResourceNavigatorWidth.
+          resourceNavigatorWidthPx: previous.resourceNavigatorWidthPx,
         };
         const next = withWorkPanelPreference(base, effectiveWorkspaceId, nextEntry);
         persist(next);
@@ -137,5 +152,17 @@ export function usePerWorkspaceWorkPanel(
     [effectiveWorkspaceId, migratedSeed]
   );
 
-  return { value, update };
+  const setResourceNavigatorWidth = useCallback(
+    (panel: ResourceSplitPanelId, width: number) => {
+      setStored(current => {
+        const base: WorkbenchLayoutPreferenceV3 = current ?? defaultWorkbenchLayoutPreferenceV3();
+        const next = withResourceNavigatorWidth(base, effectiveWorkspaceId, panel, width);
+        persist(next);
+        return next;
+      });
+    },
+    [effectiveWorkspaceId]
+  );
+
+  return { value, update, setResourceNavigatorWidth };
 }

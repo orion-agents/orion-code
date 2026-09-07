@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { WebApiError } from '../../api';
 import type { WebGitDiffPageV1, WebGitFileV1, WebReviewSnapshotV1 } from '../../types';
 import type { WorkbenchActions } from '../../useWorkbench';
+import { ResourceSplitLayout } from '../../layout/ResourceSplitLayout';
 import { Icon } from '../Icon';
 import { StateDot } from '../StateDot';
 import { DiffViewer } from '../git/DiffViewer';
@@ -12,11 +13,17 @@ export function ReviewPanel({
   refreshEpoch,
   actions,
   onSendToComposer,
+  navigatorWidthPx,
+  onNavigatorWidthCommit,
 }: {
   readonly workspaceId: string;
   readonly refreshEpoch: number;
   readonly actions: WorkbenchActions;
   readonly onSendToComposer: (text: string) => void;
+  /** v0.3.13 — per-workspace + per-panel navigator (review list) column width. */
+  readonly navigatorWidthPx: number;
+  /** v0.3.13 — persists one workspace/panel width on pointer-up / keyboard commit. */
+  readonly onNavigatorWidthCommit: (width: number) => void;
 }) {
   const [snapshot, setSnapshot] = useState<WebReviewSnapshotV1 | null>(null);
   const [selected, setSelected] = useState<WebGitFileV1 | null>(null);
@@ -162,8 +169,17 @@ export function ReviewPanel({
           {error}
         </p>
       ) : null}
-      <div className="review-layout">
-        <section className="review-files" aria-label="待审阅文件">
+      <ResourceSplitLayout
+        panelId="review"
+        navigatorWidthPx={navigatorWidthPx}
+        onNavigatorWidthCommit={onNavigatorWidthCommit}
+        contentLabel="审阅 Diff"
+        navigatorLabel="待审阅文件"
+        handleLabel="调整待审阅文件列表宽度"
+        contentClassName="review-diff"
+        navigatorClassName="review-files"
+      >
+        <>
           {snapshot.changedFiles.map(file => (
             <button
               type="button"
@@ -194,8 +210,8 @@ export function ReviewPanel({
               <p className="muted-copy">当前没有持久化验证结果。</p>
             )}
           </div>
-        </section>
-        <section className="review-diff" aria-label="审阅 Diff">
+        </>
+        <>
           {diff ? (
             <DiffViewer
               page={diff}
@@ -214,8 +230,8 @@ export function ReviewPanel({
               <p>你可以把某个 Hunk 作为草稿送回对话，提交前仍由你确认。</p>
             </div>
           )}
-        </section>
-      </div>
+        </>
+      </ResourceSplitLayout>
     </div>
   );
 }

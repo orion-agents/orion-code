@@ -22,6 +22,7 @@ import {
   PROJECT_NAVIGATION_MIN_WIDTH,
 } from '../../state/layout-preferences';
 import { Icon } from '../Icon';
+import { OrionBrandMark } from '../OrionBrandMark';
 
 const PROJECT_WINDOW_SIZE = 40;
 
@@ -219,11 +220,7 @@ export function ProjectNavigator({
       hidden={!dockVisible}
     >
       <div className="brand-row">
-        <div className="brand-mark" aria-hidden="true">
-          <span />
-          <span />
-          <span />
-        </div>
+        <OrionBrandMark className="brand-mark" size={20} />
         <div className="brand-copy">
           <strong>ORION</strong>
           <span>CODE WORKBENCH</span>
