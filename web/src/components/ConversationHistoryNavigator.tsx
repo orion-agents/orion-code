@@ -1,20 +1,16 @@
 /**
- * v0.3.13 — the conversation history rail (S2/S3 discipline).
+ * v0.3.13-plan-1 — the conversation history rail as a Codex-style mini-map.
  *
- * A narrow overlay pinned to the left inside edge of the transcript stage:
- *
- * - It represents ONLY the history window currently loaded in the browser.
- * - Visual positions are BUCKET ORDINALS (`i / (bucketCount-1)`), never raw
- *   `order` numbers, so gaps or unevenly spaced persisted orders cannot create
- *   phantom blank stretches or unstable ticks.
- * - Decorative ticks are `aria-hidden`; exactly one `role="slider"` carries
- *   pointer + keyboard navigation (Arrow/Page/Home/End).
- * - Older history is signalled by a NON-INTERACTIVE top cap; the one complete,
- *   accessible "加载更早内容" entry lives at the top of the loaded transcript,
- *   never duplicated on the rail.
- * - Tooltips appear only on focus, drag or a short hover dwell, never on plain
- *   pointer movement, close on scroll, deduplicate generic labels, and render
- *   only when there is safe gutter space left of the message column.
+ * - One tick per loaded anchor (compacted past a density limit); tick LENGTH
+ *   encodes static content weight, never DOM pixel heights.
+ * - Monochrome ticks; the viewport range lights its ticks up as one continuous
+ *   block; error ticks keep the single semantic color exception.
+ * - Hovering a tick (120ms dwell) opens a Codex-style preview card to the
+ *   right: bold topic line + a short plain-text excerpt of that row. The card
+ *   is aria-hidden decoration; `aria-valuetext` stays the semantic channel.
+ *   The card hides on leave, on scroll and during scrubs.
+ * - While the runtime is processing, a white bar at the rail's latest end
+ *   breathes to mark the live output position (static under reduced motion).
  */
 import {
   useCallback,
@@ -26,14 +22,15 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 
+import { sanitizeDisplayText } from './Markdown';
 import {
   bucketIndexOfOrder,
   bucketOrdinalPosition,
+  buildHistoryTicks,
   describeHistoryPosition,
-  formatHistoryTooltip,
-  resolveRailBucketFromY,
   resolveRailKeyIntent,
-  type HistoryAnchor,
+  resolveRailTickFromY,
+  tickLengthClass,
   type HistoryNavigationModel,
 } from './history-navigation';
 
@@ -46,35 +43,22 @@ export interface ConversationHistoryNavigatorProps {
   readonly model: HistoryNavigationModel;
   readonly activeOrder: number | null;
   readonly span: HistoryViewportSpanView | null;
-  /**
-   * v0.3.13 — whether older (already-fetched or persisted-cursor) history is
-   * available. The rail only draws a non-interactive top cap for it; the ONE
-   * complete, accessible "加载更早内容" entry lives at the top of the loaded
-   * transcript (`.load-history` in Conversation), never as a second control
-   * here.
-   */
+  /** Whether older history exists (memory window or persistence cursor). */
   readonly hasEarlierHistory: boolean;
+  /** Live output indicator on the rail's latest end. */
+  readonly processing: boolean;
   readonly reduceMotion: boolean;
   /** Smooth/plain jump for clicks and keyboard. */
   readonly onJumpToOrder: (order: number, behavior: 'smooth' | 'auto') => void;
   readonly onJumpToLatest: () => void;
 }
 
-interface TooltipView {
-  readonly label: string;
-  readonly top: number;
-}
-
-const TOOLTIP_HOVER_DELAY_MS = 380;
-const TOOLTIP_KEYBOARD_LINGER_MS = 1600;
-/** Tooltip only renders when this much safe gutter exists to its right. */
-const TOOLTIP_MIN_GUTTER_PX = 200;
-
 export function ConversationHistoryNavigator({
   model,
   activeOrder,
   span,
   hasEarlierHistory,
+  processing,
   reduceMotion,
   onJumpToOrder,
   onJumpToLatest,
@@ -82,110 +66,110 @@ export function ConversationHistoryNavigator({
   const railRef = useRef<HTMLDivElement>(null);
   const pointerId = useRef<number | null>(null);
   const scrubbingRef = useRef(false);
-  const hoverYRef = useRef<number | null>(null);
   const hoverTimer = useRef<number | null>(null);
-  const lingerTimer = useRef<number | null>(null);
-  const lastTooltipBucket = useRef<number | null>(null);
+  const hoverYRef = useRef<number | null>(null);
   const [scrubbing, setScrubbing] = useState(false);
-  const [tooltip, setTooltip] = useState<TooltipView | null>(null);
-  const [focused, setFocused] = useState(false);
+  const [hover, setHover] = useState<{
+    readonly title: string;
+    readonly preview: string | null;
+    readonly top: number;
+  } | null>(null);
 
-  const bucketCount = model.buckets.length;
-  const loaded = bucketCount > 0;
+  const ticks = useMemo(() => buildHistoryTicks(model.anchors), [model.anchors]);
+  const tickCount = ticks.length;
 
-  // 1-based slider position of the active reading anchor's bucket.
+  // Keyboard ordinal stays on the bucket model; ticks align to it by jumpOrder.
   const activePosition = useMemo(() => {
-    if (activeOrder === null || bucketCount === 0) return 0;
+    if (activeOrder === null || tickCount === 0) return 0;
     const bucketIndex = bucketIndexOfOrder(model, activeOrder);
     return bucketIndex !== null ? bucketIndex + 1 : 0;
-  }, [activeOrder, model, bucketCount]);
+  }, [activeOrder, model, tickCount]);
 
-  const activeBucketIndex = activePosition > 0 ? activePosition - 1 : null;
   const activeDescription = useMemo(
     () => (activeOrder === null ? null : describeHistoryPosition(model, activeOrder)),
     [activeOrder, model]
   );
 
-  const topMarker = span !== null ? (bucketIndexOfOrder(model, span.firstOrder) ?? 0) : null;
-  const bottomMarker =
-    span !== null ? (bucketIndexOfOrder(model, span.lastOrder) ?? bucketCount - 1) : null;
+  // Viewport highlight: the bucket range covering the visible span, applied to
+  // every tick whose jumpOrder falls inside it — one continuous lit block.
+  const firstVisibleBucket =
+    span !== null ? (bucketIndexOfOrder(model, span.firstOrder) ?? 0) : null;
+  const lastVisibleBucket =
+    span !== null ? (bucketIndexOfOrder(model, span.lastOrder) ?? model.buckets.length - 1) : null;
 
-  const clearTimers = () => {
+  const tickBucketIndexes = useMemo(
+    () => ticks.map(tick => bucketIndexOfOrder(model, tick.jumpOrder)),
+    [model, ticks]
+  );
+
+  const hidePreview = useCallback(() => {
     if (hoverTimer.current !== null) {
       window.clearTimeout(hoverTimer.current);
       hoverTimer.current = null;
     }
-    if (lingerTimer.current !== null) {
-      window.clearTimeout(lingerTimer.current);
-      lingerTimer.current = null;
-    }
-  };
-
-  const hideTooltip = useCallback(() => {
-    clearTimers();
-    lastTooltipBucket.current = null;
-    setTooltip(null);
+    setHover(null);
   }, []);
 
-  /** False when the message column starts too close to the rail. */
-  const hasTooltipSpace = useCallback((): boolean => {
-    const rail = railRef.current;
-    if (!rail) return false;
-    const railRect = rail.getBoundingClientRect();
-    const content = document.querySelector<HTMLElement>('.transcript-content');
-    const contentLeft = content?.getBoundingClientRect().left;
-    if (contentLeft === undefined) return false;
-    return contentLeft - railRect.right >= TOOLTIP_MIN_GUTTER_PX;
-  }, []);
-
-  const showTooltipForBucket = useCallback(
-    (bucketIndex: number, clientY?: number) => {
-      if (!hasTooltipSpace()) {
-        hideTooltip();
-        return;
-      }
-      if (clientY === undefined && lastTooltipBucket.current === bucketIndex) return;
-      const bucket = model.buckets[bucketIndex];
-      if (!bucket) return;
-      const anchor =
-        model.anchors.find(item => item.order === bucket.jumpOrder) ?? ({} as HistoryAnchor);
+  const showPreviewAt = useCallback(
+    (clientY: number) => {
       const rail = railRef.current;
-      const rect = rail?.getBoundingClientRect();
-      lastTooltipBucket.current = bucketIndex;
-      setTooltip({
-        label: formatHistoryTooltip(anchor),
-        top:
-          clientY !== undefined && rect
-            ? Math.max(0, Math.min(rect.height - 4, clientY - rect.top))
-            : rect
-              ? bucketOrdinalPosition(bucketIndex, bucketCount) * rect.height
-              : 0,
+      if (!rail) return;
+      const rect = rail.getBoundingClientRect();
+      const tickIndex = resolveRailTickFromY({
+        clientY,
+        railTop: rect.top,
+        railHeight: rect.height,
+        tickCount,
+      });
+      const tick = ticks[tickIndex];
+      if (!tick) return;
+      const anchor = model.anchors.find(item => item.order === tick.jumpOrder);
+      // Codex pairing: a user row previews the assistant reply that follows it.
+      let preview = anchor?.preview;
+      if (anchor?.kind === 'user') {
+        const reply = model.anchors.find(
+          item => item.order > anchor.order && item.kind === 'assistant'
+        );
+        const replyText = reply?.preview;
+        if (replyText) preview = preview ? `${preview}\n\n${replyText}` : replyText;
+      }
+      const ordinalTop = bucketOrdinalPosition(tickIndex, tickCount) * rect.height;
+      setHover({
+        title: sanitizeDisplayText(anchor?.label ?? ''),
+        preview: preview ? sanitizeDisplayText(preview) : null,
+        top: Math.max(8, Math.min(rect.height - 140, ordinalTop)),
       });
     },
-    [bucketCount, hasTooltipSpace, hideTooltip, model]
+    [model, tickCount, ticks]
   );
 
-  const showActiveTooltip = useCallback(() => {
-    if (activeBucketIndex === null) return;
-    showTooltipForBucket(activeBucketIndex);
-  }, [activeBucketIndex, showTooltipForBucket]);
+  const schedulePreview = useCallback(
+    (clientY: number) => {
+      hoverYRef.current = clientY;
+      if (hoverTimer.current !== null) window.clearTimeout(hoverTimer.current);
+      hoverTimer.current = window.setTimeout(() => {
+        hoverTimer.current = null;
+        const y = hoverYRef.current;
+        if (y === null || pointerId.current !== null || scrubbingRef.current) return;
+        showPreviewAt(y);
+      }, 120);
+    },
+    [showPreviewAt]
+  );
 
-  // Close the tooltip on ANY scroll (capture phase sees inner-container
-  // scrolls too) unless a drag we own is producing those scrolls.
+  // Any transcript scroll closes the card unless a drag we own scrolls it.
   useEffect(() => {
     const onScrollCapture = () => {
       if (scrubbingRef.current) return;
-      clearTimers();
-      lastTooltipBucket.current = null;
-      setTooltip(null);
+      hidePreview();
     };
     window.addEventListener('scroll', onScrollCapture, true);
     return () => window.removeEventListener('scroll', onScrollCapture, true);
-  }, []);
+  }, [hidePreview]);
 
   useEffect(
     () => () => {
-      clearTimers();
+      if (hoverTimer.current !== null) window.clearTimeout(hoverTimer.current);
     },
     []
   );
@@ -193,20 +177,19 @@ export function ConversationHistoryNavigator({
   const jumpFromClientY = useCallback(
     (clientY: number, behavior: 'smooth' | 'auto') => {
       const rail = railRef.current;
-      if (!rail) return undefined;
+      if (!rail) return;
       const rect = rail.getBoundingClientRect();
-      const bucketIndex = resolveRailBucketFromY({
+      const tickIndex = resolveRailTickFromY({
         clientY,
         railTop: rect.top,
         railHeight: rect.height,
-        bucketCount,
+        tickCount,
       });
-      const bucket = model.buckets[bucketIndex];
-      if (!bucket) return undefined;
-      onJumpToOrder(bucket.jumpOrder, behavior);
-      return bucketIndex;
+      const tick = ticks[tickIndex];
+      if (!tick) return;
+      onJumpToOrder(tick.jumpOrder, behavior);
     },
-    [bucketCount, model, onJumpToOrder]
+    [onJumpToOrder, tickCount, ticks]
   );
 
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -217,9 +200,8 @@ export function ConversationHistoryNavigator({
     document.documentElement.dataset.historyScrubbing = '1';
     scrubbingRef.current = true;
     setScrubbing(true);
-    clearTimers();
-    const bucketIndex = jumpFromClientY(event.clientY, 'auto');
-    if (bucketIndex !== undefined) showTooltipForBucket(bucketIndex, event.clientY);
+    hidePreview();
+    jumpFromClientY(event.clientY, 'auto');
   };
 
   const endScrub = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -231,45 +213,7 @@ export function ConversationHistoryNavigator({
     scrubbingRef.current = false;
     delete document.documentElement.dataset.historyScrubbing;
     setScrubbing(false);
-    // Keep the tooltip visible briefly after a drag ends, then close.
-    if (lingerTimer.current !== null) window.clearTimeout(lingerTimer.current);
-    lingerTimer.current = window.setTimeout(hideTooltip, TOOLTIP_KEYBOARD_LINGER_MS);
-  };
-
-  const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (pointerId.current === event.pointerId) {
-      const bucketIndex = jumpFromClientY(event.clientY, 'auto');
-      if (bucketIndex !== undefined) showTooltipForBucket(bucketIndex, event.clientY);
-      return;
-    }
-    // Plain hover: only schedule a delayed dwell tooltip; never re-render per
-    // pointer move.
-    hoverYRef.current = event.clientY;
-    if (hoverTimer.current !== null) window.clearTimeout(hoverTimer.current);
-    hoverTimer.current = window.setTimeout(() => {
-      hoverTimer.current = null;
-      const y = hoverYRef.current;
-      if (y === null || pointerId.current !== null || scrubbingRef.current) return;
-      const rail = railRef.current;
-      if (!rail) return;
-      const rect = rail.getBoundingClientRect();
-      const bucketIndex = resolveRailBucketFromY({
-        clientY: y,
-        railTop: rect.top,
-        railHeight: rect.height,
-        bucketCount,
-      });
-      showTooltipForBucket(bucketIndex, y);
-    }, TOOLTIP_HOVER_DELAY_MS);
-  };
-
-  const onPointerLeave = () => {
-    if (pointerId.current !== null) return;
-    if (hoverTimer.current !== null) {
-      window.clearTimeout(hoverTimer.current);
-      hoverTimer.current = null;
-    }
-    hideTooltip();
+    hidePreview();
   };
 
   const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -277,38 +221,15 @@ export function ConversationHistoryNavigator({
       key: event.key,
       shiftKey: event.shiftKey,
       currentIndex: activePosition - 1,
-      bucketCount,
+      bucketCount: model.buckets.length,
       model,
     });
     if (intent === null) return;
     event.preventDefault();
     onJumpToOrder(intent, reduceMotion ? 'auto' : 'smooth');
-    const targetIndex = bucketIndexOfOrder(model, intent);
-    if (targetIndex !== null) {
-      showTooltipForBucket(targetIndex);
-      if (lingerTimer.current !== null) window.clearTimeout(lingerTimer.current);
-      lingerTimer.current = window.setTimeout(hideTooltip, TOOLTIP_KEYBOARD_LINGER_MS);
-    }
   };
 
-  const onFocus = () => {
-    setFocused(true);
-    showActiveTooltip();
-  };
-
-  const onBlur = () => {
-    setFocused(false);
-    hideTooltip();
-  };
-
-  if (!loaded) return null;
-
-  const topPercent =
-    topMarker !== null ? bucketOrdinalPosition(topMarker, bucketCount) * 100 : null;
-  const bottomPercent =
-    bottomMarker !== null ? bucketOrdinalPosition(bottomMarker, bucketCount) * 100 : null;
-  const markerHeightPx =
-    topPercent !== null && bottomPercent !== null ? Math.max(2, bottomPercent - topPercent) : null;
+  if (tickCount === 0) return null;
 
   return (
     <nav className="history-rail" aria-label="会话历史定位">
@@ -318,69 +239,66 @@ export function ConversationHistoryNavigator({
           role="slider"
           aria-label="已加载会话历史位置"
           aria-valuemin={0}
-          aria-valuemax={Math.max(0, bucketCount - 1)}
+          aria-valuemax={Math.max(0, model.buckets.length - 1)}
           aria-valuenow={Math.max(0, activePosition - 1)}
           aria-valuetext={
             activeDescription
               ? `已加载 ${activeDescription.bucketIndex}/${activeDescription.bucketCount} 个关键节点，当前为${activeDescription.kindLabel}${hasEarlierHistory ? '；更早历史可在正文顶部加载' : ''}`
-              : `已加载 ${bucketCount} 个关键节点${hasEarlierHistory ? '；更早历史可在正文顶部加载' : ''}`
+              : `已加载 ${model.buckets.length} 个关键节点${hasEarlierHistory ? '；更早历史可在正文顶部加载' : ''}`
           }
-          tabIndex={loaded ? 0 : undefined}
+          tabIndex={0}
           onKeyDown={onKeyDown}
-          onFocus={onFocus}
-          onBlur={onBlur}
           onPointerDown={onPointerDown}
-          onPointerMove={onPointerMove}
+          onPointerMove={event => {
+            if (pointerId.current === event.pointerId) {
+              jumpFromClientY(event.clientY, 'auto');
+              return;
+            }
+            schedulePreview(event.clientY);
+          }}
+          onPointerLeave={hidePreview}
           onPointerUp={endScrub}
           onPointerCancel={endScrub}
           onLostPointerCapture={endScrub}
-          onPointerLeave={onPointerLeave}
           onDoubleClick={onJumpToLatest}
         >
-          {hasEarlierHistory ? (
-            <span className="history-earlier-cap" aria-hidden="true" title="" />
-          ) : null}
           <div className="history-ticks" aria-hidden="true">
-            {model.buckets.map(bucket => (
-              <span
-                key={bucket.index}
-                className={tickClass(bucket.hasError, bucket.kinds)}
-                style={{
-                  top: `${bucketOrdinalPosition(bucket.index, bucketCount) * 100}%`,
-                }}
-              />
-            ))}
+            {ticks.map((tick, index) => {
+              const ownerBucket = tickBucketIndexes[index];
+              const inViewport =
+                ownerBucket !== null &&
+                firstVisibleBucket !== null &&
+                lastVisibleBucket !== null &&
+                ownerBucket >= firstVisibleBucket &&
+                ownerBucket <= lastVisibleBucket;
+              return (
+                <span
+                  key={tick.index}
+                  className={[
+                    'history-tick',
+                    tickLengthClass(tick.weight),
+                    inViewport ? 'is-viewport' : '',
+                    tick.hasError ? 'is-error' : '',
+                    scrubbing ? 'is-scrubbing' : '',
+                  ]
+                    .filter(Boolean)
+                    .join(' ')}
+                  style={{
+                    top: `${bucketOrdinalPosition(tick.index, tickCount) * 100}%`,
+                  }}
+                />
+              );
+            })}
           </div>
-          {topPercent !== null && markerHeightPx !== null ? (
-            <div
-              className="history-viewport-marker"
-              aria-hidden="true"
-              style={{ top: `${topPercent}%`, height: `${markerHeightPx}%` }}
-            />
-          ) : null}
-          {activeBucketIndex !== null && (focused || scrubbing) ? (
-            <div
-              className="history-active-dot"
-              aria-hidden="true"
-              style={{
-                top: `${bucketOrdinalPosition(activeBucketIndex, bucketCount) * 100}%`,
-              }}
-            />
-          ) : null}
+          {processing ? <span className="history-live-bar" aria-hidden="true" /> : null}
         </div>
-        {tooltip ? (
-          <div className="history-tooltip" style={{ top: tooltip.top }} aria-hidden="true">
-            {tooltip.label}
+        {hover ? (
+          <div className="history-preview-card" style={{ top: hover.top }} aria-hidden="true">
+            <strong>{hover.title}</strong>
+            {hover.preview ? <p>{hover.preview}</p> : null}
           </div>
         ) : null}
       </div>
     </nav>
   );
-}
-
-function tickClass(hasError: boolean, kinds: readonly string[]): string {
-  if (hasError) return 'history-tick history-tick-error';
-  if (kinds.includes('user')) return 'history-tick history-tick-user';
-  if (kinds.includes('assistant')) return 'history-tick history-tick-assistant';
-  return 'history-tick history-tick-activity';
 }

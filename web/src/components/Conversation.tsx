@@ -338,6 +338,7 @@ export function Conversation({
           activeOrder={history.activeOrder}
           span={history.span}
           hasEarlierHistory={allTimeline.length > timeline.length || hasRemoteHistory}
+          processing={state.processing}
           reduceMotion={reduceMotion}
           onJumpToOrder={(order, behavior) => history.scrollToOrder(order, behavior)}
           onJumpToLatest={jumpToLatest}
@@ -402,6 +403,7 @@ function toHistoryAnchor(item: TimelineItem): HistoryAnchor | null {
       key,
       kind: 'tool',
       label: firstLine(item.value.summary) || item.value.name,
+      preview: previewText(item.value.summary),
       priority: item.value.state === 'error' ? 'error' : 'activity',
     };
   }
@@ -411,6 +413,7 @@ function toHistoryAnchor(item: TimelineItem): HistoryAnchor | null {
       key,
       kind: 'edit',
       label: item.value.request.path,
+      preview: previewText(`${item.value.request.path}\n${item.value.request.newString ?? ''}`),
       priority: 'activity',
     };
   }
@@ -420,6 +423,7 @@ function toHistoryAnchor(item: TimelineItem): HistoryAnchor | null {
       key,
       kind: 'subtask',
       label: firstLine(item.value.objective) || item.value.role,
+      preview: previewText(item.value.summary || item.value.objective),
       priority: SUBTASK_FAILURE_STATES.has(item.value.state) ? 'error' : 'activity',
     };
   }
@@ -429,6 +433,7 @@ function toHistoryAnchor(item: TimelineItem): HistoryAnchor | null {
       key,
       kind: 'research',
       label: firstLine(item.value.objective) || 'Research',
+      preview: previewText(item.value.conclusion || item.value.objective),
       priority: item.value.stage === 'failed' ? 'error' : 'activity',
     };
   }
@@ -440,6 +445,7 @@ function toHistoryAnchor(item: TimelineItem): HistoryAnchor | null {
       key,
       kind: 'tool',
       label: firstLine(activity.summary) || activity.name || activity.detail || '工具活动',
+      preview: previewText(activity.summary || activity.body),
       priority: activity.state === 'error' ? 'error' : 'activity',
     };
   }
@@ -467,6 +473,7 @@ function toHistoryAnchor(item: TimelineItem): HistoryAnchor | null {
       firstLine(entry.content) ||
       entry.title ||
       (role === 'user' ? '用户任务' : role === 'assistant' ? 'Orion 回复' : roleLabel(role)),
+    preview: previewText(entry.content),
   };
 }
 
@@ -481,6 +488,14 @@ function firstLine(value: string | undefined): string | null {
   if (!value) return null;
   const line = value.replace(/\s+/gu, ' ').trim();
   return line.length > 80 ? `${line.slice(0, 80)}…` : line;
+}
+
+/** Hover-preview excerpt: first 280 chars with real line breaks preserved. */
+function previewText(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  return trimmed.length <= 280 ? trimmed : `${trimmed.slice(0, 280)}…`;
 }
 
 function renderTimelineItem(item: TimelineItem, state: WorkbenchState) {

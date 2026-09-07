@@ -1026,110 +1026,90 @@ p {
   gap: 15px;
 }
 
-/* v0.3.13 S2/S3 — conversation history navigator rail. The rail is an overlay
-   pinned to the viewport's left inside edge; it never scrolls with the
-   transcript and never creates a second scroll container. The message column
-   reserves a gutter via container queries below so cards never sit under the
-   rail. */
+/* v0.3.13-plan-1 — Codex-style mini-map rail. A 14px strip pinned to the
+   stage's left edge: dense content-weighted ticks, the viewport range lit as
+   one continuous block, a white live bar while processing, zero chrome. */
 .history-rail {
   position: absolute;
   z-index: 4;
   top: 0;
   bottom: 0;
-  left: 0;
-  width: 22px;
+  left: 4px;
+  width: 14px;
   pointer-events: none;
 }
 
 .history-rail-inner {
-  display: flex;
   position: relative;
   height: 100%;
-  flex-direction: column;
   pointer-events: auto;
 }
 
 .history-slider {
   position: relative;
-  flex: 1 1 auto;
-  min-height: 0;
+  height: 100%;
   cursor: pointer;
   touch-action: none;
 }
 
-.history-earlier-cap {
-  position: absolute;
-  top: 4px;
-  left: 50%;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--text-2) 45%, transparent);
-  pointer-events: none;
-  transform: translateX(-50%);
-}
-
 .history-ticks {
   position: absolute;
-  inset: 0;
+  inset: 6px 0;
 }
 
 .history-tick {
   position: absolute;
-  left: 3px;
-  right: 3px;
-  height: 3px;
-  margin-top: -1.5px;
-  border-radius: 2px;
-  background: color-mix(in srgb, var(--text-2) 22%, transparent);
-}
-
-.history-tick-user,
-.history-tick-assistant {
-  background: color-mix(in srgb, var(--accent) 46%, transparent);
-}
-
-.history-tick-error {
-  background: color-mix(in srgb, var(--danger) 62%, transparent);
-}
-
-.history-viewport-marker {
-  position: absolute;
   left: 0;
-  right: 0;
-  border-left: 2px solid color-mix(in srgb, var(--accent) 75%, transparent);
+  height: 2px;
   border-radius: 1px;
-  background: color-mix(in srgb, var(--accent) 13%, transparent);
-}
-
-.history-active-dot {
-  position: absolute;
-  left: -1px;
-  width: 8px;
-  height: 8px;
-  margin-top: -4px;
-  border: 2px solid var(--surface-raised);
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
-}
-
-.history-tooltip {
-  position: absolute;
-  left: 26px;
-  max-width: 180px;
-  padding: 4px 8px;
-  overflow: hidden;
-  border: 1px solid var(--border-strong);
-  border-radius: 6px;
-  background: var(--surface-raised);
-  box-shadow: var(--shadow);
-  color: var(--text-2);
-  font-size: 11px;
-  pointer-events: none;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  background: color-mix(in srgb, var(--text-2) 32%, transparent);
   transform: translateY(-50%);
+  transition: background-color 0.15s ease;
+}
+
+.history-tick-s {
+  width: 6px;
+}
+
+.history-tick-m {
+  width: 9px;
+}
+
+.history-tick-l {
+  width: 12px;
+}
+
+.history-tick.is-viewport {
+  background: color-mix(in srgb, var(--text) 78%, transparent);
+}
+
+.history-tick.is-error {
+  background: color-mix(in srgb, var(--danger) 55%, transparent);
+}
+
+.history-tick.is-scrubbing {
+  background: color-mix(in srgb, var(--text) 60%, transparent);
+}
+
+.history-live-bar {
+  position: absolute;
+  bottom: 2px;
+  left: 0;
+  width: 10px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--text);
+  animation: history-live-breathe 1.2s ease-in-out infinite;
+}
+
+@keyframes history-live-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
 }
 
 html[data-history-scrubbing] .history-slider {
@@ -1141,17 +1121,64 @@ html[data-history-scrubbing] * {
   user-select: none !important;
 }
 
-.history-rail:focus-within .history-active-dot,
-.history-slider:focus-visible .history-active-dot {
+.history-slider:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--accent) 40%, transparent);
-  outline-offset: 1px;
+  outline-offset: 2px;
+}
+
+/* v0.3.13-plan-2 — hover preview card: bold topic line + plain-text excerpt,
+   aria-hidden decoration that may overlap the message column (Codex parity). */
+.history-preview-card {
+  position: absolute;
+  z-index: 5;
+  left: 24px;
+  width: 300px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--surface-raised);
+  box-shadow: var(--shadow);
+  pointer-events: none;
+}
+
+.history-preview-card strong {
+  display: block;
+  overflow: hidden;
+  margin: 0 0 6px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-preview-card p {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.55;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .history-live-bar {
+    animation: none;
+  }
+  .history-tick {
+    transition: none;
+  }
 }
 /* v0.3.13 S2/S3 — the history rail reserves a left gutter on wide
    conversation columns; on compact columns it shrinks, on narrow columns it is
    hidden entirely (the message column then uses the plain centring gutter). */
 @container (min-width: 761px) {
   .history-rail {
-    width: 22px;
+    width: 14px;
   }
   .transcript-content {
     width: min(820px, calc(100% - 64px));
@@ -1160,9 +1187,9 @@ html[data-history-scrubbing] * {
 
 @container (min-width: 641px) and (max-width: 760px) {
   .history-rail {
-    width: 18px;
+    width: 12px;
   }
-  .history-tooltip {
+  .history-preview-card {
     display: none;
   }
   .transcript-content {

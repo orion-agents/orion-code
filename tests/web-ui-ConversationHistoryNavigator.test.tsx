@@ -1,26 +1,24 @@
 /**
- * v0.3.13 S2 — ConversationHistoryNavigator render contract (SSR markup).
+ * v0.3.13-plan-1 — ConversationHistoryNavigator render contract (SSR markup).
  *
- * The rail is a navigation landmark with decorative hidden ticks and exactly
- * one focusable, adjustable slider — never one focusable control per timeline
- * row. This pins the markup contracts that Playwright and screen readers rely
- * on.
+ * The rail is a Codex-style mini-map: dense decorative ticks (three length
+ * tiers, viewport range lit, error ticks red), ONE focusable slider, a white
+ * live bar while processing — and absolutely no other chrome (no tooltip, no
+ * caps, no dots, no buttons).
  */
 import * as React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 import { ConversationHistoryNavigator } from '../web/src/components/ConversationHistoryNavigator';
-import {
-  buildHistoryNavigation,
-  type HistoryAnchor,
-} from '../web/src/components/history-navigation';
+import { buildHistoryNavigation, type HistoryAnchor } from '../web/src/components/history-navigation';
 
 function anchor(order: number, kind: HistoryAnchor['kind']): HistoryAnchor {
   return {
     order,
     key: `a${order}`,
     kind,
-    label: `${kind}#${order}`,
+    // Assistant turns carry long bodies so all three length tiers appear.
+    label: kind === 'assistant' ? `回复内容 ${'x'.repeat(160)}` : `${kind}#${order}`,
     priority:
       kind === 'user' || kind === 'assistant' ? 'turn' : kind === 'system' ? 'error' : 'activity',
   };
@@ -29,6 +27,7 @@ function anchor(order: number, kind: HistoryAnchor['kind']): HistoryAnchor {
 function renderRail(
   overrides: {
     readonly hasEarlierHistory?: boolean;
+    readonly processing?: boolean;
     readonly activeOrder?: number | null;
     readonly span?: { readonly firstOrder: number; readonly lastOrder: number } | null;
     readonly count?: number;
@@ -50,6 +49,7 @@ function renderRail(
       activeOrder: overrides.activeOrder ?? null,
       span: overrides.span ?? null,
       hasEarlierHistory: overrides.hasEarlierHistory ?? false,
+      processing: overrides.processing ?? false,
       reduceMotion: overrides.reduceMotion ?? false,
       onJumpToOrder: () => undefined,
       onJumpToLatest: () => undefined,
@@ -57,57 +57,67 @@ function renderRail(
   );
 }
 
-describe('ConversationHistoryNavigator markup (v0.3.13 S2)', () => {
-  it('renders a labelled navigation landmark with a single slider', () => {
+describe('ConversationHistoryNavigator markup (v0.3.13-plan-1 mini-map)', () => {
+  it('renders a labelled landmark with a single slider and zero buttons', () => {
     const html = renderRail();
     expect(html).toContain('aria-label="会话历史定位"');
-    expect(html).toContain('role="slider"');
-    expect(html).toContain('aria-label="已加载会话历史位置"');
     expect((html.match(/role="slider"/gu) ?? []).length).toBe(1);
-  });
-
-  it('keeps ticks decorative: aria-hidden container, no per-tick controls', () => {
-    const html = renderRail();
-    expect(html).toContain('class="history-ticks" aria-hidden="true"');
-    expect(html).toContain('history-tick ');
-    // Decorative ticks never become buttons/links; the only interactive
-    // affordance on the rail is the single slider.
     expect(html).not.toContain('role="button"');
-    expect((html.match(/role="slider"/gu) ?? []).length).toBe(1);
+    expect(html).not.toContain('<button');
+    expect(html).toContain('tabindex="0"');
   });
 
-  it('reports the active reading position via aria-valuetext', () => {
-    const html = renderRail({ activeOrder: 20 });
+  it('emits dense decorative ticks with three length tiers', () => {
+    const html = renderRail({ count: 40 });
+    expect(html).toContain('class="history-ticks" aria-hidden="true"');
+    expect((html.match(/history-tick-s/gu) ?? []).length).toBeGreaterThan(0);
+    expect((html.match(/history-tick-m/gu) ?? []).length).toBeGreaterThan(0);
+    expect((html.match(/history-tick-l/gu) ?? []).length).toBeGreaterThan(0);
+  });
+
+  it('has NO tooltip, cap, dot or marker chrome anywhere', () => {
+    const html = renderRail({
+      activeOrder: 10,
+      span: { firstOrder: 2, lastOrder: 12 },
+      hasEarlierHistory: true,
+    });
+    for (const forbidden of [
+      'history-tooltip',
+      'history-earlier-cap',
+      'history-active-dot',
+      'history-viewport-marker',
+    ]) {
+      expect(html).not.toContain(forbidden);
+    }
+    // The hover preview card is interaction-only; static markup never has it.
+    expect(html).not.toContain('history-preview-card');
+  });
+
+  it('lights the viewport range and marks error ticks', () => {
+    const html = renderRail({ span: { firstOrder: 2, lastOrder: 12 } });
+    expect(html).toContain('is-viewport');
+    expect(html).toContain('is-error');
+  });
+
+  it('announces position and the older-history footnote via aria-valuetext', () => {
+    const html = renderRail({ hasEarlierHistory: true, activeOrder: 8 });
     expect(html).toContain('aria-valuetext=');
-    expect(html).toContain('当前为');
+    expect(html).toContain('关键节点');
+    expect(html).toContain('更早历史可在正文顶部加载');
   });
 
-  it('draws the viewport range marker when a span is available', () => {
-    const html = renderRail({ span: { firstOrder: 10, lastOrder: 22 } });
-    expect(html).toContain('history-viewport-marker');
+  it('shows the white live bar only while processing', () => {
+    expect(renderRail({ processing: true })).toContain('history-live-bar');
+    expect(renderRail({ processing: false })).not.toContain('history-live-bar');
   });
 
-  it('keeps "load earlier" OUT of the rail: no button, only a decorative cap', () => {
-    const withEarlier = renderRail({ hasEarlierHistory: true });
-    expect(withEarlier).not.toContain('role="button"');
-    expect(withEarlier).not.toContain('加载更早');
-    expect(withEarlier).not.toContain('从持久记录');
-    // Non-interactive top cap tells the eye more history exists above.
-    expect(withEarlier).toContain('history-earlier-cap');
-    expect(withEarlier).toContain('aria-valuetext');
-    expect(withEarlier).toContain('更早历史可在正文顶部加载');
-    const none = renderRail({ hasEarlierHistory: false });
-    expect(none).not.toContain('history-earlier-cap');
+  it('renders nothing for an empty model', () => {
+    expect(renderRail({ count: 0 })).toBe('');
   });
 
-  it('renders nothing for an empty model so no empty landmark shows', () => {
-    const html = renderRail({ count: 0 });
-    expect(html).toBe('');
-  });
-
-  it('honours reduced motion at the keyboard layer (smooth disabled)', () => {
-    // Markup itself cannot exercise keys, but the slider must stay focusable
-    // in both motion preferences.
-    expect(renderRail({ reduceMotion: true })).toContain('tabindex="0"');
+  it('compacts huge timelines to the tick density limit', () => {
+    const html = renderRail({ count: 1000 });
+    expect((html.match(/class="history-tick /gu) ?? []).length).toBeLessThanOrEqual(220);
+    expect((html.match(/class="history-tick /gu) ?? []).length).toBeGreaterThan(180);
   });
 });

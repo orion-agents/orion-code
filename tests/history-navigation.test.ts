@@ -2,16 +2,18 @@
  * v0.3.13 S1 — pure conversation-history navigation model contracts.
  */
 import {
+  anchorWeight,
   bucketIndexOfOrder,
   bucketOrdinalPosition,
   buildHistoryNavigation,
+  buildHistoryTicks,
   describeHistoryPosition,
-  formatHistoryTooltip,
   historyKindLabel,
   nearestAnchorOrder,
   pickActiveOrderFromBounds,
-  resolveRailBucketFromY,
   resolveRailKeyIntent,
+  resolveRailTickFromY,
+  tickLengthClass,
   type HistoryAnchor,
 } from '../web/src/components/history-navigation';
 
@@ -181,14 +183,14 @@ describe('bucket ordinal geometry (v0.3.13 S3)', () => {
     expect(bucketOrdinalPosition(9, 6)).toBe(1); // clamps
   });
 
-  it('resolves pointer y to a bucket index, clamped', () => {
-    const rail = { railTop: 100, railHeight: 500, bucketCount: 6 };
-    expect(resolveRailBucketFromY({ clientY: 100, ...rail })).toBe(0);
-    expect(resolveRailBucketFromY({ clientY: 350, ...rail })).toBe(3);
-    expect(resolveRailBucketFromY({ clientY: 600, ...rail })).toBe(5);
-    expect(resolveRailBucketFromY({ clientY: 0, ...rail })).toBe(0);
-    expect(resolveRailBucketFromY({ clientY: 900, ...rail })).toBe(5);
-    expect(resolveRailBucketFromY({ clientY: 100, railTop: 0, railHeight: 0, bucketCount: 0 })).toBe(0);
+  it('resolves pointer y to a tick index, clamped', () => {
+    const rail = { railTop: 100, railHeight: 500, tickCount: 6 };
+    expect(resolveRailTickFromY({ clientY: 100, ...rail })).toBe(0);
+    expect(resolveRailTickFromY({ clientY: 350, ...rail })).toBe(3);
+    expect(resolveRailTickFromY({ clientY: 600, ...rail })).toBe(5);
+    expect(resolveRailTickFromY({ clientY: 0, ...rail })).toBe(0);
+    expect(resolveRailTickFromY({ clientY: 900, ...rail })).toBe(5);
+    expect(resolveRailTickFromY({ clientY: 100, railTop: 0, railHeight: 0, tickCount: 0 })).toBe(0);
   });
 
   it('locates the bucket that owns an order (and none outside)', () => {
@@ -205,23 +207,84 @@ describe('bucket ordinal geometry (v0.3.13 S3)', () => {
   });
 });
 
-describe('formatHistoryTooltip (v0.3.13 S3)', () => {
-  it('collapses generic labels that echo the kind', () => {
-    expect(formatHistoryTooltip({ order: 1, key: 'k', kind: 'assistant', label: 'Orion 回复', priority: 'turn' })).toBe('Orion 回复');
-    expect(formatHistoryTooltip({ order: 1, key: 'k', kind: 'user', label: '用户任务', priority: 'turn' })).toBe('用户任务');
+describe('buildHistoryTicks (v0.3.13-plan-1)', () => {
+  it('emits one tick per anchor below the density limit', () => {
+    const ticks = buildHistoryTicks(mixed(50));
+    expect(ticks).toHaveLength(50);
+    expect(ticks[0].orders).toEqual([0]);
+    expect(ticks[49].orders).toEqual([49]);
   });
 
-  it('keeps real content and never duplicates the kind', () => {
-    const label = formatHistoryTooltip({ order: 1, key: 'k', kind: 'assistant', label: '  修复超时并重试连接  ', priority: 'turn' });
-    expect(label).toBe('Orion 回复 · 修复超时并重试连接');
-    expect(formatHistoryTooltip({ order: 1, key: 'k', kind: 'tool', label: '', priority: 'activity' })).toBe('工具活动');
+  it('compacts huge timelines to the tick limit preserving order', () => {
+    const ticks = buildHistoryTicks(mixed(1000));
+    expect(ticks.length).toBeLessThanOrEqual(220);
+    expect(ticks[0].orders[0]).toBe(0);
+    expect(ticks.at(-1)?.orders.at(-1)).toBe(999);
+    const covered = ticks.flatMap(t => t.orders);
+    expect(new Set(covered).size).toBe(1000);
   });
 
-  it('truncates long labels to a single line', () => {
-    const long = 'x'.repeat(120);
-    const label = formatHistoryTooltip({ order: 1, key: 'k', kind: 'tool', label: long, priority: 'activity' });
-    expect(label.length).toBeLessThan(60);
-    expect(label.endsWith('…')).toBe(true);
+  it('never loses errors through compaction (OR per group)', () => {
+    const anchors = [
+      ...Array.from({ length: 300 }, (_, i) =>
+        anchor(i, i % 2 ? 'tool' : 'assistant', i % 2 ? 'activity' : 'turn')
+      ),
+      { order: 300, key: 'err', kind: 'system', label: 'boom', priority: 'error' } as HistoryAnchor,
+      ...Array.from({ length: 300 }, (_, i) => anchor(301 + i, 'tool', 'activity')),
+    ];
+    const ticks = buildHistoryTicks(anchors, { maxTicks: 30 });
+    expect(ticks.some(t => t.hasError)).toBe(true);
+    const errorTick = ticks.find(t => t.hasError)!;
+    expect(errorTick.orders).toContain(300);
+    expect(errorTick.jumpOrder).toBe(300);
+  });
+
+  it('aligns every tick to exactly one bucket via jumpOrder', () => {
+    const anchors = mixed(500);
+    const model = buildHistoryNavigation(anchors);
+    for (const tick of buildHistoryTicks(anchors)) {
+      expect(bucketIndexOfOrder(model, tick.jumpOrder)).not.toBeNull();
+    }
+  });
+
+  it('keeps jump target priority: newest error > newest turn > newest', () => {
+    const anchors = [
+      anchor(0, 'user'),
+      anchor(1, 'tool'),
+      { order: 2, key: 'e', kind: 'system', label: 'x', priority: 'error' } as HistoryAnchor,
+      anchor(3, 'assistant'),
+      anchor(4, 'tool'),
+    ];
+    const ticks = buildHistoryTicks(anchors, { maxTicks: 1 });
+    expect(ticks).toHaveLength(1);
+    expect(ticks[0].jumpOrder).toBe(2);
+    const noError = buildHistoryNavigation(
+      [anchor(0, 'tool'), anchor(1, 'user'), anchor(2, 'assistant'), anchor(3, 'tool')],
+      { maxBuckets: 1 }
+    );
+    void noError;
+    const turnTicks = buildHistoryTicks(
+      [anchor(0, 'tool'), anchor(1, 'user'), anchor(2, 'assistant'), anchor(3, 'tool')],
+      { maxTicks: 1 }
+    );
+    expect(turnTicks[0].jumpOrder).toBe(2);
+  });
+
+  it('weights long assistant content above short activity rows', () => {
+    const longTurn = anchor(0, 'assistant');
+    (longTurn as { label: string }).label = 'x'.repeat(600);
+    const shortTool = anchor(1, 'tool');
+    expect(anchorWeight(longTurn)).toBeGreaterThan(anchorWeight(shortTool));
+    const ticks = buildHistoryTicks([longTurn, shortTool]);
+    expect(tickLengthClass(ticks[0].weight)).toBe('history-tick-l');
+    expect(tickLengthClass(ticks[1].weight)).toBe('history-tick-s');
+  });
+
+  it('handles empty and single inputs', () => {
+    expect(buildHistoryTicks([])).toEqual([]);
+    const single = buildHistoryTicks([anchor(5, 'user')]);
+    expect(single).toHaveLength(1);
+    expect(single[0].jumpOrder).toBe(5);
   });
 });
 
