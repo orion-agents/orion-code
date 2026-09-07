@@ -15,10 +15,12 @@ import {
   WorkspaceDialog,
 } from './components/Dialogs';
 import { Icon } from './components/Icon';
+import { OrionBrandMark } from './components/OrionBrandMark';
 import { SettingsDialog } from './components/SettingsDialog';
 import { ShortcutHelpDialog } from './components/ShortcutHelpDialog';
 import { ProjectNavigator } from './components/projects/ProjectNavigator';
 import { WorkPanelDock } from './layout/WorkPanelDock';
+import { usePerWorkspaceWorkPanel } from './usePerWorkspaceWorkPanel';
 import { requestId } from './api';
 import { findShortcut, matchesShortcut } from './shortcuts';
 import type { ThemePreference } from './settings/types';
@@ -26,10 +28,15 @@ import {
   computeWorkbenchColumns,
   loadWorkbenchLayoutPreference,
   saveWorkbenchLayoutPreference,
+  WORK_PANEL_RAIL_WIDTH,
   type AgentPanelId,
   type WorkbenchLayoutPreferenceV2,
   type WorkPanelId,
 } from './state/layout-preferences';
+import {
+  computeWideDesktopColumns,
+  maxDockableDetailWidth,
+} from './layout/right-workspace-geometry';
 import { activeSessionSnapshotSync, type WebSessionSummaryV1, type WorkbenchNotice } from './types';
 import { themeColorForAppearance } from './themes/theme-color';
 import { useWorkbench } from './useWorkbench';
@@ -146,6 +153,13 @@ export function App() {
   const { state, actions } = useWorkbench();
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [layoutPreference, setLayoutPreference] = useState(loadWorkbenchLayoutPreference);
+  // v0.3.12 S1.2 — per-workspace work-panel preference (schema v3). The v2
+  // workPanel block stays only as the migration seed and the rail `order`.
+  const {
+    value: workPanelPreference,
+    update: updatePerWorkspaceWorkPanel,
+    setResourceNavigatorWidth,
+  } = usePerWorkspaceWorkPanel(state.workspaceId, layoutPreference.workPanel);
   const [panelOverlayOpen, setPanelOverlayOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
@@ -166,10 +180,21 @@ export function App() {
   const restoreProjectSettingsFocus = useRef(false);
   const shellRef = useRef<HTMLDivElement>(null);
   const shellWidth = useElementWidth(shellRef);
-  const columns = computeWorkbenchColumns(shellWidth, layoutPreference);
+  // v0.3.12 — desktop width uses the wide Right Workspace solver; the v2
+  // solver still owns narrow/compact drawer behaviour below 1180px.
+  const useWideDesktopColumns = shellWidth > 1180;
+  const columns = useWideDesktopColumns
+    ? computeWideDesktopColumns({
+        containerWidth: shellWidth,
+        navigationExpanded: layoutPreference.projectNavigation.expanded,
+        navigationWidthPx: layoutPreference.projectNavigation.widthPx,
+        workExpanded: workPanelPreference.expanded,
+        workDetailWidthPx: workPanelPreference.detailWidthPx,
+      })
+    : computeWorkbenchColumns(shellWidth, layoutPreference);
   const navigationOverlay = columns.projectNavigation.mode === 'drawer';
   const panelOverlay = columns.workPanel.mode === 'drawer';
-  const panelDerivedRail = columns.workPanel.mode === 'rail' && layoutPreference.workPanel.expanded;
+  const panelDerivedRail = columns.workPanel.mode === 'rail' && workPanelPreference.expanded;
   const panelSurfaceOverlay = panelOverlay || (panelDerivedRail && panelOverlayOpen);
   const panelExpanded =
     panelOverlay || panelDerivedRail ? panelOverlayOpen : columns.workPanel.mode === 'dock';
@@ -213,18 +238,19 @@ export function App() {
     []
   );
 
+  // v0.3.12 S1.2 — v2-shaped patches (incl. legacy widthPx total width) are
+  // translated into the per-workspace v3 detail width and persisted there.
   const updatePanelPreference = useCallback(
     (patch: Partial<WorkbenchLayoutPreferenceV2['workPanel']>) => {
-      setLayoutPreference(current => {
-        const next: WorkbenchLayoutPreferenceV2 = {
-          ...current,
-          workPanel: { ...current.workPanel, ...patch },
-        };
-        saveWorkbenchLayoutPreference(next);
-        return next;
+      updatePerWorkspaceWorkPanel({
+        ...patch,
+        detailWidthPx:
+          patch.widthPx === undefined
+            ? undefined
+            : Math.max(360, patch.widthPx - WORK_PANEL_RAIL_WIDTH),
       });
     },
-    []
+    [updatePerWorkspaceWorkPanel]
   );
 
   const rememberDrawerTrigger = useCallback(() => {
@@ -506,7 +532,7 @@ export function App() {
             '--project-navigation-width': `${columns.projectNavigation.widthPx}px`,
             '--project-navigation-preferred-width': `${layoutPreference.projectNavigation.widthPx}px`,
             '--work-panel-width': `${columns.workPanel.widthPx}px`,
-            '--work-panel-preferred-width': `${layoutPreference.workPanel.widthPx}px`,
+            '--work-panel-preferred-width': `${workPanelPreference.detailWidthPx + WORK_PANEL_RAIL_WIDTH}px`,
           } as CSSProperties
         }
         aria-busy={state.boot === 'loading'}
@@ -597,7 +623,7 @@ export function App() {
               setPanelOverlayOpen(true);
               return;
             }
-            updatePanelPreference({ expanded: !layoutPreference.workPanel.expanded });
+            updatePanelPreference({ expanded: !workPanelPreference.expanded });
           }}
           onRevealSettings={focusProjectSettings}
           onCreateSession={createSession}
@@ -612,9 +638,9 @@ export function App() {
           actions={actions}
           mode={panelSurfaceOverlay ? 'overlay' : 'dock'}
           expanded={panelExpanded}
-          activePanel={layoutPreference.workPanel.activePanel}
+          activePanel={workPanelPreference.activePanel}
           panelOrder={layoutPreference.workPanel.order}
-          agentPanel={layoutPreference.workPanel.agentPanel}
+          agentPanel={workPanelPreference.agentPanel}
           onExpand={() => {
             if (panelOverlay || panelDerivedRail) setPanelOverlayOpen(true);
             else updatePanelPreference({ expanded: true });
@@ -626,10 +652,18 @@ export function App() {
           onPanelChange={(activePanel: WorkPanelId) => updatePanelPreference({ activePanel })}
           onAgentPanelChange={(agentPanel: AgentPanelId) => updatePanelPreference({ agentPanel })}
           onWidthPreview={width => {
-            const preview = computeWorkbenchColumns(shellWidth, {
-              ...layoutPreference,
-              workPanel: { ...layoutPreference.workPanel, widthPx: width },
-            });
+            const preview = useWideDesktopColumns
+              ? computeWideDesktopColumns({
+                  containerWidth: shellWidth,
+                  navigationExpanded: layoutPreference.projectNavigation.expanded,
+                  navigationWidthPx: layoutPreference.projectNavigation.widthPx,
+                  workExpanded: true,
+                  workDetailWidthPx: Math.max(360, width - WORK_PANEL_RAIL_WIDTH),
+                })
+              : computeWorkbenchColumns(shellWidth, {
+                  ...layoutPreference,
+                  workPanel: { ...layoutPreference.workPanel, widthPx: width },
+                });
             shellRef.current?.style.setProperty(
               '--work-panel-width',
               `${preview.workPanel.widthPx}px`
@@ -637,6 +671,16 @@ export function App() {
           }}
           onWidthCommit={width => updatePanelPreference({ widthPx: width })}
           width={columns.workPanel.widthPx}
+          maxWidthPx={
+            useWideDesktopColumns
+              ? maxDockableDetailWidth(
+                  shellWidth -
+                    (layoutPreference.projectNavigation.expanded
+                      ? layoutPreference.projectNavigation.widthPx
+                      : WORK_PANEL_RAIL_WIDTH)
+                ) + WORK_PANEL_RAIL_WIDTH
+              : undefined
+          }
           onSendToComposer={text => {
             setComposerInsertion({ id: Date.now(), text });
             if (panelOverlay) closeDrawers();
@@ -644,6 +688,8 @@ export function App() {
               document.querySelector<HTMLElement>('#orion-composer')?.focus()
             );
           }}
+          resourceNavigatorWidths={workPanelPreference.resourceNavigatorWidthPx}
+          onResourceNavigatorWidthCommit={setResourceNavigatorWidth}
         />
 
         {drawersOpen ? (
@@ -677,11 +723,7 @@ export function App() {
 
         {state.boot !== 'ready' ? (
           <section className="boot-screen" role={state.boot === 'error' ? 'alert' : 'status'}>
-            <div className="boot-mark" aria-hidden="true">
-              <span />
-              <span />
-              <span />
-            </div>
+            <OrionBrandMark className="boot-mark" size={34} />
             {state.boot === 'loading' ? (
               <>
                 <h1>正在启动 Orion Workbench</h1>

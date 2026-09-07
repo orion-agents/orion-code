@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { WebApiError } from '../../api';
 import type { WebGitDiffPageV1, WebGitFileV1, WebGitLogPageV1, WebGitStatusV1 } from '../../types';
 import type { WorkbenchActions } from '../../useWorkbench';
+import { ResourceSplitLayout } from '../../layout/ResourceSplitLayout';
 import { Icon } from '../Icon';
 import { DiffViewer } from './DiffViewer';
 
@@ -11,11 +12,17 @@ export function GitPanel({
   refreshEpoch,
   actions,
   onSendToComposer,
+  navigatorWidthPx,
+  onNavigatorWidthCommit,
 }: {
   readonly workspaceId: string;
   readonly refreshEpoch: number;
   readonly actions: WorkbenchActions;
   readonly onSendToComposer: (text: string) => void;
+  /** v0.3.13 — per-workspace + per-panel navigator (change list) column width. */
+  readonly navigatorWidthPx: number;
+  /** v0.3.13 — persists one workspace/panel width on pointer-up / keyboard commit. */
+  readonly onNavigatorWidthCommit: (width: number) => void;
 }) {
   const [status, setStatus] = useState<WebGitStatusV1 | null>(null);
   const [log, setLog] = useState<WebGitLogPageV1 | null>(null);
@@ -228,8 +235,17 @@ export function GitPanel({
           {error}
         </p>
       ) : null}
-      <div className="git-layout">
-        <section className="git-changes" aria-label="Git 变更">
+      <ResourceSplitLayout
+        panelId="git"
+        navigatorWidthPx={navigatorWidthPx}
+        onNavigatorWidthCommit={onNavigatorWidthCommit}
+        contentLabel="Git Diff"
+        navigatorLabel="Git 变更"
+        handleLabel="调整 Git 变更列表宽度"
+        contentClassName="git-diff"
+        navigatorClassName="git-changes"
+      >
+        <>
           {status.clean ? (
             <div className="resource-empty compact">
               <Icon name="check" />
@@ -291,8 +307,8 @@ export function GitPanel({
               </button>
             ) : null}
           </div>
-        </section>
-        <section className="git-diff" aria-label="Git Diff">
+        </>
+        <>
           {diff ? (
             <DiffViewer
               page={diff}
@@ -311,8 +327,8 @@ export function GitPanel({
               <p>Diff 来自受限 Git read model，不解析对话或工具输出。</p>
             </div>
           )}
-        </section>
-      </div>
+        </>
+      </ResourceSplitLayout>
     </div>
   );
 }

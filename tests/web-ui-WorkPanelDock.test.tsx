@@ -66,6 +66,8 @@ function render(opts: {
       onWidthCommit: noop,
       width: 420,
       onSendToComposer: noop,
+      resourceNavigatorWidths: { files: 300, git: 300, review: 300 },
+      onResourceNavigatorWidthCommit: noop,
     })
   );
 }

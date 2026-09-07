@@ -591,6 +591,15 @@ async function handleRequest(context: RequestContext): Promise<void> {
     );
     return;
   }
+  if (method === 'GET' && path === '/files/search') {
+    const contextGuard = requireContextGuardQuery(url);
+    const query = url.searchParams.get('q') ?? '';
+    const scopeValue = url.searchParams.get('scope');
+    const scope = scopeValue === 'content' ? ('content' as const) : ('name' as const);
+    const limit = boundedInteger(url.searchParams.get('limit'), 50, 1, 200);
+    sendJson(response, 200, context.workbench.searchFiles(contextGuard, { query, scope, limit }));
+    return;
+  }
   if (method === 'GET' && path === '/files') {
     const contextGuard = requireContextGuardQuery(url);
     sendJson(
@@ -638,6 +647,58 @@ async function handleRequest(context: RequestContext): Promise<void> {
     );
     return;
   }
+  if (method === 'POST' && (path === '/git/stage' || path === '/git/unstage')) {
+    assertMutation(request, context.nonce, context.origin, 'git_mutation_forbidden');
+    assertGitUserGesture(request);
+    const body = requireRecord(await readJson(request), 'Git stage request');
+    assertOnlyKeys(body, [
+      'requestId',
+      'expectedContextRevision',
+      'workspaceId',
+      'fileIds',
+      'expectedRepositoryRevision',
+    ]);
+    const requestId = requireUuid(body.requestId, 'requestId');
+    const contextGuard = requireContextGuardRecord(body);
+    const fileIds = requireStringArray(body.fileIds, 'fileIds', 200, 256);
+    const expectedRepositoryRevision = requireGitRevision(body.expectedRepositoryRevision);
+    const action = path === '/git/stage' ? ('stage' as const) : ('unstage' as const);
+    const result = await context.workbench.executeMutation(
+      requestId,
+      'git.mutation',
+      { action, fileIds, expectedRepositoryRevision, ...contextGuard },
+      async () =>
+        action === 'stage'
+          ? context.workbench.gitStage(contextGuard, { fileIds, expectedRepositoryRevision })
+          : context.workbench.gitUnstage(contextGuard, { fileIds, expectedRepositoryRevision })
+    );
+    sendJson(response, 200, result);
+    return;
+  }
+  if (method === 'POST' && path === '/git/commit') {
+    assertMutation(request, context.nonce, context.origin, 'git_mutation_forbidden');
+    assertGitUserGesture(request);
+    const body = requireRecord(await readJson(request), 'Git commit request');
+    assertOnlyKeys(body, [
+      'requestId',
+      'expectedContextRevision',
+      'workspaceId',
+      'message',
+      'expectedRepositoryRevision',
+    ]);
+    const requestId = requireUuid(body.requestId, 'requestId');
+    const contextGuard = requireContextGuardRecord(body);
+    const message = requireText(body.message, 'message', 2000);
+    const expectedRepositoryRevision = requireGitRevision(body.expectedRepositoryRevision);
+    const result = await context.workbench.executeMutation(
+      requestId,
+      'git.commit',
+      { message, expectedRepositoryRevision, ...contextGuard },
+      async () => context.workbench.gitCommit(contextGuard, { message, expectedRepositoryRevision })
+    );
+    sendJson(response, 200, result);
+    return;
+  }
   if (method === 'GET' && path === '/git/log') {
     const contextGuard = requireContextGuardQuery(url);
     sendJson(
@@ -666,6 +727,19 @@ async function handleRequest(context: RequestContext): Promise<void> {
         lineLimit: boundedInteger(url.searchParams.get('lineLimit'), 240, 1, 500),
         byteLimit: boundedInteger(url.searchParams.get('byteLimit'), 256 * 1024, 1024, 1024 * 1024),
       })
+    );
+    return;
+  }
+  if (method === 'GET' && path === '/review/verification') {
+    const contextGuard = requireContextGuardQuery(url);
+    const sessionId = url.searchParams.get('sessionId') ?? undefined;
+    const cursorValue = url.searchParams.get('cursor');
+    const cursor = cursorValue === null ? undefined : Number(cursorValue);
+    const pageSize = boundedInteger(url.searchParams.get('pageSize'), 25, 1, 100);
+    sendJson(
+      response,
+      200,
+      await context.workbench.reviewVerificationPage(contextGuard, { sessionId, cursor, pageSize })
     );
     return;
   }
@@ -859,6 +933,41 @@ function assertMutation(
   const contentType = request.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase();
   if (contentType !== 'application/json') {
     throw new HttpProblem(415, 'Mutations require application/json.');
+  }
+}
+
+function requireStringArray(
+  value: unknown,
+  name: string,
+  maxLength: number,
+  maxItemBytes: number
+): string[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > maxLength) {
+    throw new HttpProblem(400, `${name} must list 1 through ${maxLength} items.`);
+  }
+  return value.map(item => {
+    if (typeof item !== 'string' || item.length === 0 || item.length > maxItemBytes) {
+      throw new HttpProblem(400, `${name} contains an invalid item.`);
+    }
+    return item;
+  });
+}
+
+function requireGitRevision(value: unknown): string {
+  const text = requireText(value, 'expectedRepositoryRevision', 64);
+  if (!/^[0-9a-f]{40,64}$/u.test(text)) {
+    throw new HttpProblem(400, 'expectedRepositoryRevision must be a git revision.');
+  }
+  return text;
+}
+
+function assertGitUserGesture(request: IncomingMessage): void {
+  if (request.headers[WEB_USER_GESTURE_HEADER] !== 'git-mutation-v1') {
+    throw new HttpProblem(
+      403,
+      'Git mutations require an explicit browser user gesture.',
+      'git_user_gesture_required'
+    );
   }
 }
 

@@ -63,6 +63,7 @@ import {
 } from '../services/session-storage';
 import { WorkspaceRegistryError, WorkspaceRegistryV1 } from '../services/workspace-registry';
 import { WebWorkbenchError } from './errors';
+import { enforceContextBudget, extractLineRange } from './context-text';
 import { WebEventHub } from './event-hub';
 import { FileReadServiceV1 } from './file-read-service';
 import { GitReadModelServiceV1 } from './git-read-model-service';
@@ -1111,6 +1112,105 @@ export class WebWorkbenchController {
     return result;
   }
 
+  searchFiles(
+    context: WebContextGuardV1,
+    input: { readonly query: string; readonly scope: 'name' | 'content'; readonly limit?: number }
+  ) {
+    this.assertContextGuard(context);
+    const result = this.fileService.search(input);
+    return Object.freeze({
+      revision: this.fileContextRevision(),
+      items: Object.freeze(
+        result.items.map(item =>
+          Object.freeze({
+            id: item.id,
+            name: item.name,
+            path: item.path,
+          })
+        )
+      ),
+      truncated: result.truncated,
+    });
+  }
+
+  /** v0.3.12 S3 — guarded stage/unstage/commit with repository revision CAS. */
+  async gitStage(
+    context: WebContextGuardV1,
+    input: {
+      readonly fileIds: readonly string[];
+      readonly expectedRepositoryRevision: string;
+    }
+  ): Promise<{ readonly repositoryRevision: string }> {
+    this.assertContextGuard(context);
+    const paths = this.resolveSafeGitPaths(input.fileIds);
+    await this.assertGitRepositoryRevision(input.expectedRepositoryRevision);
+    return this.gitService.stagePaths(paths);
+  }
+
+  async gitUnstage(
+    context: WebContextGuardV1,
+    input: {
+      readonly fileIds: readonly string[];
+      readonly expectedRepositoryRevision: string;
+    }
+  ): Promise<{ readonly repositoryRevision: string }> {
+    this.assertContextGuard(context);
+    const paths = this.resolveSafeGitPaths(input.fileIds);
+    await this.assertGitRepositoryRevision(input.expectedRepositoryRevision);
+    return this.gitService.unstagePaths(paths);
+  }
+
+  async gitCommit(
+    context: WebContextGuardV1,
+    input: {
+      readonly message: string;
+      readonly expectedRepositoryRevision: string;
+    }
+  ): Promise<{ readonly repositoryRevision: string; readonly commitSha: string }> {
+    this.assertContextGuard(context);
+    await this.assertGitRepositoryRevision(input.expectedRepositoryRevision);
+    return this.gitService.commit(input.message);
+  }
+
+  private resolveSafeGitPaths(fileIds: readonly string[]): readonly string[] {
+    if (!Array.isArray(fileIds) || fileIds.length === 0 || fileIds.length > 200) {
+      throw new WebWorkbenchError(400, 'fileIds must list 1 through 200 files.');
+    }
+    return fileIds.map(fileId => {
+      if (typeof fileId !== 'string' || fileId.length > 256) {
+        throw new WebWorkbenchError(400, 'A file id is invalid.', 'file_id_invalid');
+      }
+      return this.fileService.pathForFileId(fileId);
+    });
+  }
+
+  private async assertGitRepositoryRevision(expected: string): Promise<void> {
+    if (typeof expected !== 'string' || !/^[0-9a-f]{40,64}$/u.test(expected)) {
+      throw new WebWorkbenchError(400, 'expectedRepositoryRevision is invalid.');
+    }
+    const status = await this.gitService.status({ pageSize: 1 });
+    if (status.repositoryRevision !== expected) {
+      throw new WebWorkbenchError(
+        409,
+        'The repository changed before the operation could run.',
+        'git_revision_conflict'
+      );
+    }
+  }
+
+  private fileContextRevision(): string {
+    const node = this.fileService as unknown as { rootRevision?(): string };
+    return typeof node.rootRevision === 'function' ? node.rootRevision() : '';
+  }
+
+  async reviewVerificationPage(
+    context: WebContextGuardV1,
+    input: { readonly sessionId?: string; readonly cursor?: number; readonly pageSize?: number }
+  ) {
+    this.assertContextGuard(context);
+    return this.reviewService.verificationPage(input);
+  }
+
   async gitLog(context: WebContextGuardV1, input: Parameters<GitReadModelServiceV1['log']>[0]) {
     this.assertContextGuard(context);
     const result = await this.gitService.log(input);
@@ -1601,6 +1701,34 @@ export class WebWorkbenchController {
           revision: page.revision,
           content: this.sanitizeContextText(page.content),
           truncated: page.nextCursor !== null,
+        };
+      }
+      case 'file_range': {
+        const page = this.fileService.readContent({
+          fileId: reference.id,
+          limitBytes: MAX_CONTEXT_REFERENCE_BYTES,
+        });
+        if (page.revision !== reference.revision) {
+          throw new WebWorkbenchError(409, 'Referenced file changed.', 'context_reference_stale');
+        }
+        if (page.binary || page.content === undefined) {
+          throw new WebWorkbenchError(
+            403,
+            'Binary files cannot be added to model Context.',
+            'context_reference_forbidden'
+          );
+        }
+        const extracted = extractLineRange(page.content, reference.startLine, reference.endLine);
+        const budgeted = enforceContextBudget(extracted.text, MAX_CONTEXT_REFERENCE_BYTES);
+        return {
+          kind: 'file_range',
+          id: reference.id,
+          label: `${this.sanitizeContextText(page.name)}:${reference.startLine}-${reference.endLine}`,
+          revision: page.revision,
+          startLine: reference.startLine,
+          endLine: reference.endLine,
+          content: this.sanitizeContextText(budgeted.text),
+          truncated: budgeted.truncated || page.nextCursor !== null || extracted.clampedAtEnd,
         };
       }
       case 'folder': {

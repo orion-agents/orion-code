@@ -199,3 +199,44 @@ function fakeGit(pages: readonly WebGitStatusV1[], diff = jest.fn()): GitReadMod
   });
   return { status, diff } as unknown as GitReadModelServiceV1;
 }
+
+describe('progressive verification page (v0.3.12 S2)', () => {
+  test('pages receipts with optional per-session filtering', async () => {
+    const git = fakeGit([gitStatus()]);
+    const receipts = Array.from(
+      { length: 60 },
+      (_, index): VerifiedDurableToolReceiptRefV1 => ({
+        callId: 'call-page-' + index,
+        sessionId: index % 2 === 0 ? 'session-a' : 'session-b',
+        threadId: 'thread-' + (index % 3),
+        sequence: index,
+        toolName: 'exec_command',
+        terminal: 'completed',
+        success: true,
+        outputBytes: 10,
+        hasArtifact: false,
+        executionPolicyDigest: 'a'.repeat(64),
+        receiptDigest: String(index).padStart(64, 'b'),
+        finishedAt: 1_700_000_000_000 - index,
+      })
+    );
+    const service = new ReviewServiceV1(git, async () => receipts);
+
+    const first = await service.verificationPage({ sessionId: 'session-a', pageSize: 10 });
+    expect(first.items).toHaveLength(10);
+    expect(first.totalForSession).toBe(30);
+    expect(first.nextCursor).toBe(10);
+    expect(first.items[0].sessionId).toBe('session-a');
+
+    const second = await service.verificationPage({
+      sessionId: 'session-a',
+      cursor: 10,
+      pageSize: 10,
+    });
+    expect(second.items[0].callId).toBe('call-page-20');
+
+    const tail = await service.verificationPage({ cursor: 55, pageSize: 100 });
+    expect(tail.items).toHaveLength(5);
+    expect(tail.nextCursor).toBeNull();
+  });
+});

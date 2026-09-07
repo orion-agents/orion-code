@@ -17,6 +17,9 @@ import { Markdown, safeJson, sanitizeDisplayText } from './Markdown';
 import { sessionTitle } from './WorkspaceRail';
 import { StateDot } from './StateDot';
 import { ComposerControlCenter } from './composer/ComposerControlCenter';
+import { buildHistoryNavigation, type HistoryAnchor } from './history-navigation';
+import { ConversationHistoryNavigator } from './ConversationHistoryNavigator';
+import { useConversationHistoryNavigator } from './useConversationHistoryNavigator';
 
 const INITIAL_TIMELINE_WINDOW = 320;
 const TIMELINE_PAGE = 300;
@@ -66,7 +69,6 @@ type TimelineItem =
   | { readonly kind: 'edit'; readonly order: number; readonly value: WebEditPreview }
   | { readonly kind: 'subtask'; readonly order: number; readonly value: WebSubtask }
   | { readonly kind: 'research'; readonly order: number; readonly value: WebResearch };
-
 export function Conversation({
   state,
   actions,
@@ -94,6 +96,31 @@ export function Conversation({
   const pinnedRef = useRef(true);
   const prependAnchor = useRef<{ height: number; top: number } | null>(null);
   const [pinned, setPinned] = useState(true);
+  // v0.3.13 — history navigator model + viewport observer binding.
+  const [reduceMotion, setReduceMotion] = useState(false);
+  const anchors = useMemo<readonly HistoryAnchor[]>(
+    () =>
+      timeline.map(toHistoryAnchor).filter((anchor): anchor is HistoryAnchor => anchor !== null),
+    [timeline]
+  );
+  const historyModel = useMemo(() => buildHistoryNavigation(anchors), [anchors]);
+  const history = useConversationHistoryNavigator({
+    viewportRef: scrollRef,
+    model: historyModel,
+    activeSessionId: state.activeSessionId,
+    onUserNavigate: () => {
+      pinnedRef.current = false;
+      setPinned(false);
+    },
+  });
+
+  useEffect(() => {
+    const media = window.matchMedia('(prefers-reduced-motion: reduce)');
+    setReduceMotion(media.matches);
+    const onChange = (event: MediaQueryListEvent) => setReduceMotion(event.matches);
+    media.addEventListener('change', onChange);
+    return () => media.removeEventListener('change', onChange);
+  }, []);
 
   useEffect(() => {
     setVisibleCount(INITIAL_TIMELINE_WINDOW);
@@ -229,74 +256,94 @@ export function Conversation({
         </div>
       ) : null}
 
-      <div
-        className="transcript-viewport"
-        ref={scrollRef}
-        role="region"
-        aria-label="会话记录"
-        tabIndex={0}
-        onScroll={updatePinned}
-        aria-busy={state.processing}
-      >
-        <div className="transcript-content" ref={contentRef}>
-          {allTimeline.length > timeline.length || hasRemoteHistory ? (
-            <button
-              type="button"
-              className="load-history"
-              onClick={() => void loadEarlier()}
-              disabled={Boolean(state.pendingAction)}
-            >
-              {allTimeline.length > timeline.length
-                ? `加载更早内容 · 还剩 ${allTimeline.length - timeline.length} 项`
-                : '从持久记录加载更早内容'}
-            </button>
-          ) : null}
+      <div className="transcript-stage">
+        <div
+          className="transcript-viewport"
+          ref={scrollRef}
+          role="region"
+          aria-label="会话记录"
+          tabIndex={0}
+          onScroll={updatePinned}
+          aria-busy={state.processing}
+        >
+          <div className="transcript-content" ref={contentRef}>
+            {allTimeline.length > timeline.length || hasRemoteHistory ? (
+              <button
+                type="button"
+                className="load-history"
+                onClick={() => void loadEarlier()}
+                disabled={Boolean(state.pendingAction)}
+              >
+                {allTimeline.length > timeline.length
+                  ? `加载更早内容 · 还剩 ${allTimeline.length - timeline.length} 项`
+                  : '从持久记录加载更早内容'}
+              </button>
+            ) : null}
 
-          {!state.activeSessionId ? (
-            <EmptyConversation
-              icon="workspace"
-              title="选择或创建一个会话"
-              detail="Orion 会在当前工作区运行，并沿用 CLI/TUI 的权限与持久化状态。"
-              action="创建会话"
-              onAction={onCreateSession}
-            />
-          ) : snapshotSync.status === 'failed' && timeline.length === 0 ? (
-            <EmptyConversation
-              icon="warning"
-              title="会话快照加载失败"
-              detail={snapshotSync.error ?? '请重试当前会话快照。'}
-            />
-          ) : (snapshotSync.status === 'loading' || snapshotSync.status === 'refreshing') &&
-            timeline.length === 0 ? (
-            <EmptyConversation
-              icon="refresh"
-              title="正在同步会话"
-              detail="本地 Web Host 正在读取最近的会话快照。"
-            />
-          ) : timeline.length === 0 ? (
-            <EmptyConversation
-              icon="spark"
-              title="准备好开始了"
-              detail="描述要构建、修复或调查的任务。Orion 会实时展示工具、文件变化与验证结果。"
-            />
-          ) : (
-            <ol className="timeline" aria-label="会话记录">
-              {timeline.map(item => (
-                <li key={timelineKey(item)} data-event-id={item.order}>
-                  {renderTimelineItem(item, state)}
-                </li>
-              ))}
-            </ol>
-          )}
-          {state.processing ? (
-            <div className="thinking-indicator" role="status">
-              <span />
-              <span />
-              <span />
-              <span>{state.statusMessage || 'Orion 正在处理…'}</span>
-            </div>
-          ) : null}
+            {!state.activeSessionId ? (
+              <EmptyConversation
+                icon="workspace"
+                title="选择或创建一个会话"
+                detail="Orion 会在当前工作区运行，并沿用 CLI/TUI 的权限与持久化状态。"
+                action="创建会话"
+                onAction={onCreateSession}
+              />
+            ) : snapshotSync.status === 'failed' && timeline.length === 0 ? (
+              <EmptyConversation
+                icon="warning"
+                title="会话快照加载失败"
+                detail={snapshotSync.error ?? '请重试当前会话快照。'}
+              />
+            ) : (snapshotSync.status === 'loading' || snapshotSync.status === 'refreshing') &&
+              timeline.length === 0 ? (
+              <EmptyConversation
+                icon="refresh"
+                title="正在同步会话"
+                detail="本地 Web Host 正在读取最近的会话快照。"
+              />
+            ) : timeline.length === 0 ? (
+              <EmptyConversation
+                icon="spark"
+                title="准备好开始了"
+                detail="描述要构建、修复或调查的任务。Orion 会实时展示工具、文件变化与验证结果。"
+              />
+            ) : (
+              <ol className="timeline" aria-label="会话记录">
+                {timeline.map(item => (
+                  <li
+                    key={timelineKey(item)}
+                    id={`conversation-item-${state.activeSessionId ?? 'none'}-${timelineKey(item)}`}
+                    data-event-id={item.order}
+                    data-order={item.order}
+                    ref={element => history.registerItem(item.order, element)}
+                  >
+                    {renderTimelineItem(item, state)}
+                  </li>
+                ))}
+              </ol>
+            )}
+            {state.processing ? (
+              <div className="thinking-indicator" role="status">
+                <span />
+                <span />
+                <span />
+                <span>{state.statusMessage || 'Orion 正在处理…'}</span>
+              </div>
+            ) : null}
+          </div>
         </div>
+        <ConversationHistoryNavigator
+          model={historyModel}
+          activeOrder={history.activeOrder}
+          span={history.span}
+          earlierInMemory={Math.max(0, allTimeline.length - timeline.length)}
+          hasRemoteEarlier={hasRemoteHistory}
+          loadBusy={Boolean(state.pendingAction)}
+          reduceMotion={reduceMotion}
+          onLoadEarlier={() => void loadEarlier()}
+          onJumpToOrder={(order, behavior) => history.scrollToOrder(order, behavior)}
+          onJumpToLatest={jumpToLatest}
+        />
       </div>
 
       {!pinned && timeline.length > 0 ? (
@@ -339,6 +386,103 @@ function timelineKey(item: TimelineItem): string {
   if (item.kind === 'edit') return `edit-${item.order}`;
   if (item.kind === 'subtask') return `subtask-${item.value.taskId}`;
   return `research-${item.value.packetId}`;
+}
+
+/**
+ * v0.3.13 — maps one loaded timeline row onto the history rail's navigation
+ * vocabulary. Transcript roles become user / assistant / system; tool, edit,
+ * subtask and research rows map directly. Error conditions (tool failures,
+ * failed research, command failures, error layers, budget stops) surface as
+ * `error` priority so they always stay visible on the rail.
+ */
+function toHistoryAnchor(item: TimelineItem): HistoryAnchor | null {
+  const order = item.order;
+  const key = timelineKey(item);
+  if (item.kind === 'tool') {
+    return {
+      order,
+      key,
+      kind: 'tool',
+      label: firstLine(item.value.summary) || item.value.name,
+      priority: item.value.state === 'error' ? 'error' : 'activity',
+    };
+  }
+  if (item.kind === 'edit') {
+    return {
+      order,
+      key,
+      kind: 'edit',
+      label: item.value.request.path,
+      priority: 'activity',
+    };
+  }
+  if (item.kind === 'subtask') {
+    return {
+      order,
+      key,
+      kind: 'subtask',
+      label: firstLine(item.value.objective) || item.value.role,
+      priority: SUBTASK_FAILURE_STATES.has(item.value.state) ? 'error' : 'activity',
+    };
+  }
+  if (item.kind === 'research') {
+    return {
+      order,
+      key,
+      kind: 'research',
+      label: firstLine(item.value.objective) || 'Research',
+      priority: item.value.stage === 'failed' ? 'error' : 'activity',
+    };
+  }
+  const entry = item.value;
+  if (entry.toolActivity) {
+    const activity = entry.toolActivity;
+    return {
+      order,
+      key,
+      kind: 'tool',
+      label: firstLine(activity.summary) || activity.name || activity.detail || '工具活动',
+      priority: activity.state === 'error' ? 'error' : 'activity',
+    };
+  }
+  const role = entry.role;
+  let priority: HistoryAnchor['priority'];
+  if (role === 'user') {
+    priority = 'turn';
+  } else if (role === 'assistant') {
+    priority = 'turn';
+  } else {
+    priority =
+      role === 'error' || (role === 'command' && entry.command?.success === false)
+        ? 'error'
+        : 'activity';
+  }
+  if (entry.errorLayer || entry.budgetStop) priority = 'error';
+  const kind: HistoryAnchor['kind'] =
+    role === 'user' ? 'user' : role === 'assistant' ? 'assistant' : 'system';
+  return {
+    order,
+    key,
+    kind,
+    priority,
+    label:
+      firstLine(entry.content) ||
+      entry.title ||
+      (role === 'user' ? '用户任务' : role === 'assistant' ? 'Orion 回复' : roleLabel(role)),
+  };
+}
+
+const SUBTASK_FAILURE_STATES: ReadonlySet<string> = new Set([
+  'failed',
+  'timed_out',
+  'rejected',
+  'cancelled',
+]);
+
+function firstLine(value: string | undefined): string | null {
+  if (!value) return null;
+  const line = value.replace(/\s+/gu, ' ').trim();
+  return line.length > 80 ? `${line.slice(0, 80)}…` : line;
 }
 
 function renderTimelineItem(item: TimelineItem, state: WorkbenchState) {

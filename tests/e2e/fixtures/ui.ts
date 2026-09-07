@@ -156,9 +156,12 @@ export async function waitForWorkbenchReady(
   await expect(page.getByRole('status').filter({ hasText: '正在启动 Orion Workbench' })).toBeHidden(
     { timeout: options.timeout }
   );
-  await expect(page.getByText('本地 Runtime 已连接', { exact: true })).toBeVisible({
-    timeout: options.timeout,
-  });
+  // v0.3.12 S0 — readiness is a stable state contract, not display copy.
+  // The host-connected footer carries data-testid="runtime-connection-state"
+  // with data-state="live" once the events stream is established.
+  await expect(
+    page.locator('[data-testid="runtime-connection-state"][data-state="live"]')
+  ).toBeVisible({ timeout: options.timeout });
   await expect(ui.settingsButton).toBeEnabled({ timeout: options.timeout });
   return ui;
 }

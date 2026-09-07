@@ -4,7 +4,10 @@ export const PROJECT_NAVIGATION_MAX_WIDTH = 480;
 export const PROJECT_NAVIGATION_RAIL_WIDTH = 48;
 export const WORK_PANEL_MIN_WIDTH = 320;
 export const WORK_PANEL_DEFAULT_WIDTH = 420;
-export const WORK_PANEL_MAX_WIDTH = 720;
+// v0.3.12 — stored width may be far wider than the v2 720px dock cap. The
+// rendered dock clamps to the per-viewport max dockable width (geometry);
+// this only bounds what a stored preference may hold.
+export const WORK_PANEL_MAX_WIDTH = 3200;
 export const WORK_PANEL_RAIL_WIDTH = 48;
 export const CONVERSATION_MIN_WIDTH = 560;
 export const WORKBENCH_LAYOUT_STORAGE_KEY = 'orion.web.workbench-layout.v2';
@@ -272,7 +275,7 @@ export function normalizeWorkPanelOrder(value: unknown): readonly WorkPanelId[] 
   return Object.freeze([...value]) as readonly WorkPanelId[];
 }
 
-function isWorkPanel(value: unknown): value is WorkPanelId {
+export function isWorkPanel(value: unknown): value is WorkPanelId {
   return ['agent', 'review', 'terminal', 'files', 'git'].includes(String(value));
 }
 

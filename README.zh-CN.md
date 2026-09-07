@@ -2,9 +2,10 @@
 
 面向终端与浏览器、本地优先的目标驱动 Coding Agent。
 
-> v0.3.11 候选版本：右侧工作面板改为**竖状 rail 菜单**——常驻 48px 竖栏，
-> 点击图标即展示对应面板（再点收起、Esc 关闭），带终端状态徽标并支持持久化图标顺序。
-> Candidate 源码不代表已创建 npm 发布、Git tag 或达到可合并状态。
+> v0.3.12 候选版本：在竖状 rail 之上的**大尺寸右侧工作区**——纯 dock/rail/drawer 几何
+> （详情面可拉宽至 80vw，对话保留 320px 最小宽度）、按 workspace 的布局偏好、共享仓库快照
+> store、Review 验证证据渐进分页、受控 Git stage/unstage/commit、受限工作区搜索与带版本
+> 约束的 file_range Context 引用。Candidate 源码不代表已创建 npm 发布、Git tag 或达到可合并状态。
 
 [English](README.md) ·
 [v0.3.7 方案](docs/plan/v0.3.7-left-rail-improvement-plan.md) ·
@@ -101,7 +102,7 @@ Current。Node 20 已结束上游维护，不再属于 v0.3 Runtime 合同。
 当 npm 已存在不可变的 `0.3.4` 发布凭据后：
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.11
+npm install -g @orion-agents/orion-code@0.3.12
 orion --version
 orion doctor
 ```

@@ -15,6 +15,7 @@ import {
   clampPanelWidth,
   panelWidthPercent,
   resolvePanelResizeKeyWidth,
+  resolvePointerResizeWidth,
   type PanelResizeKeyIntent,
 } from '../web/src/layout/PanelResizeHandle';
 
@@ -126,5 +127,58 @@ describe('PanelResizeHandle separator semantics', () => {
     const html = renderToStaticMarkup(React.createElement(PanelResizeHandle, sharedProps));
     expect(html).not.toContain('aria-hidden');
     expect(html).toContain('aria-label="调整面板宽度"');
+  });
+});
+
+describe('resolvePointerResizeWidth (v0.3.13 resource-split bounds)', () => {
+  const bounds = { left: 900, right: 1400 };
+
+  it('side=right measures from the right edge of the provided bounds box', () => {
+    // Pointer at 1200 inside a 900→1400 split root → navigator width 200px.
+    expect(
+      resolvePointerResizeWidth({
+        side: 'right',
+        clientX: 1200,
+        bounds,
+        minWidth: 160,
+        maxWidth: 420,
+      })
+    ).toBe(200);
+  });
+
+  it('side=left measures from the left edge (outer-splitter parity)', () => {
+    // Pointer at 1100 inside a 900→1400 root → panel width 200px.
+    expect(
+      resolvePointerResizeWidth({
+        side: 'left',
+        clientX: 1100,
+        bounds,
+        minWidth: 200,
+        maxWidth: 800,
+      })
+    ).toBe(200);
+  });
+
+  it('clamps inner drags to the navigator [160, 420] contract', () => {
+    // Pointer 150px from the root's right edge → floor 160.
+    expect(
+      resolvePointerResizeWidth({
+        side: 'right',
+        clientX: 1250,
+        bounds,
+        minWidth: 160,
+        maxWidth: 420,
+      })
+    ).toBe(160);
+    // Drag 500px left of the root's right edge (clientX 900) → capped at 420.
+    expect(
+      resolvePointerResizeWidth({
+        side: 'right',
+        clientX: 900,
+        bounds,
+        minWidth: 160,
+        maxWidth: 420,
+      })
+    ).toBe(420);
   });
 });

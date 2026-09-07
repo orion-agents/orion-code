@@ -22,6 +22,7 @@ import {
   PROJECT_NAVIGATION_MIN_WIDTH,
 } from '../../state/layout-preferences';
 import { Icon } from '../Icon';
+import { OrionBrandMark } from '../OrionBrandMark';
 
 const PROJECT_WINDOW_SIZE = 40;
 
@@ -219,11 +220,7 @@ export function ProjectNavigator({
       hidden={!dockVisible}
     >
       <div className="brand-row">
-        <div className="brand-mark" aria-hidden="true">
-          <span />
-          <span />
-          <span />
-        </div>
+        <OrionBrandMark className="brand-mark" size={20} />
         <div className="brand-copy">
           <strong>ORION</strong>
           <span>CODE WORKBENCH</span>
@@ -606,7 +603,13 @@ export function ProjectNavigator({
 
       <footer className="rail-footer">
         <span className={`connection-dot ${state.connection}`} aria-hidden="true" />
-        <span title={connectionTitle(state.connection)}>{connectionLabel(state.connection)}</span>
+        <span
+          data-testid="runtime-connection-state"
+          data-state={state.connection}
+          title={connectionTitle(state.connection)}
+        >
+          {connectionLabel(state.connection)}
+        </span>
         <button
           type="button"
           className="icon-button rail-settings"

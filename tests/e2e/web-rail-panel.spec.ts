@@ -9,7 +9,7 @@ test.use({ trace: 'off', video: 'off', screenshot: 'off' });
  * content back to the rail, and the terminal icon carries a status badge while
  * the foreground session runs.
  */
-test('WEB38-P0-01 rail is vertical and activation shows exactly one panel', async ({ page }) => {
+test('WEB33-P0-13 rail is vertical and activation shows exactly one panel', async ({ page }) => {
   test.setTimeout(120_000);
   await page.setViewportSize({ width: 1_600, height: 900 });
   const ui = workbenchUi(page);
@@ -37,7 +37,7 @@ test('WEB38-P0-01 rail is vertical and activation shows exactly one panel', asyn
   await expect(page.locator('#work-panel [role="tablist"]')).toHaveCount(0);
 });
 
-test('WEB38-P0-02 re-clicking the active icon collapses back to the rail', async ({ page }) => {
+test('WEB33-P0-14 re-clicking the active icon collapses back to the rail', async ({ page }) => {
   test.setTimeout(120_000);
   await page.setViewportSize({ width: 1_600, height: 900 });
   const ui = workbenchUi(page);

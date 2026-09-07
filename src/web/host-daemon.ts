@@ -13,6 +13,7 @@
  *     "startedAt": 1725000000000, "workspace": "/abs/path" }
  */
 import { spawn, type ChildProcess } from 'child_process';
+import { connect } from 'net';
 import { existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
@@ -125,11 +126,56 @@ function childArgs(webArgs: readonly string[]): readonly string[] {
  * stdio to `~/.orion-code/logs/web-<port>.log`, and wait for the pidfile so the
  * foreground command can print the URL and exit cleanly.
  */
-export function spawnBackgroundHost(options: {
+
+/**
+ * True when something already listens on 127.0.0.1:port — typically another
+ * Orion host process (e.g. one managed by launchd, which does not write a
+ * pidfile). Detecting this up front turns a raw EADDRINUSE crash into a
+ * friendly message.
+ */
+export function isHostPortTaken(port: number): Promise<boolean> {
+  return new Promise(resolve => {
+    const socket = connect({ host: '127.0.0.1', port });
+    let settled = false;
+    const done = (taken: boolean) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(taken);
+    };
+    socket.once('connect', () => done(true));
+    socket.once('error', () => done(false));
+    socket.setTimeout(800, () => done(false));
+  });
+}
+
+/** Best-effort tail of the host log used when a background child exits early. */
+export function readHostLogTail(port: number, lines = 6): string {
+  try {
+    const raw = readFileSync(join(hostLogsDirectory(), `web-${port}.log`), 'utf8');
+    return raw.split('\n').filter(Boolean).slice(-lines).join('\n');
+  } catch {
+    return '';
+  }
+}
+
+async function assertHostPortAvailable(port: number): Promise<void> {
+  if (await isHostPortTaken(port)) {
+    throw new Error(
+      `Port ${port} is already served by another Orion host process. This is ` +
+        `often a launchd LaunchAgent (ai.orion-code.web). Check with ` +
+        '`launchctl list | grep orion`; if the running host belongs to this ' +
+        `CLI, use \`orion web status --port ${port}\` to confirm before stopping it.`
+    );
+  }
+}
+
+export async function spawnBackgroundHost(options: {
   readonly cwd: string;
   readonly port: number;
   readonly webArgs: readonly string[];
 }): Promise<{ readonly child: ChildProcess; readonly pidfile: HostPidfile }> {
+  await assertHostPortAvailable(options.port);
   const logsDirectory = hostLogsDirectory();
   mkdirSync(logsDirectory, { recursive: true });
   const logPath = join(logsDirectory, `web-${options.port}.log`);

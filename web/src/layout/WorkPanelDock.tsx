@@ -32,15 +32,20 @@ const PANEL_SHORTCUT_IDS = [
   'focus-work-panel-5',
 ] as const;
 
+// v0.3.12 S1 — panel metadata comes from the single registry; no local copies.
+import { WORK_PANEL_REGISTRY } from './work-panel-registry';
+import type { ResourceSplitPanelId } from '../state/right-workspace-preferences';
+
 const PANEL_META: Readonly<
   Record<WorkPanelId, { readonly label: string; readonly icon: IconName }>
-> = Object.freeze({
-  agent: { label: 'Agent', icon: 'spark' },
-  review: { label: '审阅', icon: 'edit' },
-  terminal: { label: '终端', icon: 'terminal' },
-  files: { label: '文件', icon: 'workspace' },
-  git: { label: 'Git', icon: 'branch' },
-});
+> = Object.freeze(
+  Object.fromEntries(
+    [...WORK_PANEL_REGISTRY].map(([id, registration]) => [
+      id,
+      { label: registration.label, icon: registration.icon },
+    ])
+  ) as Record<WorkPanelId, { readonly label: string; readonly icon: IconName }>
+);
 
 /** v0.3.8 — Session phases that light up the terminal icon in the vertical rail. */
 const RAIL_ACTIVE_PHASES = new Set([
@@ -78,7 +83,16 @@ export interface WorkPanelDockProps {
   readonly onWidthCommit: (width: number) => void;
   /** Live dock width in px, used for the resize separator's `aria-valuenow`. */
   readonly width: number;
+  /** v0.3.12 — per-viewport dock width ceiling (detail + rail). */
+  readonly maxWidthPx?: number;
   readonly onSendToComposer: (text: string) => void;
+  /**
+   * v0.3.13 — per-panel navigator column widths for the current workspace,
+   * forwarded to the Files/Git/Review resource panels.
+   */
+  readonly resourceNavigatorWidths: Readonly<Record<ResourceSplitPanelId, number>>;
+  /** v0.3.13 — persists one workspace/panel navigator width on drag end. */
+  readonly onResourceNavigatorWidthCommit: (panel: ResourceSplitPanelId, width: number) => void;
 }
 
 export function WorkPanelDock({
@@ -96,7 +110,10 @@ export function WorkPanelDock({
   onWidthPreview,
   onWidthCommit,
   width,
+  maxWidthPx,
   onSendToComposer,
+  resourceNavigatorWidths,
+  onResourceNavigatorWidthCommit,
 }: WorkPanelDockProps) {
   const surfaceRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -293,6 +310,8 @@ export function WorkPanelDock({
           refreshEpoch={resourceEpochs.review}
           actions={actions}
           onSendToComposer={onSendToComposer}
+          navigatorWidthPx={resourceNavigatorWidths.review}
+          onNavigatorWidthCommit={width => onResourceNavigatorWidthCommit('review', width)}
         />
       ) : null}
       {id === 'terminal' ? (
@@ -309,6 +328,8 @@ export function WorkPanelDock({
           workspaceId={state.workspaceId}
           refreshEpoch={resourceEpochs.files}
           actions={actions}
+          navigatorWidthPx={resourceNavigatorWidths.files}
+          onNavigatorWidthCommit={width => onResourceNavigatorWidthCommit('files', width)}
         />
       ) : null}
       {id === 'git' ? (
@@ -317,6 +338,8 @@ export function WorkPanelDock({
           refreshEpoch={resourceEpochs.git}
           actions={actions}
           onSendToComposer={onSendToComposer}
+          navigatorWidthPx={resourceNavigatorWidths.git}
+          onNavigatorWidthCommit={width => onResourceNavigatorWidthCommit('git', width)}
         />
       ) : null}
     </div>
@@ -410,7 +433,12 @@ export function WorkPanelDock({
         </div>
       )}
       {mode === 'dock' && expanded ? (
-        <WorkPanelResizeHandle width={width} onPreview={onWidthPreview} onCommit={onWidthCommit} />
+        <WorkPanelResizeHandle
+          width={width}
+          maxWidth={maxWidthPx}
+          onPreview={onWidthPreview}
+          onCommit={onWidthCommit}
+        />
       ) : null}
     </aside>
   );

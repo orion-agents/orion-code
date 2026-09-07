@@ -15,7 +15,9 @@ describe('Web Workbench layout preferences v2', () => {
     expect(clampProjectNavigationWidth(900)).toBe(480);
     expect(clampProjectNavigationWidth(Number.NaN)).toBe(PROJECT_NAVIGATION_DEFAULT_WIDTH);
     expect(clampStoredWorkPanelWidth(100)).toBe(320);
-    expect(clampStoredWorkPanelWidth(900)).toBe(720);
+    // v0.3.12 — the stored width cap is wide; per-viewport clamping happens in
+    // the geometry solver at render time (720 was the old dock ceiling).
+    expect(clampStoredWorkPanelWidth(900)).toBe(900);
     expect(clampStoredWorkPanelWidth(Number.NaN)).toBe(WORK_PANEL_DEFAULT_WIDTH);
   });
 
@@ -137,7 +139,13 @@ describe('work panel vertical-rail order (v0.3.8)', () => {
     JSON.stringify({
       schemaVersion: 2,
       projectNavigation: { expanded: true, widthPx: 280 },
-      workPanel: { expanded: true, widthPx: 420, activePanel: 'review', agentPanel: 'goal', ...extra },
+      workPanel: {
+        expanded: true,
+        widthPx: 420,
+        activePanel: 'review',
+        agentPanel: 'goal',
+        ...extra,
+      },
     });
 
   it('defaults to canonical order when the stored preference has no order', () => {

@@ -22,6 +22,50 @@ which is **not** a pass.
 
 ## [Unreleased]
 
+## [0.3.12] — CANDIDATE
+
+> **Status: candidate.** Wide Right Workspace + repository-truth + guarded Git
+> mutations (plan docs/plan/v0.3.12-plan.md) plus the v0.3.13 follow-ups that
+> landed on this branch (plans v3/v4/v5). Not merged, tagged or published.
+
+### Added
+
+- Wide Right Workspace logic layer: five-panel registry, per-workspace layout
+  preferences (schema v4 with per-panel navigator widths), pure dock/rail/drawer
+  geometry with 320px conversation minimum and 360/560/960/max snap points.
+- Repository snapshot store shared by Git/Review/Files decorations
+  (coalescing, one-shot invalidation, revision-stale detection).
+- Progressive Review verification paging (GET /review/verification).
+- Guarded Git stage/unstage/commit (POST /git/\*) with host-resolved file ids,
+  repository-revision CAS and an explicit user-gesture header.
+- Bounded workspace search (GET /files/search; name/content scopes).
+- Context V2 file_range references (revision-bound, line-extracted, budgeted).
+- **Resource split layout (v0.3.13-plan-v4):** Files/Git/Review share one
+  content | splitter | navigator shell (`ResourceSplitLayout`) with explicit
+  named grid areas (no more sparse grid auto-placement gaps). Git now shows its
+  diff on the left, matching Files/Review. Each panel has an inner draggable
+  separator measured against the split root — never the workbench shell — so
+  dragging never moves the outer Right Workspace; per-workspace + per-panel
+  navigator widths are persisted (300px default, 160–420px drag range,
+  double-click/keyboard reset), and <=620px containers stack navigator-over-
+  content and hide the handle.
+- **Conversation history navigator (v0.3.13-plan-v5):** a left-inside rail on
+  the loaded transcript derived from the unified order timeline. A pure bucket
+  model (<=48–64 stable buckets, user/assistant/errors always visible) feeds
+  decorative ticks plus one focusable `role="slider"` (Arrow/Page/Home/End,
+  reduced-motion aware). An IntersectionObserver + rAF-throttled viewport
+  marker tracks the reading position; pointer scrub uses capture and cancels
+  pinned auto-follow; the top entry drives the existing paginated
+  load-earlier. Container-query degradation: full rail >760px, compact
+  641–760px, hidden <=640px with no horizontal overflow.
+- **Unified Orion brand mark (v0.3.13-plan-v5 §9):** one decorative
+  `OrionBrandMark` inline SVG (20×20 artboard, three bars, theme-token
+  gradients with forced-colors fallback) replaces the duplicated
+  `.brand-mark`/`.boot-mark` span CSS in the project navigator and boot
+  screen; the mark stays aria-hidden and non-interactive.
+- E2E: rail-panel scenario ids on the allowlist; real-conversation smoke spec;
+  Files/Review/Git split-layout, history-rail and brand visual specs.
+
 ## [0.3.11] — NPM-PUBLISHED
 
 > **Status: npm-published.** `@orion-agents/orion-code@0.3.11` is available through the npm

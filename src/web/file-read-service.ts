@@ -116,6 +116,15 @@ export class FileReadServiceV1 {
     return Object.freeze({ ...this.performance });
   }
 
+  /** v0.3.12 S3 — resolve a remembered file id back to its workspace-relative path. */
+  pathForFileId(fileId: string): string {
+    const relativePath = this.pathById.get(fileId);
+    if (relativePath === undefined) {
+      throw new WebWorkbenchError(404, 'File node was not found.', 'file_not_found');
+    }
+    return relativePath;
+  }
+
   identifyRelativePath(relativePath: string): string {
     const normalized = normalizeRelativePath(relativePath);
     this.resolveRelative(normalized);
@@ -189,6 +198,137 @@ export class FileReadServiceV1 {
           })
         : null,
     });
+  }
+
+  /**
+   * v0.3.12 S4 — bounded workspace search. Name scope walks the tree (skipping
+   * VCS/dependency/ignored names, hidden directories, out-of-root symlinks and
+   * sensitive paths); content scope additionally matches inside the first
+   * 64 KiB of each text file and skips binary payloads. Results cap at
+   * `limit`; the scan stops early once the cap is reached or the file budget
+   * is exhausted.
+   */
+  search(input: {
+    readonly query: string;
+    readonly scope: 'name' | 'content';
+    readonly limit?: number;
+  }): {
+    readonly items: ReadonlyArray<{
+      readonly id: string;
+      readonly name: string;
+      readonly path: string;
+    }>;
+    readonly truncated: boolean;
+  } {
+    const query = input.query.trim().slice(0, 200).toLowerCase();
+    if (!query) {
+      throw new WebWorkbenchError(
+        400,
+        'A non-empty search query is required.',
+        'file_search_query_required'
+      );
+    }
+    const limit = boundedPageSize(input.limit ?? 50);
+    const items: Array<{ id: string; name: string; path: string }> = [];
+    const stack: Array<{ dir: string; rel: string }> = [{ dir: this.root, rel: '' }];
+    let visitedDirectories = 0;
+    let visitedFiles = 0;
+    let truncated = false;
+    const fileBudget = 2500;
+    while (stack.length > 0 && visitedFiles < fileBudget) {
+      const { dir, rel } = stack.pop() as { dir: string; rel: string };
+      visitedDirectories += 1;
+      if (visitedDirectories > 4000) {
+        truncated = true;
+        break;
+      }
+      let directory;
+      try {
+        directory = opendirSync(dir);
+      } catch {
+        continue;
+      }
+      const entries: Array<{ name: string; kind: 'directory' | 'file' | 'link' }> = [];
+      try {
+        for (;;) {
+          const entry = directory.readSync();
+          if (!entry) break;
+          if (
+            IGNORED_NAMES.has(entry.name) ||
+            (entry.name.startsWith('.') && entry.isDirectory())
+          ) {
+            continue;
+          }
+          if (entry.isDirectory()) entries.push({ name: entry.name, kind: 'directory' });
+          else if (entry.isFile()) entries.push({ name: entry.name, kind: 'file' });
+          else if (entry.isSymbolicLink()) entries.push({ name: entry.name, kind: 'link' });
+        }
+      } finally {
+        directory.closeSync();
+      }
+      entries.sort((left, right) => left.name.localeCompare(right.name));
+      for (const entry of entries) {
+        if (items.length >= limit) {
+          truncated = true;
+          break;
+        }
+        const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+        const absolute = resolve(dir, entry.name);
+        if (entry.kind === 'directory') {
+          stack.push({ dir: absolute, rel: childRel });
+          continue;
+        }
+        if (entry.kind === 'link') {
+          try {
+            const canonical = realpathSync(absolute);
+            if (!isWithinRoot(canonical, this.root)) continue;
+            if (statSync(canonical).isDirectory()) continue;
+          } catch {
+            continue;
+          }
+        }
+        visitedFiles += 1;
+        if (isSensitiveFilePath(childRel)) continue;
+        const nameMatches = entry.name.toLowerCase().includes(query);
+        if (input.scope === 'name') {
+          if (nameMatches) {
+            items.push({ id: this.remember(childRel), name: entry.name, path: childRel });
+          }
+          continue;
+        }
+        let contentMatches = false;
+        if (!nameMatches) {
+          contentMatches = this.fileContainsQuery(absolute, query);
+        }
+        if (nameMatches || contentMatches) {
+          items.push({ id: this.remember(childRel), name: entry.name, path: childRel });
+        }
+      }
+    }
+    return Object.freeze({
+      items: Object.freeze(items.map(item => Object.freeze(item))),
+      truncated: truncated || visitedFiles >= fileBudget,
+    });
+  }
+
+  private fileContainsQuery(absolutePath: string, query: string): boolean {
+    try {
+      const descriptor = openSync(absolutePath, constants.O_RDONLY);
+      try {
+        const buffer = Buffer.alloc(64 * 1024);
+        const bytesRead = readSync(descriptor, buffer, 0, buffer.length, 0);
+        if (bytesRead === 0) return false;
+        if (buffer.subarray(0, bytesRead).includes(0)) return false;
+        return new TextDecoder('utf-8')
+          .decode(buffer.subarray(0, bytesRead))
+          .toLowerCase()
+          .includes(query);
+      } finally {
+        closeSync(descriptor);
+      }
+    } catch {
+      return false;
+    }
   }
 
   readContent(input: {
