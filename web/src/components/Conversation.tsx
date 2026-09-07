@@ -20,6 +20,7 @@ import { ComposerControlCenter } from './composer/ComposerControlCenter';
 import { buildHistoryNavigation, type HistoryAnchor } from './history-navigation';
 import { ConversationHistoryNavigator } from './ConversationHistoryNavigator';
 import { useConversationHistoryNavigator } from './useConversationHistoryNavigator';
+import { ToolOutputPreview } from './ToolOutputPreview';
 
 const INITIAL_TIMELINE_WINDOW = 320;
 const TIMELINE_PAGE = 300;
@@ -336,11 +337,8 @@ export function Conversation({
           model={historyModel}
           activeOrder={history.activeOrder}
           span={history.span}
-          earlierInMemory={Math.max(0, allTimeline.length - timeline.length)}
-          hasRemoteEarlier={hasRemoteHistory}
-          loadBusy={Boolean(state.pendingAction)}
+          hasEarlierHistory={allTimeline.length > timeline.length || hasRemoteHistory}
           reduceMotion={reduceMotion}
-          onLoadEarlier={() => void loadEarlier()}
           onJumpToOrder={(order, behavior) => history.scrollToOrder(order, behavior)}
           onJumpToLatest={jumpToLatest}
         />
@@ -625,13 +623,15 @@ function ToolCard({
         {preview ? (
           <div className="tool-detail-section">
             <span className="micro-label">输出预览</span>
-            <pre tabIndex={0}>{sanitizeDisplayText(preview)}</pre>
-            {activity?.outputView?.omittedBytes ? (
-              <p className="truncation-note">
-                另有 {formatBytes(activity.outputView.omittedBytes)} 已折叠，可在 Inspector
-                中查看产物。
-              </p>
-            ) : null}
+            <ToolOutputPreview
+              text={preview}
+              defaultOpen={tool.state === 'error'}
+              note={
+                activity?.outputView?.omittedBytes
+                  ? `另有 ${formatBytes(activity.outputView.omittedBytes)} 已折叠，可在 Inspector 中查看产物。`
+                  : null
+              }
+            />
           </div>
         ) : null}
       </details>
@@ -654,9 +654,18 @@ function StandaloneToolActivity({ entry }: { readonly entry: WebTranscriptEntry 
       </div>
       {activity.summary ? <p className="tool-summary">{activity.summary}</p> : null}
       {activity.outputView?.preview || activity.body ? (
-        <pre tabIndex={0}>
-          {sanitizeDisplayText(activity.outputView?.preview || activity.body || '')}
-        </pre>
+        <div className="tool-detail-section tool-output-section">
+          <span className="micro-label">输出</span>
+          <ToolOutputPreview
+            text={activity.outputView?.preview || activity.body}
+            defaultOpen={activity.state === 'error'}
+            note={
+              activity.outputView?.omittedBytes
+                ? `另有 ${formatBytes(activity.outputView.omittedBytes)} 已折叠，可在 Inspector 中查看产物。`
+                : null
+            }
+          />
+        </div>
       ) : null}
     </article>
   );

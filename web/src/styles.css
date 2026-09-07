@@ -1049,37 +1049,24 @@ p {
   pointer-events: auto;
 }
 
-.history-load-earlier {
-  flex: none;
-  width: 22px;
-  min-height: 26px;
-  padding: 0;
-  border: 0;
-  border-radius: 0 8px 8px 0;
-  background: transparent;
-  color: var(--muted);
-  font-size: 10px;
-  line-height: 1.2;
-  cursor: pointer;
-  writing-mode: vertical-rl;
-}
-
-.history-load-earlier:hover {
-  background: var(--surface-2);
-  color: var(--accent);
-}
-
-.history-load-earlier:disabled {
-  cursor: default;
-  opacity: 0.45;
-}
-
 .history-slider {
   position: relative;
   flex: 1 1 auto;
   min-height: 0;
   cursor: pointer;
   touch-action: none;
+}
+
+.history-earlier-cap {
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--text-2) 45%, transparent);
+  pointer-events: none;
+  transform: translateX(-50%);
 }
 
 .history-ticks {
@@ -1129,8 +1116,8 @@ p {
 
 .history-tooltip {
   position: absolute;
-  left: 30px;
-  max-width: 220px;
+  left: 26px;
+  max-width: 180px;
   padding: 4px 8px;
   overflow: hidden;
   border: 1px solid var(--border-strong);
@@ -1174,9 +1161,6 @@ html[data-history-scrubbing] * {
 @container (min-width: 641px) and (max-width: 760px) {
   .history-rail {
     width: 18px;
-  }
-  .history-load-earlier {
-    display: none;
   }
   .history-tooltip {
     display: none;
@@ -1586,6 +1570,66 @@ html[data-history-scrubbing] * {
   margin: 6px 0 0;
   color: var(--muted);
   font-size: 11px;
+}
+
+/* v0.3.13 S4 — shared tool output preview. Real newlines are preserved with
+   pre-wrap (no one-line horizontal blowout); folded long output stays compact
+   and the raw response remains copyable. */
+.tool-output-section {
+  padding-top: 8px;
+}
+.tool-output-fold {
+  margin-top: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #070910;
+}
+:root[data-theme='light'] .tool-output-fold {
+  background: #f5f6f9;
+}
+.tool-output-fold summary {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  gap: 8px;
+  list-style: none;
+}
+.tool-output-fold summary::-webkit-details-marker {
+  display: none;
+}
+.tool-output-fold summary .text-button {
+  flex: none;
+}
+.tool-output-text {
+  max-height: 420px;
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+  color: var(--text-2);
+  font:
+    var(--font-code) / 1.55 'SFMono-Regular',
+    Consolas,
+    monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.tool-output-preview-open .tool-output-text {
+  margin-top: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #070910;
+}
+:root[data-theme='light'] .tool-output-preview-open .tool-output-text {
+  background: #f5f6f9;
+}
+.tool-output-preview-open .truncation-note {
+  margin: 6px 2px 0;
 }
 
 .edit-card {
@@ -3942,29 +3986,14 @@ html[data-history-scrubbing] * {
   display: flex;
   width: 44px;
   height: 48px;
-  align-items: flex-end;
+  align-items: center;
   justify-content: center;
-  padding-bottom: 12px;
-  gap: 3px;
+  padding-bottom: 10px;
 }
 
-.project-rail-brand span {
-  display: block;
-  width: 4px;
-  border-radius: 3px;
-  background: linear-gradient(180deg, var(--accent), var(--accent-2));
-}
-
-.project-rail-brand span:nth-child(1) {
-  height: 12px;
-}
-
-.project-rail-brand span:nth-child(2) {
-  height: 20px;
-}
-
-.project-rail-brand span:nth-child(3) {
-  height: 15px;
+/* v0.3.13 §9 — collapsed rail reuses the shared OrionBrandMark glyph. */
+.project-rail-brand .orion-brand-mark {
+  align-self: center;
 }
 
 .project-rail-action {

@@ -28,9 +28,7 @@ function anchor(order: number, kind: HistoryAnchor['kind']): HistoryAnchor {
 
 function renderRail(
   overrides: {
-    readonly earlierInMemory?: number;
-    readonly hasRemoteEarlier?: boolean;
-    readonly loadBusy?: boolean;
+    readonly hasEarlierHistory?: boolean;
     readonly activeOrder?: number | null;
     readonly span?: { readonly firstOrder: number; readonly lastOrder: number } | null;
     readonly count?: number;
@@ -51,11 +49,8 @@ function renderRail(
       model,
       activeOrder: overrides.activeOrder ?? null,
       span: overrides.span ?? null,
-      earlierInMemory: overrides.earlierInMemory ?? 0,
-      hasRemoteEarlier: overrides.hasRemoteEarlier ?? false,
-      loadBusy: overrides.loadBusy ?? false,
+      hasEarlierHistory: overrides.hasEarlierHistory ?? false,
       reduceMotion: overrides.reduceMotion ?? false,
-      onLoadEarlier: () => undefined,
       onJumpToOrder: () => undefined,
       onJumpToLatest: () => undefined,
     })
@@ -92,13 +87,17 @@ describe('ConversationHistoryNavigator markup (v0.3.13 S2)', () => {
     expect(html).toContain('history-viewport-marker');
   });
 
-  it('shows the load-earlier state on top of the rail', () => {
-    const inMemory = renderRail({ earlierInMemory: 300 });
-    expect(inMemory).toContain('加载更早 · 剩 300 项');
-    const remote = renderRail({ hasRemoteEarlier: true });
-    expect(remote).toContain('从持久记录加载更早内容');
-    const busy = renderRail({ earlierInMemory: 300, loadBusy: true });
-    expect(busy).toContain('disabled=""');
+  it('keeps "load earlier" OUT of the rail: no button, only a decorative cap', () => {
+    const withEarlier = renderRail({ hasEarlierHistory: true });
+    expect(withEarlier).not.toContain('role="button"');
+    expect(withEarlier).not.toContain('加载更早');
+    expect(withEarlier).not.toContain('从持久记录');
+    // Non-interactive top cap tells the eye more history exists above.
+    expect(withEarlier).toContain('history-earlier-cap');
+    expect(withEarlier).toContain('aria-valuetext');
+    expect(withEarlier).toContain('更早历史可在正文顶部加载');
+    const none = renderRail({ hasEarlierHistory: false });
+    expect(none).not.toContain('history-earlier-cap');
   });
 
   it('renders nothing for an empty model so no empty landmark shows', () => {

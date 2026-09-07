@@ -199,24 +199,57 @@ export function describeHistoryPosition(
 }
 
 /**
- * Drag coordinate → order mapping used by the rail. Pure so the pointer
- * contract can be unit tested without a DOM: a `clientY` inside the rail's
- * bounding rect maps linearly onto the loaded order range, clamped.
+ * The rail's visual coordinate is the BUCKET ORDINAL, never the raw `order`
+ * number: row gaps or wildly spaced persisted orders would otherwise draw
+ * phantom blank stretches and unstable tick positions. These helpers map
+ * clientY and orders onto `[0, bucketCount - 1]` positions (0 = oldest
+ * loaded bucket, n-1 = newest).
  */
-export function resolveRailOrderFromY(options: {
+
+/** 0..1 visual position of the i-th bucket along the rail. */
+export function bucketOrdinalPosition(index: number, bucketCount: number): number {
+  if (bucketCount <= 0) return 0;
+  if (bucketCount === 1) return 0.5;
+  const clamped = Math.max(0, Math.min(bucketCount - 1, index));
+  return clamped / (bucketCount - 1);
+}
+
+/** Index of the bucket containing `order`, or null when outside loaded history. */
+export function bucketIndexOfOrder(model: HistoryNavigationModel, order: number): number | null {
+  const index = model.buckets.findIndex(
+    bucket => order >= bucket.startOrder && order <= bucket.endOrder
+  );
+  return index >= 0 ? index : null;
+}
+
+/**
+ * Pointer coordinate → bucket index. Pure so drags can be unit tested: a
+ * `clientY` inside the rail maps onto the bucket ordinals and clamps.
+ */
+export function resolveRailBucketFromY(options: {
   readonly clientY: number;
   readonly railTop: number;
   readonly railHeight: number;
-  readonly minOrder: number;
-  readonly maxOrder: number;
+  readonly bucketCount: number;
 }): number {
-  const { clientY, railTop, railHeight, minOrder, maxOrder } = options;
-  if (!Number.isFinite(railHeight) || railHeight <= 0) return minOrder;
-  if (!Number.isFinite(maxOrder) || !Number.isFinite(minOrder) || maxOrder <= minOrder) {
-    return minOrder;
-  }
+  const { clientY, railTop, railHeight, bucketCount } = options;
+  if (!Number.isFinite(railHeight) || railHeight <= 0 || bucketCount <= 0) return 0;
   const ratio = (clientY - railTop) / railHeight;
-  return Math.round(minOrder + Math.max(0, Math.min(1, ratio)) * (maxOrder - minOrder));
+  return Math.max(0, Math.min(bucketCount - 1, Math.round(ratio * (bucketCount - 1))));
+}
+
+/**
+ * One-line tooltip text for an anchor. Generic fallback labels that merely
+ * echo the kind ("Orion 回复 · Orion 回复") collapse to the kind alone; real
+ * content labels show as `kind · first-line` so the tooltip never duplicates
+ * and never wraps.
+ */
+export function formatHistoryTooltip(anchor: HistoryAnchor): string {
+  const typeLabel = historyKindLabel(anchor.kind);
+  const cleaned = anchor.label.replace(/\s+/gu, ' ').trim();
+  if (!cleaned || cleaned === typeLabel) return typeLabel;
+  const line = cleaned.length > 40 ? `${cleaned.slice(0, 40)}…` : cleaned;
+  return `${typeLabel} · ${line}`;
 }
 
 /**

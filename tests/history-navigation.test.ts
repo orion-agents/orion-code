@@ -2,13 +2,16 @@
  * v0.3.13 S1 — pure conversation-history navigation model contracts.
  */
 import {
+  bucketIndexOfOrder,
+  bucketOrdinalPosition,
   buildHistoryNavigation,
   describeHistoryPosition,
+  formatHistoryTooltip,
   historyKindLabel,
   nearestAnchorOrder,
   pickActiveOrderFromBounds,
+  resolveRailBucketFromY,
   resolveRailKeyIntent,
-  resolveRailOrderFromY,
   type HistoryAnchor,
 } from '../web/src/components/history-navigation';
 
@@ -166,23 +169,59 @@ describe('buildHistoryNavigation priority preservation', () => {
   });
 });
 
-describe('resolveRailOrderFromY', () => {
-  const rail = { railTop: 100, railHeight: 500, minOrder: 100, maxOrder: 600 };
-  it('maps the rail height linearly onto the loaded order range', () => {
-    expect(resolveRailOrderFromY({ clientY: 100, ...rail })).toBe(100);
-    expect(resolveRailOrderFromY({ clientY: 600, ...rail })).toBe(600);
-    expect(resolveRailOrderFromY({ clientY: 350, ...rail })).toBe(350);
+describe('bucket ordinal geometry (v0.3.13 S3)', () => {
+  it('maps bucket index onto equal visual slots regardless of order gaps', () => {
+    // Wide order gaps must not stretch any tick: 6 buckets are always at
+    // 0/20/40/60/80/100 percent.
+    expect(bucketOrdinalPosition(0, 6)).toBe(0);
+    expect(bucketOrdinalPosition(2, 6)).toBeCloseTo(0.4);
+    expect(bucketOrdinalPosition(5, 6)).toBe(1);
+    expect(bucketOrdinalPosition(0, 1)).toBe(0.5);
+    expect(bucketOrdinalPosition(0, 0)).toBe(0);
+    expect(bucketOrdinalPosition(9, 6)).toBe(1); // clamps
   });
 
-  it('clamps drags outside the rail', () => {
-    expect(resolveRailOrderFromY({ clientY: 0, ...rail })).toBe(100);
-    expect(resolveRailOrderFromY({ clientY: 900, ...rail })).toBe(600);
+  it('resolves pointer y to a bucket index, clamped', () => {
+    const rail = { railTop: 100, railHeight: 500, bucketCount: 6 };
+    expect(resolveRailBucketFromY({ clientY: 100, ...rail })).toBe(0);
+    expect(resolveRailBucketFromY({ clientY: 350, ...rail })).toBe(3);
+    expect(resolveRailBucketFromY({ clientY: 600, ...rail })).toBe(5);
+    expect(resolveRailBucketFromY({ clientY: 0, ...rail })).toBe(0);
+    expect(resolveRailBucketFromY({ clientY: 900, ...rail })).toBe(5);
+    expect(resolveRailBucketFromY({ clientY: 100, railTop: 0, railHeight: 0, bucketCount: 0 })).toBe(0);
   });
 
-  it('degrades safely for degenerate inputs', () => {
-    expect(
-      resolveRailOrderFromY({ clientY: 100, railTop: 0, railHeight: 0, minOrder: 5, maxOrder: 5 })
-    ).toBe(5);
+  it('locates the bucket that owns an order (and none outside)', () => {
+    const model = buildHistoryNavigation([
+      anchor(0, 'user'),
+      anchor(500, 'assistant'),
+      anchor(1000, 'tool'),
+    ]);
+    expect(bucketIndexOfOrder(model, 0)).toBe(0);
+    expect(bucketIndexOfOrder(model, 500)).toBe(1);
+    expect(bucketIndexOfOrder(model, 1000)).toBe(2);
+    expect(bucketIndexOfOrder(model, 750)).toBeNull();
+    expect(bucketIndexOfOrder(model, -5)).toBeNull();
+  });
+});
+
+describe('formatHistoryTooltip (v0.3.13 S3)', () => {
+  it('collapses generic labels that echo the kind', () => {
+    expect(formatHistoryTooltip({ order: 1, key: 'k', kind: 'assistant', label: 'Orion 回复', priority: 'turn' })).toBe('Orion 回复');
+    expect(formatHistoryTooltip({ order: 1, key: 'k', kind: 'user', label: '用户任务', priority: 'turn' })).toBe('用户任务');
+  });
+
+  it('keeps real content and never duplicates the kind', () => {
+    const label = formatHistoryTooltip({ order: 1, key: 'k', kind: 'assistant', label: '  修复超时并重试连接  ', priority: 'turn' });
+    expect(label).toBe('Orion 回复 · 修复超时并重试连接');
+    expect(formatHistoryTooltip({ order: 1, key: 'k', kind: 'tool', label: '', priority: 'activity' })).toBe('工具活动');
+  });
+
+  it('truncates long labels to a single line', () => {
+    const long = 'x'.repeat(120);
+    const label = formatHistoryTooltip({ order: 1, key: 'k', kind: 'tool', label: long, priority: 'activity' });
+    expect(label.length).toBeLessThan(60);
+    expect(label.endsWith('…')).toBe(true);
   });
 });
 
