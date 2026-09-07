@@ -28,7 +28,7 @@ async function seedConversation(page: Parameters<typeof submitPrompt>[0], rounds
   }
 }
 
-test('WEB34-P0-19 rail and slider render beside the transcript without layout shift', async ({
+test('WEB33-P0-25 rail and slider render beside the transcript without layout shift', async ({
   page,
 }) => {
   test.setTimeout(300_000);
@@ -69,7 +69,7 @@ test('WEB34-P0-19 rail and slider render beside the transcript without layout sh
   expect(after).toEqual(before);
 });
 
-test('WEB34-P0-20 clicking the rail jumps the transcript and exposes a viewport marker', async ({
+test('WEB33-P0-26 clicking the rail jumps the transcript and exposes a viewport marker', async ({
   page,
 }) => {
   test.setTimeout(300_000);
@@ -106,7 +106,7 @@ test('WEB34-P0-20 clicking the rail jumps the transcript and exposes a viewport 
   expect(latest.max - latest.bottom).toBeLessThan(80);
 });
 
-test('WEB34-P0-21 pointer drag scrubs the transcript without text selection', async ({ page }) => {
+test('WEB33-P0-27 pointer drag scrubs the transcript without text selection', async ({ page }) => {
   test.setTimeout(300_000);
   await page.setViewportSize({ width: 1_600, height: 900 });
   await waitForWorkbenchReady(page, { timeout: 30_000 });
@@ -128,7 +128,7 @@ test('WEB34-P0-21 pointer drag scrubs the transcript without text selection', as
   expect(top).toBeLessThan(40);
 });
 
-test('WEB34-P0-22 browsing the past never steals the scroll while new output arrives', async ({
+test('WEB33-P0-28 browsing the past never steals the scroll while new output arrives', async ({
   page,
 }) => {
   test.setTimeout(300_000);
@@ -157,14 +157,20 @@ test('WEB34-P0-22 browsing the past never steals the scroll while new output arr
   expect(Math.abs(during - before)).toBeLessThan(120);
 });
 
-test('WEB34-P0-23 narrow conversation columns hide the rail and keep controls usable', async ({
+test('WEB33-P0-29 narrow conversation columns hide the rail and keep controls usable', async ({
   page,
 }) => {
   test.setTimeout(300_000);
-  // A compact desktop whose central column sits below the 640px rail cutoff.
-  await page.setViewportSize({ width: 700, height: 900 });
+  // Build the conversation at a wide viewport (stable session creation), then
+  // shrink the central column below the 640px rail cutoff.
+  await page.setViewportSize({ width: 1_600, height: 900 });
   await waitForWorkbenchReady(page, { timeout: 30_000 });
-  await seedConversation(page, 2);
+  // Enough turns that the narrow column actually overflows vertically (a
+  // scrollable transcript is a precondition for the jump-latest control).
+  await seedConversation(page, 5);
+
+  await page.setViewportSize({ width: 620, height: 700 });
+  await page.waitForTimeout(900);
 
   await expect(page.getByRole('navigation', { name: '会话历史定位' })).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
@@ -184,4 +190,24 @@ test('WEB34-P0-23 narrow conversation columns hide the rail and keep controls us
   const bottom = await viewport.evaluate(element => element.scrollTop + element.clientHeight);
   const max = await viewport.evaluate(element => element.scrollHeight);
   expect(max - bottom).toBeLessThan(80);
+});
+
+test('WEB33-P0-30 the rail never duplicates the load-earlier control (v0.3.13 S1)', async ({
+  page,
+}) => {
+  test.setTimeout(300_000);
+  await page.setViewportSize({ width: 1_600, height: 900 });
+  await waitForWorkbenchReady(page, { timeout: 30_000 });
+  await seedConversation(page, 3);
+
+  const rail = page.getByRole('navigation', { name: '会话历史定位' });
+  await expect(rail).toBeVisible();
+  // The one complete "load earlier" entry lives in the transcript column; the
+  // rail exposes only a slider — no second button, no vertical text.
+  expect(await rail.getByRole('button').count()).toBe(0);
+  expect(await rail.locator('text=加载更早').count()).toBe(0);
+  expect(await rail.locator('text=持久记录').count()).toBe(0);
+  // Screen readers still learn older history exists via the slider text.
+  const slider = rail.getByRole('slider', { name: '已加载会话历史位置' });
+  await expect(slider).toHaveAttribute('aria-valuetext', /关键节点/u);
 });

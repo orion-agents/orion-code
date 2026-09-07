@@ -35,8 +35,10 @@ export interface HistoryAnchor {
   /** Stable timeline key (entry id / call id / task id), never the render index. */
   readonly key: string;
   readonly kind: HistoryAnchorKind;
-  /** Short, truncatable description used by tooltips and aria-valuetext. */
+  /** Short, truncatable description used by aria-valuetext. */
   readonly label: string;
+  /** Longer plain-text excerpt (≤280 chars) for the hover preview card. */
+  readonly preview?: string;
   readonly priority: HistoryAnchorPriority;
 }
 
@@ -199,24 +201,156 @@ export function describeHistoryPosition(
 }
 
 /**
- * Drag coordinate → order mapping used by the rail. Pure so the pointer
- * contract can be unit tested without a DOM: a `clientY` inside the rail's
- * bounding rect maps linearly onto the loaded order range, clamped.
+ * The rail's visual coordinate is the BUCKET ORDINAL, never the raw `order`
+ * number: row gaps or wildly spaced persisted orders would otherwise draw
+ * phantom blank stretches and unstable tick positions. These helpers map
+ * clientY and orders onto `[0, bucketCount - 1]` positions (0 = oldest
+ * loaded bucket, n-1 = newest).
  */
-export function resolveRailOrderFromY(options: {
+
+/** 0..1 visual position of the i-th bucket along the rail. */
+export function bucketOrdinalPosition(index: number, bucketCount: number): number {
+  if (bucketCount <= 0) return 0;
+  if (bucketCount === 1) return 0.5;
+  const clamped = Math.max(0, Math.min(bucketCount - 1, index));
+  return clamped / (bucketCount - 1);
+}
+
+/** Index of the bucket containing `order`, or null when outside loaded history. */
+export function bucketIndexOfOrder(model: HistoryNavigationModel, order: number): number | null {
+  const index = model.buckets.findIndex(
+    bucket => order >= bucket.startOrder && order <= bucket.endOrder
+  );
+  return index >= 0 ? index : null;
+}
+
+export const HISTORY_TICK_LENGTH_CLASSES = [
+  'history-tick-s',
+  'history-tick-m',
+  'history-tick-l',
+] as const;
+export type HistoryTickLengthClass = (typeof HISTORY_TICK_LENGTH_CLASSES)[number];
+
+/**
+ * Static content weight of one anchor (0..1). It intentionally NEVER reads the
+ * DOM: rendered pixel heights jump when Markdown blocks expand, so the tick
+ * outline is derived from the anchor's payload size on a log curve instead.
+ * Activity rows (tool/edit/subtask/research) get a low base weight so long
+ * command output cannot drown out the conversation turns.
+ */
+export function anchorWeight(anchor: HistoryAnchor): number {
+  const payload =
+    anchor.kind === 'tool' ||
+    anchor.kind === 'edit' ||
+    anchor.kind === 'subtask' ||
+    anchor.kind === 'research'
+      ? 160
+      : 240;
+  const size = anchor.label.length;
+  const raw = 0.35 + Math.log2(1 + size / payload) * 0.55;
+  return Math.max(0.15, Math.min(1, raw));
+}
+
+export interface HistoryTick {
+  /** Visual ordinal (0 = oldest loaded row). */
+  readonly index: number;
+  /** Anchor orders merged into this tick (length 1 unless compacted). */
+  readonly orders: readonly number[];
+  /** Click/keyboard landing row (newest error, else newest turn, else middle). */
+  readonly jumpOrder: number;
+  /** Normalised content weight (0..1) driving the tick length. */
+  readonly weight: number;
+  readonly hasError: boolean;
+}
+
+export const HISTORY_DEFAULT_MAX_TICKS = 220;
+export const HISTORY_MAX_TICKS_LIMIT = 400;
+
+/**
+ * Mini-map ticks for the rail: one tick per anchor until the count exceeds the
+ * density limit, then a stable order-preserving compaction (summed weights,
+ * OR-ed errors) — never pixel-derived, so expanding a Markdown block cannot
+ * move history coordinates.
+ */
+export function buildHistoryTicks(
+  anchors: readonly HistoryAnchor[],
+  options: { readonly maxTicks?: number } = {}
+): readonly HistoryTick[] {
+  const maxTicks =
+    typeof options.maxTicks === 'number' && Number.isFinite(options.maxTicks)
+      ? Math.max(1, Math.min(HISTORY_MAX_TICKS_LIMIT, Math.round(options.maxTicks)))
+      : HISTORY_DEFAULT_MAX_TICKS;
+  const sorted = [...anchors]
+    .filter(anchor => Number.isFinite(anchor.order))
+    .sort((left, right) => left.order - right.order);
+  if (sorted.length === 0) return Object.freeze([]);
+
+  const groups: HistoryAnchor[][] = [];
+  if (sorted.length <= maxTicks) {
+    for (const anchor of sorted) groups.push([anchor]);
+  } else {
+    const perGroup = Math.ceil(sorted.length / maxTicks);
+    for (let start = 0; start < sorted.length; start += perGroup) {
+      groups.push(sorted.slice(start, start + perGroup));
+    }
+  }
+
+  const ticks = groups.map((group, index) => {
+    const hasError = group.some(anchor => anchor.priority === 'error');
+    const newest = group.reduce(
+      (best, anchor) => (anchor.order > best.order ? anchor : best),
+      group[0]
+    );
+    let jump = newest;
+    let bestRank = -1;
+    for (const anchor of group) {
+      // Newest error wins, then newest turn, else the newest anchor.
+      const rank = anchor.priority === 'error' ? 2 : anchor.priority === 'turn' ? 1 : 0;
+      if (rank >= bestRank) {
+        bestRank = rank;
+        jump = anchor;
+      }
+    }
+    const weight = Math.max(
+      0.15,
+      Math.min(
+        1,
+        group.reduce((sum, anchor) => sum + anchorWeight(anchor), 0) / group.length +
+          (hasError ? 0.1 : 0)
+      )
+    );
+    return {
+      index,
+      orders: Object.freeze(group.map(anchor => anchor.order)),
+      jumpOrder: jump.order,
+      weight,
+      hasError,
+    } satisfies HistoryTick;
+  });
+  return Object.freeze(ticks);
+}
+
+/** Tick length class from the normalised weight: three visual tiers. */
+export function tickLengthClass(weight: number): HistoryTickLengthClass {
+  if (weight >= 0.72) return 'history-tick-l';
+  if (weight >= 0.45) return 'history-tick-m';
+  return 'history-tick-s';
+}
+
+/**
+ * Pointer coordinate → tick index. Pure so drags can be unit tested: a
+ * `clientY` inside the rail maps onto the tick ordinals and clamps.
+ */
+export function resolveRailTickFromY(options: {
   readonly clientY: number;
   readonly railTop: number;
   readonly railHeight: number;
-  readonly minOrder: number;
-  readonly maxOrder: number;
+  readonly tickCount: number;
 }): number {
-  const { clientY, railTop, railHeight, minOrder, maxOrder } = options;
-  if (!Number.isFinite(railHeight) || railHeight <= 0) return minOrder;
-  if (!Number.isFinite(maxOrder) || !Number.isFinite(minOrder) || maxOrder <= minOrder) {
-    return minOrder;
-  }
+  const { clientY, railTop, railHeight, tickCount } = options;
+  if (!Number.isFinite(railHeight) || railHeight <= 0 || tickCount <= 0) return 0;
   const ratio = (clientY - railTop) / railHeight;
-  return Math.round(minOrder + Math.max(0, Math.min(1, ratio)) * (maxOrder - minOrder));
+  return Math.max(0, Math.min(tickCount - 1, Math.round(ratio * (tickCount - 1))));
 }
 
 /**

@@ -342,8 +342,6 @@ export async function createSession(
       async () => {
         const current = await currentActiveSession(page);
         if (!current) return false;
-        const rename = current.row.getByRole('button', { name: /^重命名会话 / });
-        if (!(await rename.isEnabled())) return false;
         const currentElement = await current.button.elementHandle();
         if (!currentElement) return false;
         if (!previousActiveElement) return true;
@@ -364,9 +362,6 @@ export async function createSession(
     .toBe(true);
 
   let activeRow = await activeSessionRow(page, options);
-  await expect(activeRow.getByRole('button', { name: /^重命名会话 / })).toBeEnabled({
-    timeout: options.timeout,
-  });
   let active = activeRow.locator('.project-session-main');
 
   if (options.name) {
@@ -388,19 +383,26 @@ export async function renameActiveSession(
 
   const ui = workbenchUi(page);
   const activeRow = await activeSessionRow(page, options);
-  let renameButton = activeRow.getByRole('button', { name: /^重命名会话 / });
-
-  if (!(await renameButton.isVisible())) {
-    await openSessionNavigation(page, options);
-    renameButton = activeRow.getByRole('button', { name: /^重命名会话 / });
-  }
-
-  await activeRow.hover();
-  await expect(renameButton).toBeVisible({ timeout: options.timeout });
-  await expect(renameButton).toBeEnabled({ timeout: options.timeout });
   const previousName = await activeRow.locator('.project-session-main strong').innerText();
-  await renameButton.focus();
-  await renameButton.press('Enter');
+  const renameButton = activeRow.getByRole('button', { name: /^重命名会话 / });
+
+  if (await renameButton.count()) {
+    await activeRow.hover();
+    await expect(renameButton).toBeVisible({ timeout: options.timeout });
+    await expect(renameButton).toBeEnabled({ timeout: options.timeout });
+    await renameButton.focus();
+    await renameButton.press('Enter');
+  } else {
+    // v0.3.7+ keeps rename inside the per-row actions menu.
+    await openSessionNavigation(page, options);
+    const menuButton = activeRow.getByRole('button', { name: /操作$/u });
+    await expect(menuButton).toBeVisible({ timeout: options.timeout });
+    await menuButton.click();
+    const menu = page.getByRole('menu');
+    const renameItem = menu.getByRole('menuitem', { name: /重命名/u });
+    await expect(renameItem).toBeEnabled({ timeout: options.timeout });
+    await renameItem.click();
+  }
   await expect(ui.renameDialog).toBeVisible({ timeout: options.timeout });
   const nameInput = ui.renameDialog.getByRole('textbox', { name: '会话名称' });
   // The controlled dialog initializes its draft in an effect. Waiting for that

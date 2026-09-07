@@ -8,7 +8,7 @@ test.use({ trace: 'off', video: 'off', screenshot: 'on' });
  * navigator across desktop, minimum rail and the <=760px drawer; it never
  * becomes an interactive control and never causes horizontal overflow.
  */
-test('WEB34-P0-24 brand mark is a single decorative SVG next to ORION copy', async ({ page }) => {
+test('WEB33-P0-31 brand mark is a single decorative SVG next to ORION copy', async ({ page }) => {
   test.setTimeout(180_000);
   await page.setViewportSize({ width: 1_280, height: 900 });
   await waitForWorkbenchReady(page, { timeout: 30_000 });
@@ -35,7 +35,7 @@ test('WEB34-P0-24 brand mark is a single decorative SVG next to ORION copy', asy
   await page.screenshot({ path: 'test-results/v0313-brand-desktop.png', fullPage: false });
 });
 
-test('WEB34-P0-25 brand survives the minimum project rail and the narrow drawer', async ({
+test('WEB33-P0-32 brand survives the minimum project rail and the narrow drawer', async ({
   page,
 }) => {
   test.setTimeout(180_000);
@@ -48,7 +48,14 @@ test('WEB34-P0-25 brand survives the minimum project rail and the narrow drawer'
   const collapse = railSurface.getByRole('button', { name: '折叠项目导航' });
   if (await collapse.isVisible()) {
     await collapse.click();
-    await expect(railSurface).toHaveClass(/project-navigator-collapsed/u, { timeout: 15_000 });
+    // The collapsed state renders a DIFFERENT aside (#workspace-rail) that
+    // carries the collapsed class and the shared brand glyph.
+    const collapsedRail = page.locator('#workspace-rail');
+    await expect(collapsedRail).toHaveClass(/project-navigator-collapsed/u, {
+      timeout: 15_000,
+    });
+    await expect(collapsedRail.locator('.orion-brand-mark')).toBeVisible();
+    await expect(collapsedRail.getByRole('button', { name: '展开项目导航' })).toBeVisible();
   }
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
     true

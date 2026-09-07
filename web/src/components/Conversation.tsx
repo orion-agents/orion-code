@@ -20,6 +20,7 @@ import { ComposerControlCenter } from './composer/ComposerControlCenter';
 import { buildHistoryNavigation, type HistoryAnchor } from './history-navigation';
 import { ConversationHistoryNavigator } from './ConversationHistoryNavigator';
 import { useConversationHistoryNavigator } from './useConversationHistoryNavigator';
+import { ToolOutputPreview } from './ToolOutputPreview';
 
 const INITIAL_TIMELINE_WINDOW = 320;
 const TIMELINE_PAGE = 300;
@@ -336,11 +337,9 @@ export function Conversation({
           model={historyModel}
           activeOrder={history.activeOrder}
           span={history.span}
-          earlierInMemory={Math.max(0, allTimeline.length - timeline.length)}
-          hasRemoteEarlier={hasRemoteHistory}
-          loadBusy={Boolean(state.pendingAction)}
+          hasEarlierHistory={allTimeline.length > timeline.length || hasRemoteHistory}
+          processing={state.processing}
           reduceMotion={reduceMotion}
-          onLoadEarlier={() => void loadEarlier()}
           onJumpToOrder={(order, behavior) => history.scrollToOrder(order, behavior)}
           onJumpToLatest={jumpToLatest}
         />
@@ -404,6 +403,7 @@ function toHistoryAnchor(item: TimelineItem): HistoryAnchor | null {
       key,
       kind: 'tool',
       label: firstLine(item.value.summary) || item.value.name,
+      preview: previewText(item.value.summary),
       priority: item.value.state === 'error' ? 'error' : 'activity',
     };
   }
@@ -413,6 +413,7 @@ function toHistoryAnchor(item: TimelineItem): HistoryAnchor | null {
       key,
       kind: 'edit',
       label: item.value.request.path,
+      preview: previewText(`${item.value.request.path}\n${item.value.request.newString ?? ''}`),
       priority: 'activity',
     };
   }
@@ -422,6 +423,7 @@ function toHistoryAnchor(item: TimelineItem): HistoryAnchor | null {
       key,
       kind: 'subtask',
       label: firstLine(item.value.objective) || item.value.role,
+      preview: previewText(item.value.summary || item.value.objective),
       priority: SUBTASK_FAILURE_STATES.has(item.value.state) ? 'error' : 'activity',
     };
   }
@@ -431,6 +433,7 @@ function toHistoryAnchor(item: TimelineItem): HistoryAnchor | null {
       key,
       kind: 'research',
       label: firstLine(item.value.objective) || 'Research',
+      preview: previewText(item.value.conclusion || item.value.objective),
       priority: item.value.stage === 'failed' ? 'error' : 'activity',
     };
   }
@@ -442,6 +445,7 @@ function toHistoryAnchor(item: TimelineItem): HistoryAnchor | null {
       key,
       kind: 'tool',
       label: firstLine(activity.summary) || activity.name || activity.detail || '工具活动',
+      preview: previewText(activity.summary || activity.body),
       priority: activity.state === 'error' ? 'error' : 'activity',
     };
   }
@@ -469,6 +473,7 @@ function toHistoryAnchor(item: TimelineItem): HistoryAnchor | null {
       firstLine(entry.content) ||
       entry.title ||
       (role === 'user' ? '用户任务' : role === 'assistant' ? 'Orion 回复' : roleLabel(role)),
+    preview: previewText(entry.content),
   };
 }
 
@@ -483,6 +488,14 @@ function firstLine(value: string | undefined): string | null {
   if (!value) return null;
   const line = value.replace(/\s+/gu, ' ').trim();
   return line.length > 80 ? `${line.slice(0, 80)}…` : line;
+}
+
+/** Hover-preview excerpt: first 280 chars with real line breaks preserved. */
+function previewText(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  return trimmed.length <= 280 ? trimmed : `${trimmed.slice(0, 280)}…`;
 }
 
 function renderTimelineItem(item: TimelineItem, state: WorkbenchState) {
@@ -625,13 +638,15 @@ function ToolCard({
         {preview ? (
           <div className="tool-detail-section">
             <span className="micro-label">输出预览</span>
-            <pre tabIndex={0}>{sanitizeDisplayText(preview)}</pre>
-            {activity?.outputView?.omittedBytes ? (
-              <p className="truncation-note">
-                另有 {formatBytes(activity.outputView.omittedBytes)} 已折叠，可在 Inspector
-                中查看产物。
-              </p>
-            ) : null}
+            <ToolOutputPreview
+              text={preview}
+              defaultOpen={tool.state === 'error'}
+              note={
+                activity?.outputView?.omittedBytes
+                  ? `另有 ${formatBytes(activity.outputView.omittedBytes)} 已折叠，可在 Inspector 中查看产物。`
+                  : null
+              }
+            />
           </div>
         ) : null}
       </details>
@@ -654,9 +669,18 @@ function StandaloneToolActivity({ entry }: { readonly entry: WebTranscriptEntry 
       </div>
       {activity.summary ? <p className="tool-summary">{activity.summary}</p> : null}
       {activity.outputView?.preview || activity.body ? (
-        <pre tabIndex={0}>
-          {sanitizeDisplayText(activity.outputView?.preview || activity.body || '')}
-        </pre>
+        <div className="tool-detail-section tool-output-section">
+          <span className="micro-label">输出</span>
+          <ToolOutputPreview
+            text={activity.outputView?.preview || activity.body}
+            defaultOpen={activity.state === 'error'}
+            note={
+              activity.outputView?.omittedBytes
+                ? `另有 ${formatBytes(activity.outputView.omittedBytes)} 已折叠，可在 Inspector 中查看产物。`
+                : null
+            }
+          />
+        </div>
       ) : null}
     </article>
   );
