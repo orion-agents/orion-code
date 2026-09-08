@@ -32,6 +32,12 @@ test('WEB33-P0-16 Files puts preview left of the tree on one grid row', async ({
 
   // Open the Files panel from the vertical rail.
   await page.locator('.work-panel-rail-button[data-work-panel-id="files"]').click();
+  // The fixture default detail width sits below the 620px split threshold;
+  // widen the docked panel to its max so the split geometry applies.
+  const dockGrip = page.getByRole('separator', { name: /调整工作面板宽度/u });
+  await dockGrip.focus();
+  await page.keyboard.press('End');
+  await page.waitForTimeout(400);
   const layout = page.locator('.resource-split-layout');
   const tree = page.locator('[aria-label="工作区文件"]');
   const preview = page.locator('[aria-label="文件预览"]');
@@ -67,6 +73,11 @@ test('WEB33-P0-17 Review puts diff left of the file list on one grid row', async
   await waitForWorkbenchReady(page, { timeout: 30_000 });
 
   await page.locator('.work-panel-rail-button[data-work-panel-id="review"]').click();
+  // Widen the docked panel past the 620px stack threshold.
+  const dockGrip = page.getByRole('separator', { name: /调整工作面板宽度/u });
+  await dockGrip.focus();
+  await page.keyboard.press('End');
+  await page.waitForTimeout(400);
   const diff = page.locator('[aria-label="审阅 Diff"]');
   const list = page.locator('[aria-label="待审阅文件"]');
   await expect(list).toBeVisible({ timeout: 30_000 });
@@ -78,29 +89,16 @@ test('WEB33-P0-17 Review puts diff left of the file list on one grid row', async
 
 test('WEB33-P0-18 narrow Files container stacks navigator above content', async ({ page }) => {
   test.setTimeout(180_000);
-  // A narrow detail surface (360px) puts the panel container below 620px.
-  await page.setViewportSize({ width: 900, height: 900 });
+  await page.setViewportSize({ width: 1_600, height: 900 });
   await waitForWorkbenchReady(page, { timeout: 30_000 });
-  await page.evaluate(() => {
-    localStorage.setItem(
-      'orion.web.right-workspace.v3',
-      JSON.stringify({
-        schemaVersion: 3,
-        projectNavigation: { expanded: false, widthPx: 280 },
-        workPanel: {
-          byWorkspace: {},
-          fallback: {
-            expanded: true,
-            activePanel: 'files',
-            detailWidthPx: 360,
-            taskSubview: 'overview',
-          },
-        },
-      })
-    );
-  });
-  await page.reload({ waitUntil: 'domcontentloaded' });
-  await waitForWorkbenchReady(page, { timeout: 30_000 });
+  await page.locator('.work-panel-rail-button[data-work-panel-id="files"]').click();
+
+  // Shrink the docked detail surface to its minimum (Home): the files
+  // container drops below 620px and the layout stacks into one column.
+  const dockGrip = page.getByRole('separator', { name: /调整工作面板宽度/u });
+  await dockGrip.focus();
+  await page.keyboard.press('Home');
+  await page.waitForTimeout(400);
 
   const tree = page.locator('[aria-label="工作区文件"]');
   const preview = page.locator('[aria-label="文件预览"]');
