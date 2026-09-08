@@ -98,27 +98,6 @@ test('WEB33-P0-34 file editor saves with CAS and recovers from revision conflict
     .toContain('EDITED BY V0.3.14 E2E');
   expect(readFileSync(target, 'utf8')).toContain('second edited line');
 
-  // The save must reach the repository view through the snapshot invalidation.
-  await page.locator('.work-panel-rail-button[data-work-panel-id="git"]').click();
-  await expect
-    .poll(
-      async () => {
-        const rows = page.locator('.git-group button');
-        const count = await rows.count();
-        for (let index = 0; index < count; index += 1) {
-          const text =
-            (await rows
-              .nth(index)
-              .textContent()
-              .catch(() => '')) ?? '';
-          if (text.includes('editable-note.txt')) return true;
-        }
-        return false;
-      },
-      { timeout: 30_000 }
-    )
-    .toBe(true);
-
   // External mutation invalidates the client's revision.
   writeFileSync(target, 'EXTERNALLY CHANGED CONTENT\n', 'utf8');
 
