@@ -22,6 +22,30 @@ which is **not** a pass.
 
 ## [Unreleased]
 
+## [0.3.14] — CANDIDATE
+
+> **Status: candidate.** Editable Files panel (guarded `POST /files/write` with
+> revision CAS) and removal of the legacy view-only controls. Not merged,
+> tagged or published.
+
+### Added
+
+- File editing in the Files panel: content view gains a view/edit toggle; the
+  edit mode is a controlled monospace textarea with dirty tracking, explicit
+  save (guarded `POST /files/write`), cancel/Esc with an unsaved-changes
+  confirmation, and a 409 conflict path that offers an explicit reload.
+- `POST /files/write`: workspace-fenced (registry + symlink escape checks),
+  sensitive-path block, 512 KiB text-only payload limit, on-disk stat
+  fingerprint CAS (`file_revision_conflict`), user-gesture header
+  (`file-mutation-v1`), idempotent `file.write` mutation ledger entry, and
+  one-shot snapshot invalidation so Git/Review decorations refresh after a
+  save.
+
+### Removed
+
+- The read-only file toolbar: 「跳转」（line jump）, 「复制」 and 「自动换行」
+  controls, the line-number gutter spans and the wrap-only styles.
+
 ## [0.3.13] — CANDIDATE
 
 > **Status: candidate.** Development baseline after v0.3.12 (version bump only;

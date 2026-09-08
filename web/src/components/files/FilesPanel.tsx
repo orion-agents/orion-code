@@ -41,11 +41,14 @@ export function FilesPanel({
   const [contentError, setContentError] = useState('');
   const [resourceNotice, setResourceNotice] = useState('');
   const [query, setQuery] = useState('');
-  const [wrapLines, setWrapLines] = useState(false);
-  const [targetLine, setTargetLine] = useState('1');
   const [gitDecorations, setGitDecorations] = useState<GitDecorations>({});
   const [gitDecorationNotice, setGitDecorationNotice] = useState('');
-  const previewRef = useRef<HTMLPreElement>(null);
+  // v0.3.14 — file editor state: view/edit modes with a CAS-guarded draft.
+  const [editMode, setEditMode] = useState<'view' | 'edit'>('view');
+  const [draft, setDraft] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [conflict, setConflict] = useState(false);
+  const [contentRevision, setContentRevision] = useState('');
   const generationRef = useRef(0);
   const contentRequestRef = useRef(0);
 
@@ -151,6 +154,9 @@ export function FilesPanel({
       setContent('');
       setContentCursor(null);
       setBinary(false);
+      setEditMode('view');
+      setDraft('');
+      setConflict(false);
     }
     if (!recovered) setResourceNotice('');
     try {
@@ -162,6 +168,7 @@ export function FilesPanel({
       setBinary(page.binary);
       setContent(current => (append ? `${current}${page.content ?? ''}` : (page.content ?? '')));
       setContentCursor(page.nextCursor);
+      setContentRevision(page.revision);
       if (recovered) setResourceNotice('文件已变化，已从第一页重新载入。');
     } catch (error) {
       if (generation !== generationRef.current || request !== contentRequestRef.current) return;
@@ -170,6 +177,45 @@ export function FilesPanel({
         return;
       }
       setContentError(message(error));
+    }
+  };
+
+  const editable =
+    Boolean(selected) &&
+    !binary &&
+    !selected?.sensitive &&
+    contentCursor === null &&
+    (selected?.sizeBytes ?? 0) <= 512 * 1024;
+
+  const beginEdit = () => {
+    setDraft(content);
+    setConflict(false);
+    setEditMode('edit');
+  };
+
+  const cancelEdit = () => {
+    if (draft !== content && !window.confirm('放弃未保存的修改？')) return;
+    setEditMode('view');
+    setDraft('');
+    setConflict(false);
+  };
+
+  const saveEdit = async () => {
+    if (!selected || saving) return;
+    setSaving(true);
+    setConflict(false);
+    try {
+      await actions.writeFileContent(selected.id, draft, contentRevision);
+      setEditMode('view');
+      setDraft('');
+      await selectFile(selected, false, true, generationRef.current, contentRequestRef.current + 1);
+      setResourceNotice('已保存文件。');
+      void loadGitDecorations();
+    } catch (error) {
+      if (isRevisionConflict(error)) setConflict(true);
+      else setResourceNotice(message(error));
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -290,59 +336,75 @@ export function FilesPanel({
               ) : (
                 <>
                   <div className="file-preview-actions">
-                    <label>
-                      <span className="sr-only">跳到行</span>
-                      <input
-                        type="number"
-                        min="1"
-                        value={targetLine}
-                        aria-label="跳到行"
-                        onChange={event => setTargetLine(event.target.value)}
-                      />
-                    </label>
-                    <button
-                      type="button"
-                      className="text-button"
-                      onClick={() => scrollToLine(previewRef.current, targetLine)}
-                    >
-                      跳转
-                    </button>
-                    <button
-                      type="button"
-                      className="text-button"
-                      onClick={() => void copyText(content, setResourceNotice)}
-                    >
-                      复制
-                    </button>
-                    <button
-                      type="button"
-                      className="text-button"
-                      aria-pressed={wrapLines}
-                      onClick={() => setWrapLines(value => !value)}
-                    >
-                      自动换行
-                    </button>
+                    {editMode === 'view' ? (
+                      <button
+                        type="button"
+                        className="text-button"
+                        disabled={!editable}
+                        title={editable ? undefined : '仅支持编辑 512 KB 内的 UTF-8 文本文件'}
+                        onClick={beginEdit}
+                      >
+                        编辑
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          className="primary-button"
+                          disabled={saving || draft === content}
+                          onClick={() => void saveEdit()}
+                        >
+                          {saving ? '保存中…' : '保存'}
+                        </button>
+                        <button
+                          type="button"
+                          className="text-button"
+                          disabled={saving}
+                          onClick={cancelEdit}
+                        >
+                          取消
+                        </button>
+                      </>
+                    )}
                   </div>
-                  <pre
-                    ref={previewRef}
-                    tabIndex={0}
-                    className={`file-code-view ${wrapLines ? 'wrap' : ''}`}
-                    aria-label={`文件内容 ${selected.name}`}
-                  >
-                    {sanitizeDisplayText(content)
-                      .split('\n')
-                      .map((line, index) => (
-                        <span className="file-code-line" data-line={index + 1} key={index}>
-                          <span className="file-line-number" aria-hidden="true">
-                            {index + 1}
-                          </span>
-                          <span className="file-line-content">{line || ' '}</span>
-                        </span>
-                      ))}
-                  </pre>
+                  {conflict ? (
+                    <p className="resource-error" role="alert">
+                      文件已在别处变更，保存被拒绝。
+                      <button
+                        type="button"
+                        className="text-button"
+                        onClick={() => void selectFile(selected, false, true)}
+                      >
+                        重新加载
+                      </button>
+                    </p>
+                  ) : null}
+                  {editMode === 'edit' ? (
+                    <textarea
+                      className="file-editor"
+                      value={draft}
+                      spellCheck={false}
+                      aria-label={`编辑文件 ${selected.name}`}
+                      onChange={event => setDraft(event.target.value)}
+                      onKeyDown={event => {
+                        if (event.key === 'Escape') {
+                          event.preventDefault();
+                          cancelEdit();
+                        }
+                      }}
+                    />
+                  ) : (
+                    <pre
+                      tabIndex={0}
+                      className="file-code-view"
+                      aria-label={`文件内容 ${selected.name}`}
+                    >
+                      {sanitizeDisplayText(content)}
+                    </pre>
+                  )}
                 </>
               )}
-              {contentCursor ? (
+              {contentCursor && editMode === 'view' ? (
                 <button
                   type="button"
                   className="secondary-button"
@@ -532,24 +594,6 @@ function formatBytes(bytes: number): string {
 
 function isRevisionConflict(error: unknown): boolean {
   return error instanceof WebApiError && error.code === 'file_revision_conflict';
-}
-
-function scrollToLine(preview: HTMLPreElement | null, rawLine: string): void {
-  const line = Number(rawLine);
-  if (!preview || !Number.isSafeInteger(line) || line < 1) return;
-  preview.querySelector<HTMLElement>(`[data-line="${line}"]`)?.scrollIntoView({
-    block: 'center',
-  });
-  preview.focus();
-}
-
-async function copyText(content: string, announce: (message: string) => void): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(content);
-    announce('已复制当前加载的文件内容。');
-  } catch {
-    announce('浏览器未允许复制，请手动选择文本。');
-  }
 }
 
 function message(error: unknown): string {

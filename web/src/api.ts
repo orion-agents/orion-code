@@ -294,6 +294,21 @@ export class OrionWebApi {
     return this.query(`/files/${encodeURIComponent(fileId)}/content?${query.toString()}`);
   }
 
+  /** v0.3.14 — guarded CAS save for the file editor. */
+  writeFileContent(
+    context: WebContextGuardV1,
+    fileId: string,
+    content: string,
+    expectedRevision: string
+  ): Promise<{ readonly fileId: string; readonly revision: string; readonly sizeBytes: number }> {
+    return this.mutate(
+      '/files/write',
+      'POST',
+      { ...context, fileId, content, expectedRevision, requestId: requestId() },
+      { 'X-Orion-User-Gesture': 'file-mutation-v1' }
+    );
+  }
+
   gitStatus(context: WebContextGuardV1, cursor?: string): Promise<WebGitStatusV1> {
     const query = new URLSearchParams({ pageSize: '200' });
     appendContext(query, context);

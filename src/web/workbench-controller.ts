@@ -66,6 +66,7 @@ import { WebWorkbenchError } from './errors';
 import { enforceContextBudget, extractLineRange } from './context-text';
 import { WebEventHub } from './event-hub';
 import { FileReadServiceV1 } from './file-read-service';
+import { FileWriteServiceV1 } from './file-write-service';
 import { GitReadModelServiceV1 } from './git-read-model-service';
 import {
   WorkspaceMutationArbiterV1,
@@ -178,6 +179,7 @@ export class WebWorkbenchController {
   private readonly workspaceMutationOwners = new Map<string, WebSessionActorKeyV1>();
   private readonly pendingWorkspaceMutationStates = new Map<string, WorkspaceMutationStateV1>();
   private fileService!: FileReadServiceV1;
+  private fileWriteService!: FileWriteServiceV1;
   private gitService!: GitReadModelServiceV1;
   private reviewService!: ReviewServiceV1;
   private contextRevisionValue = randomUUID();
@@ -1098,6 +1100,21 @@ export class WebWorkbenchController {
   ) {
     this.assertContextGuard(context);
     const result = this.fileService.readContent(input);
+    this.assertContextGuard(context);
+    return result;
+  }
+
+  /** v0.3.14 — guarded CAS write for an existing in-root text file. */
+  writeFileContent(
+    context: WebContextGuardV1,
+    input: {
+      readonly fileId: string;
+      readonly content: string;
+      readonly expectedRevision: string;
+    }
+  ): { readonly fileId: string; readonly revision: string; readonly sizeBytes: number } {
+    this.assertContextGuard(context);
+    const result = this.fileWriteService.writeContent(input);
     this.assertContextGuard(context);
     return result;
   }
@@ -2283,6 +2300,7 @@ export class WebWorkbenchController {
     this.workspaceValue = workspace;
     this.runtimeValue = runtime;
     this.fileService = new FileReadServiceV1(workspace);
+    this.fileWriteService = new FileWriteServiceV1(this.fileService);
     this.gitService = new GitReadModelServiceV1(workspace);
     this.reviewService = new ReviewServiceV1(this.gitService, () =>
       listProjectDurableToolReceiptRefsV1(this.workspaceValue)

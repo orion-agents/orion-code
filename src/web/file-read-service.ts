@@ -371,7 +371,7 @@ export class FileReadServiceV1 {
       if (sample.length > 0) {
         this.performance.bytesRead += readSync(descriptor, sample, 0, sample.length, 0);
       }
-      const binary = isBinary(sample);
+      const binary = isBinary(validUtf8Prefix(sample));
       if (binary) {
         return Object.freeze({
           fileId: input.fileId,
@@ -438,6 +438,38 @@ export class FileReadServiceV1 {
     } finally {
       closeSync(descriptor);
     }
+  }
+
+  /** v0.3.14 — write-path preflight for an existing in-root regular text file. */
+  writePreflight(fileId: string): {
+    readonly canonicalPath: string;
+    readonly relativePath: string;
+    readonly revision: string;
+    readonly sizeBytes: number;
+  } {
+    this.performance.readOperations += 1;
+    const node = this.resolveNode(fileId);
+    if (!node.stat.isFile()) {
+      throw new WebWorkbenchError(409, 'File node is not a regular file.', 'file_not_regular');
+    }
+    if (isSensitiveResolvedPath(this.root, node.relativePath, node.canonicalPath)) {
+      throw new WebWorkbenchError(
+        403,
+        'Sensitive files are not writable in the Web Workbench.',
+        'sensitive_file_blocked'
+      );
+    }
+    return Object.freeze({
+      canonicalPath: node.canonicalPath,
+      relativePath: node.relativePath,
+      revision: fingerprintStat(node.stat),
+      sizeBytes: Number(node.stat.size),
+    });
+  }
+
+  /** v0.3.14 — post-write revision fingerprint for the response. */
+  revisionOf(canonicalPath: string): string {
+    return fingerprintStat(statSync(canonicalPath, { bigint: true }));
   }
 
   private projectNode(relativePath: string): WebFileNodeV1 {
@@ -655,7 +687,7 @@ function isSensitiveResolvedPath(
   return isSensitiveFilePath(relative(root, canonicalPath));
 }
 
-function fingerprintStat(stat: BigIntStats): string {
+export function fingerprintStat(stat: BigIntStats): string {
   return createHash('sha256')
     .update(
       [stat.dev, stat.ino, stat.mode, stat.size, stat.mtimeNs, stat.ctimeNs]
@@ -685,7 +717,7 @@ function boundedContentBytes(value: number): number {
   return value;
 }
 
-function isBinary(buffer: Buffer): boolean {
+export function isBinary(buffer: Buffer): boolean {
   if (buffer.includes(0)) return true;
   try {
     new TextDecoder('utf-8', { fatal: true }).decode(buffer);

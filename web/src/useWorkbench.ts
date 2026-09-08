@@ -142,6 +142,11 @@ export interface WorkbenchActions {
   readToolDetail(artifactId: string, offsetBytes?: number): Promise<WebToolDetailPageV1>;
   listFiles(parentId?: string, cursor?: string): Promise<WebFileTreePageV1>;
   readFileContent(fileId: string, cursor?: string): Promise<WebFileContentPageV1>;
+  writeFileContent(
+    fileId: string,
+    content: string,
+    expectedRevision: string
+  ): Promise<{ readonly fileId: string; readonly revision: string; readonly sizeBytes: number }>;
   gitStatus(cursor?: string): Promise<WebGitStatusV1>;
   gitLog(cursor?: string): Promise<WebGitLogPageV1>;
   gitDiff(fileId: string, cursor?: string): Promise<WebGitDiffPageV1>;
@@ -1358,6 +1363,11 @@ export function useWorkbench(): UseWorkbenchResult {
       api.readFileContent(fileId, requireContextGuard(stateRef.current), cursor),
     [api]
   );
+  const writeFileContent = useCallback(
+    (fileId: string, content: string, expectedRevision: string) =>
+      api.writeFileContent(requireContextGuard(stateRef.current), fileId, content, expectedRevision),
+    [api]
+  );
   const gitStatus = useCallback(
     (cursor?: string) => api.gitStatus(requireContextGuard(stateRef.current), cursor),
     [api]
@@ -1468,6 +1478,7 @@ export function useWorkbench(): UseWorkbenchResult {
       readToolDetail,
       listFiles,
       readFileContent,
+    writeFileContent,
       gitStatus,
       gitLog,
       gitDiff,
