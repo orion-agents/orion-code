@@ -178,6 +178,48 @@ describe('FileWriteServiceV1 (v0.3.14 T1)', () => {
     expect(readFileSync(cjk, 'utf8')).toContain('updated');
   });
 
+  test('rejects a non-string payload, a directory target and a sensitive target', () => {
+    expectFileError(
+      () =>
+        writeService.writeContent({
+          fileId: textFileId,
+          content: 42 as unknown as string,
+          expectedRevision: textRevision,
+        }),
+      400,
+      'file_content_invalid'
+    );
+
+    mkdirSync(join(workspace, 'nested'));
+    const page = readService.list({});
+    const directory = page.items.find(item => item.name === 'nested')!;
+    expectFileError(
+      () =>
+        writeService.writeContent({
+          fileId: directory.id,
+          content: 'x',
+          expectedRevision: textRevision,
+        }),
+      409,
+      'file_not_regular'
+    );
+
+    writeFileSync(join(workspace, '.env'), 'ORION_CODE_API_KEY=secret\n', 'utf8');
+    const sensitivePage = readService.list({});
+    const sensitive = sensitivePage.items.find(item => item.name === '.env')!;
+    expectFileError(
+      () =>
+        writeService.writeContent({
+          fileId: sensitive.id,
+          content: 'x',
+          expectedRevision: textRevision,
+        }),
+      403,
+      'sensitive_file_blocked'
+    );
+    expect(readFileSync(join(workspace, '.env'), 'utf8')).toContain('secret');
+  });
+
   test('validates the revision format before touching the disk', () => {
     expectFileError(
       () =>

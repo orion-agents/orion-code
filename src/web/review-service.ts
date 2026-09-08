@@ -8,6 +8,8 @@ import type {
   WebGitStatusV1,
 } from './git-read-model-service';
 
+const VERIFICATION_WINDOW = 100;
+
 export interface WebReviewVerificationV1 {
   readonly callId: string;
   readonly sessionId: string;
@@ -36,6 +38,8 @@ export interface WebReviewSnapshotV1 {
   readonly conflictCount: number;
   readonly truncated: boolean;
   readonly verification: readonly WebReviewVerificationV1[];
+  /** True when more durable receipts exist than the bounded snapshot window. */
+  readonly verificationTruncated: boolean;
 }
 
 /** Review overview composed only from Git facts and doubly verified durable tool receipts. */
@@ -70,7 +74,8 @@ export class ReviewServiceV1 {
       untracked.push(...page.untracked);
     }
     const changedFiles = uniqueFiles([...conflicted, ...staged, ...unstaged, ...untracked]);
-    const verification = this.projectVerification(receiptRefs.slice(0, 100));
+    const verificationWindow = receiptRefs.slice(0, VERIFICATION_WINDOW);
+    const verification = this.projectVerification(verificationWindow);
     const revision = createHash('sha256')
       .update(
         JSON.stringify({
@@ -92,6 +97,7 @@ export class ReviewServiceV1 {
       conflictCount: conflicted.length,
       truncated: statusPages.at(-1)?.truncated ?? false,
       verification: Object.freeze(verification),
+      verificationTruncated: receiptRefs.length > verificationWindow.length,
     });
   }
 
