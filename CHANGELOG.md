@@ -41,6 +41,19 @@ which is **not** a pass.
   one-shot snapshot invalidation so Git/Review decorations refresh after a
   save.
 
+### Fixed
+
+- Resource refreshes keep the inspected file: `ReviewPanel` no longer drops the
+  open diff on a manual refresh, a `refreshEpoch` invalidation or a Git revision
+  conflict recovery; `FilesPanel` keeps the open file on refresh (still reset
+  when the workspace itself changes), so the editor no longer closes mid-edit.
+- Verification evidence now shows the receipt digest (first 8 chars) and states
+  when more durable receipts exist than the bounded snapshot window
+  (`verificationTruncated`); the summary counters are localised
+  (已暂存 / 未暂存 / 未跟踪 / 冲突) instead of raw English labels.
+- Binary detection tolerates an 8 KiB sample that ends inside one UTF-8 code
+  point, so CJK files are no longer rejected as binary on read or save.
+
 ### Removed
 
 - The read-only file toolbar: 「跳转」（line jump）, 「复制」 and 「自动换行」

@@ -51,6 +51,7 @@ export function FilesPanel({
   const [contentRevision, setContentRevision] = useState('');
   const generationRef = useRef(0);
   const contentRequestRef = useRef(0);
+  const selectedRef = useRef<WebFileNodeV1 | null>(null);
 
   const loadDirectory = async (
     parentId: string,
@@ -117,13 +118,18 @@ export function FilesPanel({
     }
   };
 
+  const workspaceIdRef = useRef(workspaceId);
   useEffect(() => {
     const generation = generationRef.current + 1;
     generationRef.current = generation;
     contentRequestRef.current += 1;
+    // v0.3.14 — a workspace switch must drop the selection; a plain resource
+    // refresh must NOT, otherwise the editor closes under the user.
+    const restore = workspaceIdRef.current === workspaceId ? selectedRef.current : null;
+    workspaceIdRef.current = workspaceId;
     setDirectories({});
     setExpanded(new Set(['workspace-root']));
-    setSelected(null);
+    setSelected(restore);
     setContent('');
     setContentCursor(null);
     setBinary(false);
@@ -134,6 +140,7 @@ export function FilesPanel({
     if (workspaceId) {
       void loadDirectory('workspace-root', false, generation);
       void loadGitDecorations(generation);
+      if (restore) void selectFile(restore, false, false, generation);
     }
     // Loading is deliberately tied to the active Context identity.
   }, [refreshEpoch, workspaceId]);
@@ -180,12 +187,7 @@ export function FilesPanel({
     }
   };
 
-  const editable =
-    Boolean(selected) &&
-    !binary &&
-    !selected?.sensitive &&
-    contentCursor === null &&
-    (selected?.sizeBytes ?? 0) <= 512 * 1024;
+  const editable = canEditFileContent({ selected, binary, hasMorePages: contentCursor !== null });
 
   const beginEdit = () => {
     setDraft(content);
@@ -228,6 +230,10 @@ export function FilesPanel({
     }
     setExpanded(next);
   };
+
+  useEffect(() => {
+    selectedRef.current = selected;
+  }, [selected]);
 
   const loadedNodes = useMemo(
     () => Object.values(directories).flatMap(page => page.items),
@@ -584,6 +590,25 @@ function buildGitDecorations(status: WebGitStatusV1): GitDecorations {
   return Object.fromEntries(
     [...decorations].map(([path, labels]) => [path, Object.freeze([...labels])])
   );
+}
+
+/** Largest file the Web editor will save back (payload and target alike). */
+export const FILE_EDIT_MAX_BYTES = 512 * 1024;
+
+/**
+ * v0.3.14 — whether a loaded file may open in the editor. Pure so the rule
+ * (regular readable text, not sensitive, fully paged in, within the size cap)
+ * can be unit tested without a DOM: the panel is server-rendered on first paint.
+ */
+export function canEditFileContent(input: {
+  readonly selected: WebFileNodeV1 | null;
+  readonly binary: boolean;
+  readonly hasMorePages: boolean;
+}): boolean {
+  const { selected, binary, hasMorePages } = input;
+  if (!selected || binary || selected.sensitive || !selected.readable) return false;
+  if (hasMorePages) return false;
+  return (selected.sizeBytes ?? 0) <= FILE_EDIT_MAX_BYTES;
 }
 
 function formatBytes(bytes: number): string {

@@ -34,7 +34,7 @@ export function ReviewPanel({
   const generationRef = useRef(0);
   const diffRequestRef = useRef(0);
 
-  const refresh = async (generation = generationRef.current) => {
+  const refresh = async (generation = generationRef.current, restoreFileId?: string) => {
     if (generation !== generationRef.current) return;
     setLoading(true);
     setError('');
@@ -42,8 +42,14 @@ export function ReviewPanel({
       const next = await actions.review();
       if (generation !== generationRef.current) return;
       setSnapshot(next);
-      setSelected(null);
+      // Keep the inspected file across refreshes (manual, epoch and conflict
+      // recovery) instead of dropping the user back to the empty state.
+      const restored = restoreFileId
+        ? (next.changedFiles.find(file => file.fileId === restoreFileId) ?? null)
+        : null;
+      setSelected(restored);
       setDiff(null);
+      if (restored) void openDiff(restored, undefined, generation);
     } catch (caught) {
       if (generation !== generationRef.current) return;
       setError(message(caught));
@@ -57,7 +63,7 @@ export function ReviewPanel({
     generationRef.current = generation;
     diffRequestRef.current += 1;
     setResourceNotice('');
-    void refresh(generation);
+    void refresh(generation, selected?.fileId);
   };
 
   useEffect(() => {
@@ -100,7 +106,7 @@ export function ReviewPanel({
       if (generation !== generationRef.current || request !== diffRequestRef.current) return;
       if (isRevisionConflict(caught)) {
         setResourceNotice('仓库已变化，已重新建立审阅快照。');
-        await refresh(generation);
+        await refresh(generation, file.fileId);
         return;
       }
       setError(message(caught));
@@ -133,14 +139,8 @@ export function ReviewPanel({
             {snapshot.clean ? <Icon name="check" /> : <Icon name="edit" />}
           </span>
           <div>
-            <strong>
-              {snapshot.clean ? '没有待审阅变更' : `${snapshot.totalChangedFiles} 个变更文件`}
-            </strong>
-            <span>
-              {snapshot.truncated ? '当前显示 · ' : ''}
-              {snapshot.stagedCount} staged · {snapshot.unstagedCount} unstaged ·{' '}
-              {snapshot.untrackedCount} untracked · {snapshot.conflictCount} conflict
-            </span>
+            <strong>{reviewSummary(snapshot).headline}</strong>
+            <span>{reviewSummary(snapshot).counters}</span>
           </div>
         </div>
         <button
@@ -201,7 +201,8 @@ export function ReviewPanel({
                   <div>
                     <strong>{item.toolName}</strong>
                     <small>
-                      {item.state} · {item.outputBytes} B{item.hasArtifact ? ' · artifact' : ''}
+                      {item.state} · {item.outputBytes} B{item.hasArtifact ? ' · artifact' : ''} ·{' '}
+                      <code title="receipt digest">{item.receiptDigest.slice(0, 8)}</code>
                     </small>
                   </div>
                 </article>
@@ -209,6 +210,9 @@ export function ReviewPanel({
             ) : (
               <p className="muted-copy">当前没有持久化验证结果。</p>
             )}
+            {snapshot.verificationTruncated ? (
+              <p className="muted-copy">仅显示最近 {snapshot.verification.length} 条验证结果。</p>
+            ) : null}
           </div>
         </>
         <>
@@ -234,6 +238,31 @@ export function ReviewPanel({
       </ResourceSplitLayout>
     </div>
   );
+}
+
+/**
+ * v0.3.14 — review summary copy. Pure so the localised counters can be unit
+ * tested without rendering the panel.
+ */
+export function reviewSummary(snapshot: {
+  readonly clean: boolean;
+  readonly totalChangedFiles: number;
+  readonly stagedCount: number;
+  readonly unstagedCount: number;
+  readonly untrackedCount: number;
+  readonly conflictCount: number;
+  readonly truncated: boolean;
+}): { readonly headline: string; readonly counters: string } {
+  const counters = [
+    `${snapshot.stagedCount} 已暂存`,
+    `${snapshot.unstagedCount} 未暂存`,
+    `${snapshot.untrackedCount} 未跟踪`,
+    `${snapshot.conflictCount} 冲突`,
+  ].join(' · ');
+  return Object.freeze({
+    headline: snapshot.clean ? '没有待审阅变更' : `${snapshot.totalChangedFiles} 个变更文件`,
+    counters: `${snapshot.truncated ? '当前显示 · ' : ''}${counters}`,
+  });
 }
 
 function message(error: unknown): string {

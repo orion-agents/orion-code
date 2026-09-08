@@ -58,6 +58,8 @@ describe('ReviewServiceV1', () => {
     });
     expect(snapshot.changedFiles).toEqual([changedFile]);
     expect(snapshot.verification).toHaveLength(100);
+    // 101 receipts exist but the snapshot window is 100 — the UI must say so.
+    expect(snapshot.verificationTruncated).toBe(true);
     expect(snapshot.verification[0]).toEqual({
       callId: 'call-0',
       sessionId: 'session-1',
