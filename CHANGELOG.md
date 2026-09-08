@@ -22,6 +22,46 @@ which is **not** a pass.
 
 ## [Unreleased]
 
+## [0.3.14] — CANDIDATE
+
+> **Status: candidate.** Editable Files panel (guarded `POST /files/write` with
+> revision CAS) and removal of the legacy view-only controls. Not merged,
+> tagged or published.
+
+### Added
+
+- File editing in the Files panel: content view gains a view/edit toggle; the
+  edit mode is a controlled monospace textarea with dirty tracking, explicit
+  save (guarded `POST /files/write`), cancel/Esc with an unsaved-changes
+  confirmation, and a 409 conflict path that offers an explicit reload.
+- `POST /files/write`: workspace-fenced (registry + symlink escape checks),
+  sensitive-path block, 512 KiB text-only payload limit, on-disk stat
+  fingerprint CAS (`file_revision_conflict`), user-gesture header
+  (`file-mutation-v1`), idempotent `file.write` mutation ledger entry, and
+  one-shot snapshot invalidation so Git/Review decorations refresh after a
+  save.
+
+### Fixed
+
+- Resource refreshes keep the inspected file: `ReviewPanel` no longer drops the
+  open diff on a manual refresh, a `refreshEpoch` invalidation or a Git revision
+  conflict recovery; `FilesPanel` keeps the open file on refresh (still reset
+  when the workspace itself changes), so the editor no longer closes mid-edit.
+- The review summary counters are localised (已暂存 / 未暂存 / 未跟踪 / 冲突)
+  instead of raw English labels.
+- Binary detection tolerates an 8 KiB sample that ends inside one UTF-8 code
+  point, so CJK files are no longer rejected as binary on read or save.
+
+### Removed
+
+- The read-only file toolbar: 「跳转」（line jump）, 「复制」 and 「自动换行」
+  controls, the line-number gutter spans and the wrap-only styles.
+- The Review panel's 「验证证据」 module: the evidence list,
+  `WebReviewVerificationV1`, `ReviewServiceV1.verificationPage`, the
+  `GET /review/verification` route and the snapshot's `verification` /
+  `verificationTruncated` fields. The review overview is now composed only from
+  Git facts; durable tool receipts remain available to the runtime.
+
 ## [0.3.13] — CANDIDATE
 
 > **Status: candidate.** Development baseline after v0.3.12 (version bump only;

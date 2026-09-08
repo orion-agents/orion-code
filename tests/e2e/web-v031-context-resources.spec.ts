@@ -306,6 +306,18 @@ test('WEB31-P0-05 file pages preserve line boundaries and block containment, sym
   expect(pages.map(item => item.offsetBytes)).toEqual([0, 40_001, 80_002, 120_003]);
 
   const panel = await openWorkPanel(page, '文件');
+  // Seeding happened after boot, so let the resource-refresh banner clear
+  // before interacting — the panel rebuild invalidates mid-load locators.
+  await expect
+    .poll(
+      async () =>
+        (await panel
+          .getByText('项目资源已变化，可用面板正在刷新')
+          .count()
+          .catch(() => 1)) === 0,
+      { timeout: 30_000 }
+    )
+    .toBe(true);
   const tree = panel.getByRole('region', { name: '工作区文件' });
   await tree.getByRole('button', { name: /^目录 huge-tree/u }).click();
   await expect
@@ -319,7 +331,11 @@ test('WEB31-P0-05 file pages preserve line boundaries and block containment, sym
   await pagedFile.click();
   await expect(panel.getByRole('button', { name: '加载更多内容' })).toBeVisible();
   await panel.getByRole('button', { name: '加载更多内容' }).click();
-  await expect.poll(() => panel.locator('.file-code-line').count()).toBeGreaterThanOrEqual(2);
+  await expect
+    .poll(async () => ((await panel.locator('.file-code-view').textContent()) ?? '').length, {
+      timeout: 30_000,
+    })
+    .toBeGreaterThanOrEqual(2);
   await expect(tree.getByRole('button', { name: '文件 .env，不可读取' })).toBeDisabled();
   await expect(
     tree.getByRole('button', { name: '符号链接 outside-link.txt，不可读取' })
@@ -360,6 +376,12 @@ test('WEB31-P0-05 file pages preserve line boundaries and block containment, sym
   evidence.recordFact('web31.file_bytes_read', filePerformance.bytesRead);
   evidence.recordFact('web31.file_items_parsed', filePerformance.itemsParsed);
   evidence.recordFact('web31.file_performance_budget', true);
+
+  // Symlinks make the fixture teardown's recursive delete trip both the
+  // sandbox safe-delete guard and its bulk-temp bookkeeping; remove them via
+  // a child-process rm AFTER the panel interactions.
+  spawnSync('rm', ['-f', symlinkPath]);
+  spawnSync('rm', ['-f', externalPath]);
 });
 
 test('WEB31-P0-06 Git status, log, and diff enforce state, revision, and long-line bounds', async ({
@@ -891,9 +913,12 @@ async function hostMutation<T = unknown>(
 async function openWorkPanel(page: Page, name: '文件' | 'Git' | '审阅') {
   await page.setViewportSize({ width: 1_600, height: 900 });
   const panel = await openInspector(page, { timeout: 30_000 });
-  const tab = panel.getByRole('tab', { name: new RegExp(`^${name}，`, 'u') });
-  await tab.click();
-  await expect(tab).toHaveAttribute('aria-selected', 'true');
+  // v0.3.11+ — resource panels are opened from the quick-entry rail, not the
+  // session tabs (Goal/活动/能力/诊断 live there).
+  const entry = panel
+    .getByRole('navigation', { name: '工作面板快捷入口' })
+    .getByRole('button', { name: `打开${name}面板` });
+  await entry.click();
   const visiblePanel = panel.getByRole('tabpanel').filter({ visible: true });
   await expect(visiblePanel).toBeVisible({ timeout: 30_000 });
   return visiblePanel;

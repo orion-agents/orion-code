@@ -647,6 +647,38 @@ async function handleRequest(context: RequestContext): Promise<void> {
     );
     return;
   }
+  const fileWriteMatch = path === '/files/write';
+  if (method === 'POST' && fileWriteMatch) {
+    assertMutation(request, context.nonce, context.origin, 'file_mutation_forbidden');
+    assertFileUserGesture(request);
+    const body = requireRecord(await readJson(request), 'File write request');
+    assertOnlyKeys(body, [
+      'requestId',
+      'fileId',
+      'content',
+      'expectedRevision',
+      'workspaceId',
+      'expectedContextRevision',
+    ]);
+    const requestId = requireUuid(body.requestId, 'requestId');
+    const contextGuard = requireContextGuardRecord(body);
+    const fileId = requireText(body.fileId, 'fileId', 256);
+    const content = requireText(body.content, 'content', 512 * 1024 + 8);
+    const expectedRevision = requireFileRevision(body.expectedRevision);
+    const result = await context.workbench.executeMutation(
+      requestId,
+      'file.write',
+      { fileId, expectedRevision, ...contextGuard },
+      () =>
+        context.workbench.writeFileContent(contextGuard, {
+          fileId,
+          content,
+          expectedRevision,
+        })
+    );
+    sendJson(response, 200, result);
+    return;
+  }
   if (method === 'POST' && (path === '/git/stage' || path === '/git/unstage')) {
     assertMutation(request, context.nonce, context.origin, 'git_mutation_forbidden');
     assertGitUserGesture(request);
@@ -727,19 +759,6 @@ async function handleRequest(context: RequestContext): Promise<void> {
         lineLimit: boundedInteger(url.searchParams.get('lineLimit'), 240, 1, 500),
         byteLimit: boundedInteger(url.searchParams.get('byteLimit'), 256 * 1024, 1024, 1024 * 1024),
       })
-    );
-    return;
-  }
-  if (method === 'GET' && path === '/review/verification') {
-    const contextGuard = requireContextGuardQuery(url);
-    const sessionId = url.searchParams.get('sessionId') ?? undefined;
-    const cursorValue = url.searchParams.get('cursor');
-    const cursor = cursorValue === null ? undefined : Number(cursorValue);
-    const pageSize = boundedInteger(url.searchParams.get('pageSize'), 25, 1, 100);
-    sendJson(
-      response,
-      200,
-      await context.workbench.reviewVerificationPage(contextGuard, { sessionId, cursor, pageSize })
     );
     return;
   }
@@ -957,6 +976,24 @@ function requireGitRevision(value: unknown): string {
   const text = requireText(value, 'expectedRepositoryRevision', 64);
   if (!/^[0-9a-f]{40,64}$/u.test(text)) {
     throw new HttpProblem(400, 'expectedRepositoryRevision must be a git revision.');
+  }
+  return text;
+}
+
+function assertFileUserGesture(request: IncomingMessage): void {
+  if (request.headers[WEB_USER_GESTURE_HEADER] !== 'file-mutation-v1') {
+    throw new HttpProblem(
+      403,
+      'File mutations require an explicit browser user gesture.',
+      'file_user_gesture_required'
+    );
+  }
+}
+
+function requireFileRevision(value: unknown): string {
+  const text = requireText(value, 'expectedRevision', 64);
+  if (!/^[0-9a-f]{64}$/u.test(text)) {
+    throw new HttpProblem(400, 'expectedRevision must be a file content revision.');
   }
   return text;
 }

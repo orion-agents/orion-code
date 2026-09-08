@@ -1,4 +1,3 @@
-import type { VerifiedDurableToolReceiptRefV1 } from '../src/runtime/durable-tool-receipt-reader';
 import type {
   GitReadModelServiceV1,
   WebGitDiffPageV1,
@@ -15,7 +14,7 @@ describe('ReviewServiceV1', () => {
     worktreeStatus: 'M',
   });
 
-  test('builds a deduplicated, bounded snapshot from Git and durable verification facts', async () => {
+  test('builds a deduplicated, bounded snapshot from Git facts', async () => {
     const status = gitStatus({
       staged: [changedFile],
       unstaged: [changedFile],
@@ -23,25 +22,8 @@ describe('ReviewServiceV1', () => {
       truncated: true,
       nextCursor: 'next-status',
     });
-    const receipts = Array.from(
-      { length: 101 },
-      (_, index): VerifiedDurableToolReceiptRefV1 => ({
-        callId: `call-${index}`,
-        sessionId: 'session-1',
-        threadId: 'thread-1',
-        sequence: index,
-        toolName: index % 2 ? 'exec_command' : 'write_file',
-        terminal: index === 0 ? 'failed' : 'completed',
-        success: index !== 0,
-        outputBytes: index * 10,
-        hasArtifact: index % 3 === 0,
-        executionPolicyDigest: index === 0 ? 'a'.repeat(64) : `${index}`.padStart(64, 'a'),
-        receiptDigest: index === 0 ? 'b'.repeat(64) : `${index}`.padStart(64, 'b'),
-        finishedAt: 1_700_000_000_000 - index,
-      })
-    );
     const git = fakeGit([status, gitStatus({ totalFiles: 1 })]);
-    const service = new ReviewServiceV1(git, async () => receipts);
+    const service = new ReviewServiceV1(git);
 
     const snapshot = await service.snapshot();
 
@@ -57,21 +39,6 @@ describe('ReviewServiceV1', () => {
       truncated: false,
     });
     expect(snapshot.changedFiles).toEqual([changedFile]);
-    expect(snapshot.verification).toHaveLength(100);
-    expect(snapshot.verification[0]).toEqual({
-      callId: 'call-0',
-      sessionId: 'session-1',
-      threadId: 'thread-1',
-      sequence: 0,
-      toolName: 'write_file',
-      state: 'error',
-      terminal: 'failed',
-      success: false,
-      outputBytes: 0,
-      hasArtifact: true,
-      executionPolicyDigest: 'a'.repeat(64),
-      receiptDigest: 'b'.repeat(64),
-    });
     expect(snapshot.revision).toMatch(/^[0-9a-f]{64}$/u);
     await expect(service.snapshot()).resolves.toMatchObject({ revision: snapshot.revision });
   });
@@ -107,7 +74,7 @@ describe('ReviewServiceV1', () => {
         nextCursor: null,
       }),
     ]);
-    const service = new ReviewServiceV1(git, async () => []);
+    const service = new ReviewServiceV1(git);
 
     const snapshot = await service.snapshot();
 
@@ -118,32 +85,6 @@ describe('ReviewServiceV1', () => {
     expect(git.status).toHaveBeenCalledTimes(2);
     expect(git.status).toHaveBeenNthCalledWith(1, { pageSize: 2_000 });
     expect(git.status).toHaveBeenNthCalledWith(2, { cursor: 'next-status', pageSize: 2_000 });
-  });
-
-  test('binds the Review revision to the authoritative receipt references', async () => {
-    const base: VerifiedDurableToolReceiptRefV1 = {
-      callId: 'call-bound',
-      sessionId: 'session-bound',
-      threadId: 'thread-bound',
-      sequence: 7,
-      toolName: 'exec_command',
-      terminal: 'completed',
-      success: true,
-      outputBytes: 2,
-      hasArtifact: false,
-      executionPolicyDigest: 'a'.repeat(64),
-      receiptDigest: 'b'.repeat(64),
-      finishedAt: 1_700_000_000_000,
-    };
-    let receipts: readonly VerifiedDurableToolReceiptRefV1[] = [base];
-    const service = new ReviewServiceV1(fakeGit([gitStatus()]), async () => receipts);
-
-    const first = await service.snapshot();
-    receipts = [{ ...base, receiptDigest: 'c'.repeat(64) }];
-    const second = await service.snapshot();
-
-    expect(second.revision).not.toBe(first.revision);
-    expect(second.verification[0].receiptDigest).toBe('c'.repeat(64));
   });
 
   test('delegates bounded diff reads without manufacturing transcript-derived review state', async () => {
@@ -199,44 +140,3 @@ function fakeGit(pages: readonly WebGitStatusV1[], diff = jest.fn()): GitReadMod
   });
   return { status, diff } as unknown as GitReadModelServiceV1;
 }
-
-describe('progressive verification page (v0.3.12 S2)', () => {
-  test('pages receipts with optional per-session filtering', async () => {
-    const git = fakeGit([gitStatus()]);
-    const receipts = Array.from(
-      { length: 60 },
-      (_, index): VerifiedDurableToolReceiptRefV1 => ({
-        callId: 'call-page-' + index,
-        sessionId: index % 2 === 0 ? 'session-a' : 'session-b',
-        threadId: 'thread-' + (index % 3),
-        sequence: index,
-        toolName: 'exec_command',
-        terminal: 'completed',
-        success: true,
-        outputBytes: 10,
-        hasArtifact: false,
-        executionPolicyDigest: 'a'.repeat(64),
-        receiptDigest: String(index).padStart(64, 'b'),
-        finishedAt: 1_700_000_000_000 - index,
-      })
-    );
-    const service = new ReviewServiceV1(git, async () => receipts);
-
-    const first = await service.verificationPage({ sessionId: 'session-a', pageSize: 10 });
-    expect(first.items).toHaveLength(10);
-    expect(first.totalForSession).toBe(30);
-    expect(first.nextCursor).toBe(10);
-    expect(first.items[0].sessionId).toBe('session-a');
-
-    const second = await service.verificationPage({
-      sessionId: 'session-a',
-      cursor: 10,
-      pageSize: 10,
-    });
-    expect(second.items[0].callId).toBe('call-page-20');
-
-    const tail = await service.verificationPage({ cursor: 55, pageSize: 100 });
-    expect(tail.items).toHaveLength(5);
-    expect(tail.nextCursor).toBeNull();
-  });
-});

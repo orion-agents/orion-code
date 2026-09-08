@@ -15,7 +15,6 @@ import type {
   WebModelCatalogPageV1,
   WebPageV1,
   WebReviewSnapshotV1,
-  WebReviewVerificationV1,
   WebSessionMutationResultV1,
   WebSessionSnapshotV1,
   WebSessionSummaryV1,
@@ -294,6 +293,21 @@ export class OrionWebApi {
     return this.query(`/files/${encodeURIComponent(fileId)}/content?${query.toString()}`);
   }
 
+  /** v0.3.14 — guarded CAS save for the file editor. */
+  writeFileContent(
+    context: WebContextGuardV1,
+    fileId: string,
+    content: string,
+    expectedRevision: string
+  ): Promise<{ readonly fileId: string; readonly revision: string; readonly sizeBytes: number }> {
+    return this.mutate(
+      '/files/write',
+      'POST',
+      { ...context, fileId, content, expectedRevision, requestId: requestId() },
+      { 'X-Orion-User-Gesture': 'file-mutation-v1' }
+    );
+  }
+
   gitStatus(context: WebContextGuardV1, cursor?: string): Promise<WebGitStatusV1> {
     const query = new URLSearchParams({ pageSize: '200' });
     appendContext(query, context);
@@ -403,25 +417,6 @@ export class OrionWebApi {
   }
 
   /** v0.3.12 — progressive Review verification evidence (summary stays first). */
-  async reviewVerificationPage(
-    context: WebContextGuardV1,
-    input: {
-      readonly sessionId?: string;
-      readonly cursor?: number;
-      readonly pageSize?: number;
-    } = {}
-  ): Promise<{
-    readonly items: readonly WebReviewVerificationV1[];
-    readonly nextCursor: number | null;
-    readonly totalForSession: number;
-  }> {
-    const params = new URLSearchParams();
-    appendContext(params, context);
-    if (input.sessionId) params.set('sessionId', input.sessionId);
-    if (input.cursor !== undefined) params.set('cursor', String(input.cursor));
-    if (input.pageSize !== undefined) params.set('pageSize', String(input.pageSize));
-    return this.query(`/review/verification?${params.toString()}`);
-  }
 
   /** v0.3.12 — guarded stage/unstage/commit (Host resolves ids; CAS on revision). */
   gitStage(

@@ -57,7 +57,7 @@ export function workbenchUi(page: Page) {
     transcript: main.getByRole('list', { name: '会话记录' }),
     settingsDialog: page.getByRole('dialog', { name: '设置' }),
     renameDialog: page.getByRole('dialog', { name: '重命名会话' }),
-    workspaceDialog: page.getByRole('dialog', { name: '选择工作区' }),
+    workspaceDialog: page.getByRole('dialog', { name: '打开或新增项目' }),
     toolDetailGroup: inspector.getByRole('group', { name: '工具输出详情' }),
   };
 }
@@ -171,7 +171,9 @@ export async function openSessionNavigation(
   options: UiOperationOptions = {}
 ): Promise<Locator> {
   const ui = workbenchUi(page);
-  const railSurface = page.locator('#workspace-rail');
+  // The rail renders two different asides: expanded = #project-navigation
+  // (which also carries drawer-open in drawer mode), collapsed = #workspace-rail.
+  const railSurface = page.locator('#workspace-rail, #project-navigation').first();
   // Let the ResizeObserver-driven column solver commit after a viewport change.
   // Otherwise a stale desktop rail can appear visible for one frame while the
   // shell is already transitioning to the modal drawer contract.

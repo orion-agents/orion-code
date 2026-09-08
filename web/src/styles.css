@@ -4796,33 +4796,38 @@ html[data-panel-resizing] .workbench-shell {
 
 .file-preview .file-code-view {
   min-height: 0;
-  padding: 9px 0;
+  padding: 9px 14px;
+  white-space: pre;
 }
 
-.file-code-line {
-  display: grid;
-  min-width: max-content;
-  grid-template-columns: 48px minmax(0, 1fr);
+/* v0.3.14 — file editor: plain controlled textarea over the same surface. */
+.file-editor {
+  min-height: 320px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #070910;
+  color: var(--text-2);
+  font:
+    var(--font-code) / 1.55 'SFMono-Regular',
+    Consolas,
+    monospace;
+  resize: vertical;
+  tab-size: 4;
+  white-space: pre;
 }
 
-.file-line-number {
-  padding: 0 10px 0 6px;
-  color: var(--muted);
-  text-align: right;
-  user-select: none;
+:root[data-theme='light'] .file-editor {
+  background: #f5f6f9;
 }
 
-.file-line-content {
-  padding-right: 12px;
+.file-editor:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  outline-offset: 1px;
 }
 
-.file-code-view.wrap .file-code-line {
-  min-width: 0;
-}
-
-.file-code-view.wrap .file-line-content {
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
+.file-conflict {
+  color: var(--danger);
 }
 
 .resource-empty {
@@ -4899,17 +4904,6 @@ html[data-panel-resizing] .workbench-shell {
 
 .git-group h3,
 .git-history h3,
-.review-verification h3 {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin: 10px 5px 4px;
-  color: var(--muted);
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
 .git-group > button,
 .review-files > button {
   display: flex;
@@ -4959,15 +4953,6 @@ html[data-panel-resizing] .workbench-shell {
 }
 
 .git-history article,
-.review-verification article {
-  display: grid;
-  min-width: 0;
-  grid-template-columns: auto minmax(0, 1fr);
-  padding: 6px;
-  border-top: 1px solid var(--border);
-  gap: 2px 6px;
-}
-
 .git-history article code,
 .git-history article strong,
 .git-history article span {
@@ -4987,11 +4972,6 @@ html[data-panel-resizing] .workbench-shell {
 }
 
 .git-history article span,
-.review-verification article small {
-  color: var(--muted);
-  font-size: 11px;
-}
-
 .diff-viewer {
   display: flex;
   min-width: 0;
@@ -5077,22 +5057,6 @@ html[data-panel-resizing] .workbench-shell {
 
 .review-summary strong {
   font-size: 11px;
-}
-
-.review-verification {
-  margin-top: 11px;
-  border-top: 1px solid var(--border);
-}
-
-.review-verification article {
-  grid-template-columns: 8px minmax(0, 1fr);
-  align-items: center;
-}
-
-.review-verification article div {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
 }
 
 .terminal-tabs {
