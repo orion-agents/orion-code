@@ -21,7 +21,7 @@ import type {
   WebGitLogPageV1,
   WebGitStatusV1,
 } from './git-read-model-service';
-import type { WebReviewSnapshotV1, WebReviewVerificationV1 } from './review-service';
+import type { WebReviewSnapshotV1 } from './review-service';
 import type { WebSessionRuntimeSummaryV1 } from './session-runtime-registry';
 import type {
   WebTerminalCreateResultV1,
@@ -435,7 +435,6 @@ export type {
   WebGitLogPageV1,
   WebGitStatusV1,
   WebReviewSnapshotV1,
-  WebReviewVerificationV1,
   WebTerminalCreateResultV1,
   WebTerminalExitV1,
   WebTerminalGapV1,

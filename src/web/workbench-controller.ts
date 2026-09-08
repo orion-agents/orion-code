@@ -7,10 +7,7 @@ import {
   FollowupQueueConflictError,
 } from '../runtime/agent-runtime-controller';
 import type { AgentRuntimeEvent } from '../runtime/agent-runtime-protocol';
-import {
-  DurableToolReceiptReaderError,
-  listProjectDurableToolReceiptRefsV1,
-} from '../runtime/durable-tool-receipt-reader';
+import {} from '../runtime/durable-tool-receipt-reader';
 import { loadFirstPartyMcpConfigurationV1 } from '../runtime/mcp';
 import {
   createProductUiRuntime,
@@ -1220,14 +1217,6 @@ export class WebWorkbenchController {
     return typeof node.rootRevision === 'function' ? node.rootRevision() : '';
   }
 
-  async reviewVerificationPage(
-    context: WebContextGuardV1,
-    input: { readonly sessionId?: string; readonly cursor?: number; readonly pageSize?: number }
-  ) {
-    this.assertContextGuard(context);
-    return this.reviewService.verificationPage(input);
-  }
-
   async gitLog(context: WebContextGuardV1, input: Parameters<GitReadModelServiceV1['log']>[0]) {
     this.assertContextGuard(context);
     const result = await this.gitService.log(input);
@@ -1244,20 +1233,9 @@ export class WebWorkbenchController {
 
   async review(context: WebContextGuardV1) {
     this.assertContextGuard(context);
-    try {
-      const result = await this.reviewService.snapshot();
-      this.assertContextGuard(context);
-      return result;
-    } catch (error) {
-      if (error instanceof DurableToolReceiptReaderError) {
-        throw new WebWorkbenchError(
-          500,
-          'Durable Review receipt facts failed integrity validation.',
-          'review_receipt_invalid'
-        );
-      }
-      throw error;
-    }
+    const result = await this.reviewService.snapshot();
+    this.assertContextGuard(context);
+    return result;
   }
 
   listTerminals(context: WebContextGuardV1) {
@@ -2302,9 +2280,7 @@ export class WebWorkbenchController {
     this.fileService = new FileReadServiceV1(workspace);
     this.fileWriteService = new FileWriteServiceV1(this.fileService);
     this.gitService = new GitReadModelServiceV1(workspace);
-    this.reviewService = new ReviewServiceV1(this.gitService, () =>
-      listProjectDurableToolReceiptRefsV1(this.workspaceValue)
-    );
+    this.reviewService = new ReviewServiceV1(this.gitService);
     const eventSink = {
       emit: (event: AgentRuntimeEvent): string | void => {
         if (event.type === 'status_changed') this.latestStatus = event.message;

@@ -5,7 +5,6 @@ import type { WebGitDiffPageV1, WebGitFileV1, WebReviewSnapshotV1 } from '../../
 import type { WorkbenchActions } from '../../useWorkbench';
 import { ResourceSplitLayout } from '../../layout/ResourceSplitLayout';
 import { Icon } from '../Icon';
-import { StateDot } from '../StateDot';
 import { DiffViewer } from '../git/DiffViewer';
 
 export function ReviewPanel({
@@ -192,28 +191,6 @@ export function ReviewPanel({
               <small>{`${file.indexStatus}${file.worktreeStatus}`.trim() || '?'}</small>
             </button>
           ))}
-          <div className="review-verification">
-            <h3>验证证据</h3>
-            {snapshot.verification.length ? (
-              snapshot.verification.map(item => (
-                <article key={`${item.callId}:${item.toolName}`}>
-                  <StateDot state={item.state} />
-                  <div>
-                    <strong>{item.toolName}</strong>
-                    <small>
-                      {item.state} · {item.outputBytes} B{item.hasArtifact ? ' · artifact' : ''} ·{' '}
-                      <code title="receipt digest">{item.receiptDigest.slice(0, 8)}</code>
-                    </small>
-                  </div>
-                </article>
-              ))
-            ) : (
-              <p className="muted-copy">当前没有持久化验证结果。</p>
-            )}
-            {snapshot.verificationTruncated ? (
-              <p className="muted-copy">仅显示最近 {snapshot.verification.length} 条验证结果。</p>
-            ) : null}
-          </div>
         </>
         <>
           {diff ? (

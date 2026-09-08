@@ -4904,17 +4904,6 @@ html[data-panel-resizing] .workbench-shell {
 
 .git-group h3,
 .git-history h3,
-.review-verification h3 {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin: 10px 5px 4px;
-  color: var(--muted);
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
 .git-group > button,
 .review-files > button {
   display: flex;
@@ -4964,15 +4953,6 @@ html[data-panel-resizing] .workbench-shell {
 }
 
 .git-history article,
-.review-verification article {
-  display: grid;
-  min-width: 0;
-  grid-template-columns: auto minmax(0, 1fr);
-  padding: 6px;
-  border-top: 1px solid var(--border);
-  gap: 2px 6px;
-}
-
 .git-history article code,
 .git-history article strong,
 .git-history article span {
@@ -4992,11 +4972,6 @@ html[data-panel-resizing] .workbench-shell {
 }
 
 .git-history article span,
-.review-verification article small {
-  color: var(--muted);
-  font-size: 11px;
-}
-
 .diff-viewer {
   display: flex;
   min-width: 0;
@@ -5082,22 +5057,6 @@ html[data-panel-resizing] .workbench-shell {
 
 .review-summary strong {
   font-size: 11px;
-}
-
-.review-verification {
-  margin-top: 11px;
-  border-top: 1px solid var(--border);
-}
-
-.review-verification article {
-  grid-template-columns: 8px minmax(0, 1fr);
-  align-items: center;
-}
-
-.review-verification article div {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
 }
 
 .terminal-tabs {

@@ -47,10 +47,8 @@ which is **not** a pass.
   open diff on a manual refresh, a `refreshEpoch` invalidation or a Git revision
   conflict recovery; `FilesPanel` keeps the open file on refresh (still reset
   when the workspace itself changes), so the editor no longer closes mid-edit.
-- Verification evidence now shows the receipt digest (first 8 chars) and states
-  when more durable receipts exist than the bounded snapshot window
-  (`verificationTruncated`); the summary counters are localised
-  (已暂存 / 未暂存 / 未跟踪 / 冲突) instead of raw English labels.
+- The review summary counters are localised (已暂存 / 未暂存 / 未跟踪 / 冲突)
+  instead of raw English labels.
 - Binary detection tolerates an 8 KiB sample that ends inside one UTF-8 code
   point, so CJK files are no longer rejected as binary on read or save.
 
@@ -58,6 +56,11 @@ which is **not** a pass.
 
 - The read-only file toolbar: 「跳转」（line jump）, 「复制」 and 「自动换行」
   controls, the line-number gutter spans and the wrap-only styles.
+- The Review panel's 「验证证据」 module: the evidence list,
+  `WebReviewVerificationV1`, `ReviewServiceV1.verificationPage`, the
+  `GET /review/verification` route and the snapshot's `verification` /
+  `verificationTruncated` fields. The review overview is now composed only from
+  Git facts; durable tool receipts remain available to the runtime.
 
 ## [0.3.13] — CANDIDATE
 
