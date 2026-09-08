@@ -51,6 +51,7 @@ export function FilesPanel({
   const [contentRevision, setContentRevision] = useState('');
   const generationRef = useRef(0);
   const contentRequestRef = useRef(0);
+  const selectedRef = useRef<WebFileNodeV1 | null>(null);
 
   const loadDirectory = async (
     parentId: string,
@@ -117,13 +118,18 @@ export function FilesPanel({
     }
   };
 
+  const workspaceIdRef = useRef(workspaceId);
   useEffect(() => {
     const generation = generationRef.current + 1;
     generationRef.current = generation;
     contentRequestRef.current += 1;
+    // v0.3.14 — a workspace switch must drop the selection; a plain resource
+    // refresh must NOT, otherwise the editor closes under the user.
+    const restore = workspaceIdRef.current === workspaceId ? selectedRef.current : null;
+    workspaceIdRef.current = workspaceId;
     setDirectories({});
     setExpanded(new Set(['workspace-root']));
-    setSelected(null);
+    setSelected(restore);
     setContent('');
     setContentCursor(null);
     setBinary(false);
@@ -134,6 +140,7 @@ export function FilesPanel({
     if (workspaceId) {
       void loadDirectory('workspace-root', false, generation);
       void loadGitDecorations(generation);
+      if (restore) void selectFile(restore, false, false, generation);
     }
     // Loading is deliberately tied to the active Context identity.
   }, [refreshEpoch, workspaceId]);
@@ -223,6 +230,10 @@ export function FilesPanel({
     }
     setExpanded(next);
   };
+
+  useEffect(() => {
+    selectedRef.current = selected;
+  }, [selected]);
 
   const loadedNodes = useMemo(
     () => Object.values(directories).flatMap(page => page.items),
