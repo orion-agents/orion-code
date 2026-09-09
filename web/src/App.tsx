@@ -335,7 +335,11 @@ export function App() {
     const archived = state.archivedSessions;
     if (sessions?.status !== 'ready') return;
     if (archived.ownerWorkspaceId === workspaceId && archived.status !== 'idle') return;
-    void actions.loadArchivedWorkspaceSessions(workspaceId);
+    // v0.3.15 — the eager loader reports failures through `archived_sessions_failed`.
+    // A workspace switch that lands mid-request rejects the stale Context guard
+    // (`context changed before admitted`); as a fire-and-forget effect it must not
+    // surface that race as an unhandled promise rejection.
+    void actions.loadArchivedWorkspaceSessions(workspaceId).catch(() => undefined);
   }, [actions, state.archivedSessions, state.workspaceId, state.workspaceSessions]);
 
   const dismissQueuedNotice = useCallback(
@@ -598,20 +602,18 @@ export function App() {
         <Conversation
           state={state}
           actions={actions}
-          navigationOpen={
-            navigationOverlay ? navigationModalOpen : columns.projectNavigation.mode === 'dock'
-          }
-          inspectorExpanded={panelExpanded}
-          onOpenNavigation={() => {
-            if (!navigationOverlay) {
-              updateProjectNavigationPreference({ expanded: true });
-              focusProjectSearch();
-              return;
-            }
-            rememberDrawerTrigger();
-            setPanelOverlayOpen(false);
-            setNavigationOpen(true);
-          }}
+          onRevealSettings={focusProjectSettings}
+          onCreateSession={createSession}
+          composerInsertion={composerInsertion}
+        />
+
+        <WorkPanelDock
+          state={state}
+          actions={actions}
+          mode={panelSurfaceOverlay ? 'overlay' : 'dock'}
+          expanded={panelExpanded}
+          themePreference={theme}
+          onCycleTheme={cycleTheme}
           onToggleInspector={() => {
             if (panelOverlay || panelDerivedRail) {
               if (panelOverlayOpen) {
@@ -625,19 +627,6 @@ export function App() {
             }
             updatePanelPreference({ expanded: !workPanelPreference.expanded });
           }}
-          onRevealSettings={focusProjectSettings}
-          onCreateSession={createSession}
-          themePreference={theme}
-          onCycleTheme={cycleTheme}
-          onShowShortcuts={() => setShortcutHelpOpen(true)}
-          composerInsertion={composerInsertion}
-        />
-
-        <WorkPanelDock
-          state={state}
-          actions={actions}
-          mode={panelSurfaceOverlay ? 'overlay' : 'dock'}
-          expanded={panelExpanded}
           activePanel={workPanelPreference.activePanel}
           panelOrder={layoutPreference.workPanel.order}
           agentPanel={workPanelPreference.agentPanel}

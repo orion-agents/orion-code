@@ -526,6 +526,24 @@ p {
   height: 29px;
   min-height: 29px;
 }
+
+/* v0.3.15 T2 — in-flight feedback: the icon rotates while its button reports
+   aria-busy; the button box never changes size. */
+.icon-button[aria-busy='true'] svg {
+  animation: icon-rotate 0.9s linear infinite;
+}
+
+@keyframes icon-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .icon-button[aria-busy='true'] svg {
+    animation: none;
+  }
+}
 .icon-text-button {
   padding: 5px 9px;
   color: var(--text-2);
@@ -3995,6 +4013,19 @@ html[data-history-scrubbing] * {
   width: 100%;
 }
 
+/* v0.3.15 T2/D3 — unified confirm modal (discard draft, clear Goal): same
+   shell as the other dialogs, compact width, cancel takes initial focus. */
+.confirm-modal {
+  width: min(420px, calc(100vw - 28px));
+}
+
+.confirm-body {
+  margin: 14px 18px 6px;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
 .project-navigator {
   background: linear-gradient(
     180deg,
@@ -4079,7 +4110,7 @@ html[data-history-scrubbing] * {
   margin: 0 10px 8px;
   padding: 0 9px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: var(--surface-2);
   color: var(--muted);
   gap: 7px;
@@ -4111,13 +4142,6 @@ html[data-history-scrubbing] * {
   padding: 0;
   background: transparent;
   color: var(--muted);
-}
-
-.project-search-scope {
-  margin: 0 12px 8px;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.35;
 }
 
 .project-tree {
@@ -4452,6 +4476,21 @@ html[data-history-scrubbing] * {
   background: var(--border);
 }
 
+/* v0.3.15 — push the relocated theme/inspector buttons to the bottom of the rail. */
+.work-panel-rail-spacer {
+  flex: 1 1 auto;
+  align-self: stretch;
+  margin: 4px 6px 2px;
+  border-top: 1px solid var(--border);
+}
+
+/* v0.3.15 — the inspector toggle lives in the work-panel rail (not a drawer-only
+   control), so override the base .inspector-toggle { display:none } for this
+   context. */
+.work-panel-rail .inspector-toggle {
+  display: inline-flex;
+}
+
 .rail-status-dot {
   position: absolute;
   top: 7px;
@@ -4780,6 +4819,11 @@ html[data-panel-resizing] .workbench-shell {
   gap: 5px;
 }
 
+/* v0.3.15 T2 — 保存/保存中… swap must not shift the row; hold one width. */
+.file-preview-actions .primary-button {
+  min-width: 78px;
+}
+
 .file-preview-actions label {
   display: contents;
 }
@@ -4912,12 +4956,25 @@ html[data-panel-resizing] .workbench-shell {
   min-height: 32px;
   align-items: center;
   padding: 0 6px;
-  border-radius: 5px;
+  border-radius: var(--radius-xs);
   background: transparent;
   color: var(--text-2);
   font-size: var(--font-body);
   text-align: left;
   gap: 6px;
+}
+
+/* v0.3.15 T3 — group headings step back: same structure, quieter type. */
+.git-group h3,
+.git-history h3 {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+.git-group h3 span {
+  color: var(--muted);
+  font-weight: 400;
 }
 
 .git-group > button:hover,

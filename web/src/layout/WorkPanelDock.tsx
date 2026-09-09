@@ -3,6 +3,7 @@ import { lazy, Suspense, useEffect, useId, useRef, useState, type KeyboardEvent 
 import { AgentPanel, type AgentPanelTab } from '../components/Inspector';
 import { Icon, type IconName } from '../components/Icon';
 import { StateDot } from '../components/StateDot';
+import type { ThemePreference } from '../settings/types';
 import type { WorkbenchState } from '../types';
 import type { WorkbenchActions } from '../useWorkbench';
 import { DEFAULT_WORK_PANEL_ORDER, type WorkPanelId } from '../state/layout-preferences';
@@ -66,6 +67,29 @@ function railDotState(phase: string | undefined, processing: boolean): string | 
   return 'running';
 }
 
+/** v0.3.15 — theme cycling moved here so the rail owns the cycle button. */
+const THEME_CYCLE_ORDER: readonly ThemePreference[] = ['system', 'light', 'dark'];
+const THEME_ICON: Record<ThemePreference, IconName> = {
+  system: 'monitor',
+  light: 'sun',
+  dark: 'moon',
+};
+const THEME_LABEL: Record<ThemePreference, string> = {
+  system: '跟随系统',
+  light: '浅色',
+  dark: '深色',
+};
+
+function themeCycleInfo(preference: ThemePreference | undefined): {
+  readonly current: ThemePreference;
+  readonly next: ThemePreference;
+} {
+  const current = preference ?? 'system';
+  const index = THEME_CYCLE_ORDER.indexOf(current);
+  const next = THEME_CYCLE_ORDER[(index + 1) % THEME_CYCLE_ORDER.length];
+  return { current, next };
+}
+
 export interface WorkPanelDockProps {
   readonly state: WorkbenchState;
   readonly actions: WorkbenchActions;
@@ -93,6 +117,10 @@ export interface WorkPanelDockProps {
   readonly resourceNavigatorWidths: Readonly<Record<ResourceSplitPanelId, number>>;
   /** v0.3.13 — persists one workspace/panel navigator width on drag end. */
   readonly onResourceNavigatorWidthCommit: (panel: ResourceSplitPanelId, width: number) => void;
+  /** v0.3.15 — theme cycle + inspector toggle (moved out of the conversation banner). */
+  readonly themePreference: ThemePreference | undefined;
+  readonly onCycleTheme: () => void;
+  readonly onToggleInspector: () => void;
 }
 
 export function WorkPanelDock({
@@ -100,6 +128,9 @@ export function WorkPanelDock({
   actions,
   mode,
   expanded,
+  themePreference,
+  onCycleTheme,
+  onToggleInspector,
   activePanel,
   panelOrder,
   agentPanel,
@@ -116,7 +147,6 @@ export function WorkPanelDock({
   onResourceNavigatorWidthCommit,
 }: WorkPanelDockProps) {
   const surfaceRef = useRef<HTMLElement>(null);
-  const closeRef = useRef<HTMLButtonElement>(null);
   const detailRef = useRef<HTMLDivElement>(null);
   const previousExpanded = useRef(expanded);
   const contentIdBase = useId();
@@ -144,22 +174,7 @@ export function WorkPanelDock({
   };
   const foregroundPhase = state.sessionRuntimeById[state.activeSessionId ?? '']?.phase;
   const terminalDotState = railDotState(foregroundPhase, state.processing);
-
-  useEffect(() => {
-    if (mode !== 'overlay' || !expanded) return undefined;
-    let attempts = 0;
-    let interval = 0;
-    const focusClose = () => {
-      attempts += 1;
-      closeRef.current?.focus();
-      if (document.activeElement === closeRef.current || attempts >= 10) {
-        window.clearInterval(interval);
-      }
-    };
-    interval = window.setInterval(focusClose, 16);
-    focusClose();
-    return () => window.clearInterval(interval);
-  }, [expanded, mode]);
+  const themeCycle = themeCycleInfo(themePreference);
 
   // v0.3.8 S2 — focus hand-off: collapsing returns focus to the rail icon of
   // the previously active panel; a freshly opened dock focuses the content.
@@ -284,6 +299,25 @@ export function WorkPanelDock({
           </button>
         );
       })}
+      <div className="work-panel-rail-spacer" />
+      <button
+        type="button"
+        className="icon-button theme-cycle-button"
+        onClick={onCycleTheme}
+        aria-label={`主题：${THEME_LABEL[themeCycle.current]}，点击切换为${THEME_LABEL[themeCycle.next]}`}
+      >
+        <Icon name={THEME_ICON[themeCycle.current]} size={17} />
+      </button>
+      <button
+        type="button"
+        className="icon-button inspector-toggle"
+        onClick={onToggleInspector}
+        aria-label={expanded ? '关闭工作面板' : '打开工作面板'}
+        aria-controls="work-panel"
+        aria-expanded={expanded}
+      >
+        <Icon name="sidebar" size={17} />
+      </button>
     </nav>
   );
 
@@ -375,25 +409,6 @@ export function WorkPanelDock({
               aria-label="工作面板内容"
               tabIndex={-1}
             >
-              <header className="work-panel-header">
-                <div>
-                  <span className="eyebrow">PROJECT WORKSPACE</span>
-                  <h2>{PANEL_META[activePanel].label}</h2>
-                </div>
-                <div className="work-panel-header-actions">
-                  <button
-                    type="button"
-                    className="icon-button"
-                    onClick={onCollapse}
-                    aria-label="收起工作面板"
-                    aria-controls="work-panel-detail"
-                    aria-expanded="true"
-                    title="收起（Esc）"
-                  >
-                    <Icon name="sidebar" />
-                  </button>
-                </div>
-              </header>
               <div className="work-panel-content">
                 <Suspense fallback={<p className="resource-loading">正在加载工作面板…</p>}>
                   {paneIds.map(id => renderPane(id))}
@@ -405,25 +420,6 @@ export function WorkPanelDock({
         </div>
       ) : (
         <div id="work-panel-detail" className="work-panel-detail" hidden={!expanded}>
-          <header className="work-panel-header">
-            <div>
-              <span className="eyebrow">PROJECT WORKSPACE</span>
-              <h2>{PANEL_META[activePanel].label}</h2>
-            </div>
-            <div className="work-panel-header-actions">
-              <button
-                ref={closeRef}
-                type="button"
-                className="icon-button"
-                onClick={onCollapse}
-                aria-label="关闭工作面板"
-                aria-controls="work-panel-detail"
-                aria-expanded="true"
-              >
-                <Icon name="close" />
-              </button>
-            </div>
-          </header>
           {rail(true)}
           <div className="work-panel-content">
             <Suspense fallback={<p className="resource-loading">正在加载工作面板…</p>}>

@@ -5,6 +5,7 @@ import type { WebGitDiffPageV1, WebGitFileV1, WebGitLogPageV1, WebGitStatusV1 } 
 import type { WorkbenchActions } from '../../useWorkbench';
 import { ResourceSplitLayout } from '../../layout/ResourceSplitLayout';
 import { Icon } from '../Icon';
+import { useAutoNotice } from '../useAutoNotice';
 import { DiffViewer } from './DiffViewer';
 
 export function GitPanel({
@@ -30,7 +31,10 @@ export function GitPanel({
   const [diff, setDiff] = useState<WebGitDiffPageV1 | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [resourceNotice, setResourceNotice] = useState('');
+  // v0.3.15 T1 — recovery notices fade out on their own; real errors persist
+  // in `.resource-error` below.
+  const { notice: resourceNotice, showNotice: setResourceNotice, clearNotice: clearResourceNotice } =
+    useAutoNotice();
   const generationRef = useRef(0);
   const diffRequestRef = useRef(0);
 
@@ -57,7 +61,7 @@ export function GitPanel({
     const generation = generationRef.current + 1;
     generationRef.current = generation;
     diffRequestRef.current += 1;
-    setResourceNotice('');
+    clearResourceNotice();
     void refresh(generation);
   };
 
@@ -70,7 +74,7 @@ export function GitPanel({
     setSelected(null);
     setDiff(null);
     setError('');
-    setResourceNotice('');
+    clearResourceNotice();
     if (workspaceId) void refresh(generation);
   }, [refreshEpoch, workspaceId]);
 
@@ -184,9 +188,9 @@ export function GitPanel({
   if (!status.isRepository) {
     return (
       <div className="resource-empty">
-        <Icon name="branch" />
+        <Icon name="branch" size={16} />
         <strong>当前项目不是 Git 仓库</strong>
-        <p>文件和 Agent 仍可使用；Git 面板保持只读空状态。</p>
+        <p>文件和 Agent 不受影响。</p>
       </div>
     );
   }
@@ -206,7 +210,7 @@ export function GitPanel({
     <div className="work-resource-panel git-panel">
       <div className="git-summary">
         <div>
-          <Icon name="branch" size={15} />
+          <Icon name="branch" size={16} />
           <strong>
             {status.detached ? `detached ${status.head ?? ''}` : status.branch || 'HEAD'}
           </strong>
@@ -219,15 +223,16 @@ export function GitPanel({
           type="button"
           className="icon-button"
           aria-label="刷新 Git 状态"
+          aria-busy={loading}
           onClick={reload}
           disabled={loading}
         >
-          <Icon name="refresh" size={15} />
+          <Icon name="refresh" size={16} />
         </button>
       </div>
       {resourceNotice ? (
         <p className="resource-notice" role="status">
-          {resourceNotice}
+          {resourceNotice.text}
         </p>
       ) : null}
       {error ? (
@@ -322,9 +327,8 @@ export function GitPanel({
             />
           ) : (
             <div className="resource-empty">
-              <Icon name="code" />
+              <Icon name="code" size={16} />
               <strong>选择变更查看 Diff</strong>
-              <p>Diff 来自受限 Git read model，不解析对话或工具输出。</p>
             </div>
           )}
         </>

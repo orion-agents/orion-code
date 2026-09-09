@@ -98,7 +98,9 @@ describe('ReviewServiceV1', () => {
       truncated: false,
     });
     const diff = jest.fn().mockResolvedValue(page);
-    const service = new ReviewServiceV1(fakeGit([gitStatus()], diff), async () => []);
+    // v0.3.14 removed the verification-evidence loader — the service owns the
+    // git read model alone.
+    const service = new ReviewServiceV1(fakeGit([gitStatus()], diff));
 
     await expect(service.diff({ fileId: changedFile.fileId, lineLimit: 20 })).resolves.toBe(page);
     expect(diff).toHaveBeenCalledWith({ fileId: changedFile.fileId, lineLimit: 20 });

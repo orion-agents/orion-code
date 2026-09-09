@@ -92,13 +92,8 @@ export function ProjectNavigator({
     new Set(state.workspaceId ? [state.workspaceId] : [])
   );
   const deferredQuery = useDeferredValue(query.trim().toLocaleLowerCase());
-  const closeRef = useRef<HTMLButtonElement>(null);
   const operationLocked = Boolean(state.pendingAction);
   const workspaceTransitionLocked = operationLocked || state.processing;
-
-  useEffect(() => {
-    if (drawerOpen) closeRef.current?.focus();
-  }, [drawerOpen]);
 
   useEffect(() => {
     if (!state.workspaceId) return;
@@ -217,32 +212,6 @@ export function ProjectNavigator({
       aria-label="项目与会话"
       hidden={!dockVisible}
     >
-      <div className="brand-row">
-        <OrionBrandMark className="brand-mark" size={20} />
-        <div className="brand-copy">
-          <strong>ORION</strong>
-          <span>CODE WORKBENCH</span>
-        </div>
-        <button
-          ref={closeRef}
-          type="button"
-          className="icon-button drawer-close"
-          aria-label="关闭项目导航"
-          onClick={onCloseDrawer}
-        >
-          <Icon name="close" />
-        </button>
-        <button
-          type="button"
-          className="icon-button project-navigation-collapse"
-          aria-label="折叠项目导航"
-          title="折叠项目导航（⌘/Ctrl+B）"
-          onClick={onCollapse}
-        >
-          <Icon name="sidebar" />
-        </button>
-      </div>
-
       <div className="project-toolbar">
         <div>
           <span className="eyebrow">LOCAL PROJECTS</span>
@@ -276,13 +245,13 @@ export function ProjectNavigator({
         ) : null}
       </label>
 
-      {searchMayBeIncomplete ? (
-        <p className="project-search-scope" role="status">
-          搜索仅覆盖已加载的项目和会话；仍有分页内容未加载。
-        </p>
-      ) : null}
-
-      <nav className="project-tree" aria-label="已知项目">
+      <nav
+        className="project-tree"
+        aria-label="已知项目"
+        aria-description={
+          searchMayBeIncomplete ? '搜索仅覆盖已加载的项目和会话；仍有分页内容未加载。' : undefined
+        }
+      >
         {windowedProjects.map((project, index) => {
           const projectIndex = projectWindowStart + index;
           const previous = projects[projectIndex - 1];

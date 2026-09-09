@@ -4,8 +4,10 @@ import { WebApiError } from '../../api';
 import type { WebFileNodeV1, WebGitStatusV1 } from '../../types';
 import type { WorkbenchActions } from '../../useWorkbench';
 import { ResourceSplitLayout } from '../../layout/ResourceSplitLayout';
+import { ConfirmDialog } from '../Dialogs';
 import { Icon } from '../Icon';
 import { sanitizeDisplayText } from '../Markdown';
+import { useAutoNotice } from '../useAutoNotice';
 
 interface DirectoryPage {
   readonly items: readonly WebFileNodeV1[];
@@ -39,7 +41,9 @@ export function FilesPanel({
   const [contentCursor, setContentCursor] = useState<string | null>(null);
   const [binary, setBinary] = useState(false);
   const [contentError, setContentError] = useState('');
-  const [resourceNotice, setResourceNotice] = useState('');
+  // v0.3.15 T1 — success/info notices fade out on their own; errors persist.
+  const { notice: resourceNotice, showNotice: setResourceNotice, clearNotice: clearResourceNotice } =
+    useAutoNotice();
   const [query, setQuery] = useState('');
   const [gitDecorations, setGitDecorations] = useState<GitDecorations>({});
   const [gitDecorationNotice, setGitDecorationNotice] = useState('');
@@ -49,6 +53,8 @@ export function FilesPanel({
   const [saving, setSaving] = useState(false);
   const [conflict, setConflict] = useState(false);
   const [contentRevision, setContentRevision] = useState('');
+  // v0.3.15 T2 — the discard confirmation replaces `window.confirm`.
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
   const generationRef = useRef(0);
   const contentRequestRef = useRef(0);
   const selectedRef = useRef<WebFileNodeV1 | null>(null);
@@ -134,7 +140,7 @@ export function FilesPanel({
     setContentCursor(null);
     setBinary(false);
     setContentError('');
-    setResourceNotice('');
+    clearResourceNotice();
     setGitDecorations({});
     setGitDecorationNotice('');
     if (workspaceId) {
@@ -165,7 +171,7 @@ export function FilesPanel({
       setDraft('');
       setConflict(false);
     }
-    if (!recovered) setResourceNotice('');
+    if (!recovered) clearResourceNotice();
     try {
       const page = await actions.readFileContent(
         node.id,
@@ -195,11 +201,21 @@ export function FilesPanel({
     setEditMode('edit');
   };
 
+  // v0.3.15 T2 — a dirty draft asks through the unified confirm modal instead
+  // of a native browser dialog; a clean draft closes without asking.
   const cancelEdit = () => {
-    if (draft !== content && !window.confirm('放弃未保存的修改？')) return;
+    if (draft !== content) {
+      setConfirmDiscard(true);
+      return;
+    }
+    discardEdit();
+  };
+
+  const discardEdit = () => {
     setEditMode('view');
     setDraft('');
     setConflict(false);
+    setConfirmDiscard(false);
   };
 
   const saveEdit = async () => {
@@ -211,11 +227,11 @@ export function FilesPanel({
       setEditMode('view');
       setDraft('');
       await selectFile(selected, false, true, generationRef.current, contentRequestRef.current + 1);
-      setResourceNotice('已保存文件。');
+      setResourceNotice('已保存文件。', 'success');
       void loadGitDecorations();
     } catch (error) {
       if (isRevisionConflict(error)) setConflict(true);
-      else setResourceNotice(message(error));
+      else setResourceNotice(message(error), 'error');
     } finally {
       setSaving(false);
     }
@@ -243,29 +259,34 @@ export function FilesPanel({
     ? loadedNodes.filter(node => node.name.toLocaleLowerCase().includes(query.toLocaleLowerCase()))
     : null;
 
+  // v0.3.15 T2 — in-flight feedback for the toolbar refresh (no layout shift).
+  const refreshing = Boolean(directories['workspace-root']?.loading);
+
   return (
     <div className="work-resource-panel files-panel">
       <div className="resource-toolbar">
         <label className="resource-search">
           <span className="sr-only">搜索已加载文件</span>
-          <Icon name="search" size={14} />
+          <Icon name="search" size={16} />
           <input
             type="search"
             value={query}
             onChange={event => setQuery(event.target.value)}
             placeholder="搜索已加载文件"
+            title="搜索仅覆盖已加载的目录和文件"
           />
         </label>
         <button
           type="button"
           className="icon-button"
           aria-label="刷新文件树"
+          aria-busy={refreshing}
           onClick={() => {
             void loadDirectory('workspace-root');
             void loadGitDecorations();
           }}
         >
-          <Icon name="refresh" size={15} />
+          <Icon name="refresh" size={16} />
         </button>
       </div>
 
@@ -287,7 +308,6 @@ export function FilesPanel({
           ) : null}
           {matches ? (
             <>
-              <p className="resource-hint">搜索仅覆盖已加载的目录和文件。</p>
               <ul role="list" className="file-node-list search-results">
                 {matches.map(node => (
                   <FileRow
@@ -320,7 +340,7 @@ export function FilesPanel({
         <>
           {resourceNotice ? (
             <p className="resource-notice" role="status">
-              {resourceNotice}
+              {resourceNotice.text}
             </p>
           ) : null}
           {selected ? (
@@ -335,9 +355,8 @@ export function FilesPanel({
                 </p>
               ) : binary ? (
                 <div className="resource-empty">
-                  <Icon name="code" />
-                  <strong>二进制文件</strong>
-                  <p>出于安全和性能考虑，只显示元数据。</p>
+                  <Icon name="code" size={16} />
+                  <strong title="出于安全和性能考虑，只显示元数据。">二进制文件</strong>
                 </div>
               ) : (
                 <>
@@ -358,6 +377,7 @@ export function FilesPanel({
                           type="button"
                           className="primary-button"
                           disabled={saving || draft === content}
+                          aria-busy={saving}
                           onClick={() => void saveEdit()}
                         >
                           {saving ? '保存中…' : '保存'}
@@ -422,13 +442,22 @@ export function FilesPanel({
             </>
           ) : (
             <div className="resource-empty">
-              <Icon name="workspace" />
+              <Icon name="workspace" size={16} />
               <strong>选择文件预览</strong>
-              <p>敏感文件、工作区外链接和二进制正文不会返回浏览器。</p>
+              <p title="敏感文件、工作区外链接和二进制正文不会返回浏览器。">受限内容不会返回浏览器。</p>
             </div>
           )}
         </>
       </ResourceSplitLayout>
+      <ConfirmDialog
+        open={confirmDiscard}
+        onClose={() => setConfirmDiscard(false)}
+        title="放弃未保存的修改？"
+        body="当前草稿尚未保存，放弃后将回到文件的最新内容。"
+        confirmLabel="放弃修改"
+        danger
+        onConfirm={discardEdit}
+      />
     </div>
   );
 }
@@ -534,7 +563,7 @@ function FileRow({
       onClick={() => (directoryLike ? onToggle(node.id) : onSelect(node))}
       disabled={blocked}
     >
-      <Icon name={directoryLike ? 'workspace' : 'code'} size={14} />
+      <Icon name={directoryLike ? 'workspace' : 'code'} size={16} />
       <span>{node.name}</span>
       {node.kind === 'symlink' ? <small>链接</small> : null}
       {node.sensitive ? <small>敏感</small> : null}

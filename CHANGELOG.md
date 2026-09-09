@@ -22,6 +22,53 @@ which is **not** a pass.
 
 ## [Unreleased]
 
+## [0.3.15] — CANDIDATE
+
+> **Status: candidate.** Web Workbench visual & interaction convergence
+> (`docs/plan/v0.3.15-plan.md`): copy thinning, unified confirm modal, busy
+> affordances and resource-panel visual tightening. No protocol, API or
+> dependency changes. Not merged, tagged or published.
+
+### Fixed
+
+- The eager archived-sessions loader no longer refetches in a loop after a
+  rejected request: `archived_sessions_failed` now claims the workspace
+  (`ownerWorkspaceId`), so the App effect's guard skips settled workspaces, and
+  the fire-and-forget call no longer surfaces the workspace-switch Context race
+  (`The active Context changed before the operation was admitted`) as hundreds
+  of unhandled promise rejections / 409 console errors.
+
+### Changed
+
+- **Copy thinning (T1):** removed or compressed eight explanatory paragraphs in
+  Files / Git / Review / ProjectNavigator / Inspector; details moved to
+  `title` / `aria` attributes (search scope, binary metadata, sensitive-content
+  fence, Git read-model detail, hunk-to-composer hint, diagnostics redaction).
+  Empty states follow icon + one short line.
+- **Transient notices (T1):** Files/Git/Review recovery and success notices now
+  fade out automatically after 4s; error notices persist until replaced
+  (`useAutoNotice`).
+- **Unified confirm modal (T2/D3):** the two remaining `window.confirm` guards
+  — Files discard-unsaved-changes and Inspector clear-Goal — use a shared
+  `ConfirmDialog` (native `<dialog>`: Esc cancel, focus trap, cancel-focused
+  Enter, danger action styling).
+- **Busy affordances (T2):** Files/Git/Review refresh buttons report
+  `aria-busy` with a rotating icon (box size unchanged, reduced-motion aware);
+  the Files save button holds a fixed minimum width so 保存/保存中… no longer
+  shifts the row, and reports `aria-busy` while saving.
+- **Visual convergence (T3):** resource-panel icons unified on the 12/16/20
+  tiers (16px inside panels), search fields and change-list rows reuse the
+  existing radius tokens, and Git group/history headings step back to muted
+  11px type. No new theme tokens.
+
+### Tests
+
+- New SSR contracts (`tests/web-ui-resource-copy-v0315.test.tsx`): thinned copy
+  never returns to first paint, busy buttons idle on first paint, confirm-modal
+  markup (focused cancel, danger action, closed shell), goal-clear wiring.
+- E2E locators were unaffected: the only referenced copy (`二进制文件`,
+  `刷新文件树`, `选择文件预览`) is unchanged.
+
 ## [0.3.14] — CANDIDATE
 
 > **Status: candidate.** Editable Files panel (guarded `POST /files/write` with

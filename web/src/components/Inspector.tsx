@@ -9,6 +9,7 @@ import {
 } from '../types';
 import { Icon } from './Icon';
 import { Markdown, safeJson, sanitizeDisplayText } from './Markdown';
+import { ConfirmDialog } from './Dialogs';
 
 export type AgentPanelTab = 'goal' | 'activity' | 'integrations' | 'diagnostics';
 
@@ -103,6 +104,9 @@ function GoalPanel({
   const pending = Boolean(state.pendingAction);
   const commandBlocked =
     pending || state.connection !== 'live' || !isActiveSessionSnapshotReady(state);
+  // v0.3.15 T2 — clearing a Goal asks through the unified confirm modal
+  // instead of `window.confirm`.
+  const [confirmClear, setConfirmClear] = useState(false);
   if (!goal) {
     return (
       <div className="inspector-stack">
@@ -218,10 +222,7 @@ function GoalPanel({
           <button
             type="button"
             className="danger-ghost-button"
-            onClick={() => {
-              if (window.confirm('清除此 Goal？会话记录仍会保留。'))
-                void actions.controlGoal('clear');
-            }}
+            onClick={() => setConfirmClear(true)}
             disabled={commandBlocked}
           >
             清除
@@ -289,6 +290,16 @@ function GoalPanel({
           </ol>
         </section>
       ) : null}
+      <ConfirmDialog
+        open={confirmClear}
+        onClose={() => setConfirmClear(false)}
+        title="清除此 Goal？"
+        body="Goal 的目标与进度会从当前会话移除，会话记录仍会保留。"
+        confirmLabel="清除 Goal"
+        danger
+        pending={pending}
+        onConfirm={() => actions.controlGoal('clear')}
+      />
     </div>
   );
 }
@@ -796,7 +807,7 @@ function DiagnosticsPanel({
       {state.loopStats ? <JsonSection title="Loop statistics" value={state.loopStats} /> : null}
       <section className="security-note">
         <Icon name="check" size={16} />
-        <p>诊断载荷由 Host 脱敏。API Key、认证 Header 和环境值不会返回浏览器。</p>
+        <p title="API Key、认证 Header 和环境值不会返回浏览器。">诊断载荷由 Host 脱敏。</p>
       </section>
     </div>
   );
