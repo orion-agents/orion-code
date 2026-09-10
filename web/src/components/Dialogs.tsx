@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useId,
   useRef,
   useState,
   type FormEvent,
@@ -452,6 +453,72 @@ export function SessionTagsDialog({
           </button>
         </footer>
       </form>
+    </DialogFrame>
+  );
+}
+
+export interface ConfirmDialogProps {
+  readonly open: boolean;
+  readonly onClose: () => void;
+  readonly title: string;
+  readonly body: string;
+  readonly confirmLabel: string;
+  /** Destructive confirmations render the danger action; focus starts on 取消. */
+  readonly danger?: boolean;
+  readonly pending?: boolean;
+  readonly onConfirm: () => void | Promise<void>;
+}
+
+/**
+ * v0.3.15 — one confirmation modal for destructive/unsaved-change guards,
+ * replacing the last `window.confirm` calls (FilesPanel discard, Inspector
+ * goal clear). Reuses `DialogFrame`, so Esc cancel, backdrop click and the
+ * native focus trap come for free; the cancel button takes initial focus so
+ * Enter can never confirm a destructive action accidentally.
+ */
+export function ConfirmDialog({
+  open,
+  onClose,
+  title,
+  body,
+  confirmLabel,
+  danger = false,
+  pending = false,
+  onConfirm,
+}: ConfirmDialogProps) {
+  const titleId = useId();
+  const confirm = async () => {
+    if (pending) return;
+    try {
+      await onConfirm();
+      onClose();
+    } catch {
+      // Failures keep the dialog open; panels surface the error themselves.
+    }
+  };
+
+  return (
+    <DialogFrame open={open} onClose={onClose} labelledBy={titleId} className="confirm-modal">
+      <header className="modal-header">
+        <h2 id={titleId}>{title}</h2>
+        <button type="button" className="icon-button" onClick={onClose} aria-label="关闭确认窗口">
+          <Icon name="close" />
+        </button>
+      </header>
+      <p className="confirm-body">{body}</p>
+      <footer className="modal-footer">
+        <button type="button" className="secondary-button" autoFocus onClick={onClose}>
+          取消
+        </button>
+        <button
+          type="button"
+          className={danger ? 'danger-button' : 'primary-button'}
+          disabled={pending}
+          onClick={() => void confirm()}
+        >
+          {pending ? '处理中…' : confirmLabel}
+        </button>
+      </footer>
     </DialogFrame>
   );
 }

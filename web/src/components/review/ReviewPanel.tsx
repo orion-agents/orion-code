@@ -5,6 +5,7 @@ import type { WebGitDiffPageV1, WebGitFileV1, WebReviewSnapshotV1 } from '../../
 import type { WorkbenchActions } from '../../useWorkbench';
 import { ResourceSplitLayout } from '../../layout/ResourceSplitLayout';
 import { Icon } from '../Icon';
+import { useAutoNotice } from '../useAutoNotice';
 import { DiffViewer } from '../git/DiffViewer';
 
 export function ReviewPanel({
@@ -29,7 +30,10 @@ export function ReviewPanel({
   const [diff, setDiff] = useState<WebGitDiffPageV1 | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [resourceNotice, setResourceNotice] = useState('');
+  // v0.3.15 T1 — recovery notices fade out on their own; real errors persist
+  // in `.resource-error` below.
+  const { notice: resourceNotice, showNotice: setResourceNotice, clearNotice: clearResourceNotice } =
+    useAutoNotice();
   const generationRef = useRef(0);
   const diffRequestRef = useRef(0);
 
@@ -61,7 +65,7 @@ export function ReviewPanel({
     const generation = generationRef.current + 1;
     generationRef.current = generation;
     diffRequestRef.current += 1;
-    setResourceNotice('');
+    clearResourceNotice();
     void refresh(generation, selected?.fileId);
   };
 
@@ -73,7 +77,7 @@ export function ReviewPanel({
     setSelected(null);
     setDiff(null);
     setError('');
-    setResourceNotice('');
+    clearResourceNotice();
     if (workspaceId) void refresh(generation);
   }, [refreshEpoch, workspaceId]);
 
@@ -135,7 +139,7 @@ export function ReviewPanel({
       <div className="review-summary">
         <div>
           <span className={`review-score ${snapshot.clean ? 'clean' : 'changed'}`}>
-            {snapshot.clean ? <Icon name="check" /> : <Icon name="edit" />}
+            {snapshot.clean ? <Icon name="check" size={16} /> : <Icon name="edit" size={16} />}
           </span>
           <div>
             <strong>{reviewSummary(snapshot).headline}</strong>
@@ -146,10 +150,11 @@ export function ReviewPanel({
           type="button"
           className="icon-button"
           aria-label="刷新审阅快照"
+          aria-busy={loading}
           disabled={loading}
           onClick={reload}
         >
-          <Icon name="refresh" size={15} />
+          <Icon name="refresh" size={16} />
         </button>
       </div>
       {snapshot.truncated ? (
@@ -160,7 +165,7 @@ export function ReviewPanel({
       ) : null}
       {resourceNotice ? (
         <p className="resource-notice" role="status">
-          {resourceNotice}
+          {resourceNotice.text}
         </p>
       ) : null}
       {error ? (
@@ -206,9 +211,9 @@ export function ReviewPanel({
             />
           ) : (
             <div className="resource-empty">
-              <Icon name="edit" />
+              <Icon name="edit" size={16} />
               <strong>选择文件开始审阅</strong>
-              <p>你可以把某个 Hunk 作为草稿送回对话，提交前仍由你确认。</p>
+              <p title="你可以把某个 Hunk 作为草稿送回对话，提交前仍由你确认。">选中 Hunk 可送回对话。</p>
             </div>
           )}
         </>

@@ -491,6 +491,11 @@ export function workbenchReducer(
         archivedSessions: {
           ...state.archivedSessions,
           status: 'error',
+          // v0.3.15 — claim ownership on failure too: the eager loader in App
+          // skips workspaces that already have a settled archived listing, so a
+          // rejected request (context race) must not invite a refetch storm on
+          // every foreground snapshot.
+          ownerWorkspaceId: action.workspaceId,
           error: action.detail,
         },
       };

@@ -1,7 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import type { WorkbenchActions } from '../useWorkbench';
-import type { ThemePreference } from '../settings/types';
 import {
   activeSessionSnapshotSync,
   isActiveSessionSnapshotReady,
@@ -14,7 +13,6 @@ import {
 } from '../types';
 import { Icon, type IconName } from './Icon';
 import { Markdown, safeJson, sanitizeDisplayText } from './Markdown';
-import { sessionTitle } from './WorkspaceRail';
 import { StateDot } from './StateDot';
 import { ComposerControlCenter } from './composer/ComposerControlCenter';
 import { buildHistoryNavigation, type HistoryAnchor } from './history-navigation';
@@ -25,42 +23,11 @@ import { ToolOutputPreview } from './ToolOutputPreview';
 const INITIAL_TIMELINE_WINDOW = 320;
 const TIMELINE_PAGE = 300;
 
-/** Theme cycling: system -> light -> dark -> system (order matters). */
-const THEME_CYCLE_ORDER: readonly ThemePreference[] = ['system', 'light', 'dark'];
-const THEME_ICON: Record<ThemePreference, IconName> = {
-  system: 'monitor',
-  light: 'sun',
-  dark: 'moon',
-};
-const THEME_LABEL: Record<ThemePreference, string> = {
-  system: '跟随系统',
-  light: '浅色',
-  dark: '深色',
-};
-
-function themeCycleInfo(preference: ThemePreference | undefined): {
-  readonly current: ThemePreference;
-  readonly next: ThemePreference;
-} {
-  const current = preference ?? 'system';
-  const index = THEME_CYCLE_ORDER.indexOf(current);
-  const next = THEME_CYCLE_ORDER[(index + 1) % THEME_CYCLE_ORDER.length];
-  return { current, next };
-}
-
 export interface ConversationProps {
   readonly state: WorkbenchState;
   readonly actions: WorkbenchActions;
-  readonly navigationOpen: boolean;
-  readonly inspectorExpanded: boolean;
-  readonly onOpenNavigation: () => void;
-  readonly onToggleInspector: () => void;
   readonly onRevealSettings: () => void;
   readonly onCreateSession: () => void;
-  /** v0.3.6 shell shortcuts: theme cycling and the keyboard reference. */
-  readonly themePreference: ThemePreference | undefined;
-  readonly onCycleTheme: () => void;
-  readonly onShowShortcuts: () => void;
   readonly composerInsertion: { readonly id: number; readonly text: string } | null;
 }
 
@@ -73,18 +40,10 @@ type TimelineItem =
 export function Conversation({
   state,
   actions,
-  navigationOpen,
-  inspectorExpanded,
-  onOpenNavigation,
-  onToggleInspector,
   onRevealSettings,
   onCreateSession,
-  themePreference,
-  onCycleTheme,
-  onShowShortcuts,
   composerInsertion,
 }: ConversationProps) {
-  const activeSession = state.sessions.find(session => session.id === state.activeSessionId);
   const snapshotSync = activeSessionSnapshotSync(state);
   const allTimeline = useMemo(
     () => buildTimeline(state),
@@ -187,63 +146,8 @@ export function Conversation({
     viewport.scrollTo({ top: viewport.scrollHeight, behavior: 'smooth' });
   };
 
-  const themeCycle = themeCycleInfo(themePreference);
-
   return (
     <main className="conversation-column" id="main-content">
-      <header className="conversation-header">
-        <button
-          type="button"
-          className="icon-button mobile-nav-toggle"
-          onClick={onOpenNavigation}
-          aria-label="打开会话导航"
-          aria-controls="workspace-rail"
-          aria-expanded={navigationOpen}
-        >
-          <Icon name="menu" />
-        </button>
-        <div className="conversation-identity">
-          <div className="title-line">
-            <h1 tabIndex={-1}>{activeSession ? sessionTitle(activeSession) : 'Orion Code'}</h1>
-            {state.processing ? <span className="running-pulse">运行中</span> : null}
-          </div>
-          <p title={state.workspace}>
-            {activeSession?.model ??
-              state.settings?.sections.defaults.model.effectiveValue ??
-              '本地工作台'}{' '}
-            · {basename(state.workspace)}
-          </p>
-        </div>
-        <div className="header-actions">
-          <button
-            type="button"
-            className="icon-button theme-cycle-button"
-            onClick={onCycleTheme}
-            aria-label={`主题：${THEME_LABEL[themeCycle.current]}，点击切换为${THEME_LABEL[themeCycle.next]}`}
-          >
-            <Icon name={THEME_ICON[themeCycle.current]} />
-          </button>
-          <button
-            type="button"
-            className="icon-button shortcut-help-button"
-            onClick={onShowShortcuts}
-            aria-label="键盘快捷键帮助"
-          >
-            <Icon name="keyboard" />
-          </button>
-          <button
-            type="button"
-            className="icon-button inspector-toggle"
-            onClick={onToggleInspector}
-            aria-label={inspectorExpanded ? '关闭工作面板' : '打开工作面板'}
-            aria-controls="work-panel"
-            aria-expanded={inspectorExpanded}
-          >
-            <Icon name="sidebar" />
-          </button>
-        </div>
-      </header>
-
       {!state.bootstrap?.configured ? (
         <div className="configuration-banner" role="status">
           <Icon name="warning" />
@@ -1057,9 +961,4 @@ function formatBytes(bytes: number): string {
   if (bytes < 1_024) return `${bytes} B`;
   if (bytes < 1_048_576) return `${(bytes / 1_024).toFixed(1)} KB`;
   return `${(bytes / 1_048_576).toFixed(1)} MB`;
-}
-
-function basename(path: string): string {
-  const normalized = path.replace(/[\\/]+$/, '');
-  return normalized.split(/[\\/]/).filter(Boolean).at(-1) ?? normalized;
 }

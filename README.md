@@ -2,13 +2,11 @@
 
 Local-first, goal-driven coding agent for the terminal and browser.
 
-> v0.3.12 candidate — a Wide Right Workspace on top of the vertical rail: pure
-> dock/rail/drawer geometry (detail dockable to 80vw while the conversation
-> keeps a 320px minimum), per-workspace layout preferences, a shared repository
-> snapshot store, progressive Review verification, guarded Git stage/unstage/
-> commit, bounded workspace search and revision-bound file_range Context
-> references. Candidate source is not an npm publication, Git tag, or
-> merge-ready release.
+> v0.3.15 candidate — Web Workbench visual & interaction convergence: thinned
+> explanatory copy across the resource panels, one unified confirm modal
+> replacing the last `window.confirm` guards, busy feedback for refresh/save
+> actions, and Orion-style visual tightening of Files / Git / Review.
+> Candidate source is not an npm publication, Git tag, or merge-ready release.
 
 [中文说明](README.zh-CN.md) ·
 [v0.3.7 plan](docs/plan/v0.3.7-left-rail-improvement-plan.md) ·
@@ -173,7 +171,7 @@ current development environments. Node 20 is upstream EOL and is no longer a v0.
 After the immutable `0.3.5` npm receipt exists:
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.12
+npm install -g @orion-agents/orion-code@0.3.15
 orion --version
 orion doctor
 ```
