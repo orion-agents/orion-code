@@ -121,6 +121,8 @@ export interface WorkPanelDockProps {
   readonly themePreference: ThemePreference | undefined;
   readonly onCycleTheme: () => void;
   readonly onToggleInspector: () => void;
+  /** v0.3.15 — open the keyboard shortcut reference dialog (restored trigger). */
+  readonly onShowShortcutHelp: () => void;
 }
 
 export function WorkPanelDock({
@@ -131,6 +133,7 @@ export function WorkPanelDock({
   themePreference,
   onCycleTheme,
   onToggleInspector,
+  onShowShortcutHelp,
   activePanel,
   panelOrder,
   agentPanel,
@@ -300,6 +303,15 @@ export function WorkPanelDock({
         );
       })}
       <div className="work-panel-rail-spacer" />
+      <button
+        type="button"
+        className="icon-button shortcut-help-button"
+        onClick={onShowShortcutHelp}
+        aria-label="查看键盘快捷键"
+        title="键盘快捷键（⌘/Ctrl+/）"
+      >
+        <Icon name="keyboard" size={17} />
+      </button>
       <button
         type="button"
         className="icon-button theme-cycle-button"

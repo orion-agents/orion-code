@@ -548,7 +548,6 @@ export function App() {
           collapsed={columns.projectNavigation.mode === 'rail'}
           resizable={columns.projectNavigation.mode === 'dock'}
           width={columns.projectNavigation.widthPx}
-          onCloseDrawer={closeDrawers}
           onExpand={() => {
             if (navigationOverlay) {
               rememberDrawerTrigger();
@@ -614,6 +613,7 @@ export function App() {
           expanded={panelExpanded}
           themePreference={theme}
           onCycleTheme={cycleTheme}
+          onShowShortcutHelp={() => setShortcutHelpOpen(true)}
           onToggleInspector={() => {
             if (panelOverlay || panelDerivedRail) {
               if (panelOverlayOpen) {

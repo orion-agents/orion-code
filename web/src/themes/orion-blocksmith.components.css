@@ -43,6 +43,22 @@
     inset -2px -2px var(--pixel-wood-dark);
 }
 
+/* v0.3.15 — the project tile carries the pixel-rendered orion-code mark, so it
+   squares its corner to sit on the blocksmith pixel grid. The tile keeps its
+   own accent-soft fill: the mark's gradient is accent-coloured and must stay
+   legible in both light and dark appearances. */
+:root[data-ui-style='orion-blocksmith'] .workspace-icon {
+  border-radius: 2px;
+}
+
+:root[data-ui-style='orion-blocksmith'] .workspace-icon .orion-brand-mark-pixel {
+  filter: drop-shadow(1px 1px 0 var(--pixel-shadow));
+}
+
+:root[data-ui-style='orion-blocksmith'] .project-toolbar-brand .pixel-wordmark {
+  filter: drop-shadow(1px 1px 0 var(--pixel-shadow));
+}
+
 :root[data-ui-style='orion-blocksmith'] .project-row,
 :root[data-ui-style='orion-blocksmith'] .project-session-main,
 :root[data-ui-style='orion-blocksmith'] .composer,

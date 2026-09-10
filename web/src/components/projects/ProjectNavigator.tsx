@@ -3,7 +3,6 @@ import {
   useDeferredValue,
   useEffect,
   useMemo,
-  useRef,
   useState,
   type KeyboardEvent,
 } from 'react';
@@ -23,6 +22,7 @@ import {
 } from '../../state/layout-preferences';
 import { Icon } from '../Icon';
 import { OrionBrandMark } from '../OrionBrandMark';
+import { PixelWordmark } from '../PixelWordmark';
 
 const PROJECT_WINDOW_SIZE = 40;
 
@@ -34,7 +34,6 @@ export interface ProjectNavigatorProps {
   readonly resizable: boolean;
   /** Live dock width in px, used for the resize separator's `aria-valuenow`. */
   readonly width?: number;
-  readonly onCloseDrawer: () => void;
   readonly onExpand: () => void;
   readonly onCollapse: () => void;
   readonly onOpenWorkspaceDialog: () => void;
@@ -66,7 +65,6 @@ export function ProjectNavigator({
   collapsed,
   resizable,
   width,
-  onCloseDrawer,
   onExpand,
   onCollapse,
   onOpenWorkspaceDialog,
@@ -213,20 +211,31 @@ export function ProjectNavigator({
       hidden={!dockVisible}
     >
       <div className="project-toolbar">
-        <div>
-          <span className="eyebrow">LOCAL PROJECTS</span>
-          <h2>项目</h2>
+        <div className="project-toolbar-brand">
+          <PixelWordmark text="orion-code" scale={2} />
+          <h2 className="sr-only">项目</h2>
         </div>
-        <button
-          type="button"
-          className="icon-button"
-          aria-label="选择其他工作区"
-          title="打开其他项目"
-          onClick={onOpenWorkspaceDialog}
-          disabled={workspaceTransitionLocked}
-        >
-          <Icon name="add" />
-        </button>
+        <div className="project-toolbar-actions">
+          <button
+            type="button"
+            className="icon-button"
+            aria-label="收起项目导航"
+            title="收起项目导航（⌘/Ctrl+B）"
+            onClick={onCollapse}
+          >
+            <Icon name="chevron-left" />
+          </button>
+          <button
+            type="button"
+            className="icon-button"
+            aria-label="选择其他工作区"
+            title="打开其他项目"
+            onClick={onOpenWorkspaceDialog}
+            disabled={workspaceTransitionLocked}
+          >
+            <Icon name="add" />
+          </button>
+        </div>
       </div>
 
       <label className="project-search">

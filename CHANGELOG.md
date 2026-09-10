@@ -29,7 +29,20 @@ which is **not** a pass.
 > affordances and resource-panel visual tightening. No protocol, API or
 > dependency changes. Not merged, tagged or published.
 
+### Added
+
+- **Pixel brand identity:** the Workbench brand is now true pixel art. A
+  dot-matrix `orion-code` wordmark (`PixelWordmark`, 5×7 grid, run-merged hard
+  rects, integer `scale`) sits in the expanded rail header, and an SVG page
+  icon (`web/public/favicon.svg`) gives the browser tab a real favicon (there
+  was none). `OrionBrandMark` gained an optional `pixel` prop that renders
+  solid two-tone bars with a 1px base shadow; the default gradient glyph used
+  by the boot screen and the collapsed rail is unchanged.
+
 ### Fixed
+
+- Restored the keyboard-shortcut reference trigger (now a rail icon), which was
+  lost when the conversation header was removed.
 
 - The eager archived-sessions loader no longer refetches in a loop after a
   rejected request: `archived_sessions_failed` now claims the workspace
@@ -60,6 +73,13 @@ which is **not** a pass.
   tiers (16px inside panels), search fields and change-list rows reuse the
   existing radius tokens, and Git group/history headings step back to muted
   11px type. No new theme tokens.
+- **Banner-free chrome:** the conversation header, the left-rail brand row and
+  the right-rail `PROJECT WORKSPACE` header are removed — conversation content
+  now starts at the top of the column. The theme-cycle and inspector-toggle
+  controls moved to the bottom of the right rail, and the left rail exposes a
+  collapse control in its toolbar. Project and session rows keep the plain
+  folder icon; the `orion-code` mark is used only in the rail header, the
+  collapsed rail and the favicon.
 
 ### Tests
 

@@ -13,7 +13,6 @@ import {
 } from '../types';
 import { Icon, type IconName } from './Icon';
 import { Markdown, safeJson, sanitizeDisplayText } from './Markdown';
-import { sessionTitle } from './WorkspaceRail';
 import { StateDot } from './StateDot';
 import { ComposerControlCenter } from './composer/ComposerControlCenter';
 import { buildHistoryNavigation, type HistoryAnchor } from './history-navigation';
@@ -45,7 +44,6 @@ export function Conversation({
   onCreateSession,
   composerInsertion,
 }: ConversationProps) {
-  const activeSession = state.sessions.find(session => session.id === state.activeSessionId);
   const snapshotSync = activeSessionSnapshotSync(state);
   const allTimeline = useMemo(
     () => buildTimeline(state),

@@ -30,7 +30,8 @@ export type IconName =
   | 'terminal'
   | 'trash'
   | 'warning'
-  | 'workspace';
+  | 'workspace'
+  | 'chevron-left';
 
 export interface IconProps extends Omit<SVGProps<SVGSVGElement>, 'name'> {
   readonly name: IconName;
@@ -173,4 +174,5 @@ const paths: Record<IconName, JSX.Element> = {
       <path d="M3 7V5h7l2 2" />
     </>
   ),
+  'chevron-left': <path d="m15 7-5 5 5 5" />,
 };
