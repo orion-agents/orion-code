@@ -1,6 +1,7 @@
 import {
   useEffect,
   useId,
+  useReducer,
   useRef,
   useState,
   type FormEvent,
@@ -8,9 +9,20 @@ import {
   type ReactNode,
 } from 'react';
 
-import type { WebSessionSummaryV1, WorkbenchState } from '../types';
+import type {
+  WebDirectoryPickResultV1,
+  WebSessionSummaryV1,
+  WebWorkspaceCandidateV1,
+  WorkbenchState,
+} from '../types';
 import { Icon } from './Icon';
 import { basename, sessionTitle } from './WorkspaceRail';
+import { WorkspaceConfirmCard } from './workspace/WorkspaceConfirmCard';
+import {
+  initialWorkspacePickerState,
+  workspacePickerBusy,
+  workspacePickerReducer,
+} from './workspace/workspace-picker-state';
 
 interface DialogFrameProps {
   readonly open: boolean;
@@ -65,6 +77,10 @@ export interface WorkspaceDialogProps {
   readonly state: WorkbenchState;
   readonly onSelect: (path: string) => Promise<void>;
   readonly onLoadMore: () => Promise<void>;
+  /** v0.3.16 — Host OS directory picker. Browse only: nothing activates. */
+  readonly onPickDirectory: () => Promise<WebDirectoryPickResultV1>;
+  /** v0.3.16 — read-only preview of a candidate directory. */
+  readonly onInspect: (path: string) => Promise<WebWorkspaceCandidateV1>;
 }
 
 export function WorkspaceDialog({
@@ -73,22 +89,98 @@ export function WorkspaceDialog({
   state,
   onSelect,
   onLoadMore,
+  onPickDirectory,
+  onInspect,
 }: WorkspaceDialogProps) {
   const [path, setPath] = useState('');
   const [localError, setLocalError] = useState('');
   const [busy, setBusy] = useState(false);
   const [showAllWorkspaces, setShowAllWorkspaces] = useState(false);
+  const [query, setQuery] = useState('');
+  const [picker, dispatch] = useReducer(workspacePickerReducer, initialWorkspacePickerState);
   useEffect(() => {
     if (!open) return;
     setPath('');
     setLocalError('');
     setBusy(false);
     setShowAllWorkspaces(false);
+    setQuery('');
+    dispatch({ type: 'reset' });
   }, [open]);
 
-  const locked = Boolean(state.pendingAction) || busy;
-  const suggested = state.workspaces.slice(0, 3);
-  const remaining = state.workspaces.slice(3);
+  const pickerBusy = workspacePickerBusy(picker);
+  const locked = Boolean(state.pendingAction) || busy || pickerBusy;
+  const confirming = picker.phase === 'confirm' || picker.phase === 'activate-pending';
+  const activeCandidate = confirming ? picker.candidate : null;
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const matchesQuery = (workspace: WorkbenchState['workspaces'][number]) =>
+    !normalizedQuery ||
+    workspace.label.toLocaleLowerCase().includes(normalizedQuery) ||
+    workspace.path.toLocaleLowerCase().includes(normalizedQuery);
+  const visible = state.workspaces.filter(matchesQuery);
+  const pinned = visible.filter(workspace => workspace.pinnedOrder !== undefined);
+  const recent = visible.filter(workspace => workspace.pinnedOrder === undefined);
+  const RECENT_PREVIEW_COUNT = 3;
+  const shownRecent = showAllWorkspaces ? recent : recent.slice(0, RECENT_PREVIEW_COUNT);
+  const hiddenRecent = recent.length - shownRecent.length;
+  const hasWorkspaces = pinned.length > 0 || recent.length > 0;
+
+  /**
+   * v0.3.16 — inspect a candidate without activating it. Used by both the
+   * native picker and the advanced manual entry; the user still has to confirm
+   * on the card before any workspace transition happens.
+   */
+  const inspectPath = async (candidatePath: string, source: 'picker' | 'manual') => {
+    dispatch({ type: 'inspect-started', path: candidatePath });
+    try {
+      const candidate = await onInspect(candidatePath);
+      dispatch({ type: 'inspect-succeeded', candidate: { ...candidate, source } });
+    } catch (error) {
+      dispatch({
+        type: 'failed',
+        message: error instanceof Error ? error.message : '无法读取该目录。',
+      });
+    }
+  };
+
+  const chooseFolder = async () => {
+    dispatch({ type: 'picker-started' });
+    try {
+      const result = await onPickDirectory();
+      if (result.outcome === 'cancelled') {
+        dispatch({ type: 'picker-cancelled' });
+        return;
+      }
+      if (result.outcome !== 'selected' || !result.path) {
+        dispatch({
+          type: 'picker-unavailable',
+          reason: '系统目录选择器不可用，请在高级选项中粘贴绝对路径。',
+        });
+        return;
+      }
+      await inspectPath(result.path, 'picker');
+    } catch (error) {
+      dispatch({
+        type: 'picker-unavailable',
+        reason: error instanceof Error ? error.message : '无法打开系统目录选择器。',
+      });
+    }
+  };
+
+  const openCandidate = async (candidate: WebWorkspaceCandidateV1) => {
+    // Only here — after an inspected candidate has been confirmed — do we enter
+    // the existing activation flow.
+    dispatch({ type: 'activate-started' });
+    try {
+      await onSelect(candidate.canonicalPath);
+      onClose();
+    } catch (error) {
+      dispatch({
+        type: 'failed',
+        message: error instanceof Error ? error.message : '工作区切换失败。',
+      });
+    }
+  };
 
   const select = async (next: string) => {
     const target = next.trim();
@@ -136,36 +228,89 @@ export function WorkspaceDialog({
           <Icon name="close" />
         </button>
       </div>
-      <div className="workspace-options" role="group" aria-label="常用工作区">
-        {suggested.map(workspace => (
-          <WorkspaceOption
-            key={workspace.id}
-            workspace={workspace}
-            locked={locked}
-            onSelect={select}
+      <div className="workspace-picker">
+        <label className="workspace-search">
+          <span className="sr-only">搜索最近项目</span>
+          <Icon name="search" size={15} />
+          <input
+            type="search"
+            value={query}
+            onChange={event => setQuery(event.target.value)}
+            placeholder="搜索最近项目…"
+            disabled={locked}
           />
-        ))}
-        {remaining.length > 0 ? (
+        </label>
+        <button
+          type="button"
+          className="workspace-pick-folder primary-button"
+          onClick={() => void chooseFolder()}
+          disabled={picker.phase === 'picker-pending' || (locked && !pickerBusy)}
+          aria-busy={picker.phase === 'picker-pending'}
+        >
+          <Icon name="workspace" size={16} />
+          {picker.phase === 'picker-pending' ? '正在打开 Finder…' : '从 Finder 选择文件夹…'}
+        </button>
+        {picker.error ? (
+          <p className="field-error" role="alert">
+            {picker.error}
+          </p>
+        ) : null}
+        {picker.phase === 'inspect-pending' ? (
+          <p className="workspace-inspect-pending" role="status">
+            正在解析 {picker.pendingPath}…
+          </p>
+        ) : null}
+      </div>
+
+      {activeCandidate ? (
+        <WorkspaceConfirmCard
+          candidate={activeCandidate}
+          busy={picker.phase === 'activate-pending'}
+          error={picker.error}
+          onCancel={() => dispatch({ type: 'back-to-browse' })}
+          onOpen={() => void openCandidate(activeCandidate)}
+        />
+      ) : null}
+
+      <div className="workspace-options" role="group" aria-label="常用工作区">
+        {pinned.length > 0 ? (
           <>
-            <button
-              type="button"
-              className="text-button workspace-toggle-all"
-              aria-expanded={showAllWorkspaces}
-              onClick={() => setShowAllWorkspaces(value => !value)}
-            >
-              {showAllWorkspaces ? '收起其他工作区' : `其他工作区（${remaining.length}）`}
-            </button>
-            {showAllWorkspaces
-              ? remaining.map(workspace => (
-                  <WorkspaceOption
-                    key={workspace.id}
-                    workspace={workspace}
-                    locked={locked}
-                    onSelect={select}
-                  />
-                ))
-              : null}
+            <h3 className="workspace-group-heading">固定项目</h3>
+            {pinned.map(workspace => (
+              <WorkspaceOption
+                key={workspace.id}
+                workspace={workspace}
+                locked={locked}
+                onSelect={select}
+              />
+            ))}
           </>
+        ) : null}
+        {recent.length > 0 ? (
+          <>
+            <h3 className="workspace-group-heading">
+              {pinned.length > 0 ? '最近打开' : '最近项目'}
+            </h3>
+            {shownRecent.map(workspace => (
+              <WorkspaceOption
+                key={workspace.id}
+                workspace={workspace}
+                locked={locked}
+                onSelect={select}
+              />
+            ))}
+          </>
+        ) : null}
+        {!hasWorkspaces ? <p className="workspace-empty">没有匹配的项目。</p> : null}
+        {hiddenRecent > 0 || (showAllWorkspaces && recent.length > RECENT_PREVIEW_COUNT) ? (
+          <button
+            type="button"
+            className="text-button workspace-toggle-all"
+            aria-expanded={showAllWorkspaces}
+            onClick={() => setShowAllWorkspaces(value => !value)}
+          >
+            {showAllWorkspaces ? '收起其他项目' : `其他项目（${hiddenRecent}）`}
+          </button>
         ) : null}
         {state.workspaceNextCursor ? (
           <button
@@ -178,30 +323,34 @@ export function WorkspaceDialog({
           </button>
         ) : null}
       </div>
-      <form className="workspace-path-form" onSubmit={submit}>
-        <label htmlFor="workspace-path-input">打开其他本地目录</label>
-        <div className="path-input-row">
-          <input
-            id="workspace-path-input"
-            value={path}
-            onChange={event => {
-              setPath(event.target.value);
-              if (localError) setLocalError('');
-            }}
-            placeholder="/Users/name/project"
-            spellCheck={false}
-            autoComplete="off"
-          />
-          <button type="submit" className="primary-button" disabled={!path.trim() || locked}>
-            {busy ? '打开中…' : '打开'}
-          </button>
-        </div>
-        {localError ? (
-          <p className="field-error" role="alert">
-            {localError}
-          </p>
-        ) : null}
-      </form>
+
+      <details className="workspace-advanced">
+        <summary>高级：粘贴绝对路径</summary>
+        <form className="workspace-path-form" onSubmit={submit}>
+          <label htmlFor="workspace-path-input">打开其他本地目录</label>
+          <div className="path-input-row">
+            <input
+              id="workspace-path-input"
+              value={path}
+              onChange={event => {
+                setPath(event.target.value);
+                if (localError) setLocalError('');
+              }}
+              placeholder="/Users/name/project"
+              spellCheck={false}
+              autoComplete="off"
+            />
+            <button type="submit" className="primary-button" disabled={!path.trim() || locked}>
+              {busy ? '打开中…' : '打开'}
+            </button>
+          </div>
+          {localError ? (
+            <p className="field-error" role="alert">
+              {localError}
+            </p>
+          ) : null}
+        </form>
+      </details>
     </DialogFrame>
   );
 }

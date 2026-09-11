@@ -15,6 +15,7 @@ import {
   parseWebOpenSettingsDocument,
   parseWebSettingsUpdate,
   type WebContextGuardV1,
+  type WebWorkspaceCandidateSourceV1,
 } from './protocol';
 import { WebWorkbenchError } from './errors';
 import { DEFAULT_WEB_PORT } from './cli-options';
@@ -306,6 +307,46 @@ async function handleRequest(context: RequestContext): Promise<void> {
       }
     );
     sendJson(response, 200, result);
+    return;
+  }
+  // v0.3.16 — open the OS directory picker. A browse action: the result is a
+  // path the client must still confirm, so nothing is registered or activated.
+  if (method === 'POST' && path === '/workspaces/pick-directory') {
+    assertMutation(request, context.nonce, context.origin);
+    const body = requireRecord(await readJson(request), 'Directory pick request');
+    assertOnlyKeys(body, ['requestId', 'title', 'initialPath']);
+    const requestId = requireUuid(body.requestId, 'requestId');
+    const title = optionalText(body.title, 'title', 200);
+    const initialPath = optionalText(body.initialPath, 'initialPath', 4096);
+    const result = await context.workbench.executeMutation(
+      requestId,
+      'workspace.pick-directory',
+      { title, initialPath },
+      async () => {
+        const picked = await context.workbench.pickDirectory({ title, initialPath });
+        return {
+          requestId,
+          outcome: picked.kind,
+          ...(picked.kind === 'selected' ? { path: picked.path } : {}),
+          ...(picked.kind === 'unavailable' ? { reason: picked.reason } : {}),
+        };
+      }
+    );
+    sendJson(response, 200, result);
+    return;
+  }
+  // v0.3.16 — read-only preview of a candidate directory. Authenticated
+  // transport only: no mutation reservation and no idempotency cache, because
+  // this writes nothing and a retry is harmless.
+  if (method === 'POST' && path === '/workspaces/inspect') {
+    assertMutation(request, context.nonce, context.origin);
+    const body = requireRecord(await readJson(request), 'Workspace inspect request');
+    assertOnlyKeys(body, ['requestId', 'path', 'source']);
+    const requestId = requireUuid(body.requestId, 'requestId');
+    const candidatePath = requireText(body.path, 'path', 4096);
+    const source = requireCandidateSource(optionalText(body.source, 'source', 32));
+    const candidate = context.workbench.inspectWorkspacePath(candidatePath, source);
+    sendJson(response, 200, { requestId, candidate });
     return;
   }
   if (method === 'GET' && path === '/sessions') {
@@ -1182,6 +1223,8 @@ function defaultProblemCode(status: number): string {
       return 'unsupported_media_type';
     case 421:
       return 'misdirected_request';
+    case 429:
+      return 'too_many_requests';
     case 503:
       return 'service_unavailable';
     default:
@@ -1202,6 +1245,27 @@ function requireText(value: unknown, name: string, maxLength: number): string {
   }
   if (value.length > maxLength) throw new HttpProblem(400, `${name} is too long.`);
   return value.trim();
+}
+
+function optionalText(value: unknown, name: string, maxLength: number): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  return requireText(value, name, maxLength);
+}
+
+/** v0.3.16 — where a workspace candidate came from; `manual` is the default. */
+const CANDIDATE_SOURCES: readonly WebWorkspaceCandidateSourceV1[] = [
+  'picker',
+  'recent',
+  'pinned',
+  'discovered',
+  'manual',
+];
+
+function requireCandidateSource(value: string | undefined): WebWorkspaceCandidateSourceV1 {
+  if (value === undefined) return 'manual';
+  const source = CANDIDATE_SOURCES.find(candidate => candidate === value);
+  if (!source) throw new HttpProblem(400, 'Unknown workspace candidate source.');
+  return source;
 }
 
 function requireUuid(value: unknown, name: string): string {
@@ -1257,6 +1321,7 @@ function statusTitle(status: number): string {
   if (status === 413) return 'Payload too large';
   if (status === 415) return 'Unsupported media type';
   if (status === 421) return 'Misdirected request';
+  if (status === 429) return 'Too many requests';
   if (status === 503) return 'Service unavailable';
   return 'Internal server error';
 }

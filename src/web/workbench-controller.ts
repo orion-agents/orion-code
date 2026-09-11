@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { existsSync, realpathSync, statSync, watch, type FSWatcher } from 'fs';
-import { basename, resolve } from 'path';
+import { basename, join, resolve } from 'path';
 
 import {
   AgentRuntimeController,
@@ -97,7 +97,16 @@ import {
   type WebWorkspaceSummaryV1,
   type WebWorkspaceProjectSummaryV1,
   type WebWorkspaceInvalidationReasonV1,
+  type WebWorkspaceAvailabilityV1,
+  type WebWorkspaceCandidateSourceV1,
+  type WebWorkspaceCandidateV1,
+  type WebWorkspaceKindV1,
 } from './protocol';
+import {
+  createNativeDirectoryPicker,
+  type NativeDirectoryPickResult,
+  type NativeDirectoryPicker,
+} from './native-directory-picker';
 import { ReviewServiceV1 } from './review-service';
 import {
   WebSessionRuntimeRegistryError,
@@ -145,6 +154,8 @@ export interface WebWorkbenchControllerOptions {
   readonly createRuntime?: (cwd: string) => Promise<OrionCodeUiRuntime>;
   readonly createSessionRuntime?: (cwd: string) => Promise<OrionCodeUiRuntime>;
   readonly workspaceRegistry?: WorkspaceRegistryV1;
+  /** v0.3.16 — Host native directory picker; injectable for tests. */
+  readonly nativeDirectoryPicker?: NativeDirectoryPicker;
 }
 
 /** Owns the Workspace surface plus the bounded Web Session actor registry. */
@@ -167,6 +178,9 @@ export class WebWorkbenchController {
    */
   private readonly workspaceKernels = new Map<string, WorkspaceRuntimeKernelV1>();
   private readonly workspaceRegistry: WorkspaceRegistryV1;
+  /** v0.3.16 — Host directory picker plus its single-in-flight guard. */
+  private readonly directoryPicker: NativeDirectoryPicker;
+  private pickerInFlight = false;
   readonly terminalManager: TerminalManagerV1;
   private readonly mutationResults = new Map<string, CachedMutationResult>();
   private readonly sessionViews = new Map<string, CachedSessionView>();
@@ -217,6 +231,7 @@ export class WebWorkbenchController {
       onStateChanged: state => this.emitWorkspaceMutationState(state),
     });
     this.workspaceRegistry = options.workspaceRegistry ?? new WorkspaceRegistryV1();
+    this.directoryPicker = options.nativeDirectoryPicker ?? createNativeDirectoryPicker();
     this.terminalManager = new TerminalManagerV1({
       resolveWorkspace: workspaceId => this.workspaceRegistry.find(workspaceId)?.canonicalPath,
       getActiveContext: () => ({
@@ -366,6 +381,65 @@ export class WebWorkbenchController {
     );
     if (context) this.assertContextGuard(context);
     return result;
+  }
+
+  /**
+   * v0.3.16 — Ask the Host to run the OS directory picker.
+   *
+   * This is a *browse* action: it never registers, activates or reads a
+   * workspace. Only one picker may be open at a time so a stuck native dialog
+   * cannot be stacked, and the result is a plain path the caller must still
+   * confirm through the normal activation flow.
+   */
+  async pickDirectory(input: {
+    readonly title?: string;
+    readonly initialPath?: string;
+  }): Promise<NativeDirectoryPickResult> {
+    if (this.closed) {
+      throw new WebWorkbenchError(503, 'The local Web Host is shutting down.', 'host_closed');
+    }
+    if (this.pickerInFlight) {
+      throw new WebWorkbenchError(429, 'A directory picker is already open.', 'picker_busy');
+    }
+    this.pickerInFlight = true;
+    try {
+      return await this.directoryPicker.pickDirectory(input);
+    } finally {
+      this.pickerInFlight = false;
+    }
+  }
+
+  /**
+   * v0.3.16 — Read-only inspection of a candidate directory.
+   *
+   * Resolves the canonical path, availability and Git/Folder kind. It does not
+   * register the path, activate a Context, touch the event stream or read file
+   * contents — only `stat` plus the presence of `.git`.
+   */
+  inspectWorkspacePath(
+    path: string,
+    source: WebWorkspaceCandidateSourceV1 = 'manual'
+  ): WebWorkspaceCandidateV1 {
+    if (this.closed) {
+      throw new WebWorkbenchError(503, 'The local Web Host is shutting down.', 'host_closed');
+    }
+    const inspected = inspectDirectory(requireCandidatePath(path));
+    const existing = this.workspaceRegistry
+      .list()
+      .find(entry => entry.canonicalPath === inspected.canonicalPath);
+    const counts =
+      inspected.availability === 'available' ? countSessionsByProject() : undefined;
+    return Object.freeze({
+      canonicalPath: inspected.canonicalPath,
+      label: basename(inspected.canonicalPath) || inspected.canonicalPath,
+      availability: inspected.availability,
+      kind: inspected.availability === 'available' ? detectWorkspaceKind(inspected.canonicalPath) : 'folder',
+      source,
+      ...(existing ? { existingWorkspaceId: existing.id } : {}),
+      ...(existing?.pinnedOrder !== undefined ? { pinnedOrder: existing.pinnedOrder } : {}),
+      ...(counts ? { sessionCount: counts.get(inspected.canonicalPath) ?? 0 } : {}),
+      isActive: inspected.canonicalPath === this.workspaceValue,
+    });
   }
 
   listWorkspaceSessions(
@@ -3037,6 +3111,78 @@ async function captureShutdownFailure(
     await operation();
   } catch (error) {
     failures.push(error);
+  }
+}
+
+/** v0.3.16 — markers that make a directory interesting as a project. */
+const PROJECT_SIGNAL_MARKERS = [
+  '.git',
+  'package.json',
+  'pyproject.toml',
+  'Cargo.toml',
+  'go.mod',
+] as const;
+
+/**
+ * True when a directory looks like a project root. Only marker *existence* is
+ * checked — never file contents — which is what roots discovery filters on.
+ */
+export function hasProjectSignal(canonicalPath: string): boolean {
+  return PROJECT_SIGNAL_MARKERS.some(marker => {
+    try {
+      return existsSync(join(canonicalPath, marker));
+    } catch {
+      return false;
+    }
+  });
+}
+
+function requireCandidatePath(path: string): string {
+  const trimmed = path.trim();
+  if (!trimmed) {
+    throw new WebWorkbenchError(400, 'A directory path is required.', 'invalid_request');
+  }
+  if (trimmed.length > 4096) {
+    throw new WebWorkbenchError(400, 'The directory path is too long.', 'invalid_request');
+  }
+  return trimmed;
+}
+
+/**
+ * Non-throwing canonicalization for the read-only inspector. `canonicalDirectory`
+ * below is the mutation path — it rejects missing or unreadable directories,
+ * which is what activation wants but not what a preview needs.
+ */
+function inspectDirectory(path: string): {
+  readonly canonicalPath: string;
+  readonly availability: WebWorkspaceAvailabilityV1;
+} {
+  const absolute = resolve(path);
+  let canonical: string;
+  try {
+    canonical = realpathSync(absolute);
+  } catch {
+    return {
+      canonicalPath: absolute,
+      availability: existsSync(absolute) ? 'unreadable' : 'missing',
+    };
+  }
+  let stat: ReturnType<typeof statSync>;
+  try {
+    stat = statSync(canonical);
+  } catch {
+    return { canonicalPath: canonical, availability: 'unreadable' };
+  }
+  if (!stat.isDirectory()) return { canonicalPath: canonical, availability: 'not_directory' };
+  return { canonicalPath: canonical, availability: 'available' };
+}
+
+/** `.git` as a directory (clone) or a file (worktree/submodule) both count. */
+function detectWorkspaceKind(canonicalPath: string): WebWorkspaceKindV1 {
+  try {
+    return existsSync(join(canonicalPath, '.git')) ? 'git' : 'folder';
+  } catch {
+    return 'folder';
   }
 }
 

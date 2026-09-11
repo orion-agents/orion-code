@@ -755,6 +755,8 @@ export function App() {
         state={state}
         onSelect={actions.switchWorkspace}
         onLoadMore={actions.loadMoreWorkspaces}
+        onPickDirectory={actions.pickWorkspaceDirectory}
+        onInspect={actions.inspectWorkspacePath}
       />
       <RenameDialog
         open={Boolean(renameTarget)}

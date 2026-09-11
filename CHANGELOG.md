@@ -22,6 +22,49 @@ which is **not** a pass.
 
 ## [Unreleased]
 
+## [0.3.16] — CANDIDATE
+
+> **Status: candidate.** LOCAL WORKSPACE opens a new project without typing a
+> path (`docs/plan/v0.3.16-plan.md`): a Host-side native folder picker, and a
+> read-only inspect step separated from activation. Covers slices S1 and S2;
+> controlled workspace-roots discovery (S3) is not implemented yet. No protocol
+> removals or dependency changes. Not merged, tagged or published.
+
+### Added
+
+- **Native folder picker (Host):** `POST /workspaces/pick-directory` runs the OS
+  directory chooser on the Host. The AppleScript is a fixed constant and the
+  prompt / default location travel as `argv` through `execFile`, so a chosen
+  path is never interpolated into a shell or script string. Cancelling is a
+  normal outcome, platforms without an adapter report `picker_unavailable`
+  rather than faking a selection, and only one picker may be open at a time.
+- **Read-only workspace inspect:** `POST /workspaces/inspect` resolves the
+  canonical path, availability (`available` / `missing` / `not_directory` /
+  `unreadable`) and Git-vs-folder kind, plus existing workspace id, session
+  count and pin order. It never registers a workspace, activates a Context or
+  reads file contents.
+- **Project picker dialog:** the LOCAL WORKSPACE dialog now leads with
+  `从 Finder 选择文件夹…`, groups pinned and recent projects, and shows a
+  confirmation card (canonical path, kind, availability, session count). The
+  manual absolute-path entry moved into a collapsed 高级 disclosure.
+
+### Changed
+
+- Browsing, searching, inspecting and cancelling never call `activateContext`,
+  pause the event stream or stop a running Session; only confirming 打开项目
+  enters the existing activation flow.
+
+### Tests
+
+- `tests/native-directory-picker.test.ts` — outcome mapping, argv isolation,
+  trailing-separator handling and non-macOS unavailability.
+- `tests/web-workbench-workspace-picker.test.ts` — inspect is strictly
+  read-only and the picker is single-in-flight.
+- `tests/web-ui-workspace-picker.test.tsx` — state-machine invariants (no
+  activation without a confirmed candidate) and the confirmation card.
+- `tests/e2e/*` — the four specs that filled the manual path now open the
+  advanced disclosure first.
+
 ## [0.3.15] — CANDIDATE
 
 > **Status: candidate.** Web Workbench visual & interaction convergence

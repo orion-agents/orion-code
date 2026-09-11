@@ -3979,6 +3979,116 @@ html[data-history-scrubbing] * {
   color: var(--muted);
   font-size: 11px;
 }
+/* v0.3.16 — LOCAL WORKSPACE picker: search + Finder entry, groups, confirm card. */
+.workspace-picker {
+  display: flex;
+  flex-direction: column;
+  padding: 12px 16px 4px;
+  gap: 8px;
+}
+.workspace-search {
+  display: flex;
+  height: 34px;
+  align-items: center;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--muted);
+  gap: 7px;
+}
+.workspace-search:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.workspace-search input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+}
+.workspace-pick-folder {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.workspace-inspect-pending {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+.workspace-group-heading {
+  margin: 10px 0 2px;
+  padding: 0 9px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.workspace-empty {
+  margin: 6px 0;
+  padding: 0 9px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.workspace-confirm {
+  margin: 10px 16px 0;
+  padding: 12px 13px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.workspace-confirm-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.workspace-confirm-name {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-confirm-meta {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+}
+.workspace-confirm-path,
+.workspace-confirm-note {
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 11px;
+}
+.workspace-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 11px;
+  gap: 8px;
+}
+.workspace-advanced {
+  padding: 0 16px 14px;
+}
+.workspace-advanced > summary {
+  padding: 7px 0;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+.workspace-advanced[open] > summary {
+  color: var(--text);
+}
+.workspace-advanced .workspace-path-form {
+  padding: 10px 0 0;
+  border-top: 0;
+}
 .workspace-path-form {
   padding: 13px 16px 16px;
   border-top: 1px solid var(--border);

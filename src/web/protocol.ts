@@ -417,6 +417,56 @@ export interface WebWorkspaceProjectSummaryV1 {
 }
 
 export type WebWorkspaceResourceV1 = 'files' | 'git' | 'review';
+
+/** v0.3.16 — LOCAL WORKSPACE picker contracts (read-only until confirm). */
+
+export type WebDirectoryPickOutcomeV1 = 'selected' | 'cancelled' | 'unavailable';
+
+export interface WebDirectoryPickResultV1 {
+  readonly outcome: WebDirectoryPickOutcomeV1;
+  /** Present only when `outcome === 'selected'`. */
+  readonly path?: string;
+  /** Operator-readable reason code; present only when `outcome === 'unavailable'`. */
+  readonly reason?: string;
+}
+
+export interface WebDirectoryPickRequestV1 {
+  readonly requestId: string;
+  readonly title?: string;
+  readonly initialPath?: string;
+}
+
+export type WebWorkspaceAvailabilityV1 = 'available' | 'missing' | 'not_directory' | 'unreadable';
+export type WebWorkspaceKindV1 = 'git' | 'folder';
+export type WebWorkspaceCandidateSourceV1 =
+  | 'picker'
+  | 'recent'
+  | 'pinned'
+  | 'discovered'
+  | 'manual';
+
+/**
+ * A read-only description of a directory the user *may* open. Inspecting a
+ * path never registers it, never activates a Context and never reads file
+ * contents — only `stat` plus the existence of a few project markers.
+ */
+export interface WebWorkspaceCandidateV1 {
+  readonly canonicalPath: string;
+  readonly label: string;
+  readonly availability: WebWorkspaceAvailabilityV1;
+  readonly kind: WebWorkspaceKindV1;
+  readonly source: WebWorkspaceCandidateSourceV1;
+  readonly existingWorkspaceId?: string;
+  readonly sessionCount?: number;
+  readonly pinnedOrder?: number;
+  readonly isActive?: boolean;
+}
+
+export interface WebWorkspaceInspectRequestV1 {
+  readonly requestId: string;
+  readonly path: string;
+  readonly source?: WebWorkspaceCandidateSourceV1;
+}
 export type WebWorkspaceInvalidationReasonV1 =
   | 'context-change'
   | 'filesystem-change'

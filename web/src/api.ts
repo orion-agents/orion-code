@@ -25,6 +25,9 @@ import type {
   WebToolDetailSummaryV1,
   WebWorkspaceSummaryV1,
   WebWorkspaceProjectSummaryV1,
+  WebWorkspaceCandidateSourceV1,
+  WebWorkspaceCandidateV1,
+  WebDirectoryPickResultV1,
 } from '../../src/web/protocol';
 
 import {
@@ -512,6 +515,43 @@ export class OrionWebApi {
       workspaces: result.page.items,
       nextCursor: result.page.nextCursor,
     };
+  }
+
+  /**
+   * v0.3.16 — open the Host OS directory picker.
+   *
+   * Browse only: nothing is registered or activated, and the user cancelling
+   * is a normal outcome rather than an error.
+   */
+  pickDirectory(input: {
+    readonly title?: string;
+    readonly initialPath?: string;
+  }): Promise<WebDirectoryPickResultV1> {
+    return this.mutate('/workspaces/pick-directory', 'POST', {
+      requestId: requestId(),
+      ...(input.title ? { title: input.title } : {}),
+      ...(input.initialPath ? { initialPath: input.initialPath } : {}),
+    });
+  }
+
+  /**
+   * v0.3.16 — read-only preview of a candidate directory. Resolves the
+   * canonical path and Git/Folder kind without touching the registry or the
+   * active Context.
+   */
+  async inspectWorkspace(
+    path: string,
+    source?: WebWorkspaceCandidateSourceV1
+  ): Promise<WebWorkspaceCandidateV1> {
+    const result = await this.mutate<{
+      readonly requestId: string;
+      readonly candidate: WebWorkspaceCandidateV1;
+    }>('/workspaces/inspect', 'POST', {
+      requestId: requestId(),
+      path,
+      ...(source ? { source } : {}),
+    });
+    return result.candidate;
   }
 
   async createSession(context: WebContextGuardV1): Promise<WebSessionSummaryV1> {

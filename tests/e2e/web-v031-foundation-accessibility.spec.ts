@@ -797,6 +797,8 @@ async function activateWorkspaceThroughUi(page: Page, path: string): Promise<voi
   await expect(trigger).toBeEnabled({ timeout: 30_000 });
   await trigger.click();
   await expect(ui.workspaceDialog).toBeVisible();
+  // v0.3.16 — the manual path entry now lives behind the advanced disclosure.
+  await ui.workspaceDialog.locator('summary', { hasText: '高级：粘贴绝对路径' }).click();
   await ui.workspaceDialog.getByRole('textbox', { name: '打开其他本地目录' }).fill(path);
   await ui.workspaceDialog.getByRole('button', { name: '打开', exact: true }).click();
   await expect(ui.workspaceDialog).toBeHidden({ timeout: 30_000 });

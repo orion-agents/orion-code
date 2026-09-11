@@ -42,6 +42,8 @@ import {
   initialWorkbenchState,
   isActiveSessionSnapshotReady,
   type DiagnosticsSnapshot,
+  type WebDirectoryPickResultV1,
+  type WebWorkspaceCandidateV1,
   type WorkbenchState,
 } from './types';
 import { upsertSessionSummary } from './state/session-collection';
@@ -88,6 +90,10 @@ export interface WorkbenchActions {
   loadMoreToolDetails(): Promise<void>;
   recoverSession(): Promise<void>;
   switchWorkspace(path: string): Promise<void>;
+  /** v0.3.16 — open the Host OS directory picker (browse only, no activation). */
+  pickWorkspaceDirectory(): Promise<WebDirectoryPickResultV1>;
+  /** v0.3.16 — read-only preview of a candidate directory. */
+  inspectWorkspacePath(path: string): Promise<WebWorkspaceCandidateV1>;
   activateContext(workspaceId: string, sessionId: string | null): Promise<void>;
   setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<void>;
   removeWorkspace(workspaceId: string): Promise<void>;
@@ -888,6 +894,24 @@ export function useWorkbench(): UseWorkbenchResult {
     [api, loadBaseline, pauseEventStream, resumeEventStream, runOperation]
   );
 
+  /**
+   * v0.3.16 — open the Host OS directory picker.
+   *
+   * Deliberately not wrapped in `runOperation`: cancelling is a normal outcome
+   * that must not raise a notice, and browsing must not pause the event stream
+   * or touch the active Context.
+   */
+  const pickWorkspaceDirectory = useCallback(() => api.pickDirectory({}), [api]);
+
+  /**
+   * v0.3.16 — read-only preview of a candidate directory. No notice, no pause,
+   * no state write; the dialog owns the local picker state machine.
+   */
+  const inspectWorkspacePath = useCallback(
+    (path: string) => api.inspectWorkspace(path, 'picker'),
+    [api]
+  );
+
   const selectSession = useCallback(
     (sessionId: string) => {
       const current = stateRef.current;
@@ -1444,6 +1468,8 @@ export function useWorkbench(): UseWorkbenchResult {
       loadMoreToolDetails,
       recoverSession,
       switchWorkspace,
+      pickWorkspaceDirectory,
+      inspectWorkspacePath,
       activateContext,
       setWorkspacePinned,
       removeWorkspace,
@@ -1540,6 +1566,8 @@ export function useWorkbench(): UseWorkbenchResult {
       setWorkspacePinned,
       submit,
       switchWorkspace,
+      pickWorkspaceDirectory,
+      inspectWorkspacePath,
       moveQueued,
       terminalAttachTicket,
       terminalSocket,
