@@ -69,7 +69,12 @@ function patchPath(path: string): string {
 function buildHunkBody(
   hunk: GitHunkV2,
   selection: { readonly whole: boolean; readonly lineIds: ReadonlySet<string> }
-): { readonly body: readonly string[]; readonly oldCount: number; readonly newCount: number; readonly changes: number } {
+): {
+  readonly body: readonly string[];
+  readonly oldCount: number;
+  readonly newCount: number;
+  readonly changes: number;
+} {
   const body: string[] = [];
   let oldCount = 0;
   let newCount = 0;

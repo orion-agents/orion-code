@@ -171,8 +171,7 @@ export function useGitWorkspace(input: {
 
         const previousFileId = current.selectedFileId;
         const previousPath =
-          entries.find(entry => entry.fileId === previousFileId)?.path ??
-          (diff ? diff.path : null);
+          entries.find(entry => entry.fileId === previousFileId)?.path ?? (diff ? diff.path : null);
         const repaired = resolveSelectionAfterRefresh({
           entries,
           previousFileId,
@@ -192,7 +191,8 @@ export function useGitWorkspace(input: {
         if (previousFileId) {
           // Same selection: keep the rendered document and mark it as possibly outdated
           // instead of blanking the pane.
-          const stillValid = diff !== null && nextStatus.repositoryRevision === diff.repositoryRevision;
+          const stillValid =
+            diff !== null && nextStatus.repositoryRevision === diff.repositoryRevision;
           setStale(!stillValid);
         } else {
           setStale(false);
@@ -286,7 +286,8 @@ export function useGitWorkspace(input: {
       const generation = generationRef.current;
       const token = diffTokenRef.current + 1;
       diffTokenRef.current = token;
-      setSession({ selectedLineIds: [], 
+      setSession({
+        selectedLineIds: [],
         selectedFileId: entry.fileId,
         selectedSource: entry.source,
         anchorLineId: null,

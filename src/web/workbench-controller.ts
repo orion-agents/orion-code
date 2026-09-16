@@ -485,7 +485,9 @@ export class WebWorkbenchController {
       isActive: inspected.canonicalPath === this.workspaceValue,
     });
     if (span) {
-      this.openTelemetry.record(span.finish('success', inspected.timedOut ? 'inspect_budget_exceeded' : undefined));
+      this.openTelemetry.record(
+        span.finish('success', inspected.timedOut ? 'inspect_budget_exceeded' : undefined)
+      );
     }
     return candidate;
   }

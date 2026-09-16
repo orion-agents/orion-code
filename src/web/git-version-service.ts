@@ -157,7 +157,9 @@ function imageDataUrl(bytes: Buffer): string | null {
 }
 
 /** Detects an LFS pointer and extracts its state. Never fetches anything. */
-function parseLfsPointer(head: string): { readonly oid: string; readonly size: number | null } | null {
+function parseLfsPointer(
+  head: string
+): { readonly oid: string; readonly size: number | null } | null {
   if (!head.startsWith('version https://git-lfs.github.com/spec/')) return null;
   const oidMatch = /^oid sha256:([0-9a-f]{64})$/mu.exec(head);
   if (!oidMatch) return null;

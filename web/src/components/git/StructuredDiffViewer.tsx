@@ -221,12 +221,7 @@ export function StructuredDiffViewer({
             并排
           </button>
         </div>
-        <button
-          type="button"
-          className="text-button"
-          aria-pressed={wrap}
-          onClick={onToggleWrap}
-        >
+        <button type="button" className="text-button" aria-pressed={wrap} onClick={onToggleWrap}>
           换行
         </button>
         <button
@@ -249,17 +244,17 @@ export function StructuredDiffViewer({
           </button>
         ) : null}
         {onToggleIgnoreWhitespace ? (
-            <button
-              type="button"
-              className={`text-button ${ignoreWhitespace ? 'diff-toggle-on' : ''}`}
-              aria-pressed={ignoreWhitespace}
-              title="忽略空白差异（重新读取 Diff）"
-              onClick={onToggleIgnoreWhitespace}
-            >
-              忽略空白
-            </button>
-          ) : null}
           <button
+            type="button"
+            className={`text-button ${ignoreWhitespace ? 'diff-toggle-on' : ''}`}
+            aria-pressed={ignoreWhitespace}
+            title="忽略空白差异（重新读取 Diff）"
+            onClick={onToggleIgnoreWhitespace}
+          >
+            忽略空白
+          </button>
+        ) : null}
+        <button
           type="button"
           className="text-button"
           onClick={() => onSetAllFolded(collapsedHunks.length === 0)}
@@ -367,9 +362,17 @@ export function StructuredDiffViewer({
             onClick={() =>
               onSendToComposer(
                 buildHunkReviewContext(
-                  { path: doc.path, source: doc.source, repositoryRevision: doc.repositoryRevision },
-                  doc.hunks[Math.max(0, anchors.findIndex(a => a.lineId === anchorLineId))] ??
-                    doc.hunks[0]
+                  {
+                    path: doc.path,
+                    source: doc.source,
+                    repositoryRevision: doc.repositoryRevision,
+                  },
+                  doc.hunks[
+                    Math.max(
+                      0,
+                      anchors.findIndex(a => a.lineId === anchorLineId)
+                    )
+                  ] ?? doc.hunks[0]
                 )
               )
             }
@@ -401,7 +404,11 @@ function DiffHeader({
   stale,
 }: {
   readonly doc: GitDiffDocumentV2;
-  readonly stats: { readonly additions: number; readonly deletions: number; readonly hunks: number };
+  readonly stats: {
+    readonly additions: number;
+    readonly deletions: number;
+    readonly hunks: number;
+  };
   readonly stale: boolean;
 }) {
   return (
@@ -494,7 +501,13 @@ function DiffRow({
         activeAnchor === line.lineId ? 'diff-line-anchor' : ''
       }`}
       data-line-id={line.lineId}
-      data-side={line.oldLineNumber !== null && line.newLineNumber !== null ? 'both' : line.oldLineNumber !== null ? 'old' : 'new'}
+      data-side={
+        line.oldLineNumber !== null && line.newLineNumber !== null
+          ? 'both'
+          : line.oldLineNumber !== null
+            ? 'old'
+            : 'new'
+      }
     >
       <span className="diff-gutter">{line.oldLineNumber ?? ''}</span>
       <span className="diff-gutter">{line.newLineNumber ?? ''}</span>

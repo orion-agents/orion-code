@@ -14,7 +14,11 @@ import { useGitPanelKeyboard } from '../../state/useGitPanelKeyboard';
 import type { GitCommitPreviewV1, GitWorktreeSourceV1, WebGitFileV1 } from '../../types';
 import { ResourceSplitLayout } from '../../layout/ResourceSplitLayout';
 import { entriesForSource, useGitWorkspace } from '../../state/useGitWorkspace';
-import { GIT_PANEL_VIEWS, type GitPanelStore, type GitPanelView } from '../../state/git-panel-state';
+import {
+  GIT_PANEL_VIEWS,
+  type GitPanelStore,
+  type GitPanelView,
+} from '../../state/git-panel-state';
 import { changeAnchors } from './diff-view-model';
 import { Icon } from '../Icon';
 import { useAutoNotice } from '../useAutoNotice';
@@ -40,7 +44,12 @@ const GROUP_ORDER = ['conflict', 'unstaged', 'staged', 'untracked'] as const;
 
 /** `counts` keeps the v1 spelling `conflicted`; the source name is `conflict`. */
 function countOf(
-  counts: { readonly conflicted: number; readonly staged: number; readonly unstaged: number; readonly untracked: number },
+  counts: {
+    readonly conflicted: number;
+    readonly staged: number;
+    readonly unstaged: number;
+    readonly untracked: number;
+  },
   source: (typeof GROUP_ORDER)[number]
 ): number {
   return source === 'conflict' ? counts.conflicted : counts[source];
@@ -202,7 +211,6 @@ export function GitPanel({
     onEscapeFallback: () => undefined,
   });
 
-
   if (git.error && !status) {
     return (
       <div className="resource-empty" role="alert">
@@ -246,9 +254,7 @@ export function GitPanel({
         </div>
         <span>
           {status?.upstream || '无 upstream'}
-          {status && (status.ahead || status.behind)
-            ? ` · ↑${status.ahead} ↓${status.behind}`
-            : ''}
+          {status && (status.ahead || status.behind) ? ` · ↑${status.ahead} ↓${status.behind}` : ''}
         </span>
         <button
           type="button"
@@ -424,37 +430,37 @@ export function GitPanel({
                         : [...session.selectedLineIds, lineId],
                     })
                   }
-                document={diff}
-                mode={effectiveMode}
-                wrap={git.display.wrap}
-                showWhitespace={git.display.showWhitespace}
-                collapsedHunks={session.collapsedHunks}
-                anchorLineId={session.anchorLineId}
-                loading={git.loading}
-                stale={git.stale}
-                onChangeMode={mode => git.setDisplay({ mode })}
-                onToggleWrap={() => git.setDisplay({ wrap: !git.display.wrap })}
-                onToggleWhitespace={() =>
-                  git.setDisplay({ showWhitespace: !git.display.showWhitespace })
-                }
-                onToggleHunk={hunkId =>
-                  git.setSession({
-                    collapsedHunks: session.collapsedHunks.includes(hunkId)
-                      ? session.collapsedHunks.filter(id => id !== hunkId)
-                      : [...session.collapsedHunks, hunkId],
-                  })
-                }
-                onSetAllFolded={folded =>
-                  git.setSession({
-                    collapsedHunks: folded
-                      ? diff.hunks.map(hunk => hunk.hunkId)
-                      : ([] as readonly string[]),
-                  })
-                }
-                onAnchorChange={lineId => git.setSession({ anchorLineId: lineId })}
-                onNotice={showNotice}
-                onLoadMore={diff.nextCursor ? git.loadMoreDiff : undefined}
-                onSendToComposer={onSendToComposer}
+                  document={diff}
+                  mode={effectiveMode}
+                  wrap={git.display.wrap}
+                  showWhitespace={git.display.showWhitespace}
+                  collapsedHunks={session.collapsedHunks}
+                  anchorLineId={session.anchorLineId}
+                  loading={git.loading}
+                  stale={git.stale}
+                  onChangeMode={mode => git.setDisplay({ mode })}
+                  onToggleWrap={() => git.setDisplay({ wrap: !git.display.wrap })}
+                  onToggleWhitespace={() =>
+                    git.setDisplay({ showWhitespace: !git.display.showWhitespace })
+                  }
+                  onToggleHunk={hunkId =>
+                    git.setSession({
+                      collapsedHunks: session.collapsedHunks.includes(hunkId)
+                        ? session.collapsedHunks.filter(id => id !== hunkId)
+                        : [...session.collapsedHunks, hunkId],
+                    })
+                  }
+                  onSetAllFolded={folded =>
+                    git.setSession({
+                      collapsedHunks: folded
+                        ? diff.hunks.map(hunk => hunk.hunkId)
+                        : ([] as readonly string[]),
+                    })
+                  }
+                  onAnchorChange={lineId => git.setSession({ anchorLineId: lineId })}
+                  onNotice={showNotice}
+                  onLoadMore={diff.nextCursor ? git.loadMoreDiff : undefined}
+                  onSendToComposer={onSendToComposer}
                 />
               </div>
             ) : (
@@ -528,7 +534,10 @@ function CommitForm({
   readonly draft: { readonly summary: string; readonly body: string };
   readonly busy: boolean;
   readonly onDraftChange: (draft: { readonly summary: string; readonly body: string }) => void;
-  readonly onCommit: (input: { readonly summary: string; readonly body?: string }) => Promise<string>;
+  readonly onCommit: (input: {
+    readonly summary: string;
+    readonly body?: string;
+  }) => Promise<string>;
 }) {
   const [open, setOpen] = useState(false);
   const [localError, setLocalError] = useState('');
@@ -814,7 +823,9 @@ function ChangesNavigator({
                       取消
                     </button>
                   ) : null}
-                  {group.source === 'conflict' ? <span className="git-conflict-hint">需在 Files 处理</span> : null}
+                  {group.source === 'conflict' ? (
+                    <span className="git-conflict-hint">需在 Files 处理</span>
+                  ) : null}
                 </div>
               ))}
             </div>
@@ -824,7 +835,6 @@ function ChangesNavigator({
     </>
   );
 }
-
 
 /**
  * An explicit placeholder. The panel states what is missing and which stage delivers it

@@ -13,10 +13,7 @@
  * No React here: the store and the normalisers are plain functions so they can be tested
  * without a renderer.
  */
-import type {
-  GitWorktreeSourceV1,
-  WebGitFileSourceV1,
-} from '../../../src/web/git-file-source';
+import type { GitWorktreeSourceV1, WebGitFileSourceV1 } from '../../../src/web/git-file-source';
 
 export type GitPanelView = 'changes' | 'history' | 'compare';
 export type GitDiffMode = 'unified' | 'side-by-side';
@@ -249,8 +246,6 @@ export function resolveSelectionAfterRefresh(input: {
     fileId: fallback.fileId,
     path: fallback.path,
     notice:
-      input.previousFileId === null
-        ? ''
-        : `原选中的改动已不在此列表，已跳到 ${fallback.path}。`,
+      input.previousFileId === null ? '' : `原选中的改动已不在此列表，已跳到 ${fallback.path}。`,
   };
 }

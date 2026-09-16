@@ -89,7 +89,12 @@ export function useGitPanelKeyboard(handlers: GitPanelKeyboardHandlers): void {
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault();
         const step = event.key === 'ArrowDown' ? 1 : -1;
-        const next = index < 0 ? (step > 0 ? 0 : fileIds.length - 1) : Math.min(fileIds.length - 1, Math.max(0, index + step));
+        const next =
+          index < 0
+            ? step > 0
+              ? 0
+              : fileIds.length - 1
+            : Math.min(fileIds.length - 1, Math.max(0, index + step));
         setSession({ selectedFileId: fileIds[next], selectedSource: null, anchorLineId: null });
         return;
       }

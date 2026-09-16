@@ -44,12 +44,7 @@ export interface GitHunkV2 {
   readonly complete: boolean;
 }
 
-export type GitDiffDocumentKindV2 =
-  | 'text'
-  | 'binary'
-  | 'symlink'
-  | 'submodule'
-  | 'metadata';
+export type GitDiffDocumentKindV2 = 'text' | 'binary' | 'symlink' | 'submodule' | 'metadata';
 
 export interface GitDiffCapabilitiesV2 {
   readonly stageFile: boolean;

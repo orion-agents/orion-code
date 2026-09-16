@@ -71,9 +71,9 @@ async function resolveCommit(
   runGit: (args: readonly string[]) => Promise<string>,
   ref: string
 ): Promise<string> {
-  const resolved = (await runGit(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]).catch(
-    () => ''
-  ))
+  const resolved = (
+    await runGit(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]).catch(() => '')
+  )
     .toString()
     .trim();
   if (!/^[0-9a-f]{7,64}$/iu.test(resolved)) {
@@ -168,23 +168,24 @@ export function createGitCompareReader(options: GitCompareReaderOptions) {
       if (mode === 'merge-base') {
         // `--all` is the honest way to ask: a single answer means one divergence point, and
         // more than one means the question has no unique answer.
-        const raw = await runGit(['merge-base', '--all', pair.baseOid, pair.headOid]).catch(error => {
-          const message = error instanceof Error ? error.message : '';
-          if (/missing|bad object/iu.test(message)) {
+        const raw = await runGit(['merge-base', '--all', pair.baseOid, pair.headOid]).catch(
+          error => {
+            const message = error instanceof Error ? error.message : '';
+            if (/missing|bad object/iu.test(message)) {
+              throw new WebWorkbenchError(
+                409,
+                'The repository does not contain the objects needed for this comparison (a shallow clone?).',
+                'git_shallow_history'
+              );
+            }
+            // git exits non-zero with no candidates when the histories are unrelated, and with
+            // a diagnostic when objects are missing — those are different failures.
             throw new WebWorkbenchError(
               409,
-              'The repository does not contain the objects needed for this comparison (a shallow clone?).',
-              'git_shallow_history'
+              'The two refs have no common ancestor; use the two-endpoint comparison instead.',
+              'git_merge_base_missing'
             );
           }
-          // git exits non-zero with no candidates when the histories are unrelated, and with
-          // a diagnostic when objects are missing — those are different failures.
-          throw new WebWorkbenchError(
-            409,
-            'The two refs have no common ancestor; use the two-endpoint comparison instead.',
-            'git_merge_base_missing'
-          );
-        }
         );
         const candidates = raw
           .split('\n')

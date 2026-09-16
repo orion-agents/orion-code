@@ -52,7 +52,9 @@ async function openWorkspaceDialog(page: Parameters<typeof workbenchUi>[0]) {
   return ui;
 }
 
-test('WEB38-P0-01 (W316P-01) opening the dialog browses nothing and installs no Runtime', async ({ page }) => {
+test('WEB38-P0-01 (W316P-01) opening the dialog browses nothing and installs no Runtime', async ({
+  page,
+}) => {
   const before = await diagnostics(page);
   const bootstrapBefore = await webBootstrap(page);
 

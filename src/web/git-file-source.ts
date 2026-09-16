@@ -37,7 +37,5 @@ export const GIT_FILE_SOURCES_V1: readonly WebGitFileSourceV1[] = Object.freeze(
 ]);
 
 export function isGitFileSourceV1(value: unknown): value is WebGitFileSourceV1 {
-  return (
-    typeof value === 'string' && (GIT_FILE_SOURCES_V1 as readonly string[]).includes(value)
-  );
+  return typeof value === 'string' && (GIT_FILE_SOURCES_V1 as readonly string[]).includes(value);
 }

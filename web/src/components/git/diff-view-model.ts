@@ -170,7 +170,12 @@ export function findInDocument(
         Object.freeze({
           lineId: line.lineId,
           hunkId: hunk.hunkId,
-          side: line.oldLineNumber !== null && line.newLineNumber !== null ? 'both' : line.oldLineNumber !== null ? 'old' : 'new',
+          side:
+            line.oldLineNumber !== null && line.newLineNumber !== null
+              ? 'both'
+              : line.oldLineNumber !== null
+                ? 'old'
+                : 'new',
         })
       );
     }
@@ -210,11 +215,14 @@ export function markerFor(kind: GitDiffLineV2['kind']): string {
 }
 
 /** Review context for one hunk, built from the raw lines so nothing is invented. */
-export function buildHunkReviewContext(input: {
-  readonly path: string;
-  readonly source: string;
-  readonly repositoryRevision: string;
-}, hunk: GitHunkV2): string {
+export function buildHunkReviewContext(
+  input: {
+    readonly path: string;
+    readonly source: string;
+    readonly repositoryRevision: string;
+  },
+  hunk: GitHunkV2
+): string {
   const metadata = {
     schemaVersion: 2,
     type: 'review_context',

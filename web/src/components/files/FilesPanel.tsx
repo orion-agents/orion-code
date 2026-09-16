@@ -54,8 +54,11 @@ export function FilesPanel({
   const [binary, setBinary] = useState(false);
   const [contentError, setContentError] = useState('');
   // v0.3.15 T1 — success/info notices fade out on their own; errors persist.
-  const { notice: resourceNotice, showNotice: setResourceNotice, clearNotice: clearResourceNotice } =
-    useAutoNotice();
+  const {
+    notice: resourceNotice,
+    showNotice: setResourceNotice,
+    clearNotice: clearResourceNotice,
+  } = useAutoNotice();
   const [query, setQuery] = useState('');
   const [gitDecorations, setGitDecorations] = useState<GitDecorations>({});
   const [gitDecorationNotice, setGitDecorationNotice] = useState('');
@@ -480,7 +483,9 @@ export function FilesPanel({
             <div className="resource-empty">
               <Icon name="workspace" size={16} />
               <strong>选择文件预览</strong>
-              <p title="敏感文件、工作区外链接和二进制正文不会返回浏览器。">受限内容不会返回浏览器。</p>
+              <p title="敏感文件、工作区外链接和二进制正文不会返回浏览器。">
+                受限内容不会返回浏览器。
+              </p>
             </div>
           )}
         </>

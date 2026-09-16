@@ -83,7 +83,8 @@ export function GitConflictView({
         <em className="git-merge-badge">{SHAPE_LABELS[data.shape]}</em>
       </header>
       <p className="git-compare-hint">
-        直接读 index 的 stage 1/2/3，不用普通暂存 Diff 代替完整冲突视图。缺失的版本是这种冲突形态的正常结果。
+        直接读 index 的 stage 1/2/3，不用普通暂存 Diff
+        代替完整冲突视图。缺失的版本是这种冲突形态的正常结果。
       </p>
       <div className="git-conflict-grid">
         {versions.map(version => (
@@ -108,9 +109,7 @@ export function GitConflictView({
                 二进制内容（{version.byteSize} 字节），不在此处渲染。
               </p>
             ) : version.truncated ? (
-              <p className="git-conflict-note">
-                超过上限（{version.byteSize} 字节），未读取内容。
-              </p>
+              <p className="git-conflict-note">超过上限（{version.byteSize} 字节），未读取内容。</p>
             ) : (
               <pre className="git-conflict-content">{version.content ?? ''}</pre>
             )}

@@ -127,10 +127,7 @@ export function WorkspaceDialog({
    * point; the user still has to confirm on the card before any workspace
    * transition happens.
    */
-  const inspectPath = async (
-    candidatePath: string,
-    source: WebWorkspaceCandidateSourceV1
-  ) => {
+  const inspectPath = async (candidatePath: string, source: WebWorkspaceCandidateSourceV1) => {
     dispatch({ type: 'inspect-started', path: candidatePath });
     try {
       const candidate = await onInspect(candidatePath);

@@ -158,7 +158,8 @@ export function useGitHistory(input: {
         // Auto-open the first readable file so the pane is never a dead end.
         const first = nextFiles.files.find(file => !file.sensitive && !file.binary);
         const wanted =
-          session.selectedCommitPath && nextFiles.files.some(f => f.path === session.selectedCommitPath)
+          session.selectedCommitPath &&
+          nextFiles.files.some(f => f.path === session.selectedCommitPath)
             ? session.selectedCommitPath
             : (first?.path ?? null);
         if (wanted !== session.selectedCommitPath) setSession({ selectedCommitPath: wanted });
@@ -197,7 +198,13 @@ export function useGitHistory(input: {
         setDiff(null);
       }
     })();
-  }, [actions, enabled, session.selectedCommitId, session.selectedCommitPath, session.selectedCommitParentIndex]);
+  }, [
+    actions,
+    enabled,
+    session.selectedCommitId,
+    session.selectedCommitPath,
+    session.selectedCommitParentIndex,
+  ]);
 
   // ---------------------------------------------------------------------------------------
   // File history.
@@ -258,7 +265,10 @@ export function useGitHistory(input: {
     [setSession]
   );
 
-  const selectFile = useCallback((path: string) => setSession({ selectedCommitPath: path }), [setSession]);
+  const selectFile = useCallback(
+    (path: string) => setSession({ selectedCommitPath: path }),
+    [setSession]
+  );
 
   const loadMore = useCallback(() => {
     const cursor = page?.nextCursor;

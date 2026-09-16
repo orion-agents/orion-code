@@ -236,8 +236,14 @@ export interface WorkbenchActions {
     readonly rev?: string;
     readonly limit?: number;
   }): Promise<GitFileHistoryPageV1>;
-  gitStage(fileIds: readonly string[], expectedRepositoryRevision: string): Promise<GitMutationResultV1>;
-  gitUnstage(fileIds: readonly string[], expectedRepositoryRevision: string): Promise<GitMutationResultV1>;
+  gitStage(
+    fileIds: readonly string[],
+    expectedRepositoryRevision: string
+  ): Promise<GitMutationResultV1>;
+  gitUnstage(
+    fileIds: readonly string[],
+    expectedRepositoryRevision: string
+  ): Promise<GitMutationResultV1>;
   gitApplyPatch(input: {
     readonly fileId: string;
     readonly hunkIds?: readonly string[];
@@ -249,7 +255,11 @@ export interface WorkbenchActions {
     readonly body?: string;
     readonly expectedRepositoryRevision: string;
     readonly requestId: string;
-  }): Promise<{ readonly repositoryRevision: string; readonly commitSha: string; readonly warning?: string }>;
+  }): Promise<{
+    readonly repositoryRevision: string;
+    readonly commitSha: string;
+    readonly warning?: string;
+  }>;
   review(): Promise<WebReviewSnapshotV1>;
   terminals(): Promise<readonly WebTerminalMetadataV1[]>;
   createTerminal(cols: number, rows: number): Promise<WebTerminalCreateResultV1>;
@@ -356,143 +366,146 @@ export function useWorkbench(): UseWorkbenchResult {
     [api]
   );
 
-  const loadBaselineOnce = useCallback(async (reusableWorkspaces?: WorkspaceListResponse) => {
-    const generation = ++resourceGeneration.current;
-    try {
-      const bootstrap = await api.bootstrap();
-      const context = {
-        expectedContextRevision: bootstrap.contextRevision,
-        workspaceId: bootstrap.workspaceId,
-      } satisfies WebContextGuardV1;
-      settingsMirror.reset();
-      settingsMirror.accept(bootstrap.settings);
-      // v0.3.17 — reuse the page activation already returned when it provably
-      // describes the Context we just bootstrapped; otherwise fetch it.
-      const canReuse =
-        reusableWorkspaces !== undefined &&
-        reusableWorkspaces.activeId !== '' &&
-        reusableWorkspaces.activeId === bootstrap.workspaceId;
-      const reusable = canReuse ? reusableWorkspaces : undefined;
-      const workspacesPromise: Promise<WorkspaceListResponse> = reusable
-        ? Promise.resolve(reusable)
-        : api.listWorkspaces(context);
-      const [workspaces, sessions, mirrorSnapshot] = await Promise.all([
-        workspacesPromise,
-        api.listSessions(context),
-        settingsMirror.refresh(),
-      ]);
-      const foregroundSessionId = preferredForegroundSession(
-        bootstrap.workspaceId,
-        sessions.sessions,
-        bootstrap.activeSessionId
-      );
-      rememberForegroundSession(bootstrap.workspaceId, foregroundSessionId);
-      const effectiveBootstrap = Object.freeze({
-        ...bootstrap,
-        activeSessionId: foregroundSessionId,
-      });
-      const settings = await migrateLegacyAppearance(
-        api,
-        settingsMirror,
-        mirrorSnapshot.document ?? mirrorSnapshot.lastGood ?? bootstrap.settings,
-        context
-      );
-      if (generation !== resourceGeneration.current) return;
-      dispatch({
-        type: 'baseline_loaded',
-        bootstrap: effectiveBootstrap,
-        workspaces,
-        sessions: sessions.sessions,
-        sessionNextCursor: sessions.nextCursor,
-        diagnostics: {},
-        settings,
-        skills: [],
-        skillNextCursor: null,
-        mcpServers: [],
-        mcpNextCursor: null,
-        toolDetails: [],
-        toolDetailNextCursor: null,
-      });
-      // v0.3.17 — the foreground snapshot is not part of the identity baseline.
-      // Render the shell first (project header, session list, Composer
-      // skeleton), then restore the session. The reducer already marks the
-      // active session 'loading', so the Composer stays disabled until this
-      // settles — "more responsive" never means "pretend it is ready".
-      if (foregroundSessionId) {
-        void api
-          .sessionSnapshot(foregroundSessionId, context)
-          .then(snapshot => {
-            if (generation !== resourceGeneration.current) return;
-            assertSessionSnapshotIdentity(snapshot, foregroundSessionId, context);
-            dispatch({
-              type: 'session_snapshot_loaded',
-              snapshot,
-              contextRevision: context.expectedContextRevision,
-              workspaceId: context.workspaceId,
-            });
-          })
-          .catch(error => {
-            if (generation !== resourceGeneration.current) return;
-            dispatch({
-              type: 'snapshot_failed',
-              sessionId: foregroundSessionId,
-              detail: errorMessage(error),
-              contextRevision: context.expectedContextRevision,
-              workspaceId: context.workspaceId,
-            });
-          });
-      }
-
-      cancelSessionPrefetch.current();
-      const prefetchIds = sessions.sessions
-        .map(session => session.id)
-        .filter(sessionId => sessionId !== foregroundSessionId)
-        .slice(0, SESSION_PREFETCH_LIMIT);
-      cancelSessionPrefetch.current = scheduleIdleTask(() => {
+  const loadBaselineOnce = useCallback(
+    async (reusableWorkspaces?: WorkspaceListResponse) => {
+      const generation = ++resourceGeneration.current;
+      try {
+        const bootstrap = await api.bootstrap();
+        const context = {
+          expectedContextRevision: bootstrap.contextRevision,
+          workspaceId: bootstrap.workspaceId,
+        } satisfies WebContextGuardV1;
+        settingsMirror.reset();
+        settingsMirror.accept(bootstrap.settings);
+        // v0.3.17 — reuse the page activation already returned when it provably
+        // describes the Context we just bootstrapped; otherwise fetch it.
+        const canReuse =
+          reusableWorkspaces !== undefined &&
+          reusableWorkspaces.activeId !== '' &&
+          reusableWorkspaces.activeId === bootstrap.workspaceId;
+        const reusable = canReuse ? reusableWorkspaces : undefined;
+        const workspacesPromise: Promise<WorkspaceListResponse> = reusable
+          ? Promise.resolve(reusable)
+          : api.listWorkspaces(context);
+        const [workspaces, sessions, mirrorSnapshot] = await Promise.all([
+          workspacesPromise,
+          api.listSessions(context),
+          settingsMirror.refresh(),
+        ]);
+        const foregroundSessionId = preferredForegroundSession(
+          bootstrap.workspaceId,
+          sessions.sessions,
+          bootstrap.activeSessionId
+        );
+        rememberForegroundSession(bootstrap.workspaceId, foregroundSessionId);
+        const effectiveBootstrap = Object.freeze({
+          ...bootstrap,
+          activeSessionId: foregroundSessionId,
+        });
+        const settings = await migrateLegacyAppearance(
+          api,
+          settingsMirror,
+          mirrorSnapshot.document ?? mirrorSnapshot.lastGood ?? bootstrap.settings,
+          context
+        );
         if (generation !== resourceGeneration.current) return;
-        void runWithConcurrency(prefetchIds, SESSION_PREFETCH_CONCURRENCY, async sessionId => {
+        dispatch({
+          type: 'baseline_loaded',
+          bootstrap: effectiveBootstrap,
+          workspaces,
+          sessions: sessions.sessions,
+          sessionNextCursor: sessions.nextCursor,
+          diagnostics: {},
+          settings,
+          skills: [],
+          skillNextCursor: null,
+          mcpServers: [],
+          mcpNextCursor: null,
+          toolDetails: [],
+          toolDetailNextCursor: null,
+        });
+        // v0.3.17 — the foreground snapshot is not part of the identity baseline.
+        // Render the shell first (project header, session list, Composer
+        // skeleton), then restore the session. The reducer already marks the
+        // active session 'loading', so the Composer stays disabled until this
+        // settles — "more responsive" never means "pretend it is ready".
+        if (foregroundSessionId) {
+          void api
+            .sessionSnapshot(foregroundSessionId, context)
+            .then(snapshot => {
+              if (generation !== resourceGeneration.current) return;
+              assertSessionSnapshotIdentity(snapshot, foregroundSessionId, context);
+              dispatch({
+                type: 'session_snapshot_loaded',
+                snapshot,
+                contextRevision: context.expectedContextRevision,
+                workspaceId: context.workspaceId,
+              });
+            })
+            .catch(error => {
+              if (generation !== resourceGeneration.current) return;
+              dispatch({
+                type: 'snapshot_failed',
+                sessionId: foregroundSessionId,
+                detail: errorMessage(error),
+                contextRevision: context.expectedContextRevision,
+                workspaceId: context.workspaceId,
+              });
+            });
+        }
+
+        cancelSessionPrefetch.current();
+        const prefetchIds = sessions.sessions
+          .map(session => session.id)
+          .filter(sessionId => sessionId !== foregroundSessionId)
+          .slice(0, SESSION_PREFETCH_LIMIT);
+        cancelSessionPrefetch.current = scheduleIdleTask(() => {
           if (generation !== resourceGeneration.current) return;
-          await loadSessionSnapshot(sessionId, context).catch(() => undefined);
+          void runWithConcurrency(prefetchIds, SESSION_PREFETCH_CONCURRENCY, async sessionId => {
+            if (generation !== resourceGeneration.current) return;
+            await loadSessionSnapshot(sessionId, context).catch(() => undefined);
+          });
         });
-      });
 
-      void api
-        .workspaceProjectSummary(bootstrap.workspaceId, context)
-        .then(summary => {
-          if (generation === resourceGeneration.current) {
-            dispatch({ type: 'workspace_project_summary_loaded', summary });
-          }
-        })
-        .catch(() => undefined);
+        void api
+          .workspaceProjectSummary(bootstrap.workspaceId, context)
+          .then(summary => {
+            if (generation === resourceGeneration.current) {
+              dispatch({ type: 'workspace_project_summary_loaded', summary });
+            }
+          })
+          .catch(() => undefined);
 
-      // Catalogs and diagnostics do not gate the composer. Load them after the
-      // cursor-bound transcript baseline so a large artifact directory cannot
-      // hold the entire application in its boot overlay.
-      void Promise.all([
-        api.diagnostics(context).catch(() => ({}) as DiagnosticsSnapshot),
-        api.skills(context).catch(() => ({ skills: [], nextCursor: null })),
-        api.mcp(context).catch(() => ({ servers: [], nextCursor: null })),
-        api.toolDetails(context).catch(() => ({ details: [], nextCursor: null })),
-      ]).then(([diagnostics, skills, mcp, toolDetails]) => {
-        if (generation !== resourceGeneration.current) return;
-        dispatch({ type: 'diagnostics_loaded', diagnostics });
-        dispatch({
-          type: 'capabilities_loaded',
-          skills: skills.skills,
-          skillNextCursor: skills.nextCursor,
-          mcpServers: mcp.servers,
-          mcpNextCursor: mcp.nextCursor,
+        // Catalogs and diagnostics do not gate the composer. Load them after the
+        // cursor-bound transcript baseline so a large artifact directory cannot
+        // hold the entire application in its boot overlay.
+        void Promise.all([
+          api.diagnostics(context).catch(() => ({}) as DiagnosticsSnapshot),
+          api.skills(context).catch(() => ({ skills: [], nextCursor: null })),
+          api.mcp(context).catch(() => ({ servers: [], nextCursor: null })),
+          api.toolDetails(context).catch(() => ({ details: [], nextCursor: null })),
+        ]).then(([diagnostics, skills, mcp, toolDetails]) => {
+          if (generation !== resourceGeneration.current) return;
+          dispatch({ type: 'diagnostics_loaded', diagnostics });
+          dispatch({
+            type: 'capabilities_loaded',
+            skills: skills.skills,
+            skillNextCursor: skills.nextCursor,
+            mcpServers: mcp.servers,
+            mcpNextCursor: mcp.nextCursor,
+          });
+          dispatch({
+            type: 'tool_details_loaded',
+            details: toolDetails.details,
+            nextCursor: toolDetails.nextCursor,
+          });
         });
-        dispatch({
-          type: 'tool_details_loaded',
-          details: toolDetails.details,
-          nextCursor: toolDetails.nextCursor,
-        });
-      });
-    } catch (error) {
-      throw error;
-    }
-  }, [api, loadSessionSnapshot, settingsMirror]);
+      } catch (error) {
+        throw error;
+      }
+    },
+    [api, loadSessionSnapshot, settingsMirror]
+  );
 
   /**
    * v0.3.17 — `reusableWorkspaces` lets a caller that already received a fresh
@@ -500,21 +513,24 @@ export function useWorkbench(): UseWorkbenchResult {
    * only trusted when its `activeId` matches the bootstrap we just read, so a
    * stale page can never be applied to a different Context.
    */
-  const loadBaseline = useCallback(async (reusableWorkspaces?: WorkspaceListResponse) => {
-    let lastError: unknown;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      try {
-        await loadBaselineOnce(reusableWorkspaces);
-        return;
-      } catch (error) {
-        lastError = error;
-        if (!isBaselineRetryable(error) || attempt === 2) break;
-        await waitForBaselineRetry(100 * 3 ** attempt);
+  const loadBaseline = useCallback(
+    async (reusableWorkspaces?: WorkspaceListResponse) => {
+      let lastError: unknown;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          await loadBaselineOnce(reusableWorkspaces);
+          return;
+        } catch (error) {
+          lastError = error;
+          if (!isBaselineRetryable(error) || attempt === 2) break;
+          await waitForBaselineRetry(100 * 3 ** attempt);
+        }
       }
-    }
-    dispatch({ type: 'boot_failed', message: errorMessage(lastError) });
-    throw lastError;
-  }, [loadBaselineOnce]);
+      dispatch({ type: 'boot_failed', message: errorMessage(lastError) });
+      throw lastError;
+    },
+    [loadBaselineOnce]
+  );
 
   useEffect(() => {
     // React StrictMode replays effects in development; bootstrap may perform a one-time
@@ -1504,7 +1520,12 @@ export function useWorkbench(): UseWorkbenchResult {
   );
   const writeFileContent = useCallback(
     (fileId: string, content: string, expectedRevision: string) =>
-      api.writeFileContent(requireContextGuard(stateRef.current), fileId, content, expectedRevision),
+      api.writeFileContent(
+        requireContextGuard(stateRef.current),
+        fileId,
+        content,
+        expectedRevision
+      ),
     [api]
   );
   const gitStatus = useCallback(
@@ -1725,7 +1746,7 @@ export function useWorkbench(): UseWorkbenchResult {
       readToolDetail,
       listFiles,
       readFileContent,
-    writeFileContent,
+      writeFileContent,
       gitStatus,
       gitLog,
       gitDiff,
