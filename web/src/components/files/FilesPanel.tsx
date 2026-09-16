@@ -637,7 +637,9 @@ function mergeNodes(
 }
 
 function buildGitDecorations(status: WebGitStatusV1): GitDecorations {
-  if (!status.isRepository) return {};
+  // v0.3.19 (G317-22) — decorations are worktree-backed. A bare repository reports
+  // `isRepository: true` now, so the guard has to be the precise one.
+  if (!status.hasWorktree) return {};
   const decorations = new Map<string, Set<string>>();
   const add = (path: string, label: string) => {
     const normalized = path.replace(/\\/gu, '/').replace(/^\.\//u, '');

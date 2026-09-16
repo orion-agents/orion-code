@@ -172,7 +172,7 @@ describe('v0.3.17 G317 scenario variants', () => {
   });
 
   // ---- G317-22: bare repository --------------------------------------------------------
-  test('G317-22 a bare repository is readable history with an explicit limit', async () => {
+  test('G317-22 a bare repository states what it is instead of denying it', async () => {
     writeFileSync(join(repo, 'file.txt'), 'content\n');
     rawGit(repo, ['add', '.']);
     rawGit(repo, ['commit', '-q', '-m', 'base']);
@@ -180,20 +180,65 @@ describe('v0.3.17 G317 scenario variants', () => {
     rawGit(repo, ['clone', '-q', '--bare', repo, bare]);
     const bareService = new GitReadModelServiceV1(bare);
 
-    // A bare repository has no working tree, so it is outside the workspace boundary this
-    // panel works in. The limit is stated rather than worked around.
-    await expect(bareService.history({ pageSize: 5 })).rejects.toThrow(
-      /unavailable|not a repository/iu
-    );
-    // Measured contract: no worktree means it is not a repository for this panel's purposes,
-    // and there is nothing to report as changed. It must never invent changes.
     const bareStatus = await bareService.status();
-    expect(bareStatus.isRepository).toBe(false);
-    expect(bareStatus.branch).toBeNull();
+
+    // v0.3.19 (G317-22) — the contract, stated rather than inferred from a failed command.
+    // A bare repository IS a repository; `--show-toplevel` failing is only evidence that it
+    // has no working tree. Reporting `isRepository: false` said the wrong thing about a
+    // directory git itself calls a repository.
+    expect(bareStatus.repositoryKind).toBe('bare');
+    expect(bareStatus.isRepository).toBe(true);
+    expect(bareStatus.hasWorktree).toBe(false);
+
+    // It has a real HEAD, so the branch is reported instead of being hidden.
+    expect(bareStatus.branch).toBe('main');
+    // Nothing differs from an index that does not exist, so the change lists are empty — and
+    // they must never be fabricated. `hasWorktree: false` is what stops that being read as
+    // "your working tree is clean".
     expect(bareStatus.clean).toBe(true);
     expect(bareStatus.staged).toEqual([]);
     expect(bareStatus.unstaged).toEqual([]);
     expect(bareStatus.untracked).toEqual([]);
+    expect(bareStatus.counts.total).toBe(0);
+    // A bare repository has no checkout to detach, so it is never reported as detached.
+    expect(bareStatus.detached).toBe(false);
+
+    // The limit is precise now, and it names the real reason rather than "unavailable".
+    await expect(bareService.history({ pageSize: 5 })).rejects.toThrow(/bare repository/iu);
+  });
+
+  // ---- G317-22: the three kinds are distinguishable ------------------------------------
+  test('G317-22 absent, bare and worktree are three different answers', async () => {
+    const plain = join(root, 'not-a-repo');
+    mkdirSync(plain);
+    const bare = join(root, 'kind-bare.git');
+    rawGit(repo, ['clone', '-q', '--bare', repo, bare]);
+
+    const answers = {
+      absent: await new GitReadModelServiceV1(plain).status(),
+      bare: await new GitReadModelServiceV1(bare).status(),
+      worktree: await service.status(),
+    };
+
+    expect(answers.absent.repositoryKind).toBe('absent');
+    expect(answers.absent.isRepository).toBe(false);
+    expect(answers.absent.hasWorktree).toBe(false);
+
+    expect(answers.bare.repositoryKind).toBe('bare');
+    expect(answers.bare.isRepository).toBe(true);
+    expect(answers.bare.hasWorktree).toBe(false);
+
+    expect(answers.worktree.repositoryKind).toBe('worktree');
+    expect(answers.worktree.isRepository).toBe(true);
+    expect(answers.worktree.hasWorktree).toBe(true);
+    expect(answers.worktree.rootLabel).toBeTruthy();
+
+    // The coarse flag and the precise one must never disagree about the worktree case; the
+    // whole point of the pair is that only the precise one is safe to gate worktree reads on.
+    for (const answer of Object.values(answers)) {
+      expect(answer.hasWorktree).toBe(answer.repositoryKind === 'worktree');
+      expect(answer.isRepository).toBe(answer.repositoryKind !== 'absent');
+    }
   });
 
   // ---- G317-01: non-repository and clean repository ------------------------------------

@@ -228,6 +228,18 @@ export function GitPanel({
     return <p className="resource-loading">正在读取 Git 状态…</p>;
   }
 
+  if (status && status.repositoryKind === 'bare') {
+    // v0.3.19 (G317-22) — a bare repository *is* a repository, so it must not be told the
+    // project "is not a Git repository". What it has no working tree, and this panel reads one.
+    return (
+      <div className="resource-empty">
+        <Icon name="branch" size={16} />
+        <strong>当前项目是裸仓库</strong>
+        <p>裸仓库没有工作区，工作栏没有可显示的变更或 Diff。文件和 Agent 不受影响。</p>
+      </div>
+    );
+  }
+
   if (status && !status.isRepository) {
     return (
       <div className="resource-empty">

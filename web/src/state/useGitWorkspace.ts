@@ -155,7 +155,11 @@ export function useGitWorkspace(input: {
         setStatus(nextStatus);
         setLog(nextLog);
 
-        if (!nextStatus.isRepository) {
+        if (!nextStatus.hasWorktree) {
+          // v0.3.19 (G317-22) — a bare repository is a repository but has no working tree, so
+          // nothing here is selectable. Gating on `isRepository` alone would have walked into
+          // this branch with an empty list and reported it as "you have nothing to stage"
+          // rather than "there is nothing to read here".
           setDiff(null);
           setStale(false);
           return;
@@ -479,7 +483,9 @@ export function useGitWorkspace(input: {
    */
   const checkForRepositoryChange = useCallback(async () => {
     const current = statusRef.current;
-    if (!current?.isRepository) return;
+    // v0.3.19 (G317-22) — only a worktree-backed repository has a revision that writes can
+    // move, so a bare repository must not be polled for changes it cannot have.
+    if (!current?.hasWorktree) return;
     try {
       const summary = await snapshotStore.getSnapshot(workspaceId);
       if (summary.repositoryRevision === current.repositoryRevision) return;
@@ -637,7 +643,8 @@ export function useGitWorkspace(input: {
   // The commit form must describe the real index, so the preview is re-read whenever the
   // repository moves — independent of whatever the change list is filtered to.
   useEffect(() => {
-    if (!status?.isRepository) {
+    // v0.3.19 (G317-22) — the commit form describes an index, and a bare repository has none.
+    if (!status?.hasWorktree) {
       setPreview(null);
       return;
     }
@@ -653,7 +660,7 @@ export function useGitWorkspace(input: {
     return () => {
       cancelled = true;
     };
-  }, [actions, status?.isRepository, status?.repositoryRevision]);
+  }, [actions, status?.hasWorktree, status?.repositoryRevision]);
 
   return {
     session,

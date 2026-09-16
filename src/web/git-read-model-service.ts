@@ -84,8 +84,33 @@ export interface WebGitStatusCountsV1 {
   readonly loaded: number;
 }
 
+/**
+ * v0.3.19 (G317-22) — what this workspace actually is, stated instead of inferred.
+ *
+ * `git rev-parse --show-toplevel` fails for a bare repository, and that used to be reported
+ * as "not a repository at all". Those are two different facts and the reader is owed the
+ * right one:
+ *
+ *   - `worktree` — an ordinary repository with a working tree; the panel reads changes.
+ *   - `bare`     — a repository with **no** working tree. It is a repository, its history
+ *                  exists, but this panel has no changes and no diff to read, and it must
+ *                  never invent any.
+ *   - `absent`   — no repository here at all.
+ *
+ * `isRepository` stays the coarse question ("is this a repository?"). Anything that needs
+ * a working tree must ask `hasWorktree`.
+ */
+export type GitRepositoryKindV1 = 'worktree' | 'bare' | 'absent';
+
 export interface WebGitStatusV1 {
   readonly isRepository: boolean;
+  /** v0.3.19 (G317-22) — the precise answer to "what is this workspace". */
+  readonly repositoryKind: GitRepositoryKindV1;
+  /**
+   * v0.3.19 (G317-22) — true only for `repositoryKind: 'worktree'`. Every worktree-backed
+   * surface (change lists, diffs, staging, commit) is meaningless when this is false.
+   */
+  readonly hasWorktree: boolean;
   readonly repositoryRevision: string;
   readonly rootLabel?: string;
   readonly branch: string | null;
@@ -140,6 +165,8 @@ interface GitStatusRecord {
 
 interface RepositorySnapshot {
   readonly isRepository: boolean;
+  /** v0.3.19 (G317-22) — see `GitRepositoryKindV1`. */
+  readonly repositoryKind: GitRepositoryKindV1;
   readonly root?: string;
   readonly branch: string | null;
   readonly head: string | null;
@@ -270,10 +297,15 @@ export class GitReadModelServiceV1 {
     const nextOffset = offset + page.length;
     return Object.freeze({
       isRepository: snapshot.isRepository,
+      repositoryKind: snapshot.repositoryKind,
+      hasWorktree: snapshot.repositoryKind === 'worktree',
       repositoryRevision: snapshot.revision,
       ...(snapshot.root ? { rootLabel: basename(snapshot.root) } : {}),
       branch: snapshot.branch,
-      detached: snapshot.isRepository && !snapshot.branch,
+      // v0.3.19 (G317-22) — only a worktree-backed checkout can be "detached". A bare
+      // repository has no branch either, and reporting that as a detached HEAD invented a
+      // state the repository is not in.
+      detached: snapshot.repositoryKind === 'worktree' && !snapshot.branch,
       head: snapshot.head ? snapshot.head.slice(0, 12) : null,
       upstream: snapshot.upstream,
       ahead: snapshot.ahead,
@@ -792,17 +824,60 @@ export class GitReadModelServiceV1 {
   }
 
   private async capture(): Promise<RepositorySnapshot> {
-    let root: string;
+    let root: string | undefined;
+    let repositoryKind: GitRepositoryKindV1 = 'absent';
     try {
       root =
         this.repositoryRoot ??
         realpathSync((await this.runGit(['rev-parse', '--show-toplevel'], this.workspace)).trim());
       if (!isWithinRoot(root, this.workspace)) throw new Error('repository root escaped workspace');
       this.repositoryRoot = root;
+      repositoryKind = 'worktree';
     } catch {
+      // v0.3.19 (G317-22) — `--show-toplevel` fails for a bare repository too, so the failure
+      // alone cannot say which case this is. Ask directly. Conflating "no repository" with
+      // "a repository that has no working tree" told the reader the wrong thing about a
+      // directory that is in fact a valid repository.
+      const bare = (await this.tryGit(['rev-parse', '--is-bare-repository'], this.workspace))
+        ?.trim()
+        .toLowerCase();
+      repositoryKind = bare === 'true' ? 'bare' : 'absent';
+    }
+    if (repositoryKind === 'bare') {
+      // A bare repository has no index and no working tree, so there is nothing to report as
+      // changed — but its HEAD is real and worth stating. `clean` stays true in `status()`
+      // because zero files differ from an index that does not exist; `hasWorktree` is what
+      // tells the reader not to trust that as "you have nothing to commit".
+      const [branchResult, headResult] = await Promise.all([
+        this.tryGit(['symbolic-ref', '--quiet', '--short', 'HEAD'], this.workspace),
+        this.tryGit(['rev-parse', 'HEAD'], this.workspace),
+      ]);
+      const branch = branchResult?.trim() || null;
+      const head = headResult?.trim() || null;
+      const revision = createHash('sha256')
+        .update(JSON.stringify({ bare: this.workspace, branch, head }))
+        .digest('hex');
+      return Object.freeze({
+        isRepository: true,
+        repositoryKind: 'bare',
+        branch,
+        head,
+        upstream: null,
+        ahead: 0,
+        behind: 0,
+        records: Object.freeze([]),
+        rawStatus: '',
+        stagedRecords: 0,
+        conflictedRecords: 0,
+        indexDigest: createHash('sha256').update('').digest('hex'),
+        revision,
+      });
+    }
+    if (repositoryKind === 'absent') {
       const revision = createHash('sha256').update(`not-git:${this.workspace}`).digest('hex');
       return Object.freeze({
         isRepository: false,
+        repositoryKind: 'absent',
         branch: null,
         head: null,
         upstream: null,
@@ -815,6 +890,11 @@ export class GitReadModelServiceV1 {
         indexDigest: createHash('sha256').update('').digest('hex'),
         revision,
       });
+    }
+    if (!root) {
+      // Only the `worktree` branch assigns a root and both other kinds returned above, so this
+      // is unreachable today — it exists so the invariant is enforced, not merely inferred.
+      throw new Error('Resolved a non-worktree repository without a root.');
     }
     const [rawStatus, branchResult, headResult, upstreamResult, indexListing] = await Promise.all([
       this.runGit(['status', '--porcelain=v1', '-z', '--untracked-files=all'], root),
@@ -872,6 +952,7 @@ export class GitReadModelServiceV1 {
       .digest('hex');
     return Object.freeze({
       isRepository: true,
+      repositoryKind: 'worktree' as const,
       root,
       branch,
       head,
@@ -1393,6 +1474,15 @@ export class GitReadModelServiceV1 {
 
   private async requireRepositoryRoot(): Promise<string> {
     const snapshot = await this.capture();
+    if (snapshot.repositoryKind === 'bare') {
+      // v0.3.19 (G317-22) — a bare repository *is* a repository, so "unavailable" was the
+      // wrong word for it. What it lacks is a working tree, and this panel is worktree-based:
+      // the limit is stated rather than worked around, and reading from a different working
+      // tree would widen access in a way the workspace boundary does not allow.
+      throw new Error(
+        'This workspace is a bare repository. The Git panel reads a working tree, so it has no changes or history to show here.'
+      );
+    }
     if (!snapshot.isRepository || !snapshot.root) {
       throw new Error('Git repository is unavailable.');
     }
