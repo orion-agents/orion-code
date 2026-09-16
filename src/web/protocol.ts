@@ -15,12 +15,28 @@ import type { SessionMeta } from '../services/session-storage';
 import type { ToolConfirmationPolicy } from '../services/global-config';
 import type { WebFileContentPageV1, WebFileNodeV1, WebFileTreePageV1 } from './file-read-service';
 import type {
+  GitCommitIdentityV1,
+  GitCommitOutcomeV1,
+  GitCommitPreviewV1,
+  GitIndexEntryV1,
+  GitMutationResultV1,
+  GitWorktreeSourceV1,
   WebGitCommitV1,
   WebGitDiffPageV1,
+  WebGitFileSourceV1,
   WebGitFileV1,
   WebGitLogPageV1,
+  WebGitStatusCountsV1,
   WebGitStatusV1,
 } from './git-read-model-service';
+import type {
+  GitDiffCapabilitiesV2,
+  GitDiffDocumentV2,
+  GitDiffDocumentKindV2,
+  GitDiffLineKindV2,
+  GitDiffLineV2,
+  GitHunkV2,
+} from './git-diff-document';
 import type { WebReviewSnapshotV1 } from './review-service';
 import type { WebSessionRuntimeSummaryV1 } from './session-runtime-registry';
 import type {
@@ -417,6 +433,64 @@ export interface WebWorkspaceProjectSummaryV1 {
 }
 
 export type WebWorkspaceResourceV1 = 'files' | 'git' | 'review';
+
+/** v0.3.16 — LOCAL WORKSPACE picker contracts (read-only until confirm). */
+
+export type WebDirectoryPickOutcomeV1 = 'selected' | 'cancelled' | 'unavailable';
+
+export interface WebDirectoryPickResultV1 {
+  readonly outcome: WebDirectoryPickOutcomeV1;
+  /** Present only when `outcome === 'selected'`. */
+  readonly path?: string;
+  /** Operator-readable reason code; present only when `outcome === 'unavailable'`. */
+  readonly reason?: string;
+}
+
+export interface WebDirectoryPickRequestV1 {
+  readonly requestId: string;
+  readonly title?: string;
+  readonly initialPath?: string;
+}
+
+export type WebWorkspaceAvailabilityV1 = 'available' | 'missing' | 'not_directory' | 'unreadable';
+export type WebWorkspaceKindV1 = 'git' | 'folder';
+export type WebWorkspaceCandidateSourceV1 =
+  | 'picker'
+  | 'recent'
+  | 'pinned'
+  | 'discovered'
+  | 'manual';
+
+/**
+ * v0.3.17 — `deferred` means the picker deliberately did not wait for the
+ * session catalog to rebuild; the count may arrive later or not at all. It must
+ * never be rendered as a spinner that blocks the confirmation card.
+ */
+export type WebWorkspaceSessionCountStatusV1 = 'ready' | 'deferred';
+
+/**
+ * A read-only description of a directory the user *may* open. Inspecting a
+ * path never registers it, never activates a Context and never reads file
+ * contents — only `stat` plus the existence of a few project markers.
+ */
+export interface WebWorkspaceCandidateV1 {
+  readonly canonicalPath: string;
+  readonly label: string;
+  readonly availability: WebWorkspaceAvailabilityV1;
+  readonly kind: WebWorkspaceKindV1;
+  readonly source: WebWorkspaceCandidateSourceV1;
+  readonly existingWorkspaceId?: string;
+  readonly sessionCount?: number;
+  readonly sessionCountStatus?: WebWorkspaceSessionCountStatusV1;
+  readonly pinnedOrder?: number;
+  readonly isActive?: boolean;
+}
+
+export interface WebWorkspaceInspectRequestV1 {
+  readonly requestId: string;
+  readonly path: string;
+  readonly source?: WebWorkspaceCandidateSourceV1;
+}
 export type WebWorkspaceInvalidationReasonV1 =
   | 'context-change'
   | 'filesystem-change'
@@ -426,13 +500,56 @@ export type WebWorkspaceInvalidationReasonV1 =
 export type WebToolDetailSummaryV1 = ToolDetailSummary;
 export type WebToolDetailPageV1 = ToolDetailPage;
 export type {
+  GitBlameLineV1,
+  GitGraphPageV1,
+  GitGraphRowV1,
+  GitBlameResultV1,
+  GitRefKindV1,
+  GitRefV1,
+  GitRefsV1,
+  GitCommitSummaryV1,
+  GitCommitDetailV1,
+  GitCommitFileV1,
+  GitCommitFilesV1,
+  GitHistoryQueryV1,
+  GitHistoryPageV1,
+  GitFileHistoryPageV1,
+} from './git-history-service';
+export type {
+  GitCompareFileV1,
+  GitCompareModeV1,
+  GitCompareResultV1,
+} from './git-compare-service';
+export type {
+  GitBlobResultV1,
+  GitConflictShapeV1,
+  GitConflictVersionsV1,
+  GitFileVersionV1,
+  GitSubmoduleEntryV1,
+  GitVersionLabelV1,
+} from './git-version-service';
+export type {
   WebFileContentPageV1,
   WebFileNodeV1,
   WebFileTreePageV1,
+  GitCommitIdentityV1,
+  GitCommitOutcomeV1,
+  GitCommitPreviewV1,
+  GitIndexEntryV1,
+  GitMutationResultV1,
+  GitWorktreeSourceV1,
+  GitDiffCapabilitiesV2,
+  GitDiffDocumentV2,
+  GitDiffDocumentKindV2,
+  GitDiffLineKindV2,
+  GitDiffLineV2,
+  GitHunkV2,
   WebGitCommitV1,
   WebGitDiffPageV1,
+  WebGitFileSourceV1,
   WebGitFileV1,
   WebGitLogPageV1,
+  WebGitStatusCountsV1,
   WebGitStatusV1,
   WebReviewSnapshotV1,
   WebTerminalCreateResultV1,

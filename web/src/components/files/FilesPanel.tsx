@@ -25,6 +25,7 @@ export function FilesPanel({
   actions,
   navigatorWidthPx,
   onNavigatorWidthCommit,
+  revealRequest,
 }: {
   readonly workspaceId: string;
   readonly refreshEpoch: number;
@@ -33,6 +34,17 @@ export function FilesPanel({
   readonly navigatorWidthPx: number;
   /** v0.3.13 — persists one workspace/panel width on pointer-up / keyboard commit. */
   readonly onNavigatorWidthCommit: (width: number) => void;
+  /**
+   * v0.3.17 S6 — a request from another panel to open one file (plan G7).
+   *
+   * The id is minted by the Host, so this panel never has to know that the request came
+   * from Git — it just opens the file like any other selection.
+   */
+  readonly revealRequest?: {
+    readonly id: number;
+    readonly fileId: string;
+    readonly displayPath: string;
+  } | null;
 }) {
   const [directories, setDirectories] = useState<Readonly<Record<string, DirectoryPage>>>({});
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set(['workspace-root']));
@@ -151,6 +163,8 @@ export function FilesPanel({
     // Loading is deliberately tied to the active Context identity.
   }, [refreshEpoch, workspaceId]);
 
+  const revealIdRef = useRef<number | null>(null);
+
   const selectFile = async (
     node: WebFileNodeV1,
     append = false,
@@ -246,6 +260,28 @@ export function FilesPanel({
     }
     setExpanded(next);
   };
+
+  /**
+   * v0.3.17 S6 — open a file another panel asked for (plan G7).
+   *
+   * The id was minted by the Host, so this panel never has to know the request came from Git.
+   * The request id is what makes a repeat render a no-op: opening the same file again is only
+   * correct when the reader actually asked again.
+   */
+  useEffect(() => {
+    if (!revealRequest) return;
+    if (revealIdRef.current === revealRequest.id) return;
+    revealIdRef.current = revealRequest.id;
+    void selectFile({
+      id: revealRequest.fileId,
+      name: revealRequest.displayPath.split('/').pop() ?? revealRequest.displayPath,
+      displayPath: revealRequest.displayPath,
+      kind: 'file',
+      modifiedAt: new Date().toISOString(),
+      sensitive: false,
+      readable: true,
+    });
+  }, [revealRequest?.id]);
 
   useEffect(() => {
     selectedRef.current = selected;

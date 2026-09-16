@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type KeyboardEvent } from 'react';
 
-import type { WebGitDiffPageV1 } from '../../types';
+import type { WebGitDiffPageV1, WebGitFileSourceV1 } from '../../types';
 import { Icon } from '../Icon';
 import { buildReviewContext, splitHunks } from './diff-hunks';
 
@@ -61,6 +61,8 @@ export function DiffViewer({
     <div className="diff-viewer">
       <header>
         <strong title={page.path}>{page.path}</strong>
+        {/* v0.3.17 S1 — always state which two versions are being compared. */}
+        <span className="diff-source">{sourceLabel(page.source)}</span>
         <span>{page.truncated ? '受限预览' : `${page.lines.length} 行`}</span>
       </header>
       {hunks.length > 1 ? (
@@ -151,6 +153,15 @@ export function DiffViewer({
 function displayLine(line: string, showWhitespace: boolean): string {
   if (!showWhitespace) return line;
   return line.replace(/\t/gu, '→\t').replace(/ +$/gu, spaces => '·'.repeat(spaces.length));
+}
+
+/** v0.3.17 S1 — the comparison direction shown next to the file name. */
+function sourceLabel(source: WebGitFileSourceV1 | undefined): string {
+  if (source === 'staged') return 'HEAD → 索引';
+  if (source === 'unstaged') return '索引 → 工作区';
+  if (source === 'untracked') return '空 → 未跟踪文件';
+  if (source === 'conflict') return '冲突版本';
+  return '改动';
 }
 
 async function copyHunk(value: string, announce: (value: string) => void): Promise<void> {

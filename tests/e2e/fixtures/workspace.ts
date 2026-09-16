@@ -129,11 +129,15 @@ export function createWorkspaceFixture(options: WorkspaceFixtureOptions): Worksp
     mode: 0o600,
   });
   const mcp = options.includeMcp === false ? null : writeMcpFixtureConfig(configDirectory);
+  // v0.3.17 — E2E must never pop a real Finder dialog. The Host answers the
+  // picker from this script file, which a spec rewrites before clicking; an
+  // absent or malformed file behaves like a cancelled dialog.
   const environment = Object.freeze({
     ORION_CODE_CONFIG_DIR: configDirectory,
     ORION_CODE_API_KEY: TEST_API_KEY,
     NO_COLOR: '1',
     FORCE_COLOR: '0',
+    ORION_CODE_WEB_PICKER_FIXTURE: join(rootDirectory, 'picker-script.json'),
   });
 
   let restoreEnvironment: (() => void) | undefined;

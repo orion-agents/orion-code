@@ -1,12 +1,17 @@
 /**
- * v0.3.7 — WorkspaceDialog (打开或新增项目) rendering contract: suggested list,
- * collapsible 其他工作区, state pills and the path form.
+ * v0.3.16 — WorkspaceDialog (打开或新增项目) rendering contract: the Finder
+ * picker as the primary entry, pinned/recent grouping, state pills and the
+ * folded advanced path form.
  */
 import * as React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 import { WorkspaceDialog } from '../web/src/components/Dialogs';
-import { initialWorkbenchState, type WebWorkspaceSummaryV1, type WorkbenchState } from '../web/src/types';
+import {
+  initialWorkbenchState,
+  type WebWorkspaceSummaryV1,
+  type WorkbenchState,
+} from '../web/src/types';
 
 function workspace(id: string, overrides: Partial<WebWorkspaceSummaryV1> = {}): WebWorkspaceSummaryV1 {
   return {
@@ -43,6 +48,10 @@ function render(overrides: Partial<WorkbenchState> = {}) {
       state: dialogState(overrides),
       onSelect: async () => undefined,
       onLoadMore: async () => undefined,
+      onPickDirectory: async () => ({ outcome: 'cancelled' as const }),
+      onInspect: async () => {
+        throw new Error('inspect is not exercised by the render contract');
+      },
     })
   );
 }
@@ -59,10 +68,27 @@ describe('WorkspaceDialog', () => {
     expect(html).toContain('aria-label="常用工作区"');
     expect(html).toContain('项目 w1');
     expect(html).toContain('项目 w3');
-    expect(html).toContain('其他工作区（1）');
+    expect(html).toContain('其他项目（1）');
     // The fourth entry stays collapsed until the toggle is expanded.
     expect(html).not.toContain('项目 w4');
     expect(html).toContain('aria-expanded="false"');
+  });
+
+  it('leads with the folder picker and folds the manual path form', () => {
+    const html = render();
+    expect(html).toContain('从 Finder 选择文件夹…');
+    expect(html).toContain('搜索最近项目…');
+    expect(html).toContain('高级：粘贴绝对路径');
+    // No confirmation card until a directory has been inspected.
+    expect(html).not.toContain('已选择本地项目');
+  });
+
+  it('groups pinned workspaces ahead of recent ones', () => {
+    const html = render({
+      workspaces: [workspace('p1', { pinnedOrder: 0 }), workspace('w2'), workspace('w3')],
+    });
+    expect(html).toContain('固定项目');
+    expect(html).toContain('最近打开');
   });
 
   it('labels the current and unavailable workspaces explicitly', () => {

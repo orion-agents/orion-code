@@ -60,6 +60,71 @@ describe('Orion local Web host', () => {
     expect(misdirected.status).toBe(421);
   });
 
+  test('accepts every loopback spelling of its own endpoint and refuses everything else', async () => {
+    const port = handle.port;
+
+    // Same listener, different spelling. `localhost` is how most people open a local UI, and
+    // it used to be refused with 421 on every request including the document itself.
+    const accepted = [
+      `127.0.0.1:${port}`,
+      `localhost:${port}`,
+      // Host names are case-insensitive.
+      `LOCALHOST:${port}`,
+      // The whole of 127.0.0.0/8 is this machine (RFC 5735).
+      `127.0.0.2:${port}`,
+      `[::1]:${port}`,
+    ];
+    for (const host of accepted) {
+      const response = await rawRequest(handle, '/api/v1/health', { Host: host });
+      expect({ host, status: response.status }).toEqual({ host, status: 200 });
+    }
+
+    // Refused for one of the two real reasons: not a loopback name, or not this port.
+    const refused = [
+      // An attacker-controlled name is exactly what the anti-rebinding check exists for.
+      `evil.invalid:${port}`,
+      `attacker.invalid:${port}`,
+      // A Bonjour name is not guaranteed to resolve to this machine.
+      `hope-mac.local:${port}`,
+      // A LAN address is not loopback.
+      `192.168.1.5:${port}`,
+      // Right machine, wrong listener.
+      '127.0.0.1:1',
+    ];
+    for (const host of refused) {
+      const response = await rawRequest(handle, '/api/v1/health', { Host: host });
+      expect({ host, status: response.status }).toEqual({ host, status: 421 });
+    }
+  });
+
+  test('a mutation Origin may be any loopback spelling, but never a foreign name', async () => {
+    const endpoint = `${handle.url}/api/v1/sessions`;
+    const body = JSON.stringify({ requestId: randomUUID() });
+    const mutate = (origin: string) =>
+      fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          Origin: origin,
+          'Content-Type': 'application/json',
+          'X-Orion-Web-Nonce': handle.nonce,
+        },
+        body,
+      });
+
+    // The Origin check used to compare the header string exactly, so a page opened at
+    // `localhost:<port>` passed the Host check and then had every mutation refused at 403.
+    for (const origin of [handle.url, `http://localhost:${handle.port}`]) {
+      const allowed = await mutate(origin);
+      expect({ origin, forbidden: allowed.status === 403 }).toEqual({ origin, forbidden: false });
+    }
+
+    // A foreign name is refused even when it carries the correct port, so the check is still
+    // testing the hostname and not merely the port.
+    const foreign = await mutate(`http://attacker.invalid:${handle.port}`);
+    expect(foreign.status).toBe(403);
+    await expect(foreign.json()).resolves.toMatchObject({ status: 403 });
+  });
+
   test('requires exact Origin, nonce and JSON for mutations', async () => {
     const endpoint = `${handle.url}/api/v1/sessions`;
     const body = JSON.stringify({ requestId: randomUUID() });

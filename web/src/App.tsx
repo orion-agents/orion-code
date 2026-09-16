@@ -171,6 +171,11 @@ export function App() {
   const noticeSeq = useRef(0);
   const storeNoticeRef = useRef(state.notice);
   const lastEnqueuedNoticeId = useRef<number | null>(null);
+  const [fileReveal, setFileReveal] = useState<{
+    readonly id: number;
+    readonly fileId: string;
+    readonly displayPath: string;
+  } | null>(null);
   const [composerInsertion, setComposerInsertion] = useState<{
     readonly id: number;
     readonly text: string;
@@ -670,6 +675,16 @@ export function App() {
                 ) + WORK_PANEL_RAIL_WIDTH
               : undefined
           }
+          revealFileRequest={fileReveal}
+          onRevealInFiles={target => {
+            if (panelOverlay || panelDerivedRail) setPanelOverlayOpen(true);
+            setFileReveal({
+              id: Date.now(),
+              fileId: target.filesToken,
+              displayPath: target.path,
+            });
+            updatePanelPreference({ activePanel: 'files' });
+          }}
           onSendToComposer={text => {
             setComposerInsertion({ id: Date.now(), text });
             if (panelOverlay) closeDrawers();
@@ -755,6 +770,8 @@ export function App() {
         state={state}
         onSelect={actions.switchWorkspace}
         onLoadMore={actions.loadMoreWorkspaces}
+        onPickDirectory={actions.pickWorkspaceDirectory}
+        onInspect={actions.inspectWorkspacePath}
       />
       <RenameDialog
         open={Boolean(renameTarget)}

@@ -47,10 +47,14 @@ test('E2E-P0-07 workspaces stay isolated while MCP and large artifacts are expli
   const ui = workbenchUi(page);
   await ui.workspaceRail.getByRole('button', { name: '选择其他工作区' }).click();
   await expect(ui.workspaceDialog).toBeVisible();
+  // v0.3.16 — the manual path entry now lives behind the advanced disclosure.
+  await ui.workspaceDialog.locator('summary', { hasText: '高级：粘贴绝对路径' }).click();
   await ui.workspaceDialog
     .getByRole('textbox', { name: '打开其他本地目录' })
     .fill(workspace.secondaryWorkspace);
   await ui.workspaceDialog.getByRole('button', { name: '打开', exact: true }).click();
+  // v0.3.17 — the advanced path confirms on the card before activating.
+  await ui.workspaceDialog.getByRole('button', { name: '打开项目' }).click();
   await expect(ui.workspaceDialog).toBeHidden({ timeout: 30_000 });
   await expect
     .poll(async () => (await webBootstrap(page)).workspace, { timeout: 30_000 })

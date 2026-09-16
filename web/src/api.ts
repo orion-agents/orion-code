@@ -9,8 +9,23 @@ import type {
   WebFileContentPageV1,
   WebFileTreePageV1,
   WebGitDiffPageV1,
+  WebGitFileSourceV1,
   WebGitLogPageV1,
   WebGitStatusV1,
+  GitCommitDetailV1,
+  GitCommitFilesV1,
+  GitCommitPreviewV1,
+  GitCompareModeV1,
+  GitCompareResultV1,
+  GitFileHistoryPageV1,
+  GitHistoryPageV1,
+  GitBlameResultV1,
+  GitBlobResultV1,
+  GitConflictVersionsV1,
+  GitGraphPageV1,
+  GitSubmoduleEntryV1,
+  GitRefsV1,
+  GitDiffDocumentV2,
   WebMcpServerSummaryV1,
   WebModelCatalogPageV1,
   WebPageV1,
@@ -25,6 +40,9 @@ import type {
   WebToolDetailSummaryV1,
   WebWorkspaceSummaryV1,
   WebWorkspaceProjectSummaryV1,
+  WebWorkspaceCandidateSourceV1,
+  WebWorkspaceCandidateV1,
+  WebDirectoryPickResultV1,
 } from '../../src/web/protocol';
 
 import {
@@ -308,10 +326,20 @@ export class OrionWebApi {
     );
   }
 
-  gitStatus(context: WebContextGuardV1, cursor?: string): Promise<WebGitStatusV1> {
+  /**
+   * v0.3.17 S1 — `group`/`query` are Host-side filters: results and counts cover the
+   * whole matching set, not just the loaded page.
+   */
+  gitStatus(
+    context: WebContextGuardV1,
+    cursor?: string,
+    filter?: { readonly group?: WebGitFileSourceV1; readonly query?: string }
+  ): Promise<WebGitStatusV1> {
     const query = new URLSearchParams({ pageSize: '200' });
     appendContext(query, context);
     if (cursor) query.set('cursor', cursor);
+    if (filter?.group) query.set('group', filter.group);
+    if (filter?.query) query.set('query', filter.query);
     return this.query(`/git/status?${query.toString()}`);
   }
 
@@ -327,6 +355,22 @@ export class OrionWebApi {
     appendContext(query, context);
     if (cursor) query.set('cursor', cursor);
     return this.query(`/git/diff/${encodeURIComponent(fileId)}?${query.toString()}`);
+  }
+
+  /** v0.3.17 S2 — structured hunks with old/new line numbers and completeness. */
+  gitDiffDocument(
+    fileId: string,
+    context: WebContextGuardV1,
+    cursor?: string,
+    ignoreWhitespace?: boolean,
+    wordDiff?: boolean
+  ): Promise<GitDiffDocumentV2> {
+    const query = new URLSearchParams({ lineLimit: '240', byteLimit: String(256 * 1024) });
+    appendContext(query, context);
+    if (cursor) query.set('cursor', cursor);
+    if (ignoreWhitespace) query.set('ignoreWhitespace', '1');
+    if (wordDiff) query.set('wordDiff', '1');
+    return this.query(`/git/diff-v2/${encodeURIComponent(fileId)}?${query.toString()}`);
   }
 
   review(context: WebContextGuardV1): Promise<WebReviewSnapshotV1> {
@@ -445,19 +489,230 @@ export class OrionWebApi {
     );
   }
 
+  /**
+   * v0.3.17 S3 — the `requestId` is minted by the caller for commits so a retry after a
+   * timeout can be answered from the Host idempotency ledger instead of replaying blindly.
+   */
   gitCommit(
     context: WebContextGuardV1,
-    message: string,
-    expectedRepositoryRevision: string
+    input: {
+      readonly summary: string;
+      readonly body?: string;
+      readonly expectedRepositoryRevision: string;
+      readonly requestId: string;
+    }
   ): Promise<{
     readonly repositoryRevision: string;
     readonly commitSha: string;
     readonly requestId: string;
+    readonly durationMs?: number;
+    readonly warning?: string;
   }> {
     return this.mutate(
       '/git/commit',
       'POST',
-      { ...context, message, expectedRepositoryRevision, requestId: requestId() },
+      {
+        ...context,
+        summary: input.summary,
+        ...(input.body === undefined ? {} : { body: input.body }),
+        expectedRepositoryRevision: input.expectedRepositoryRevision,
+        requestId: input.requestId,
+      },
+      { 'X-Orion-User-Gesture': 'git-mutation-v1' }
+    );
+  }
+
+
+  /**
+   * v0.3.17 S4 — history reads. Read-only by construction: they use `query`, never
+   * `mutate`, so no history view can reach the mutation path.
+   */
+  /**
+   * v0.3.17 S5 — branch/version comparison. Query only: the compare view can never reach
+   * the mutation path.
+   */
+  gitCompare(
+    context: WebContextGuardV1,
+    input: { readonly baseRef: string; readonly headRef: string; readonly mode: GitCompareModeV1 }
+  ): Promise<GitCompareResultV1> {
+    const params = new URLSearchParams({
+      base: input.baseRef,
+      head: input.headRef,
+      mode: input.mode,
+    });
+    return this.query(withContext(`/git/compare?${params.toString()}`, context));
+  }
+
+  gitCompareFileDiff(
+    context: WebContextGuardV1,
+    input: {
+      readonly baseOid: string;
+      readonly headOid: string;
+      readonly path: string;
+      readonly cursor?: string;
+    }
+  ): Promise<GitDiffDocumentV2> {
+    const params = new URLSearchParams({
+      baseOid: input.baseOid,
+      headOid: input.headOid,
+      path: input.path,
+    });
+    if (input.cursor) params.set('cursor', input.cursor);
+    return this.query(withContext(`/git/compare/file?${params.toString()}`, context));
+  }
+
+  gitRefs(context: WebContextGuardV1): Promise<GitRefsV1> {
+    return this.query(withContext('/git/refs', context));
+  }
+
+  gitHistory(
+    context: WebContextGuardV1,
+    query: {
+      readonly message?: string;
+      readonly author?: string;
+      readonly path?: string;
+      readonly sha?: string;
+      readonly since?: string;
+      readonly until?: string;
+      readonly rev?: string;
+      readonly cursor?: string;
+      readonly pageSize?: number;
+    }
+  ): Promise<GitHistoryPageV1> {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== undefined && value !== '') params.set(key, String(value));
+    }
+    return this.query(withContext(`/git/history?${params.toString()}`, context));
+  }
+
+  gitCommitDetail(
+    context: WebContextGuardV1,
+    oid: string,
+    parentIndex = 0
+  ): Promise<GitCommitDetailV1> {
+    const params = new URLSearchParams({ parent: String(parentIndex) });
+    return this.query(
+      withContext(`/git/commit/${encodeURIComponent(oid)}?${params.toString()}`, context)
+    );
+  }
+
+  gitCommitFiles(
+    context: WebContextGuardV1,
+    oid: string,
+    parentIndex = 0
+  ): Promise<GitCommitFilesV1> {
+    const params = new URLSearchParams({ parent: String(parentIndex) });
+    return this.query(
+      withContext(`/git/commit/${encodeURIComponent(oid)}/files?${params.toString()}`, context)
+    );
+  }
+
+  gitCommitDiff(
+    context: WebContextGuardV1,
+    input: {
+      readonly oid: string;
+      readonly path: string;
+      readonly parentIndex?: number;
+      readonly cursor?: string;
+    }
+  ): Promise<GitDiffDocumentV2> {
+    const params = new URLSearchParams({
+      path: input.path,
+      parent: String(input.parentIndex ?? 0),
+    });
+    if (input.cursor) params.set('cursor', input.cursor);
+    return this.query(
+      withContext(`/git/commit/${encodeURIComponent(input.oid)}/diff?${params.toString()}`, context)
+    );
+  }
+
+  /** v0.3.17 S5 — conflict stages, historical blob, gitlink list. Query-only. */
+  /** v0.3.17 S5 — the commit graph as git drew it, plus word-level diffs. */
+  /** v0.3.17 S6 — Host-side Git token -> Files token translation (plan G7). */
+  gitFilesTarget(
+    context: WebContextGuardV1,
+    fileToken: string
+  ): Promise<{
+    readonly path: string;
+    readonly source: string;
+    readonly filesToken: string;
+  }> {
+    const params = new URLSearchParams({ fileToken });
+    return this.query(withContext(`/git/files-target?${params.toString()}`, context));
+  }
+
+  gitGraph(context: WebContextGuardV1, limit = 200): Promise<GitGraphPageV1> {
+    const params = new URLSearchParams({ limit: String(limit) });
+    return this.query(withContext(`/git/graph?${params.toString()}`, context));
+  }
+
+  gitConflictVersions(context: WebContextGuardV1, path: string): Promise<GitConflictVersionsV1> {
+    const params = new URLSearchParams({ path });
+    return this.query(withContext(`/git/conflict?${params.toString()}`, context));
+  }
+
+  gitBlob(
+    context: WebContextGuardV1,
+    input: { readonly path: string; readonly rev: string }
+  ): Promise<GitBlobResultV1> {
+    const params = new URLSearchParams({ path: input.path, rev: input.rev });
+    return this.query(withContext(`/git/blob?${params.toString()}`, context));
+  }
+
+  gitSubmodules(context: WebContextGuardV1): Promise<readonly GitSubmoduleEntryV1[]> {
+    return this.query(withContext('/git/submodules', context));
+  }
+
+  gitBlame(
+    context: WebContextGuardV1,
+    input: { readonly path: string; readonly rev?: string; readonly limit?: number }
+  ): Promise<GitBlameResultV1> {
+    const params = new URLSearchParams({ path: input.path });
+    if (input.rev) params.set('rev', input.rev);
+    if (input.limit !== undefined) params.set('limit', String(input.limit));
+    return this.query(withContext(`/git/blame?${params.toString()}`, context));
+  }
+
+  gitFileHistory(
+    context: WebContextGuardV1,
+    input: { readonly path: string; readonly rev?: string; readonly limit?: number }
+  ): Promise<GitFileHistoryPageV1> {
+    const params = new URLSearchParams({ path: input.path });
+    if (input.rev) params.set('rev', input.rev);
+    if (input.limit !== undefined) params.set('limit', String(input.limit));
+    return this.query(withContext(`/git/file-history?${params.toString()}`, context));
+  }
+
+  /** v0.3.17 S3 — what the index would commit, independent of the change-list filter. */
+  gitCommitPreview(context: WebContextGuardV1): Promise<GitCommitPreviewV1> {
+    return this.query(withContext('/git/commit/preview', context));
+  }
+
+  /**
+   * v0.3.17 S3 — hunk / line staging. Only ids travel: the Host rebuilds the patch from the
+   * reviewed document, so the browser can never submit patch text or Git flags.
+   */
+  gitApplyPatch(
+    context: WebContextGuardV1,
+    input: {
+      readonly fileId: string;
+      readonly hunkIds?: readonly string[];
+      readonly lineIds?: readonly string[];
+      readonly expectedRepositoryRevision: string;
+    }
+  ): Promise<{ readonly repositoryRevision: string }> {
+    return this.mutate(
+      '/git/patch',
+      'POST',
+      {
+        ...context,
+        fileId: input.fileId,
+        ...(input.hunkIds ? { hunkIds: [...input.hunkIds] } : {}),
+        ...(input.lineIds ? { lineIds: [...input.lineIds] } : {}),
+        expectedRepositoryRevision: input.expectedRepositoryRevision,
+        requestId: requestId(),
+      },
       { 'X-Orion-User-Gesture': 'git-mutation-v1' }
     );
   }
@@ -512,6 +767,43 @@ export class OrionWebApi {
       workspaces: result.page.items,
       nextCursor: result.page.nextCursor,
     };
+  }
+
+  /**
+   * v0.3.16 — open the Host OS directory picker.
+   *
+   * Browse only: nothing is registered or activated, and the user cancelling
+   * is a normal outcome rather than an error.
+   */
+  pickDirectory(input: {
+    readonly title?: string;
+    readonly initialPath?: string;
+  }): Promise<WebDirectoryPickResultV1> {
+    return this.mutate('/workspaces/pick-directory', 'POST', {
+      requestId: requestId(),
+      ...(input.title ? { title: input.title } : {}),
+      ...(input.initialPath ? { initialPath: input.initialPath } : {}),
+    });
+  }
+
+  /**
+   * v0.3.16 — read-only preview of a candidate directory. Resolves the
+   * canonical path and Git/Folder kind without touching the registry or the
+   * active Context.
+   */
+  async inspectWorkspace(
+    path: string,
+    source?: WebWorkspaceCandidateSourceV1
+  ): Promise<WebWorkspaceCandidateV1> {
+    const result = await this.mutate<{
+      readonly requestId: string;
+      readonly candidate: WebWorkspaceCandidateV1;
+    }>('/workspaces/inspect', 'POST', {
+      requestId: requestId(),
+      path,
+      ...(source ? { source } : {}),
+    });
+    return result.candidate;
   }
 
   async createSession(context: WebContextGuardV1): Promise<WebSessionSummaryV1> {
