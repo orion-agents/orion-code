@@ -40,6 +40,9 @@ function fileById(
   return bucket.find(entry => entry.path === path);
 }
 
+// Real repositories, real subprocesses and real hooks: the default 5s budget measures the
+// sandbox load, not the code.
+jest.setTimeout(30_000);
 describe('v0.3.17 S3 write path', () => {
   let root: string;
   let repo: string;

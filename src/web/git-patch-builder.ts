@@ -94,7 +94,11 @@ function buildHunkBody(
         changes += 1;
       } else {
         // Kept in the index: becomes context.
-        body.push(` ${line.text}`);
+        //
+        // The original raw line is reused with its prefix swapped for a space, NOT
+        // `line.text`. `text` is the normalised display form, so rebuilding from it dropped
+        // the `\r` of a CRLF file and the patch then failed to apply against the real index.
+        body.push(` ${line.raw.slice(1)}`);
         oldCount += 1;
         newCount += 1;
       }

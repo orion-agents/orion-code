@@ -1117,7 +1117,21 @@ export class GitReadModelServiceV1 {
           'index',
           context.env,
           patch
-        );
+        ).catch(error => {
+          const message = error instanceof Error ? error.message : '';
+          // A patch rebuilt from the reviewed document can still be inapplicable to the real
+          // index. CRLF line endings are the common cause: the diff text cannot represent them
+          // unambiguously, so the rebuilt context does not match the stored bytes. The plan
+          // requires such a selection to be refused explicitly rather than to fail as a Git
+          // error — nothing has been written at this point.
+          throw new WebWorkbenchError(
+            409,
+            /patch failed|patch does not apply/iu.test(message)
+              ? 'This selection cannot be applied to the index (CRLF line endings are a common cause).'
+              : message,
+            'git_patch_not_applicable'
+          );
+        });
         await this.runGit(
           ['apply', '--cached', '--recount', ...direction, '-'],
           pathsInfo.root,
