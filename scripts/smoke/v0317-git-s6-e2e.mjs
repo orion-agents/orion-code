@@ -141,19 +141,38 @@ async function main() {
     const conflictRow = page.locator('.git-row button', { hasText: 'shared.txt' }).first();
     await conflictRow.click();
     await page.waitForSelector('.git-conflict, .diff-body', { timeout: 30_000 });
+    // The three-way view loads asynchronously (it reads the index stages), so counting
+    // immediately can hit its loading state. Wait for one of the two legitimate renderings.
+    await page
+      .waitForFunction(
+        () => {
+          const content = document.querySelector('.git-content');
+          if (!content) return false;
+          return content.querySelector('.git-conflict') !== null || /只读/.test(content.textContent ?? '');
+        },
+        undefined,
+        { timeout: 20_000 }
+      )
+      .catch(() => undefined);
     const conflictShown = await page.locator('.git-conflict').count();
-    if (conflictShown === 0) {
-      const region = await page.locator('.git-content').innerText().catch(() => '(no .git-content)');
-      const errorText = await page.locator('.resource-error').first().innerText().catch(() => '');
-      process.stdout.write(
-        `DIAG conflict region: ${region.replace(/\s+/g, ' ').slice(0, 200)}\n` +
-          `DIAG error: ${errorText.slice(0, 160)}\n`
-      );
-    }
+    const region = await page.locator('.git-content').innerText().catch(() => '');
+    const stageButtons = await page.locator('button[aria-label^="暂存 "]').count();
+    process.stdout.write(
+      `DIAG conflict: threeWay=${conflictShown > 0} stageableButtons=${stageButtons} region=${region.replace(/\s+/g, ' ').slice(0, 120)}\n`
+    );
+
+    // Plan G6: never present a conflict as an ordinary staged diff.
     check(
-      'a conflicted file renders the three-way conflict view',
+      'a conflicted file is never presented as an ordinary stageable diff',
+      conflictShown > 0 || (stageButtons === 0 && /只读|冲突/.test(region)),
+      conflictShown > 0 ? 'three-way view' : `read-only notice (stageable buttons: ${stageButtons})`
+    );
+
+    // Measured separately: whether the ideal three-way rendering was used.
+    check(
+      'the three-way conflict view is used when available',
       conflictShown > 0,
-      conflictShown > 0 ? 'git-conflict present' : 'fell back to an ordinary diff'
+      conflictShown > 0 ? 'git-conflict present' : 'rendered through the fallback path'
     );
     if (conflictShown > 0) {
       const text = await page.locator('.git-conflict').innerText();
