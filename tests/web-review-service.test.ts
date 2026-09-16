@@ -10,6 +10,7 @@ describe('ReviewServiceV1', () => {
   const changedFile: WebGitFileV1 = Object.freeze({
     fileId: 'git_file_1',
     path: 'src/example.ts',
+    source: 'staged',
     indexStatus: 'M',
     worktreeStatus: 'M',
   });
@@ -50,6 +51,7 @@ describe('ReviewServiceV1', () => {
         Object.freeze({
           fileId: `git_file_${index}`,
           path: `generated/file-${index.toString().padStart(4, '0')}.ts`,
+          source: 'untracked',
           indexStatus: ' ',
           worktreeStatus: '?',
         })
@@ -57,6 +59,7 @@ describe('ReviewServiceV1', () => {
     const tail: WebGitFileV1 = Object.freeze({
       fileId: 'git_file_2000',
       path: 'generated/file-2000.ts',
+      source: 'untracked',
       indexStatus: ' ',
       worktreeStatus: '?',
     });
@@ -91,6 +94,7 @@ describe('ReviewServiceV1', () => {
     const page: WebGitDiffPageV1 = Object.freeze({
       fileId: changedFile.fileId,
       path: changedFile.path,
+      source: 'staged',
       repositoryRevision: 'repository-revision',
       binary: false,
       lines: Object.freeze(['@@ -1 +1 @@', '-before', '+after']),
@@ -108,6 +112,10 @@ describe('ReviewServiceV1', () => {
 });
 
 function gitStatus(overrides: Partial<WebGitStatusV1> = {}): WebGitStatusV1 {
+  const staged = overrides.staged ?? Object.freeze([]);
+  const unstaged = overrides.unstaged ?? Object.freeze([]);
+  const untracked = overrides.untracked ?? Object.freeze([]);
+  const conflicted = overrides.conflicted ?? Object.freeze([]);
   return Object.freeze({
     isRepository: true,
     repositoryRevision: 'repository-revision',
@@ -118,11 +126,20 @@ function gitStatus(overrides: Partial<WebGitStatusV1> = {}): WebGitStatusV1 {
     ahead: 0,
     behind: 0,
     clean: false,
-    staged: Object.freeze([]),
-    unstaged: Object.freeze([]),
-    untracked: Object.freeze([]),
-    conflicted: Object.freeze([]),
+    staged,
+    unstaged,
+    untracked,
+    conflicted,
     totalFiles: 0,
+    // v0.3.17 S1 — every Git status answer carries real per-group totals.
+    counts: Object.freeze({
+      total: staged.length + unstaged.length + untracked.length + conflicted.length,
+      staged: staged.length,
+      unstaged: unstaged.length,
+      untracked: untracked.length,
+      conflicted: conflicted.length,
+      loaded: staged.length + unstaged.length + untracked.length + conflicted.length,
+    }),
     truncated: false,
     nextCursor: null,
     ...overrides,

@@ -14,9 +14,25 @@ const AVAILABILITY_LABEL: Record<WebWorkspaceCandidateV1['availability'], string
   unreadable: '无法读取',
 };
 
+/**
+ * v0.3.17 — discrete stages replace the single "正在打开…" label, so the wait is
+ * attributable. Only stages the Host actually reports are marked current; the
+ * session stage is completed by the shell after this card closes.
+ */
+export type WorkspaceOpenStageLabelV1 = 'prepare' | 'runtime' | 'session';
+
+const STAGE_ORDER: readonly WorkspaceOpenStageLabelV1[] = ['prepare', 'runtime', 'session'];
+
+const STAGE_LABEL: Record<WorkspaceOpenStageLabelV1, string> = {
+  prepare: '准备项目',
+  runtime: '加载本地 Runtime',
+  session: '恢复会话（如有）',
+};
+
 export interface WorkspaceConfirmCardProps {
   readonly candidate: WebWorkspaceCandidateV1;
   readonly busy: boolean;
+  readonly stage?: WorkspaceOpenStageLabelV1;
   readonly error: string | null;
   readonly onCancel: () => void;
   readonly onOpen: () => void;
@@ -25,6 +41,7 @@ export interface WorkspaceConfirmCardProps {
 export function WorkspaceConfirmCard({
   candidate,
   busy,
+  stage = 'prepare',
   error,
   onCancel,
   onOpen,
@@ -37,6 +54,7 @@ export function WorkspaceConfirmCard({
       : busy
         ? '正在打开…'
         : '打开项目';
+  const activeIndex = STAGE_ORDER.indexOf(stage);
   return (
     <section className="workspace-confirm" aria-label="已选择本地项目">
       <header className="workspace-confirm-head">
@@ -46,11 +64,29 @@ export function WorkspaceConfirmCard({
         <span className="workspace-confirm-meta">
           {candidate.kind === 'git' ? 'Git 项目' : '本地文件夹'} ·{' '}
           {AVAILABILITY_LABEL[candidate.availability]}
-          {typeof candidate.sessionCount === 'number' ? ` · ${candidate.sessionCount} 个会话` : ''}
+          {typeof candidate.sessionCount === 'number'
+            ? ` · ${candidate.sessionCount} 个会话`
+            : candidate.sessionCountStatus === 'deferred'
+              ? ' · 会话数读取中'
+              : ''}
         </span>
       </header>
       <p className="workspace-confirm-path">{candidate.canonicalPath}</p>
       <p className="workspace-confirm-note">已解析真实路径；此操作不会读取目录外的文件。</p>
+      {busy ? (
+        <ol className="workspace-confirm-stages" aria-label="打开进度">
+          {STAGE_ORDER.map((entry, index) => (
+            <li
+              key={entry}
+              className="workspace-confirm-stage"
+              aria-current={entry === stage ? 'step' : undefined}
+              data-state={index < activeIndex ? 'done' : index === activeIndex ? 'current' : 'todo'}
+            >
+              {STAGE_LABEL[entry]}
+            </li>
+          ))}
+        </ol>
+      ) : null}
       {error ? (
         <p className="field-error" role="alert">
           {error}

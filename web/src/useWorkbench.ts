@@ -16,7 +16,23 @@ import type {
   WebContextGuardV1,
   WebFileContentPageV1,
   WebFileTreePageV1,
+  GitBlameResultV1,
+  GitBlobResultV1,
+  GitConflictVersionsV1,
+  GitGraphPageV1,
+  GitSubmoduleEntryV1,
+  GitCommitDetailV1,
+  GitCompareModeV1,
+  GitCompareResultV1,
+  GitCommitFilesV1,
+  GitCommitPreviewV1,
+  GitDiffDocumentV2,
+  GitFileHistoryPageV1,
+  GitHistoryPageV1,
+  GitRefsV1,
+  GitMutationResultV1,
   WebGitDiffPageV1,
+  WebGitFileSourceV1,
   WebGitLogPageV1,
   WebGitStatusV1,
   WebReviewSnapshotV1,
@@ -45,6 +61,7 @@ import {
   type WebDirectoryPickResultV1,
   type WebWorkspaceCandidateV1,
   type WorkbenchState,
+  type WorkspaceListResponse,
 } from './types';
 import { upsertSessionSummary } from './state/session-collection';
 import { removeComposerDraftsForWorkspace } from './state/composer-drafts';
@@ -153,9 +170,86 @@ export interface WorkbenchActions {
     content: string,
     expectedRevision: string
   ): Promise<{ readonly fileId: string; readonly revision: string; readonly sizeBytes: number }>;
-  gitStatus(cursor?: string): Promise<WebGitStatusV1>;
+  gitStatus(
+    cursor?: string,
+    filter?: { readonly group?: WebGitFileSourceV1; readonly query?: string }
+  ): Promise<WebGitStatusV1>;
   gitLog(cursor?: string): Promise<WebGitLogPageV1>;
   gitDiff(fileId: string, cursor?: string): Promise<WebGitDiffPageV1>;
+  /** v0.3.17 S2 — structured hunks with old/new line numbers. */
+  gitDiffDocument(
+    fileId: string,
+    cursor?: string,
+    ignoreWhitespace?: boolean,
+    wordDiff?: boolean
+  ): Promise<GitDiffDocumentV2>;
+  /** v0.3.17 S3 — index writes. Read and write actions are kept separate on purpose. */
+  gitCommitPreview(): Promise<GitCommitPreviewV1>;
+  /** v0.3.17 S4 — history reads; none of these can reach the mutation path. */
+  gitRefs(): Promise<GitRefsV1>;
+  /** v0.3.17 S5 — comparison reads; query-only by construction. */
+  gitCompare(input: {
+    readonly baseRef: string;
+    readonly headRef: string;
+    readonly mode: GitCompareModeV1;
+  }): Promise<GitCompareResultV1>;
+  gitCompareFileDiff(input: {
+    readonly baseOid: string;
+    readonly headOid: string;
+    readonly path: string;
+    readonly cursor?: string;
+  }): Promise<GitDiffDocumentV2>;
+  gitHistory(query: {
+    readonly message?: string;
+    readonly author?: string;
+    readonly path?: string;
+    readonly sha?: string;
+    readonly since?: string;
+    readonly until?: string;
+    readonly cursor?: string;
+    readonly pageSize?: number;
+  }): Promise<GitHistoryPageV1>;
+  gitCommitDetail(oid: string, parentIndex?: number): Promise<GitCommitDetailV1>;
+  gitCommitFiles(oid: string, parentIndex?: number): Promise<GitCommitFilesV1>;
+  gitCommitDiff(input: {
+    readonly oid: string;
+    readonly path: string;
+    readonly parentIndex?: number;
+    readonly cursor?: string;
+  }): Promise<GitDiffDocumentV2>;
+  gitGraph(limit?: number): Promise<GitGraphPageV1>;
+  gitFilesTarget(fileToken: string): Promise<{
+    readonly path: string;
+    readonly source: string;
+    readonly filesToken: string;
+  }>;
+  gitConflictVersions(path: string): Promise<GitConflictVersionsV1>;
+  gitBlob(input: { readonly path: string; readonly rev: string }): Promise<GitBlobResultV1>;
+  gitSubmodules(): Promise<readonly GitSubmoduleEntryV1[]>;
+  gitBlame(input: {
+    readonly path: string;
+    readonly rev?: string;
+    readonly limit?: number;
+  }): Promise<GitBlameResultV1>;
+  gitFileHistory(input: {
+    readonly path: string;
+    readonly rev?: string;
+    readonly limit?: number;
+  }): Promise<GitFileHistoryPageV1>;
+  gitStage(fileIds: readonly string[], expectedRepositoryRevision: string): Promise<GitMutationResultV1>;
+  gitUnstage(fileIds: readonly string[], expectedRepositoryRevision: string): Promise<GitMutationResultV1>;
+  gitApplyPatch(input: {
+    readonly fileId: string;
+    readonly hunkIds?: readonly string[];
+    readonly lineIds?: readonly string[];
+    readonly expectedRepositoryRevision: string;
+  }): Promise<GitMutationResultV1>;
+  gitCommit(input: {
+    readonly summary: string;
+    readonly body?: string;
+    readonly expectedRepositoryRevision: string;
+    readonly requestId: string;
+  }): Promise<{ readonly repositoryRevision: string; readonly commitSha: string; readonly warning?: string }>;
   review(): Promise<WebReviewSnapshotV1>;
   terminals(): Promise<readonly WebTerminalMetadataV1[]>;
   createTerminal(cols: number, rows: number): Promise<WebTerminalCreateResultV1>;
@@ -262,7 +356,7 @@ export function useWorkbench(): UseWorkbenchResult {
     [api]
   );
 
-  const loadBaselineOnce = useCallback(async () => {
+  const loadBaselineOnce = useCallback(async (reusableWorkspaces?: WorkspaceListResponse) => {
     const generation = ++resourceGeneration.current;
     try {
       const bootstrap = await api.bootstrap();
@@ -272,8 +366,18 @@ export function useWorkbench(): UseWorkbenchResult {
       } satisfies WebContextGuardV1;
       settingsMirror.reset();
       settingsMirror.accept(bootstrap.settings);
+      // v0.3.17 — reuse the page activation already returned when it provably
+      // describes the Context we just bootstrapped; otherwise fetch it.
+      const canReuse =
+        reusableWorkspaces !== undefined &&
+        reusableWorkspaces.activeId !== '' &&
+        reusableWorkspaces.activeId === bootstrap.workspaceId;
+      const reusable = canReuse ? reusableWorkspaces : undefined;
+      const workspacesPromise: Promise<WorkspaceListResponse> = reusable
+        ? Promise.resolve(reusable)
+        : api.listWorkspaces(context);
       const [workspaces, sessions, mirrorSnapshot] = await Promise.all([
-        api.listWorkspaces(context),
+        workspacesPromise,
         api.listSessions(context),
         settingsMirror.refresh(),
       ]);
@@ -287,15 +391,6 @@ export function useWorkbench(): UseWorkbenchResult {
         ...bootstrap,
         activeSessionId: foregroundSessionId,
       });
-      const sessionResult = foregroundSessionId
-        ? await api
-            .sessionSnapshot(foregroundSessionId, context)
-            .then(snapshot => {
-              assertSessionSnapshotIdentity(snapshot, foregroundSessionId, context);
-              return { snapshot, error: undefined };
-            })
-            .catch(error => ({ snapshot: null, error }))
-        : { snapshot: null, error: undefined };
       const settings = await migrateLegacyAppearance(
         api,
         settingsMirror,
@@ -318,22 +413,34 @@ export function useWorkbench(): UseWorkbenchResult {
         toolDetails: [],
         toolDetailNextCursor: null,
       });
-      if (sessionResult.snapshot) {
-        dispatch({
-          type: 'session_snapshot_loaded',
-          snapshot: sessionResult.snapshot,
-          contextRevision: context.expectedContextRevision,
-          workspaceId: context.workspaceId,
-        });
-      }
-      if (sessionResult.error) {
-        dispatch({
-          type: 'snapshot_failed',
-          sessionId: foregroundSessionId,
-          detail: errorMessage(sessionResult.error),
-          contextRevision: context.expectedContextRevision,
-          workspaceId: context.workspaceId,
-        });
+      // v0.3.17 — the foreground snapshot is not part of the identity baseline.
+      // Render the shell first (project header, session list, Composer
+      // skeleton), then restore the session. The reducer already marks the
+      // active session 'loading', so the Composer stays disabled until this
+      // settles — "more responsive" never means "pretend it is ready".
+      if (foregroundSessionId) {
+        void api
+          .sessionSnapshot(foregroundSessionId, context)
+          .then(snapshot => {
+            if (generation !== resourceGeneration.current) return;
+            assertSessionSnapshotIdentity(snapshot, foregroundSessionId, context);
+            dispatch({
+              type: 'session_snapshot_loaded',
+              snapshot,
+              contextRevision: context.expectedContextRevision,
+              workspaceId: context.workspaceId,
+            });
+          })
+          .catch(error => {
+            if (generation !== resourceGeneration.current) return;
+            dispatch({
+              type: 'snapshot_failed',
+              sessionId: foregroundSessionId,
+              detail: errorMessage(error),
+              contextRevision: context.expectedContextRevision,
+              workspaceId: context.workspaceId,
+            });
+          });
       }
 
       cancelSessionPrefetch.current();
@@ -387,11 +494,17 @@ export function useWorkbench(): UseWorkbenchResult {
     }
   }, [api, loadSessionSnapshot, settingsMirror]);
 
-  const loadBaseline = useCallback(async () => {
+  /**
+   * v0.3.17 — `reusableWorkspaces` lets a caller that already received a fresh
+   * page (for example `/workspaces/activate`) skip the duplicate request. It is
+   * only trusted when its `activeId` matches the bootstrap we just read, so a
+   * stale page can never be applied to a different Context.
+   */
+  const loadBaseline = useCallback(async (reusableWorkspaces?: WorkspaceListResponse) => {
     let lastError: unknown;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        await loadBaselineOnce();
+        await loadBaselineOnce(reusableWorkspaces);
         return;
       } catch (error) {
         lastError = error;
@@ -886,7 +999,9 @@ export function useWorkbench(): UseWorkbenchResult {
           const result = await api.activateWorkspace(path, requireContextGuard(stateRef.current));
           dispatch({ type: 'workspaces_loaded', value: result });
           dispatch({ type: 'reset_session_view', activeSessionId: null });
-          await loadBaseline();
+          // v0.3.17 — the activation response already carries the fresh workspace
+          // page; the baseline reuses it instead of asking for it again.
+          await loadBaseline(result);
         } finally {
           resumeEventStream();
         }
@@ -1393,7 +1508,8 @@ export function useWorkbench(): UseWorkbenchResult {
     [api]
   );
   const gitStatus = useCallback(
-    (cursor?: string) => api.gitStatus(requireContextGuard(stateRef.current), cursor),
+    (cursor?: string, filter?: { readonly group?: WebGitFileSourceV1; readonly query?: string }) =>
+      api.gitStatus(requireContextGuard(stateRef.current), cursor, filter),
     [api]
   );
   const gitLog = useCallback(
@@ -1403,6 +1519,111 @@ export function useWorkbench(): UseWorkbenchResult {
   const gitDiff = useCallback(
     (fileId: string, cursor?: string) =>
       api.gitDiff(fileId, requireContextGuard(stateRef.current), cursor),
+    [api]
+  );
+  const gitDiffDocument = useCallback(
+    (fileId: string, cursor?: string, ignoreWhitespace?: boolean, wordDiff?: boolean) =>
+      api.gitDiffDocument(
+        fileId,
+        requireContextGuard(stateRef.current),
+        cursor,
+        ignoreWhitespace,
+        wordDiff
+      ),
+    [api]
+  );
+  const gitRefs = useCallback(() => api.gitRefs(requireContextGuard(stateRef.current)), [api]);
+  const gitCompare = useCallback(
+    (input: Parameters<WorkbenchActions['gitCompare']>[0]) =>
+      api.gitCompare(requireContextGuard(stateRef.current), input),
+    [api]
+  );
+  const gitCompareFileDiff = useCallback(
+    (input: Parameters<WorkbenchActions['gitCompareFileDiff']>[0]) =>
+      api.gitCompareFileDiff(requireContextGuard(stateRef.current), input),
+    [api]
+  );
+  const gitHistory = useCallback(
+    (query: Parameters<WorkbenchActions['gitHistory']>[0]) =>
+      api.gitHistory(requireContextGuard(stateRef.current), query),
+    [api]
+  );
+  const gitCommitDetail = useCallback(
+    (oid: string, parentIndex = 0) =>
+      api.gitCommitDetail(requireContextGuard(stateRef.current), oid, parentIndex),
+    [api]
+  );
+  const gitCommitFiles = useCallback(
+    (oid: string, parentIndex = 0) =>
+      api.gitCommitFiles(requireContextGuard(stateRef.current), oid, parentIndex),
+    [api]
+  );
+  const gitCommitDiff = useCallback(
+    (input: Parameters<WorkbenchActions['gitCommitDiff']>[0]) =>
+      api.gitCommitDiff(requireContextGuard(stateRef.current), input),
+    [api]
+  );
+  const gitFilesTarget = useCallback(
+    (fileToken: string) => api.gitFilesTarget(requireContextGuard(stateRef.current), fileToken),
+    [api]
+  );
+  const gitGraph = useCallback(
+    (limit = 200) => api.gitGraph(requireContextGuard(stateRef.current), limit),
+    [api]
+  );
+  const gitConflictVersions = useCallback(
+    (path: string) => api.gitConflictVersions(requireContextGuard(stateRef.current), path),
+    [api]
+  );
+  const gitBlob = useCallback(
+    (input: Parameters<WorkbenchActions['gitBlob']>[0]) =>
+      api.gitBlob(requireContextGuard(stateRef.current), input),
+    [api]
+  );
+  const gitSubmodules = useCallback(
+    () => api.gitSubmodules(requireContextGuard(stateRef.current)),
+    [api]
+  );
+  const gitBlame = useCallback(
+    (input: Parameters<WorkbenchActions['gitBlame']>[0]) =>
+      api.gitBlame(requireContextGuard(stateRef.current), input),
+    [api]
+  );
+  const gitFileHistory = useCallback(
+    (input: Parameters<WorkbenchActions['gitFileHistory']>[0]) =>
+      api.gitFileHistory(requireContextGuard(stateRef.current), input),
+    [api]
+  );
+  const gitCommitPreview = useCallback(
+    () => api.gitCommitPreview(requireContextGuard(stateRef.current)),
+    [api]
+  );
+  const gitStage = useCallback(
+    (fileIds: readonly string[], expectedRepositoryRevision: string) =>
+      api.gitStage(requireContextGuard(stateRef.current), fileIds, expectedRepositoryRevision),
+    [api]
+  );
+  const gitUnstage = useCallback(
+    (fileIds: readonly string[], expectedRepositoryRevision: string) =>
+      api.gitUnstage(requireContextGuard(stateRef.current), fileIds, expectedRepositoryRevision),
+    [api]
+  );
+  const gitApplyPatch = useCallback(
+    (input: {
+      readonly fileId: string;
+      readonly hunkIds?: readonly string[];
+      readonly lineIds?: readonly string[];
+      readonly expectedRepositoryRevision: string;
+    }) => api.gitApplyPatch(requireContextGuard(stateRef.current), input),
+    [api]
+  );
+  const gitCommit = useCallback(
+    (input: {
+      readonly summary: string;
+      readonly body?: string;
+      readonly expectedRepositoryRevision: string;
+      readonly requestId: string;
+    }) => api.gitCommit(requireContextGuard(stateRef.current), input),
     [api]
   );
   const review = useCallback(() => api.review(requireContextGuard(stateRef.current)), [api]);
@@ -1508,6 +1729,26 @@ export function useWorkbench(): UseWorkbenchResult {
       gitStatus,
       gitLog,
       gitDiff,
+      gitDiffDocument,
+      gitCommitPreview,
+      gitRefs,
+      gitCompare,
+      gitCompareFileDiff,
+      gitHistory,
+      gitCommitDetail,
+      gitCommitFiles,
+      gitCommitDiff,
+      gitFilesTarget,
+      gitGraph,
+      gitConflictVersions,
+      gitBlob,
+      gitSubmodules,
+      gitBlame,
+      gitFileHistory,
+      gitStage,
+      gitUnstage,
+      gitApplyPatch,
+      gitCommit,
       review,
       terminals,
       createTerminal,
@@ -1522,6 +1763,12 @@ export function useWorkbench(): UseWorkbenchResult {
       closeTerminal,
       createTerminal,
       gitDiff,
+      gitDiffDocument,
+      gitCommitPreview,
+      gitStage,
+      gitUnstage,
+      gitApplyPatch,
+      gitCommit,
       gitLog,
       gitStatus,
       listFiles,

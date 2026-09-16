@@ -9,6 +9,7 @@ import * as React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 import { WorkspaceConfirmCard } from '../web/src/components/workspace/WorkspaceConfirmCard';
+import type { WorkspaceOpenStageLabelV1 } from '../web/src/components/workspace/WorkspaceConfirmCard';
 import {
   initialWorkspacePickerState,
   workspacePickerBusy,
@@ -91,12 +92,18 @@ describe('workspacePickerReducer', () => {
 });
 
 describe('WorkspaceConfirmCard', () => {
-  const render = (c: WebWorkspaceCandidateV1, busy = false, error: string | null = null) =>
+  const render = (
+    c: WebWorkspaceCandidateV1,
+    busy = false,
+    error: string | null = null,
+    stage?: WorkspaceOpenStageLabelV1
+  ) =>
     renderToStaticMarkup(
       React.createElement(WorkspaceConfirmCard, {
         candidate: c,
         busy,
         error,
+        ...(stage ? { stage } : {}),
         onCancel: () => undefined,
         onOpen: () => undefined,
       })
@@ -128,6 +135,28 @@ describe('WorkspaceConfirmCard', () => {
     const html = render(candidate({ isActive: true }));
     expect(html).toContain('当前项目');
     expect(html).toContain('disabled=""');
+  });
+
+  it('shows discrete stages while opening instead of one vague label', () => {
+    const html = render(candidate(), true, null, 'runtime');
+    expect(html).toContain('aria-label="打开进度"');
+    expect(html).toContain('准备项目');
+    expect(html).toContain('加载本地 Runtime');
+    expect(html).toContain('恢复会话（如有）');
+    // Only the stage the Host actually reports is marked as current.
+    expect(html).toContain('aria-current="step"');
+    expect(html).toContain('data-state="current"');
+  });
+
+  it('hides the stage list until the user confirms', () => {
+    expect(render(candidate())).not.toContain('打开进度');
+  });
+
+  it('reports a deferred session count without blocking the card', () => {
+    const html = render(candidate({ sessionCount: undefined, sessionCountStatus: 'deferred' }));
+    expect(html).toContain('会话数读取中');
+    // The confirmation button must stay available while the count is pending.
+    expect(html).toContain('打开项目');
   });
 
   it('reports an activation failure once via role=alert', () => {

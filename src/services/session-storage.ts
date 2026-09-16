@@ -3107,8 +3107,32 @@ export function listSessions(limit?: number): SessionMeta[] {
  * Sessions are excluded so the picker count matches the default listing.
  */
 export function countSessionsByProject(): ReadonlyMap<string, number> {
+  return countSessionsByProjectFromCatalog(loadOrRebuildSessionCatalog());
+}
+
+/**
+ * v0.3.17 — Counts **only when the catalog is already warm**.
+ *
+ * Previewing a directory must never make the user wait for a catalog rebuild or
+ * a file-lock acquisition (the lock ceiling is 10s). This validates the
+ * in-memory cache with a cheap `stat` — no scan, no lock, no write — and
+ * returns `null` otherwise so callers can defer the count instead of blocking.
+ */
+export function peekCachedSessionCounts(): ReadonlyMap<string, number> | null {
+  const cache = sessionCatalogCache;
+  if (!cache) return null;
+  try {
+    const stat = statSync(cache.path);
+    if (stat.mtimeMs !== cache.mtimeMs || stat.size !== cache.size) return null;
+  } catch {
+    return null;
+  }
+  return countSessionsByProjectFromCatalog(cache.catalog);
+}
+
+function countSessionsByProjectFromCatalog(catalog: SessionCatalog): ReadonlyMap<string, number> {
   const counts = new Map<string, number>();
-  for (const session of Object.values(loadOrRebuildSessionCatalog().sessions)) {
+  for (const session of Object.values(catalog.sessions)) {
     if (session.archivedAt) continue;
     counts.set(session.projectPath, (counts.get(session.projectPath) ?? 0) + 1);
   }

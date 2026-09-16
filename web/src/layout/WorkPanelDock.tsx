@@ -110,6 +110,16 @@ export interface WorkPanelDockProps {
   /** v0.3.12 — per-viewport dock width ceiling (detail + rail). */
   readonly maxWidthPx?: number;
   readonly onSendToComposer: (text: string) => void;
+  /** v0.3.17 S6 — forwarded to the Files panel when another panel asks to open a file. */
+  readonly revealFileRequest?: {
+    readonly id: number;
+    readonly fileId: string;
+    readonly displayPath: string;
+  } | null;
+  readonly onRevealInFiles?: (target: {
+    readonly path: string;
+    readonly filesToken: string;
+  }) => void;
   /**
    * v0.3.13 — per-panel navigator column widths for the current workspace,
    * forwarded to the Files/Git/Review resource panels.
@@ -145,6 +155,8 @@ export function WorkPanelDock({
   onWidthCommit,
   width,
   maxWidthPx,
+  revealFileRequest,
+  onRevealInFiles,
   onSendToComposer,
   resourceNavigatorWidths,
   onResourceNavigatorWidthCommit,
@@ -374,6 +386,7 @@ export function WorkPanelDock({
           workspaceId={state.workspaceId}
           refreshEpoch={resourceEpochs.files}
           actions={actions}
+          revealRequest={revealFileRequest ?? null}
           navigatorWidthPx={resourceNavigatorWidths.files}
           onNavigatorWidthCommit={width => onResourceNavigatorWidthCommit('files', width)}
         />
@@ -383,6 +396,7 @@ export function WorkPanelDock({
           workspaceId={state.workspaceId}
           refreshEpoch={resourceEpochs.git}
           actions={actions}
+          onRevealInFiles={onRevealInFiles}
           onSendToComposer={onSendToComposer}
           navigatorWidthPx={resourceNavigatorWidths.git}
           onNavigatorWidthCommit={width => onResourceNavigatorWidthCommit('git', width)}

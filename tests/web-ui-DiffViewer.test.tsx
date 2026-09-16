@@ -15,6 +15,8 @@ function page(overrides: Partial<WebGitDiffPageV1> = {}): WebGitDiffPageV1 {
   return {
     fileId: 'file:1',
     path: 'web/src/App.tsx',
+    // v0.3.17 S2 — a diff page always states which comparison it renders.
+    source: 'unstaged',
     repositoryRevision: 'abc123',
     binary: false,
     lines: [

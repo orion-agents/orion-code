@@ -92,11 +92,37 @@ export const WEB_E2E_WEB33_SCENARIOS_V1 = Object.freeze([
   ...WEB_E2E_WEB33_THEME_SCENARIOS_V1,
   ...WEB_E2E_WEB33_SESSION_SCENARIOS_V1,
 ]);
+/**
+ * v0.3.17 — LOCAL WORKSPACE open path. The picker is driven by a script file
+ * (`ORION_CODE_WEB_PICKER_FIXTURE`) so CI never opens a real Finder dialog.
+ */
+export const WEB_E2E_WEB38_SCENARIOS_V1 = Object.freeze([
+  'WEB38-P0-01',
+  'WEB38-P0-02',
+  'WEB38-P0-03',
+  'WEB38-P0-04',
+  'WEB38-P0-05',
+] as const);
+/**
+ * v0.3.17 — Git right-hand work panel (`docs/plan/v0.3.17-plan.md`).
+ *
+ * One id per user-visible capability the plan calls P0/P1 and that a browser can
+ * actually verify; the per-stage unit suites are registered separately.
+ */
+export const WEB_E2E_WEB317_SCENARIOS_V1 = Object.freeze([
+  'WEB39-P0-01',
+  'WEB39-P0-02',
+  'WEB39-P0-03',
+  'WEB39-P0-04',
+  'WEB39-P0-05',
+]);
 export const WEB_E2E_FULL_SCENARIOS_V1 = Object.freeze([
   ...WEB_E2E_LEGACY_SCENARIOS_V1,
   ...WEB_E2E_WEB31_SCENARIOS_V1,
   ...WEB_E2E_WEB32_SCENARIOS_V1,
   ...WEB_E2E_WEB33_SCENARIOS_V1,
+  ...WEB_E2E_WEB38_SCENARIOS_V1,
+  ...WEB_E2E_WEB317_SCENARIOS_V1,
 ]);
 export const WEB_E2E_SETTINGS_SCENARIOS_V1 = Object.freeze(
   WEB_E2E_FULL_SCENARIOS_V1.filter(id => id.startsWith('SET-P0-'))

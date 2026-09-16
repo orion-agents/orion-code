@@ -22,6 +22,182 @@ which is **not** a pass.
 
 ## [Unreleased]
 
+## [0.3.17]
+
+> **Status: candidate.** Opening a local project is made fast and honest
+> (`docs/plan/v0.3.16-plan-v1.md`): the directory preview no longer waits on the
+> session catalog, the Finder browse action no longer occupies the global
+> Context mutation admission, and every entry point shares one
+> inspect → confirm → activate contract. Covers S2, S3 and S5; S1 (per-stage
+> telemetry) and S4 (staged activate baseline) are not implemented yet. Not
+> merged, tagged or published.
+>
+> **Update:** S1 (per-stage telemetry) and the S4 headline (the foreground
+> snapshot no longer gates the first render) also landed on this branch, plus a
+> bounded inspect probe. The measured Host-side receipt is in
+> `docs/plan/evidence/v0.3.17-open-baseline.md`.
+>
+> **Update 2:** the Git right-hand work panel (`docs/plan/v0.3.17-plan.md`,
+> S0–S6) is implemented on this branch as well. Evidence per stage is under
+> `docs/plan/evidence/v0.3.17-git/`, and the scenario matrix is
+> `g317-status.md`. All functional gaps are closed; the remaining items are
+> assertion and evidence backlog, listed under **Known gaps** below.
+
+### Added
+
+- **Per-stage open-path telemetry:** `WorkspaceOpenTelemetryV1` keeps a bounded
+  ring of `{ requestId, operation, outcome, stage ms, errorCode }` for the
+  picker, the inspect probe and the Context transition, and exposes it
+  read-only through Diagnostics as `workspaceOpen`. Traces never carry a path,
+  a label or file content.
+
+### Fixed
+
+- **The preview no longer blocks on the session catalog:** `inspect` used to
+  call `countSessionsByProject()`, which can rebuild the catalog and hold its
+  file lock for up to 10s before the confirmation card appeared. It now reads
+  the warm cache only (`peekCachedSessionCounts()`) and reports
+  `sessionCountStatus: 'deferred'` when the catalog is cold; the card stays
+  usable and shows 会话数读取中 instead of stalling.
+
+### Changed
+
+- **The native picker is browse admission, not a mutation:**
+  `POST /workspaces/pick-directory` no longer goes through `executeMutation()`,
+  so an open Finder dialog does not raise `activeMutationCount` or enter the
+  idempotency ledger and can no longer make a project switch look like a busy
+  Runtime. Single-flight (`picker_busy`) and the nonce/origin/content-type
+  guards are unchanged.
+- **One path contract:** the advanced manual entry and the pinned/recent rows
+  now go through the same inspect → confirm → activate state machine as the
+  Finder entry. Nothing activates without an explicit confirmation, and
+  availability plus the Git/Folder kind are always re-checked.
+- **The picker timeout is wired:** `timeoutMs` reaches the default `execFile`
+  runner, and a timeout reports its own `picker_timeout` reason code instead of
+  being folded into `picker_unavailable`.
+- **The preview probe is bounded:** `inspectDirectory` now uses asynchronous fs
+  raced against a 250ms budget, so a hung network mount or a broken symlink
+  cannot freeze the Node event loop; on timeout the directory is reported
+  `unreadable` with an `inspect_budget_exceeded` trace code.
+- **The foreground snapshot no longer gates the first render:** `loadBaseline`
+  dispatches the identity baseline (bootstrap, workspaces, sessions, settings)
+  before restoring the session, so the project shell and session list appear
+  while the transcript is still loading. The reducer already marks the active
+  session `loading`, so the Composer stays disabled until the snapshot settles.
+- **Activation no longer re-requests the workspace page:** the page returned by
+  `POST /workspaces/activate` is reused by the baseline when its `activeId`
+  matches the freshly bootstrapped Context, so opening a project issues one
+  fewer round-trip. A mismatch falls back to the normal request.
+- **The confirmation card reports discrete stages:** while opening, the card
+  shows `准备项目 → 加载本地 Runtime → 恢复会话（如有）` with only the stage the
+  Host actually reports marked `aria-current="step"`, instead of one vague
+  "正在打开…" label covering the whole wait.
+
+### Tests
+
+- `tests/web-workbench-workspace-picker.test.ts` — the preview never calls the
+  catalog rebuild entry point; the count is `ready` when the cache is warm.
+- `tests/session-catalog-peek.test.ts` — the peek answers `null` on a cold
+  module instead of loading or locking.
+- `tests/native-directory-picker.test.ts` — a timeout keeps its own reason code.
+- `tests/web-ui-workspace-picker.test.tsx` — the card stays actionable while the
+  count is deferred, and the stage list only appears after confirming.
+- `tests/workspace-open-telemetry.test.ts` — stage offsets, duplicate marks,
+  bounded retention, and that a serialized trace contains no path.
+- `tests/e2e/web-v0317-workspace-open.spec.ts` — W316P-01/02/04/08/09 driven by a
+  scripted picker: no browse side effects, inspect-then-confirm, cancellation,
+  the shared advanced-path contract, and the no-path-leak regression.
+- `tests/e2e/*` — the four manual-path specs confirm on the card before
+  activating.
+
+### Test seams
+
+- **`ORION_CODE_WEB_PICKER_FIXTURE`** points the Host at a JSON script file so
+  end-to-end runs never open a real Finder dialog (`{"path": …}` /
+  `{"paths": […]}` / `{"outcome": "cancelled" | "unavailable"}`). The script is
+  re-read on every invocation, and an absent or malformed file behaves like a
+  cancelled dialog. It is browse-only: the returned path still has to be
+  confirmed and passes through the same guarded activation flow.
+
+### Added — Git right-hand work panel (S0–S6)
+
+- **Change navigation:** staged / unstaged / untracked / conflict groups with a
+  host-side filter and search, counts that cover the whole matching set, and a
+  pagination cursor bound to the group and query it was issued for.
+- **Diff reading:** unified and side-by-side, old/new line numbers, continuous
+  hunks, fold state, line anchors, word-level diff (`--word-diff=plain`) and
+  ignore-all-space — the last two are bound into the pagination cursor, so a
+  page can never be continued under a different view.
+- **Writes through an index transaction:** every index change holds
+  `index.lock` (and only ever removes a lock it created), writes to a private
+  sibling index, verifies it, and publishes with a single atomic rename.
+  Hunk-level and line-level staging rebuild the patch on the Host from the
+  reviewed document — the browser only ever sends ids.
+- **Commit form and result recovery:** summary plus multi-line body, the
+  identity / signing / hook configuration that will actually run, a preview of
+  the real index (independent of list filters), the draft preserved on failure,
+  and idempotent replay by `requestId`.
+- **History:** search across the whole reachable history, commit details,
+  root commits compared with the empty tree, merge parents selectable and
+  labelled, file history with `--follow`, blame, historical blobs for files
+  that no longer exist locally, and a commit graph drawn by git itself.
+- **Branch and version comparison:** two-endpoint snapshot and diverged-from
+  (merge-base) modes; the resolved commit ids are part of the result so an open
+  comparison can be frozen, and a multi-merge-base pair is refused rather than
+  silently picking one.
+- **Conflict views:** base / ours / theirs read from index stages 1/2/3 plus
+  the working tree, with a stage that legitimately does not exist reported as
+  absent instead of being elided.
+- **Submodule and LFS:** recorded gitlink SHAs are shown without traversing
+  submodules, and LFS pointers are reported as state without fetching objects.
+- **Image versions:** a bounded, magic-byte-identified image becomes a data URL
+  so both versions of a picture can be shown without a download.
+- **Cross-panel links:** "open in Files" translates a Git token into a Files
+  token on the Host, and the composer reference carries the file, comparison
+  source, revision and line range into the draft without sending it.
+- **Responsive and keyboard:** three tiers keyed off the panel container (not
+  the window), with a narrow layout that never writes the downgrade back into
+  the stored preference; arrow keys, Enter, F7 / Shift+F7 change navigation,
+  Escape unwinding one layer at a time, and Space toggling selection only —
+  never a Git write.
+
+### Fixed — Git panel
+
+- **Staging could silently do nothing:** the private index copy received a
+  fresh mtime, which defeated Git’s racy-clean rule — a file edited within the
+  same timestamp granularity and with an unchanged size was not re-hashed, so
+  `git add` succeeded while changing nothing. The copy now preserves the
+  original timestamps, and staging verifies each path with `hash-object
+  --path` against the index entry.
+- **`localhost` was rejected site-wide:** the Host and Origin checks compared
+  header strings exactly, so `http://localhost:<port>` returned 421 (and, with
+  only the Host check fixed, every mutation would have returned 403). Both now
+  accept any loopback spelling of the same endpoint while still refusing
+  attacker-controlled names and a mismatched port.
+- **`git apply -` and `git commit -F -` blocked forever:** the async
+  `execFile` `input` option is silently ignored, so stdin was never closed.
+  Writes now use `spawn` and close stdin explicitly, and a timeout kills the
+  whole process group so a slow hook cannot be orphaned.
+- **Refs came back empty:** `for-each-ref` does not support the `%x1f` escapes
+  that `git log --format` does; it printed them literally. Refs are now parsed
+  from a space-separated format.
+- **A detached HEAD could be reported as a branch:** the check was "no ref
+  points at HEAD", which is wrong when detaching onto a branch tip. It now
+  asks git whether HEAD is a symbolic ref.
+
+### Known gaps
+
+- Assertion and evidence backlog for the Git panel: an end-to-end spec
+  (`tests/e2e/web-v0317-git-workspace.spec.ts`), automated assertions for the
+  Files cross-panel link, and scenario variants not yet covered (staging a
+  deletion or rename, CRLF line selection, signing failure, bare repository
+  and linked worktree cases, agent-led file changes).
+- Narrow-viewport and dark-theme screenshots, plus performance samples for the
+  reads added in S5 and S6.
+- `npm run typecheck:e2e` fails on this branch with 12 errors in the v0.3.12
+  and v0.3.13 specs; the same 12 errors reproduce on the v0.3.16 baseline, so
+  they are pre-existing and unrelated to the Git panel.
+
 ## [0.3.16] — CANDIDATE
 
 > **Status: candidate.** LOCAL WORKSPACE opens a new project without typing a

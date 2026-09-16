@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { existsSync, realpathSync, statSync, watch, type FSWatcher } from 'fs';
+import { access, realpath, stat } from 'fs/promises';
 import { basename, join, resolve } from 'path';
 
 import {
@@ -13,6 +14,8 @@ import {
   createProductUiRuntime,
   createWorkspaceRuntimeKernelV1,
 } from '../runtime/product-bootstrap';
+import type { GitCompareModeV1 } from './git-compare-service';
+import type { GitHistoryQueryV1 } from './git-history-service';
 import type { OrionRuntimeV1 } from '../runtime/orion-runtime-v1';
 import type { WorkspaceRuntimeKernelV1 } from '../runtime/workspace-runtime-kernel';
 import { digestRuntimeValue } from '../runtime/protocol/canonical';
@@ -52,6 +55,7 @@ import {
   listArchivedProjectSessions,
   loadSessionMeta,
   normalizeSessionTags,
+  peekCachedSessionCounts,
   renameSession,
   restoreSession,
   readSessionMessages,
@@ -107,6 +111,7 @@ import {
   type NativeDirectoryPickResult,
   type NativeDirectoryPicker,
 } from './native-directory-picker';
+import { WorkspaceOpenTelemetryV1 } from './workspace-open-telemetry';
 import { ReviewServiceV1 } from './review-service';
 import {
   WebSessionRuntimeRegistryError,
@@ -181,6 +186,8 @@ export class WebWorkbenchController {
   /** v0.3.16 — Host directory picker plus its single-in-flight guard. */
   private readonly directoryPicker: NativeDirectoryPicker;
   private pickerInFlight = false;
+  /** v0.3.17 — bounded, path-free open-path traces exposed through diagnostics(). */
+  private readonly openTelemetry = new WorkspaceOpenTelemetryV1();
   readonly terminalManager: TerminalManagerV1;
   private readonly mutationResults = new Map<string, CachedMutationResult>();
   private readonly sessionViews = new Map<string, CachedSessionView>();
@@ -394,6 +401,8 @@ export class WebWorkbenchController {
   async pickDirectory(input: {
     readonly title?: string;
     readonly initialPath?: string;
+    /** v0.3.17 — optional trace correlation id from the HTTP request. */
+    readonly requestId?: string;
   }): Promise<NativeDirectoryPickResult> {
     if (this.closed) {
       throw new WebWorkbenchError(503, 'The local Web Host is shutting down.', 'host_closed');
@@ -401,45 +410,84 @@ export class WebWorkbenchController {
     if (this.pickerInFlight) {
       throw new WebWorkbenchError(429, 'A directory picker is already open.', 'picker_busy');
     }
+    const span = input.requestId
+      ? this.openTelemetry.start(input.requestId, 'pick-directory')
+      : undefined;
     this.pickerInFlight = true;
     try {
-      return await this.directoryPicker.pickDirectory(input);
+      span?.mark('picker_launch');
+      const result = await this.directoryPicker.pickDirectory(input);
+      span?.mark('picker_result');
+      if (span) {
+        const outcome =
+          result.kind === 'selected'
+            ? 'success'
+            : result.kind === 'cancelled'
+              ? 'cancelled'
+              : 'failed';
+        this.openTelemetry.record(
+          span.finish(outcome, result.kind === 'unavailable' ? result.reason : undefined)
+        );
+      }
+      return result;
+    } catch (error) {
+      if (span) this.openTelemetry.record(span.finish('failed', 'picker_error'));
+      throw error;
     } finally {
       this.pickerInFlight = false;
     }
   }
 
   /**
-   * v0.3.16 — Read-only inspection of a candidate directory.
+   * v0.3.17 — Read-only, bounded preview of a candidate directory.
    *
-   * Resolves the canonical path, availability and Git/Folder kind. It does not
-   * register the path, activate a Context, touch the event stream or read file
-   * contents — only `stat` plus the presence of `.git`.
+   * Probes with asynchronous fs so a hung network mount or a broken symlink
+   * cannot freeze the Node event loop, and races the whole probe against a
+   * short budget. It never registers a workspace, activates a Context, reads
+   * file contents, or touches the session catalog beyond a warm-cache peek.
    */
-  inspectWorkspacePath(
+  async inspectWorkspaceFast(
     path: string,
-    source: WebWorkspaceCandidateSourceV1 = 'manual'
-  ): WebWorkspaceCandidateV1 {
+    source: WebWorkspaceCandidateSourceV1 = 'manual',
+    requestId?: string
+  ): Promise<WebWorkspaceCandidateV1> {
     if (this.closed) {
       throw new WebWorkbenchError(503, 'The local Web Host is shutting down.', 'host_closed');
     }
-    const inspected = inspectDirectory(requireCandidatePath(path));
+    const span = requestId ? this.openTelemetry.start(requestId, 'inspect') : undefined;
+    const inspected = await inspectDirectory(requireCandidatePath(path));
+    span?.mark('inspect_fs');
     const existing = this.workspaceRegistry
       .list()
       .find(entry => entry.canonicalPath === inspected.canonicalPath);
-    const counts =
-      inspected.availability === 'available' ? countSessionsByProject() : undefined;
-    return Object.freeze({
+    // The preview must never wait on the session catalog: rebuilding it can
+    // take a file lock for up to 10s. Use the warm cache when it is already
+    // valid, otherwise report the count as deferred rather than blocking the
+    // confirmation card.
+    const counts = inspected.availability === 'available' ? peekCachedSessionCounts() : null;
+    span?.mark('inspect_session_count');
+    const candidate = Object.freeze({
       canonicalPath: inspected.canonicalPath,
       label: basename(inspected.canonicalPath) || inspected.canonicalPath,
       availability: inspected.availability,
-      kind: inspected.availability === 'available' ? detectWorkspaceKind(inspected.canonicalPath) : 'folder',
+      kind: inspected.kind,
       source,
       ...(existing ? { existingWorkspaceId: existing.id } : {}),
       ...(existing?.pinnedOrder !== undefined ? { pinnedOrder: existing.pinnedOrder } : {}),
-      ...(counts ? { sessionCount: counts.get(inspected.canonicalPath) ?? 0 } : {}),
+      ...(inspected.availability === 'available'
+        ? counts
+          ? {
+              sessionCount: counts.get(inspected.canonicalPath) ?? 0,
+              sessionCountStatus: 'ready' as const,
+            }
+          : { sessionCountStatus: 'deferred' as const }
+        : {}),
       isActive: inspected.canonicalPath === this.workspaceValue,
     });
+    if (span) {
+      this.openTelemetry.record(span.finish('success', inspected.timedOut ? 'inspect_budget_exceeded' : undefined));
+    }
+    return candidate;
   }
 
   listWorkspaceSessions(
@@ -1230,7 +1278,7 @@ export class WebWorkbenchController {
     }
   ): Promise<{ readonly repositoryRevision: string }> {
     this.assertContextGuard(context);
-    const paths = this.resolveSafeGitPaths(input.fileIds);
+    const paths = this.gitService.resolveMutationPaths('stage', input.fileIds);
     await this.assertGitRepositoryRevision(input.expectedRepositoryRevision);
     return this.gitService.stagePaths(paths);
   }
@@ -1243,33 +1291,213 @@ export class WebWorkbenchController {
     }
   ): Promise<{ readonly repositoryRevision: string }> {
     this.assertContextGuard(context);
-    const paths = this.resolveSafeGitPaths(input.fileIds);
+    const paths = this.gitService.resolveMutationPaths('unstage', input.fileIds);
     await this.assertGitRepositoryRevision(input.expectedRepositoryRevision);
     return this.gitService.unstagePaths(paths);
   }
 
-  async gitCommit(
-    context: WebContextGuardV1,
-    input: {
-      readonly message: string;
-      readonly expectedRepositoryRevision: string;
-    }
-  ): Promise<{ readonly repositoryRevision: string; readonly commitSha: string }> {
+  /**
+   * v0.3.17 S4 — history reads.
+   *
+   * Read-only by construction: they are registered as queries, so none of them can reach the
+   * mutation path (`assertMutation` / `executeMutation` are never involved). That is what
+   * makes "browsing history never writes to the workspace" a structural property rather than
+   * a promise.
+   */
+  /**
+   * v0.3.17 S6 — translate a Git file token into a Files token (plan G7).
+   *
+   * The browser never derives one token from the other: the Git token is resolved to a
+   * workspace-relative path here, and only the FileReadService mints the Files-side id.
+   * That keeps the two id spaces from leaking into each other.
+   */
+  async gitFilesTarget(context: WebContextGuardV1, gitFileToken: string) {
     this.assertContextGuard(context);
-    await this.assertGitRepositoryRevision(input.expectedRepositoryRevision);
-    return this.gitService.commit(input.message);
+    const target = this.gitService.resolveTarget(gitFileToken);
+    const filesToken = this.fileService.identifyRelativePath(target.path);
+    this.assertContextGuard(context);
+    return Object.freeze({
+      path: target.path,
+      source: target.source,
+      filesToken,
+    });
   }
 
-  private resolveSafeGitPaths(fileIds: readonly string[]): readonly string[] {
-    if (!Array.isArray(fileIds) || fileIds.length === 0 || fileIds.length > 200) {
-      throw new WebWorkbenchError(400, 'fileIds must list 1 through 200 files.');
+  async gitRefs(context: WebContextGuardV1) {
+    this.assertContextGuard(context);
+    const result = await this.gitService.refs();
+    this.assertContextGuard(context);
+    return result;
+  }
+
+  async gitHistory(context: WebContextGuardV1, query: GitHistoryQueryV1) {
+    this.assertContextGuard(context);
+    const result = await this.gitService.history(query);
+    this.assertContextGuard(context);
+    return result;
+  }
+
+  async gitCommitDetail(context: WebContextGuardV1, oid: string, parentIndex = 0) {
+    this.assertContextGuard(context);
+    const result = await this.gitService.commitDetail(oid, parentIndex);
+    this.assertContextGuard(context);
+    return result;
+  }
+
+  async gitCommitFiles(context: WebContextGuardV1, oid: string, parentIndex = 0) {
+    this.assertContextGuard(context);
+    const result = await this.gitService.commitFiles(oid, parentIndex);
+    this.assertContextGuard(context);
+    return result;
+  }
+
+  async gitCommitDiff(
+    context: WebContextGuardV1,
+    input: {
+      readonly oid: string;
+      readonly path: string;
+      readonly parentIndex?: number;
+      readonly cursor?: string;
     }
-    return fileIds.map(fileId => {
-      if (typeof fileId !== 'string' || fileId.length > 256) {
-        throw new WebWorkbenchError(400, 'A file id is invalid.', 'file_id_invalid');
-      }
-      return this.fileService.pathForFileId(fileId);
-    });
+  ) {
+    this.assertContextGuard(context);
+    const result = await this.gitService.commitDiffDocument(input);
+    this.assertContextGuard(context);
+    return result;
+  }
+
+  /**
+   * v0.3.17 S5 — branch/version comparison. Registered as a query: the compare view can
+   * never reach the mutation path.
+   */
+  async gitCompare(
+    context: WebContextGuardV1,
+    input: { readonly baseRef: string; readonly headRef: string; readonly mode: GitCompareModeV1 }
+  ) {
+    this.assertContextGuard(context);
+    const result = await this.gitService.compare(input);
+    this.assertContextGuard(context);
+    return result;
+  }
+
+  async gitCompareFileDiff(
+    context: WebContextGuardV1,
+    input: {
+      readonly baseOid: string;
+      readonly headOid: string;
+      readonly path: string;
+      readonly cursor?: string;
+    }
+  ) {
+    this.assertContextGuard(context);
+    const result = await this.gitService.compareFileDiffDocument(input);
+    this.assertContextGuard(context);
+    return result;
+  }
+
+  /** v0.3.17 S5 — the commit graph, as git itself drew it. Read-only. */
+  async gitGraph(context: WebContextGuardV1, input: { readonly limit?: number }) {
+    this.assertContextGuard(context);
+    const result = await this.gitService.graph(input);
+    this.assertContextGuard(context);
+    return result;
+  }
+
+  async gitBlame(
+    context: WebContextGuardV1,
+    input: { readonly path: string; readonly rev?: string; readonly limit?: number }
+  ) {
+    this.assertContextGuard(context);
+    const result = await this.gitService.blame(input);
+    this.assertContextGuard(context);
+    return result;
+  }
+
+  /**
+   * v0.3.17 S5 — conflict stages, historical blobs and gitlink entries. All query-only.
+   */
+  async gitConflictVersions(context: WebContextGuardV1, path: string) {
+    this.assertContextGuard(context);
+    const result = await this.gitService.conflictVersions(path);
+    this.assertContextGuard(context);
+    return result;
+  }
+
+  async gitBlob(
+    context: WebContextGuardV1,
+    input: { readonly path: string; readonly rev: string }
+  ) {
+    this.assertContextGuard(context);
+    const result = await this.gitService.fileBlob(input);
+    this.assertContextGuard(context);
+    return result;
+  }
+
+  async gitSubmodules(context: WebContextGuardV1) {
+    this.assertContextGuard(context);
+    const result = await this.gitService.submodules();
+    this.assertContextGuard(context);
+    return result;
+  }
+
+  async gitFileHistory(
+    context: WebContextGuardV1,
+    input: { readonly path: string; readonly rev?: string; readonly limit?: number }
+  ) {
+    this.assertContextGuard(context);
+    const result = await this.gitService.fileHistory(input);
+    this.assertContextGuard(context);
+    return result;
+  }
+
+  /** v0.3.17 S3 — preview of what the index would commit, independent of list filters. */
+  async gitCommitPreview(context: WebContextGuardV1) {
+    this.assertContextGuard(context);
+    const result = await this.gitService.commitPreview();
+    this.assertContextGuard(context);
+    return result;
+  }
+
+  /**
+   * v0.3.17 S3 — commit against the frozen revision the form showed. Identity, signing and
+   * hooks come from the repository's own configuration (plan §7.9).
+   */
+  async gitCommit(
+    context: WebContextGuardV1,
+    input: Parameters<GitReadModelServiceV1['commit']>[0]
+  ) {
+    this.assertContextGuard(context);
+    const result = await this.gitService.commit(input);
+    this.assertContextGuard(context);
+    return result;
+  }
+
+  /** v0.3.17 S3 — Host-rebuilt hunk or line selection applied to the index only. */
+  async gitApplyPatch(
+    context: WebContextGuardV1,
+    input: {
+      readonly fileId: string;
+      readonly expectedRepositoryRevision: string;
+      readonly hunkIds?: readonly string[];
+      readonly lineIds?: readonly string[];
+    }
+  ) {
+    this.assertContextGuard(context);
+    await this.assertGitRepositoryRevision(input.expectedRepositoryRevision);
+    const result = await this.gitService.applySelection(input);
+    this.assertContextGuard(context);
+    return result;
+  }
+
+  /** v0.3.17 S2 — structured diff document for the selected comparison source. */
+  async gitDiffDocument(
+    context: WebContextGuardV1,
+    input: Parameters<GitReadModelServiceV1['diffDocument']>[0]
+  ) {
+    this.assertContextGuard(context);
+    const result = await this.gitService.diffDocument(input);
+    this.assertContextGuard(context);
+    return result;
   }
 
   private async assertGitRepositoryRevision(expected: string): Promise<void> {
@@ -1464,7 +1692,11 @@ export class WebWorkbenchController {
     }
   }
 
-  async switchWorkspace(path: string, context: WebContextGuardV1): Promise<void> {
+  async switchWorkspace(
+    path: string,
+    context: WebContextGuardV1,
+    requestId?: string
+  ): Promise<void> {
     this.assertContextGuard(context);
     const next = canonicalDirectory(path);
     if (next === this.workspaceValue) return;
@@ -1478,10 +1710,13 @@ export class WebWorkbenchController {
       expectedContextRevision: context.expectedContextRevision,
       workspaceId: entry.id,
       sessionId: null,
+      ...(requestId ? { requestId } : {}),
     });
   }
 
-  async activateContext(input: Omit<WebContextActivateRequestV1, 'requestId'>): Promise<void> {
+  async activateContext(
+    input: Omit<WebContextActivateRequestV1, 'requestId'> & { readonly requestId?: string }
+  ): Promise<void> {
     if (input.expectedContextRevision !== this.contextRevisionValue) {
       throw new WebWorkbenchError(
         409,
@@ -1508,6 +1743,12 @@ export class WebWorkbenchController {
       return;
     }
 
+    // v0.3.17 — trace the transition so "confirm → usable" can be attributed
+    // to a stage instead of guessed at.
+    const span = input.requestId
+      ? this.openTelemetry.start(input.requestId, 'activate')
+      : undefined;
+    span?.mark('activate_admitted');
     this.assertReadyForTransition('activate a Context');
     const previousWorkspace = this.workspaceValue;
     const previousSessionId = currentSessionId;
@@ -1531,7 +1772,9 @@ export class WebWorkbenchController {
           // actors of that Workspace still reference. Install the target
           // control plane first, then release the previous one's mutable state.
           await this.installRuntime(targetWorkspace, false);
+          span?.mark('runtime_install');
           await previousRuntime.shutdown();
+          span?.mark('previous_runtime_shutdown');
         }
         this.workspaceRegistry.register(targetWorkspace, { activated: true });
       } catch (activationError) {
@@ -1557,9 +1800,24 @@ export class WebWorkbenchController {
       this.emitState();
       this.emitWorkspaceResourceInvalidation('context-change');
       if (targetWorkspace !== previousWorkspace) this.emitSettingsWorkspaceChange();
-    })().finally(() => {
-      if (this.transition === transition) this.transition = undefined;
-    });
+    })()
+      .then(() => {
+        if (span) this.openTelemetry.record(span.finish('success'));
+      })
+      .catch(error => {
+        if (span) {
+          this.openTelemetry.record(
+            span.finish(
+              'failed',
+              error instanceof WebWorkbenchError ? error.code : 'activate_error'
+            )
+          );
+        }
+        throw error;
+      })
+      .finally(() => {
+        if (this.transition === transition) this.transition = undefined;
+      });
     this.transition = transition;
     return transition;
   }
@@ -2028,6 +2286,8 @@ export class WebWorkbenchController {
       harness,
       eventStream: this.eventHub.snapshot(),
       workspaceKernel: this.runtimeValue.workspaceRuntimeKernel?.diagnostics() ?? null,
+      // v0.3.17 — bounded, path-free open-path traces (picker / inspect / activate).
+      workspaceOpen: this.openTelemetry.snapshot(),
       session: {
         ...this.sessionActivity,
         actors: this.sessionRegistry.stats(),
@@ -3148,41 +3408,103 @@ function requireCandidatePath(path: string): string {
   return trimmed;
 }
 
+interface DirectoryInspection {
+  readonly canonicalPath: string;
+  readonly availability: WebWorkspaceAvailabilityV1;
+  readonly kind: WebWorkspaceKindV1;
+  /** True when the probe hit the time budget instead of finishing. */
+  readonly timedOut: boolean;
+}
+
+/** Short budget: an unresponsive mount must never make the picker feel stuck. */
+const INSPECT_BUDGET_MS = 250;
+
+async function hasPath(absolute: string): Promise<boolean> {
+  try {
+    await access(absolute);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** `.git` as a directory (clone) or a file (worktree/submodule) both count. */
+async function detectWorkspaceKind(canonicalPath: string): Promise<WebWorkspaceKindV1> {
+  try {
+    await access(join(canonicalPath, '.git'));
+    return 'git';
+  } catch {
+    return 'folder';
+  }
+}
+
+async function probeDirectory(absolute: string): Promise<DirectoryInspection> {
+  let canonical: string;
+  try {
+    canonical = await realpath(absolute);
+  } catch {
+    return {
+      canonicalPath: absolute,
+      availability: (await hasPath(absolute)) ? 'unreadable' : 'missing',
+      kind: 'folder',
+      timedOut: false,
+    };
+  }
+  let stats: Awaited<ReturnType<typeof stat>>;
+  try {
+    stats = await stat(canonical);
+  } catch {
+    return {
+      canonicalPath: canonical,
+      availability: 'unreadable',
+      kind: 'folder',
+      timedOut: false,
+    };
+  }
+  if (!stats.isDirectory()) {
+    return {
+      canonicalPath: canonical,
+      availability: 'not_directory',
+      kind: 'folder',
+      timedOut: false,
+    };
+  }
+  return {
+    canonicalPath: canonical,
+    availability: 'available',
+    kind: await detectWorkspaceKind(canonical),
+    timedOut: false,
+  };
+}
+
 /**
  * Non-throwing canonicalization for the read-only inspector. `canonicalDirectory`
  * below is the mutation path — it rejects missing or unreadable directories,
  * which is what activation wants but not what a preview needs.
+ *
+ * The whole probe is raced against a short budget so an unresponsive network
+ * mount cannot freeze the event loop; on timeout the directory is reported
+ * `unreadable` and the caller can retry.
  */
-function inspectDirectory(path: string): {
-  readonly canonicalPath: string;
-  readonly availability: WebWorkspaceAvailabilityV1;
-} {
+async function inspectDirectory(path: string): Promise<DirectoryInspection> {
   const absolute = resolve(path);
-  let canonical: string;
+  let timer: NodeJS.Timeout | undefined;
+  const budget = new Promise<DirectoryInspection>(resolveBudget => {
+    timer = setTimeout(
+      () =>
+        resolveBudget({
+          canonicalPath: absolute,
+          availability: 'unreadable',
+          kind: 'folder',
+          timedOut: true,
+        }),
+      INSPECT_BUDGET_MS
+    );
+  });
   try {
-    canonical = realpathSync(absolute);
-  } catch {
-    return {
-      canonicalPath: absolute,
-      availability: existsSync(absolute) ? 'unreadable' : 'missing',
-    };
-  }
-  let stat: ReturnType<typeof statSync>;
-  try {
-    stat = statSync(canonical);
-  } catch {
-    return { canonicalPath: canonical, availability: 'unreadable' };
-  }
-  if (!stat.isDirectory()) return { canonicalPath: canonical, availability: 'not_directory' };
-  return { canonicalPath: canonical, availability: 'available' };
-}
-
-/** `.git` as a directory (clone) or a file (worktree/submodule) both count. */
-function detectWorkspaceKind(canonicalPath: string): WebWorkspaceKindV1 {
-  try {
-    return existsSync(join(canonicalPath, '.git')) ? 'git' : 'folder';
-  } catch {
-    return 'folder';
+    return await Promise.race([probeDirectory(absolute), budget]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 

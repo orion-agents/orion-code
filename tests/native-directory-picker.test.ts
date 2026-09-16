@@ -4,10 +4,17 @@
  * These tests never open a real dialog: the process runner is injected, so we
  * can assert exactly what would be executed and how each outcome is mapped.
  */
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+
 import {
+  createFixtureDirectoryPicker,
   createNativeDirectoryPicker,
+  fixturePickerFromEnvironment,
   parseNativePickerStdout,
   type DirectoryPickerCommand,
+  type FixturePickerScript,
 } from '../src/web/native-directory-picker';
 
 function recordingPicker(stdout: string) {
@@ -78,6 +85,59 @@ describe('parseNativePickerStdout', () => {
   });
 });
 
+describe('createFixtureDirectoryPicker', () => {
+  it('walks a path list and repeats the last entry', async () => {
+    const picker = createFixtureDirectoryPicker(() => ({ paths: ['/tmp/a', '/tmp/b'] }));
+    await expect(picker.pickDirectory({})).resolves.toEqual({ kind: 'selected', path: '/tmp/a' });
+    await expect(picker.pickDirectory({})).resolves.toEqual({ kind: 'selected', path: '/tmp/b' });
+    await expect(picker.pickDirectory({})).resolves.toEqual({ kind: 'selected', path: '/tmp/b' });
+  });
+
+  it('honours cancelled and unavailable outcomes', async () => {
+    const cancelled = createFixtureDirectoryPicker(() => ({ outcome: 'cancelled' }));
+    await expect(cancelled.pickDirectory({})).resolves.toEqual({ kind: 'cancelled' });
+
+    const unavailable = createFixtureDirectoryPicker(() => ({
+      outcome: 'unavailable',
+      reason: 'picker_timeout',
+    }));
+    await expect(unavailable.pickDirectory({})).resolves.toEqual({
+      kind: 'unavailable',
+      reason: 'picker_timeout',
+    });
+  });
+
+  it('re-reads the script so a test can change the next answer', async () => {
+    let answer: FixturePickerScript = { path: '/tmp/first' };
+    const picker = createFixtureDirectoryPicker(() => answer);
+    await expect(picker.pickDirectory({})).resolves.toEqual({ kind: 'selected', path: '/tmp/first' });
+    answer = { outcome: 'cancelled' };
+    await expect(picker.pickDirectory({})).resolves.toEqual({ kind: 'cancelled' });
+  });
+
+  it('is inert when the environment variable is absent', () => {
+    expect(fixturePickerFromEnvironment({})).toBeUndefined();
+    expect(fixturePickerFromEnvironment({ ORION_CODE_WEB_PICKER_FIXTURE: '  ' })).toBeUndefined();
+  });
+
+  it('reads the script file named by the environment variable', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'orion-picker-fixture-'));
+    try {
+      const scriptPath = join(root, 'picker.json');
+      writeFileSync(scriptPath, JSON.stringify({ path: root }));
+      const picker = fixturePickerFromEnvironment({ ORION_CODE_WEB_PICKER_FIXTURE: scriptPath });
+      expect(picker).toBeDefined();
+      await expect(picker?.pickDirectory({})).resolves.toEqual({ kind: 'selected', path: root });
+
+      // A malformed script behaves like a cancelled dialog, never a crash.
+      writeFileSync(scriptPath, '{ not json');
+      await expect(picker?.pickDirectory({})).resolves.toEqual({ kind: 'cancelled' });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('createNativeDirectoryPicker', () => {
   it('invokes osascript with a fixed script and passes the title/path as argv', async () => {
     const { picker, calls } = recordingPicker('__ORION_PICK_SELECTED__/tmp/chosen/');
@@ -120,6 +180,21 @@ describe('createNativeDirectoryPicker', () => {
     await expect(picker.pickDirectory({})).resolves.toEqual({
       kind: 'unavailable',
       reason: 'picker_unavailable',
+    });
+  });
+
+  it('keeps a timeout distinct from an unavailable picker', async () => {
+    const picker = createNativeDirectoryPicker({
+      platform: 'darwin',
+      runner: async () => {
+        throw Object.assign(new Error('native directory picker failed'), {
+          reason: 'picker_timeout',
+        });
+      },
+    });
+    await expect(picker.pickDirectory({})).resolves.toEqual({
+      kind: 'unavailable',
+      reason: 'picker_timeout',
     });
   });
 

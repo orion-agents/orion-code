@@ -12,6 +12,7 @@ import {
 import type {
   WebDirectoryPickResultV1,
   WebSessionSummaryV1,
+  WebWorkspaceCandidateSourceV1,
   WebWorkspaceCandidateV1,
   WorkbenchState,
 } from '../types';
@@ -93,23 +94,19 @@ export function WorkspaceDialog({
   onInspect,
 }: WorkspaceDialogProps) {
   const [path, setPath] = useState('');
-  const [localError, setLocalError] = useState('');
-  const [busy, setBusy] = useState(false);
   const [showAllWorkspaces, setShowAllWorkspaces] = useState(false);
   const [query, setQuery] = useState('');
   const [picker, dispatch] = useReducer(workspacePickerReducer, initialWorkspacePickerState);
   useEffect(() => {
     if (!open) return;
     setPath('');
-    setLocalError('');
-    setBusy(false);
     setShowAllWorkspaces(false);
     setQuery('');
     dispatch({ type: 'reset' });
   }, [open]);
 
   const pickerBusy = workspacePickerBusy(picker);
-  const locked = Boolean(state.pendingAction) || busy || pickerBusy;
+  const locked = Boolean(state.pendingAction) || pickerBusy;
   const confirming = picker.phase === 'confirm' || picker.phase === 'activate-pending';
   const activeCandidate = confirming ? picker.candidate : null;
   const normalizedQuery = query.trim().toLocaleLowerCase();
@@ -126,11 +123,14 @@ export function WorkspaceDialog({
   const hasWorkspaces = pinned.length > 0 || recent.length > 0;
 
   /**
-   * v0.3.16 — inspect a candidate without activating it. Used by both the
-   * native picker and the advanced manual entry; the user still has to confirm
-   * on the card before any workspace transition happens.
+   * v0.3.16 — inspect a candidate without activating it. Used by every entry
+   * point; the user still has to confirm on the card before any workspace
+   * transition happens.
    */
-  const inspectPath = async (candidatePath: string, source: 'picker' | 'manual') => {
+  const inspectPath = async (
+    candidatePath: string,
+    source: WebWorkspaceCandidateSourceV1
+  ) => {
     dispatch({ type: 'inspect-started', path: candidatePath });
     try {
       const candidate = await onInspect(candidatePath);
@@ -182,30 +182,21 @@ export function WorkspaceDialog({
     }
   };
 
-  const select = async (next: string) => {
-    const target = next.trim();
-    if (!target) return;
-    // v0.3.7: validate before the round-trip so the user gets actionable feedback
-    // instead of a silent no-op.
-    if (target === state.workspace) {
-      setLocalError('该目录已经是当前工作区。');
-      return;
-    }
-    setLocalError('');
-    setBusy(true);
-    try {
-      await onSelect(target);
-      onClose();
-    } catch (error) {
-      setLocalError(error instanceof Error ? error.message : '工作区切换失败。');
-    } finally {
-      setBusy(false);
-    }
+  /**
+   * v0.3.17 — pinned/recent rows use the same inspect → confirm → activate
+   * contract as the Finder and advanced paths. They are inspected rather than
+   * activated directly so availability and the Git/Folder kind are always
+   * re-checked, and nothing switches without an explicit confirmation.
+   */
+  const openListedWorkspace = (workspace: WorkbenchState['workspaces'][number]) => {
+    void inspectPath(workspace.path, workspace.pinnedOrder !== undefined ? 'pinned' : 'recent');
   };
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    void select(path);
+    const target = path.trim();
+    if (!target) return;
+    void inspectPath(target, 'manual');
   };
 
   return (
@@ -266,6 +257,7 @@ export function WorkspaceDialog({
         <WorkspaceConfirmCard
           candidate={activeCandidate}
           busy={picker.phase === 'activate-pending'}
+          stage={picker.phase === 'activate-pending' ? 'runtime' : 'prepare'}
           error={picker.error}
           onCancel={() => dispatch({ type: 'back-to-browse' })}
           onOpen={() => void openCandidate(activeCandidate)}
@@ -281,7 +273,7 @@ export function WorkspaceDialog({
                 key={workspace.id}
                 workspace={workspace}
                 locked={locked}
-                onSelect={select}
+                onOpen={openListedWorkspace}
               />
             ))}
           </>
@@ -296,7 +288,7 @@ export function WorkspaceDialog({
                 key={workspace.id}
                 workspace={workspace}
                 locked={locked}
-                onSelect={select}
+                onOpen={openListedWorkspace}
               />
             ))}
           </>
@@ -332,23 +324,15 @@ export function WorkspaceDialog({
             <input
               id="workspace-path-input"
               value={path}
-              onChange={event => {
-                setPath(event.target.value);
-                if (localError) setLocalError('');
-              }}
+              onChange={event => setPath(event.target.value)}
               placeholder="/Users/name/project"
               spellCheck={false}
               autoComplete="off"
             />
             <button type="submit" className="primary-button" disabled={!path.trim() || locked}>
-              {busy ? '打开中…' : '打开'}
+              打开
             </button>
           </div>
-          {localError ? (
-            <p className="field-error" role="alert">
-              {localError}
-            </p>
-          ) : null}
         </form>
       </details>
     </DialogFrame>
@@ -358,18 +342,18 @@ export function WorkspaceDialog({
 function WorkspaceOption({
   workspace,
   locked,
-  onSelect,
+  onOpen,
 }: {
   readonly workspace: WorkbenchState['workspaces'][number];
   readonly locked: boolean;
-  readonly onSelect: (path: string) => Promise<void>;
+  readonly onOpen: (workspace: WorkbenchState['workspaces'][number]) => void;
 }) {
   return (
     <button
       type="button"
       className={`workspace-option ${workspace.active ? 'active' : ''}`}
       disabled={workspace.active || !workspace.available || locked}
-      onClick={() => void onSelect(workspace.path)}
+      onClick={() => onOpen(workspace)}
     >
       <span className="workspace-icon">
         <Icon name="workspace" size={17} />

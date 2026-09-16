@@ -18,6 +18,7 @@
  *   because picker output may contain a path the user has not confirmed.
  */
 import { execFile } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 
 export type NativeDirectoryPickResult =
   | { readonly kind: 'selected'; readonly path: string }
@@ -85,21 +86,37 @@ const MACOS_PICK_SCRIPT = [
   'end run',
 ].join('\n');
 
-const defaultRunner: DirectoryPickerRunner = command =>
-  new Promise((resolve, reject) => {
-    execFile(
-      command.file,
-      [...command.args],
-      { timeout: DEFAULT_TIMEOUT_MS, maxBuffer: 64 * 1024, windowsHide: true },
-      (error, stdout) => {
-        if (error) {
-          reject(error);
-          return;
+/** Why a picker invocation could not produce a directory. */
+export type DirectoryPickerFailureReason = 'picker_unavailable' | 'picker_timeout';
+
+/**
+ * The default runner kills the child process when `timeoutMs` elapses, which is
+ * a distinct outcome from "this platform has no picker". It is surfaced as a
+ * fixed reason code so callers never have to parse an error message.
+ */
+const createDefaultRunner =
+  (timeoutMs: number): DirectoryPickerRunner =>
+  command =>
+    new Promise((resolve, reject) => {
+      execFile(
+        command.file,
+        [...command.args],
+        { timeout: timeoutMs, maxBuffer: 64 * 1024, windowsHide: true },
+        (error, stdout) => {
+          if (error) {
+            const failure = new Error('native directory picker failed');
+            (failure as { reason?: DirectoryPickerFailureReason }).reason = (
+              error as { killed?: boolean }
+            ).killed
+              ? 'picker_timeout'
+              : 'picker_unavailable';
+            reject(failure);
+            return;
+          }
+          resolve({ stdout: typeof stdout === 'string' ? stdout : String(stdout ?? '') });
         }
-        resolve({ stdout: typeof stdout === 'string' ? stdout : String(stdout ?? '') });
-      }
-    );
-  });
+      );
+    });
 
 /**
  * `POSIX path of` always appends a trailing slash; the registry compares
@@ -133,7 +150,7 @@ export function createNativeDirectoryPicker(
   options: NativeDirectoryPickerOptions = {}
 ): NativeDirectoryPicker {
   const platform = options.platform ?? process.platform;
-  const runner = options.runner ?? defaultRunner;
+  const runner = options.runner ?? createDefaultRunner(options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   const maxPathLength = options.maxPathLength ?? DEFAULT_MAX_PATH_LENGTH;
 
   return {
@@ -152,10 +169,78 @@ export function createNativeDirectoryPicker(
           file: 'osascript',
           args: ['-e', MACOS_PICK_SCRIPT, title, initialPath],
         }));
-      } catch {
-        return { kind: 'unavailable', reason: 'picker_unavailable' };
+      } catch (error) {
+        const reason = (error as { reason?: DirectoryPickerFailureReason } | null)?.reason;
+        return {
+          kind: 'unavailable',
+          reason: reason === 'picker_timeout' ? 'picker_timeout' : 'picker_unavailable',
+        };
       }
       return parseNativePickerStdout(stdout, maxPathLength);
     },
   };
+}
+
+/**
+ * v0.3.17 — scripted picker for end-to-end tests.
+ *
+ * CI must never pop a real Finder dialog, so E2E points the Host at a JSON
+ * script file instead. The script is re-read on every invocation, which lets a
+ * test change the next answer between clicks:
+ *
+ * ```json
+ * { "path": "/abs/dir" }                        // selected
+ * { "paths": ["/a", "/b"] }                     // sequential, last one repeats
+ * { "outcome": "cancelled" }                    // user cancelled
+ * { "outcome": "unavailable", "reason": "..." } // no picker on this platform
+ * ```
+ *
+ * This is a browse-only seam: the returned path still has to be confirmed on
+ * the card and passes through the same guarded activation flow, so it can never
+ * cause an unattended workspace switch.
+ */
+export interface FixturePickerScript {
+  readonly path?: string;
+  readonly paths?: readonly string[];
+  readonly outcome?: 'cancelled' | 'unavailable';
+  readonly reason?: string;
+}
+
+export function createFixtureDirectoryPicker(
+  readScript: () => FixturePickerScript
+): NativeDirectoryPicker {
+  let cursor = 0;
+  return {
+    async pickDirectory(): Promise<NativeDirectoryPickResult> {
+      const script = readScript();
+      const paths = script.paths ?? (script.path ? [script.path] : []);
+      if (paths.length > 0) {
+        const next = paths[Math.min(cursor, paths.length - 1)];
+        cursor += 1;
+        return next ? { kind: 'selected', path: next } : { kind: 'cancelled' };
+      }
+      if (script.outcome === 'unavailable') {
+        return { kind: 'unavailable', reason: script.reason ?? 'picker_unavailable' };
+      }
+      return { kind: 'cancelled' };
+    },
+  };
+}
+
+/** Reads the script from `ORION_CODE_WEB_PICKER_FIXTURE`; absent means real. */
+export function fixturePickerFromEnvironment(
+  env: NodeJS.ProcessEnv = process.env
+): NativeDirectoryPicker | undefined {
+  const scriptPath = env.ORION_CODE_WEB_PICKER_FIXTURE?.trim();
+  if (!scriptPath) return undefined;
+  return createFixtureDirectoryPicker(() => {
+    try {
+      const parsed = JSON.parse(readFileSync(scriptPath, 'utf8')) as FixturePickerScript;
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      // A missing or malformed script behaves like a cancelled dialog rather
+      // than failing the request.
+      return {};
+    }
+  });
 }

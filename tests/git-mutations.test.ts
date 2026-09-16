@@ -50,7 +50,11 @@ describe('guarded git mutations (v0.3.12 S3)', () => {
     expect(status).toContain('M  base.txt');
 
     // Commit with nothing staged for added.ts but base.txt staged -> allowed.
-    const commitResult = await git.commit('feat: stage base change');
+    const commitResult = await git.commit({
+      summary: 'feat: stage base change',
+      expectedRepositoryRevision: (await git.status()).repositoryRevision,
+      requestId: 'mut-commit-base-1',
+    });
     expect(commitResult.commitSha).toMatch(/^[0-9a-f]{40}$/u);
     const after = porcelain(repo).trim();
     expect(after).toContain('?? added.ts');
@@ -73,10 +77,27 @@ describe('guarded git mutations (v0.3.12 S3)', () => {
     const git = new GitReadModelServiceV1(repo);
     await expect(git.stagePaths(['--cached'])).rejects.toThrow(/Unsafe Git path/);
     await expect(git.stagePaths(['../outside.txt'])).rejects.toThrow(/Unsafe Git path/);
-    await expect(git.commit('   ')).rejects.toThrow(/commit message/);
-    await expect(git.commit('bad\x07message')).rejects.toThrow(/commit message/);
+    const revision = (await git.status()).repositoryRevision;
+    // v0.3.17 S3 — the message is now summary + optional body, so the failure reason is
+    // reported by code rather than by a generic message.
+    await expect(
+      git.commit({ summary: '   ', expectedRepositoryRevision: revision, requestId: 'mut-bad-1' })
+    ).rejects.toMatchObject({ code: 'git_message_invalid' });
+    await expect(
+      git.commit({
+        summary: 'bad\u0007message',
+        expectedRepositoryRevision: revision,
+        requestId: 'mut-bad-2',
+      })
+    ).rejects.toMatchObject({ code: 'git_message_invalid' });
     // nothing staged -> commit refused
-    await expect(git.commit('valid but empty stage')).rejects.toThrow(/Nothing is staged/);
+    await expect(
+      git.commit({
+        summary: 'valid but empty stage',
+        expectedRepositoryRevision: revision,
+        requestId: 'mut-empty-1',
+      })
+    ).rejects.toMatchObject({ code: 'git_nothing_staged' });
     rmSync(root, { recursive: true, force: true });
   });
 });

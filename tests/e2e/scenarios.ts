@@ -12,9 +12,11 @@ import {
   WEB_E2E_WEB32_SCENARIOS_V1,
   WEB_E2E_WEB33_CRITICAL_SCENARIOS_V1,
   WEB_E2E_WEB33_SCENARIOS_V1,
+  WEB_E2E_WEB317_SCENARIOS_V1,
 } from '../../src/runtime/release-receipts';
 
 export const WEB_E2E_FULL_SCENARIOS = WEB_E2E_FULL_SCENARIOS_V1;
+export const WEB_E2E_WEB317_SCENARIOS = WEB_E2E_WEB317_SCENARIOS_V1;
 export const WEB_E2E_CRITICAL_SCENARIOS = WEB_E2E_CRITICAL_SCENARIOS_V1;
 export const WEB_E2E_SETTINGS_SCENARIOS = WEB_E2E_SETTINGS_SCENARIOS_V1;
 export const WEB_E2E_WEB31_SCENARIOS = WEB_E2E_WEB31_SCENARIOS_V1;
@@ -369,10 +371,13 @@ export function expectedWebE2EScenarios(
 }
 
 export function webE2EScenarioIdFromTitle(title: string): string {
-  const matches = title.match(/\b(?:E2E|SET|WEB31|WEB32|WEB33)-P0-\d{2}\b/gu) ?? [];
+  // v0.3.17 — the validator used to accept only `-P0-` and only up to WEB33,
+  // while specs already use `-P1-` (WEB36) and WEB37. Both made those specs fail
+  // during fixture setup instead of running.
+  const matches = title.match(/\b(?:E2E|SET|WEB3[1-9])-P[01]-\d{2}\b/gu) ?? [];
   if (matches.length !== 1) {
     throw new Error(
-      'Every Web E2E test title must include exactly one E2E-P0-XX, SET-P0-XX, WEB31-P0-XX, WEB32-P0-XX, or WEB33-P0-XX ID.'
+      'Every Web E2E test title must include exactly one E2E-PN-XX, SET-PN-XX, or WEB3X-PN-XX ID (P0 or P1).'
     );
   }
   if (matches[0].startsWith('SET-P0-') && !title.includes(WEB_E2E_SETTINGS_TAG)) {

@@ -15,12 +15,14 @@ import {
   parseWebOpenSettingsDocument,
   parseWebSettingsUpdate,
   type WebContextGuardV1,
+  type GitWorktreeSourceV1,
   type WebWorkspaceCandidateSourceV1,
 } from './protocol';
 import { WebWorkbenchError } from './errors';
 import { DEFAULT_WEB_PORT } from './cli-options';
 import { attachTerminalWebSocketServer } from './terminal-server';
 import { pageCollectionItems, WebWorkbenchController } from './workbench-controller';
+import { fixturePickerFromEnvironment } from './native-directory-picker';
 
 export interface OrionWebServerOptions {
   readonly cwd: string;
@@ -43,6 +45,65 @@ export interface OrionWebServerHandle {
 const HOST = '127.0.0.1' as const;
 const API_PREFIX = '/api/v1';
 
+/**
+ * Names that always resolve to this machine.
+ *
+ * The Host check exists to stop DNS rebinding: an attacker who points their own domain at
+ * 127.0.0.1 still sends *their* name in the Host header, and that is what must be refused.
+ * `localhost` is not attacker-controlled — it is resolved from the OS hosts file — so refusing
+ * it only broke the most natural way to open the UI (`http://localhost:4242` returned 421 for
+ * every request, including the document itself). The loopback block is accepted for the same
+ * reason: the whole of 127.0.0.0/8 is this machine.
+ */
+const LOOPBACK_HOSTNAMES = new Set(['localhost', '::1', '[::1]']);
+
+function isLoopbackHostname(hostname: string): boolean {
+  const value = hostname.toLowerCase();
+  if (LOOPBACK_HOSTNAMES.has(value)) return true;
+  const octets = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/u.exec(value);
+  if (!octets) return false;
+  if (octets[1] !== '127') return false;
+  return octets.slice(2).every(part => Number(part) <= 255);
+}
+
+/** Splits a Host header or an Origin into comparable parts. */
+function parseEndpoint(
+  value: string
+): { readonly protocol: string; readonly hostname: string; readonly port: string } | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value.includes('://') ? value : `http://${value}`);
+    return Object.freeze({
+      protocol: url.protocol,
+      hostname: url.hostname.toLowerCase(),
+      // `new URL` normalises an explicit :80 away, so both sides go through this same path
+      // and stay comparable.
+      port: url.port || '80',
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when `actual` names the same loopback endpoint as the listener's `origin`.
+ *
+ * Shared by the Host and Origin checks on purpose: they used to compare differently, so fixing
+ * one would have left the other still refusing `localhost` — and a mutation refused at the
+ * Origin step looks nothing like a document refused at the Host step.
+ *
+ * The properties that make the check meaningful are preserved: the hostname must be a loopback
+ * name (this is what stops DNS rebinding) and the port and scheme must match the listener.
+ */
+function isSameLoopbackEndpoint(actual: string, origin: string): boolean {
+  const expected = parseEndpoint(origin);
+  const candidate = parseEndpoint(actual);
+  if (expected === null || candidate === null) return false;
+  if (candidate.port !== expected.port) return false;
+  if (candidate.protocol !== expected.protocol) return false;
+  return isLoopbackHostname(candidate.hostname);
+}
+
 export async function startOrionWebServer(
   options: OrionWebServerOptions
 ): Promise<OrionWebServerHandle> {
@@ -54,8 +115,15 @@ export async function startOrionWebServer(
   if (!/^[A-Za-z0-9_-]+$/u.test(nonce)) {
     throw new Error('Web nonce must use unpadded base64url characters.');
   }
+  // v0.3.17 — E2E drives the picker from a script file so CI never opens a real
+  // Finder dialog. Unset in production, which keeps the native adapter.
+  const fixturePicker = fixturePickerFromEnvironment();
   const workbench =
-    options.workbench ?? (await WebWorkbenchController.create({ cwd: options.cwd }));
+    options.workbench ??
+    (await WebWorkbenchController.create({
+      cwd: options.cwd,
+      ...(fixturePicker ? { nativeDirectoryPicker: fixturePicker } : {}),
+    }));
   const staticRoot = options.staticRoot ?? resolveDefaultStaticRoot();
   let origin = '';
   let closing: Promise<void> | undefined;
@@ -292,7 +360,7 @@ async function handleRequest(context: RequestContext): Promise<void> {
       'workspace.activate',
       { path: workspace, ...contextGuard },
       async () => {
-        await context.workbench.switchWorkspace(workspace, contextGuard);
+        await context.workbench.switchWorkspace(workspace, contextGuard, requestId);
         return {
           requestId,
           active: context.workbench.workspace,
@@ -311,6 +379,10 @@ async function handleRequest(context: RequestContext): Promise<void> {
   }
   // v0.3.16 — open the OS directory picker. A browse action: the result is a
   // path the client must still confirm, so nothing is registered or activated.
+  // v0.3.17 — browse admission: authenticated and single-flight, but NOT a
+  // mutation. It must not raise the global Context mutation admission or enter
+  // the idempotency ledger, otherwise an open Finder dialog looks like a busy
+  // Runtime and a project switch is refused while the user is still browsing.
   if (method === 'POST' && path === '/workspaces/pick-directory') {
     assertMutation(request, context.nonce, context.origin);
     const body = requireRecord(await readJson(request), 'Directory pick request');
@@ -318,21 +390,13 @@ async function handleRequest(context: RequestContext): Promise<void> {
     const requestId = requireUuid(body.requestId, 'requestId');
     const title = optionalText(body.title, 'title', 200);
     const initialPath = optionalText(body.initialPath, 'initialPath', 4096);
-    const result = await context.workbench.executeMutation(
+    const picked = await context.workbench.pickDirectory({ title, initialPath, requestId });
+    sendJson(response, 200, {
       requestId,
-      'workspace.pick-directory',
-      { title, initialPath },
-      async () => {
-        const picked = await context.workbench.pickDirectory({ title, initialPath });
-        return {
-          requestId,
-          outcome: picked.kind,
-          ...(picked.kind === 'selected' ? { path: picked.path } : {}),
-          ...(picked.kind === 'unavailable' ? { reason: picked.reason } : {}),
-        };
-      }
-    );
-    sendJson(response, 200, result);
+      outcome: picked.kind,
+      ...(picked.kind === 'selected' ? { path: picked.path } : {}),
+      ...(picked.kind === 'unavailable' ? { reason: picked.reason } : {}),
+    });
     return;
   }
   // v0.3.16 — read-only preview of a candidate directory. Authenticated
@@ -345,7 +409,11 @@ async function handleRequest(context: RequestContext): Promise<void> {
     const requestId = requireUuid(body.requestId, 'requestId');
     const candidatePath = requireText(body.path, 'path', 4096);
     const source = requireCandidateSource(optionalText(body.source, 'source', 32));
-    const candidate = context.workbench.inspectWorkspacePath(candidatePath, source);
+    const candidate = await context.workbench.inspectWorkspaceFast(
+      candidatePath,
+      source,
+      requestId
+    );
     sendJson(response, 200, { requestId, candidate });
     return;
   }
@@ -676,6 +744,8 @@ async function handleRequest(context: RequestContext): Promise<void> {
   }
   if (method === 'GET' && path === '/git/status') {
     const contextGuard = requireContextGuardQuery(url);
+    const group = url.searchParams.get('group');
+    const searchQuery = url.searchParams.get('query');
     sendJson(
       response,
       200,
@@ -684,6 +754,12 @@ async function handleRequest(context: RequestContext): Promise<void> {
           ? { cursor: url.searchParams.get('cursor') as string }
           : {}),
         pageSize: boundedInteger(url.searchParams.get('pageSize'), 200, 1, 2_000),
+        // v0.3.17 S1 — filtering happens in the Host so result counts cover the whole
+        // matching set. v0.3.17 S4 — the cast is to the *working-tree* source set: a status
+        // query can never filter by the comparison-only `commit` source, and the service
+        // validates the value either way.
+        ...(group ? { group: group as GitWorktreeSourceV1 } : {}),
+        ...(searchQuery ? { query: searchQuery } : {}),
       })
     );
     return;
@@ -748,6 +824,201 @@ async function handleRequest(context: RequestContext): Promise<void> {
     sendJson(response, 200, result);
     return;
   }
+  if (method === 'GET' && path === '/git/commit/preview') {
+    const contextGuard = requireContextGuardQuery(url);
+    sendJson(response, 200, await context.workbench.gitCommitPreview(contextGuard));
+    return;
+  }
+  // v0.3.17 S4 — history reads. All of these are read-only: none of them can touch the
+  // working tree or the index, which is the S4 exit criterion.
+  if (method === 'GET' && path === '/git/refs') {
+    const contextGuard = requireContextGuardQuery(url);
+    sendJson(response, 200, await context.workbench.gitRefs(contextGuard));
+    return;
+  }
+  if (method === 'GET' && path === '/git/history') {
+    const contextGuard = requireContextGuardQuery(url);
+    sendJson(
+      response,
+      200,
+      await context.workbench.gitHistory(contextGuard, {
+        ...optionalQueryParams(url, ['message', 'author', 'sha', 'path', 'since', 'until', 'rev', 'cursor']),
+        pageSize: boundedInteger(url.searchParams.get('pageSize'), 30, 1, 100),
+      })
+    );
+    return;
+  }
+  if (method === 'GET' && path === '/git/compare') {
+    const contextGuard = requireContextGuardQuery(url);
+    const baseRef = url.searchParams.get('base');
+    const headRef = url.searchParams.get('head');
+    const mode = url.searchParams.get('mode') === 'merge-base' ? 'merge-base' : 'snapshot';
+    if (!baseRef || !headRef) throw new HttpProblem(400, 'base and head are required.');
+    sendJson(
+      response,
+      200,
+      await context.workbench.gitCompare(contextGuard, { baseRef, headRef, mode })
+    );
+    return;
+  }
+  if (method === 'GET' && path === '/git/compare/file') {
+    const contextGuard = requireContextGuardQuery(url);
+    const baseOid = url.searchParams.get('baseOid');
+    const headOid = url.searchParams.get('headOid');
+    const filePath = url.searchParams.get('path');
+    if (!baseOid || !headOid || !filePath) {
+      throw new HttpProblem(400, 'baseOid, headOid and path are required.');
+    }
+    sendJson(
+      response,
+      200,
+      await context.workbench.gitCompareFileDiff(contextGuard, {
+        baseOid,
+        headOid,
+        path: filePath,
+        ...(url.searchParams.get('cursor')
+          ? { cursor: url.searchParams.get('cursor') as string }
+          : {}),
+      })
+    );
+    return;
+  }
+  if (method === 'GET' && path === '/git/blame') {
+    const contextGuard = requireContextGuardQuery(url);
+    const filePath = url.searchParams.get('path');
+    if (!filePath) throw new HttpProblem(400, 'path is required.');
+    sendJson(
+      response,
+      200,
+      await context.workbench.gitBlame(contextGuard, {
+        path: filePath,
+        ...(url.searchParams.get('rev') ? { rev: url.searchParams.get('rev') as string } : {}),
+        limit: boundedInteger(url.searchParams.get('limit'), 2_000, 1, 5_000),
+      })
+    );
+    return;
+  }
+  if (method === 'GET' && path === '/git/graph') {
+    const contextGuard = requireContextGuardQuery(url);
+    sendJson(
+      response,
+      200,
+      await context.workbench.gitGraph(contextGuard, {
+        limit: boundedInteger(url.searchParams.get('limit'), 200, 1, 2_000),
+      })
+    );
+    return;
+  }
+  if (method === 'GET' && path === '/git/files-target') {
+    const contextGuard = requireContextGuardQuery(url);
+    const fileToken = url.searchParams.get('fileToken');
+    if (!fileToken) throw new HttpProblem(400, 'fileToken is required.');
+    sendJson(response, 200, await context.workbench.gitFilesTarget(contextGuard, fileToken));
+    return;
+  }
+  if (method === 'GET' && path === '/git/submodules') {
+    const contextGuard = requireContextGuardQuery(url);
+    sendJson(response, 200, await context.workbench.gitSubmodules(contextGuard));
+    return;
+  }
+  if (method === 'GET' && path === '/git/conflict') {
+    const contextGuard = requireContextGuardQuery(url);
+    const filePath = url.searchParams.get('path');
+    if (!filePath) throw new HttpProblem(400, 'path is required.');
+    sendJson(response, 200, await context.workbench.gitConflictVersions(contextGuard, filePath));
+    return;
+  }
+  if (method === 'GET' && path === '/git/blob') {
+    const contextGuard = requireContextGuardQuery(url);
+    const filePath = url.searchParams.get('path');
+    const rev = url.searchParams.get('rev');
+    if (!filePath || !rev) throw new HttpProblem(400, 'path and rev are required.');
+    sendJson(response, 200, await context.workbench.gitBlob(contextGuard, { path: filePath, rev }));
+    return;
+  }
+  if (method === 'GET' && path === '/git/file-history') {
+    const contextGuard = requireContextGuardQuery(url);
+    const filePath = url.searchParams.get('path');
+    if (!filePath) throw new HttpProblem(400, 'path is required.');
+    sendJson(
+      response,
+      200,
+      await context.workbench.gitFileHistory(contextGuard, {
+        path: filePath,
+        ...(url.searchParams.get('rev') ? { rev: url.searchParams.get('rev') as string } : {}),
+        limit: boundedInteger(url.searchParams.get('limit'), 30, 1, 200),
+      })
+    );
+    return;
+  }
+  if (method === 'GET' && path.startsWith('/git/commit/')) {
+    const contextGuard = requireContextGuardQuery(url);
+    const [, , , rawOid, sub] = path.split('/');
+    const oid = decodeURIComponent(rawOid ?? '');
+    const parentIndex = boundedInteger(url.searchParams.get('parent'), 0, 0, 63);
+    if (sub === 'files') {
+      sendJson(response, 200, await context.workbench.gitCommitFiles(contextGuard, oid, parentIndex));
+      return;
+    }
+    if (sub === 'diff') {
+      const filePath = url.searchParams.get('path');
+      if (!filePath) throw new HttpProblem(400, 'path is required.');
+      sendJson(
+        response,
+        200,
+        await context.workbench.gitCommitDiff(contextGuard, {
+          oid,
+          path: filePath,
+          parentIndex,
+          ...(url.searchParams.get('cursor')
+            ? { cursor: url.searchParams.get('cursor') as string }
+            : {}),
+        })
+      );
+      return;
+    }
+    sendJson(response, 200, await context.workbench.gitCommitDetail(contextGuard, oid, parentIndex));
+    return;
+  }
+  // v0.3.17 S3 — hunk / line level staging. The body carries ids only; the Host rebuilds the
+  // patch from the reviewed document, so a browser can never submit patch text or Git flags.
+  if (method === 'POST' && path === '/git/patch') {
+    assertMutation(request, context.nonce, context.origin, 'git_mutation_forbidden');
+    assertGitUserGesture(request);
+    const body = requireRecord(await readJson(request), 'Git patch request');
+    assertOnlyKeys(body, [
+      'requestId',
+      'expectedContextRevision',
+      'workspaceId',
+      'fileId',
+      'hunkIds',
+      'lineIds',
+      'expectedRepositoryRevision',
+    ]);
+    const requestId = requireUuid(body.requestId, 'requestId');
+    const contextGuard = requireContextGuardRecord(body);
+    const fileId = requireText(body.fileId, 'fileId', 256);
+    const hunkIds = optionalStringList(body.hunkIds, 'hunkIds', 200, 256);
+    const lineIds = optionalStringList(body.lineIds, 'lineIds', 2_000, 256);
+    if (hunkIds.length === 0 && lineIds.length === 0) {
+      throw new WebWorkbenchError(400, 'Select at least one hunk or line.', 'git_patch_invalid');
+    }
+    const expectedRepositoryRevision = requireGitRevision(body.expectedRepositoryRevision);
+    const result = await context.workbench.executeMutation(
+      requestId,
+      'git.patch',
+      { fileId, hunkIds, lineIds, expectedRepositoryRevision, ...contextGuard },
+      async () =>
+        context.workbench.gitApplyPatch(contextGuard, {
+          fileId,
+          hunkIds,
+          lineIds,
+          expectedRepositoryRevision,
+        })
+    );
+    sendJson(response, 200, result);
+    return;
+  }
   if (method === 'POST' && path === '/git/commit') {
     assertMutation(request, context.nonce, context.origin, 'git_mutation_forbidden');
     assertGitUserGesture(request);
@@ -756,18 +1027,29 @@ async function handleRequest(context: RequestContext): Promise<void> {
       'requestId',
       'expectedContextRevision',
       'workspaceId',
-      'message',
+      'summary',
+      'body',
       'expectedRepositoryRevision',
     ]);
     const requestId = requireUuid(body.requestId, 'requestId');
     const contextGuard = requireContextGuardRecord(body);
-    const message = requireText(body.message, 'message', 2000);
+    // Newlines are legitimate in a commit body; only control characters are rejected, and
+    // that check lives with the message builder so the two never drift apart.
+    const summary = requireText(body.summary, 'summary', 2_000);
+    const commitBody =
+      body.body === undefined ? undefined : requireTextAllowingNewlines(body.body, 'body', 20_000);
     const expectedRepositoryRevision = requireGitRevision(body.expectedRepositoryRevision);
     const result = await context.workbench.executeMutation(
       requestId,
       'git.commit',
-      { message, expectedRepositoryRevision, ...contextGuard },
-      async () => context.workbench.gitCommit(contextGuard, { message, expectedRepositoryRevision })
+      { summary, body: commitBody, expectedRepositoryRevision, ...contextGuard },
+      async () =>
+        context.workbench.gitCommit(contextGuard, {
+          summary,
+          ...(commitBody === undefined ? {} : { body: commitBody }),
+          expectedRepositoryRevision,
+          requestId,
+        })
     );
     sendJson(response, 200, result);
     return;
@@ -782,6 +1064,26 @@ async function handleRequest(context: RequestContext): Promise<void> {
           ? { cursor: url.searchParams.get('cursor') as string }
           : {}),
         pageSize: boundedInteger(url.searchParams.get('pageSize'), 30, 1, 100),
+      })
+    );
+    return;
+  }
+  const gitDiffV2Match = path.match(/^\/git\/diff-v2\/([^/]+)$/);
+  if (method === 'GET' && gitDiffV2Match) {
+    const contextGuard = requireContextGuardQuery(url);
+    sendJson(
+      response,
+      200,
+      await context.workbench.gitDiffDocument(contextGuard, {
+        fileId: safeDecodePathSegment(gitDiffV2Match[1]),
+        ...(url.searchParams.get('cursor')
+          ? { cursor: url.searchParams.get('cursor') as string }
+          : {}),
+        lineLimit: boundedInteger(url.searchParams.get('lineLimit'), 240, 1, 500),
+        byteLimit: boundedInteger(url.searchParams.get('byteLimit'), 256 * 1024, 1024, 1024 * 1024),
+        // v0.3.17 S5 — bound into the pagination cursor by the service.
+        ...(url.searchParams.get('ignoreWhitespace') === '1' ? { ignoreWhitespace: true } : {}),
+        ...(url.searchParams.get('wordDiff') === '1' ? { wordDiff: true } : {}),
       })
     );
     return;
@@ -980,7 +1282,7 @@ function assertMutation(
   origin: string,
   forbiddenCode = 'request_forbidden'
 ): void {
-  if (request.headers.origin !== origin) {
+  if (!isSameLoopbackEndpoint(request.headers.origin ?? '', origin)) {
     throw new HttpProblem(403, 'Mutation requires the exact loopback Origin.', forbiddenCode);
   }
   const fetchSite = request.headers['sec-fetch-site'];
@@ -1059,10 +1361,15 @@ function assertTerminalUserGesture(request: IncomingMessage): void {
   }
 }
 
+/**
+ * Rejects any request whose Host is not this machine and this port.
+ *
+ * `evil.invalid` / `attacker.invalid` stay refused (the anti-rebinding property), while
+ * `localhost` and the loopback block are accepted because they name the same listener.
+ */
 function assertHost(request: IncomingMessage, origin: string): void {
   if (!origin) return;
-  const expected = new URL(origin).host;
-  if (request.headers.host !== expected) {
+  if (!isSameLoopbackEndpoint(request.headers.host ?? '', origin)) {
     throw new HttpProblem(421, 'Request Host does not match the loopback listener.');
   }
 }
@@ -1239,6 +1546,19 @@ function requireRecord(value: unknown, name: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+/** v0.3.17 S4 — copies only the named, non-empty query parameters. */
+function optionalQueryParams<T extends string>(
+  url: URL,
+  names: readonly T[]
+): Partial<Record<T, string>> {
+  const out: Partial<Record<T, string>> = {};
+  for (const name of names) {
+    const value = url.searchParams.get(name);
+    if (value !== null && value !== '') out[name] = value;
+  }
+  return out;
+}
+
 function requireText(value: unknown, name: string, maxLength: number): string {
   if (typeof value !== 'string' || !value.trim()) {
     throw new HttpProblem(400, `${name} must be a non-empty string.`);
@@ -1250,6 +1570,39 @@ function requireText(value: unknown, name: string, maxLength: number): string {
 function optionalText(value: unknown, name: string, maxLength: number): string | undefined {
   if (value === undefined || value === null) return undefined;
   return requireText(value, name, maxLength);
+}
+
+/**
+ * v0.3.17 S3 — commit bodies legitimately span lines, so trimming happens without
+ * rejecting newlines. Control characters are rejected later by `normalizeCommitMessage`,
+ * which is the single owner of that rule.
+ */
+function requireTextAllowingNewlines(value: unknown, name: string, maxLength: number): string {
+  if (typeof value !== 'string') {
+    throw new HttpProblem(400, `${name} must be a string.`);
+  }
+  if (value.length > maxLength) throw new HttpProblem(400, `${name} is too long.`);
+  return value;
+}
+
+/** v0.3.17 S3 — bounded list of opaque ids; never interpreted as paths or flags. */
+function optionalStringList(
+  value: unknown,
+  name: string,
+  maxItems: number,
+  maxItemLength: number
+): readonly string[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new HttpProblem(400, `${name} must be an array.`);
+  if (value.length > maxItems) throw new HttpProblem(400, `${name} has too many entries.`);
+  const items: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== 'string' || !entry || entry.length > maxItemLength) {
+      throw new HttpProblem(400, `${name} contains an invalid entry.`);
+    }
+    items.push(entry);
+  }
+  return items;
 }
 
 /** v0.3.16 — where a workspace candidate came from; `manual` is the default. */
