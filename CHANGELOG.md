@@ -22,6 +22,41 @@ which is **not** a pass.
 
 ## [Unreleased]
 
+## [0.3.18]
+
+> **Status: released.** Closes the assertion and evidence backlog of the Git
+> right-hand work panel shipped in 0.3.17, and fixes the CRLF part-staging
+> defect found right after that release.
+
+### Fixed
+
+- **CRLF part-staging was impossible:** the rebuilt context reused the
+  normalised display text, dropping the carriage return, so the patch never
+  matched the stored bytes. The raw line is reused so the context keeps its
+  line endings, and a selection that still cannot apply is refused explicitly
+  with `git_patch_not_applicable` instead of surfacing as a Git failure.
+
+### Added
+
+- **Assertion coverage for the G317 backlog:** deleting and renaming through
+  the panel (git records R with the content preserved), line-level staging on a
+  CRLF file, a signing failure (HEAD and the staged work untouched), bare and
+  non-repository workspaces, and a clean repository with readable history.
+- **Conflict-assertion split:** the plan requirement (a conflict is never shown
+  as an ordinary stageable diff) is asserted separately from whether the ideal
+  three-way view rendered — the earlier single assertion was flaky because the
+  three-way view loads asynchronously.
+- **Browser evidence:** conflict, comparison, blame, narrow-viewport and
+  open-in-Files screenshots under docs/plan/evidence/v0.3.17-git/screenshots/.
+
+### Known gaps
+
+- The bare-repository `status()` contract is measured but not yet pinned (its
+  current behaviour is neither a refusal nor an empty status).
+- Performance samples for the S5/S6 reads, dark-theme screenshot assertions,
+  and the agent-led file-change scenario are still open.
+
+---
 ## [0.3.17]
 
 > **Status: candidate.** Opening a local project is made fast and honest

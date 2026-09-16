@@ -238,13 +238,81 @@ async function main() {
       check('blame renders per-line attribution', false, String(error).slice(0, 120));
     }
 
-    check('no page errors were raised', pageErrors.length === 0, pageErrors.join('; ').slice(0, 120));
+
     check(
       'the whole run left HEAD, index and worktree untouched',
       repoState() === stateBefore,
       'compared via independent git processes'
     );
 
+    // ---- cross-panel: open a working-tree file in Files (G317-17) ----------------------
+    try {
+      await page.click('.git-views > button:has-text("变更")');
+      writeFileSync(join(WORKSPACE, 'open-me.txt'), 'opened from the Git panel\n');
+      await page.reload();
+      await page.waitForSelector('button[aria-label="打开Git面板"]', { timeout: 30_000 });
+      await page.click('button[aria-label="打开Git面板"]');
+      await page.waitForSelector('.git-row', { timeout: 30_000 });
+      await page.locator('.git-row button', { hasText: 'open-me.txt' }).first().click();
+      await page.waitForSelector('button:has-text("在 Files 打开")', { timeout: 30_000 });
+      await page.click('button:has-text("在 Files 打开")');
+      await page.waitForTimeout(1500);
+      const filesPanel = await page.locator('.files-panel').count();
+      const gitPanel = await page.locator('.git-panel').count();
+      const err = await page.locator('.resource-error').first().innerText().catch(() => '');
+      process.stdout.write(
+        `DIAG files: filesPanel=${filesPanel} gitPanel=${gitPanel} err=${err.slice(0, 100)}\n`
+      );
+      if (filesPanel > 0) {
+        const filesText = await page.locator('.files-panel').innerText();
+        check(
+          'Git → Files opens the same file in the Files panel',
+          filesText.includes('open-me.txt'),
+          filesText.replace(/\s+/g, ' ').slice(0, 80)
+        );
+        await page.screenshot({ path: join(SHOTS, 's6-05-open-in-files.png') });
+      } else {
+        check(
+          'Git → Files opens the same file in the Files panel',
+          false,
+          `Files panel did not appear (gitPanel=${gitPanel}, err=${err.slice(0, 60)})`
+        );
+      }
+    } catch (error) {
+      check('Git → Files opens the same file in the Files panel', false, String(error).slice(0, 110));
+    }
+
+    // ---- dark theme (G317-19) ----------------------------------------------------------
+    try {
+      const toggle = page.locator('.theme-cycle-button');
+      await toggle.waitFor({ timeout: 30_000 });
+      let dark = false;
+      for (let attempt = 0; attempt < 5 && !dark; attempt += 1) {
+        const label = (await toggle.getAttribute('aria-label')) ?? '';
+        const themeAttr =
+          (await page.locator('html').getAttribute('data-theme')) ??
+          (await page.locator('body').getAttribute('data-theme')) ??
+          '';
+        if (/dark|暗/.test(label) || /dark/i.test(themeAttr)) dark = true;
+        else await toggle.click();
+        await page.waitForTimeout(400);
+      }
+      await page.waitForTimeout(600);
+      const finalAttr =
+        (await page.locator('html').getAttribute('data-theme')) ??
+        (await page.locator('body').getAttribute('data-theme')) ??
+        '';
+      check(
+        'the panel is usable in the dark theme',
+        dark || /dark/i.test(finalAttr),
+        `theme=${finalAttr || 'unknown'}`
+      );
+      await page.screenshot({ path: join(SHOTS, 's6-06-dark.png') });
+    } catch (error) {
+      check('the panel is usable in the dark theme', false, String(error).slice(0, 110));
+    }
+
+    check('no page errors were raised', pageErrors.length === 0, pageErrors.join('; ').slice(0, 120));
     await page.close();
   } finally {
     await browser.close().catch(() => undefined);
