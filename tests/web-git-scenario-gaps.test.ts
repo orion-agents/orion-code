@@ -182,10 +182,42 @@ describe('v0.3.17 G317 scenario variants', () => {
 
     // A bare repository has no working tree, so it is outside the workspace boundary this
     // panel works in. The limit is stated rather than worked around.
-    await expect(bareService.history({ pageSize: 5 })).rejects.toThrow(/unavailable|not a repository/i);
-    // NOTE: `status()` on a bare repository is deliberately NOT asserted here. Its current
-    // behaviour is neither a refusal nor a clean empty status, and pinning an assertion to
-    // that would record an accident as a contract. It is listed as an open limit in
-    // docs/plan/evidence/v0.3.17-git/g317-status.md instead.
+    await expect(bareService.history({ pageSize: 5 })).rejects.toThrow(
+      /unavailable|not a repository/iu
+    );
+    // Measured contract: no worktree means it is not a repository for this panel's purposes,
+    // and there is nothing to report as changed. It must never invent changes.
+    const bareStatus = await bareService.status();
+    expect(bareStatus.isRepository).toBe(false);
+    expect(bareStatus.branch).toBeNull();
+    expect(bareStatus.clean).toBe(true);
+    expect(bareStatus.staged).toEqual([]);
+    expect(bareStatus.unstaged).toEqual([]);
+    expect(bareStatus.untracked).toEqual([]);
+  });
+
+  // ---- G317-01: non-repository and clean repository ------------------------------------
+  test('G317-01 a non-repository and a clean repository both report honestly', async () => {
+    const plain = join(root, 'plain');
+    mkdirSync(plain);
+    const plainService = new GitReadModelServiceV1(plain);
+
+    // Not a repository: stated as such, and history is refused rather than fabricated.
+    const plainStatus = await plainService.status();
+    expect(plainStatus.isRepository).toBe(false);
+    await expect(plainService.history({ pageSize: 5 })).rejects.toThrow(
+      /unavailable|not a repository/iu
+    );
+
+    // A clean repository: nothing changed, but the history is still there.
+    writeFileSync(join(repo, 'clean.txt'), 'x\n');
+    rawGit(repo, ['add', '.']);
+    rawGit(repo, ['commit', '-q', '-m', 'clean state']);
+    const cleanStatus = await service.status();
+    expect(cleanStatus.isRepository).toBe(true);
+    expect(cleanStatus.clean).toBe(true);
+    expect(cleanStatus.counts.total).toBe(0);
+    const history = await service.history({ pageSize: 5 });
+    expect(history.items.length).toBeGreaterThan(0);
   });
 });
