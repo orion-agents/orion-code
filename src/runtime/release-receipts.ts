@@ -116,6 +116,21 @@ export const WEB_E2E_WEB317_SCENARIOS_V1 = Object.freeze([
   'WEB39-P0-04',
   'WEB39-P0-05',
 ]);
+/**
+ * v0.3.19 — closing the v0.3.17 G317 assertion backlog.
+ *
+ * Each id is one of the five scenarios that were left as "feature present, assertion
+ * missing": an external (agent) write must not move the reader, `在 Files 打开` must
+ * actually reach the Files panel, the theme and narrow tiers must be verified rather than
+ * assumed, and repeated open/close plus a hundred diffs must stay bounded.
+ */
+export const WEB_E2E_WEB34_SCENARIOS_V1 = Object.freeze([
+  'WEB34-P0-01',
+  'WEB34-P0-02',
+  'WEB34-P0-03',
+  'WEB34-P0-04',
+  'WEB34-P0-05',
+]);
 export const WEB_E2E_FULL_SCENARIOS_V1 = Object.freeze([
   ...WEB_E2E_LEGACY_SCENARIOS_V1,
   ...WEB_E2E_WEB31_SCENARIOS_V1,
@@ -123,6 +138,7 @@ export const WEB_E2E_FULL_SCENARIOS_V1 = Object.freeze([
   ...WEB_E2E_WEB33_SCENARIOS_V1,
   ...WEB_E2E_WEB38_SCENARIOS_V1,
   ...WEB_E2E_WEB317_SCENARIOS_V1,
+  ...WEB_E2E_WEB34_SCENARIOS_V1,
 ]);
 export const WEB_E2E_SETTINGS_SCENARIOS_V1 = Object.freeze(
   WEB_E2E_FULL_SCENARIOS_V1.filter(id => id.startsWith('SET-P0-'))

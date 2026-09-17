@@ -287,7 +287,6 @@ export function useGitWorkspace(input: {
 
   const openFile = useCallback(
     (entry: WebGitFileV1) => {
-      const generation = generationRef.current;
       const token = diffTokenRef.current + 1;
       diffTokenRef.current = token;
       setSession({
@@ -320,12 +319,20 @@ export function useGitWorkspace(input: {
             displayRef.current.ignoreWhitespace,
             displayRef.current.wordDiff
           );
-          if (generation !== generationRef.current || token !== diffTokenRef.current) return;
+          // v0.3.19 (G317-03/G317-20) — only a newer *selection* supersedes this read.
+          //
+          // The generation guard used to drop the document whenever any refresh had happened
+          // in the meantime, including the 2s visible poll. That silently produced a blank
+          // reading pane with a file still selected: the read was abandoned, nothing re-issued
+          // it, and `diff` stayed null. A repository refresh is not a competing read of this
+          // file, and the document states the revision it was rendered against, so accepting it
+          // and letting `stale` tell the truth is both safer and correct.
+          if (token !== diffTokenRef.current) return;
           cache.write(document.repositoryRevision, entry.fileId, document);
           setDiff(document);
-          setStale(false);
+          setStale(document.repositoryRevision !== statusRef.current?.repositoryRevision);
         } catch (caught) {
-          if (generation !== generationRef.current || token !== diffTokenRef.current) return;
+          if (token !== diffTokenRef.current) return;
           if (isRevisionConflict(caught)) {
             setError('仓库已变化，已重新载入 Git 状态。');
             setSession({ selectedFileId: null, selectedSource: null });
@@ -333,9 +340,7 @@ export function useGitWorkspace(input: {
           }
           setError(messageOf(caught));
         } finally {
-          if (generation === generationRef.current && token === diffTokenRef.current) {
-            setLoading(false);
-          }
+          if (token === diffTokenRef.current) setLoading(false);
         }
       })();
     },
