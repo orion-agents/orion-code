@@ -22,11 +22,13 @@ which is **not** a pass.
 
 ## [Unreleased]
 
-## [0.3.19]
+## [0.3.19] — 2026-09-19
 
-> **Status: candidate.** Closes the five scenarios the v0.3.17 status table left as
-> "feature present, assertion missing" (`docs/plan/evidence/v0.3.17-git/g317-status.md`),
-> and fixes the three defects those assertions found. Not merged, tagged or published.
+> **Status: published.** Released as `@orion-agents/orion-code@0.3.19` from
+> `refs/tags/v0.3.19`, and merged to `main` as `d17d211` (#259). Closes the five scenarios
+> the v0.3.17 status table left as "feature present, assertion missing"
+> (`docs/plan/evidence/v0.3.17-git/g317-status.md`), and fixes the three defects those
+> assertions found.
 
 ### Fixed
 

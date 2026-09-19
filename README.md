@@ -2,12 +2,12 @@
 
 Local-first, goal-driven coding agent for the terminal and browser.
 
-> v0.3.19 candidate — closes the v0.3.17 Git work panel's assertion backlog
+> v0.3.19 — closes the v0.3.17 Git work panel's assertion backlog
 > (`docs/plan/evidence/v0.3.17-git/g317-status.md`) and fixes what those
 > assertions found: responsive tiers that never activated, a diff read discarded
 > on a background refresh that left the pane blank, a narrow back control that
 > dropped the reading position, and a bare repository reported as "not a
-> repository". Candidate source is not an npm publication, Git tag, or merge.
+> repository". Published to npm as 0.3.19 and tagged `v0.3.19`.
 
 [中文说明](README.zh-CN.md) ·
 [v0.3.7 plan](docs/plan/v0.3.7-left-rail-improvement-plan.md) ·
