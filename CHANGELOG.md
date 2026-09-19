@@ -22,6 +22,13 @@ which is **not** a pass.
 
 ## [Unreleased]
 
+## [0.3.20]
+
+> **Status: candidate.** Open. The v0.3.19 verification round found that the Web E2E suite has
+> been red since v0.3.11 (the dock's tabs became rail buttons) independently of the Git panel
+> work, and `web-v031-foundation-accessibility.spec.ts` is the clearest example. Repairing those
+> specs is the intended content of this cycle. Not merged, tagged or published.
+
 ## [0.3.19] — 2026-09-19
 
 > **Status: published.** Released as `@orion-agents/orion-code@0.3.19` from
