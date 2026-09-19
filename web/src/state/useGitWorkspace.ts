@@ -155,7 +155,11 @@ export function useGitWorkspace(input: {
         setStatus(nextStatus);
         setLog(nextLog);
 
-        if (!nextStatus.isRepository) {
+        if (!nextStatus.hasWorktree) {
+          // v0.3.19 (G317-22) — a bare repository is a repository but has no working tree, so
+          // nothing here is selectable. Gating on `isRepository` alone would have walked into
+          // this branch with an empty list and reported it as "you have nothing to stage"
+          // rather than "there is nothing to read here".
           setDiff(null);
           setStale(false);
           return;
@@ -283,7 +287,6 @@ export function useGitWorkspace(input: {
 
   const openFile = useCallback(
     (entry: WebGitFileV1) => {
-      const generation = generationRef.current;
       const token = diffTokenRef.current + 1;
       diffTokenRef.current = token;
       setSession({
@@ -316,12 +319,20 @@ export function useGitWorkspace(input: {
             displayRef.current.ignoreWhitespace,
             displayRef.current.wordDiff
           );
-          if (generation !== generationRef.current || token !== diffTokenRef.current) return;
+          // v0.3.19 (G317-03/G317-20) — only a newer *selection* supersedes this read.
+          //
+          // The generation guard used to drop the document whenever any refresh had happened
+          // in the meantime, including the 2s visible poll. That silently produced a blank
+          // reading pane with a file still selected: the read was abandoned, nothing re-issued
+          // it, and `diff` stayed null. A repository refresh is not a competing read of this
+          // file, and the document states the revision it was rendered against, so accepting it
+          // and letting `stale` tell the truth is both safer and correct.
+          if (token !== diffTokenRef.current) return;
           cache.write(document.repositoryRevision, entry.fileId, document);
           setDiff(document);
-          setStale(false);
+          setStale(document.repositoryRevision !== statusRef.current?.repositoryRevision);
         } catch (caught) {
-          if (generation !== generationRef.current || token !== diffTokenRef.current) return;
+          if (token !== diffTokenRef.current) return;
           if (isRevisionConflict(caught)) {
             setError('仓库已变化，已重新载入 Git 状态。');
             setSession({ selectedFileId: null, selectedSource: null });
@@ -329,9 +340,7 @@ export function useGitWorkspace(input: {
           }
           setError(messageOf(caught));
         } finally {
-          if (generation === generationRef.current && token === diffTokenRef.current) {
-            setLoading(false);
-          }
+          if (token === diffTokenRef.current) setLoading(false);
         }
       })();
     },
@@ -479,7 +488,9 @@ export function useGitWorkspace(input: {
    */
   const checkForRepositoryChange = useCallback(async () => {
     const current = statusRef.current;
-    if (!current?.isRepository) return;
+    // v0.3.19 (G317-22) — only a worktree-backed repository has a revision that writes can
+    // move, so a bare repository must not be polled for changes it cannot have.
+    if (!current?.hasWorktree) return;
     try {
       const summary = await snapshotStore.getSnapshot(workspaceId);
       if (summary.repositoryRevision === current.repositoryRevision) return;
@@ -637,7 +648,8 @@ export function useGitWorkspace(input: {
   // The commit form must describe the real index, so the preview is re-read whenever the
   // repository moves — independent of whatever the change list is filtered to.
   useEffect(() => {
-    if (!status?.isRepository) {
+    // v0.3.19 (G317-22) — the commit form describes an index, and a bare repository has none.
+    if (!status?.hasWorktree) {
       setPreview(null);
       return;
     }
@@ -653,7 +665,7 @@ export function useGitWorkspace(input: {
     return () => {
       cancelled = true;
     };
-  }, [actions, status?.isRepository, status?.repositoryRevision]);
+  }, [actions, status?.hasWorktree, status?.repositoryRevision]);
 
   return {
     session,

@@ -6,7 +6,7 @@
  * place; all writes are deliberately absent until S3 (plan §10 scopes file level write
  * wiring to S3, hunk/line writes follow it).
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { useGitHistory } from '../../state/useGitHistory';
 import { useGitPanelKeyboard } from '../../state/useGitPanelKeyboard';
@@ -16,6 +16,7 @@ import { ResourceSplitLayout } from '../../layout/ResourceSplitLayout';
 import { entriesForSource, useGitWorkspace } from '../../state/useGitWorkspace';
 import {
   GIT_PANEL_VIEWS,
+  resolveGitPanelLayout,
   type GitPanelStore,
   type GitPanelView,
 } from '../../state/git-panel-state';
@@ -105,25 +106,49 @@ export function GitPanel({
   /**
    * v0.3.17 S6 — responsive tiers keyed off the *panel* width, not the window (plan §4.3).
    *
-   * The forced unified mode below never writes back to the stored preference: a narrow
-   * container must not permanently downgrade what the reader chose for a wide one.
+   * v0.3.19 (G317-19) — two fixes, both found by asserting the tier against the panel that is
+   * actually rendered:
+   *
+   *   1. The decision lives in `resolveGitPanelLayout`, so the plan's widths (960 / 620 / 360)
+   *      are asserted in a unit test rather than only being observable in whichever browser
+   *      window happened to be open.
+   *   2. The observer is attached with a **callback ref**, not an effect. The panel's first
+   *      render is the loading placeholder, which does not contain the measured node, so an
+   *      effect with `[]` deps read `panelRef.current === null`, returned, and never ran again:
+   *      the width stayed 0, `data-width` stayed `wide` on a 480px panel, and the responsive
+   *      tiers were silently inert on every load whose status was not already cached.
+   *
+   * The forced unified mode never writes back to the stored preference: a narrow container must
+   * not permanently downgrade what the reader chose for a wide one.
    */
-  const panelRef = useRef<HTMLDivElement>(null);
-  const [panelWidth, setPanelWidth] = useState(0);
-  useEffect(() => {
-    const node = panelRef.current;
+  const observerRef = useRef<ResizeObserver | null>(null);
+  const attachPanel = useCallback((node: HTMLDivElement | null) => {
+    observerRef.current?.disconnect();
+    observerRef.current = null;
     if (!node) return;
     const observer = new ResizeObserver(entries => {
       for (const entry of entries) setPanelWidth(entry.contentRect.width);
     });
     observer.observe(node);
+    observerRef.current = observer;
+    // The first observation is asynchronous, so seed from the layout we are already in.
     setPanelWidth(node.getBoundingClientRect().width);
-    return () => observer.disconnect();
   }, []);
-  const narrow = panelWidth > 0 && panelWidth <= 620;
-  const compact = panelWidth > 0 && panelWidth <= 959;
-  /** Reading area under 640px cannot show two code columns honestly. */
-  const effectiveMode = panelWidth > 0 && panelWidth <= 640 ? 'unified' : git.display.mode;
+  const [panelWidth, setPanelWidth] = useState(0);
+  useEffect(() => () => observerRef.current?.disconnect(), []);
+  const layout = resolveGitPanelLayout(panelWidth, git.display.mode);
+  const narrow = layout.narrow;
+  const effectiveMode = layout.effectiveMode;
+
+  /**
+   * v0.3.19 (G317-19) — "which pane is on top" is not the same question as "which file is
+   * being read".
+   *
+   * The narrow tier used to switch back to the list by clearing `selectedFileId`, which threw
+   * away the reader's position, the anchors that hang off it, and the cached document. Returning
+   * to the list must cost nothing, so the pane choice is its own state and the selection stays.
+   */
+  const [narrowShowsDetail, setNarrowShowsDetail] = useState(false);
 
   /**
    * v0.3.17 S6 — "open in Files" for a working-tree file.
@@ -228,6 +253,18 @@ export function GitPanel({
     return <p className="resource-loading">正在读取 Git 状态…</p>;
   }
 
+  if (status && status.repositoryKind === 'bare') {
+    // v0.3.19 (G317-22) — a bare repository *is* a repository, so it must not be told the
+    // project "is not a Git repository". What it has no working tree, and this panel reads one.
+    return (
+      <div className="resource-empty">
+        <Icon name="branch" size={16} />
+        <strong>当前项目是裸仓库</strong>
+        <p>裸仓库没有工作区，工作栏没有可显示的变更或 Diff。文件和 Agent 不受影响。</p>
+      </div>
+    );
+  }
+
   if (status && !status.isRepository) {
     return (
       <div className="resource-empty">
@@ -240,9 +277,9 @@ export function GitPanel({
 
   return (
     <div
-      ref={panelRef}
-      data-width={narrow ? 'narrow' : compact ? 'compact' : 'wide'}
-      data-narrow-view={narrow && session.selectedFileId ? 'detail' : 'list'}
+      ref={attachPanel}
+      data-width={layout.dataWidth}
+      data-narrow-view={narrow && narrowShowsDetail && session.selectedFileId ? 'detail' : 'list'}
       className="work-resource-panel git-panel"
     >
       <div className="git-summary">
@@ -321,7 +358,7 @@ export function GitPanel({
             <button
               type="button"
               className="git-back-to-list"
-              onClick={() => git.setSession({ selectedFileId: null })}
+              onClick={() => setNarrowShowsDetail(false)}
             >
               ← 返回文件列表
             </button>
@@ -340,6 +377,7 @@ export function GitPanel({
               selectedFileId={session.selectedFileId}
               onSelect={entry => {
                 git.setSession({ selectedLineIds: [] });
+                setNarrowShowsDetail(true);
                 git.openFile(entry);
               }}
               onToggleSelection={git.toggleSelection}

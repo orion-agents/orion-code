@@ -22,6 +22,18 @@ const DEFAULTS = {
   stagedFiles: 100,
   untrackedFiles: 40,
   targetBytes: 200 * 1024,
+  /**
+   * v0.3.19 (G317-20) — how many extra files to commit and then modify, so the "2,000 changed
+   * files" bound has a fixture that actually reaches it. Defaults to 0 so the S2 baseline
+   * stays byte-for-byte reproducible.
+   */
+  changedFiles: 0,
+  /**
+   * v0.3.19 (G317-20) — size of a committed file that is then rewritten line by line, so the
+   * diff itself (not just the file) is large. This is what "大数据有界" is about: the panel
+   * must bound the diff it produces, not merely read a large file cheaply.
+   */
+  wideDiffBytes: 0,
 };
 
 function parseArgs(argv) {
@@ -30,8 +42,15 @@ function parseArgs(argv) {
     const arg = argv[index];
     if (arg === '--dir') options.dir = argv[++index];
     else if (arg === '--commits') options.commits = Number(argv[++index]);
+    else if (arg === '--changed-files') options.changedFiles = Number(argv[++index]);
+    else if (arg === '--wide-diff-bytes') options.wideDiffBytes = Number(argv[++index]);
     else if (arg.startsWith('--dir=')) options.dir = arg.slice('--dir='.length);
     else if (arg.startsWith('--commits=')) options.commits = Number(arg.slice('--commits='.length));
+    else if (arg.startsWith('--changed-files=')) {
+      options.changedFiles = Number(arg.slice('--changed-files='.length));
+    } else if (arg.startsWith('--wide-diff-bytes=')) {
+      options.wideDiffBytes = Number(arg.slice('--wide-diff-bytes='.length));
+    }
   }
   return options;
 }
@@ -113,6 +132,13 @@ function main() {
   git(dir, ['fast-import', '--quiet', '--done'], buildHistoryStream(options.commits));
   git(dir, ['reset', '-q', '--hard', 'HEAD']);
 
+  // v0.3.19 (G317-20) — the comparison samples need two ends. A single-ref repository can only
+  // offer one option in the ref pickers, which is why the first attempt collected no comparison
+  // samples at all. A tag and a branch pin two points on the same history.
+  const tipBack = offset => `HEAD~${Math.max(0, Math.min(offset, options.commits - 1))}`;
+  git(dir, ['tag', '-a', 'perf-base', '-m', 'perf base', tipBack(200)]);
+  git(dir, ['branch', 'perf-side', tipBack(500)]);
+
   // 2. A committed baseline of ordinary files.
   mkdirSync(join(dir, 'src'), { recursive: true });
   for (let index = 0; index < options.baselineFiles; index += 1) {
@@ -164,12 +190,52 @@ function main() {
     );
   }
 
+  // v0.3.19 (G317-20) — the large-changed-set profile. Committed first, then modified, so the
+  // whole set shows up as ordinary unstaged changes rather than as untracked additions.
+  if (options.changedFiles > 0) {
+    mkdirSync(join(dir, 'bulk'), { recursive: true });
+    for (let index = 0; index < options.changedFiles; index += 1) {
+      writeFileSync(
+        join(dir, `bulk/file-${String(index).padStart(5, '0')}.txt`),
+        fileBody(index + 900_000, 20)
+      );
+    }
+    git(dir, ['add', 'bulk']);
+    git(dir, ['commit', '-q', '-m', 'chore: bulk baseline']);
+    for (let index = 0; index < options.changedFiles; index += 1) {
+      writeFileSync(
+        join(dir, `bulk/file-${String(index).padStart(5, '0')}.txt`),
+        `${fileBody(index + 900_000, 20)}changed line ${index}\n`
+      );
+    }
+  }
+
+  // v0.3.19 (G317-20) — a large *diff*: the file is rewritten throughout, so the patch is
+  // proportional to the file rather than to a single edited line.
+  let wideDiffActualBytes = 0;
+  if (options.wideDiffBytes > 0) {
+    mkdirSync(join(dir, 'wide'), { recursive: true });
+    const originalBody = fileBodyOfSize(7_700_000, options.wideDiffBytes);
+    writeFileSync(join(dir, 'wide/diff.txt'), originalBody);
+    git(dir, ['add', 'wide/diff.txt']);
+    git(dir, ['commit', '-q', '-m', 'feat: add wide diff target']);
+    const rewritten = originalBody
+      .split('\n')
+      .map(line => (line.startsWith('line ') ? `rewritten ${line.slice(5)}` : line))
+      .join('\n');
+    writeFileSync(join(dir, 'wide/diff.txt'), rewritten);
+    wideDiffActualBytes = Buffer.byteLength(rewritten, 'utf8');
+  }
+
   const summary = {
     dir,
     commits: options.commits,
     targetBytesRequested: options.targetBytes,
     // The real size, so the evidence never quotes the requested figure as an achieved one.
     targetBytesActual: Buffer.byteLength(targetBody, 'utf8'),
+    changedFilesRequested: options.changedFiles,
+    wideDiffBytesRequested: options.wideDiffBytes,
+    wideDiffActualBytes,
     // `-uall` so untracked files are counted individually rather than as one directory.
     porcelain: git(dir, ['status', '--porcelain=v1', '-uall']).split('\n').filter(Boolean).length,
     elapsedMs: Date.now() - started,

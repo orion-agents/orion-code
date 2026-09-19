@@ -38,7 +38,11 @@ async function main(): Promise<void> {
     await page.goto(handle.url, { waitUntil: 'networkidle' });
 
     await page.getByRole('heading', { name: '选择或创建一个会话' }).waitFor();
-    await page.getByText('本地 Runtime 已连接').waitFor();
+    // Readiness is the stable state contract, not display copy: the footer carries
+    // data-testid="runtime-connection-state" with data-state="live" once the events stream is
+    // established. Asserting the old `本地 Runtime 已连接` text failed for years' worth of runs
+    // after the copy changed to `已连接` (docs/plan/v0.3.12-plan-v2.md:22).
+    await page.locator('[data-testid="runtime-connection-state"][data-state="live"]').waitFor();
     await page.getByRole('button', { name: '创建会话', exact: true }).first().click();
     await page.getByText('模型尚未配置').waitFor();
     await page.locator('.project-session-main[aria-current="page"]').waitFor();

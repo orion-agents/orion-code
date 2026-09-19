@@ -2,12 +2,12 @@
 
 Local-first, goal-driven coding agent for the terminal and browser.
 
-> v0.3.18 npm-published — the Git right-hand work panel
-> (`docs/plan/v0.3.17-plan.md`, S0–S6): change navigation with host-side
-> filtering, unified and side-by-side diffs, hunk/line staging through an atomic
-> index transaction, history / compare / conflict views, plus the local
-> project-open path. Fixes one CRLF part-staging defect.
-> 0.3.18 is published to npm; `main` does not carry it yet and no Git tag exists.
+> v0.3.19 candidate — closes the v0.3.17 Git work panel's assertion backlog
+> (`docs/plan/evidence/v0.3.17-git/g317-status.md`) and fixes what those
+> assertions found: responsive tiers that never activated, a diff read discarded
+> on a background refresh that left the pane blank, a narrow back control that
+> dropped the reading position, and a bare repository reported as "not a
+> repository". Candidate source is not an npm publication, Git tag, or merge.
 
 [中文说明](README.zh-CN.md) ·
 [v0.3.7 plan](docs/plan/v0.3.7-left-rail-improvement-plan.md) ·
@@ -172,7 +172,7 @@ current development environments. Node 20 is upstream EOL and is no longer a v0.
 After the immutable `0.3.5` npm receipt exists:
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.18
+npm install -g @orion-agents/orion-code@0.3.19
 orion --version
 orion doctor
 ```

@@ -11,6 +11,7 @@ import {
   gitPanelScopeKey,
   isGitPanelView,
   normalizeGitDisplayPreference,
+  resolveGitPanelLayout,
   resolveSelectionAfterRefresh,
 } from '../web/src/state/git-panel-state';
 
@@ -135,5 +136,63 @@ describe('resolveSelectionAfterRefresh', () => {
     expect(
       resolveSelectionAfterRefresh({ entries: [], previousFileId: 'git_a', previousPath: 'a.ts' })
     ).toEqual({ fileId: null, path: null, notice: '' });
+  });
+});
+
+/**
+ * v0.3.19 (G317-19) — the responsive tier, asserted at the widths the plan names
+ * (panel 960 / 620 / 360) instead of only in whichever browser window was open.
+ */
+describe('resolveGitPanelLayout', () => {
+  test('the plan widths pick the documented tiers', () => {
+    expect(resolveGitPanelLayout(960, 'side-by-side')).toEqual({
+      tier: 'wide',
+      narrow: false,
+      effectiveMode: 'side-by-side',
+      dataWidth: 'wide',
+    });
+    expect(resolveGitPanelLayout(620, 'side-by-side')).toEqual({
+      tier: 'narrow',
+      narrow: true,
+      // 620 <= 640, so two code columns would be dishonest here.
+      effectiveMode: 'unified',
+      dataWidth: 'narrow',
+    });
+    expect(resolveGitPanelLayout(360, 'side-by-side')).toEqual({
+      tier: 'narrow',
+      narrow: true,
+      effectiveMode: 'unified',
+      dataWidth: 'narrow',
+    });
+  });
+
+  test('the tier boundaries are inclusive where the plan says they are', () => {
+    expect(resolveGitPanelLayout(620, 'unified').tier).toBe('narrow');
+    expect(resolveGitPanelLayout(621, 'unified').tier).toBe('compact');
+    expect(resolveGitPanelLayout(959, 'unified').tier).toBe('compact');
+    expect(resolveGitPanelLayout(960, 'unified').tier).toBe('wide');
+    // The side-by-side floor is separate from the narrow ceiling, on purpose.
+    expect(resolveGitPanelLayout(640, 'side-by-side').effectiveMode).toBe('unified');
+    expect(resolveGitPanelLayout(641, 'side-by-side').effectiveMode).toBe('side-by-side');
+  });
+
+  test('an unmeasured panel is wide, never guessed to be narrow', () => {
+    // Before the first ResizeObserver callback the width is unknown; the unconstrained render
+    // is the safe default, and a narrow panel must never be inferred from a missing number.
+    for (const width of [0, -1, Number.NaN]) {
+      expect(resolveGitPanelLayout(width, 'side-by-side')).toEqual({
+        tier: 'wide',
+        narrow: false,
+        effectiveMode: 'side-by-side',
+        dataWidth: 'wide',
+      });
+    }
+  });
+
+  test('the narrowed mode is a rendering decision, never written back to the preference', () => {
+    const narrow = resolveGitPanelLayout(360, 'side-by-side');
+    // The stored preference is unchanged — a narrow container must not downgrade a wide one.
+    expect(narrow.effectiveMode).toBe('unified');
+    expect(resolveGitPanelLayout(1400, 'side-by-side').effectiveMode).toBe('side-by-side');
   });
 });

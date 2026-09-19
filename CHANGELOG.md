@@ -22,6 +22,53 @@ which is **not** a pass.
 
 ## [Unreleased]
 
+## [0.3.19]
+
+> **Status: candidate.** Closes the five scenarios the v0.3.17 status table left as
+> "feature present, assertion missing" (`docs/plan/evidence/v0.3.17-git/g317-status.md`),
+> and fixes the three defects those assertions found. Not merged, tagged or published.
+
+### Fixed
+
+- **The responsive tiers were inert.** `GitPanel` attached its `ResizeObserver` from an
+  effect with an empty dependency list. The panel's first render is the loading placeholder,
+  which does not contain the measured node, so the effect read a null ref, returned, and never
+  ran again: the width stayed `0`, `data-width` stayed `wide` on a 480px panel, and the narrow
+  affordances never activated on any load whose status was not already cached. The observer is
+  now attached with a callback ref, so it follows the node in and out of the tree.
+- **A discarded diff read left the pane blank with a file still selected.** Only a newer
+  *selection* supersedes a read now. The document states the revision it was rendered against,
+  so accepting it and letting `stale` tell the truth is both safer and correct — dropping it
+  because the 2s visible poll had bumped the revision abandoned the read with nothing to
+  re-issue it.
+- **Returning from the narrow detail pane threw away the reading position.** The back control
+  cleared `selectedFileId` to show the list, which also dropped the anchors and the cached
+  document. The pane choice is now its own state.
+
+### Added
+
+- **A bare repository is no longer reported as "not a repository".** `rev-parse
+  --show-toplevel` fails for a bare repository too, and that single failure was read as "no
+  repository here". Status now carries `repositoryKind: 'worktree' | 'bare' | 'absent'` and
+  `hasWorktree`; every worktree-backed surface gates on `hasWorktree`, which is the only flag
+  that cannot be wrong. A bare repository's branch is reported instead of hidden, its change
+  lists stay empty, and the history limit names the real reason.
+- **G317 assertion backlog:** an external write no longer moves the reader (the refresh is
+  detected and the document is marked stale instead of silently kept); `在 Files 打开` is
+  asserted end to end; the theme is measured rather than assumed (system preference, the
+  explicit choice through Settings, reduced motion and forced colours); the narrow tier's back
+  affordance and overflow are asserted; and repeated open/close plus a hundred consecutive
+  diffs are asserted bounded, with S5/S6 samples recorded by
+  `scripts/perf/v0319-git-s6-samples.mjs`.
+
+### Known limits
+
+- The `compact` and `wide` panel tiers are pinned by `resolveGitPanelLayout` unit tests, not in
+  a browser: neither seeding `workPanel.widthPx` nor dragging the splitter reproduced a tier
+  change in the E2E harness. `docs/plan/evidence/v0.3.17-git/s6-responsive-keyboard.md` records
+  the measurement.
+- The drawer entry point below 1180px is not asserted; those widths assert overflow only.
+
 ## [0.3.18]
 
 > **Status: npm-published, not tagged or merged.** The exact contents below are

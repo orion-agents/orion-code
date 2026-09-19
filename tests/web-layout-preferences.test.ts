@@ -111,6 +111,44 @@ describe('Web Workbench layout preferences v2', () => {
       workPanel: { mode: 'drawer', widthPx: 0 },
     });
   });
+
+  /**
+   * v0.3.19 (G317-19) — the plan's window widths (1280 / 768 / 375) must not overflow.
+   *
+   * Stated as an invariant rather than only as golden numbers, because "不溢出" is the actual
+   * requirement: whatever the tier, the columns it solves for have to fit the container.
+   */
+  it.each([1_280, 768, 375])('solves columns that fit a %ipx container without overflow', width => {
+    for (const preference of [
+      makePreference({}),
+      makePreference({ navigationWidth: 480, workPanelWidth: 3_200 }),
+      makePreference({ navigationWidth: 240, workPanelWidth: 320 }),
+      makePreference({ navigationExpanded: false, workPanelExpanded: false }),
+    ]) {
+      const columns = computeWorkbenchColumns(width, preference);
+      const total =
+        columns.projectNavigation.widthPx + columns.conversationWidthPx + columns.workPanel.widthPx;
+      expect(total).toBeLessThanOrEqual(width);
+      // A docked column is a real column; a rail is exactly the rail; a drawer takes no space.
+      expect(columns.projectNavigation.widthPx).toBeGreaterThanOrEqual(0);
+      expect(columns.workPanel.widthPx).toBeGreaterThanOrEqual(0);
+      if (columns.workPanel.mode === 'rail') {
+        expect(columns.workPanel.widthPx).toBe(48);
+      }
+      if (columns.workPanel.mode === 'drawer') {
+        expect(columns.workPanel.widthPx).toBe(0);
+      }
+    }
+  });
+
+  it('hands the whole container to the conversation at the phone width', () => {
+    // 375 is below 760, so both side panels are drawers and nothing is reserved for them.
+    expect(computeWorkbenchColumns(375, makePreference({ navigationWidth: 480 }))).toEqual({
+      projectNavigation: { mode: 'drawer', widthPx: 0 },
+      conversationWidthPx: 375,
+      workPanel: { mode: 'drawer', widthPx: 0 },
+    });
+  });
 });
 
 function makePreference(input: {

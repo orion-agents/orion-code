@@ -249,3 +249,53 @@ export function resolveSelectionAfterRefresh(input: {
       input.previousFileId === null ? '' : `原选中的改动已不在此列表，已跳到 ${fallback.path}。`,
   };
 }
+
+/** v0.3.19 (G317-19) — the plan's panel widths: 960 wide, 620 narrow, 360 at the floor. */
+export const GIT_PANEL_WIDE_MIN_WIDTH = 960;
+export const GIT_PANEL_COMPACT_MAX_WIDTH = 959;
+export const GIT_PANEL_NARROW_MAX_WIDTH = 620;
+/** Reading two code columns needs more room than the panel stops being narrow at. */
+export const GIT_PANEL_SIDE_BY_SIDE_MIN_WIDTH = 640;
+
+export type GitPanelTier = 'wide' | 'compact' | 'narrow';
+
+export interface GitPanelLayoutV1 {
+  readonly tier: GitPanelTier;
+  /** True while the panel is narrow enough that it shows one pane at a time. */
+  readonly narrow: boolean;
+  /** The mode actually rendered, which is not always the stored preference. */
+  readonly effectiveMode: GitDiffMode;
+  /** What `data-width` reports, so the DOM and the logic can never disagree. */
+  readonly dataWidth: GitPanelTier;
+}
+
+/**
+ * v0.3.19 (G317-19) — the responsive decision, extracted so it can be asserted at the plan's
+ * widths instead of only being visible in a browser at whatever width a window happened to be.
+ *
+ * Two things this deliberately does *not* do:
+ *   - it never writes back to the stored preference, because a narrow container must not
+ *     permanently downgrade what the reader chose for a wide one;
+ *   - it returns `wide` before the first measurement (`width <= 0`), so the initial render is
+ *     the unconstrained one and a narrow panel is never guessed at from a missing width.
+ */
+export function resolveGitPanelLayout(
+  panelWidth: number,
+  storedMode: GitDiffMode
+): GitPanelLayoutV1 {
+  if (!Number.isFinite(panelWidth) || panelWidth <= 0) {
+    return { tier: 'wide', narrow: false, effectiveMode: storedMode, dataWidth: 'wide' };
+  }
+  const tier: GitPanelTier =
+    panelWidth <= GIT_PANEL_NARROW_MAX_WIDTH
+      ? 'narrow'
+      : panelWidth <= GIT_PANEL_COMPACT_MAX_WIDTH
+        ? 'compact'
+        : 'wide';
+  return {
+    tier,
+    narrow: tier === 'narrow',
+    effectiveMode: panelWidth <= GIT_PANEL_SIDE_BY_SIDE_MIN_WIDTH ? 'unified' : storedMode,
+    dataWidth: tier,
+  };
+}

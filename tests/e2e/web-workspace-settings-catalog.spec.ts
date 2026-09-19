@@ -21,6 +21,7 @@ import { allowExpectedNetworkFailures, capturedSseEvents, expect, test } from '.
 import {
   answerApproval,
   createSession,
+  openWorkspacePathForm,
   renameActiveSession,
   selectInspectorTab,
   submitPrompt,
@@ -48,7 +49,9 @@ test('E2E-P0-07 workspaces stay isolated while MCP and large artifacts are expli
   await ui.workspaceRail.getByRole('button', { name: '选择其他工作区' }).click();
   await expect(ui.workspaceDialog).toBeVisible();
   // v0.3.16 — the manual path entry now lives behind the advanced disclosure.
-  await ui.workspaceDialog.locator('summary', { hasText: '高级：粘贴绝对路径' }).click();
+  // v0.3.19 — <details> keeps its open state while the dialog stays mounted, so an
+  // unconditional click closes it on the second call and the path box never appears.
+  await openWorkspacePathForm(ui.workspaceDialog);
   await ui.workspaceDialog
     .getByRole('textbox', { name: '打开其他本地目录' })
     .fill(workspace.secondaryWorkspace);

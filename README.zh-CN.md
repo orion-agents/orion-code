@@ -2,10 +2,10 @@
 
 面向终端与浏览器、本地优先的目标驱动 Coding Agent。
 
-> v0.3.18 已发布至 npm：Git 右侧工作栏（`docs/plan/v0.3.17-plan.md`，S0–S6）——
-> 变更导航（Host 侧筛选）、统一与并排 Diff、经原子 index 事务的 Hunk/行级暂存、
-> 历史 / 比较 / 冲突视图，外加本地项目打开链路；并修复一处 CRLF 分段暂存缺陷。
-> 0.3.18 已发布至 npm，但尚未进入 `main`，也未创建 Git tag。
+> v0.3.19 候选版本：补齐 v0.3.17 Git 工作栏的断言欠账
+> （`docs/plan/evidence/v0.3.17-git/g317-status.md`），并修掉这些断言找出来的问题——
+> 响应式三档从未生效、被后台刷新丢弃的 Diff 读取导致内容区空白、窄屏返回丢失阅读位置、
+> 裸仓库被当成「不是仓库」。Candidate 源码不代表已创建 npm 发布、Git tag 或达到可合并状态。
 
 [English](README.md) ·
 [v0.3.7 方案](docs/plan/v0.3.7-left-rail-improvement-plan.md) ·
@@ -102,7 +102,7 @@ Current。Node 20 已结束上游维护，不再属于 v0.3 Runtime 合同。
 当 npm 已存在不可变的 `0.3.4` 发布凭据后：
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.18
+npm install -g @orion-agents/orion-code@0.3.19
 orion --version
 orion doctor
 ```

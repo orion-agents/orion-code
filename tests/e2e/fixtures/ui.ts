@@ -48,7 +48,11 @@ export function workbenchUi(page: Page) {
     newSessionButton: activeProject.getByRole('button', { name: /^在 .* 新建会话$/u }),
     sessionSearch: workspaceRail.getByRole('searchbox', { name: '搜索项目和会话' }),
     navigationButton: main.getByRole('button', { name: '打开会话导航', exact: true }),
-    inspectorButton: main.getByRole('button', { name: /^(打开|关闭)工作面板$/u }),
+    // v0.3.11 moved the work-panel toggle into the dock rail, which is a sibling of <main>,
+    // so scoping to `main` alone stopped matching it.
+    inspectorButton: main
+      .getByRole('button', { name: /^(打开|关闭)工作面板$/u })
+      .or(page.locator('#work-panel').getByRole('button', { name: /^(打开|关闭)工作面板$/u })),
     settingsButton: workspaceRail.getByRole('button', { name: '打开设置', exact: true }),
     modeButton: main.getByRole('button', { name: '工作模式', exact: true }),
     permissionButton: main.getByRole('button', { name: '会话权限', exact: true }),
@@ -145,6 +149,26 @@ export async function discardSettingsDraft(
   await expect(confirm).toBeVisible({ timeout: options.timeout });
   await confirm.getByRole('button', { name: '放弃更改', exact: true }).click();
   await expect(ui.settingsDialog).toBeHidden({ timeout: options.timeout });
+}
+
+/**
+ * v0.3.19 — reveals the manual path form in the workspace dialog.
+ *
+ * v0.3.16 moved the form behind `<details class="workspace-advanced">`. `<details>` keeps its
+ * open state for as long as the dialog stays mounted, so clicking the summary unconditionally
+ * **closes** it on any second call and the textbox then never appears. Open it only when the
+ * textbox is not already usable.
+ */
+export async function openWorkspacePathForm(
+  dialog: Locator,
+  options: UiOperationOptions = {}
+): Promise<Locator> {
+  const pathInput = dialog.getByRole('textbox', { name: '打开其他本地目录' });
+  if (!(await pathInput.isVisible())) {
+    await dialog.locator('summary', { hasText: '高级：粘贴绝对路径' }).click();
+  }
+  await expect(pathInput).toBeVisible({ timeout: options.timeout });
+  return pathInput;
 }
 
 export async function waitForWorkbenchReady(

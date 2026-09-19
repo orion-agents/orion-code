@@ -118,6 +118,10 @@ function gitStatus(overrides: Partial<WebGitStatusV1> = {}): WebGitStatusV1 {
   const conflicted = overrides.conflicted ?? Object.freeze([]);
   return Object.freeze({
     isRepository: true,
+    // v0.3.19 (G317-22) — the precise kind travels with the coarse flag; ReviewServiceV1 only
+    // reads the change lists, so a worktree repository is the only shape it needs here.
+    repositoryKind: 'worktree' as const,
+    hasWorktree: true,
     repositoryRevision: 'repository-revision',
     branch: 'main',
     detached: false,

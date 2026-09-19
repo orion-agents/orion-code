@@ -11,7 +11,7 @@ import { join } from 'path';
 
 import { guardedBrowserGet, webBootstrap } from './fixtures/api';
 import { expect, test } from './fixtures/test';
-import { waitForWorkbenchReady, workbenchUi } from './fixtures/ui';
+import { openWorkspacePathForm, waitForWorkbenchReady, workbenchUi } from './fixtures/ui';
 
 interface OpenTraceShape {
   readonly requestId: string;
@@ -139,7 +139,7 @@ test('WEB38-P0-04 (W316P-08) the advanced path follows the same inspect → conf
   const picked = mkdtempSync(join(workspace.rootDirectory, 'typed-'));
   const ui = await openWorkspaceDialog(page);
 
-  await ui.workspaceDialog.locator('summary', { hasText: '高级：粘贴绝对路径' }).click();
+  await openWorkspacePathForm(ui.workspaceDialog);
   await ui.workspaceDialog.getByRole('textbox', { name: '打开其他本地目录' }).fill(picked);
   await ui.workspaceDialog.getByRole('button', { name: '打开', exact: true }).click();
 
