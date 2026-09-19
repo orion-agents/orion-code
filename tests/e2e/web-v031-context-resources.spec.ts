@@ -36,7 +36,13 @@ import {
   webBootstrap,
 } from './fixtures/api';
 import { allowExpectedNetworkFailures, expect, test } from './fixtures/test';
-import { createSession, openInspector, waitForWorkbenchReady, workbenchUi } from './fixtures/ui';
+import {
+  createSession,
+  openInspector,
+  openWorkspacePathForm,
+  waitForWorkbenchReady,
+  workbenchUi,
+} from './fixtures/ui';
 
 test.use({ trace: 'off', video: 'off', screenshot: 'off' });
 
@@ -831,7 +837,9 @@ async function switchWorkspaceThroughUi(page: Page, path: string): Promise<void>
   await ui.workspaceRail.getByRole('button', { name: '选择其他工作区' }).click();
   await expect(ui.workspaceDialog).toBeVisible();
   // v0.3.16 — the manual path entry now lives behind the advanced disclosure.
-  await ui.workspaceDialog.locator('summary', { hasText: '高级：粘贴绝对路径' }).click();
+  // v0.3.19 — <details> keeps its open state while the dialog stays mounted, so an
+  // unconditional click closes it on the second call and the path box never appears.
+  await openWorkspacePathForm(ui.workspaceDialog);
   await ui.workspaceDialog.getByRole('textbox', { name: '打开其他本地目录' }).fill(path);
   await ui.workspaceDialog.getByRole('button', { name: '打开', exact: true }).click();
   // v0.3.17 — the advanced path confirms on the card before activating.

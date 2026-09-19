@@ -228,9 +228,11 @@ async function main(): Promise<void> {
     });
     await capture(page, outputDirectory, screenshots, 'offline', '离线与待重连');
     await context.setOffline(false);
-    await expect(page.getByText('本地 Runtime 已连接', { exact: true })).toBeVisible({
-      timeout: 30_000,
-    });
+    // Same stable state contract as the E2E fixture: copying the footer text made this
+    // capture break silently when the copy changed.
+    await expect(
+      page.locator('[data-testid="runtime-connection-state"][data-state="live"]')
+    ).toBeVisible({ timeout: 30_000 });
 
     await page.setViewportSize({ width: 390, height: 844 });
     await workbenchUi(page).navigationButton.click();

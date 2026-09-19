@@ -23,6 +23,7 @@ import {
   createSession,
   openInspector,
   openSessionNavigation,
+  openWorkspacePathForm,
   selectInspectorTab,
   setAgentMode,
   submitPrompt,
@@ -290,10 +291,12 @@ test('WEB31-P0-04 Agent panel preserves Plan, activity, capabilities, diagnostic
   await expect(workbenchUi(page).modeButton).toContainText('BUILD');
 
   const inspector = await openInspector(page, { timeout: 30_000 });
-  await expect(inspector.getByRole('tab', { name: /^Agent，/u })).toHaveAttribute(
-    'aria-selected',
-    'true'
-  );
+  // v0.3.11 replaced the dock's role="tab" strip with rail buttons, so selection is
+  // `aria-current="page"` and there is no tab to match. Keying on `data-work-panel-id` keeps
+  // this assertion about *which panel is selected* instead of about label copy.
+  await expect(
+    inspector.locator('[data-work-panel-id="agent"][aria-current="page"]')
+  ).toBeVisible();
 
   const goal = await selectInspectorTab(page, 'Goal');
   await expect(goal.getByRole('textbox', { name: '创建 Goal' })).toBeVisible();
@@ -366,10 +369,9 @@ test('WEB31-P0-11 five responsive widths preserve keyboard focus and zero page o
   await page.keyboard.press('Control+Shift+KeyB');
   await expect(ui.inspectorDock).toHaveAttribute('data-state', 'expanded');
   await page.keyboard.press('Control+Shift+Digit3');
-  await expect(ui.inspectorDock.getByRole('tab', { name: /^终端，/u })).toHaveAttribute(
-    'aria-selected',
-    'true'
-  );
+  await expect(
+    ui.inspectorDock.locator('[data-work-panel-id="terminal"][aria-current="page"]')
+  ).toBeVisible();
   await page.keyboard.press('Control+Shift+Digit1');
   await expect(ui.inspectorDock.getByRole('tab', { name: /^Agent，/u })).toHaveAttribute(
     'aria-selected',
@@ -798,7 +800,9 @@ async function activateWorkspaceThroughUi(page: Page, path: string): Promise<voi
   await trigger.click();
   await expect(ui.workspaceDialog).toBeVisible();
   // v0.3.16 — the manual path entry now lives behind the advanced disclosure.
-  await ui.workspaceDialog.locator('summary', { hasText: '高级：粘贴绝对路径' }).click();
+  // v0.3.19 — <details> keeps its open state while the dialog stays mounted, so an
+  // unconditional click closes it on the second call and the path box never appears.
+  await openWorkspacePathForm(ui.workspaceDialog);
   await ui.workspaceDialog.getByRole('textbox', { name: '打开其他本地目录' }).fill(path);
   await ui.workspaceDialog.getByRole('button', { name: '打开', exact: true }).click();
   // v0.3.17 — the advanced path confirms on the card before activating.
