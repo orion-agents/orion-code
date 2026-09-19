@@ -28,11 +28,19 @@ export function GitHistoryView({
 }: {
   readonly history: GitHistoryModel;
   readonly actions: WorkbenchActions;
-  readonly display: { readonly mode: GitDiffMode; readonly wrap: boolean; readonly showWhitespace: boolean };
+  readonly display: {
+    readonly mode: GitDiffMode;
+    readonly wrap: boolean;
+    readonly showWhitespace: boolean;
+  };
   readonly collapsedHunks: readonly string[];
   readonly anchorLineId: string | null;
   readonly onDisplayChange: (
-    patch: Partial<{ readonly mode: GitDiffMode; readonly wrap: boolean; readonly showWhitespace: boolean }>
+    patch: Partial<{
+      readonly mode: GitDiffMode;
+      readonly wrap: boolean;
+      readonly showWhitespace: boolean;
+    }>
   ) => void;
   readonly onToggleHunk: (hunkId: string) => void;
   readonly onSetAllFolded: (folded: boolean) => void;
@@ -45,14 +53,26 @@ export function GitHistoryView({
   const [blame, setBlame] = useState<{
     readonly path: string;
     readonly rev: string;
-    readonly lines: readonly { readonly lineNumber: number; readonly commitShort: string; readonly author: string; readonly authoredAt: string; readonly summary: string; readonly isBoundary: boolean }[];
+    readonly lines: readonly {
+      readonly lineNumber: number;
+      readonly commitShort: string;
+      readonly author: string;
+      readonly authoredAt: string;
+      readonly summary: string;
+      readonly isBoundary: boolean;
+    }[];
     readonly truncated: boolean;
   } | null>(null);
   const [blameBusy, setBlameBusy] = useState(false);
   // v0.3.17 S5 — read a file at a revision, including one no longer in the worktree.
   // v0.3.17 S5 — the commit graph, drawn by git itself.
   const [graph, setGraph] = useState<{
-    readonly rows: readonly { readonly graph: string; readonly id: string | null; readonly shortId: string | null; readonly subject: string }[];
+    readonly rows: readonly {
+      readonly graph: string;
+      readonly id: string | null;
+      readonly shortId: string | null;
+      readonly subject: string;
+    }[];
     readonly truncated: boolean;
   } | null>(null);
   const [graphBusy, setGraphBusy] = useState(false);
@@ -177,9 +197,7 @@ export function GitHistoryView({
           </header>
           {/* `--follow` has real limits for copies and complex merges; say so instead of
               implying the tracking is complete (plan G6). */}
-          <p className="git-file-history-note">
-            跟随重命名；复制与复杂合并场景的追踪可能不完整。
-          </p>
+          <p className="git-file-history-note">跟随重命名；复制与复杂合并场景的追踪可能不完整。</p>
           <ul>
             {fileHistory.items.map(commit => (
               <li key={commit.id}>
@@ -209,9 +227,7 @@ export function GitHistoryView({
             <div>
               <code>{detail.shortId}</code>
               {detail.isMerge ? (
-                <span className="git-merge-badge">
-                  合并提交 · {detail.parents.length} 个父提交
-                </span>
+                <span className="git-merge-badge">合并提交 · {detail.parents.length} 个父提交</span>
               ) : detail.parents.length === 0 ? (
                 <span className="git-root-badge">根提交</span>
               ) : null}
@@ -357,7 +373,10 @@ export function GitHistoryView({
       {graph ? (
         <section className="git-graph" aria-label="提交拓扑">
           <header>
-            <strong>拓扑（{graph.rows.length}{graph.truncated ? '+' : ''} 行）</strong>
+            <strong>
+              拓扑（{graph.rows.length}
+              {graph.truncated ? '+' : ''} 行）
+            </strong>
             <button type="button" className="text-button" onClick={() => setGraph(null)}>
               关闭
             </button>

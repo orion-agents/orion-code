@@ -149,15 +149,13 @@ export function useConversationHistoryNavigator(options: {
     // registry has to be rebuilt from what is actually rendered, keeping this
     // independent of React reconciliation.
     registry.current.clear();
-    viewport
-      .querySelectorAll<HTMLElement>('li[data-order]')
-      .forEach(element => {
-        const order = Number(element.dataset.order);
-        if (Number.isFinite(order)) {
-          registry.current.set(order, element);
-          observer.observe(element);
-        }
-      });
+    viewport.querySelectorAll<HTMLElement>('li[data-order]').forEach(element => {
+      const order = Number(element.dataset.order);
+      if (Number.isFinite(order)) {
+        registry.current.set(order, element);
+        observer.observe(element);
+      }
+    });
     return () => disconnect();
     // Re-binding when the loaded window grows (load-earlier) is intentional;
     // onUserNavigate is read through a ref so it needs no dependency here.

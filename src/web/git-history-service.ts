@@ -200,7 +200,13 @@ const FIELD_SEPARATOR = '\x1f';
  *  mistaken for a separator. */
 const LIST_FORMAT = ['%H', '%h', '%ct', '%an', '%s', '%P', '%D'].join(FIELD_SEPARATOR);
 
-function bounded(value: number | undefined, fallback: number, min: number, max: number, name: string): number {
+function bounded(
+  value: number | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+  name: string
+): number {
   if (value === undefined) return fallback;
   if (!Number.isInteger(value) || value < min || value > max) {
     throw new WebWorkbenchError(400, `${name} must be an integer from ${min} to ${max}.`);
@@ -362,19 +368,14 @@ export function createGitHistoryReader(options: GitHistoryReaderOptions): GitHis
     const chosen = parents[Math.min(parentIndex, parents.length - 1)];
     return {
       baseOid: chosen,
-      baseLabel:
-        parents.length > 1
-          ? `父提交 ${parentIndex + 1}/${parents.length}`
-          : '父提交',
+      baseLabel: parents.length > 1 ? `父提交 ${parentIndex + 1}/${parents.length}` : '父提交',
     };
   };
 
   return {
     async refs() {
       await requireRoot();
-      const head = (
-        await runGit(['rev-parse', '--verify', '--quiet', 'HEAD']).catch(() => '')
-      )
+      const head = (await runGit(['rev-parse', '--verify', '--quiet', 'HEAD']).catch(() => ''))
         .toString()
         .trim();
       // Detached is defined by HEAD being a raw oid rather than a symbolic ref, NOT by
@@ -457,7 +458,12 @@ export function createGitHistoryReader(options: GitHistoryReaderOptions): GitHis
       // separators the list format relies on.
       const message = await runGit(['log', '-1', '--format=%B', summary.id]);
       const committerRaw = (
-        await runGit(['log', '-1', `--format=%cn${FIELD_SEPARATOR}%ce${FIELD_SEPARATOR}%cI`, summary.id])
+        await runGit([
+          'log',
+          '-1',
+          `--format=%cn${FIELD_SEPARATOR}%ce${FIELD_SEPARATOR}%cI`,
+          summary.id,
+        ])
       ).trim();
       const [committerName, authorEmail, committedAt] = committerRaw.split(FIELD_SEPARATOR);
       const base = await resolveBase(summary.id, parentIndex);
@@ -505,13 +511,7 @@ export function createGitHistoryReader(options: GitHistoryReaderOptions): GitHis
     async history(query) {
       const root = await requireRoot();
       void root;
-      const pageSize = bounded(
-        query.pageSize,
-        SEARCH_PAGE_DEFAULT,
-        1,
-        SEARCH_PAGE_MAX,
-        'pageSize'
-      );
+      const pageSize = bounded(query.pageSize, SEARCH_PAGE_DEFAULT, 1, SEARCH_PAGE_MAX, 'pageSize');
       const message = assertSearchText(query.message, 'message');
       const author = assertSearchText(query.author, 'author');
       const sha = query.sha ? assertOid(query.sha, 'sha') : undefined;
@@ -676,17 +676,16 @@ export function createGitHistoryReader(options: GitHistoryReaderOptions): GitHis
         .toString()
         .trim();
       if (!tracked) {
-        return Object.freeze({ path, rev: rev ?? null, lines: Object.freeze([]), truncated: false });
+        return Object.freeze({
+          path,
+          rev: rev ?? null,
+          lines: Object.freeze([]),
+          truncated: false,
+        });
       }
       // `--porcelain` is machine-readable and stable; the date stays ISO so the client never
       // re-implements time. Uncommitted lines show as boundary/not-committed metadata.
-      const raw = await runGit([
-        'blame',
-        '--porcelain',
-        ...(target ? [target] : []),
-        '--',
-        path,
-      ]);
+      const raw = await runGit(['blame', '--porcelain', ...(target ? [target] : []), '--', path]);
       const commits = new Map<string, { author: string; authoredAt: string; summary: string }>();
       const lines: import('./git-history-service').GitBlameLineV1[] = [];
       let currentOid: string | null = null;
@@ -737,7 +736,14 @@ export function createGitHistoryReader(options: GitHistoryReaderOptions): GitHis
         else if (key === 'summary') pendingSummary = value;
         else if (key === 'boundary') boundary = true;
         if (pendingAuthor && pendingTime && pendingSummary && !commits.has(currentOid)) {
-          commits.set(currentOid, Object.freeze({ author: pendingAuthor, authoredAt: pendingTime, summary: pendingSummary }));
+          commits.set(
+            currentOid,
+            Object.freeze({
+              author: pendingAuthor,
+              authoredAt: pendingTime,
+              summary: pendingSummary,
+            })
+          );
         }
       }
       return Object.freeze({
@@ -754,9 +760,7 @@ export function createGitHistoryReader(options: GitHistoryReaderOptions): GitHis
       await requireRoot();
       const rev = input.rev ? assertSearchText(input.rev, 'rev') : undefined;
       const target = rev ?? 'HEAD';
-      const tracked = (
-        await runGit(['rev-parse', '--verify', '--quiet', target]).catch(() => '')
-      )
+      const tracked = (await runGit(['rev-parse', '--verify', '--quiet', target]).catch(() => ''))
         .toString()
         .trim();
       if (!tracked) {

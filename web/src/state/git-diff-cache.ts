@@ -24,7 +24,12 @@ export interface GitDiffCache {
   write(repositoryRevision: string, fileToken: string, document: GitDiffDocumentV2): void;
   clear(): void;
   /** Diagnostics for the perf harness; not used by the reader. */
-  stats(): { readonly entries: number; readonly bytes: number; readonly hits: number; readonly misses: number };
+  stats(): {
+    readonly entries: number;
+    readonly bytes: number;
+    readonly hits: number;
+    readonly misses: number;
+  };
 }
 
 /** Cheap and stable: what the reader would have to transfer again. */
@@ -44,7 +49,10 @@ export function createGitDiffCache(options?: {
   const maxBytes = options?.maxBytes ?? GIT_DIFF_CACHE_MAX_BYTES;
   const maxEntryBytes = options?.maxEntryBytes ?? GIT_DIFF_CACHE_MAX_ENTRY_BYTES;
   /** Insertion-ordered, so the first key is the least recently used. */
-  const entries = new Map<string, { readonly document: GitDiffDocumentV2; readonly bytes: number }>();
+  const entries = new Map<
+    string,
+    { readonly document: GitDiffDocumentV2; readonly bytes: number }
+  >();
   let bytes = 0;
   let hits = 0;
   let misses = 0;

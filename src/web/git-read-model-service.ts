@@ -404,7 +404,13 @@ export class GitReadModelServiceV1 {
     const ignoreWhitespace = input.ignoreWhitespace === true;
     const wordDiff = input.wordDiff === true;
     const offset = input.cursor
-      ? this.decodeCursor(input.cursor, 'diff', snapshot.revision, input.fileId, diffScope(ignoreWhitespace, wordDiff)).offset
+      ? this.decodeCursor(
+          input.cursor,
+          'diff',
+          snapshot.revision,
+          input.fileId,
+          diffScope(ignoreWhitespace, wordDiff)
+        ).offset
       : 0;
     const commands = diffCommands(path, target.source, ignoreWhitespace, wordDiff);
     const page = await streamDiffPage({
@@ -649,10 +655,7 @@ export class GitReadModelServiceV1 {
   }
 
   /** Reads one file at a revision — including a file that no longer exists locally. */
-  async fileBlob(input: {
-    readonly path: string;
-    readonly rev: string;
-  }): Promise<GitBlobResultV1> {
+  async fileBlob(input: { readonly path: string; readonly rev: string }): Promise<GitBlobResultV1> {
     return this.versionReader().blob(input);
   }
 
@@ -928,10 +931,7 @@ export class GitReadModelServiceV1 {
    * action may write. This replaces FileReadService token lookup, whose token space is
    * unrelated to Git and silently rejected every real Git list token.
    */
-  resolveMutationPaths(
-    action: 'stage' | 'unstage',
-    fileIds: readonly string[]
-  ): readonly string[] {
+  resolveMutationPaths(action: 'stage' | 'unstage', fileIds: readonly string[]): readonly string[] {
     if (!Array.isArray(fileIds) || fileIds.length === 0 || fileIds.length > 200) {
       throw new WebWorkbenchError(400, 'fileIds must list 1 through 200 files.');
     }
@@ -1021,7 +1021,8 @@ export class GitReadModelServiceV1 {
     assertSafeGitPaths(paths);
     if (paths.length === 0) throw new Error('unstage requires at least one path.');
     const pathsInfo = await this.resolveIndexPaths();
-    const head = (await this.tryGit(['rev-parse', '--verify', 'HEAD'], pathsInfo.root)) !== undefined;
+    const head =
+      (await this.tryGit(['rev-parse', '--verify', 'HEAD'], pathsInfo.root)) !== undefined;
     // Captured up front so the postcondition is checked against a frozen expectation.
     const headBlobs = new Map<string, string | null>();
     for (const path of paths) {
@@ -1153,10 +1154,7 @@ export class GitReadModelServiceV1 {
   }
 
   /** `ls-files --stage -z` parsed into path → blob oid, honouring a private index env. */
-  private async indexEntries(
-    root: string,
-    env: NodeJS.ProcessEnv
-  ): Promise<Map<string, string>> {
+  private async indexEntries(root: string, env: NodeJS.ProcessEnv): Promise<Map<string, string>> {
     const raw = await this.runGit(['ls-files', '--stage', '-z'], root, 'index', env);
     const entries = new Map<string, string>();
     for (const record of raw.split('\0')) {
@@ -1296,7 +1294,11 @@ export class GitReadModelServiceV1 {
       throw new WebWorkbenchError(409, 'Git repository is unavailable.', 'git_not_repository');
     }
     if (before.revision !== input.expectedRepositoryRevision) {
-      throw new WebWorkbenchError(409, 'Repository changed before commit.', 'git_revision_conflict');
+      throw new WebWorkbenchError(
+        409,
+        'Repository changed before commit.',
+        'git_revision_conflict'
+      );
     }
     if (before.conflictedRecords > 0) {
       throw new WebWorkbenchError(
@@ -1371,7 +1373,8 @@ export class GitReadModelServiceV1 {
     const gpgsign = (await this.tryGit(['config', 'commit.gpgsign'], root))?.trim() ?? null;
     // `rev-parse --git-path hooks` accounts for core.hooksPath; a missing directory means no
     // hooks will run, which the form states instead of silently skipping them.
-    const hooksPath = (await this.tryGit(['rev-parse', '--git-path', 'hooks'], root))?.trim() ?? null;
+    const hooksPath =
+      (await this.tryGit(['rev-parse', '--git-path', 'hooks'], root))?.trim() ?? null;
     const hooksDir = hooksPath ? resolve(root, hooksPath) : null;
     return Object.freeze({
       name,
@@ -1694,7 +1697,16 @@ function diffCommands(
     return Object.freeze([
       {
         title: 'Staged',
-        args: ['diff', '--cached', ...modes, '--no-ext-diff', '--no-textconv', '--unified=3', '--', path],
+        args: [
+          'diff',
+          '--cached',
+          ...modes,
+          '--no-ext-diff',
+          '--no-textconv',
+          '--unified=3',
+          '--',
+          path,
+        ],
       },
     ]);
   }
@@ -1788,7 +1800,6 @@ export interface GitCommitPreviewV1 {
   readonly blockedReason: string | null;
 }
 
-
 /** v0.3.17 S1 — every comparison source a status record participates in. */
 // A status record is always a working-tree state; typing the result narrowly makes the
 // compiler enforce that no comparison-only source can ever leak into a status bucket.
@@ -1801,9 +1812,7 @@ function recordSources(record: GitStatusRecord): readonly GitWorktreeSourceV1[] 
   return Object.freeze(sources);
 }
 
-function countSources(
-  records: readonly GitStatusRecord[]
-): Omit<WebGitStatusCountsV1, 'loaded'> {
+function countSources(records: readonly GitStatusRecord[]): Omit<WebGitStatusCountsV1, 'loaded'> {
   let conflicted = 0;
   let staged = 0;
   let unstaged = 0;
@@ -1837,7 +1846,11 @@ function normalizeSource(value: unknown): GitWorktreeSourceV1 | undefined {
 function normalizeQuery(value: unknown): string | undefined {
   if (value === undefined || value === null || value === '') return undefined;
   if (typeof value !== 'string' || value.length > 256) {
-    throw new WebWorkbenchError(400, 'query must be a string of at most 256 characters.', 'git_query_invalid');
+    throw new WebWorkbenchError(
+      400,
+      'query must be a string of at most 256 characters.',
+      'git_query_invalid'
+    );
   }
   const trimmed = value.trim();
   return trimmed ? trimmed.toLocaleLowerCase() : undefined;
@@ -2177,7 +2190,10 @@ export function assertRelativeGitPath(path: unknown): string {
  * A commit-diff cursor carries its comparison identity, so a page from a different commit,
  * base or parent is rejected instead of silently stitched onto the wrong document.
  */
-function encodeCommitDiffCursor(input: { readonly margin: string; readonly offset: number }): string {
+function encodeCommitDiffCursor(input: {
+  readonly margin: string;
+  readonly offset: number;
+}): string {
   return Buffer.from(JSON.stringify({ v: 1, ...input }), 'utf8').toString('base64url');
 }
 
@@ -2195,7 +2211,11 @@ function decodeCommitDiffCursor(cursor: string, margin: string): number {
     !Number.isInteger(candidate.offset) ||
     candidate.offset < 0
   ) {
-    throw new WebWorkbenchError(409, 'Diff changed; reload before paginating.', 'git_cursor_invalid');
+    throw new WebWorkbenchError(
+      409,
+      'Diff changed; reload before paginating.',
+      'git_cursor_invalid'
+    );
   }
   return candidate.offset;
 }
@@ -2206,7 +2226,10 @@ function decodeCommitDiffCursor(cursor: string, margin: string): number {
  * A `pre-commit` hook runs as a child of `git`, so killing only `git` on timeout would leave
  * the hook running and, worse, leave `index.lock` behind if the hook owned it.
  */
-function killProcessTree(child: { readonly pid?: number | undefined; kill(signal?: NodeJS.Signals): boolean }): void {
+function killProcessTree(child: {
+  readonly pid?: number | undefined;
+  kill(signal?: NodeJS.Signals): boolean;
+}): void {
   if (child.pid === undefined) return;
   try {
     process.kill(-child.pid, 'SIGKILL');

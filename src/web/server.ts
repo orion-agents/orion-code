@@ -842,7 +842,16 @@ async function handleRequest(context: RequestContext): Promise<void> {
       response,
       200,
       await context.workbench.gitHistory(contextGuard, {
-        ...optionalQueryParams(url, ['message', 'author', 'sha', 'path', 'since', 'until', 'rev', 'cursor']),
+        ...optionalQueryParams(url, [
+          'message',
+          'author',
+          'sha',
+          'path',
+          'since',
+          'until',
+          'rev',
+          'cursor',
+        ]),
         pageSize: boundedInteger(url.searchParams.get('pageSize'), 30, 1, 100),
       })
     );
@@ -957,7 +966,11 @@ async function handleRequest(context: RequestContext): Promise<void> {
     const oid = decodeURIComponent(rawOid ?? '');
     const parentIndex = boundedInteger(url.searchParams.get('parent'), 0, 0, 63);
     if (sub === 'files') {
-      sendJson(response, 200, await context.workbench.gitCommitFiles(contextGuard, oid, parentIndex));
+      sendJson(
+        response,
+        200,
+        await context.workbench.gitCommitFiles(contextGuard, oid, parentIndex)
+      );
       return;
     }
     if (sub === 'diff') {
@@ -977,7 +990,11 @@ async function handleRequest(context: RequestContext): Promise<void> {
       );
       return;
     }
-    sendJson(response, 200, await context.workbench.gitCommitDetail(contextGuard, oid, parentIndex));
+    sendJson(
+      response,
+      200,
+      await context.workbench.gitCommitDetail(contextGuard, oid, parentIndex)
+    );
     return;
   }
   // v0.3.17 S3 — hunk / line level staging. The body carries ids only; the Host rebuilds the

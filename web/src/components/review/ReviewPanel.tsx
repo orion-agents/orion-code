@@ -32,8 +32,11 @@ export function ReviewPanel({
   const [error, setError] = useState('');
   // v0.3.15 T1 — recovery notices fade out on their own; real errors persist
   // in `.resource-error` below.
-  const { notice: resourceNotice, showNotice: setResourceNotice, clearNotice: clearResourceNotice } =
-    useAutoNotice();
+  const {
+    notice: resourceNotice,
+    showNotice: setResourceNotice,
+    clearNotice: clearResourceNotice,
+  } = useAutoNotice();
   const generationRef = useRef(0);
   const diffRequestRef = useRef(0);
 
@@ -213,7 +216,9 @@ export function ReviewPanel({
             <div className="resource-empty">
               <Icon name="edit" size={16} />
               <strong>选择文件开始审阅</strong>
-              <p title="你可以把某个 Hunk 作为草稿送回对话，提交前仍由你确认。">选中 Hunk 可送回对话。</p>
+              <p title="你可以把某个 Hunk 作为草稿送回对话，提交前仍由你确认。">
+                选中 Hunk 可送回对话。
+              </p>
             </div>
           )}
         </>

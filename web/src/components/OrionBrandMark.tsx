@@ -63,68 +63,66 @@ export function OrionBrandMark({ size = 20, className, pixel = false }: OrionBra
             <stop offset="1" className="orion-mark-stop orion-mark-stop-secondary" />
           </linearGradient>
         </defs>
-        {pixel
-          ? (
-              // v0.3.15 — pixel-art rendering: solid two-tone bars with a 1px
-              // base shadow for the classic pixel 3D look, no gradient.
-              [
-                { x: 2, y: 9, h: 9 },
-                { x: 8, y: 4, h: 14 },
-                { x: 14, y: 7, h: 11 },
-              ].map(bar => (
-                <Fragment key={bar.x}>
-                  <rect
-                    x={bar.x}
-                    y={bar.y}
-                    width="4"
-                    height={Math.max(1, bar.h - 1)}
-                    rx={0}
-                    style={{ fill: 'var(--accent)' }}
-                  />
-                  {bar.h > 1 ? (
-                    <rect
-                      x={bar.x}
-                      y={bar.y + bar.h - 1}
-                      width="4"
-                      height="1"
-                      rx={0}
-                      style={{ fill: 'var(--accent-2)' }}
-                    />
-                  ) : null}
-                </Fragment>
-              ))
-            )
-          : (
-              <>
+        {pixel ? (
+          // v0.3.15 — pixel-art rendering: solid two-tone bars with a 1px
+          // base shadow for the classic pixel 3D look, no gradient.
+          [
+            { x: 2, y: 9, h: 9 },
+            { x: 8, y: 4, h: 14 },
+            { x: 14, y: 7, h: 11 },
+          ].map(bar => (
+            <Fragment key={bar.x}>
+              <rect
+                x={bar.x}
+                y={bar.y}
+                width="4"
+                height={Math.max(1, bar.h - 1)}
+                rx={0}
+                style={{ fill: 'var(--accent)' }}
+              />
+              {bar.h > 1 ? (
                 <rect
-                  className="orion-mark-bar"
-                  x="2"
-                  y="9"
+                  x={bar.x}
+                  y={bar.y + bar.h - 1}
                   width="4"
-                  height="9"
-                  rx={2}
-                  fill={`url(#${gradientA})`}
+                  height="1"
+                  rx={0}
+                  style={{ fill: 'var(--accent-2)' }}
                 />
-                <rect
-                  className="orion-mark-bar"
-                  x="8"
-                  y="4"
-                  width="4"
-                  height="14"
-                  rx={2}
-                  fill={`url(#${gradientB})`}
-                />
-                <rect
-                  className="orion-mark-bar"
-                  x="14"
-                  y="7"
-                  width="4"
-                  height="11"
-                  rx={2}
-                  fill={`url(#${gradientC})`}
-                />
-              </>
-            )}
+              ) : null}
+            </Fragment>
+          ))
+        ) : (
+          <>
+            <rect
+              className="orion-mark-bar"
+              x="2"
+              y="9"
+              width="4"
+              height="9"
+              rx={2}
+              fill={`url(#${gradientA})`}
+            />
+            <rect
+              className="orion-mark-bar"
+              x="8"
+              y="4"
+              width="4"
+              height="14"
+              rx={2}
+              fill={`url(#${gradientB})`}
+            />
+            <rect
+              className="orion-mark-bar"
+              x="14"
+              y="7"
+              width="4"
+              height="11"
+              rx={2}
+              fill={`url(#${gradientC})`}
+            />
+          </>
+        )}
       </svg>
     </span>
   );

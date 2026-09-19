@@ -18,7 +18,18 @@
  *     `git_index_busy` and left alone);
  *   - never rolls back external changes after a failure (§7.9).
  */
-import { copyFileSync, existsSync, openSync, closeSync, renameSync, statSync, unlinkSync, utimesSync, writeSync, readFileSync } from 'fs';
+import {
+  copyFileSync,
+  existsSync,
+  openSync,
+  closeSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  utimesSync,
+  writeSync,
+  readFileSync,
+} from 'fs';
 import { randomBytes } from 'crypto';
 import { dirname, join } from 'path';
 
@@ -99,11 +110,7 @@ function acquireIndexLock(indexPath: string): AcquiredLock {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
       // Someone else holds it. Report busy and leave their lock untouched.
-      throw new WebWorkbenchError(
-        409,
-        'Git index is locked by another process.',
-        'git_index_busy'
-      );
+      throw new WebWorkbenchError(409, 'Git index is locked by another process.', 'git_index_busy');
     }
     throw error;
   }

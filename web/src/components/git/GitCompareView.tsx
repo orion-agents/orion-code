@@ -40,11 +40,19 @@ export function GitCompareView({
 }: {
   readonly refs: GitRefsV1 | null;
   readonly actions: WorkbenchActions;
-  readonly display: { readonly mode: GitDiffMode; readonly wrap: boolean; readonly showWhitespace: boolean };
+  readonly display: {
+    readonly mode: GitDiffMode;
+    readonly wrap: boolean;
+    readonly showWhitespace: boolean;
+  };
   readonly collapsedHunks: readonly string[];
   readonly anchorLineId: string | null;
   readonly onDisplayChange: (
-    patch: Partial<{ readonly mode: GitDiffMode; readonly wrap: boolean; readonly showWhitespace: boolean }>
+    patch: Partial<{
+      readonly mode: GitDiffMode;
+      readonly wrap: boolean;
+      readonly showWhitespace: boolean;
+    }>
   ) => void;
   readonly onToggleHunk: (hunkId: string) => void;
   readonly onSetAllFolded: (folded: boolean) => void;
@@ -116,7 +124,11 @@ export function GitCompareView({
       <div className="git-compare-form">
         <label>
           <span>基准 A</span>
-          <select value={baseRef} aria-label="选择基准 A" onChange={event => setBaseRef(event.target.value)}>
+          <select
+            value={baseRef}
+            aria-label="选择基准 A"
+            onChange={event => setBaseRef(event.target.value)}
+          >
             {options.map(option => (
               <option key={option.value} value={option.value}>
                 {option.label}
@@ -126,7 +138,11 @@ export function GitCompareView({
         </label>
         <label>
           <span>目标 B</span>
-          <select value={headRef} aria-label="选择目标 B" onChange={event => setHeadRef(event.target.value)}>
+          <select
+            value={headRef}
+            aria-label="选择目标 B"
+            onChange={event => setHeadRef(event.target.value)}
+          >
             {options.map(option => (
               <option key={option.value} value={option.value}>
                 {option.label}
@@ -217,7 +233,9 @@ export function GitCompareView({
               loading={busy}
               onChangeMode={value => onDisplayChange({ mode: value })}
               onToggleWrap={() => onDisplayChange({ wrap: !display.wrap })}
-              onToggleWhitespace={() => onDisplayChange({ showWhitespace: !display.showWhitespace })}
+              onToggleWhitespace={() =>
+                onDisplayChange({ showWhitespace: !display.showWhitespace })
+              }
               onToggleHunk={onToggleHunk}
               onSetAllFolded={onSetAllFolded}
               onAnchorChange={onAnchorChange}

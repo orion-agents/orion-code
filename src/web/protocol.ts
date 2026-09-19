@@ -515,11 +515,7 @@ export type {
   GitHistoryPageV1,
   GitFileHistoryPageV1,
 } from './git-history-service';
-export type {
-  GitCompareFileV1,
-  GitCompareModeV1,
-  GitCompareResultV1,
-} from './git-compare-service';
+export type { GitCompareFileV1, GitCompareModeV1, GitCompareResultV1 } from './git-compare-service';
 export type {
   GitBlobResultV1,
   GitConflictShapeV1,

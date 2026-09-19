@@ -522,7 +522,6 @@ export class OrionWebApi {
     );
   }
 
-
   /**
    * v0.3.17 S4 — history reads. Read-only by construction: they use `query`, never
    * `mutate`, so no history view can reach the mutation path.

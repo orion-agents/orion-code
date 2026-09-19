@@ -24,9 +24,12 @@ which is **not** a pass.
 
 ## [0.3.18]
 
-> **Status: released.** Closes the assertion and evidence backlog of the Git
-> right-hand work panel shipped in 0.3.17, and fixes the CRLF part-staging
-> defect found right after that release.
+> **Status: npm-published, not tagged or merged.** The exact contents below are
+> published to the registry as 0.3.18, but `refs/tags/v0.3.18` does not exist and
+> `main` does not carry this work yet, so the release is not complete.
+> Closes the assertion and evidence backlog of the Git right-hand work panel
+> shipped in 0.3.17, and fixes the CRLF part-staging defect found right after
+> that release.
 
 ### Fixed
 
