@@ -205,7 +205,7 @@ export function ProjectNavigator({
 
   return (
     <aside
-      id="project-navigation"
+      id="workspace-rail"
       className={`workspace-rail project-navigator ${drawerOpen ? 'drawer-open' : ''}`}
       aria-label="项目与会话"
       hidden={!dockVisible}

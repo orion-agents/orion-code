@@ -215,6 +215,17 @@ describe('reducer archived owner-binding & runtime cleanup (v0.3.7 fixes)', () =
     expect(loading.archivedSessions.items).toEqual([]);
   });
 
+  it('claims ownership while loading so the eager loader cannot re-issue (v0.3.20 D2)', () => {
+    // The App eager-load guard skips a workspace whose archived copy is owned
+    // and not idle. Loading used to keep the *previous* owner, so the very
+    // first load of a workspace never satisfied the guard and every render
+    // re-issued the request (measured 2476 requests in ~80s).
+    const state = ownedState('other-workspace', [summary('sX')]);
+    const loading = reduce(state, { type: 'archived_sessions_loading', workspaceId: WORKSPACE });
+    expect(loading.archivedSessions.ownerWorkspaceId).toBe(WORKSPACE);
+    expect(loading.archivedSessions.status).toBe('loading');
+  });
+
   it('keeps rows of the same workspace while loading', () => {
     const state = ownedState(WORKSPACE, [summary('s9')]);
     const loading = reduce(state, { type: 'archived_sessions_loading', workspaceId: WORKSPACE });

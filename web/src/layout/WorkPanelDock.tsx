@@ -291,7 +291,6 @@ export function WorkPanelDock({
     <nav
       className={overlay ? 'work-panel-rail work-panel-rail-overlay' : 'work-panel-rail'}
       aria-label="工作面板快捷入口"
-      aria-orientation={overlay ? 'horizontal' : 'vertical'}
     >
       {orderedPanels.map((id, index) => {
         const meta = PANEL_META[id];
