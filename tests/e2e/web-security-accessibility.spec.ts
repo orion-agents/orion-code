@@ -237,10 +237,13 @@ test('E2E-P0-08 Host attacks fail closed while real-CSP UI remains keyboard and 
     .poll(async () =>
       Math.round(await ui.inspectorDock.evaluate(element => element.getBoundingClientRect().width))
     )
-    .toBe(600);
+    // v0.3.20 — at 1440 the conversation keeps 440px (above its 320 floor), so
+    // the dock does NOT concede; the pre-v0.3.12 concession expectation was
+    // for a 560px conversation minimum that the wide-desktop solver not uses.
+    .toBe(720);
   expect(
     Math.round(await ui.main.evaluate(element => element.getBoundingClientRect().width))
-  ).toBeGreaterThanOrEqual(560);
+  ).toBeGreaterThanOrEqual(320);
   const expandedMainWidth = await ui.main.evaluate(
     element => element.getBoundingClientRect().width
   );
@@ -255,7 +258,7 @@ test('E2E-P0-08 Host attacks fail closed while real-CSP UI remains keyboard and 
     );
   }, RIGHT_WORKSPACE_STORAGE_KEY);
   expect(storedAfterConcession).toContain(672);
-  evidence.recordFact('layout.pointer_resize_1440_clamped', 600);
+  evidence.recordFact('layout.pointer_resize_1440_clamped', 720);
   evidence.recordFact('layout.conversation_min_preserved', true);
 
   const collapseButton = ui.inspectorDock.getByRole('button', {

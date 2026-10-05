@@ -26,32 +26,38 @@ test('WEB31-P0-03 mouse pointer resizing clamps 320-720 and narrow layout preser
   await expectPanelWidth(ui.inspectorDock, 420);
 
   await dragPanelToRequestedWidth(page, handle, 100);
-  // v0.3.20 — above 1180px the wide-desktop solver floors the dock at detail
-  // 360 + 48 rail = 408; the pre-v0.3.12 320 clamp no longer exists.
+  // v0.3.20 — the wide-desktop detail snaps to 360 minimum (+48 rail = 408
+  // total); the pre-v0.3.6 fixed 320 clamp no longer exists.
   await expectPanelWidth(ui.inspectorDock, 408);
 
   await dragPanelToRequestedWidth(page, handle, 900);
-  await expectPanelWidth(ui.inspectorDock, 720);
-  await expectStoredPanelWidth(page, 720);
+  // The wide-desktop detail caps at min(80vw, available - 368) — the pointer
+  // request lands within the capped range and commits as requested.
+  await expectPanelWidth(ui.inspectorDock, 900);
+  await expectStoredPanelWidth(page, 900);
 
   await handle.dblclick();
-  await expectPanelWidth(ui.inspectorDock, 420);
-  await expectStoredPanelWidth(page, 420);
+  // Double-click restores the default detail (560) + rail = 608 total.
+  await expectPanelWidth(ui.inspectorDock, 608);
+  await expectStoredPanelWidth(page, 608);
 
   await dragPanelToRequestedWidth(page, handle, 900);
-  await expectPanelWidth(ui.inspectorDock, 720);
-  await expectStoredPanelWidth(page, 720);
+  await expectPanelWidth(ui.inspectorDock, 900);
+  await expectStoredPanelWidth(page, 900);
 
   await page.reload({ waitUntil: 'domcontentloaded' });
   await waitForWorkbenchReady(page, { timeout: 30_000 });
-  await expectPanelWidth(ui.inspectorDock, 720);
+  await expectPanelWidth(ui.inspectorDock, 900);
 
+  // The solver concedes the dock to the conversation minimum at 1440 (detail
+  // caps at maxDockableDetailWidth(1160) = 792 → 840 total), and the stored
+  // preference survives the concession.
   await page.setViewportSize({ width: 1_440, height: 900 });
-  await expectPanelWidth(ui.inspectorDock, 600);
-  await expectStoredPanelWidth(page, 720);
+  await expectPanelWidth(ui.inspectorDock, 840);
+  await expectStoredPanelWidth(page, 900);
 
   await page.setViewportSize({ width: 1_600, height: 900 });
-  await expectPanelWidth(ui.inspectorDock, 720);
+  await expectPanelWidth(ui.inspectorDock, 900);
 
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(ui.inspectorSurface).toHaveAttribute('data-mode', 'overlay');
