@@ -24,10 +24,36 @@ which is **not** a pass.
 
 ## [0.3.20]
 
-> **Status: candidate.** Open. The v0.3.19 verification round found that the Web E2E suite has
-> been red since v0.3.11 (the dock's tabs became rail buttons) independently of the Git panel
-> work, and `web-v031-foundation-accessibility.spec.ts` is the clearest example. Repairing those
-> specs is the intended content of this cycle. Not merged, tagged or published.
+> **Status: candidate.** Open. Repairs the Web E2E suite that has been red since
+> v0.3.11 (the dock's tabs became rail buttons) independently of the Git panel
+> work, and fixes the product defects the repair exposed. Not merged, tagged or
+> published.
+>
+> ### Fixed (product)
+>
+> - The work-panel rail no longer sets `aria-orientation` on `role=navigation`
+>   (axe `aria-allowed-attr`, critical), and the navigation aside keeps one stable
+>   id so `aria-controls` always resolves.
+> - The first archived-sessions load no longer storms the host (2476 requests
+>   measured in ~80s): the loading state claims workspace ownership like the
+>   failure path already did.
+> - The narrow-width navigation toggle and the drawer close button are restored
+>   (v0.3.15 removed them with the conversation header, leaving sub-~800px
+>   viewports without a pointer entry while their CSS and focus wiring survived).
+> - A bare Escape no longer moves focus to a stale drawer trigger, and the
+>   shortcut-help dialog restores focus to its trigger explicitly; its scrollable
+>   body is keyboard focusable (axe `scrollable-region-focusable`, serious).
+>
+> ### Test infrastructure
+>
+> - Every stale E2E locator and copy assertion traced to its contract change and
+>   rewritten; all previously failing specs pass locally (full suite 100/103 —
+>   the remainder are sandbox-only: a bulk-delete shim, two perf bounds).
+> - `allowExpectedConsoleErrors(testInfo, text, maximum)` bounds the console
+>   noise that deliberate failure journeys (CAS conflicts, phantom catalog
+>   sessions) produce; the evidence capture caps can be raised via env for
+>   diagnosis.
+> - The receipt upload only fires when the evidence gate actually ran.
 >
 > ### Security
 >
@@ -56,7 +82,7 @@ which is **not** a pass.
   affordances never activated on any load whose status was not already cached. The observer is
   now attached with a callback ref, so it follows the node in and out of the tree.
 - **A discarded diff read left the pane blank with a file still selected.** Only a newer
-  *selection* supersedes a read now. The document states the revision it was rendered against,
+  _selection_ supersedes a read now. The document states the revision it was rendered against,
   so accepting it and letting `stale` tell the truth is both safer and correct — dropping it
   because the 2s visible poll had bumped the revision abandoned the read with nothing to
   re-issue it.
@@ -67,7 +93,7 @@ which is **not** a pass.
 ### Added
 
 - **A bare repository is no longer reported as "not a repository".** `rev-parse
-  --show-toplevel` fails for a bare repository too, and that single failure was read as "no
+--show-toplevel` fails for a bare repository too, and that single failure was read as "no
   repository here". Status now carries `repositoryKind: 'worktree' | 'bare' | 'absent'` and
   `hasWorktree`; every worktree-backed surface gates on `hasWorktree`, which is the only flag
   that cannot be wrong. A bare repository's branch is reported instead of hidden, its change
@@ -126,6 +152,7 @@ which is **not** a pass.
   and the agent-led file-change scenario are still open.
 
 ---
+
 ## [0.3.17]
 
 > **Status: candidate.** Opening a local project is made fast and honest
@@ -272,7 +299,7 @@ which is **not** a pass.
   same timestamp granularity and with an unchanged size was not re-hashed, so
   `git add` succeeded while changing nothing. The copy now preserves the
   original timestamps, and staging verifies each path with `hash-object
-  --path` against the index entry.
+--path` against the index entry.
 - **`localhost` was rejected site-wide:** the Host and Origin checks compared
   header strings exactly, so `http://localhost:<port>` returned 421 (and, with
   only the Host check fixed, every mutation would have returned 403). Both now
