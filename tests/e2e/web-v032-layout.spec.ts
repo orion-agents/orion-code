@@ -41,7 +41,8 @@ test('WEB32-P0-01 left project rail pointer resize, reset, collapse and persiste
   await waitForWorkbenchReady(page, { timeout: 30_000 });
   await expectElementWidth(rail, 480);
 
-  await rail.getByRole('button', { name: '折叠项目导航' }).click();
+  // v0.3.20 — the collapse control is 收起项目导航 since the rail chrome rework.
+  await rail.getByRole('button', { name: '收起项目导航' }).click();
   await expectElementWidth(rail, 48);
   await expect(rail.getByRole('button', { name: '展开项目导航' })).toBeVisible();
   await rail.getByRole('button', { name: '展开项目导航' }).click();

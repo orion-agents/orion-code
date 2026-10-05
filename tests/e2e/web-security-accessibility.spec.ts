@@ -211,14 +211,14 @@ test('E2E-P0-08 Host attacks fail closed while real-CSP UI remains keyboard and 
       Math.round(await ui.inspectorDock.evaluate(element => element.getBoundingClientRect().width))
     )
     .toBe(720);
-  const storedDetailWidths = await page.evaluate(() => {
-    const parsed = JSON.parse(localStorage.getItem(RIGHT_WORKSPACE_STORAGE_KEY) ?? '{}') as {
+  const storedDetailWidths = await page.evaluate(key => {
+    const parsed = JSON.parse(localStorage.getItem(key) ?? '{}') as {
       workPanel?: { byWorkspace?: Record<string, { detailWidthPx?: number }> };
     };
     return Object.values(parsed.workPanel?.byWorkspace ?? {}).map(
       entry => entry?.detailWidthPx ?? null
     );
-  });
+  }, RIGHT_WORKSPACE_STORAGE_KEY);
   expect(storedDetailWidths).toContain(672);
   await page.reload({ waitUntil: 'domcontentloaded' });
   await waitForWorkbenchReady(page, { timeout: 30_000 });
@@ -246,14 +246,14 @@ test('E2E-P0-08 Host attacks fail closed while real-CSP UI remains keyboard and 
   );
   // The 1440 concession only caps the *rendered* width; the stored preference
   // stays at the committed value so it restores on wide viewports.
-  const storedAfterConcession = await page.evaluate(() => {
-    const parsed = JSON.parse(localStorage.getItem(RIGHT_WORKSPACE_STORAGE_KEY) ?? '{}') as {
+  const storedAfterConcession = await page.evaluate(key => {
+    const parsed = JSON.parse(localStorage.getItem(key) ?? '{}') as {
       workPanel?: { byWorkspace?: Record<string, { detailWidthPx?: number }> };
     };
     return Object.values(parsed.workPanel?.byWorkspace ?? {}).map(
       entry => entry?.detailWidthPx ?? null
     );
-  });
+  }, RIGHT_WORKSPACE_STORAGE_KEY);
   expect(storedAfterConcession).toContain(672);
   evidence.recordFact('layout.pointer_resize_1440_clamped', 600);
   evidence.recordFact('layout.conversation_min_preserved', true);

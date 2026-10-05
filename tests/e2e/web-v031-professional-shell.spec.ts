@@ -1,6 +1,7 @@
 import { basename, join } from 'path';
 
-import { WORKBENCH_LAYOUT_STORAGE_KEY } from '../../web/src/state/layout-preferences';
+import { RIGHT_WORKSPACE_STORAGE_KEY } from '../../web/src/state/right-workspace-preferences';
+import { WORK_PANEL_RAIL_WIDTH } from '../../web/src/state/layout-preferences';
 import { openInspector, waitForWorkbenchReady, workbenchUi } from './fixtures/ui';
 import { expect, test } from './fixtures/test';
 
@@ -25,7 +26,9 @@ test('WEB31-P0-03 mouse pointer resizing clamps 320-720 and narrow layout preser
   await expectPanelWidth(ui.inspectorDock, 420);
 
   await dragPanelToRequestedWidth(page, handle, 100);
-  await expectPanelWidth(ui.inspectorDock, 320);
+  // v0.3.20 — above 1180px the wide-desktop solver floors the dock at detail
+  // 360 + 48 rail = 408; the pre-v0.3.12 320 clamp no longer exists.
+  await expectPanelWidth(ui.inspectorDock, 408);
 
   await dragPanelToRequestedWidth(page, handle, 900);
   await expectPanelWidth(ui.inspectorDock, 720);
@@ -110,12 +113,20 @@ async function expectStoredPanelWidth(
   page: import('@playwright/test').Page,
   width: number
 ): Promise<void> {
+  // v0.3.20 — commits land in the per-workspace v4 envelope as
+  // detailWidthPx = max(360, total - 48); the legacy v2 workPanel.widthPx is
+  // only the migration seed.
+  const detailWidth = width - WORK_PANEL_RAIL_WIDTH;
   await expect
     .poll(() =>
-      page.evaluate(
-        key => JSON.parse(localStorage.getItem(key) ?? '{}').workPanel?.widthPx,
-        WORKBENCH_LAYOUT_STORAGE_KEY
-      )
+      page.evaluate(key => {
+        const parsed = JSON.parse(localStorage.getItem(key) ?? '{}') as {
+          workPanel?: { byWorkspace?: Record<string, { detailWidthPx?: number }> };
+        };
+        return Object.values(parsed.workPanel?.byWorkspace ?? {}).map(
+          entry => entry?.detailWidthPx ?? null
+        );
+      }, RIGHT_WORKSPACE_STORAGE_KEY)
     )
-    .toBe(width);
+    .toContain(detailWidth);
 }

@@ -38,6 +38,8 @@ export interface ConversationProps {
    * decision.
    */
   readonly navigationOpen: boolean;
+  /** True when the navigation renders as an overlay drawer (narrow viewports). */
+  readonly navigationOverlay: boolean;
   readonly onOpenNavigation: () => void;
 }
 
@@ -54,6 +56,7 @@ export function Conversation({
   onCreateSession,
   composerInsertion,
   navigationOpen,
+  navigationOverlay,
   onOpenNavigation,
 }: ConversationProps) {
   const snapshotSync = activeSessionSnapshotSync(state);
@@ -160,16 +163,18 @@ export function Conversation({
 
   return (
     <main className="conversation-column" id="main-content">
-      <button
-        type="button"
-        className="icon-button mobile-nav-toggle"
-        onClick={onOpenNavigation}
-        aria-label="打开会话导航"
-        aria-controls="workspace-rail"
-        aria-expanded={navigationOpen}
-      >
-        <Icon name="menu" />
-      </button>
+      {navigationOverlay ? (
+        <button
+          type="button"
+          className="icon-button mobile-nav-toggle"
+          onClick={onOpenNavigation}
+          aria-label="打开会话导航"
+          aria-controls="workspace-rail"
+          aria-expanded={navigationOpen}
+        >
+          <Icon name="menu" />
+        </button>
+      ) : null}
       {!state.bootstrap?.configured ? (
         <div className="configuration-banner" role="status">
           <Icon name="warning" />

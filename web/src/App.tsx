@@ -613,6 +613,7 @@ export function App() {
           state={state}
           actions={actions}
           navigationOpen={navigationModalOpen}
+          navigationOverlay={navigationOverlay}
           onOpenNavigation={() => {
             rememberDrawerTrigger();
             setPanelOverlayOpen(false);
