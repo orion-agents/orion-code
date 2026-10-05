@@ -1,3 +1,5 @@
+import { basename } from 'path';
+
 import { expect, test } from './fixtures/test';
 import { createSession, submitPrompt, waitForWorkbenchReady, workbenchUi } from './fixtures/ui';
 
@@ -23,7 +25,7 @@ test('WEB33-P0-15 real conversation turn streams an assistant message into the t
 
   await createSession(page);
 
-  const promptText = `v0.3.12 conversation smoke ${workspace.displayName} reply briefly`;
+  const promptText = `v0.3.12 conversation smoke ${basename(workspace.primaryWorkspace)} reply briefly`;
   await submitPrompt(page, promptText, { timeout: 30_000 });
 
   // The fixture provider answers any prompt with an assistant stream; wait for

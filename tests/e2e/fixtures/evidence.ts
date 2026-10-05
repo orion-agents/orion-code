@@ -7,8 +7,13 @@ import type { ConsoleMessage, Page, Request, Response } from '@playwright/test';
 import { redactTraceText } from '../../../src/services/redaction';
 import type { WebE2EArtifactStateV1 } from './artifact-types';
 
-const MAX_CAPTURE_BYTES = 64 * 1024;
-const MAX_EVENT_ENTRIES = 256;
+// v0.3.20 S0 — the capture caps can be raised for diagnosis via env without changing the
+// defaults. A failing run whose events were truncated (droppedEvents > 0) cannot be
+// classified from its manifest alone, so a diagnostic rerun needs a bigger buffer.
+const MAX_CAPTURE_BYTES =
+  Number.parseInt(process.env.E2E_EVIDENCE_MAX_CAPTURE_BYTES ?? '', 10) || 64 * 1024;
+const MAX_EVENT_ENTRIES =
+  Number.parseInt(process.env.E2E_EVIDENCE_MAX_EVENT_ENTRIES ?? '', 10) || 256;
 const MAX_DETAIL_BYTES = 4 * 1024;
 const MAX_FACT_BYTES = 1024;
 
@@ -169,6 +174,14 @@ export class WebE2EEvidenceCollector {
   private readonly startedAt = new Date();
   private readonly counters: MutableCounters = emptyMutableCounters();
   private readonly events: WebE2EEvidenceEventV1[] = [];
+  /**
+   * v0.3.20 S4 — per-text console-error counts. Journeys that deliberately
+   * drive the app into expected failure responses (a stale-tab CAS 409, a
+   * phantom catalog entry whose snapshot does not exist) still surface as
+   * browser console resource errors; the collector must be able to tell the
+   * test's own allowance how many of each text occurred.
+   */
+  private readonly consoleErrorCounts = new Map<string, number>();
   private readonly facts = new Map<string, WebE2EEvidenceFactV1>();
   private readonly privatePaths = new Map<string, string>();
   private readonly secrets = new Set<string>();
@@ -283,11 +296,25 @@ export class WebE2EEvidenceCollector {
         return;
       }
     }
-    if (type === 'error') this.counters.consoleErrors += 1;
+    if (type === 'error') {
+      this.counters.consoleErrors += 1;
+      this.consoleErrorCounts.set(sanitized, (this.consoleErrorCounts.get(sanitized) ?? 0) + 1);
+    }
     if (type === 'warning' || type === 'warn') this.counters.consoleWarnings += 1;
     if (type === 'error' || type === 'warning' || type === 'warn') {
       this.pushEvent({ kind: 'console', detail: `${safeComponent(type)} ${sanitized}` });
     }
+  }
+
+  /**
+   * v0.3.20 S4 — how many console errors matched `text` exactly. Used together
+   * with the `evidence:allow-console-errors` annotation to keep deliberate
+   * failure journeys (CAS conflicts, phantom catalog snapshots) out of the
+   * unexpected-evidence verdict without weakening anything else.
+   */
+  consoleErrorCount(text: string): number {
+    const expected = this.sanitize(text).trim();
+    return this.consoleErrorCounts.get(expected) ?? 0;
   }
 
   recordRequest(method: string, url: string, resourceType = 'other'): void {

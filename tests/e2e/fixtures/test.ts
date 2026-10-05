@@ -134,6 +134,30 @@ export function allowExpectedNetworkFailures(testInfo: TestInfo, maximum: number
   });
 }
 
+/**
+ * v0.3.20 S4 — bound the number of console errors whose text the test itself
+ * causes. Journeys that deliberately drive expected failure responses (a stale
+ * tab's CAS 409, a phantom catalog session whose snapshot does not exist)
+ * surface as browser console resource errors; an upper bound per exact text
+ * keeps them from failing the evidence verdict while everything else stays
+ * fail-closed. Symmetric with `allowExpectedNetworkFailures`.
+ */
+export function allowExpectedConsoleErrors(
+  testInfo: TestInfo,
+  text: string,
+  maximum: number
+): void {
+  const expected = text.trim();
+  if (!expected) throw new Error('Allowed console error text must be a non-empty string.');
+  if (!Number.isSafeInteger(maximum) || maximum < 0) {
+    throw new Error('Allowed console error maximum must be a non-negative integer.');
+  }
+  testInfo.annotations.push({
+    type: 'evidence:allow-console-errors',
+    description: JSON.stringify({ text: expected, maximum }),
+  });
+}
+
 export async function capturedSseEvents(page: import('@playwright/test').Page): Promise<unknown[]> {
   return page.evaluate(() => {
     const value = (globalThis as unknown as { __orionE2EEvents?: unknown[] }).__orionE2EEvents;
@@ -169,11 +193,37 @@ function unexpectedEvidence(
       .map(annotation => Number(annotation.description ?? 0))
       .filter(Number.isSafeInteger)
   );
+  // v0.3.20 S4 — per-text console-error allowances. Each allowance subtracts
+  // its matched occurrences (up to the bound) from the aggregate console-error
+  // count; whatever remains is unexpected.
+  let allowanceUsed = 0;
+  for (const annotation of testInfo.annotations.filter(
+    candidate => candidate.type === 'evidence:allow-console-errors'
+  )) {
+    try {
+      const parsed = JSON.parse(annotation.description ?? '') as {
+        text?: string;
+        maximum?: number;
+      };
+      const maximum = parsed.maximum;
+      if (
+        typeof parsed.text === 'string' &&
+        typeof maximum === 'number' &&
+        Number.isSafeInteger(maximum)
+      ) {
+        allowanceUsed += Math.min(Math.max(0, maximum), evidence.consoleErrorCount(parsed.text));
+      }
+    } catch {
+      // A malformed annotation is the test author's bug: treat it as absent and
+      // let the raw count stand.
+    }
+  }
+  const unexpectedConsoleErrors = Math.max(0, counters.consoleErrors - allowanceUsed);
   return [
     evidence.unmatchedExpectedConsoleErrors().length
       ? `${evidence.unmatchedExpectedConsoleErrors().length} expected console error(s) missing`
       : '',
-    counters.consoleErrors ? `${counters.consoleErrors} console error(s)` : '',
+    unexpectedConsoleErrors ? `${unexpectedConsoleErrors} console error(s)` : '',
     counters.consoleWarnings ? `${counters.consoleWarnings} console warning(s)` : '',
     counters.pageErrors ? `${counters.pageErrors} page error(s)` : '',
     counters.http5xx ? `${counters.http5xx} HTTP 5xx response(s)` : '',

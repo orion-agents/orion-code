@@ -51,7 +51,7 @@ test('WEB33-P0-16 Files puts preview left of the tree on one grid row', async ({
   const handleBox = await handle.boundingBox();
   const previewBox = await preview.boundingBox();
   const treeBox = await tree.boundingBox();
-  expect(handleBox).not.toBeNull();
+  if (!handleBox || !previewBox || !treeBox) throw new Error('resource split is not measurable');
   // The separator's hit area overlaps the boundary between the two columns.
   expect(handleBox.x).toBeGreaterThanOrEqual(previewBox.x);
   expect(handleBox.x).toBeLessThan(treeBox.x + treeBox.width);
@@ -107,8 +107,7 @@ test('WEB33-P0-18 narrow Files container stacks navigator above content', async 
 
   const treeBox = await tree.boundingBox();
   const previewBox = await preview.boundingBox();
-  expect(treeBox).not.toBeNull();
-  expect(previewBox).not.toBeNull();
+  if (!treeBox || !previewBox) throw new Error('tree/preview columns are not measurable');
   expect(treeBox.y).toBeLessThan(previewBox.y);
   expect(Math.abs(treeBox.width - previewBox.width)).toBeLessThanOrEqual(1);
   // v0.3.13 S2 — a single-column container hides the inner separator.

@@ -3,7 +3,7 @@ import { request as httpRequest } from 'http';
 import { join } from 'path';
 
 import type { Browser } from '@playwright/test';
-import { WORKBENCH_LAYOUT_STORAGE_KEY } from '../../web/src/state/layout-preferences';
+import { RIGHT_WORKSPACE_STORAGE_KEY } from '../../web/src/state/right-workspace-preferences';
 
 import {
   collapseInspector,
@@ -194,22 +194,32 @@ test('E2E-P0-08 Host attacks fail closed while real-CSP UI remains keyboard and 
       steps: 8,
     });
     await page.mouse.up();
-    await expect
-      .poll(async () =>
-        Math.round(
-          await ui.inspectorDock.evaluate(element => element.getBoundingClientRect().width)
-        )
-      )
-      .toBe(width);
   };
+  // v0.3.20 (baseline.md #13-15) — above 1180px the wide-desktop solver floors
+  // the dock at detail 360 + 48 rail (408 total), and commits land in the
+  // per-workspace v4 envelope (`orion.web.right-workspace.v3`), not the legacy
+  // v2 `workPanel.widthPx`. The old fixed 320–720 clamp no longer exists.
   await dragToWidth(320);
-  await dragToWidth(720);
-  expect(
-    await page.evaluate(
-      key => JSON.parse(localStorage.getItem(key) ?? '{}').workPanel?.widthPx,
-      WORKBENCH_LAYOUT_STORAGE_KEY
+  await expect
+    .poll(async () =>
+      Math.round(await ui.inspectorDock.evaluate(element => element.getBoundingClientRect().width))
     )
-  ).toBe(720);
+    .toBe(408);
+  await dragToWidth(720);
+  await expect
+    .poll(async () =>
+      Math.round(await ui.inspectorDock.evaluate(element => element.getBoundingClientRect().width))
+    )
+    .toBe(720);
+  const storedDetailWidths = await page.evaluate(() => {
+    const parsed = JSON.parse(localStorage.getItem(RIGHT_WORKSPACE_STORAGE_KEY) ?? '{}') as {
+      workPanel?: { byWorkspace?: Record<string, { detailWidthPx?: number }> };
+    };
+    return Object.values(parsed.workPanel?.byWorkspace ?? {}).map(
+      entry => entry?.detailWidthPx ?? null
+    );
+  });
+  expect(storedDetailWidths).toContain(672);
   await page.reload({ waitUntil: 'domcontentloaded' });
   await waitForWorkbenchReady(page, { timeout: 30_000 });
   await expect
@@ -217,7 +227,7 @@ test('E2E-P0-08 Host attacks fail closed while real-CSP UI remains keyboard and 
       Math.round(await ui.inspectorDock.evaluate(element => element.getBoundingClientRect().width))
     )
     .toBe(720);
-  evidence.recordFact('layout.pointer_resize_min', 320);
+  evidence.recordFact('layout.pointer_resize_min', 408);
   evidence.recordFact('layout.pointer_resize_max', 720);
   evidence.recordFact('layout.keyboard_resize_surface_count', 0);
   evidence.recordFact('layout.pointer_resize_persisted', true);
@@ -234,12 +244,17 @@ test('E2E-P0-08 Host attacks fail closed while real-CSP UI remains keyboard and 
   const expandedMainWidth = await ui.main.evaluate(
     element => element.getBoundingClientRect().width
   );
-  expect(
-    await page.evaluate(
-      key => JSON.parse(localStorage.getItem(key) ?? '{}').workPanel?.widthPx,
-      WORKBENCH_LAYOUT_STORAGE_KEY
-    )
-  ).toBe(720);
+  // The 1440 concession only caps the *rendered* width; the stored preference
+  // stays at the committed value so it restores on wide viewports.
+  const storedAfterConcession = await page.evaluate(() => {
+    const parsed = JSON.parse(localStorage.getItem(RIGHT_WORKSPACE_STORAGE_KEY) ?? '{}') as {
+      workPanel?: { byWorkspace?: Record<string, { detailWidthPx?: number }> };
+    };
+    return Object.values(parsed.workPanel?.byWorkspace ?? {}).map(
+      entry => entry?.detailWidthPx ?? null
+    );
+  });
+  expect(storedAfterConcession).toContain(672);
   evidence.recordFact('layout.pointer_resize_1440_clamped', 600);
   evidence.recordFact('layout.conversation_min_preserved', true);
 

@@ -15,7 +15,13 @@ import {
   webBootstrap,
 } from './fixtures/api';
 import { OPENAI_FIXTURE_MARKERS, OPENAI_FIXTURE_PROMPTS } from './fixtures/openai-provider';
-import { allowExpectedNetworkFailures, expect, installSseCapture, test } from './fixtures/test';
+import {
+  allowExpectedConsoleErrors,
+  allowExpectedNetworkFailures,
+  expect,
+  installSseCapture,
+  test,
+} from './fixtures/test';
 import type { WorkspaceFixture } from './fixtures/workspace';
 import {
   answerApproval,
@@ -42,6 +48,21 @@ test('WEB31-P0-01 packaged Workbench shows three projects and lazy-loads real Se
   workspace,
 }, testInfo) => {
   testInfo.setTimeout(180_000);
+  // v0.3.20 (baseline.md #25) — this journey seeds the session catalog with
+  // 100×200 phantom entries whose snapshot storage does not exist, so the
+  // lazy-load of a scale session surfaces as a browser 404, and the second
+  // tab's bootstrap races a CAS 409. Both are this test's own design; bound
+  // them per text instead of leaving the evidence verdict to their count.
+  allowExpectedConsoleErrors(
+    testInfo,
+    'Failed to load resource: the server responded with a status of 404 (Not Found)',
+    12
+  );
+  allowExpectedConsoleErrors(
+    testInfo,
+    'Failed to load resource: the server responded with a status of 409 (Conflict)',
+    4
+  );
   const networkFailures: NetworkFailure[] = [];
   const onRequestFailed = captureNetworkFailure(networkFailures);
   page.on('requestfailed', onRequestFailed);

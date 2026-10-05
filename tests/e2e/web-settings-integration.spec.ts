@@ -27,6 +27,7 @@ import {
 import { startOrionHost } from './fixtures/orion-host';
 import { readRepositoryVersion } from './fixtures/package-version';
 import {
+  allowExpectedConsoleErrors,
   allowExpectedNetworkFailures,
   capturedSseEvents,
   closeCapturedEventSources,
@@ -184,6 +185,22 @@ test('SET-P0-03 project Effort wins over global and model defaults across worksp
   workspace,
 }, testInfo) => {
   allowExpectedNetworkFailures(testInfo, 8);
+  // v0.3.20 (baseline.md #24) — this journey rewrites the workspace config
+  // file behind the running host, so the next settings write legitimately
+  // loses a CAS race (409) until the host resyncs. Each one surfaces as a
+  // browser console resource error; bound them instead of failing on them.
+  allowExpectedConsoleErrors(
+    testInfo,
+    'Failed to load resource: the server responded with a status of 409 (Conflict)',
+    40
+  );
+  // The restart leg stops the host while the page is still attached: the next
+  // events/SSE poll is refused until the replacement host binds the port.
+  allowExpectedConsoleErrors(
+    testInfo,
+    'Failed to load resource: net::ERR_CONNECTION_REFUSED',
+    4
+  );
   await createSession(page, { name: 'Primary effort session' });
   await openSettings(page);
   await selectSettingsSection(page, 'Models & Reasoning');
