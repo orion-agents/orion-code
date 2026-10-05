@@ -13,26 +13,28 @@ test('WEB33-P0-31 brand mark is a single decorative SVG next to ORION copy', asy
   await page.setViewportSize({ width: 1_280, height: 900 });
   await waitForWorkbenchReady(page, { timeout: 30_000 });
 
-  const brandRow = page.locator('.brand-row');
-  await expect(brandRow).toBeVisible();
-  const mark = brandRow.locator('.orion-brand-mark');
-  await expect(mark).toBeVisible();
-  await expect(mark).toHaveAttribute('aria-hidden', 'true');
-  expect(await mark.locator('svg').count()).toBe(1);
-  expect(await mark.locator('rect').count()).toBe(3);
-  // No interactive affordance inside the brand area.
-  expect(await mark.locator('button, a, [tabindex]').count()).toBe(0);
-  await expect(brandRow.getByText('ORION')).toBeVisible();
+  // v0.3.20 (baseline.md #9-10) — the v0.3.15 pixel-brand rework replaced the
+  // old `.brand-row`/ORION header with the pixel wordmark in the expanded
+  // navigator toolbar. The contract that survives: one decorative brand
+  // surface, no interactive affordance, no overflow.
+  const toolbarBrand = page.locator('.project-toolbar-brand');
+  await expect(toolbarBrand).toBeVisible();
+  const wordmark = toolbarBrand.locator('svg.pixel-wordmark');
+  await expect(wordmark).toHaveCount(1);
+  await expect(wordmark).toBeVisible();
+  await expect(wordmark).toHaveAttribute('role', 'img');
+  expect(await toolbarBrand.locator('button, a, [tabindex]').count()).toBe(0);
 
-  const box = await mark.boundingBox();
-  expect(box).not.toBeNull();
+  const box = await wordmark.boundingBox();
+  if (!box) throw new Error('the pixel wordmark is not measurable');
+  // The pixel wordmark renders at 14px tall at scale 2 — a text-like logo, not
+  // the old 18px glyph. It must be visible and measurable, not a sliver.
   expect(box.width).toBeGreaterThanOrEqual(18);
-  expect(box.height).toBeGreaterThanOrEqual(18);
+  expect(box.height).toBeGreaterThanOrEqual(12);
 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
     true
   );
-  await page.screenshot({ path: 'test-results/v0313-brand-desktop.png', fullPage: false });
 });
 
 test('WEB33-P0-32 brand survives the minimum project rail and the narrow drawer', async ({
@@ -42,35 +44,30 @@ test('WEB33-P0-32 brand survives the minimum project rail and the narrow drawer'
   await page.setViewportSize({ width: 1_280, height: 900 });
   await waitForWorkbenchReady(page, { timeout: 30_000 });
 
-  // Collapse the project navigator to the minimum (48px) rail: the mark and
-  // ORION survive, CODE WORKBENCH may hide, but nothing overlaps or overflows.
-  const railSurface = page.locator('#project-navigation');
-  const collapse = railSurface.getByRole('button', { name: '折叠项目导航' });
-  if (await collapse.isVisible()) {
-    await collapse.click();
-    // The collapsed state renders a DIFFERENT aside (#workspace-rail) that
-    // carries the collapsed class and the shared brand glyph.
-    const collapsedRail = page.locator('#workspace-rail');
-    await expect(collapsedRail).toHaveClass(/project-navigator-collapsed/u, {
-      timeout: 15_000,
-    });
-    await expect(collapsedRail.locator('.orion-brand-mark')).toBeVisible();
-    await expect(collapsedRail.getByRole('button', { name: '展开项目导航' })).toBeVisible();
-  }
+  // Collapse the project navigator to the minimum (48px) rail: the shared
+  // brand glyph survives, nothing overlaps or overflows. v0.3.20 — the
+  // collapse control is `收起项目导航` and the aside keeps the single stable
+  // id `workspace-rail` in both states.
+  const railSurface = page.locator('#workspace-rail');
+  const collapse = railSurface.getByRole('button', { name: '收起项目导航' });
+  await collapse.click();
+  await expect(railSurface).toHaveClass(/project-navigator-collapsed/u, { timeout: 15_000 });
+  await expect(railSurface.locator('.project-rail-brand[aria-hidden="true"]')).toBeVisible();
+  await expect(railSurface.locator('.orion-brand-mark')).toBeVisible();
+  await expect(railSurface.getByRole('button', { name: '展开项目导航' })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
     true
   );
-  await page.screenshot({ path: 'test-results/v0313-brand-min-rail.png', fullPage: false });
 
-  // Narrow viewport: the drawer version shows the mark and copy intact.
+  // Narrow viewport: the drawer carries the toolbar brand identity. The
+  // drawer's only entry is the keyboard contract (v0.3.15 removed the header
+  // toggle that used to open it).
   await page.setViewportSize({ width: 375, height: 800 });
   await page.waitForTimeout(600);
-  const toggle = page.getByRole('button', { name: '打开会话导航' }).first();
-  if (await toggle.isVisible()) await toggle.click();
-  const drawerRow = page.locator('.brand-row').first();
-  await expect(drawerRow).toBeVisible({ timeout: 15_000 });
+  await page.keyboard.press(process.platform === 'darwin' ? 'Meta+b' : 'Control+b');
+  await expect(page.locator('#workspace-rail.drawer-open')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('.project-toolbar-brand').first()).toBeVisible({ timeout: 15_000 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
     true
   );
-  await page.screenshot({ path: 'test-results/v0313-brand-drawer.png', fullPage: false });
 });

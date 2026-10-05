@@ -218,6 +218,14 @@ export function ProjectNavigator({
         <div className="project-toolbar-actions">
           <button
             type="button"
+            className="icon-button drawer-close"
+            aria-label="关闭项目导航"
+            onClick={onCollapse}
+          >
+            <Icon name="close" />
+          </button>
+          <button
+            type="button"
             className="icon-button"
             aria-label="收起项目导航"
             title="收起项目导航（⌘/Ctrl+B）"

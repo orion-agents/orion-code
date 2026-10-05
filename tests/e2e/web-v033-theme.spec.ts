@@ -146,11 +146,13 @@ test('WEB33-P0-03 appearance survives reload and same-origin Host restart', asyn
   await page.reload({ waitUntil: 'domcontentloaded' });
   await waitForWorkbenchReady(page, { timeout: 30_000 });
   await expectRootAppearance(page, 'orion-blocksmith', 'dark');
+  // v0.3.20 — v0.3.15 removed the conversation header (and its session <h1>);
+  // the session's identity after reload is its foreground row in the rail plus
+  // the enabled composer that row implies.
+  const ui = workbenchUi(page);
+  await expect(ui.composer).toBeEnabled({ timeout: 30_000 });
   await expect(
-    workbenchUi(page).main.getByRole('heading', {
-      level: 1,
-      name: 'Appearance restart session',
-    })
+    ui.sessionList.getByRole('button', { name: /Appearance restart session/u }).first()
   ).toBeVisible();
   expect((await sessionSnapshot(page, sessionId)).session.id).toBe(sessionId);
 
@@ -169,11 +171,10 @@ test('WEB33-P0-03 appearance survives reload and same-origin Host restart', asyn
     await expectRootAppearance(page, 'orion-blocksmith', 'dark');
     const restarted = await webBootstrap(page);
     expect(restarted.nonce).not.toBe(nonceBefore);
+    const restartedUi = workbenchUi(page);
+    await expect(restartedUi.composer).toBeEnabled({ timeout: 30_000 });
     await expect(
-      workbenchUi(page).main.getByRole('heading', {
-        level: 1,
-        name: 'Appearance restart session',
-      })
+      restartedUi.sessionList.getByRole('button', { name: /Appearance restart session/u }).first()
     ).toBeVisible();
     expect((await sessionSnapshot(page, sessionId)).session.id).toBe(sessionId);
     await captureWorkbench(page, evidence, 'web33-p0-03-restart-persisted.png', '03');
@@ -685,7 +686,7 @@ function isExpectedRestartFailure(failure: NetworkFailure): boolean {
   return (
     failure.method === 'GET' &&
     failure.path === '/api/v1/events' &&
-    /net::ERR_(?:ABORTED|CONNECTION_REFUSED)/u.test(failure.error)
+    /net::ERR_(?:ABORTED|CONNECTION_REFUSED|CONNECTION_RESET)/u.test(failure.error)
   );
 }
 
@@ -701,11 +702,20 @@ function orionMessage(page: Page, marker: string) {
   return page.getByRole('article', { name: 'Orion' }).filter({ hasText: marker }).last();
 }
 
+const WORK_PANEL_ID_BY_LABEL: Record<string, string> = {
+  终端: 'terminal',
+  文件: 'files',
+  Git: 'git',
+  审阅: 'review',
+};
+
 async function openWorkPanel(page: Page, name: '终端' | '文件' | 'Git' | '审阅'): Promise<Locator> {
   const panel = await openInspector(page);
-  const tab = panel.getByRole('tab', { name: new RegExp(`^${name}`, 'u') });
-  await tab.click();
-  await expect(tab).toHaveAttribute('aria-selected', 'true');
+  // v0.3.20 — the dock's tab strip became rail buttons (v0.3.11); the panes
+  // themselves are still role="tabpanel" labelled by the panel name.
+  const railButton = panel.locator(`[data-work-panel-id="${WORK_PANEL_ID_BY_LABEL[name]}"]`);
+  await railButton.click();
+  await expect(railButton).toHaveAttribute('aria-current', 'page');
   const pane = panel.getByRole('tabpanel', { name: new RegExp(`^${name}`, 'u') });
   await expect(pane).toBeVisible();
   return pane;

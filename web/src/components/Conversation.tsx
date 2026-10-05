@@ -29,6 +29,16 @@ export interface ConversationProps {
   readonly onRevealSettings: () => void;
   readonly onCreateSession: () => void;
   readonly composerInsertion: { readonly id: number; readonly text: string } | null;
+  /**
+   * v0.3.20 — restored. v0.3.15's banner-free chrome deleted the narrow-width
+   * navigation toggle with the header it lived in, which left sub-~800px
+   * viewports with no pointer entry to the session navigation at all (only
+   * Mod/Ctrl+B). The CSS (`.mobile-nav-toggle`) and the App's focus-restore
+   * wiring were both left behind, so the removal was incomplete, not a design
+   * decision.
+   */
+  readonly navigationOpen: boolean;
+  readonly onOpenNavigation: () => void;
 }
 
 type TimelineItem =
@@ -43,6 +53,8 @@ export function Conversation({
   onRevealSettings,
   onCreateSession,
   composerInsertion,
+  navigationOpen,
+  onOpenNavigation,
 }: ConversationProps) {
   const snapshotSync = activeSessionSnapshotSync(state);
   const allTimeline = useMemo(
@@ -148,6 +160,16 @@ export function Conversation({
 
   return (
     <main className="conversation-column" id="main-content">
+      <button
+        type="button"
+        className="icon-button mobile-nav-toggle"
+        onClick={onOpenNavigation}
+        aria-label="打开会话导航"
+        aria-controls="workspace-rail"
+        aria-expanded={navigationOpen}
+      >
+        <Icon name="menu" />
+      </button>
       {!state.bootstrap?.configured ? (
         <div className="configuration-banner" role="status">
           <Icon name="warning" />

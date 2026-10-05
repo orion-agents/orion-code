@@ -14,13 +14,25 @@ export interface ShortcutHelpDialogProps {
  */
 export function ShortcutHelpDialog({ open, onClose }: ShortcutHelpDialogProps) {
   const ref = useRef<HTMLDialogElement>(null);
+  const openerRef = useRef<HTMLElement | null>(null);
   const titleId = 'shortcut-help-title';
 
   useEffect(() => {
     const dialog = ref.current;
     if (!dialog) return;
-    if (open && !dialog.open) dialog.showModal();
-    if (!open && dialog.open) dialog.close();
+    if (open && !dialog.open) {
+      // v0.3.20 — record the trigger and restore focus explicitly on close.
+      // The native close() restoration races the app-level Escape handler's
+      // own trigger focus, and the toggle-close path could end on <body>.
+      openerRef.current = document.activeElement as HTMLElement | null;
+      dialog.showModal();
+    }
+    if (!open && dialog.open) {
+      dialog.close();
+      const opener = openerRef.current;
+      if (opener && document.contains(opener)) opener.focus();
+      openerRef.current = null;
+    }
   }, [open]);
 
   const onBackdropClick = (event: MouseEvent<HTMLDialogElement>) => {
@@ -52,7 +64,7 @@ export function ShortcutHelpDialog({ open, onClose }: ShortcutHelpDialogProps) {
         </button>
       </header>
 
-      <div className="shortcut-help-body">
+      <div className="shortcut-help-body" tabIndex={0} aria-label="键盘快捷键列表">
         {groups.map(({ group, items }) => (
           <section key={group} className="shortcut-help-group">
             <h3>{group}</h3>

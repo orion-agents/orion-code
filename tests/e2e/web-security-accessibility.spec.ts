@@ -291,7 +291,8 @@ test('E2E-P0-08 Host attacks fail closed while real-CSP UI remains keyboard and 
 
   await goalShortcut.focus();
   await goalShortcut.press('Enter');
-  const activityTab = ui.inspectorDock.getByRole('tab', { name: '活动', exact: true });
+  const inspectorSurface = ui.inspectorDock.or(ui.inspectorDialog).first();
+  const activityTab = inspectorSurface.getByRole('tab', { name: '活动', exact: true });
   await activityTab.click();
   await expect(activityTab).toHaveAttribute('aria-selected', 'true');
   await expect(activityTab).toBeFocused();

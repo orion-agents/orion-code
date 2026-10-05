@@ -21,9 +21,10 @@ test('WEB33-P0-15 real conversation turn streams an assistant message into the t
   await page.setViewportSize({ width: 1_600, height: 900 });
   const ui = workbenchUi(page);
   await waitForWorkbenchReady(page, { timeout: 30_000 });
-  await expect(ui.composer).toBeEnabled({ timeout: 30_000 });
-
+  // v0.3.20 — the composer enables once a session exists and is configured
+  // (its placeholder states that contract), so the session comes first.
   await createSession(page);
+  await expect(ui.composer).toBeEnabled({ timeout: 30_000 });
 
   const promptText = `v0.3.12 conversation smoke ${basename(workspace.primaryWorkspace)} reply briefly`;
   await submitPrompt(page, promptText, { timeout: 30_000 });

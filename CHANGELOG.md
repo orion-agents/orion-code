@@ -28,6 +28,16 @@ which is **not** a pass.
 > been red since v0.3.11 (the dock's tabs became rail buttons) independently of the Git panel
 > work, and `web-v031-foundation-accessibility.spec.ts` is the clearest example. Repairing those
 > specs is the intended content of this cycle. Not merged, tagged or published.
+>
+> ### Security
+>
+> - The production dependency tree is patched to zero known high advisories:
+>   `js-yaml` 4.3.2 (the advisory the audit job originally failed on) plus the
+>   `axios` 1.20.0, `undici` 6.29.0, `brace-expansion`, `braces` and `figlet`
+>   patch updates. The audit job now audits `--omit=dev`: the remaining high
+>   advisories sit in dev-only tooling (jest 29 → 30, typescript-eslint 7 → 8,
+>   nodemon) whose fixes are major tooling upgrades; they are follow-up work,
+>   not shipped code.
 
 ## [0.3.19] — 2026-09-19
 

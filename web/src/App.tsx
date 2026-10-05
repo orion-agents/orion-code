@@ -495,8 +495,14 @@ export function App() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (
         event.key === 'Escape' &&
-        !(event.target as HTMLElement | null)?.closest?.('[role="alertdialog"]')
+        drawersOpen &&
+        !(event.target as HTMLElement | null)?.closest?.('[role="alertdialog"], dialog')
       ) {
+        // v0.3.20 — two guards. A native <dialog> (e.g. the shortcut help) owns
+        // Escape and restores focus itself on close, so the drawer handler must
+        // not race it; and with no drawer open, closeDrawers() still moved
+        // focus to a stale drawer trigger, yanking the reader off whatever they
+        // were reading (probed: 查看键盘快捷键 → 打开Agent面板 on a bare Esc).
         closeDrawers();
       }
     };
@@ -606,6 +612,12 @@ export function App() {
         <Conversation
           state={state}
           actions={actions}
+          navigationOpen={navigationModalOpen}
+          onOpenNavigation={() => {
+            rememberDrawerTrigger();
+            setPanelOverlayOpen(false);
+            setNavigationOpen(true);
+          }}
           onRevealSettings={focusProjectSettings}
           onCreateSession={createSession}
           composerInsertion={composerInsertion}

@@ -557,11 +557,17 @@ test('WEB32-P0-11 two-tab control CAS and replay recovery preserve the matching 
 
     network.allow('net::ERR_INTERNET_DISCONNECTED');
     await context.setOffline(true);
-    await expect(page.getByText('网络已离线，Orion 将在恢复后重连', { exact: true })).toBeVisible({
+    // v0.3.20 — the offline copy changed (reducer.ts) to name the browser and
+    // the local host explicitly.
+    await expect(
+      page.getByText('浏览器已离线，本地 Web Host 将在网络恢复后重连', { exact: true })
+    ).toBeVisible({
       timeout: 30_000,
     });
     await context.setOffline(false);
-    const recover = page.getByRole('button', { name: '恢复', exact: true });
+    // v0.3.20 — the recovery action is labelled 重建连接 (the notice card's
+    // reconnect affordance), not the older 恢复.
+    const recover = page.getByRole('button', { name: '重建连接', exact: true });
     await expect(recover).toBeVisible({ timeout: 30_000 });
     expect(forcedReplayCursor).toBe(true);
     await expect(workbenchUi(page).composer).toBeDisabled();
