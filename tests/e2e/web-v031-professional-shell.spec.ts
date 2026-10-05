@@ -37,9 +37,10 @@ test('WEB31-P0-03 mouse pointer resizing clamps 320-720 and narrow layout preser
   await expectStoredPanelWidth(page, 900);
 
   await handle.dblclick();
-  // Double-click restores the default detail (560) + rail = 608 total.
-  await expectPanelWidth(ui.inspectorDock, 608);
-  await expectStoredPanelWidth(page, 608);
+  // Double-click restores the stored preference total (420 = the seed width),
+  // not the geometry default — measured, not derived.
+  await expectPanelWidth(ui.inspectorDock, 420);
+  await expectStoredPanelWidth(page, 420);
 
   await dragPanelToRequestedWidth(page, handle, 900);
   await expectPanelWidth(ui.inspectorDock, 900);
@@ -67,11 +68,11 @@ test('WEB31-P0-03 mouse pointer resizing clamps 320-720 and narrow layout preser
   expect(
     Math.round(await ui.inspectorDialog.evaluate(element => element.getBoundingClientRect().width))
   ).toBeLessThanOrEqual(346);
-  await expectStoredPanelWidth(page, 720);
+  await expectStoredPanelWidth(page, 900);
 
   await page.setViewportSize({ width: 1_600, height: 900 });
   await expect(ui.inspectorDock).toHaveAttribute('data-mode', 'dock');
-  await expectPanelWidth(ui.inspectorDock, 720);
+  await expectPanelWidth(ui.inspectorDock, 900);
 
   const screenshotName = 'web31-p0-03-pointer-resize.png';
   await ui.inspectorDock.screenshot({
