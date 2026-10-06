@@ -86,7 +86,11 @@ async function main(): Promise<void> {
       decision: manifest?.decision ?? 'MISSING',
       exactCoverage: sameOrderedValues(
         (manifest?.scenarios ?? []).map(scenario => String(scenario.scenarioId ?? '')).sort(),
-        WEB_E2E_FULL_SCENARIOS_V1
+        // v0.3.20 — the registry concatenates its per-epoch groups in delivery
+        // order, not alphabetically; compare as sorted sets or the check can
+        // never pass even when the run covered exactly the registered ids
+        // (the three CI legs were GO with a matching tarball and still NO_GO).
+        [...WEB_E2E_FULL_SCENARIOS_V1].sort()
       ),
       ...(manifest?.runId ? { runId: manifest.runId } : {}),
       ...(manifest?.createdAt ? { startedAt: manifest.createdAt } : {}),
