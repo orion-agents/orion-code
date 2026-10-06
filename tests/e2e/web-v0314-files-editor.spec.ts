@@ -112,7 +112,10 @@ test('WEB33-P0-34 file editor saves with CAS and recovers from revision conflict
   await expect
     .poll(
       async () =>
-        (await panel.locator('.file-code-view').textContent().catch(() => '')) ?? '',
+        (await panel
+          .locator('.file-code-view')
+          .textContent()
+          .catch(() => '')) ?? '',
       { timeout: 30_000 }
     )
     .toContain('EXTERNALLY CHANGED CONTENT');
