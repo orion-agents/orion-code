@@ -649,8 +649,14 @@ export function App() {
           panelOrder={layoutPreference.workPanel.order}
           agentPanel={workPanelPreference.agentPanel}
           onExpand={() => {
-            if (panelOverlay || panelDerivedRail) setPanelOverlayOpen(true);
-            else updatePanelPreference({ expanded: true });
+            if (panelOverlay || panelDerivedRail) {
+              // v0.3.20 — record the trigger on the keyboard-open path too
+              // (`toggle-work-panel` reaches onExpand through the dock's own
+              // shortcut handler, bypassing onToggleInspector): without it the
+              // close side has no trigger to restore focus to.
+              rememberDrawerTrigger();
+              setPanelOverlayOpen(true);
+            } else updatePanelPreference({ expanded: true });
           }}
           onCollapse={() => {
             if (panelSurfaceOverlay) closeDrawers();

@@ -354,9 +354,12 @@ test('E2E-P0-08 Host attacks fail closed while real-CSP UI remains keyboard and 
     ).toBe(true);
   }
   await page.keyboard.press('Escape');
-  // v0.3.20 (baseline.md D3) — below ~760px the drawer has no pointer toggle;
-  // the expanded-state assertions only apply where the button exists.
-  if (await ui.inspectorButton.isVisible().catch(() => false)) {
+  // v0.3.20 (baseline.md D3) — in overlay mode the drawer has no pointer
+  // toggle at all; the toggle assertions only apply to the docked dock.
+  const dockToggleExists = await page
+    .evaluate(() => !matchMedia('(max-width: 1180px)').matches)
+    .catch(() => false);
+  if (dockToggleExists) {
     await expect(ui.inspectorButton).toHaveAttribute('aria-expanded', 'false');
     await expect(ui.inspectorButton).toBeFocused();
   }
@@ -368,7 +371,15 @@ test('E2E-P0-08 Host attacks fail closed while real-CSP UI remains keyboard and 
   await expect(scrim).toBeVisible();
   await scrim.click({ position: { x: 20, y: 420 } });
   await expect(ui.inspectorDialog).toBeHidden();
-  await expect(ui.inspectorButton).toBeFocused();
+  // v0.3.20 (baseline.md D3) — at overlay widths there is no pointer toggle to
+  // receive focus; the scrim close hands it back to the recorded trigger.
+  if (dockToggleExists) {
+    await expect(ui.inspectorButton).toBeFocused();
+  } else {
+    await expect
+      .poll(() => page.evaluate(() => document.activeElement !== document.body))
+      .toBe(true);
+  }
 
   await openSessionNavigation(page);
   await ui.settingsButton.focus();
