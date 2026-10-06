@@ -1071,38 +1071,57 @@ test('SET-P0-13 Settings reflows at desktop, 390, 320, and 200 percent with keyb
     // Re-evaluate the responsive column mode and explicitly open the drawer before
     // hit-testing the only Settings entry at the 200% equivalent viewport.
     await openSessionNavigation(page);
-    const zoomHitTest = await workbenchUi(page).settingsButton.evaluate(button => {
-      const rect = (element: Element | null) => {
-        if (!element) return null;
-        const bounds = element.getBoundingClientRect();
-        return {
-          x: Math.round(bounds.x * 100) / 100,
-          y: Math.round(bounds.y * 100) / 100,
-          width: Math.round(bounds.width * 100) / 100,
-          height: Math.round(bounds.height * 100) / 100,
-          right: Math.round(bounds.right * 100) / 100,
-          bottom: Math.round(bounds.bottom * 100) / 100,
-        };
-      };
-      const buttonBounds = button.getBoundingClientRect();
-      const hit = document.elementFromPoint(
-        buttonBounds.left + buttonBounds.width / 2,
-        buttonBounds.top + buttonBounds.height / 2
-      );
-      return {
-        button: rect(button),
-        titleLine: rect(document.querySelector('.title-line')),
-        headerActions: rect(button.closest('.header-actions')),
-        hit: hit
-          ? {
-              tag: hit.tagName.toLowerCase(),
-              className: typeof hit.className === 'string' ? hit.className : '',
-              ariaLabel: hit.getAttribute('aria-label'),
-            }
-          : null,
-        buttonContainsHit: hit ? button.contains(hit) : false,
-      };
-    });
+    // v0.3.20 — the drawer slides in over a 180ms transform transition; the
+    // class flips instantly while the geometry is still mid-animation (CI hit
+    // x=-60 snapshots in 2/3 runs). Poll the hit test until the transition has
+    // actually settled instead of sampling it once.
+    const zoomHitTest = await (async () => {
+      const sample = () =>
+        workbenchUi(page).settingsButton.evaluate((button: HTMLElement) => {
+          const rect = (element: Element | null) => {
+            if (!element) return null;
+            const bounds = element.getBoundingClientRect();
+            return {
+              x: Math.round(bounds.x * 100) / 100,
+              y: Math.round(bounds.y * 100) / 100,
+              width: Math.round(bounds.width * 100) / 100,
+              height: Math.round(bounds.height * 100) / 100,
+              right: Math.round(bounds.right * 100) / 100,
+              bottom: Math.round(bounds.bottom * 100) / 100,
+            };
+          };
+          const buttonBounds = button.getBoundingClientRect();
+          const hit = document.elementFromPoint(
+            buttonBounds.left + buttonBounds.width / 2,
+            buttonBounds.top + buttonBounds.height / 2
+          );
+          return {
+            button: rect(button),
+            titleLine: rect(document.querySelector('.title-line')),
+            headerActions: rect(button.closest('.header-actions')),
+            hit: hit
+              ? {
+                  tag: hit.tagName.toLowerCase(),
+                  className: typeof hit.className === 'string' ? hit.className : '',
+                  ariaLabel: hit.getAttribute('aria-label'),
+                }
+              : null,
+            buttonContainsHit: hit ? button.contains(hit) : false,
+          };
+        });
+      let latest: Awaited<ReturnType<typeof sample>> | undefined;
+      await expect
+        .poll(
+          async () => {
+            latest = await sample();
+            return latest.buttonContainsHit;
+          },
+          { timeout: 15_000 }
+        )
+        .toBe(true);
+      return latest;
+    })();
+    if (!zoomHitTest) throw new Error('the zoom hit test never settled');
     evidence.recordFact('a11y.zoom_hit_test', JSON.stringify(zoomHitTest));
     evidence.recordFact('a11y.zoom_method', 'viewport-equivalent-320-css-dpr2');
     expect(zoomHitTest.buttonContainsHit, JSON.stringify(zoomHitTest)).toBe(true);
