@@ -88,10 +88,48 @@ export const WEB_E2E_WEB33_SESSION_SCENARIOS_V1 = Object.freeze([
   'WEB33-P0-23',
   'WEB33-P0-24',
 ] as const);
-export const WEB_E2E_WEB33_SCENARIOS_V1 = Object.freeze([
-  ...WEB_E2E_WEB33_THEME_SCENARIOS_V1,
-  ...WEB_E2E_WEB33_SESSION_SCENARIOS_V1,
-]);
+/**
+ * v0.3.20 — the WEB33 scenarios whose specs shipped between v0.3.13 and
+ * v0.3.15 (rail, transcript navigator, brand, files editor, resource layout)
+ * and used these ids before they were registered. The receipts' exact
+ * coverage check requires every running id to be registered exactly once:
+ * WEB33-P0-16/17/18 belong to the session-concurrency journeys, so the
+ * v0.3.13 resource-layout specs were renumbered to P0-41/42/43.
+ */
+export const WEB_E2E_WEB33_RESOURCE_SCENARIOS_V1 = Object.freeze([
+  'WEB33-P0-13',
+  'WEB33-P0-14',
+  'WEB33-P0-15',
+  'WEB33-P0-25',
+  'WEB33-P0-26',
+  'WEB33-P0-27',
+  'WEB33-P0-28',
+  'WEB33-P0-29',
+  'WEB33-P0-30',
+  'WEB33-P0-31',
+  'WEB33-P0-32',
+  'WEB33-P0-34',
+  'WEB33-P0-41',
+  'WEB33-P0-42',
+  'WEB33-P0-43',
+] as const);
+/**
+ * v0.3.15 — keyboard and shell surface journeys.
+ */
+export const WEB_E2E_WEB36_SCENARIOS_V1 = Object.freeze([
+  'WEB36-P0-01',
+  'WEB36-P1-01',
+  'WEB36-P1-02',
+  'WEB36-P1-03',
+] as const);
+/**
+ * v0.3.16 — transcript / workspace surface journeys.
+ */
+export const WEB_E2E_WEB37_SCENARIOS_V1 = Object.freeze([
+  'WEB37-P0-01',
+  'WEB37-P0-02',
+  'WEB37-P0-03',
+] as const);
 /**
  * v0.3.17 — LOCAL WORKSPACE open path. The picker is driven by a script file
  * (`ORION_CODE_WEB_PICKER_FIXTURE`) so CI never opens a real Finder dialog.
@@ -116,6 +154,11 @@ export const WEB_E2E_WEB317_SCENARIOS_V1 = Object.freeze([
   'WEB39-P0-04',
   'WEB39-P0-05',
 ]);
+export const WEB_E2E_WEB33_SCENARIOS_V1 = Object.freeze([
+  ...WEB_E2E_WEB33_THEME_SCENARIOS_V1,
+  ...WEB_E2E_WEB33_SESSION_SCENARIOS_V1,
+  ...WEB_E2E_WEB33_RESOURCE_SCENARIOS_V1,
+]);
 /**
  * v0.3.19 — closing the v0.3.17 G317 assertion backlog.
  *
@@ -136,6 +179,8 @@ export const WEB_E2E_FULL_SCENARIOS_V1 = Object.freeze([
   ...WEB_E2E_WEB31_SCENARIOS_V1,
   ...WEB_E2E_WEB32_SCENARIOS_V1,
   ...WEB_E2E_WEB33_SCENARIOS_V1,
+  ...WEB_E2E_WEB36_SCENARIOS_V1,
+  ...WEB_E2E_WEB37_SCENARIOS_V1,
   ...WEB_E2E_WEB38_SCENARIOS_V1,
   ...WEB_E2E_WEB317_SCENARIOS_V1,
   ...WEB_E2E_WEB34_SCENARIOS_V1,

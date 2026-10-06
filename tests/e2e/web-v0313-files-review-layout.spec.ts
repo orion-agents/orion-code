@@ -25,7 +25,7 @@ async function assertSameRow(
   expect(Math.abs(left.height - right.height)).toBeLessThanOrEqual(1);
 }
 
-test('WEB33-P0-16 Files puts preview left of the tree on one grid row', async ({ page }) => {
+test('WEB33-P0-41 Files puts preview left of the tree on one grid row', async ({ page }) => {
   test.setTimeout(180_000);
   await page.setViewportSize({ width: 1_600, height: 900 });
   await waitForWorkbenchReady(page, { timeout: 30_000 });
@@ -67,7 +67,7 @@ test('WEB33-P0-16 Files puts preview left of the tree on one grid row', async ({
   await page.screenshot({ path: 'test-results/v0313-files-wide.png', fullPage: false });
 });
 
-test('WEB33-P0-17 Review puts diff left of the file list on one grid row', async ({ page }) => {
+test('WEB33-P0-42 Review puts diff left of the file list on one grid row', async ({ page }) => {
   test.setTimeout(180_000);
   await page.setViewportSize({ width: 1_600, height: 900 });
   await waitForWorkbenchReady(page, { timeout: 30_000 });
@@ -87,7 +87,7 @@ test('WEB33-P0-17 Review puts diff left of the file list on one grid row', async
   await assertSameRow(page, '[aria-label="审阅 Diff"]', '[aria-label="待审阅文件"]');
 });
 
-test('WEB33-P0-18 narrow Files container stacks navigator above content', async ({ page }) => {
+test('WEB33-P0-43 narrow Files container stacks navigator above content', async ({ page }) => {
   test.setTimeout(180_000);
   await page.setViewportSize({ width: 1_600, height: 900 });
   await waitForWorkbenchReady(page, { timeout: 30_000 });

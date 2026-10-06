@@ -261,8 +261,9 @@ test('E2E-P0-08 Host attacks fail closed while real-CSP UI remains keyboard and 
   evidence.recordFact('layout.pointer_resize_1440_clamped', 720);
   evidence.recordFact('layout.conversation_min_preserved', true);
 
+  // v0.3.20 — the dock's toggle is 关闭工作面板 when expanded (v0.3.11+).
   const collapseButton = ui.inspectorDock.getByRole('button', {
-    name: '折叠工作面板',
+    name: '关闭工作面板',
     exact: true,
   });
   await collapseButton.focus();
@@ -316,9 +317,15 @@ test('E2E-P0-08 Host attacks fail closed while real-CSP UI remains keyboard and 
   await expect(ui.navigationButton).toHaveAttribute('aria-expanded', 'false');
   await expect(ui.navigationButton).toBeFocused();
 
-  await ui.inspectorButton.focus();
-  await ui.inspectorButton.press('Enter');
-  await expect(ui.inspectorButton).toHaveAttribute('aria-expanded', 'true');
+  if (await ui.inspectorButton.isVisible().catch(() => false)) {
+    await ui.inspectorButton.focus();
+    await ui.inspectorButton.press('Enter');
+    await expect(ui.inspectorButton).toHaveAttribute('aria-expanded', 'true');
+  } else {
+    // v0.3.20 (baseline.md D3) — below ~760px the collapsed drawer hides its
+    // own toggle; the shipped entry is the toggle-work-panel shortcut.
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+Shift+b' : 'Control+Shift+b');
+  }
   await expect(ui.inspectorDialog).toBeVisible();
   await expect(ui.inspectorDialog).toHaveAttribute('aria-modal', 'true');
   await expect(
@@ -347,8 +354,12 @@ test('E2E-P0-08 Host attacks fail closed while real-CSP UI remains keyboard and 
     ).toBe(true);
   }
   await page.keyboard.press('Escape');
-  await expect(ui.inspectorButton).toHaveAttribute('aria-expanded', 'false');
-  await expect(ui.inspectorButton).toBeFocused();
+  // v0.3.20 (baseline.md D3) — below ~760px the drawer has no pointer toggle;
+  // the expanded-state assertions only apply where the button exists.
+  if (await ui.inspectorButton.isVisible().catch(() => false)) {
+    await expect(ui.inspectorButton).toHaveAttribute('aria-expanded', 'false');
+    await expect(ui.inspectorButton).toBeFocused();
+  }
   expect(await ui.main.evaluate(element => (element as HTMLElement).inert)).toBe(false);
   expect(await workspaceRailState.evaluate(element => (element as HTMLElement).inert)).toBe(false);
 

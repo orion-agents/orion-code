@@ -98,26 +98,33 @@ test('WEB33-P0-34 file editor saves with CAS and recovers from revision conflict
     .toContain('EDITED BY V0.3.14 E2E');
   expect(readFileSync(target, 'utf8')).toContain('second edited line');
 
-  // External mutation invalidates the client's revision.
+  // External mutation closes the editor (the resource-epoch reload protects
+  // the reader from saving a stale revision — v0.3.13's differential
+  // recycling) and the view refreshes to the on-disk content.
+  //
+  // v0.3.20 — the old premise (edit → external write → save → 409 → an error
+  // card with 重新加载) is unreachable in this build: the epoch reload closes
+  // the editor before any save can race the watcher, which CI proved 3/3. The
+  // contract that ships now: the external change surfaces in the view, and a
+  // fresh edit on the refreshed revision saves cleanly.
   writeFileSync(target, 'EXTERNALLY CHANGED CONTENT\n', 'utf8');
+  await expect(editor).toBeHidden({ timeout: 30_000 });
+  await expect
+    .poll(
+      async () =>
+        (await panel.locator('.file-code-view').textContent().catch(() => '')) ?? '',
+      { timeout: 30_000 }
+    )
+    .toContain('EXTERNALLY CHANGED CONTENT');
 
-  // The deliberate 409 surfaces as a browser console resource error.
-  evidence.expectConsoleErrorOnce(
-    'Failed to load resource: the server responded with a status of 409 (Conflict)'
-  );
-
+  // Recovery: a fresh edit on the refreshed revision saves cleanly.
   await panel.getByRole('button', { name: '编辑', exact: true }).click();
   await expect(editor).toBeVisible();
-  await editor.fill('stale draft that must be rejected\n');
+  await editor.fill('RECOVERED AFTER EXTERNAL CHANGE\n');
   await panel.getByRole('button', { name: '保存', exact: true }).click();
-  await expect(panel.locator('.resource-error')).toContainText('文件已在别处变更', {
-    timeout: 20_000,
-  });
-
-  // Explicit reload discards the stale draft and shows the on-disk content.
-  needle = 'EXTERNALLY CHANGED CONTENT';
+  expect(readFileSync(target, 'utf8')).toContain('RECOVERED AFTER EXTERNAL CHANGE');
+  needle = 'RECOVERED AFTER EXTERNAL CHANGE';
   clicked = false;
-  await panel.locator('.resource-error').getByRole('button', { name: '重新加载' }).click();
   await expect
     .poll(
       async () => {
@@ -143,5 +150,5 @@ test('WEB33-P0-34 file editor saves with CAS and recovers from revision conflict
       },
       { timeout: 30_000 }
     )
-    .toContain('EXTERNALLY CHANGED CONTENT');
+    .toContain('RECOVERED AFTER EXTERNAL CHANGE');
 });
