@@ -143,6 +143,7 @@ export function allowExpectedNetworkFailures(testInfo: TestInfo, maximum: number
  * fail-closed. Symmetric with `allowExpectedNetworkFailures`.
  */
 export function allowExpectedConsoleErrors(
+  evidence: import('./evidence').WebE2EEvidenceCollector,
   testInfo: TestInfo,
   text: string,
   maximum: number
@@ -152,6 +153,10 @@ export function allowExpectedConsoleErrors(
   if (!Number.isSafeInteger(maximum) || maximum < 0) {
     throw new Error('Allowed console error maximum must be a non-negative integer.');
   }
+  // v0.3.20 — register with the collector so recordConsole matches the error
+  // live and the receipt's counters.consoleErrors stays clean; the annotation
+  // stays the test-verdict authority (allowanceUsed in the teardown math).
+  evidence.allowConsoleError(text, maximum);
   testInfo.annotations.push({
     type: 'evidence:allow-console-errors',
     description: JSON.stringify({ text: expected, maximum }),

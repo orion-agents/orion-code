@@ -132,6 +132,8 @@ interface PageListeners {
 }
 
 interface ExpectedConsoleError {
+  /** Allowance candidates are ceilings (max N) and may go partially unmatched. */
+  readonly allowance?: boolean;
   readonly text: string;
   matched: boolean;
 }
@@ -273,11 +275,32 @@ export class WebE2EEvidenceCollector {
   }
 
   unmatchedExpectedConsoleErrors(): readonly string[] {
+    // v0.3.20 — allowance candidates are ceilings, not point expectations:
+    // under-delivery is fine, so only exact-once expectations can go missing.
     return Object.freeze(
       this.expectedConsoleErrors
-        .filter(expected => !expected.matched)
+        .filter(expected => !expected.matched && !expected.allowance)
         .map(expected => expected.text)
     );
+  }
+
+  /**
+   * v0.3.20 S4 — register up to `maximum` console errors matching `text`
+   * exactly as expected. Registered candidates are matched live by
+   * recordConsole, keeping the receipt's `counters.consoleErrors` clean while
+   * the annotation math (allowanceUsed) stays the test-verdict authority.
+   */
+  allowConsoleError(text: string, maximum: number): void {
+    const expected = this.sanitize(text).trim();
+    if (!expected || Buffer.byteLength(expected, 'utf8') > MAX_DETAIL_BYTES) {
+      throw new Error('Allowed console error must be a bounded non-empty exact string.');
+    }
+    if (!Number.isSafeInteger(maximum) || maximum < 0) {
+      throw new Error('Allowed console error maximum must be a non-negative integer.');
+    }
+    for (let index = 0; index < maximum; index += 1) {
+      this.expectedConsoleErrors.push({ text: expected, matched: false, allowance: true });
+    }
   }
 
   recordConsole(type: string, text: string): void {

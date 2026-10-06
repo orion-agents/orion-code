@@ -54,11 +54,13 @@ test('WEB31-P0-01 packaged Workbench shows three projects and lazy-loads real Se
   // tab's bootstrap races a CAS 409. Both are this test's own design; bound
   // them per text instead of leaving the evidence verdict to their count.
   allowExpectedConsoleErrors(
+    evidence,
     testInfo,
     'Failed to load resource: the server responded with a status of 404 (Not Found)',
     12
   );
   allowExpectedConsoleErrors(
+    evidence,
     testInfo,
     'Failed to load resource: the server responded with a status of 409 (Conflict)',
     4
