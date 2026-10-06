@@ -20,7 +20,9 @@ jobs:
   verify:
     name: Node ${{ matrix.node-version }} verification
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    # v0.3.20 — the serial coverage suite plus the browser smoke exceeds 35
+    # minutes on current runners (three CI legs were cancelled mid-suite).
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
