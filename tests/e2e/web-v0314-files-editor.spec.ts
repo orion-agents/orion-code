@@ -35,7 +35,6 @@ async function openFilesPanel(page: import('@playwright/test').Page) {
 test('WEB33-P0-34 file editor saves with CAS and recovers from revision conflicts', async ({
   page,
   workspace,
-  evidence,
 }) => {
   test.setTimeout(300_000);
   await waitForWorkbenchReady(page, { timeout: 30_000 });
