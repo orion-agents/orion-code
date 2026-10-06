@@ -319,11 +319,11 @@ function addScreenshotEvidence(
   // layout — baseline.md) predate that convention; their release evidence is
   // their recorded facts, so they are explicitly exempt rather than
   // retro-fitted with capture plumbing.
-  const screenshotExempt =
-    /^WEB33-P0-(?:1[345]|2[5-9]|3[0-4]|4[1-3])$/u.test(scenario.scenarioId ?? '');
+  const screenshotExempt = /^WEB33-P0-(?:1[345]|2[5-9]|3[0-4]|4[1-3])$/u.test(
+    scenario.scenarioId ?? ''
+  );
   const requiresScreenshot =
-    /^(?:SET|WEB31|WEB32|WEB33)-P0-\d{2}$/u.test(scenario.scenarioId ?? '') &&
-    !screenshotExempt;
+    /^(?:SET|WEB31|WEB32|WEB33)-P0-\d{2}$/u.test(scenario.scenarioId ?? '') && !screenshotExempt;
   if (requiresScreenshot && screenshotFacts.length === 0) {
     throw new Error(`Release scenario screenshot evidence is missing: ${manifestPath}.`);
   }

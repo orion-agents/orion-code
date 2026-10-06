@@ -588,16 +588,21 @@ export function createWebE2EReleaseReceiptV1(
     status: input.liveCanary === 'FAIL' ? 'fail' : 'pass',
     detail: `observed=${input.liveCanary}`,
   });
+  // v0.3.20 — the run scenario ids are sorted by the evidence assembler; the
+  // registries concatenate their per-epoch groups in delivery order, so both
+  // sides are compared as sorted sets (order-sensitive comparison against the
+  // declared order rejected runs that covered exactly the registered ids).
+  const sortedFull = [...WEB_E2E_FULL_SCENARIOS_V1].sort();
+  const sortedCritical = [...WEB_E2E_CRITICAL_SCENARIOS_V1].sort();
   const primaryCoverage =
     primaryRuns.length === 3 &&
     primaryRuns.every(
-      run => run.role === 'primary' && sameOrderedValues(run.scenarioIds, WEB_E2E_FULL_SCENARIOS_V1)
+      run => run.role === 'primary' && sameOrderedValues(run.scenarioIds, sortedFull)
     );
   const runtimeCoverage =
     runtimeRuns.length === SUPPORTED_RELEASE_NODE_MAJORS_V1.length &&
     runtimeRuns.every(
-      run =>
-        run.role === 'runtime' && sameOrderedValues(run.scenarioIds, WEB_E2E_CRITICAL_SCENARIOS_V1)
+      run => run.role === 'runtime' && sameOrderedValues(run.scenarioIds, sortedCritical)
     );
   checks.push({
     id: 'scenario_coverage',
