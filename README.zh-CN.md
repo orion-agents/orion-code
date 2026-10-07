@@ -2,10 +2,9 @@
 
 面向终端与浏览器、本地优先的目标驱动 Coding Agent。
 
-> v0.3.19：补齐 v0.3.17 Git 工作栏的断言欠账
-> （`docs/plan/evidence/v0.3.17-git/g317-status.md`），并修掉这些断言找出来的问题——
-> 响应式三档从未生效、被后台刷新丢弃的 Diff 读取导致内容区空白、窄屏返回丢失阅读位置、
-> 裸仓库被当成「不是仓库」。已发布 npm 0.3.19 并打 tag `v0.3.19`。
+> v0.3.20 候选版本：进行中。v0.3.19 那轮验证发现 Web E2E 套件自 v0.3.11（停靠栏 tab 改为
+> rail 按钮）起就与产品脱节，与 Git 工作栏的工作无关；修好这些 spec 是本周期的目标。
+> 0.3.19 已发布 npm 并打 tag `v0.3.19`，0.3.20 尚未发布。
 
 [English](README.md) ·
 [v0.3.7 方案](docs/plan/v0.3.7-left-rail-improvement-plan.md) ·
@@ -102,7 +101,7 @@ Current。Node 20 已结束上游维护，不再属于 v0.3 Runtime 合同。
 当 npm 已存在不可变的 `0.3.4` 发布凭据后：
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.19
+npm install -g @orion-agents/orion-code@0.3.20
 orion --version
 orion doctor
 ```

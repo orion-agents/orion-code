@@ -272,10 +272,17 @@ test('WEB31-P0-10 terminal WebSocket burst stays isolated from Workbench SSE', a
 
 async function openTerminalPanel(page: Page): Promise<Locator> {
   const inspector = await openInspector(page, { timeout: 30_000 });
-  const tab = inspector.getByRole('tab', { name: /^终端，/u });
-  await tab.click();
-  await expect(tab).toHaveAttribute('aria-selected', 'true');
+  // v0.3.20 — the dock's tab strip became rail buttons (v0.3.11); the shell
+  // tabs *inside* the terminal panel keep their role="tab" contract.
+  const railButton = inspector.locator('[data-work-panel-id="terminal"]');
   const panel = inspector.locator('.terminal-panel');
+  // The rail button is a toggle: when the terminal pane is already open and
+  // active (P0-09 re-opens after a host restart), clicking it would collapse
+  // the dock while `aria-current` still reads "page".
+  if (!(await panel.isVisible().catch(() => false))) {
+    await railButton.click();
+    await expect(railButton).toHaveAttribute('aria-current', 'page');
+  }
   await expect(panel).toBeVisible({ timeout: 30_000 });
   return panel;
 }

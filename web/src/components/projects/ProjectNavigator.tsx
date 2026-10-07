@@ -205,7 +205,7 @@ export function ProjectNavigator({
 
   return (
     <aside
-      id="project-navigation"
+      id="workspace-rail"
       className={`workspace-rail project-navigator ${drawerOpen ? 'drawer-open' : ''}`}
       aria-label="项目与会话"
       hidden={!dockVisible}
@@ -216,6 +216,14 @@ export function ProjectNavigator({
           <h2 className="sr-only">项目</h2>
         </div>
         <div className="project-toolbar-actions">
+          <button
+            type="button"
+            className="icon-button drawer-close"
+            aria-label="关闭项目导航"
+            onClick={onCollapse}
+          >
+            <Icon name="close" />
+          </button>
           <button
             type="button"
             className="icon-button"

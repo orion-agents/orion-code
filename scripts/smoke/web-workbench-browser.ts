@@ -77,14 +77,27 @@ async function main(): Promise<void> {
       `Blocking axe violations: ${blocking.map(item => `${item.id}:${item.help}`).join(', ')}`
     );
 
-    await page.setViewportSize({ width: 390, height: 844 });
-    const navigation = page.getByRole('button', { name: '打开会话导航' });
-    await navigation.click();
-    await assertEventually(async () => (await navigation.getAttribute('aria-expanded')) === 'true');
+    // v0.3.20 — the drawer contract changed: v0.3.15's banner-free rail chrome
+    // (#255) removed the conversation header, and with it the `打开会话导航`
+    // toggle and every pointer entry below ~800px (the collapsed rail needs
+    // 560px conversation + 240px navigation to dock). The keyboard contract is
+    // what remains: Mod+B opens the drawer, Escape closes it.
+    await page.setViewportSize({ width: 768, height: 900 });
+    // Let the ResizeObserver-driven column solver commit the drawer mode before
+    // the shortcut is interpreted — otherwise it toggles collapse instead of
+    // opening the drawer (same two-frame wait the E2E fixture uses).
+    await page.evaluate(
+      () =>
+        new Promise<void>(resolve =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+        )
+    );
+    const navigationShortcut = process.platform === 'darwin' ? 'Meta+b' : 'Control+b';
+    await page.keyboard.press(navigationShortcut);
     await page.locator('#workspace-rail.drawer-open').waitFor();
     await page.keyboard.press('Escape');
     await assertEventually(
-      async () => (await navigation.getAttribute('aria-expanded')) === 'false'
+      async () => (await page.locator('#workspace-rail.drawer-open').count()) === 0
     );
 
     process.stdout.write(

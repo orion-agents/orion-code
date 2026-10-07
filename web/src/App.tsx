@@ -495,8 +495,14 @@ export function App() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (
         event.key === 'Escape' &&
-        !(event.target as HTMLElement | null)?.closest?.('[role="alertdialog"]')
+        drawersOpen &&
+        !(event.target as HTMLElement | null)?.closest?.('[role="alertdialog"], dialog')
       ) {
+        // v0.3.20 — two guards. A native <dialog> (e.g. the shortcut help) owns
+        // Escape and restores focus itself on close, so the drawer handler must
+        // not race it; and with no drawer open, closeDrawers() still moved
+        // focus to a stale drawer trigger, yanking the reader off whatever they
+        // were reading (probed: 查看键盘快捷键 → 打开Agent面板 on a bare Esc).
         closeDrawers();
       }
     };
@@ -606,6 +612,13 @@ export function App() {
         <Conversation
           state={state}
           actions={actions}
+          navigationOpen={navigationModalOpen}
+          navigationOverlay={navigationOverlay}
+          onOpenNavigation={() => {
+            rememberDrawerTrigger();
+            setPanelOverlayOpen(false);
+            setNavigationOpen(true);
+          }}
           onRevealSettings={focusProjectSettings}
           onCreateSession={createSession}
           composerInsertion={composerInsertion}
@@ -636,8 +649,14 @@ export function App() {
           panelOrder={layoutPreference.workPanel.order}
           agentPanel={workPanelPreference.agentPanel}
           onExpand={() => {
-            if (panelOverlay || panelDerivedRail) setPanelOverlayOpen(true);
-            else updatePanelPreference({ expanded: true });
+            if (panelOverlay || panelDerivedRail) {
+              // v0.3.20 — record the trigger on the keyboard-open path too
+              // (`toggle-work-panel` reaches onExpand through the dock's own
+              // shortcut handler, bypassing onToggleInspector): without it the
+              // close side has no trigger to restore focus to.
+              rememberDrawerTrigger();
+              setPanelOverlayOpen(true);
+            } else updatePanelPreference({ expanded: true });
           }}
           onCollapse={() => {
             if (panelSurfaceOverlay) closeDrawers();

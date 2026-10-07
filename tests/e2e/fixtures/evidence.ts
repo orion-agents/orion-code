@@ -7,8 +7,13 @@ import type { ConsoleMessage, Page, Request, Response } from '@playwright/test';
 import { redactTraceText } from '../../../src/services/redaction';
 import type { WebE2EArtifactStateV1 } from './artifact-types';
 
-const MAX_CAPTURE_BYTES = 64 * 1024;
-const MAX_EVENT_ENTRIES = 256;
+// v0.3.20 S0 — the capture caps can be raised for diagnosis via env without changing the
+// defaults. A failing run whose events were truncated (droppedEvents > 0) cannot be
+// classified from its manifest alone, so a diagnostic rerun needs a bigger buffer.
+const MAX_CAPTURE_BYTES =
+  Number.parseInt(process.env.E2E_EVIDENCE_MAX_CAPTURE_BYTES ?? '', 10) || 64 * 1024;
+const MAX_EVENT_ENTRIES =
+  Number.parseInt(process.env.E2E_EVIDENCE_MAX_EVENT_ENTRIES ?? '', 10) || 256;
 const MAX_DETAIL_BYTES = 4 * 1024;
 const MAX_FACT_BYTES = 1024;
 
@@ -127,6 +132,8 @@ interface PageListeners {
 }
 
 interface ExpectedConsoleError {
+  /** Allowance candidates are ceilings (max N) and may go partially unmatched. */
+  readonly allowance?: boolean;
   readonly text: string;
   matched: boolean;
 }
@@ -169,6 +176,14 @@ export class WebE2EEvidenceCollector {
   private readonly startedAt = new Date();
   private readonly counters: MutableCounters = emptyMutableCounters();
   private readonly events: WebE2EEvidenceEventV1[] = [];
+  /**
+   * v0.3.20 S4 — per-text console-error counts. Journeys that deliberately
+   * drive the app into expected failure responses (a stale-tab CAS 409, a
+   * phantom catalog entry whose snapshot does not exist) still surface as
+   * browser console resource errors; the collector must be able to tell the
+   * test's own allowance how many of each text occurred.
+   */
+  private readonly consoleErrorCounts = new Map<string, number>();
   private readonly facts = new Map<string, WebE2EEvidenceFactV1>();
   private readonly privatePaths = new Map<string, string>();
   private readonly secrets = new Set<string>();
@@ -260,11 +275,32 @@ export class WebE2EEvidenceCollector {
   }
 
   unmatchedExpectedConsoleErrors(): readonly string[] {
+    // v0.3.20 — allowance candidates are ceilings, not point expectations:
+    // under-delivery is fine, so only exact-once expectations can go missing.
     return Object.freeze(
       this.expectedConsoleErrors
-        .filter(expected => !expected.matched)
+        .filter(expected => !expected.matched && !expected.allowance)
         .map(expected => expected.text)
     );
+  }
+
+  /**
+   * v0.3.20 S4 — register up to `maximum` console errors matching `text`
+   * exactly as expected. Registered candidates are matched live by
+   * recordConsole, keeping the receipt's `counters.consoleErrors` clean while
+   * the annotation math (allowanceUsed) stays the test-verdict authority.
+   */
+  allowConsoleError(text: string, maximum: number): void {
+    const expected = this.sanitize(text).trim();
+    if (!expected || Buffer.byteLength(expected, 'utf8') > MAX_DETAIL_BYTES) {
+      throw new Error('Allowed console error must be a bounded non-empty exact string.');
+    }
+    if (!Number.isSafeInteger(maximum) || maximum < 0) {
+      throw new Error('Allowed console error maximum must be a non-negative integer.');
+    }
+    for (let index = 0; index < maximum; index += 1) {
+      this.expectedConsoleErrors.push({ text: expected, matched: false, allowance: true });
+    }
   }
 
   recordConsole(type: string, text: string): void {
@@ -283,11 +319,25 @@ export class WebE2EEvidenceCollector {
         return;
       }
     }
-    if (type === 'error') this.counters.consoleErrors += 1;
+    if (type === 'error') {
+      this.counters.consoleErrors += 1;
+      this.consoleErrorCounts.set(sanitized, (this.consoleErrorCounts.get(sanitized) ?? 0) + 1);
+    }
     if (type === 'warning' || type === 'warn') this.counters.consoleWarnings += 1;
     if (type === 'error' || type === 'warning' || type === 'warn') {
       this.pushEvent({ kind: 'console', detail: `${safeComponent(type)} ${sanitized}` });
     }
+  }
+
+  /**
+   * v0.3.20 S4 — how many console errors matched `text` exactly. Used together
+   * with the `evidence:allow-console-errors` annotation to keep deliberate
+   * failure journeys (CAS conflicts, phantom catalog snapshots) out of the
+   * unexpected-evidence verdict without weakening anything else.
+   */
+  consoleErrorCount(text: string): number {
+    const expected = this.sanitize(text).trim();
+    return this.consoleErrorCounts.get(expected) ?? 0;
   }
 
   recordRequest(method: string, url: string, resourceType = 'other'): void {

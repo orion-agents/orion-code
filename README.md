@@ -2,12 +2,10 @@
 
 Local-first, goal-driven coding agent for the terminal and browser.
 
-> v0.3.19 — closes the v0.3.17 Git work panel's assertion backlog
-> (`docs/plan/evidence/v0.3.17-git/g317-status.md`) and fixes what those
-> assertions found: responsive tiers that never activated, a diff read discarded
-> on a background refresh that left the pane blank, a narrow back control that
-> dropped the reading position, and a bare repository reported as "not a
-> repository". Published to npm as 0.3.19 and tagged `v0.3.19`.
+> v0.3.20 candidate — open. The v0.3.19 round found that the Web E2E suite has been red
+> since v0.3.11 (the dock's tabs became rail buttons), independently of the Git panel work;
+> repairing those specs is this cycle's intended content.
+> 0.3.19 is published to npm and tagged `v0.3.19`; 0.3.20 is not.
 
 [中文说明](README.zh-CN.md) ·
 [v0.3.7 plan](docs/plan/v0.3.7-left-rail-improvement-plan.md) ·
@@ -172,7 +170,7 @@ current development environments. Node 20 is upstream EOL and is no longer a v0.
 After the immutable `0.3.5` npm receipt exists:
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.19
+npm install -g @orion-agents/orion-code@0.3.20
 orion --version
 orion doctor
 ```

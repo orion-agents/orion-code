@@ -507,11 +507,11 @@ test('WEB31-P0-06 Git status, log, and diff enforce state, revision, and long-li
   expect(problemCode(oversizedDiff.body)).toBe('git_line_too_long');
 
   const panel = await openWorkPanel(page, 'Git');
-  await expect(panel.getByRole('region', { name: 'Git 变更' })).toContainText('冲突');
+  // v0.3.20 — the Git panel renders group labels (冲突/未暂存/…) and the diff
+  // viewer inside the pane itself; the old named regions are gone.
+  await expect(panel.getByText('冲突', { exact: true })).toBeVisible();
   await panel.getByRole('button').filter({ hasText: 'tracked.txt' }).first().click();
-  await expect(
-    panel.getByRole('region', { name: 'Git Diff' }).locator('.diff-viewer')
-  ).toBeVisible();
+  await expect(panel.locator('.diff-viewer')).toBeVisible();
   const performanceAfter = await browserPerformanceCounters(page);
   const gitPerformance = subtractCounters(
     performanceAfter.git,

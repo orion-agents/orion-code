@@ -466,7 +466,14 @@ export function workbenchReducer(
               ? state.archivedSessions.items
               : [],
           nextCursor: state.archivedSessions.nextCursor,
-          ownerWorkspaceId: state.archivedSessions.ownerWorkspaceId,
+          // v0.3.20 (baseline.md D2) — claim ownership on *loading* too. The eager
+          // loader in App skips a workspace whose archived copy is owned and not
+          // idle; keeping the previous owner here meant the guard never held
+          // during the first load of a workspace, so every render re-issued the
+          // request until some response landed (measured: 2476 requests in ~80s,
+          // 36 collateral 409s and Chrome ERR_INSUFFICIENT_RESOURCES). The failed
+          // path already claimed ownership for exactly this reason (v0.3.15).
+          ownerWorkspaceId: action.workspaceId,
         },
       };
     case 'archived_sessions_loaded': {

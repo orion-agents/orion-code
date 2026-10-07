@@ -42,12 +42,15 @@ export function workbenchUi(page: Page) {
     inspectorSurface,
     inspectorShortcuts,
     inspectorPanel,
+    // v0.3.20 — the narrow-width navigation toggle is restored in the product
+    // (it had been deleted with the conversation header, leaving sub-~800px
+    // viewports without a pointer entry to the session navigation).
+    navigationButton: main.getByRole('button', { name: '打开会话导航', exact: true }),
     composer: main.getByRole('textbox', { name: '发送给 Orion' }),
     sendButton: main.getByRole('button', { name: '发送消息', exact: true }),
     queueButton: main.getByRole('button', { name: '加入消息队列', exact: true }),
     newSessionButton: activeProject.getByRole('button', { name: /^在 .* 新建会话$/u }),
     sessionSearch: workspaceRail.getByRole('searchbox', { name: '搜索项目和会话' }),
-    navigationButton: main.getByRole('button', { name: '打开会话导航', exact: true }),
     // v0.3.11 moved the work-panel toggle into the dock rail, which is a sibling of <main>,
     // so scoping to `main` alone stopped matching it.
     inspectorButton: main
@@ -195,9 +198,9 @@ export async function openSessionNavigation(
   options: UiOperationOptions = {}
 ): Promise<Locator> {
   const ui = workbenchUi(page);
-  // The rail renders two different asides: expanded = #project-navigation
-  // (which also carries drawer-open in drawer mode), collapsed = #workspace-rail.
-  const railSurface = page.locator('#workspace-rail, #project-navigation').first();
+  // v0.3.20 — the aside keeps one stable id (`workspace-rail`) in both states;
+  // the old per-state ids made `aria-controls` resolve against nothing.
+  const railSurface = page.locator('#workspace-rail');
   // Let the ResizeObserver-driven column solver commit after a viewport change.
   // Otherwise a stale desktop rail can appear visible for one frame while the
   // shell is already transitioning to the modal drawer contract.
@@ -213,10 +216,10 @@ export async function openSessionNavigation(
   );
   if (drawerMode) {
     if (!(await railSurface.evaluate(element => element.classList.contains('drawer-open')))) {
-      await ui.navigationButton.click();
-      await expect(ui.navigationButton).toHaveAttribute('aria-expanded', 'true', {
-        timeout: options.timeout,
-      });
+      // v0.3.20 — the banner-free chrome (#255) removed the drawer's pointer
+      // toggle; `toggle-project-navigation` (Mod/Ctrl+B) is the shipped entry.
+      await page.keyboard.press(process.platform === 'darwin' ? 'Meta+b' : 'Control+b');
+      await expect(railSurface).toHaveClass(/drawer-open/u, { timeout: options.timeout });
     }
   } else if (
     await railSurface.evaluate(element => element.classList.contains('project-navigator-collapsed'))
@@ -226,10 +229,8 @@ export async function openSessionNavigation(
       timeout: options.timeout,
     });
   } else if (!(await railSurface.isVisible())) {
-    await ui.navigationButton.click();
-    await expect(ui.navigationButton).toHaveAttribute('aria-expanded', 'true', {
-      timeout: options.timeout,
-    });
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+b' : 'Control+b');
+    await expect(railSurface).toHaveClass(/drawer-open/u, { timeout: options.timeout });
   }
   await expect(ui.workspaceRail).toBeVisible({ timeout: options.timeout });
   return ui.workspaceRail;
@@ -246,14 +247,29 @@ export async function openInspector(
       timeout: options.timeout,
     });
     if (!overlay) {
+      // v0.3.20 — the dock's toggle lives inside the rail nav (v0.3.11+); the
+      // old `展开工作面板` label no longer exists.
       await expect(ui.inspectorShortcuts).toBeVisible({ timeout: options.timeout });
-      await ui.inspectorShortcuts.getByRole('button', { name: /^展开工作面板/u }).click();
+      const toggle = ui.inspectorShortcuts.getByRole('button', { name: /^打开工作面板$/u });
+      await expect(toggle).toBeVisible({ timeout: options.timeout });
+      await toggle.click();
     } else {
-      await expect(ui.inspectorButton).toBeVisible({ timeout: options.timeout });
-      await ui.inspectorButton.click();
-      await expect(ui.inspectorButton).toHaveAttribute('aria-expanded', 'true', {
-        timeout: options.timeout,
-      });
+      const pointerToggle = ui.inspectorButton;
+      if (await pointerToggle.isVisible().catch(() => false)) {
+        await pointerToggle.click();
+        await expect(pointerToggle).toHaveAttribute('aria-expanded', 'true', {
+          timeout: options.timeout,
+        });
+      } else {
+        // v0.3.20 (baseline.md D3) — below ~760px the collapsed work-panel
+        // drawer hides its own toggle with the container (`hidden={!expanded}`),
+        // so there is no pointer entry; the shipped affordance is the
+        // `toggle-work-panel` shortcut (Mod/Ctrl+Shift+B).
+        await page.keyboard.press(
+          process.platform === 'darwin' ? 'Meta+Shift+b' : 'Control+Shift+b'
+        );
+        await expect(ui.inspectorSurface).toHaveClass(/drawer-open/u, { timeout: options.timeout });
+      }
     }
   }
   await expect(ui.inspector).toBeVisible({ timeout: options.timeout });
