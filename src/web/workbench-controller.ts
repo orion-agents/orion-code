@@ -2421,6 +2421,9 @@ export class WebWorkbenchController {
       workspaceKernel: this.runtimeValue.workspaceRuntimeKernel?.diagnostics() ?? null,
       // v0.3.17 — bounded, path-free open-path traces (picker / inspect / activate).
       workspaceOpen: this.openTelemetry.snapshot(),
+      // v0.3.21 — bounded, path-free discovery traces (scan duration, counts,
+      // error codes). Never a root path, a label, a marker name, or content.
+      workspaceDiscovery: this.discoveryTelemetry.snapshot(),
       session: {
         ...this.sessionActivity,
         actors: this.sessionRegistry.stats(),
