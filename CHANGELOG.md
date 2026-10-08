@@ -22,12 +22,30 @@ which is **not** a pass.
 
 ## [Unreleased]
 
-## [0.3.20]
+## [0.3.21] — UNRELEASED
 
-> **Status: candidate.** Open. Repairs the Web E2E suite that has been red since
-> v0.3.11 (the dock's tabs became rail buttons) independently of the Git panel
-> work, and fixes the product defects the repair exposed. Not merged, tagged or
-> published.
+> **Status: candidate.** Open. Adds user-authorized local project-root discovery to
+> `LOCAL WORKSPACE` (bounded scan, explicit inspect → confirm → activate reuse, no
+> Home/network-volume scanning, no silent registration) and corrects the v0.3.20
+> release-facts documentation (`docs/plan/evidence/v0.3.20-e2e/release-receipt-v0.3.20.md`).
+> Not merged, tagged or published.
+
+### Added (planned)
+
+- Saved project roots registry (`WorkspaceRootsRegistryV1`) and a bounded, cancellable
+  discovery service with depth/candidate/time budgets and partial-result semantics.
+
+### Fixed (planned)
+
+- README / README.zh-CN / CHANGELOG release-state drift for v0.3.20, plus a release-check
+  guard that fails when a README describes a tagged version as unpublished.
+
+## [0.3.20] — 2026-10-07
+
+> **Status: published.** Released as `@orion-agents/orion-code@0.3.20` from
+> `refs/tags/v0.3.20`, and merged to `main` as `e658932` (#261). Repairs the Web E2E
+> suite that has been red since v0.3.11 (the dock's tabs became rail buttons)
+> independently of the Git panel work, and fixes the product defects the repair exposed.
 >
 > ### Fixed (product)
 >

@@ -462,6 +462,48 @@ function checkChangelog() {
   );
 }
 
+// v0.3.21 S0 — the README drift check: once the release tag exists, the
+// READMEs must not keep describing the current version as candidate/unpublished
+// (the same drift class the CHANGELOG gate already fails on).
+function checkReadmeReleaseState() {
+  const { version } = readJson('package.json');
+  const tag = releaseTag(version);
+  if (!tag.exists) {
+    return record(
+      'readme',
+      'README release state',
+      STATUS.SKIP,
+      `${tag.ref} not created; README release-state drift check is not applicable yet`
+    );
+  }
+  const stalePatterns = [
+    new RegExp(`v?${escapeRegExp(version)}\\s+(?:candidate|候选)`),
+    new RegExp(`\\b${escapeRegExp(version)}\\s+is\\s+not\\s+(?:published|released)`),
+    new RegExp(`${escapeRegExp(version)}\\s+尚未发布`),
+  ];
+  const offenders = [];
+  for (const readme of ['README.md', 'README.zh-CN.md']) {
+    const text = readTextIfPresent(readme);
+    if (text === null) continue;
+    if (stalePatterns.some(pattern => pattern.test(text))) offenders.push(readme);
+  }
+  if (offenders.length > 0) {
+    return record(
+      'readme',
+      'README release state',
+      STATUS.FAIL,
+      `${tag.ref} exists, but ${offenders.join(' and ')} still describe ${version} as ` +
+        'candidate/unpublished. State the published facts instead (see docs/plan/evidence/v0.3.20-e2e/release-receipt-v0.3.20.md).'
+    );
+  }
+  record(
+    'readme',
+    'README release state',
+    STATUS.PASS,
+    `${tag.ref} exists and the READMEs do not describe ${version} as unpublished`
+  );
+}
+
 // ---------------------------------------------------------------------------
 // 3. Release tag target and current checkout relationship
 // ---------------------------------------------------------------------------
@@ -980,6 +1022,7 @@ function report() {
 function main() {
   checkVersionConsistency();
   checkChangelog();
+  checkReadmeReleaseState();
   checkReleaseRef();
   checkGitHygiene();
   checkWorktreeClean();
