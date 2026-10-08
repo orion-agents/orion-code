@@ -42,6 +42,8 @@ import type {
   WebWorkspaceProjectSummaryV1,
   WebWorkspaceCandidateSourceV1,
   WebWorkspaceCandidateV1,
+  WebWorkspaceRootViewV1,
+  WebWorkspaceRootDiscoverOutcomeV1,
   WebDirectoryPickResultV1,
 } from '../../src/web/protocol';
 
@@ -803,6 +805,44 @@ export class OrionWebApi {
       ...(source ? { source } : {}),
     });
     return result.candidate;
+  }
+
+  /**
+   * v0.3.21 — saved project roots: user-authorized scan boundaries. Listing
+   * and discovering are browse actions; nothing is registered or activated.
+   */
+  async listWorkspaceRoots(): Promise<WebWorkspaceRootViewV1[]> {
+    return this.query<{ readonly roots: WebWorkspaceRootViewV1[] }>('/workspaces/roots').then(
+      result => result.roots
+    );
+  }
+
+  async addWorkspaceRoot(path: string): Promise<WebWorkspaceRootViewV1> {
+    const result = await this.mutate<{
+      readonly requestId: string;
+      readonly root: WebWorkspaceRootViewV1;
+    }>('/workspaces/roots/add', 'POST', { requestId: requestId(), path });
+    return result.root;
+  }
+
+  async removeWorkspaceRoot(rootId: string): Promise<boolean> {
+    const result = await this.mutate<{ readonly requestId: string; readonly removed: boolean }>(
+      '/workspaces/roots/remove',
+      'POST',
+      { requestId: requestId(), rootId }
+    );
+    return result.removed;
+  }
+
+  async discoverWorkspaceRoot(
+    rootId: string,
+    options: { readonly refresh?: boolean } = {}
+  ): Promise<WebWorkspaceRootDiscoverOutcomeV1> {
+    return this.mutate('/workspaces/roots/discover', 'POST', {
+      requestId: requestId(),
+      rootId,
+      refresh: options.refresh ?? true,
+    });
   }
 
   async createSession(context: WebContextGuardV1): Promise<WebSessionSummaryV1> {

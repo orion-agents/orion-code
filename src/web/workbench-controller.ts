@@ -105,6 +105,8 @@ import {
   type WebWorkspaceCandidateSourceV1,
   type WebWorkspaceCandidateV1,
   type WebWorkspaceKindV1,
+  type WebWorkspaceRootViewV1,
+  type WebWorkspaceRootDiscoverOutcomeV1,
 } from './protocol';
 import {
   createNativeDirectoryPicker,
@@ -112,6 +114,12 @@ import {
   type NativeDirectoryPicker,
 } from './native-directory-picker';
 import { WorkspaceOpenTelemetryV1 } from './workspace-open-telemetry';
+import {
+  WorkspaceDiscoveryOutcomeV1,
+  WorkspaceDiscoveryServiceV1,
+  WorkspaceDiscoveryTelemetryV1,
+} from './workspace-discovery';
+import { WorkspaceRootsRegistryV1 } from '../services/workspace-roots-registry';
 import { ReviewServiceV1 } from './review-service';
 import {
   WebSessionRuntimeRegistryError,
@@ -159,6 +167,10 @@ export interface WebWorkbenchControllerOptions {
   readonly createRuntime?: (cwd: string) => Promise<OrionCodeUiRuntime>;
   readonly createSessionRuntime?: (cwd: string) => Promise<OrionCodeUiRuntime>;
   readonly workspaceRegistry?: WorkspaceRegistryV1;
+  /** v0.3.21 — user-authorized scan boundaries; injectable for tests. */
+  readonly workspaceRootsRegistry?: WorkspaceRootsRegistryV1;
+  /** v0.3.21 — injectable discovery telemetry for tests. */
+  readonly discoveryTelemetry?: WorkspaceDiscoveryTelemetryV1;
   /** v0.3.16 — Host native directory picker; injectable for tests. */
   readonly nativeDirectoryPicker?: NativeDirectoryPicker;
 }
@@ -188,6 +200,17 @@ export class WebWorkbenchController {
   private pickerInFlight = false;
   /** v0.3.17 — bounded, path-free open-path traces exposed through diagnostics(). */
   private readonly openTelemetry = new WorkspaceOpenTelemetryV1();
+  private readonly workspaceRootsRegistry: WorkspaceRootsRegistryV1;
+  private readonly discoveryTelemetry: WorkspaceDiscoveryTelemetryV1;
+  private readonly discoveryService: WorkspaceDiscoveryServiceV1;
+  /**
+   * v0.3.21 — global discovery single-flight: at most one scan runs per Host;
+   * a new discover request aborts the previous one (scan_cancelled) and wins.
+   */
+  private readonly discoveryInflight = new Map<
+    string,
+    { controller: AbortController; promise: Promise<WorkspaceDiscoveryOutcomeV1> }
+  >();
   readonly terminalManager: TerminalManagerV1;
   private readonly mutationResults = new Map<string, CachedMutationResult>();
   private readonly sessionViews = new Map<string, CachedSessionView>();
@@ -238,6 +261,11 @@ export class WebWorkbenchController {
       onStateChanged: state => this.emitWorkspaceMutationState(state),
     });
     this.workspaceRegistry = options.workspaceRegistry ?? new WorkspaceRegistryV1();
+    this.workspaceRootsRegistry = options.workspaceRootsRegistry ?? new WorkspaceRootsRegistryV1();
+    this.discoveryTelemetry = options.discoveryTelemetry ?? new WorkspaceDiscoveryTelemetryV1();
+    this.discoveryService = new WorkspaceDiscoveryServiceV1({
+      telemetry: this.discoveryTelemetry,
+    });
     this.directoryPicker = options.nativeDirectoryPicker ?? createNativeDirectoryPicker();
     this.terminalManager = new TerminalManagerV1({
       resolveWorkspace: workspaceId => this.workspaceRegistry.find(workspaceId)?.canonicalPath,
@@ -490,6 +518,109 @@ export class WebWorkbenchController {
       );
     }
     return candidate;
+  }
+
+  // ---------------------------------------------------------------------
+  // v0.3.21 — user-authorized project roots and bounded discovery.
+  //
+  // Roots are scan boundaries, not workspaces: nothing here registers a
+  // workspace, activates a Context, installs a Runtime, or reads file
+  // contents. A discovered candidate is a hint; the client must still run the
+  // existing POST /workspaces/inspect → confirm → activate flow.
+  // ---------------------------------------------------------------------
+
+  listWorkspaceRoots(): readonly WebWorkspaceRootViewV1[] {
+    return this.workspaceRootsRegistry.list().map(entry => {
+      const cached = this.discoveryService.cached(entry.id);
+      return Object.freeze({
+        ...entry,
+        discovery: cached
+          ? Object.freeze({
+              status: cached.status,
+              candidateCount: cached.candidates.length,
+              durationMs: cached.durationMs,
+              ...(cached.errorCode ? { errorCode: cached.errorCode } : {}),
+              cached: true,
+            })
+          : null,
+      });
+    });
+  }
+
+  async addWorkspaceRoot(path: string, requestId?: string): Promise<WebWorkspaceRootViewV1> {
+    if (this.closed) {
+      throw new WebWorkbenchError(503, 'The local Web Host is shutting down.', 'host_closed');
+    }
+    const entry = this.workspaceRootsRegistry.add(path);
+    void requestId;
+    const view = this.listWorkspaceRoots().find(root => root.id === entry.id);
+    if (!view)
+      throw new WebWorkbenchError(500, 'Workspace root vanished after add.', 'scan_failed');
+    return view;
+  }
+
+  removeWorkspaceRoot(rootId: string): boolean {
+    // Cancelling first: a removed root must never receive a late scan result.
+    const inflight = this.discoveryInflight.get(rootId);
+    if (inflight) {
+      inflight.controller.abort();
+      this.discoveryInflight.delete(rootId);
+    }
+    this.discoveryService.invalidate(rootId);
+    return this.workspaceRootsRegistry.remove(rootId);
+  }
+
+  async discoverWorkspaceRoot(
+    rootId: string,
+    requestId?: string,
+    options: { readonly refresh?: boolean } = {}
+  ): Promise<WebWorkspaceRootDiscoverOutcomeV1> {
+    if (this.closed) {
+      throw new WebWorkbenchError(503, 'The local Web Host is shutting down.', 'host_closed');
+    }
+    const entry = this.workspaceRootsRegistry.find(rootId);
+    if (!entry) {
+      throw new WebWorkbenchError(404, 'Workspace root is not registered.', 'root_missing');
+    }
+    // Global single-flight: the newest discover request wins; the previous
+    // scan is aborted and reports scan_cancelled.
+    for (const [id, inflight] of this.discoveryInflight) {
+      inflight.controller.abort();
+      this.discoveryInflight.delete(id);
+    }
+    if (!options.refresh) {
+      const cached = this.discoveryService.cached(rootId);
+      if (cached) return this.toDiscoverOutcome(cached, entry.lastScannedAt, requestId);
+    }
+    const controller = new AbortController();
+    const promise = this.discoveryService.discover({ root: entry, signal: controller.signal });
+    this.discoveryInflight.set(rootId, { controller, promise });
+    let outcome: WorkspaceDiscoveryOutcomeV1;
+    try {
+      outcome = await promise;
+    } finally {
+      const current = this.discoveryInflight.get(rootId);
+      if (current && current.promise === promise) this.discoveryInflight.delete(rootId);
+    }
+    const scanned = this.workspaceRootsRegistry.markScanned(rootId);
+    return this.toDiscoverOutcome(outcome, scanned?.lastScannedAt, requestId);
+  }
+
+  private toDiscoverOutcome(
+    outcome: WorkspaceDiscoveryOutcomeV1,
+    lastScannedAt: string | undefined,
+    requestId?: string
+  ): WebWorkspaceRootDiscoverOutcomeV1 {
+    return Object.freeze({
+      ...(requestId ? { requestId } : {}),
+      rootId: outcome.rootId,
+      status: outcome.status,
+      candidates: outcome.candidates,
+      ...(outcome.errorCode ? { errorCode: outcome.errorCode } : {}),
+      durationMs: outcome.durationMs,
+      scannedEntries: outcome.scannedEntries,
+      ...(lastScannedAt ? { lastScannedAt } : {}),
+    });
   }
 
   listWorkspaceSessions(

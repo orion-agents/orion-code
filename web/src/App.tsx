@@ -791,6 +791,10 @@ export function App() {
         onLoadMore={actions.loadMoreWorkspaces}
         onPickDirectory={actions.pickWorkspaceDirectory}
         onInspect={actions.inspectWorkspacePath}
+        onListRoots={actions.listWorkspaceRoots}
+        onAddRoot={actions.addWorkspaceRoot}
+        onRemoveRoot={actions.removeWorkspaceRoot}
+        onDiscoverRoot={actions.discoverWorkspaceRoot}
       />
       <RenameDialog
         open={Boolean(renameTarget)}
