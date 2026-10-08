@@ -140,6 +140,7 @@ export const WEB_E2E_WEB38_SCENARIOS_V1 = Object.freeze([
   'WEB38-P0-03',
   'WEB38-P0-04',
   'WEB38-P0-05',
+  'WEB38-P0-06',
 ] as const);
 /**
  * v0.3.17 — Git right-hand work panel (`docs/plan/v0.3.17-plan.md`).

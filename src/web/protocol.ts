@@ -492,6 +492,51 @@ export interface WebWorkspaceInspectRequestV1 {
   readonly path: string;
   readonly source?: WebWorkspaceCandidateSourceV1;
 }
+// v0.3.21 — user-authorized project roots and bounded discovery. Roots are
+// scan boundaries, not workspaces: they live in their own registry and never
+// activate a Context or install a Runtime.
+export type WebWorkspaceRootDiscoveryHintV1 = 'git' | 'manifest';
+
+export interface WebWorkspaceRootEntryV1 {
+  readonly id: string;
+  readonly canonicalPath: string;
+  readonly label: string;
+  readonly addedAt: string;
+  readonly lastScannedAt?: string;
+}
+
+export interface WebWorkspaceRootDiscoveryStatusV1 {
+  readonly status: 'ready' | 'partial';
+  readonly candidateCount: number;
+  readonly durationMs: number;
+  readonly errorCode?: string;
+  readonly cached: boolean;
+}
+
+export interface WebWorkspaceRootViewV1 extends WebWorkspaceRootEntryV1 {
+  /** The cached outcome of the most recent scan, when one is still fresh. */
+  readonly discovery: WebWorkspaceRootDiscoveryStatusV1 | null;
+}
+
+export interface WebWorkspaceRootCandidateV1 {
+  readonly rootId: string;
+  readonly relativePath: string;
+  readonly label: string;
+  readonly hint: WebWorkspaceRootDiscoveryHintV1;
+  readonly status: 'ready' | 'partial';
+}
+
+export interface WebWorkspaceRootDiscoverOutcomeV1 {
+  readonly requestId?: string;
+  readonly rootId: string;
+  readonly status: 'ready' | 'partial';
+  readonly candidates: readonly WebWorkspaceRootCandidateV1[];
+  readonly errorCode?: string;
+  readonly durationMs: number;
+  readonly scannedEntries: number;
+  readonly lastScannedAt?: string;
+}
+
 export type WebWorkspaceInvalidationReasonV1 =
   | 'context-change'
   | 'filesystem-change'

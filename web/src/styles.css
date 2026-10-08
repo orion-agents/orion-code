@@ -3929,6 +3929,82 @@ html[data-history-scrubbing] * {
 .workspace-modal {
   width: min(600px, calc(100vw - 28px));
 }
+
+/* v0.3.21 — project-root discovery in the workspace dialog. */
+.workspace-roots {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle, rgba(128, 128, 128, 0.25));
+}
+
+.workspace-root-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.workspace-root-row.active .workspace-root-select {
+  outline: 1px solid var(--accent, #4a7dff);
+  border-radius: 8px;
+}
+
+.workspace-root-select {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.workspace-root-select:hover {
+  background: rgba(128, 128, 128, 0.12);
+}
+
+.workspace-root-select strong {
+  display: block;
+  font-size: 13px;
+}
+
+.workspace-root-select small {
+  display: block;
+  color: var(--text-muted, rgba(200, 200, 200, 0.65));
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 340px;
+}
+
+.workspace-root-actions {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.workspace-discovered {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle, rgba(128, 128, 128, 0.25));
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.workspace-add-root {
+  margin-top: 4px;
+}
+
 .workspace-options {
   max-height: 350px;
   overflow: auto;

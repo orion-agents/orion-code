@@ -14,11 +14,18 @@ import type {
   WebSessionSummaryV1,
   WebWorkspaceCandidateSourceV1,
   WebWorkspaceCandidateV1,
+  WebWorkspaceRootViewV1,
+  WebWorkspaceRootDiscoverOutcomeV1,
   WorkbenchState,
 } from '../types';
 import { Icon } from './Icon';
 import { basename, sessionTitle } from './WorkspaceRail';
 import { WorkspaceConfirmCard } from './workspace/WorkspaceConfirmCard';
+import {
+  initialWorkspaceRootDiscoveryState,
+  workspaceRootDiscoveryReducer,
+  workspaceRootScanSummary,
+} from '../state/workspace-root-discovery';
 import {
   initialWorkspacePickerState,
   workspacePickerBusy,
@@ -82,6 +89,17 @@ export interface WorkspaceDialogProps {
   readonly onPickDirectory: () => Promise<WebDirectoryPickResultV1>;
   /** v0.3.16 — read-only preview of a candidate directory. */
   readonly onInspect: (path: string) => Promise<WebWorkspaceCandidateV1>;
+  /** v0.3.21 — saved project roots: user-authorized scan boundaries. */
+  readonly onListRoots: () => Promise<WebWorkspaceRootViewV1[]>;
+  /** v0.3.21 — add a root through the native picker's confirmed path. */
+  readonly onAddRoot: (path: string) => Promise<WebWorkspaceRootViewV1>;
+  /** v0.3.21 — remove a saved root. */
+  readonly onRemoveRoot: (rootId: string) => Promise<boolean>;
+  /** v0.3.21 — bounded discovery inside one root (refresh forces a re-scan). */
+  readonly onDiscoverRoot: (
+    rootId: string,
+    options?: { readonly refresh?: boolean }
+  ) => Promise<WebWorkspaceRootDiscoverOutcomeV1>;
 }
 
 export function WorkspaceDialog({
@@ -92,17 +110,42 @@ export function WorkspaceDialog({
   onLoadMore,
   onPickDirectory,
   onInspect,
+  onListRoots,
+  onAddRoot,
+  onRemoveRoot,
+  onDiscoverRoot,
 }: WorkspaceDialogProps) {
   const [path, setPath] = useState('');
   const [showAllWorkspaces, setShowAllWorkspaces] = useState(false);
   const [query, setQuery] = useState('');
   const [picker, dispatch] = useReducer(workspacePickerReducer, initialWorkspacePickerState);
+  const [roots, rootsDispatch] = useReducer(
+    workspaceRootDiscoveryReducer,
+    initialWorkspaceRootDiscoveryState
+  );
+  const scanGeneration = useRef(0);
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      // v0.3.21 — closing the dialog resets the local discovery state; the
+      // Host-side single-flight scan (if any) finishes on its own and its
+      // result is cached by root for the next open.
+      rootsDispatch({ type: 'reset' });
+      return;
+    }
     setPath('');
     setShowAllWorkspaces(false);
     setQuery('');
     dispatch({ type: 'reset' });
+    // Load the saved roots list (a registry read — never a scan).
+    rootsDispatch({ type: 'roots-loading' });
+    void onListRoots()
+      .then(loaded => rootsDispatch({ type: 'roots-loaded', roots: loaded }))
+      .catch(error =>
+        rootsDispatch({
+          type: 'roots-failed',
+          message: error instanceof Error ? error.message : '无法读取项目根目录。',
+        })
+      );
   }, [open]);
 
   const pickerBusy = workspacePickerBusy(picker);
@@ -195,6 +238,122 @@ export function WorkspaceDialog({
     if (!target) return;
     void inspectPath(target, 'manual');
   };
+
+  // -------------------------------------------------------------------
+  // v0.3.21 — project-root discovery. Scanning starts only on explicit user
+  // action (add / refresh / selecting a root), never on dialog open; the
+  // first dialog open only reads the saved roots registry.
+  // -------------------------------------------------------------------
+  const runScan = (rootId: string, refresh: boolean) => {
+    scanGeneration.current += 1;
+    const generation = scanGeneration.current;
+    rootsDispatch({ type: 'scan-started', rootId, generation });
+    void onDiscoverRoot(rootId, { refresh })
+      .then(outcome => {
+        rootsDispatch({
+          type: 'scan-succeeded',
+          rootId,
+          generation,
+          candidates: outcome.candidates,
+          status: outcome.status,
+          ...(outcome.errorCode ? { errorCode: outcome.errorCode } : {}),
+        });
+      })
+      .catch(error => {
+        const message = error instanceof Error ? error.message : '扫描失败。';
+        rootsDispatch({ type: 'scan-failed', rootId, generation, message });
+      });
+  };
+
+  const selectRoot = (root: WebWorkspaceRootViewV1) => {
+    // Selecting a root scans it only when no cached result exists; refresh
+    // always re-scans.
+    if (root.discovery?.cached || root.discovery) {
+      rootsDispatch({
+        type: 'scan-started',
+        rootId: root.id,
+        generation: scanGeneration.current + 1,
+      });
+      void onDiscoverRoot(root.id, { refresh: false })
+        .then(outcome => {
+          scanGeneration.current += 1;
+          rootsDispatch({
+            type: 'scan-succeeded',
+            rootId: root.id,
+            generation: scanGeneration.current,
+            candidates: outcome.candidates,
+            status: outcome.status,
+            ...(outcome.errorCode ? { errorCode: outcome.errorCode } : {}),
+          });
+        })
+        .catch(error => {
+          scanGeneration.current += 1;
+          rootsDispatch({
+            type: 'scan-failed',
+            rootId: root.id,
+            generation: scanGeneration.current,
+            message: error instanceof Error ? error.message : '扫描失败。',
+          });
+        });
+      return;
+    }
+    runScan(root.id, true);
+  };
+
+  const refreshRoot = (root: WebWorkspaceRootViewV1) => {
+    runScan(root.id, true);
+  };
+
+  const removeRoot = (root: WebWorkspaceRootViewV1) => {
+    void onRemoveRoot(root.id)
+      .then(() => rootsDispatch({ type: 'root-removed', rootId: root.id }))
+      .catch(error => {
+        rootsDispatch({
+          type: 'roots-failed',
+          message: error instanceof Error ? error.message : '无法移除项目根目录。',
+        });
+      });
+  };
+
+  const addRoot = async () => {
+    rootsDispatch({ type: 'roots-loading' });
+    try {
+      const result = await onPickDirectory();
+      if (result.outcome !== 'selected' || !result.path) {
+        rootsDispatch({ type: 'roots-loaded', roots: roots.roots });
+        return;
+      }
+      const root = await onAddRoot(result.path);
+      rootsDispatch({ type: 'root-added', root });
+      // The newly authorized root is scanned once, immediately: the user just
+      // granted it explicitly.
+      runScan(root.id, true);
+    } catch (error) {
+      rootsDispatch({
+        type: 'roots-failed',
+        message: error instanceof Error ? error.message : '无法添加项目根目录。',
+      });
+    }
+  };
+
+  /** Absolute path of a discovered candidate (relativePath '' = the root). */
+  const candidateAbsolutePath = (rootCanonicalPath: string, relativePath: string): string =>
+    relativePath
+      ? `${rootCanonicalPath.replace(/[\\/]+$/u, '')}/${relativePath}`
+      : rootCanonicalPath;
+
+  const activeRoot = roots.roots.find(root => root.id === roots.activeRootId) ?? null;
+  // Front-end filtering over loaded candidates only; the query never triggers
+  // a scan and never reaches the Runtime.
+  const visibleCandidates = roots.candidates.filter(
+    candidate => !normalizedQuery || candidate.label.toLocaleLowerCase().includes(normalizedQuery)
+  );
+  const CANDIDATE_PREVIEW_COUNT = 24;
+  const [showAllCandidates, setShowAllCandidates] = useState(false);
+  const shownCandidates = showAllCandidates
+    ? visibleCandidates
+    : visibleCandidates.slice(0, CANDIDATE_PREVIEW_COUNT);
+  const hiddenCandidates = visibleCandidates.length - shownCandidates.length;
 
   return (
     <DialogFrame
@@ -312,6 +471,139 @@ export function WorkspaceDialog({
           </button>
         ) : null}
       </div>
+
+      {roots.roots.length > 0 || roots.rootsLoading ? (
+        <div className="workspace-roots" role="group" aria-label="项目根目录">
+          <h3 className="workspace-group-heading">项目根目录</h3>
+          {roots.rootsLoading ? (
+            <p className="workspace-empty" role="status">
+              正在读取项目根目录…
+            </p>
+          ) : null}
+          {roots.roots.map(root => (
+            <div
+              key={root.id}
+              className={`workspace-root-row ${roots.activeRootId === root.id ? 'active' : ''}`}
+            >
+              <button
+                type="button"
+                className="workspace-root-select"
+                onClick={() => selectRoot(root)}
+                aria-pressed={roots.activeRootId === root.id}
+              >
+                <span className="workspace-icon">
+                  <Icon name="workspace" size={15} />
+                </span>
+                <span>
+                  <strong>{root.label}</strong>
+                  <small title={root.canonicalPath}>{workspaceRootScanSummary(roots, root)}</small>
+                </span>
+              </button>
+              <span className="workspace-root-actions">
+                <button
+                  type="button"
+                  className="icon-button"
+                  onClick={() => refreshRoot(root)}
+                  disabled={roots.scanning}
+                  aria-label={`刷新项目根目录 ${root.label}`}
+                >
+                  <Icon name="refresh" size={14} />
+                </button>
+                <button
+                  type="button"
+                  className="icon-button"
+                  onClick={() => removeRoot(root)}
+                  disabled={roots.scanning}
+                  aria-label={`移除项目根目录 ${root.label}`}
+                >
+                  <Icon name="close" size={14} />
+                </button>
+              </span>
+            </div>
+          ))}
+          <button
+            type="button"
+            className="text-button workspace-add-root"
+            onClick={() => void addRoot()}
+            disabled={roots.scanning}
+          >
+            添加项目根目录…
+          </button>
+        </div>
+      ) : null}
+      {!roots.rootsLoading && roots.roots.length === 0 ? (
+        <button
+          type="button"
+          className="text-button workspace-add-root"
+          onClick={() => void addRoot()}
+          disabled={roots.scanning}
+        >
+          添加项目根目录…
+        </button>
+      ) : null}
+
+      {roots.scanning ? (
+        <p className="workspace-empty" role="status">
+          正在扫描项目根目录…
+        </p>
+      ) : null}
+      {roots.phase === 'error' ? (
+        <p className="field-error" role="alert">
+          {roots.errorMessage || '扫描失败。'}
+        </p>
+      ) : null}
+      {roots.phase === 'partial' ? (
+        <p className="workspace-empty" role="status">
+          部分结果：扫描在预算内未完成，可再次刷新。
+        </p>
+      ) : null}
+      {roots.phase === 'empty' && roots.activeRootId ? (
+        <p className="workspace-empty" role="status">
+          该根目录下未发现候选项目；可用 Finder 或高级路径打开任意目录。
+        </p>
+      ) : null}
+      {activeRoot && visibleCandidates.length > 0 ? (
+        <div className="workspace-discovered" role="group" aria-label="发现的项目">
+          <h3 className="workspace-group-heading">
+            发现的项目（{activeRoot.label}
+            {roots.phase === 'partial' ? '，部分结果' : ''}）
+          </h3>
+          {shownCandidates.map(candidate => {
+            const absolute = candidateAbsolutePath(
+              activeRoot.canonicalPath,
+              candidate.relativePath
+            );
+            return (
+              <button
+                key={`${candidate.rootId}:${candidate.relativePath || '(root)'}`}
+                type="button"
+                className="workspace-option"
+                disabled={locked}
+                onClick={() => void inspectPath(absolute, 'discovered')}
+              >
+                <span className="workspace-icon">
+                  <Icon name="workspace" size={16} />
+                </span>
+                <span>
+                  <strong>{candidate.label}</strong>
+                  <small>{candidate.hint === 'git' ? 'Git 仓库' : '项目清单'}</small>
+                </span>
+                <Icon name="chevron" size={15} />
+              </button>
+            );
+          })}
+          {hiddenCandidates > 0 ? (
+            <button
+              type="button"
+              className="text-button workspace-toggle-all"
+              aria-expanded={showAllCandidates}
+              onClick={() => setShowAllCandidates(value => !value)}
+            >
+              {showAllCandidates ? '收起候选项目' : `显示更多候选（${hiddenCandidates}）`}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
 
       <details className="workspace-advanced">
         <summary>高级：粘贴绝对路径</summary>

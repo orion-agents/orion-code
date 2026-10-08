@@ -60,6 +60,8 @@ import {
   type DiagnosticsSnapshot,
   type WebDirectoryPickResultV1,
   type WebWorkspaceCandidateV1,
+  type WebWorkspaceRootViewV1,
+  type WebWorkspaceRootDiscoverOutcomeV1,
   type WorkbenchState,
   type WorkspaceListResponse,
 } from './types';
@@ -111,6 +113,14 @@ export interface WorkbenchActions {
   pickWorkspaceDirectory(): Promise<WebDirectoryPickResultV1>;
   /** v0.3.16 — read-only preview of a candidate directory. */
   inspectWorkspacePath(path: string): Promise<WebWorkspaceCandidateV1>;
+  /** v0.3.21 — saved project roots: user-authorized scan boundaries. */
+  listWorkspaceRoots(): Promise<WebWorkspaceRootViewV1[]>;
+  addWorkspaceRoot(path: string): Promise<WebWorkspaceRootViewV1>;
+  removeWorkspaceRoot(rootId: string): Promise<boolean>;
+  discoverWorkspaceRoot(
+    rootId: string,
+    options?: { readonly refresh?: boolean }
+  ): Promise<WebWorkspaceRootDiscoverOutcomeV1>;
   activateContext(workspaceId: string, sessionId: string | null): Promise<void>;
   setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<void>;
   removeWorkspace(workspaceId: string): Promise<void>;
@@ -1033,6 +1043,17 @@ export function useWorkbench(): UseWorkbenchResult {
    * or touch the active Context.
    */
   const pickWorkspaceDirectory = useCallback(() => api.pickDirectory({}), [api]);
+  const listWorkspaceRoots = useCallback(() => api.listWorkspaceRoots(), [api]);
+  const addWorkspaceRoot = useCallback((path: string) => api.addWorkspaceRoot(path), [api]);
+  const removeWorkspaceRoot = useCallback(
+    (rootId: string) => api.removeWorkspaceRoot(rootId),
+    [api]
+  );
+  const discoverWorkspaceRoot = useCallback(
+    (rootId: string, options?: { readonly refresh?: boolean }) =>
+      api.discoverWorkspaceRoot(rootId, options),
+    [api]
+  );
 
   /**
    * v0.3.16 — read-only preview of a candidate directory. No notice, no pause,
@@ -1712,6 +1733,10 @@ export function useWorkbench(): UseWorkbenchResult {
       switchWorkspace,
       pickWorkspaceDirectory,
       inspectWorkspacePath,
+      listWorkspaceRoots,
+      addWorkspaceRoot,
+      removeWorkspaceRoot,
+      discoverWorkspaceRoot,
       activateContext,
       setWorkspacePinned,
       removeWorkspace,
@@ -1836,6 +1861,10 @@ export function useWorkbench(): UseWorkbenchResult {
       switchWorkspace,
       pickWorkspaceDirectory,
       inspectWorkspacePath,
+      listWorkspaceRoots,
+      addWorkspaceRoot,
+      removeWorkspaceRoot,
+      discoverWorkspaceRoot,
       moveQueued,
       terminalAttachTicket,
       terminalSocket,

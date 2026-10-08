@@ -2,9 +2,9 @@
 
 面向终端与浏览器、本地优先的目标驱动 Coding Agent。
 
-> v0.3.20 候选版本：进行中。v0.3.19 那轮验证发现 Web E2E 套件自 v0.3.11（停靠栏 tab 改为
-> rail 按钮）起就与产品脱节，与 Git 工作栏的工作无关；修好这些 spec 是本周期的目标。
-> 0.3.19 已发布 npm 并打 tag `v0.3.19`，0.3.20 尚未发布。
+> v0.3.21 候选版本：进行中。为 `LOCAL WORKSPACE` 增加用户显式授权的项目根目录发现（有界
+> 扫描、复用 inspect → confirm → activate）。上一版 0.3.20 已发布 npm（registry `latest`）
+> 并打 tag `v0.3.20`（`e658932`，#261）——发布事实：`docs/plan/evidence/v0.3.20-e2e/release-receipt-v0.3.20.md`。
 
 [English](README.md) ·
 [v0.3.7 方案](docs/plan/v0.3.7-left-rail-improvement-plan.md) ·
@@ -101,7 +101,7 @@ Current。Node 20 已结束上游维护，不再属于 v0.3 Runtime 合同。
 当 npm 已存在不可变的 `0.3.4` 发布凭据后：
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.20
+npm install -g @orion-agents/orion-code@0.3.21
 orion --version
 orion doctor
 ```

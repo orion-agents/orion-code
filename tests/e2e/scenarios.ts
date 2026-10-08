@@ -294,6 +294,7 @@ export const WEB33_REQUIRED_EVIDENCE_FACTS_V1: Readonly<
   'WEB37-P0-01': Object.freeze([]),
   'WEB37-P0-02': Object.freeze([]),
   'WEB37-P0-03': Object.freeze([]),
+  'WEB38-P0-06': Object.freeze([]),
   'WEB33-P0-16': Object.freeze([
     { key: 'web33.running_switch_verified', equals: true },
     { key: 'web33.background_turn_preserved', equals: true },

@@ -417,6 +417,51 @@ async function handleRequest(context: RequestContext): Promise<void> {
     sendJson(response, 200, { requestId, candidate });
     return;
   }
+  // v0.3.21 — saved project roots: read-only list. Roots are scan boundaries,
+  // not workspaces; listing them changes nothing.
+  if (method === 'GET' && path === '/workspaces/roots') {
+    sendJson(response, 200, { roots: context.workbench.listWorkspaceRoots() });
+    return;
+  }
+  // v0.3.21 — add a root through the native picker's confirmed path. A local
+  // configuration mutation: transport-guarded, naturally idempotent (roots
+  // dedupe by canonical path), and never a Context mutation.
+  if (method === 'POST' && path === '/workspaces/roots/add') {
+    assertMutation(request, context.nonce, context.origin);
+    const body = requireRecord(await readJson(request), 'Workspace root request');
+    assertOnlyKeys(body, ['requestId', 'path']);
+    const requestId = requireUuid(body.requestId, 'requestId');
+    const rootPath = requireText(body.path, 'path', 4096);
+    const root = await context.workbench.addWorkspaceRoot(rootPath, requestId);
+    sendJson(response, 200, { requestId, root });
+    return;
+  }
+  // v0.3.21 — remove a root. Cancels any in-flight scan for it first; the
+  // workspaces registry is untouched.
+  if (method === 'POST' && path === '/workspaces/roots/remove') {
+    assertMutation(request, context.nonce, context.origin);
+    const body = requireRecord(await readJson(request), 'Workspace root request');
+    assertOnlyKeys(body, ['requestId', 'rootId']);
+    const requestId = requireUuid(body.requestId, 'requestId');
+    const rootId = requireText(body.rootId, 'rootId', 128);
+    const removed = context.workbench.removeWorkspaceRoot(rootId);
+    sendJson(response, 200, { requestId, removed });
+    return;
+  }
+  // v0.3.21 — bounded discovery inside one saved root. Read-only, abortable,
+  // host-wide single-flight; the newest request aborts the previous scan. A
+  // candidate is a hint: the client still runs inspect → confirm → activate.
+  if (method === 'POST' && path === '/workspaces/roots/discover') {
+    assertMutation(request, context.nonce, context.origin);
+    const body = requireRecord(await readJson(request), 'Workspace discovery request');
+    assertOnlyKeys(body, ['requestId', 'rootId', 'refresh']);
+    const requestId = requireUuid(body.requestId, 'requestId');
+    const rootId = requireText(body.rootId, 'rootId', 128);
+    const refresh = body.refresh === undefined ? true : body.refresh === true;
+    const outcome = await context.workbench.discoverWorkspaceRoot(rootId, requestId, { refresh });
+    sendJson(response, 200, outcome);
+    return;
+  }
   if (method === 'GET' && path === '/sessions') {
     const contextGuard = requireContextGuardQuery(url);
     sendJson(
