@@ -2,9 +2,9 @@
 
 Local-first, goal-driven coding agent for the terminal and browser.
 
-> v0.3.22 candidate — open. Hardens agent reliability (ToolGateway in-flight request
-> identity) and builds a real coding-task evaluation harness. The previous release 0.3.21
-> is on npm (registry `latest`) and tagged `v0.3.21` (`0d22c9a`, #264).
+> 0.3.22 is published to npm (registry `latest`), tagged `v0.3.22` (`9f09e0a`, #265) and
+> released on GitHub. It hardened ToolGateway in-flight request identity, added the
+> durability fault-injection matrix, and shipped the coding-task evaluation harness.
 
 [中文说明](README.zh-CN.md) ·
 [v0.3.7 plan](docs/plan/v0.3.7-left-rail-improvement-plan.md) ·

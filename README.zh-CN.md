@@ -2,8 +2,9 @@
 
 面向终端与浏览器、本地优先的目标驱动 Coding Agent。
 
-> v0.3.22 候选版本：进行中。强化 Agent 可靠性（ToolGateway 执行中请求身份）并建设真实编码
-> 任务评测体系。上一版 0.3.21 已发布 npm（registry `latest`）并打 tag `v0.3.21`（`0d22c9a`，#264）。
+> 0.3.22 已发布 npm（registry `latest`）、打 tag `v0.3.22`（`9f09e0a`，#265）并在 GitHub
+> 发布 Release。本版强化 ToolGateway 执行中请求身份、新增持久化故障注入矩阵，并交付编码
+> 任务评测体系。
 
 [English](README.md) ·
 [v0.3.7 方案](docs/plan/v0.3.7-left-rail-improvement-plan.md) ·
