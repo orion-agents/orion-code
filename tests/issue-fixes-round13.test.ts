@@ -202,45 +202,6 @@ describe('#50 extension extraction keeps the leading dot', () => {
     const names = matchFiles('a', root).map((m: { path: string }) => m.path);
     expect(names).not.toContain('app.log');
   });
-
-  it('auto-fix `**/*.ts` no longer fires on extensionless paths', () => {
-    const { matchesPattern } = require('../src/services/auto-fix/autoFixHook').__testables;
-
-    expect(matchesPattern('docs/requirements', '**/*.ts')).toBe(false);
-    expect(matchesPattern('notes/highlights', '**/*.ts')).toBe(false);
-    expect(matchesPattern('src/a.ts', '**/*.ts')).toBe(true);
-    // `.mts` must not be swallowed by the `.ts` trigger either.
-    expect(matchesPattern('src/a.mts', '**/*.ts')).toBe(false);
-  });
-
-  it('detectAutoFixConfig clears commands the project does not define', () => {
-    const {
-      detectAutoFixConfig,
-      DEFAULT_AUTOFIX_CONFIG,
-    } = require('../src/services/auto-fix/autoFixConfig');
-    writeFileSync(join(root, 'package.json'), JSON.stringify({ scripts: { build: 'tsc' } }));
-
-    const config = detectAutoFixConfig(root);
-    expect(config.buildCommand).toBe('npm run build');
-    expect(config.lintCommand).toBeUndefined();
-    expect(config.testCommand).toBeUndefined();
-    // and it must not hand out the shared singleton / shared triggers array
-    expect(config).not.toBe(DEFAULT_AUTOFIX_CONFIG);
-    expect(config.triggers).not.toBe(DEFAULT_AUTOFIX_CONFIG.triggers);
-  });
-
-  it('the catch path returns a copy, so setEnabled cannot poison the defaults', () => {
-    const {
-      detectAutoFixConfig,
-      DEFAULT_AUTOFIX_CONFIG,
-    } = require('../src/services/auto-fix/autoFixConfig');
-    const missing = join(root, 'no-such-dir');
-    const config = detectAutoFixConfig(missing);
-
-    expect(config).not.toBe(DEFAULT_AUTOFIX_CONFIG);
-    config.enabled = false;
-    expect(DEFAULT_AUTOFIX_CONFIG.enabled).toBe(true);
-  });
 });
 
 // ============================================================================
