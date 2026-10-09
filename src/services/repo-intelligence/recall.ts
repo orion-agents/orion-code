@@ -116,9 +116,7 @@ export function recallFiles(
       score: entry.score,
       reasons: [...entry.reasons].sort(),
     }))
-    .sort(
-      (left, right) => right.score - left.score || left.path.localeCompare(right.path)
-    )
+    .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path))
     .slice(0, limit);
 }
 

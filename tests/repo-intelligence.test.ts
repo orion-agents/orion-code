@@ -61,7 +61,9 @@ describe('RepoSymbolIndexV1 (T23-B1/B2)', () => {
     expect(index.importersOf('src/tool-gateway.ts')).toEqual(['src/agent-loop.ts']);
     const gatewayRecord = index.getSnapshot().get('src/tool-gateway.ts');
     expect(gatewayRecord?.imports).toEqual(['src/tool-gateway.ts'].length >= 0 ? [] : []);
-    expect(gatewayRecord?.exportedNames).toEqual(expect.arrayContaining(['ToolGateway', 'ToolInvocation']));
+    expect(gatewayRecord?.exportedNames).toEqual(
+      expect.arrayContaining(['ToolGateway', 'ToolInvocation'])
+    );
   });
 
   test('incremental update re-parses only stale files', () => {

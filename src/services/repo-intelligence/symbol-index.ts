@@ -119,7 +119,10 @@ function fileDigest(stats: { mtimeMs: number; size: number }): string {
 }
 
 /** Extract symbols + import edges from one source file. */
-function parseSource(root: string, absolutePath: string): {
+function parseSource(
+  root: string,
+  absolutePath: string
+): {
   symbols: RepoSymbolEntryV1[];
   imports: string[];
   exportedNames: string[];
@@ -170,25 +173,51 @@ function parseSource(root: string, absolutePath: string): {
       }
     }
     if (ts.isFunctionDeclaration(node) && node.name)
-      push(node, node.name.text, 'function', node.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword) === true);
+      push(
+        node,
+        node.name.text,
+        'function',
+        node.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword) === true
+      );
     else if (ts.isClassDeclaration(node) && node.name)
-      push(node, node.name.text, 'class', node.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword) === true);
+      push(
+        node,
+        node.name.text,
+        'class',
+        node.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword) === true
+      );
     else if (ts.isInterfaceDeclaration(node) && node.name)
-      push(node, node.name.text, 'interface', node.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword) === true);
+      push(
+        node,
+        node.name.text,
+        'interface',
+        node.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword) === true
+      );
     else if (ts.isTypeAliasDeclaration(node) && node.name)
-      push(node, node.name.text, 'type', node.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword) === true);
+      push(
+        node,
+        node.name.text,
+        'type',
+        node.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword) === true
+      );
     else if (ts.isEnumDeclaration(node) && node.name)
-      push(node, node.name.text, 'enum', node.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword) === true);
+      push(
+        node,
+        node.name.text,
+        'enum',
+        node.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword) === true
+      );
     else if (ts.isVariableStatement(node)) {
-      const exported =
-        node.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword) === true;
+      const exported = node.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword) === true;
       for (const declaration of node.declarationList.declarations) {
         if (ts.isIdentifier(declaration.name)) {
-          const kind = declaration.name.getText(source).length > 0 && node.declarationList.flags & ts.NodeFlags.Const
-            ? 'const'
-            : node.declarationList.flags & ts.NodeFlags.Let
-              ? 'let'
-              : 'var';
+          const kind =
+            declaration.name.getText(source).length > 0 &&
+            node.declarationList.flags & ts.NodeFlags.Const
+              ? 'const'
+              : node.declarationList.flags & ts.NodeFlags.Let
+                ? 'let'
+                : 'var';
           push(node, declaration.name.text, kind as RepoSymbolEntryV1['kind'], exported);
         }
       }

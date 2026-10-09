@@ -19,6 +19,8 @@ export {
 } from './recall';
 
 /** The runtime integration flag: 'on' enables harness wiring; default off. */
-export function isRepoIntelligenceEnabled(env: Readonly<Record<string, string | undefined>> = process.env): boolean {
+export function isRepoIntelligenceEnabled(
+  env: Readonly<Record<string, string | undefined>> = process.env
+): boolean {
   return env.ORION_CODE_REPO_INTELLIGENCE === 'on';
 }
