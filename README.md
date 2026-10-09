@@ -2,10 +2,9 @@
 
 Local-first, goal-driven coding agent for the terminal and browser.
 
-> v0.3.21 candidate — open. Adds user-authorized local project-root discovery to
-> `LOCAL WORKSPACE` (bounded scan, explicit inspect → confirm → activate reuse). The previous
-> release 0.3.20 is on npm (registry `latest`) and tagged `v0.3.20` (`e658932`, #261) —
-> release facts: `docs/plan/evidence/v0.3.20-e2e/release-receipt-v0.3.20.md`.
+> v0.3.22 candidate — open. Hardens agent reliability (ToolGateway in-flight request
+> identity) and builds a real coding-task evaluation harness. The previous release 0.3.21
+> is on npm (registry `latest`) and tagged `v0.3.21` (`0d22c9a`, #264).
 
 [中文说明](README.zh-CN.md) ·
 [v0.3.7 plan](docs/plan/v0.3.7-left-rail-improvement-plan.md) ·
@@ -170,7 +169,7 @@ current development environments. Node 20 is upstream EOL and is no longer a v0.
 After the immutable `0.3.5` npm receipt exists:
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.21
+npm install -g @orion-agents/orion-code@0.3.22
 orion --version
 orion doctor
 ```

@@ -173,7 +173,16 @@ export class ToolGatewayError extends Error {
 
 /** Capability → Policy → Approval → Sandbox → Execute → durable terminal receipt. */
 export class ToolGateway {
-  private readonly inflight = new Map<string, Promise<ToolInvocationResultV1>>();
+  /**
+   * v0.3.22 T22-01 — in-flight entries carry the full request digest so the
+   * same invocationId with different arguments, tool, snapshot, or parent
+   * conflicts instead of silently reusing the first execution's promise
+   * (matching the durable journal's guard strength).
+   */
+  private readonly inflight = new Map<
+    string,
+    { requestDigest: string; promise: Promise<ToolInvocationResultV1> }
+  >();
   private readonly clock: () => number;
 
   constructor(private readonly services: ToolGatewayServicesV1) {
@@ -181,13 +190,34 @@ export class ToolGateway {
   }
 
   invoke(invocation: ToolInvocationV1): Promise<ToolInvocationResultV1> {
+    const requestDigest = computeRequestDigest(invocation);
     const existing = this.inflight.get(invocation.invocationId);
-    if (existing) return existing;
-    const run = this.invokeOnce(invocation).finally(() =>
-      this.inflight.delete(invocation.invocationId)
-    );
-    this.inflight.set(invocation.invocationId, run);
-    return run;
+    if (existing) {
+      if (existing.requestDigest !== requestDigest) {
+        // Reject (rather than throw synchronously) so callers awaiting the
+        // invocation observe the conflict through the same promise channel as
+        // the durable-journal conflict.
+        return Promise.reject(
+          new ToolGatewayError(
+            'ORION_TOOL_INVOCATION_CONFLICT',
+            'Invocation ID is already executing with different arguments or snapshot',
+            invocation.invocationId
+          )
+        );
+      }
+      return existing.promise;
+    }
+    const promise = this.invokeOnce(invocation).finally(() => {
+      // Remove only our own entry: the guard keeps a defensive barrier against
+      // deleting an entry created by a later invocation after this run
+      // finished.
+      const current = this.inflight.get(invocation.invocationId);
+      if (current && current.requestDigest === requestDigest) {
+        this.inflight.delete(invocation.invocationId);
+      }
+    });
+    this.inflight.set(invocation.invocationId, { requestDigest, promise });
+    return promise;
   }
 
   private async invokeOnce(invocation: ToolInvocationV1): Promise<ToolInvocationResultV1> {
@@ -447,8 +477,13 @@ export function createSandboxPreparationV1(
   return deepFreeze({ ...input, digest: digestRuntimeValue(input) });
 }
 
-function createIntent(invocation: ToolInvocationV1, startedAt: number): ToolInvocationIntentV1 {
-  const requestDigest = digestRuntimeValue({
+/**
+ * v0.3.22 T22-01 — the authoritative request identity, shared by the durable
+ * intent and the in-flight dedupe map. Excludes startedAt so identity stays
+ * stable across retries within one execution.
+ */
+function computeRequestDigest(invocation: ToolInvocationV1): string {
+  return digestRuntimeValue({
     invocationId: invocation.invocationId,
     parentInvocationId: invocation.parentInvocationId,
     threadId: invocation.snapshot.threadId,
@@ -458,6 +493,10 @@ function createIntent(invocation: ToolInvocationV1, startedAt: number): ToolInvo
     snapshotDigest: invocation.snapshot.digest,
     argsDigest: digestRuntimeValue(invocation.args),
   });
+}
+
+function createIntent(invocation: ToolInvocationV1, startedAt: number): ToolInvocationIntentV1 {
+  const requestDigest = computeRequestDigest(invocation);
   const content = {
     version: 1 as const,
     invocationId: invocation.invocationId,

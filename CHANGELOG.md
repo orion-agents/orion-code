@@ -22,13 +22,27 @@ which is **not** a pass.
 
 ## [Unreleased]
 
-## [0.3.21] — UNRELEASED
+## [0.3.22] — UNRELEASED
 
-> **Status: candidate.** Open. Adds user-authorized local project-root discovery to
-> `LOCAL WORKSPACE` (bounded scan, explicit inspect → confirm → activate reuse, no
-> Home/network-volume scanning, no silent registration) and corrects the v0.3.20
-> release-facts documentation (`docs/plan/evidence/v0.3.20-e2e/release-receipt-v0.3.20.md`).
-> Not merged, tagged or published.
+> **Status: candidate.** Open. Agent Reliability & Efficiency — hardens ToolGateway
+> in-flight request identity (T22-01), adds the durability fault-injection matrix (T22-02),
+> the four-state release verification gate (T22-03), and a real coding-task evaluation
+> harness (T22-04). Plan: `docs/plan/v0.3.22-plan.md`. Not merged, tagged or published.
+
+### Fixed (product)
+
+- ToolGateway in-flight dedupe now compares the full request digest: the same invocationId
+  with different arguments, tool, snapshot, or parent conflicts
+  (`ORION_TOOL_INVOCATION_CONFLICT`) instead of reusing the running execution's promise.
+
+## [0.3.21] — 2026-10-09
+
+> **Status: published.** Released as `@orion-agents/orion-code@0.3.21` from
+> `refs/tags/v0.3.21`, and merged to `main` as `0d22c9a` (#264). Adds user-authorized
+> local project-root discovery to `LOCAL WORKSPACE` (bounded scan, explicit
+> inspect → confirm → activate reuse, no Home/network-volume scanning, no silent
+> registration) and corrects the v0.3.20 release-facts documentation
+> (`docs/plan/evidence/v0.3.20-e2e/release-receipt-v0.3.20.md`).
 
 ### Added (planned)
 
