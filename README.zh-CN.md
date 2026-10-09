@@ -2,9 +2,9 @@
 
 面向终端与浏览器、本地优先的目标驱动 Coding Agent。
 
-> 0.3.22 已发布 npm（registry `latest`）、打 tag `v0.3.22`（`9f09e0a`，#265）并在 GitHub
-> 发布 Release。本版强化 ToolGateway 执行中请求身份、新增持久化故障注入矩阵，并交付编码
-> 任务评测体系。
+> v0.3.23 候选版本：进行中。编码智能与经验证的执行：真实模型编码任务评测（live eval）、
+> 仓库级代码理解与召回、有界自主验证修复。上一版 0.3.22 已发布 npm（registry `latest`）、
+> 打 tag `v0.3.22`（`9f09e0a`，#265）并发布 GitHub Release。
 
 [English](README.md) ·
 [v0.3.7 方案](docs/plan/v0.3.7-left-rail-improvement-plan.md) ·
@@ -101,7 +101,7 @@ Current。Node 20 已结束上游维护，不再属于 v0.3 Runtime 合同。
 当 npm 已存在不可变的 `0.3.4` 发布凭据后：
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.22
+npm install -g @orion-agents/orion-code@0.3.23
 orion --version
 orion doctor
 ```
