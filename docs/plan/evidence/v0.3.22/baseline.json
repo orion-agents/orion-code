@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "kind": "orion.v0.3.22.baseline",
+  "capturedAt": "2026-10-09T04:21:50.225044+00:00",
+  "baseBranch": "main",
+  "baseCommit": "0d22c9a7d2bd9ae8048b9788f6f428308143e0cd",
+  "release": {
+    "publishedVersion": "0.3.21",
+    "tag": "v0.3.21",
+    "tagCommit": "0d22c9a7d2bd9ae8048b9788f6f428308143e0cd",
+    "npmPublishedAt": "2026-10-09T04:10:55.725Z",
+    "verification": "registry curl with Cache-Control: no-cache; dist-tags.latest=0.3.21"
+  },
+  "nodeEngines": "^22.12.0 || ^24.0.0 || ^26.0.0",
+  "gates": {
+    "toolGateway": {
+      "suite": "tests/tool-gateway.test.ts",
+      "status": "pass",
+      "tests": 12
+    },
+    "note": "full-jest and E2E baselines run per-PR in CI; the Node-matrix long jobs have repeatedly been cancelled by an external actor in this environment and are recorded as not_run here with CI as the substitute evidence channel."
+  },
+  "sourceVerification": {
+    "T22-01": {
+      "status": "confirmed",
+      "evidence": [
+        "src/runtime/tool-gateway.ts:176 (bare Map pre-fix)",
+        "tests/tool-gateway.test.ts had no in-flight different-content coverage"
+      ]
+    },
+    "T22-02": {
+      "status": "symbols-verified",
+      "evidence": [
+        "src/runtime/thread-event-store.ts:830 recoverIncomplete",
+        "src/runtime/thread-runtime.ts:122/:190"
+      ]
+    },
+    "T22-04": {
+      "status": "confirmed",
+      "evidence": [
+        "scripts/bench/fixtures/harness-eval-corpus-v1.json = 6 static tasks"
+      ]
+    },
+    "T22-06": {
+      "status": "to-reproduce",
+      "evidence": [
+        "src/services/provider-resilience/request-gate.ts:10/:22-23/:50 structure only"
+      ]
+    },
+    "T22-07": {
+      "status": "confirmed",
+      "evidence": [
+        "src/runtime/first-party-tool-services.ts:179"
+      ]
+    }
+  }
+}

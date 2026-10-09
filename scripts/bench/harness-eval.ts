@@ -280,7 +280,7 @@ function parseCorpus(raw: string): EvalCorpusFileV1 {
   return value;
 }
 
-function sourceMetadata(): HarnessEvalReceiptV1['source'] {
+export function sourceMetadata(): HarnessEvalReceiptV1['source'] {
   const packageJson = JSON.parse(readFileSync(resolve(repoRoot, 'package.json'), 'utf8')) as {
     version: string;
   };

@@ -2,9 +2,8 @@
 
 面向终端与浏览器、本地优先的目标驱动 Coding Agent。
 
-> v0.3.21 候选版本：进行中。为 `LOCAL WORKSPACE` 增加用户显式授权的项目根目录发现（有界
-> 扫描、复用 inspect → confirm → activate）。上一版 0.3.20 已发布 npm（registry `latest`）
-> 并打 tag `v0.3.20`（`e658932`，#261）——发布事实：`docs/plan/evidence/v0.3.20-e2e/release-receipt-v0.3.20.md`。
+> v0.3.22 候选版本：进行中。强化 Agent 可靠性（ToolGateway 执行中请求身份）并建设真实编码
+> 任务评测体系。上一版 0.3.21 已发布 npm（registry `latest`）并打 tag `v0.3.21`（`0d22c9a`，#264）。
 
 [English](README.md) ·
 [v0.3.7 方案](docs/plan/v0.3.7-left-rail-improvement-plan.md) ·
@@ -101,7 +100,7 @@ Current。Node 20 已结束上游维护，不再属于 v0.3 Runtime 合同。
 当 npm 已存在不可变的 `0.3.4` 发布凭据后：
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.21
+npm install -g @orion-agents/orion-code@0.3.22
 orion --version
 orion doctor
 ```

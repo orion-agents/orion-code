@@ -18,6 +18,7 @@ import {
   createStaticPolicyDecisionV1,
   type ToolInvocationJournalV1,
   type ToolInvocationReceiptV1,
+  type ToolInvocationV1,
 } from '../src/runtime/tool-gateway';
 
 function createSnapshot(execute: ToolBindingV1['execute']) {
@@ -261,6 +262,113 @@ describe('ToolGateway', () => {
     await expect(
       gateway.invoke({ ...request, args: { path: 'different', content: 'different' } })
     ).rejects.toBeInstanceOf(ToolGatewayError);
+  });
+
+  // v0.3.22 T22-01 — while the first execution is still in flight, the same
+  // invocationId with different request content must conflict instead of
+  // reusing its promise; identity is the createIntent() request digest
+  // (invocationId, parent, thread/turn/step, tool, snapshot digest, args).
+  describe('in-flight identity conflicts (T22-01)', () => {
+    function startBlocked(overrides: Partial<ToolInvocationV1> = {}): {
+      gateway: ToolGateway;
+      request: ReturnType<typeof invocation>;
+      first: Promise<unknown>;
+      release: () => void;
+    } {
+      let release: (() => void) | undefined;
+      const blocker = new Promise<void>(resolve => {
+        release = resolve;
+      });
+      const snapshot = createSnapshot(async () => {
+        await blocker;
+        return { success: true, output: 'first' };
+      });
+      const request = { ...invocation(snapshot), ...overrides } as ReturnType<typeof invocation>;
+      const gateway = createAllowGateway(snapshot);
+      const first = gateway.invoke(request);
+      return { gateway, request, first, release: () => release?.() };
+    }
+
+    test('same ID with different args conflicts during execution', async () => {
+      const context = startBlocked();
+      await expect(
+        context.gateway.invoke({ ...context.request, args: { path: 'other.md', content: 'other' } })
+      ).rejects.toMatchObject({ code: 'ORION_TOOL_INVOCATION_CONFLICT' });
+      context.release();
+    });
+
+    test('same ID with a different tool conflicts during execution', async () => {
+      const context = startBlocked();
+      await expect(
+        context.gateway.invoke({ ...context.request, toolName: 'other_tool' })
+      ).rejects.toMatchObject({ code: 'ORION_TOOL_INVOCATION_CONFLICT' });
+      context.release();
+    });
+
+    test('same ID with a different snapshot conflicts during execution', async () => {
+      const context = startBlocked();
+      const otherSnapshot = createSnapshot(async () => ({ success: true, output: 'other' }));
+      await expect(
+        context.gateway.invoke({ ...context.request, snapshot: otherSnapshot })
+      ).rejects.toMatchObject({ code: 'ORION_TOOL_INVOCATION_CONFLICT' });
+      context.release();
+    });
+
+    test('same ID with a different parent conflicts during execution', async () => {
+      const context = startBlocked({ parentInvocationId: randomUUID() });
+      await expect(
+        context.gateway.invoke({ ...context.request, parentInvocationId: randomUUID() })
+      ).rejects.toMatchObject({ code: 'ORION_TOOL_INVOCATION_CONFLICT' });
+      context.release();
+      await expect(context.first).resolves.toMatchObject({ result: { output: 'first' } });
+    });
+
+    test('a conflict does not corrupt the in-flight entry: the original completes and replays', async () => {
+      const context = startBlocked();
+      const { first } = context;
+      await expect(
+        context.gateway.invoke({ ...context.request, args: { path: 'other.md', content: 'other' } })
+      ).rejects.toMatchObject({ code: 'ORION_TOOL_INVOCATION_CONFLICT' });
+      context.release();
+      await expect(first).resolves.toMatchObject({ result: { output: 'first' } });
+      // After completion the same request replays from the durable receipt.
+      await expect(context.gateway.invoke(context.request)).resolves.toMatchObject({
+        result: { output: 'first' },
+      });
+    });
+
+    test('a receipt journaled by a previous process replays without a second side effect', async () => {
+      const sharedJournal = new InMemoryToolInvocationJournalV1();
+      let fixtureExecutions = 0;
+      const buildGateway = () =>
+        new ToolGateway({
+          policy: {
+            decide: () => createStaticPolicyDecisionV1({ behavior: 'allow', source: 'policy' }),
+          },
+          approval: {
+            decide: () => createStaticApprovalDecisionV1({ approved: true, source: 'test' }),
+          },
+          sandbox: {
+            prepare: () => createSandboxPreparationV1({ backend: 'test', enforcement: 'full' }),
+          },
+          execution: new ExecutionService(),
+          journal: sharedJournal,
+        });
+      const request = invocation(
+        createSnapshot(async () => {
+          fixtureExecutions += 1;
+          return { success: true, output: 'from-previous-run' };
+        })
+      );
+      await buildGateway().invoke(request);
+      expect(fixtureExecutions).toBe(1);
+
+      // A "restarted" process shares only the durable journal: the receipt
+      // replays and the side effect never runs twice.
+      const replayed = await buildGateway().invoke(request);
+      expect(replayed.result).toMatchObject({ output: 'from-previous-run' });
+      expect(fixtureExecutions).toBe(1);
+    });
   });
 });
 

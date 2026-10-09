@@ -1,0 +1,443 @@
+{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "CT-01",
+      "category": "read-search",
+      "title": "Locate the hottest function",
+      "instruction": "Read src/parser.ts, find the function with the highest cyclomatic complexity, and write its name to answer.txt.",
+      "repo": {
+        "files": {
+          "src/parser.ts": "function parseLiteral() {\n  return 1;\n}\n\nfunction parseExpression() {\n  if (a) {}\n  if (b) {}\n  if (c) {}\n  while (d) {}\n  return 2;\n}\n"
+        }
+      },
+      "script": [
+        {
+          "op": "read",
+          "path": "src/parser.ts"
+        },
+        {
+          "op": "write",
+          "path": "answer.txt",
+          "content": "parseExpression\n"
+        }
+      ],
+      "checks": [
+        {
+          "kind": "file_equals",
+          "path": "answer.txt",
+          "value": "parseExpression\n"
+        }
+      ],
+      "expectedModelRequests": 2,
+      "estimatedTokensPerRequest": 480
+    },
+    {
+      "id": "CT-02",
+      "category": "single-file-edit",
+      "title": "Fix the config typo",
+      "instruction": "In config/app.json the key 'maxRetires' is a typo; rename it to 'maxRetries' keeping the value.",
+      "repo": {
+        "files": {
+          "config/app.json": "{\n  \"maxRetires\": 3,\n  \"timeout\": 30\n}\n"
+        }
+      },
+      "script": [
+        {
+          "op": "read",
+          "path": "config/app.json"
+        },
+        {
+          "op": "write",
+          "path": "config/app.json",
+          "content": "{\n  \"maxRetries\": 3,\n  \"timeout\": 30\n}\n"
+        }
+      ],
+      "checks": [
+        {
+          "kind": "file_contains",
+          "path": "config/app.json",
+          "value": "\"maxRetries\": 3"
+        },
+        {
+          "kind": "file_absent_value",
+          "path": "config/app.json",
+          "value": "maxRetires"
+        }
+      ],
+      "expectedModelRequests": 2,
+      "estimatedTokensPerRequest": 320
+    },
+    {
+      "id": "CT-03",
+      "category": "multi-file-refactor",
+      "title": "Rename the module across files",
+      "instruction": "Rename helper.js to util.js and update both importers to reference util.js.",
+      "repo": {
+        "files": {
+          "src/helper.js": "module.exports = { add };\nfunction add(a, b) { return a + b; }\n",
+          "src/main.js": "const { add } = require('./helper');\nconsole.log(add(1, 2));\n",
+          "test/helper.test.js": "const { add } = require('../helper');\n"
+        }
+      },
+      "script": [
+        {
+          "op": "read",
+          "path": "src/helper.js"
+        },
+        {
+          "op": "write",
+          "path": "src/util.js",
+          "content": "module.exports = { add };\nfunction add(a, b) { return a + b; }\n"
+        },
+        {
+          "op": "delete",
+          "path": "src/helper.js"
+        },
+        {
+          "op": "write",
+          "path": "src/main.js",
+          "content": "const { add } = require('./util');\nconsole.log(add(1, 2));\n"
+        },
+        {
+          "op": "write",
+          "path": "test/helper.test.js",
+          "content": "const { add } = require('../util');\n"
+        }
+      ],
+      "checks": [
+        {
+          "kind": "file_exists",
+          "path": "src/util.js"
+        },
+        {
+          "kind": "file_absent",
+          "path": "src/helper.js"
+        },
+        {
+          "kind": "file_contains",
+          "path": "src/main.js",
+          "value": "require('./util')"
+        },
+        {
+          "kind": "file_contains",
+          "path": "test/helper.test.js",
+          "value": "require('../util')"
+        }
+      ],
+      "expectedModelRequests": 5,
+      "estimatedTokensPerRequest": 540
+    },
+    {
+      "id": "CT-04",
+      "category": "fix-failing-test",
+      "title": "Make the assertion pass",
+      "instruction": "test/math.test.js expects divide(6, 3) to equal 2 but src/math.js divides incorrectly. Fix src/math.js.",
+      "repo": {
+        "files": {
+          "src/math.js": "function divide(a, b) {\n  return a - b;\n}\nmodule.exports = { divide };\n",
+          "test/math.test.js": "const { divide } = require('../src/math');\nif (divide(6, 3) !== 2) process.exit(1);\nconsole.log('ok');\n"
+        }
+      },
+      "script": [
+        {
+          "op": "read",
+          "path": "test/math.test.js"
+        },
+        {
+          "op": "read",
+          "path": "src/math.js"
+        },
+        {
+          "op": "write",
+          "path": "src/math.js",
+          "content": "function divide(a, b) {\n  return a / b;\n}\nmodule.exports = { divide };\n"
+        },
+        {
+          "op": "command",
+          "command": "node test/math.test.js"
+        }
+      ],
+      "checks": [
+        {
+          "kind": "file_contains",
+          "path": "src/math.js",
+          "value": "return a / b;"
+        }
+      ],
+      "expectedModelRequests": 4,
+      "estimatedTokensPerRequest": 420
+    },
+    {
+      "id": "CT-05",
+      "category": "add-feature",
+      "title": "Add the slugify function",
+      "instruction": "Add slugify(text) to src/slug.js that lowercases and dash-joins words, and export it.",
+      "repo": {
+        "files": {
+          "src/slug.js": "module.exports = {};\n"
+        }
+      },
+      "script": [
+        {
+          "op": "read",
+          "path": "src/slug.js"
+        },
+        {
+          "op": "write",
+          "path": "src/slug.js",
+          "content": "function slugify(text) {\n  return text.trim().toLowerCase().replace(/\\s+/g, '-');\n}\nmodule.exports = { slugify };\n"
+        }
+      ],
+      "checks": [
+        {
+          "kind": "file_contains",
+          "path": "src/slug.js",
+          "value": "function slugify"
+        },
+        {
+          "kind": "file_contains",
+          "path": "src/slug.js",
+          "value": "module.exports = { slugify }"
+        }
+      ],
+      "expectedModelRequests": 2,
+      "estimatedTokensPerRequest": 380
+    },
+    {
+      "id": "CT-06",
+      "category": "multi-turn-goal",
+      "title": "Two-step goal: scaffold then populate",
+      "instruction": "First create docs/plan.md with the heading '# Roadmap', then append the line '- ship v1'.",
+      "repo": {
+        "files": {}
+      },
+      "script": [
+        {
+          "op": "write",
+          "path": "docs/plan.md",
+          "content": "# Roadmap\n"
+        },
+        {
+          "op": "append",
+          "path": "docs/plan.md",
+          "content": "- ship v1\n"
+        }
+      ],
+      "checks": [
+        {
+          "kind": "file_equals",
+          "path": "docs/plan.md",
+          "value": "# Roadmap\n- ship v1\n"
+        }
+      ],
+      "expectedModelRequests": 2,
+      "estimatedTokensPerRequest": 260
+    },
+    {
+      "id": "CT-07",
+      "category": "compaction-continuation",
+      "title": "Continue after context compaction",
+      "instruction": "Summarize the large notes file into summary.txt after the long context is compacted.",
+      "repo": {
+        "files": {
+          "notes.md": "alpha\nbravo\ncharlie\ndelta\necho\nfoxtrot\ngolf\nhotel\nindia\njuliett\n"
+        }
+      },
+      "script": [
+        {
+          "op": "read",
+          "path": "notes.md"
+        },
+        {
+          "op": "compact"
+        },
+        {
+          "op": "write",
+          "path": "summary.txt",
+          "content": "alpha..juliett (10 lines)\n"
+        }
+      ],
+      "checks": [
+        {
+          "kind": "file_equals",
+          "path": "summary.txt",
+          "value": "alpha..juliett (10 lines)\n"
+        }
+      ],
+      "expectedModelRequests": 3,
+      "estimatedTokensPerRequest": 640
+    },
+    {
+      "id": "CT-08",
+      "category": "two-sessions-concurrent",
+      "title": "Two sessions write separate reports",
+      "instruction": "Session A writes report-a.txt, session B writes report-b.txt; neither touches the other's file.",
+      "repo": {
+        "files": {}
+      },
+      "script": [
+        {
+          "op": "session",
+          "session": "a"
+        },
+        {
+          "op": "write",
+          "path": "report-a.txt",
+          "content": "from A\n"
+        },
+        {
+          "op": "session",
+          "session": "b"
+        },
+        {
+          "op": "write",
+          "path": "report-b.txt",
+          "content": "from B\n"
+        }
+      ],
+      "checks": [
+        {
+          "kind": "file_equals",
+          "path": "report-a.txt",
+          "value": "from A\n"
+        },
+        {
+          "kind": "file_equals",
+          "path": "report-b.txt",
+          "value": "from B\n"
+        }
+      ],
+      "expectedModelRequests": 4,
+      "estimatedTokensPerRequest": 240
+    },
+    {
+      "id": "CT-09",
+      "category": "provider-429-recovery",
+      "title": "Retry through a provider 429",
+      "instruction": "Write result.txt with the computed answer; the provider returns 429 once before succeeding.",
+      "repo": {
+        "files": {}
+      },
+      "script": [
+        {
+          "op": "fail",
+          "reason": "provider_429",
+          "recover": true
+        },
+        {
+          "op": "write",
+          "path": "result.txt",
+          "content": "42\n"
+        }
+      ],
+      "checks": [
+        {
+          "kind": "file_equals",
+          "path": "result.txt",
+          "value": "42\n"
+        }
+      ],
+      "expectedModelRequests": 3,
+      "estimatedTokensPerRequest": 300
+    },
+    {
+      "id": "CT-10",
+      "category": "permission-denied",
+      "title": "Permission denied is recorded, not fabricated",
+      "instruction": "Write outside the workspace root; the policy denies it.",
+      "repo": {
+        "files": {}
+      },
+      "script": [
+        {
+          "op": "deny",
+          "reason": "path outside workspace root"
+        },
+        {
+          "op": "write",
+          "path": "fallback.txt",
+          "content": "safe\n"
+        }
+      ],
+      "checks": [
+        {
+          "kind": "file_equals",
+          "path": "fallback.txt",
+          "value": "safe\n"
+        }
+      ],
+      "expectedModelRequests": 3,
+      "estimatedTokensPerRequest": 280
+    },
+    {
+      "id": "CT-11",
+      "category": "user-cancel",
+      "title": "User cancels mid-task",
+      "instruction": "Start writing the long report; the user cancels after the first section.",
+      "repo": {
+        "files": {}
+      },
+      "script": [
+        {
+          "op": "write",
+          "path": "report.md",
+          "content": "# Report\n## Section 1\n"
+        },
+        {
+          "op": "cancel"
+        },
+        {
+          "op": "write",
+          "path": "report.md",
+          "content": "# Report\n## Section 1\n## Section 2\n"
+        }
+      ],
+      "checks": [
+        {
+          "kind": "file_equals",
+          "path": "report.md",
+          "value": "# Report\n## Section 1\n"
+        }
+      ],
+      "expectedModelRequests": 2,
+      "estimatedTokensPerRequest": 300
+    },
+    {
+      "id": "CT-12",
+      "category": "tool-failure-recovery",
+      "title": "Recover after a tool execution failure",
+      "instruction": "Deploy the config; the first deploy attempt fails, the corrected second attempt succeeds.",
+      "repo": {
+        "files": {
+          "deploy.cfg": "target=prod\n"
+        }
+      },
+      "script": [
+        {
+          "op": "read",
+          "path": "deploy.cfg"
+        },
+        {
+          "op": "fail",
+          "reason": "tool_execution_failed",
+          "recover": true
+        },
+        {
+          "op": "write",
+          "path": "deploy.cfg",
+          "content": "target=prod\nverified=true\n"
+        }
+      ],
+      "checks": [
+        {
+          "kind": "file_contains",
+          "path": "deploy.cfg",
+          "value": "verified=true"
+        }
+      ],
+      "expectedModelRequests": 4,
+      "estimatedTokensPerRequest": 350
+    }
+  ]
+}
