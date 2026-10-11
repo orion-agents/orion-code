@@ -22,12 +22,32 @@ which is **not** a pass.
 
 ## [Unreleased]
 
-## [0.3.22] — UNRELEASED
+## [0.3.23] — UNRELEASED
 
-> **Status: candidate.** Open. Agent Reliability & Efficiency — hardens ToolGateway
+> **Status: candidate.** Open. Coding Intelligence & Verified Execution — wires the live
+> coding-task evaluation to the production runtime (isolated workspaces, machine-verified
+> success, five-outcome classification), adds repo-intelligence symbol indexing and
+> recall, and consolidates the bounded verification/repair loop into the HarnessKernel
+> completion audit. Plan: `docs/plan/v0.3.23-plan.md`. Not merged, tagged or published.
+
+### Added (planned)
+
+- Live Coding Eval: `LiveTaskExecutor` + `compare-receipts` A/B reporting; five-outcome
+  classification with orthogonal falseComplete; `command_exit_zero` / `invariant` checks.
+- Repo Intelligence: lightweight TS/JS symbol index with incremental maintenance and
+  sourced recall (Recall@K evaluated).
+- Verified Repair: structured failure attribution, bounded repair loop (feature-flagged),
+  five-state completion audit; the orphaned auto-fix / verification-profile modules merge
+  into the wired stack and are removed.
+
+## [0.3.22] — 2026-10-09
+
+> **Status: published.** Released as `@orion-agents/orion-code@0.3.22` from
+> `refs/tags/v0.3.22`, and merged to `main` as `9f09e0a` (#265). Hardens ToolGateway
 > in-flight request identity (T22-01), adds the durability fault-injection matrix (T22-02),
 > the four-state release verification gate (T22-03), and a real coding-task evaluation
-> harness (T22-04). Plan: `docs/plan/v0.3.22-plan.md`. Not merged, tagged or published.
+> harness (T22-04). Plan: `docs/plan/v0.3.22-plan.md`. GitHub Release:
+> https://github.com/orion-agents/orion-code/releases/tag/v0.3.22。
 
 ### Fixed (product)
 

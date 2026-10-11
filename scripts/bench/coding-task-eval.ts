@@ -25,6 +25,7 @@ import { dirname, join, resolve } from 'path';
 import { tmpdir } from 'os';
 
 import { sourceMetadata } from './harness-eval';
+import { runLiveTask, type LiveTaskDriverV1, type LiveTaskOutcome } from './live-task-executor';
 
 export interface CodingTaskCheckV1 {
   readonly kind:
@@ -33,8 +34,19 @@ export interface CodingTaskCheckV1 {
     | 'file_matches'
     | 'file_exists'
     | 'file_absent'
-    | 'file_absent_value';
-  readonly path: string;
+    | 'file_absent_value'
+    /** v0.3.23 T23-A — live-only: a workspace command must exit 0. */
+    | 'command_exit_zero'
+    /** v0.3.23 T23-A — live-only: protected files unchanged / forbidden paths absent. */
+    | 'invariant';
+  /** Live-only (`command_exit_zero`): the workspace command to run. */
+  readonly command?: string;
+  /** Live-only (`invariant`): fixture paths that must remain byte-identical. */
+  readonly protectedFiles?: readonly string[];
+  /** Live-only (`invariant`): paths that must not exist after the run. */
+  readonly forbiddenPaths?: readonly string[];
+  /** Live-only kinds (command_exit_zero/invariant) omit the path. */
+  readonly path?: string;
   readonly value?: string;
   readonly content?: string;
 }
@@ -81,6 +93,8 @@ export interface CodingTaskSampleV1 {
   readonly taskId: string;
   readonly category: string;
   readonly mode: 'fake' | 'live';
+  /** v0.3.23 T23-A — live mode carries the five-outcome classification. */
+  readonly outcome?: LiveTaskOutcome;
   readonly solved: boolean;
   readonly falseComplete: boolean;
   readonly regression: boolean;
@@ -119,6 +133,19 @@ export interface CodingTaskEvalReceiptV1 {
 
 export interface CodingTaskEvalOptionsV1 {
   readonly mode?: 'fake' | 'live';
+  /**
+   * v0.3.23 T23-A — live-mode wiring. `driver` must be injected for tests;
+   * omitting it requires the executor's `authorizeLive` (real model cost).
+   */
+  readonly live?: {
+    readonly driver?: LiveTaskDriverV1;
+    readonly authorizeLive?: boolean;
+    readonly nodePath?: string;
+    readonly cliPath?: string;
+    readonly model?: string;
+    readonly timeoutMs?: number;
+    readonly signal?: AbortSignal;
+  };
   readonly fixturesPath?: string;
   readonly workspaceRoot?: string;
   readonly costPerThousandTokens?: number;
@@ -147,7 +174,13 @@ function createWorkspace(corpusRoot: string, task: CodingTaskFixtureV1, runId: s
   return workspace;
 }
 
+/** One file_* check against a workspace. Live-only kinds are handled by the live executor. */
+export function evaluateFileCheck(check: CodingTaskCheckV1, workspace: string): boolean {
+  return checkOne(check, workspace);
+}
+
 function checkOne(check: CodingTaskCheckV1, workspace: string): boolean {
+  if (!check.path) return false;
   const target = join(workspace, check.path);
   switch (check.kind) {
     case 'file_exists':
@@ -306,15 +339,10 @@ function percentile(values: readonly number[], fraction: number): number {
  * in scratch workspaces and verifies the checks; `live` mode requires a live
  * executor and is wired by the A/B workflow.
  */
-export function runCodingTaskEvalV1(
+export async function runCodingTaskEvalV1(
   options: CodingTaskEvalOptionsV1 = {}
-): CodingTaskEvalReceiptV1 {
+): Promise<CodingTaskEvalReceiptV1> {
   const mode = options.mode ?? 'fake';
-  if (mode !== 'fake') {
-    throw new Error(
-      'live mode requires a live executor wired to the model runtime; wire it through the A/B workflow before use'
-    );
-  }
   const corpus = loadCodingTaskCorpus(options.fixturesPath);
   const corpusRoot = options.workspaceRoot ?? mkdtempSync(join(tmpdir(), 'orion-coding-eval-'));
   mkdirSync(corpusRoot, { recursive: true });
@@ -322,17 +350,58 @@ export function runCodingTaskEvalV1(
   const costPerThousandTokens = options.costPerThousandTokens ?? 0.5;
 
   const samples: CodingTaskSampleV1[] = [];
-  for (const task of corpus.tasks) {
-    const workspace = createWorkspace(corpusRoot, task, runId);
-    try {
-      samples.push(runFakeSample(task, workspace, runId, costPerThousandTokens));
-    } finally {
-      if (!options.keepWorkspaces) rmSync(workspace, { recursive: true, force: true });
+  if (mode === 'live') {
+    // v0.3.23 T23-A — the production runtime executes each fixture in an
+    // isolated workspace; success is machine-verified afterwards.
+    for (const task of corpus.tasks) {
+      const { sample } = await runLiveTask(task, {
+        driver: options.live?.driver,
+        authorizeLive: options.live?.authorizeLive,
+        nodePath: options.live?.nodePath,
+        cliPath: options.live?.cliPath,
+        model: options.live?.model,
+        timeoutMs: options.live?.timeoutMs,
+        signal: options.live?.signal,
+        costPerThousandTokens,
+      });
+      samples.push({
+        sampleId: sample.sampleId,
+        taskId: sample.taskId,
+        category: sample.category,
+        mode: 'live',
+        outcome: sample.outcome,
+        solved: sample.solved,
+        falseComplete: sample.falseComplete,
+        regression: false,
+        modelRequests: sample.modelRequests,
+        totalTokens: sample.totalTokens,
+        toolCalls: sample.toolCalls,
+        latencyMs: sample.latencyMs,
+        retries: sample.retries,
+        costEstimate: sample.costEstimate,
+        ...(sample.failureReason ? { failureReason: sample.failureReason } : {}),
+        passedChecks: sample.passedChecks,
+        totalChecks: sample.totalChecks,
+      });
+    }
+  } else {
+    for (const task of corpus.tasks) {
+      const workspace = createWorkspace(corpusRoot, task, runId);
+      try {
+        samples.push(runFakeSample(task, workspace, runId, costPerThousandTokens));
+      } finally {
+        if (!options.keepWorkspaces) rmSync(workspace, { recursive: true, force: true });
+      }
     }
   }
 
   const latencies = samples.map(sample => sample.latencyMs);
   const solved = samples.filter(sample => sample.solved).length;
+  const outcomeCounts: Partial<Record<LiveTaskOutcome, number>> = {};
+  for (const sample of samples) {
+    if (!sample.outcome) continue;
+    outcomeCounts[sample.outcome] = (outcomeCounts[sample.outcome] ?? 0) + 1;
+  }
   const summary = {
     solved,
     attempted: samples.length,
@@ -343,6 +412,7 @@ export function runCodingTaskEvalV1(
     p50LatencyMs: percentile(latencies, 0.5),
     p95LatencyMs: percentile(latencies, 0.95),
     totalRetries: samples.reduce((sum, sample) => sum + sample.retries, 0),
+    ...(mode === 'live' ? { outcomeCounts } : {}),
   };
   return Object.freeze({
     version: 1 as const,
@@ -357,13 +427,17 @@ export function runCodingTaskEvalV1(
   });
 }
 
-/** CLI entry: `node scripts/bench/coding-task-eval.js --out <path>` (fake mode). */
-export function main(argv: readonly string[] = process.argv.slice(2)): void {
+/** CLI entry: `node scripts/bench/coding-task-eval.js --out <path> [--mode fake|live]`. */
+export async function main(argv: readonly string[] = process.argv.slice(2)): Promise<void> {
   const optionValue = (name: string): string | undefined => {
     const index = argv.indexOf(name);
     return index >= 0 ? argv[index + 1] : undefined;
   };
-  const receipt = runCodingTaskEvalV1({ mode: 'fake' });
+  const mode = optionValue('--mode') === 'live' ? ('live' as const) : ('fake' as const);
+  const receipt = await runCodingTaskEvalV1({
+    mode,
+    ...(optionValue('--authorize-live') === 'true' ? { live: { authorizeLive: true } } : {}),
+  });
   const out = optionValue('--out');
   const rendered = `${JSON.stringify(receipt, null, 2)}\n`;
   if (out) {

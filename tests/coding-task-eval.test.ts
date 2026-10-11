@@ -42,8 +42,8 @@ describe('coding-task-eval (T22-04)', () => {
     }
   });
 
-  test('fake mode solves every task with machine-verifiable checks and zero false completions', () => {
-    const receipt = runCodingTaskEvalV1({ mode: 'fake', workspaceRoot: root });
+  test('fake mode solves every task with machine-verifiable checks and zero false completions', async () => {
+    const receipt = await runCodingTaskEvalV1({ mode: 'fake', workspaceRoot: root });
     expect(receipt.kind).toBe('orion.coding-task-eval');
     expect(receipt.mode).toBe('fake');
     expect(receipt.taskCount).toBeGreaterThanOrEqual(12);
@@ -59,17 +59,17 @@ describe('coding-task-eval (T22-04)', () => {
     }
   });
 
-  test('records the source metadata required for A/B comparison', () => {
-    const receipt = runCodingTaskEvalV1({ mode: 'fake', workspaceRoot: root });
+  test('records the source metadata required for A/B comparison', async () => {
+    const receipt = await runCodingTaskEvalV1({ mode: 'fake', workspaceRoot: root });
     expect(receipt.source.gitSha).toBeTruthy();
-    expect(receipt.source.packageVersion).toBe('0.3.22');
+    expect(receipt.source.packageVersion).toBe('0.3.23');
     expect(receipt.fixtureVersion).toBe(1);
     expect(receipt.createdAt).toBeTruthy();
   });
 
-  test('is deterministic: two runs produce identical solved/tool-call/token numbers', () => {
-    const first = runCodingTaskEvalV1({ mode: 'fake', workspaceRoot: join(root, 'one') });
-    const second = runCodingTaskEvalV1({ mode: 'fake', workspaceRoot: join(root, 'two') });
+  test('is deterministic: two runs produce identical solved/tool-call/token numbers', async () => {
+    const first = await runCodingTaskEvalV1({ mode: 'fake', workspaceRoot: join(root, 'one') });
+    const second = await runCodingTaskEvalV1({ mode: 'fake', workspaceRoot: join(root, 'two') });
     expect(first.summary.solved).toBe(second.summary.solved);
     expect(first.summary.totalModelRequests).toBe(second.summary.totalModelRequests);
     expect(first.summary.totalTokens).toBe(second.summary.totalTokens);
@@ -81,8 +81,8 @@ describe('coding-task-eval (T22-04)', () => {
     );
   });
 
-  test('scratch workspaces are cleaned up unless keepWorkspaces is set', () => {
-    const kept = runCodingTaskEvalV1({
+  test('scratch workspaces are cleaned up unless keepWorkspaces is set', async () => {
+    const kept = await runCodingTaskEvalV1({
       mode: 'fake',
       workspaceRoot: join(root, 'kept'),
       keepWorkspaces: true,
@@ -91,7 +91,10 @@ describe('coding-task-eval (T22-04)', () => {
     const keptRoot = join(root, 'kept');
     expect(existsSync(keptRoot)).toBe(true);
     void kept;
-    const cleaned = runCodingTaskEvalV1({ mode: 'fake', workspaceRoot: join(root, 'cleaned') });
+    const cleaned = await runCodingTaskEvalV1({
+      mode: 'fake',
+      workspaceRoot: join(root, 'cleaned'),
+    });
     const workspaceDirs = cleaned.samples.map(() => true);
     expect(workspaceDirs.length).toBe(cleaned.taskCount);
     // The default cleans the per-task workspaces: only the root remains.
