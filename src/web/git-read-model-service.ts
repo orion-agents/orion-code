@@ -1,6 +1,7 @@
 import { spawn } from 'child_process';
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'crypto';
 import { existsSync, lstatSync, realpathSync, statSync } from 'fs';
+import { readFile as readFilePromise } from 'fs/promises';
 import { basename, isAbsolute, relative, resolve, sep } from 'path';
 
 import { isSensitiveFilePath, redactTraceText } from '../services/redaction';
@@ -672,8 +673,38 @@ export class GitReadModelServiceV1 {
     this.versionReaderInstance ??= createGitVersionReader({
       runGit: async args => this.runGit(args, await this.requireRepositoryRoot()),
       runGitBytes: async args => this.runGitBytes(args, await this.requireRepositoryRoot()),
+      readWorktreeFile: async relativePath => this.readContainedWorktreeFile(relativePath),
     });
     return this.versionReaderInstance;
+  }
+
+  /**
+   * v0.3.25 #269 — reads one working-tree file for the conflict view, refusing
+   * to leave the repository: the requested relative path (already guarded as
+   * relative and non-sensitive by the version reader) is resolved against the
+   * repository root and both the file's real path and its parent's real path
+   * must stay inside the root's real path. Returns null instead of throwing so
+   * a missing or unreadable file reads as an absent worktree version.
+   */
+  private async readContainedWorktreeFile(relativePath: string): Promise<Buffer | null> {
+    let root: string;
+    try {
+      root = realpathSync(await this.requireRepositoryRoot());
+    } catch {
+      return null;
+    }
+    try {
+      const absolute = resolve(root, relativePath);
+      const fileReal = realpathSync(absolute);
+      const parentReal = realpathSync(resolve(fileReal, '..'));
+      if (fileReal !== root && !fileReal.startsWith(root + sep)) return null;
+      if (parentReal !== root && !parentReal.startsWith(root + sep)) return null;
+      const stat = statSync(fileReal);
+      if (!stat.isFile()) return null;
+      return await readFilePromise(fileReal);
+    } catch {
+      return null;
+    }
   }
 
   /**

@@ -39,6 +39,7 @@ import type {
   ModelSwitchCompactPreflightRequest,
   ModelSwitchResult,
 } from './model-coordinator';
+import { resolveProfileSafeInputBudget } from './model-coordinator';
 import type { ModelCoordinator } from './model-coordinator';
 import { digestRuntimeValue } from './protocol/canonical';
 
@@ -271,8 +272,11 @@ export class SessionComposerControlServiceV1 {
         toModelId: profile.id,
         requestedEffort,
         compacted: false,
+        // v0.3.25 #271 — same gate as the live path: the effective input
+        // budgets decide, not raw context windows.
         compactRequired:
-          profile.resolvedContextWindow < this.project(session, true).model.contextWindow,
+          resolveProfileSafeInputBudget(profile) <
+          resolveProfileSafeInputBudget(this.resolveProfile(session.model)),
         compactPreflight: 'deferred',
         appliesFrom: 'next-logical-request',
         sessionPreferencesDigest: digestRuntimeValue({

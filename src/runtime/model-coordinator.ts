@@ -175,7 +175,9 @@ export class ModelCoordinator extends EventEmitter {
       if (clientError) return { success: false, error: clientError };
 
       const prev = this.current;
-      if (!prev || target.resolvedContextWindow >= prev.resolvedContextWindow) {
+      // v0.3.25 #271 — same budget gate as commitSwitch: the effective input
+      // budgets decide, not raw context windows.
+      if (!prev || resolveProfileSafeInputBudget(target) >= resolveProfileSafeInputBudget(prev)) {
         this.commitResolvedTarget(target, prev);
         return {
           success: true,
@@ -255,7 +257,11 @@ export class ModelCoordinator extends EventEmitter {
     let compacted = false;
     let compactRequired = false;
     let compactPreflight: ModelSwitchResult['compactPreflight'] = 'not_required';
-    if (prev && target.resolvedContextWindow < prev.resolvedContextWindow) {
+    // v0.3.25 #271 — gate the preflight on the effective input budgets, not raw
+    // context windows: a target with the same (or larger) window but a larger
+    // output reserve can still have a smaller safe input budget, and the
+    // unchanged history would exceed it without any compact.
+    if (prev && resolveProfileSafeInputBudget(target) < resolveProfileSafeInputBudget(prev)) {
       compactRequired = true;
       const safeInputBudget = resolveProfileSafeInputBudget(target);
       const targetTokens = Math.max(1, Math.floor(safeInputBudget * 0.65));
@@ -325,7 +331,7 @@ export class ModelCoordinator extends EventEmitter {
   }
 }
 
-function resolveProfileSafeInputBudget(profile: ResolvedModelProfile): number {
+export function resolveProfileSafeInputBudget(profile: ResolvedModelProfile): number {
   const reserveCeiling = Math.max(1, Math.floor(profile.resolvedContextWindow * 0.5));
   const reservedOutput = Math.min(profile.resolvedMaxOutputTokens, reserveCeiling);
   const safetyMargin = Math.max(1024, Math.ceil(profile.resolvedContextWindow * 0.02));

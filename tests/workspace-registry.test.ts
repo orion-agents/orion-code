@@ -119,4 +119,60 @@ describe('WorkspaceRegistryV1', () => {
     expect(existsSync(first)).toBe(true);
     expect(statSync(first).isDirectory()).toBe(true);
   });
+
+  // --- v0.3.25 #272 — stable registration order ---
+
+  test('activation churn keeps the registration order stable', () => {
+    const registry = createRegistry();
+    const a = registry.register(first, { activated: true });
+    const b = registry.register(second);
+    expect(a.registeredAt).not.toBe(b.registeredAt);
+
+    // Activate `second` repeatedly: lastActivatedAt changes, order does not.
+    for (let index = 0; index < 3; index += 1) {
+      registry.register(second, { activated: true });
+    }
+    const listed = registry.list().map(entry => entry.id);
+    expect(listed).toEqual([a.id, b.id]);
+    const secondEntry = registry.list().find(entry => entry.id === b.id);
+    expect(Date.parse(secondEntry?.lastActivatedAt ?? '')).toBeGreaterThan(
+      Date.parse(a.lastActivatedAt)
+    );
+    expect(Date.parse(secondEntry?.registeredAt ?? '')).toEqual(Date.parse(b.registeredAt));
+  });
+
+  test('documents without registeredAt are backfilled from lastActivatedAt and persisted', () => {
+    const registry = createRegistry();
+    registry.register(first);
+    registry.register(second);
+    // Simulate a pre-#272 document: strip the field.
+    const document = JSON.parse(readFileSync(registryPath, 'utf8'));
+    for (const entry of document.entries) delete entry.registeredAt;
+    writeFileSync(registryPath, JSON.stringify(document, null, 2));
+
+    const reopened = new WorkspaceRegistryV1({ storagePath: registryPath });
+    const listed = reopened.list();
+    // Deterministic backfill keeps the previous relative order.
+    expect(listed.map(entry => entry.label)).toEqual(['first-project', 'second-project']);
+    expect(listed[0]?.registeredAt).toBe(listed[0]?.lastActivatedAt);
+
+    // The next write persists the backfilled values.
+    const touched = reopened.register(first, { activated: true });
+    const stored = JSON.parse(readFileSync(registryPath, 'utf8')) as {
+      entries: { id: string; registeredAt?: string }[];
+    };
+    expect(stored.entries.find(entry => entry.id === touched.id)?.registeredAt).toBe(
+      listed[0]?.registeredAt
+    );
+  });
+
+  test('pinned projects still come first and unpin restores registration order', () => {
+    const registry = createRegistry();
+    const a = registry.register(first);
+    const b = registry.register(second);
+    registry.setPinned(b.id, true);
+    expect(registry.list().map(entry => entry.id)).toEqual([b.id, a.id]);
+    registry.setPinned(b.id, false);
+    expect(registry.list().map(entry => entry.id)).toEqual([a.id, b.id]);
+  });
 });

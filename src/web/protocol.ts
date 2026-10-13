@@ -419,6 +419,11 @@ export interface WebWorkspaceSummaryV1 {
   readonly available: boolean;
   readonly sessionCount: number;
   readonly lastActivatedAt: string;
+  /**
+   * v0.3.25 #272 — when the workspace was first registered. The navigation's
+   * stable default order is derived from this; optional for older Hosts.
+   */
+  readonly registeredAt?: string;
   readonly pinnedOrder?: number;
 }
 

@@ -206,7 +206,10 @@ describe('v0.3.17 S4 history reading', () => {
       const files = await service.commitFiles(rawGit(repo, ['rev-parse', 'HEAD']).trim());
       expect(files.files.find(file => file.path === '.env')?.sensitive).toBe(true);
       await expect(
-        service.commitDiffDocument({ oid: rawGit(repo, ['rev-parse', 'HEAD']).trim(), path: '.env' })
+        service.commitDiffDocument({
+          oid: rawGit(repo, ['rev-parse', 'HEAD']).trim(),
+          path: '.env',
+        })
       ).rejects.toMatchObject({ code: 'sensitive_file_blocked' });
     });
   });
@@ -228,7 +231,9 @@ describe('v0.3.17 S4 history reading', () => {
       expect(document.kind).toBe('text');
       expect(document.hunks.length).toBeGreaterThan(0);
       // The historical diff must describe the commit, not the working tree.
-      const added = document.hunks.flatMap(hunk => hunk.lines).filter(line => line.kind === 'addition');
+      const added = document.hunks
+        .flatMap(hunk => hunk.lines)
+        .filter(line => line.kind === 'addition');
       expect(added.map(line => line.text)).toContain('two');
     });
 
@@ -237,7 +242,9 @@ describe('v0.3.17 S4 history reading', () => {
       const first = rawGit(repo, ['rev-list', '--max-parents=0', 'HEAD']).trim();
       const document = await service.commitDiffDocument({ oid: first, path: 'alpha.txt' });
       expect(document.kind).toBe('text');
-      const added = document.hunks.flatMap(hunk => hunk.lines).filter(line => line.kind === 'addition');
+      const added = document.hunks
+        .flatMap(hunk => hunk.lines)
+        .filter(line => line.kind === 'addition');
       expect(added.map(line => line.text)).toContain('one');
     });
 
@@ -250,9 +257,9 @@ describe('v0.3.17 S4 history reading', () => {
       await expect(
         service.commitDiffDocument({ oid: head, path: ':!alpha.txt' })
       ).rejects.toMatchObject({ code: 'git_path_unsafe' });
-      await expect(service.commitDiffDocument({ oid: head, path: '/etc/passwd' })).rejects.toMatchObject(
-        { code: 'git_path_unsafe' }
-      );
+      await expect(
+        service.commitDiffDocument({ oid: head, path: '/etc/passwd' })
+      ).rejects.toMatchObject({ code: 'git_path_unsafe' });
     });
   });
 
@@ -263,10 +270,12 @@ describe('v0.3.17 S4 history reading', () => {
       for (let index = 0; index < 30; index += 1) {
         writeFileSync(join(repo, 'log.txt'), `entry ${index}\n`);
         rawGit(repo, ['add', '.']);
-        rawGit(
-          repo,
-          ['commit', '-q', '-m', index === 5 ? 'fix: the needle everyone looks for' : `chore: bulk ${index}`]
-        );
+        rawGit(repo, [
+          'commit',
+          '-q',
+          '-m',
+          index === 5 ? 'fix: the needle everyone looks for' : `chore: bulk ${index}`,
+        ]);
       }
     }
 
@@ -327,9 +336,9 @@ describe('v0.3.17 S4 history reading', () => {
       writeFileSync(join(repo, 'log.txt'), 'moved\n');
       rawGit(repo, ['add', '.']);
       rawGit(repo, ['commit', '-q', '-m', 'chore: moves the tip']);
-      await expect(
-        service.history({ pageSize: 5, message: 'bulk', cursor })
-      ).rejects.toMatchObject({ code: 'git_cursor_invalid' });
+      await expect(service.history({ pageSize: 5, message: 'bulk', cursor })).rejects.toMatchObject(
+        { code: 'git_cursor_invalid' }
+      );
     });
 
     test('a SHA query resolves one commit and reports reachability honestly', async () => {
@@ -383,6 +392,31 @@ describe('v0.3.17 S4 history reading', () => {
       // Both the rename and the original addition are reachable through --follow.
       expect(history.items.map(item => item.subject)).toContain('refactor: rename beta');
       expect(history.items.map(item => item.subject)).toContain('fix: add beta');
+    });
+
+    test('v0.3.25 #270 — rev selects the walked history instead of always HEAD', async () => {
+      seedHistory();
+      // A branch forked before main's latest alpha change, carrying its own edit.
+      rawGit(repo, ['checkout', '-q', '-b', 'topic', 'v1.0']);
+      writeFileSync(join(repo, 'alpha.txt'), 'one\nthree\n');
+      rawGit(repo, ['add', '.']);
+      rawGit(repo, ['commit', '-q', '-m', 'feat: alpha three on topic']);
+
+      const onTopic = await service.fileHistory({ path: 'alpha.txt', rev: 'topic' });
+      rawGit(repo, ['checkout', '-q', 'main']);
+      const onHead = await service.fileHistory({ path: 'alpha.txt' });
+
+      expect(onTopic.items.map(item => item.subject)).toContain('feat: alpha three on topic');
+      expect(onTopic.items.map(item => item.subject)).not.toContain('feat: alpha two');
+      expect(onHead.items.map(item => item.subject)).toContain('feat: alpha two');
+      expect(onHead.items.map(item => item.subject)).not.toContain('feat: alpha three on topic');
+    });
+
+    test('v0.3.25 #270 — an unknown rev still returns an empty page', async () => {
+      seedHistory();
+      const history = await service.fileHistory({ path: 'alpha.txt', rev: 'no-such-ref' });
+      expect(history.items).toHaveLength(0);
+      expect(history.followed).toBe(false);
     });
 
     test('bounds the result and reports truncation', async () => {

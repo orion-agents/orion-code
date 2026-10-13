@@ -15,6 +15,15 @@ export interface WorkspaceRegistryEntryV1 {
   readonly canonicalPath: string;
   readonly label: string;
   readonly lastActivatedAt: string;
+  /**
+   * v0.3.25 #272 — when the workspace was first registered. Navigation order is
+   * derived from this stable timestamp; `lastActivatedAt` no longer reorders
+   * the tree when sessions are activated. Documents persisted before this field
+   * existed are backfilled from `lastActivatedAt` on parse (and persisted with
+   * the backfilled value on the next write), which keeps the migration
+   * deterministic.
+   */
+  readonly registeredAt: string;
   readonly pinnedOrder?: number;
 }
 
@@ -76,6 +85,7 @@ export class WorkspaceRegistryV1 {
         canonicalPath,
         label: workspaceLabel(canonicalPath),
         lastActivatedAt: options.activated ? now : (existing?.lastActivatedAt ?? now),
+        registeredAt: existing?.registeredAt ?? now,
         ...(existing?.pinnedOrder !== undefined ? { pinnedOrder: existing.pinnedOrder } : {}),
       });
       const entries = existing
@@ -112,6 +122,7 @@ export class WorkspaceRegistryV1 {
             canonicalPath: path,
             label: workspaceLabel(path),
             lastActivatedAt: path === active ? now : (existing?.lastActivatedAt ?? now),
+            registeredAt: existing?.registeredAt ?? now,
             ...(existing?.pinnedOrder !== undefined ? { pinnedOrder: existing.pinnedOrder } : {}),
           })
         );
@@ -149,6 +160,7 @@ export class WorkspaceRegistryV1 {
         canonicalPath: target.canonicalPath,
         label: target.label,
         lastActivatedAt: target.lastActivatedAt,
+        registeredAt: target.registeredAt,
         ...(pinned ? { pinnedOrder: target.pinnedOrder ?? currentMax + 1 } : {}),
       });
       this.writeDocument(document.entries.map(entry => (entry.id === id ? updated : entry)));
@@ -251,6 +263,11 @@ function parseEntry(value: unknown): WorkspaceRegistryEntryV1 {
     !row.label.trim() ||
     typeof row.lastActivatedAt !== 'string' ||
     !Number.isFinite(Date.parse(row.lastActivatedAt)) ||
+    // v0.3.25 #272 — older documents have no registeredAt; backfill from
+    // lastActivatedAt so the migration is deterministic and the write-back
+    // persists the stable value.
+    (row.registeredAt !== undefined &&
+      (typeof row.registeredAt !== 'string' || !Number.isFinite(Date.parse(row.registeredAt)))) ||
     (row.pinnedOrder !== undefined &&
       (!Number.isSafeInteger(row.pinnedOrder) || Number(row.pinnedOrder) < 1))
   ) {
@@ -261,6 +278,7 @@ function parseEntry(value: unknown): WorkspaceRegistryEntryV1 {
     canonicalPath: row.canonicalPath,
     label: row.label,
     lastActivatedAt: row.lastActivatedAt,
+    registeredAt: typeof row.registeredAt === 'string' ? row.registeredAt : row.lastActivatedAt,
     ...(row.pinnedOrder !== undefined ? { pinnedOrder: Number(row.pinnedOrder) } : {}),
   });
 }
@@ -276,8 +294,10 @@ function compareEntries(left: WorkspaceRegistryEntryV1, right: WorkspaceRegistry
   const leftPinned = left.pinnedOrder ?? Number.MAX_SAFE_INTEGER;
   const rightPinned = right.pinnedOrder ?? Number.MAX_SAFE_INTEGER;
   if (leftPinned !== rightPinned) return leftPinned - rightPinned;
-  const recent = Date.parse(right.lastActivatedAt) - Date.parse(left.lastActivatedAt);
-  return recent || left.label.localeCompare(right.label) || left.id.localeCompare(right.id);
+  // v0.3.25 #272 — stable registration order: activating a session must not
+  // reorder the navigation tree, so lastActivatedAt no longer participates.
+  const registration = Date.parse(left.registeredAt) - Date.parse(right.registeredAt);
+  return registration || left.label.localeCompare(right.label) || left.id.localeCompare(right.id);
 }
 
 function freezeEntries(
