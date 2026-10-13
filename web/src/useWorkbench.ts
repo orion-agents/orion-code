@@ -384,6 +384,47 @@ export function useWorkbench(): UseWorkbenchResult {
     [api]
   );
 
+  // v0.3.24 PR-3 — a dirty ACTIVE snapshot must converge. The reducer keeps
+  // the displayed content and asks for fresh authority when an in-flight HTTP
+  // response predates already-rendered SSE events; this effect schedules that
+  // authoritative re-read (forced, debounced) so the active session returns to
+  // a ready state instead of staying non-ready until a manual re-selection.
+  const activeSessionId = state.activeSessionId ?? '';
+  const activeSync = activeSessionId ? state.sessionSync[activeSessionId] : undefined;
+  const activeSnapshotLoaded = state.sessionSnapshot?.session.id === activeSessionId;
+  // v0.3.24 PR-3 — the active session's snapshot must always converge: either
+  // it is dirty from an in-flight-response/SSE race, or it is missing entirely
+  // because its dispatch was rejected by a newer Context revision (two
+  // baselines racing after a reload). Schedule the authoritative re-read under
+  // the CURRENT context; the request-key dedup prevents duplicate fetches.
+  const activeSnapshotStale =
+    state.connection === 'live' &&
+    Boolean(activeSessionId) &&
+    ((activeSync?.dirty === true && activeSync.status === 'refreshing') || !activeSnapshotLoaded);
+  const activeSnapshotRequestId = activeSync?.requestId ?? null;
+  const activeContextRevision = state.contextRevision;
+  useEffect(() => {
+    if (!activeSnapshotStale) return;
+    const sessionId = stateRef.current.activeSessionId;
+    if (!sessionId) return;
+    const timer = setTimeout(() => {
+      const current = stateRef.current;
+      if (current.connection !== 'live' || current.activeSessionId !== sessionId) return;
+      const sync = current.sessionSync[sessionId];
+      const snapshotLoaded = current.sessionSnapshot?.session.id === sessionId;
+      if (!snapshotLoaded && !(sync?.dirty === true)) return;
+      void loadSessionSnapshot(
+        sessionId,
+        {
+          workspaceId: current.workspaceId,
+          expectedContextRevision: current.contextRevision,
+        },
+        { force: true }
+      ).catch(() => undefined);
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [activeSnapshotStale, activeSessionId, activeSnapshotRequestId, activeContextRevision, loadSessionSnapshot]);
+
   const loadBaselineOnce = useCallback(
     async (reusableWorkspaces?: WorkspaceListResponse) => {
       const generation = ++resourceGeneration.current;

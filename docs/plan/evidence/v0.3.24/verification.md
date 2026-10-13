@@ -97,3 +97,31 @@ ORION_WEB_E2E_EXPECTED_SCENARIOS=WEB33-P0-16,WEB33-P0-17,WEB33-P0-20,WEB33-P0-21
 ## 范围与限制
 
 Web 首次冷 Git root 探测改为异步、限时 250ms；Catalog 冷扫描和文件锁重试会让出事件循环。本地 stat/JSON/原子写的短临界区、CLI/TUI 同步 API、历史索引完整性重建仍保留同步行为。显示缓存淘汰会要求重新读取权威 tail，超大历史不能保证无限驻留。2026-10-11 的打包安装在隔离测试目录，未替换用户常驻服务；跨 OS/Node 22/24/26 全矩阵和本版最终提交的 CI 结果待验证，未把受控 Provider fixture 冒称线上付费模型验收。
+
+
+## 2026-10-13 提交绑定 CI 的首轮结果与修复（WorkBuddy 复核）
+
+PR #268（codex/v0.3.24 → main）首轮 CI（run 38334488330）暴露两类问题：
+
+1. **SET-P0-10（Host 重启恢复）teardown 失败**：测试断言全部通过，但恢复窗口内旧页面
+   重放的排队操作被轮换 nonce 的 admission 以 409 正确拒绝，浏览器将该失败资源记为
+   console error，证据守卫（0 容忍）判负。修复：按 v0.3.20 S4 机制注册天花板 allowance
+   （`allowConsoleError`，精确文本，0–2 次，测试开头注册——409 出现时机不定）。
+   本地打包复验 SET-P0-10 单场景 verdict **GO**。修复后 critical ×3 全部转绿
+   （run 38341184792）。
+2. **Node 22/24/26 矩阵的 release-check 契约测试失败**：干净 clone + Node 22.12 + npm ci
+   本地复现 **33/33 通过**——失败为 CI 环境特有。诊断增强：`runReleaseCheck` 在脚本
+   退出非零时把失败检查项（id + detail）直接打入作业日志。首轮诊断显示 fixture 被
+   `GITHUB_HEAD_REF=codex/v0.3.24` 环境泄漏污染（分支名版本约定要求 0.3.24 而 fixture
+   为 1.2.3）——下一轮以净化 spawn env 修复。
+
+3. **E2E-P0-07（三轮连跑阻断项，未解决）**：三轮稳定失败（每轮 18.7s，非 flake）。
+   失败点：reload → waitForWorkbenchReady 后 composer 持续 disabled（placeholder
+   「选择会话并配置模型后开始」，34 次轮询）。已排除：console/page error 为 0、
+   dirty/refreshing 卡死（已加收敛 effect：活跃会话快照 dirty 或缺失时 250ms 防抖
+   强制重读，manifest 显示重读确实发生但未恢复就绪）、快照请求缺失（manifest 显示
+   多次 snapshot GET）。剩余假设：reload 后两个 baseline 竞争导致 Context revision
+   错位，快照 dispatch 被静默拒绝且无状态变化（收敛 effect 的依赖不触发）。
+   下一步：reducer 层拒绝路径加诊断或改为「拒绝即调度当前 Context 重读」。
+
+全量 Jest（含上述改动）复跑：**4486 passed / 5 skipped / 0 failed（373 套件）**。
