@@ -13,7 +13,10 @@ import {
   type WorkbenchState,
 } from '../web/src/types';
 
-function workspace(id: string, overrides: Partial<WebWorkspaceSummaryV1> = {}): WebWorkspaceSummaryV1 {
+function workspace(
+  id: string,
+  overrides: Partial<WebWorkspaceSummaryV1> = {}
+): WebWorkspaceSummaryV1 {
   return {
     id,
     path: `/tmp/${id}`,
@@ -49,6 +52,14 @@ function render(overrides: Partial<WorkbenchState> = {}) {
       onSelect: async () => undefined,
       onLoadMore: async () => undefined,
       onPickDirectory: async () => ({ outcome: 'cancelled' as const }),
+      onListRoots: async () => [],
+      onAddRoot: async () => {
+        throw new Error('root addition is not exercised by the render contract');
+      },
+      onRemoveRoot: async () => false,
+      onDiscoverRoot: async () => {
+        throw new Error('root discovery is not exercised by the render contract');
+      },
       onInspect: async () => {
         throw new Error('inspect is not exercised by the render contract');
       },

@@ -4,6 +4,7 @@ import type { WorkbenchActions } from '../useWorkbench';
 import {
   activeSessionSnapshotSync,
   isActiveSessionSnapshotReady,
+  isActiveSessionActionPending,
   type WebEditPreview,
   type WebResearch,
   type WebSubtask,
@@ -71,6 +72,18 @@ export function Conversation({
   const pinnedRef = useRef(true);
   const prependAnchor = useRef<{ height: number; top: number } | null>(null);
   const [pinned, setPinned] = useState(true);
+  const sessionKey = `${state.workspaceId}:${state.activeSessionId ?? ''}`;
+  const provisionalNavigation = Boolean(state.navigationTarget || state.sessionCreationSelected);
+  const scrollPositions = useRef(
+    new Map<string, { top: number; pinned: boolean; visibleCount: number }>()
+  );
+  const currentScroll = useRef({
+    key: sessionKey,
+    top: 0,
+    pinned: true,
+    visibleCount: INITIAL_TIMELINE_WINDOW,
+  });
+  const pendingScrollRestore = useRef<{ top: number; visibleCount: number } | null>(null);
   // v0.3.13 — history navigator model + viewport observer binding.
   const [reduceMotion, setReduceMotion] = useState(false);
   const anchors = useMemo<readonly HistoryAnchor[]>(
@@ -97,15 +110,44 @@ export function Conversation({
     return () => media.removeEventListener('change', onChange);
   }, []);
 
-  useEffect(() => {
-    setVisibleCount(INITIAL_TIMELINE_WINDOW);
-    pinnedRef.current = true;
-    setPinned(true);
-  }, [state.activeSessionId]);
+  useLayoutEffect(() => {
+    const previous = currentScroll.current;
+    if (previous.key !== sessionKey) {
+      scrollPositions.current.delete(previous.key);
+      scrollPositions.current.set(previous.key, previous);
+      while (scrollPositions.current.size > 8) {
+        const oldest = scrollPositions.current.keys().next().value;
+        if (oldest === undefined) break;
+        scrollPositions.current.delete(oldest);
+      }
+    }
+    const saved = scrollPositions.current.get(sessionKey);
+    const next = saved ?? { top: 0, pinned: true, visibleCount: INITIAL_TIMELINE_WINDOW };
+    currentScroll.current = { key: sessionKey, ...next };
+    pendingScrollRestore.current = saved && !saved.pinned ? saved : null;
+    setVisibleCount(next.visibleCount);
+    pinnedRef.current = next.pinned;
+    setPinned(next.pinned);
+    prependAnchor.current = null;
+  }, [sessionKey]);
+
+  useLayoutEffect(() => {
+    if (provisionalNavigation && !currentScroll.current.pinned) {
+      pendingScrollRestore.current = currentScroll.current;
+    }
+  }, [provisionalNavigation]);
 
   useLayoutEffect(() => {
     const viewport = scrollRef.current;
     if (!viewport) return;
+    if (state.navigationTarget || state.sessionCreationSelected) return;
+    const restore = pendingScrollRestore.current;
+    if (restore) {
+      if (snapshotSync.status !== 'ready' || timeline.length === 0) return;
+      if (visibleCount !== restore.visibleCount) return;
+      viewport.scrollTop = restore.top;
+      pendingScrollRestore.current = null;
+    }
     if (prependAnchor.current) {
       const anchor = prependAnchor.current;
       viewport.scrollTop = anchor.top + (viewport.scrollHeight - anchor.height);
@@ -113,7 +155,21 @@ export function Conversation({
       return;
     }
     if (pinnedRef.current) viewport.scrollTop = viewport.scrollHeight;
-  }, [timeline.length, state.processing]);
+    currentScroll.current = {
+      key: sessionKey,
+      top: viewport.scrollTop,
+      pinned: pinnedRef.current,
+      visibleCount,
+    };
+  }, [
+    timeline.length,
+    state.processing,
+    state.navigationTarget,
+    state.sessionCreationSelected,
+    snapshotSync.status,
+    sessionKey,
+    visibleCount,
+  ]);
 
   useLayoutEffect(() => {
     const viewport = scrollRef.current;
@@ -127,15 +183,25 @@ export function Conversation({
   }, [state.activeSessionId]);
 
   const updatePinned = () => {
+    if (state.navigationTarget || state.sessionCreationSelected) return;
     const viewport = scrollRef.current;
     if (!viewport) return;
     const next = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 72;
     pinnedRef.current = next;
     setPinned(next);
+    if (!pendingScrollRestore.current) {
+      currentScroll.current = {
+        key: sessionKey,
+        top: viewport.scrollTop,
+        pinned: next,
+        visibleCount,
+      };
+    }
   };
 
   const hasRemoteHistory = Boolean(state.sessionSnapshot?.transcript.nextCursor);
   const loadEarlier = async () => {
+    const ownerKey = sessionKey;
     const viewport = scrollRef.current;
     if (viewport)
       prependAnchor.current = { height: viewport.scrollHeight, top: viewport.scrollTop };
@@ -146,9 +212,18 @@ export function Conversation({
     if (hasRemoteHistory) {
       try {
         await actions.loadOlderTranscript();
+        if (currentScroll.current.key !== ownerKey) {
+          const saved = scrollPositions.current.get(ownerKey);
+          if (saved)
+            scrollPositions.current.set(ownerKey, {
+              ...saved,
+              visibleCount: saved.visibleCount + 100,
+            });
+          return;
+        }
         setVisibleCount(count => count + 100);
       } catch {
-        prependAnchor.current = null;
+        if (currentScroll.current.key === ownerKey) prependAnchor.current = null;
       }
     }
   };
@@ -204,7 +279,7 @@ export function Conversation({
                 type="button"
                 className="load-history"
                 onClick={() => void loadEarlier()}
-                disabled={Boolean(state.pendingAction)}
+                disabled={isActiveSessionActionPending(state)}
               >
                 {allTimeline.length > timeline.length
                   ? `加载更早内容 · 还剩 ${allTimeline.length - timeline.length} 项`
@@ -212,7 +287,19 @@ export function Conversation({
               </button>
             ) : null}
 
-            {!state.activeSessionId ? (
+            {state.sessionCreationSelected ? (
+              <EmptyConversation
+                icon="refresh"
+                title="正在创建会话"
+                detail="正在保存新会话，可以继续选择其他会话。"
+              />
+            ) : state.navigationTarget ? (
+              <EmptyConversation
+                icon="refresh"
+                title="正在打开所选会话"
+                detail="正在确认项目上下文，可以继续选择其他会话。"
+              />
+            ) : !state.activeSessionId ? (
               <EmptyConversation
                 icon="workspace"
                 title="选择或创建一个会话"
@@ -254,7 +341,7 @@ export function Conversation({
                 ))}
               </ol>
             )}
-            {state.processing ? (
+            {state.processing && !state.navigationTarget && !state.sessionCreationSelected ? (
               <div className="thinking-indicator" role="status">
                 <span />
                 <span />
@@ -709,7 +796,7 @@ export function ApprovalCard({
     cardRef.current?.focus();
   }, [request.id]);
   const disabled =
-    Boolean(state.pendingAction) ||
+    isActiveSessionActionPending(state) ||
     state.connection !== 'live' ||
     !isActiveSessionSnapshotReady(state);
   return (
@@ -783,7 +870,7 @@ function QueueDock({
   readonly actions: WorkbenchActions;
 }) {
   const disabled =
-    Boolean(state.pendingAction) ||
+    isActiveSessionActionPending(state) ||
     state.connection !== 'live' ||
     !isActiveSessionSnapshotReady(state);
   return (

@@ -4,6 +4,7 @@ import type { WorkbenchActions } from '../useWorkbench';
 import {
   activeSessionSnapshotSync,
   isActiveSessionSnapshotReady,
+  isActiveSessionActionPending,
   type WebToolCall,
   type WorkbenchState,
 } from '../types';
@@ -101,7 +102,7 @@ function GoalPanel({
   const goal = state.goal;
   const plan =
     state.plan?.body ?? (typeof state.diagnostics?.plan === 'string' ? state.diagnostics.plan : '');
-  const pending = Boolean(state.pendingAction);
+  const pending = isActiveSessionActionPending(state);
   const commandBlocked =
     pending || state.connection !== 'live' || !isActiveSessionSnapshotReady(state);
   // v0.3.15 T2 — clearing a Goal asks through the unified confirm modal

@@ -290,7 +290,12 @@ function assertVersionedEvidenceFacts(scenario: WebE2EScenarioManifest, path: st
       (typeof observed === 'number' &&
         Number.isFinite(observed) &&
         observed >= requirement.minimum);
-    if (!exactOk || !minimumOk) {
+    const maximumOk =
+      requirement.maximum === undefined ||
+      (typeof observed === 'number' &&
+        Number.isFinite(observed) &&
+        observed <= requirement.maximum);
+    if (!exactOk || !minimumOk || !maximumOk) {
       throw new Error(
         `Versioned Web evidence fact ${requirement.key} is missing or invalid for ${scenarioId}: ${path}.`
       );

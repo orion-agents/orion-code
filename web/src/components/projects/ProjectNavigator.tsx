@@ -7,6 +7,7 @@ import {
   type KeyboardEvent,
 } from 'react';
 
+import { isSessionActionPending } from '../../types';
 import type {
   WebSessionRuntimeSummaryV1,
   WebSessionSummaryV1,
@@ -87,16 +88,27 @@ export function ProjectNavigator({
   const [query, setQuery] = useState('');
   const [projectWindowStart, setProjectWindowStart] = useState(0);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(
-    new Set(state.workspaceId ? [state.workspaceId] : [])
+    new Set(
+      [state.workspaceId, state.navigationTarget?.workspaceId].filter((id): id is string =>
+        Boolean(id)
+      )
+    )
   );
   const deferredQuery = useDeferredValue(query.trim().toLocaleLowerCase());
   const operationLocked = Boolean(state.pendingAction);
-  const workspaceTransitionLocked = operationLocked || state.processing;
+  const workspaceTransitionLocked = operationLocked;
 
   useEffect(() => {
-    if (!state.workspaceId) return;
-    setExpanded(current => new Set([...current, state.workspaceId]));
-  }, [state.workspaceId]);
+    setExpanded(
+      current =>
+        new Set([
+          ...current,
+          ...[state.workspaceId, state.navigationTarget?.workspaceId].filter((id): id is string =>
+            Boolean(id)
+          ),
+        ])
+    );
+  }, [state.workspaceId, state.navigationTarget?.workspaceId]);
 
   useEffect(() => setProjectWindowStart(0), [deferredQuery]);
 
@@ -171,7 +183,7 @@ export function ProjectNavigator({
           aria-label="新建会话"
           title="新建会话"
           onClick={onCreateSession}
-          disabled={operationLocked || !state.workspaceId}
+          disabled={operationLocked || state.sessionCreationPending || !state.workspaceId}
         >
           <Icon name="add" size={18} />
         </button>
@@ -355,7 +367,12 @@ export function ProjectNavigator({
                       type="button"
                       className="icon-button project-add-session"
                       aria-label={`在 ${project.label} 新建会话`}
-                      disabled={operationLocked || !project.available || !project.active}
+                      disabled={
+                        operationLocked ||
+                        state.sessionCreationPending ||
+                        !project.available ||
+                        !project.active
+                      }
                       onClick={onCreateSession}
                       title={project.active ? '新建会话' : '先激活项目后新建会话'}
                     >
@@ -388,11 +405,25 @@ export function ProjectNavigator({
                           </button>
                         </div>
                       ) : null}
+                      {project.active && state.sessionCreationPending ? (
+                        <p
+                          className="project-loading"
+                          role="listitem"
+                          aria-current={state.sessionCreationSelected ? 'page' : undefined}
+                          aria-live="polite"
+                        >
+                          正在创建会话…
+                        </p>
+                      ) : null}
                       {sessions.map(session => {
-                        const active = project.active && session.id === state.activeSessionId;
+                        const active = state.sessionCreationSelected
+                          ? false
+                          : state.navigationTarget
+                            ? state.navigationTarget.workspaceId === project.id &&
+                              state.navigationTarget.sessionId === session.id
+                            : project.active && session.id === state.activeSessionId;
                         const runtime = state.sessionRuntimeById[session.id];
                         const runtimeStatus = sessionRuntimeStatus(runtime);
-                        const sessionLocked = !project.active && workspaceTransitionLocked;
                         const busy = sessionIsBusy(runtime?.phase);
                         const sessionTags = session.tags ?? [];
                         return (
@@ -405,11 +436,11 @@ export function ProjectNavigator({
                               type="button"
                               className="project-session-main"
                               aria-current={active ? 'page' : undefined}
-                              aria-disabled={active || sessionLocked || !project.available}
+                              aria-disabled={active || !project.available}
                               onClick={() => {
                                 if (!active) onActivateContext(project.id, session.id);
                               }}
-                              disabled={sessionLocked || !project.available}
+                              disabled={!project.available}
                               onKeyDown={event => {
                                 if (event.key === 'ArrowLeft') {
                                   event.preventDefault();
@@ -452,7 +483,7 @@ export function ProjectNavigator({
                             {project.active ? (
                               <SessionRowMenu
                                 label={`会话 ${sessionTitle(session)} 操作`}
-                                disabled={operationLocked}
+                                disabled={isSessionActionPending(state, session.id)}
                                 items={[
                                   {
                                     id: 'rename',
@@ -490,7 +521,7 @@ export function ProjectNavigator({
                           <button
                             type="button"
                             className="project-empty-session"
-                            disabled={workspaceTransitionLocked || !project.available}
+                            disabled={!project.available}
                             onClick={() => onActivateContext(project.id, null)}
                           >
                             {deferredQuery ? '没有匹配会话' : '打开项目'}

@@ -32,6 +32,7 @@ export interface WebE2ERequiredFactV1 {
   readonly key: string;
   readonly equals?: string | number | boolean;
   readonly minimum?: number;
+  readonly maximum?: number;
 }
 
 export const WEB31_REQUIRED_EVIDENCE_FACTS_V1: Readonly<
@@ -287,6 +288,95 @@ export const WEB33_REQUIRED_EVIDENCE_FACTS_V1: Readonly<
   'WEB33-P0-41': Object.freeze([]),
   'WEB33-P0-42': Object.freeze([]),
   'WEB33-P0-43': Object.freeze([]),
+  'WEB33-P0-44': Object.freeze([
+    { key: 'web324.command_pending_other_session_usable', equals: true },
+    { key: 'web324.command_pending_create_usable', equals: true },
+    { key: 'web324.cross_session_draft_preserved', equals: true },
+    { key: 'web324.command_admissions', equals: 1 },
+  ]),
+  'WEB33-P0-45': Object.freeze([
+    { key: 'web324.create_pending_selection_preserved', equals: true },
+    { key: 'web324.create_single_flight_requests', equals: 1 },
+    { key: 'web324.create_added_rows', equals: 1 },
+  ]),
+  'WEB33-P0-46': Object.freeze([
+    { key: 'web324.warm_switches', equals: 20 },
+    { key: 'web324.warm_switch_snapshot_gets', equals: 0 },
+    { key: 'web324.warm_switch_sse_reconnects', equals: 0 },
+    { key: 'web324.warm_switch_activate_posts', equals: 0 },
+    { key: 'web324.warm_switch_p95_budget', equals: true },
+  ]),
+  'WEB33-P0-47': Object.freeze([
+    { key: 'web324.streaming_rendered_content_preserved', equals: true },
+    { key: 'web324.background_refresh_requests', equals: 1 },
+    { key: 'web324.background_refresh_selection_preserved', equals: true },
+  ]),
+  'WEB33-P0-48': Object.freeze([
+    { key: 'web324.cross_workspace_actor_preserved', equals: true },
+    { key: 'web324.cross_workspace_turn_preserved', equals: true },
+    { key: 'web324.cross_workspace_draft_usable', equals: true },
+    { key: 'web324.cross_workspace_provider_replays', equals: 0 },
+  ]),
+  'WEB33-P0-49': Object.freeze([
+    { key: 'web324.create_post_snapshot_decoupled', equals: true },
+    { key: 'web324.create_failed_snapshot_formal_id_preserved', equals: true },
+    { key: 'web324.create_failed_snapshot_retry', equals: true },
+    { key: 'web324.create_failed_snapshot_count', equals: 1 },
+  ]),
+  'WEB33-P0-50': Object.freeze([
+    { key: 'web324.create_ten_click_posts', equals: 1 },
+    { key: 'web324.create_provisional_write_blocked', equals: true },
+    { key: 'web324.create_post_failure_rollback', equals: true },
+    { key: 'web324.create_post_failure_other_draft_preserved', equals: true },
+    { key: 'web324.create_post_retry', equals: true },
+  ]),
+  'WEB33-P0-51': Object.freeze([
+    { key: 'web324.history_pending_other_session_write', equals: true },
+    { key: 'web324.history_late_response_selection_preserved', equals: true },
+    { key: 'web324.history_loaded_page_preserved', equals: true },
+    { key: 'web324.history_pending_requests', equals: 1 },
+  ]),
+  'WEB33-P0-52': Object.freeze([
+    { key: 'web324.scroll_two_session_positions_restored', equals: true },
+    { key: 'web324.scroll_history_height_preserved', equals: true },
+    { key: 'web324.scroll_restore_tolerance_px', equals: 3 },
+    { key: 'web324.scroll_cold_context_position_restored', equals: true },
+    { key: 'web324.scroll_cold_snapshot_requests', minimum: 1 },
+  ]),
+  'WEB33-P0-56': Object.freeze([
+    { key: 'web324.same_session_old_snapshot_rejected', equals: true },
+    { key: 'web324.same_session_fresh_snapshot_requests', minimum: 2 },
+    { key: 'web324.same_session_duplicate_messages', equals: 0 },
+    { key: 'web324.same_session_provider_replays', equals: 0 },
+  ]),
+  'WEB33-P0-57': Object.freeze([
+    { key: 'web324.context_failed_activation_later_target_drained', equals: true },
+    { key: 'web324.context_failed_activation_count', equals: 1 },
+    { key: 'web324.context_request_target_identities_preserved', equals: true },
+    { key: 'web324.context_request_ids_distinct', equals: true },
+    { key: 'web324.context_navigation_actor_allocations', equals: 0 },
+  ]),
+  ...Object.fromEntries(
+    [
+      ['53', 10],
+      ['54', 100],
+      ['55', 1000],
+    ].map(([id, count]) => [
+      `WEB33-P0-${id}`,
+      Object.freeze([
+        { key: 'web324.scale_variant', equals: 'candidate' },
+        { key: 'web324.scale_catalog_sessions', equals: count },
+        { key: 'web324.scale_history_messages', equals: 10000 },
+        { key: 'web324.scale_dom_rows', minimum: 2, maximum: 100 },
+        { key: 'web324.scale_samples', minimum: 20 },
+        { key: 'web324.scale_snapshot_gets', equals: 0 },
+        { key: 'web324.scale_sse_reconnects', equals: 0 },
+        { key: 'web324.scale_actor_allocations', equals: 0 },
+        { key: 'web324.scale_provider_requests', equals: 0 },
+        { key: 'web324.scale_budget', equals: true },
+      ]),
+    ])
+  ),
   'WEB36-P0-01': Object.freeze([]),
   'WEB36-P1-01': Object.freeze([]),
   'WEB36-P1-02': Object.freeze([]),
@@ -328,7 +418,8 @@ export const WEB33_REQUIRED_EVIDENCE_FACTS_V1: Readonly<
     { key: 'web33.warm_switch_budget', equals: true },
     { key: 'web33.cold_switch_budget', equals: true },
     { key: 'web33.long_session_messages', equals: 10000 },
-    { key: 'web33.switch_snapshot_pages_max', equals: 1 },
+    // Warm reuse can eliminate the read entirely; the budget is at most one page.
+    { key: 'web33.switch_snapshot_pages_max', minimum: 0, maximum: 1 },
     { key: 'web33.switch_catalog_requests', equals: 0 },
     { key: 'web33.switch_sse_reconnects', equals: 0 },
     { key: 'web33.switch_replay_resets', equals: 0 },

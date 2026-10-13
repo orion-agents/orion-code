@@ -12,8 +12,8 @@ import {
   readdirSync,
   renameSync,
   unlinkSync,
-  realpathSync,
   statSync,
+  promises as fsPromises,
 } from 'fs';
 import { createHash, randomUUID } from 'crypto';
 import { execFileSync } from 'child_process';
@@ -31,6 +31,7 @@ import {
   getProjectSessionsDir,
   getConfigDir,
   getProjectsDir,
+  resolveProjectStoragePath,
 } from './config-dir';
 import { atomicWriteFileSync } from './atomic-write';
 import { withFileLockSync } from './file-lock';
@@ -62,7 +63,12 @@ import {
   loadThreadCutoverIndexV1,
   type ThreadCutoverIndexEntryV1,
 } from '../runtime/legacy-thread-materializer';
-import { getProjectThreadsV2Dir } from '../product/paths';
+import {
+  getProjectThreadsV2Dir,
+  resolveProjectStorageIdentityAsync,
+  assertProjectStorageIdentity,
+  ensureResolvedProjectDir,
+} from '../product/paths';
 import type {
   SessionHistoryRecoveryDiagnosticV1,
   SessionHistoryResolvedSourceV1,
@@ -662,7 +668,6 @@ export type SessionLookupResult =
 // Project helpers
 // ============================================================================
 
-const MAX_CACHE_SIZE = 256;
 const SESSION_CATALOG_VERSION = 1;
 
 interface SessionCatalog {
@@ -688,64 +693,14 @@ function emptySessionCatalog(): SessionCatalog {
 }
 
 /**
- * Evict the oldest entries when a Map exceeds MAX_CACHE_SIZE.
- * Simple LRU approximation: delete the first (oldest) entries until
- * the map is within bounds. Called after each insertion.
- */
-function evictOldest<K, V>(map: Map<K, V>, maxSize: number): void {
-  while (map.size > maxSize) {
-    const firstKey = map.keys().next().value;
-    if (firstKey !== undefined) map.delete(firstKey);
-    else break;
-  }
-}
-
-const resolvedProjectPathCache = new Map<string, string>();
-
-/**
  * Resolve a working directory to the project identity used for session storage.
  * Git repositories share sessions from the repository root; non-git folders use
  * their real absolute path.
  */
 export function resolveProjectPath(cwd: string = process.cwd()): string {
-  const absolute = resolve(cwd);
-  const cached = resolvedProjectPathCache.get(absolute);
-  if (cached) {
-    return cached;
-  }
-
-  let resolvedPath = absolute;
-
-  if (existsSync(absolute)) {
-    try {
-      const root = execFileSync('git', ['-C', absolute, 'rev-parse', '--show-toplevel'], {
-        encoding: 'utf-8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-      }).trim();
-      if (root) {
-        resolvedPath = realpathSync(root);
-        resolvedProjectPathCache.set(absolute, resolvedPath);
-        evictOldest(resolvedProjectPathCache, MAX_CACHE_SIZE);
-        return resolvedPath;
-      }
-    } catch (error) {
-      // Not a git worktree, or git is unavailable.
-      debugError('session-storage.resolveGitRoot', error, absolute);
-    }
-  }
-
-  try {
-    resolvedPath = realpathSync(absolute);
-  } catch (error) {
-    // Broken symlink or concurrent deletion; the literal path still works
-    // as a stable project key.
-    debugError('session-storage.realpath', error, absolute);
-    resolvedPath = absolute;
-  }
-
-  resolvedProjectPathCache.set(absolute, resolvedPath);
-  evictOldest(resolvedProjectPathCache, MAX_CACHE_SIZE);
-  return resolvedPath;
+  // Storage helpers and Session identity must share the same invalidation
+  // boundary; a second permanent cache could miss a newly initialized repo.
+  return resolveProjectStoragePath(cwd);
 }
 
 export function getProjectKey(projectPath: string): string {
@@ -771,8 +726,11 @@ function getGitBranch(projectPath: string): string | undefined {
   }
 }
 
-function normalizeSessionMeta(session: SessionMeta): SessionMeta {
-  const projectPath = resolveProjectPath(session.projectPath);
+function normalizeSessionMeta(
+  session: SessionMeta,
+  persistedStorage?: { readonly projectPath: string; readonly historyPath: string }
+): SessionMeta {
+  const projectPath = persistedStorage?.projectPath ?? resolveProjectPath(session.projectPath);
   const startTime = session.startTime ?? Date.now();
   const updatedAt = session.updatedAt ?? session.endTime ?? startTime;
 
@@ -787,16 +745,25 @@ function normalizeSessionMeta(session: SessionMeta): SessionMeta {
     updatedAtIso: session.updatedAtIso ?? new Date(updatedAt).toISOString(),
     messageCount: session.messageCount ?? 0,
     historySizeBytes:
-      session.historySizeBytes ?? computeSessionHistorySizeBytes({ id: session.id, projectPath }),
+      session.historySizeBytes ??
+      (persistedStorage
+        ? (safeFileSize(persistedStorage.historyPath) ?? 0)
+        : computeSessionHistorySizeBytes({ id: session.id, projectPath })),
     tokenCount: session.tokenCount ?? 0,
     cost: session.cost ?? 0,
-    gitBranch: session.gitBranch ?? getGitBranch(projectPath),
+    // Normalization is a read-model operation. Missing optional metadata must
+    // not spawn Git on every read/save of a non-repository Session.
+    gitBranch: session.gitBranch,
   };
 }
 
-function tryNormalizeSessionMeta(session: SessionMeta, sourcePath: string): SessionMeta | null {
+function tryNormalizeSessionMeta(
+  session: SessionMeta,
+  sourcePath: string,
+  persistedStorage?: { readonly projectPath: string; readonly historyPath: string }
+): SessionMeta | null {
   try {
-    return normalizeSessionMeta(session);
+    return normalizeSessionMeta(session, persistedStorage);
   } catch (error) {
     debugError('session-storage.normalizeSessionMeta', error, sourcePath);
     return null;
@@ -967,6 +934,111 @@ function updateSessionCatalog(update: (catalog: SessionCatalog) => void): Sessio
     },
     { waitMs: 10_000 }
   );
+}
+
+interface SessionCatalogScan {
+  catalog: SessionCatalog;
+  stamps: Map<string, string>;
+}
+
+function catalogSourceStamp(path: string): string {
+  try {
+    const stat = statSync(path);
+    return [stat.dev, stat.ino, stat.mode, stat.size, stat.mtimeMs, stat.ctimeMs].join(':');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'missing';
+    throw error;
+  }
+}
+
+async function scanSessionCatalogAsync(): Promise<SessionCatalogScan> {
+  const catalog = emptySessionCatalog();
+  const stamps = new Map<string, string>();
+  const projectsDir = getProjectsDir();
+  stamps.set(projectsDir, catalogSourceStamp(projectsDir));
+  if (!existsSync(projectsDir)) return { catalog, stamps };
+  let sinceYield = 0;
+  for (const projectKey of await fsPromises.readdir(projectsDir)) {
+    const sessionsDir = join(projectsDir, projectKey, 'sessions');
+    stamps.set(sessionsDir, catalogSourceStamp(sessionsDir));
+    if (!existsSync(sessionsDir)) continue;
+    for (const file of (await fsPromises.readdir(sessionsDir)).filter(isSessionMetaFile)) {
+      const path = join(sessionsDir, file);
+      // Stamp before reading. A concurrent atomic replacement between these
+      // steps must invalidate the scan rather than bless stale bytes.
+      stamps.set(path, catalogSourceStamp(path));
+      let raw: SessionMeta;
+      try {
+        raw = JSON.parse(await fsPromises.readFile(path, 'utf8')) as SessionMeta;
+      } catch (error) {
+        debugError('session-storage.scanCatalogAsync', error, path);
+        continue;
+      }
+      if (!raw || typeof raw.id !== 'string' || !raw.id || !raw.projectPath) continue;
+      if (typeof raw.projectPath !== 'string') continue;
+      // Historical metadata already owns its persisted root. Rediscovering
+      // Git here could migrate it, or let an unrelated broken repo deny Host
+      // startup. Rebuild the index without probing any historical repository.
+      const normalized = tryNormalizeSessionMeta(raw, path, {
+        projectPath: resolve(raw.projectPath),
+        historyPath: path.slice(0, -'.json'.length) + '.jsonl',
+      });
+      if (normalized) {
+        const previous = catalog.sessions[normalized.id];
+        if (
+          !previous ||
+          (normalized.updatedAt ?? normalized.startTime) >
+            (previous.updatedAt ?? previous.startTime)
+        ) {
+          catalog.sessions[normalized.id] = normalized;
+        }
+      }
+      if (++sinceYield >= 16) {
+        sinceYield = 0;
+        await new Promise<void>(resolveYield => setImmediate(resolveYield));
+      }
+    }
+  }
+  return { catalog, stamps };
+}
+
+/** Warm/rebuild the global read model without synchronous lock retry or scan. */
+export async function prepareSessionCatalogAsync(waitMs = 10_000): Promise<void> {
+  ensureConfigDir();
+  const path = getSessionCatalogPath();
+  if (readCachedSessionCatalog(path)) return;
+  const deadline = Date.now() + waitMs;
+  let scanned = await scanSessionCatalogAsync();
+  const scanChanged = new Error('Session Catalog sources changed during scan.');
+  while (true) {
+    try {
+      withFileLockSync(
+        path,
+        () => {
+          // A writer may have published a newer Catalog while the scan ran.
+          if (readCachedSessionCatalog(path)) return;
+          for (const [sourcePath, stamp] of scanned.stamps) {
+            if (catalogSourceStamp(sourcePath) !== stamp) throw scanChanged;
+          }
+          writeSessionCatalog(path, scanned.catalog);
+        },
+        { waitMs: 0 }
+      );
+      return;
+    } catch (error) {
+      if (Date.now() >= deadline) throw error;
+      if (error === scanChanged) {
+        scanned = await scanSessionCatalogAsync();
+      } else if (
+        error instanceof Error &&
+        error.message === `Timed out waiting for file lock ${path}.lock`
+      ) {
+        await new Promise<void>(resolveWait => setTimeout(resolveWait, 10));
+      } else {
+        throw error;
+      }
+    }
+  }
 }
 
 function parseHarnessSidecarFile(path: string): HarnessSidecar | null {
@@ -1518,8 +1590,13 @@ function computeSessionHistorySizeBytes(session: Pick<SessionMeta, 'id' | 'proje
 
 /**
  * 创建新会话
+ * @param options Optional pre-probed Git metadata. Supplying this object skips synchronous Git.
  */
-export function createSession(projectPath: string, model: string): SessionMeta {
+export function createSession(
+  projectPath: string,
+  model: string,
+  options?: { readonly gitBranch?: string }
+): SessionMeta {
   ensureConfigDir();
   const canonicalProjectPath = resolveProjectPath(projectPath);
   const now = Date.now();
@@ -1535,13 +1612,107 @@ export function createSession(projectPath: string, model: string): SessionMeta {
     updatedAt: now,
     updatedAtIso: new Date(now).toISOString(),
     messageCount: 0,
-    gitBranch: getGitBranch(canonicalProjectPath),
+    // Interactive Hosts can supply an asynchronously probed branch. Passing
+    // options (including an unavailable branch) deliberately skips the legacy
+    // synchronous Git probe; CLI/TUI callers retain their existing behavior.
+    gitBranch: options ? options.gitBranch : getGitBranch(canonicalProjectPath),
     tokenCount: 0,
     cost: 0,
   };
 
   saveSessionMeta(session);
   return session;
+}
+
+/**
+ * Web creation waits for cross-process metadata/catalog locks asynchronously.
+ * Both locks are acquired before any Session bytes are written. The original
+ * synchronous lock owner/recovery and atomic publication remain authoritative.
+ */
+export async function createSessionAsync(
+  projectPath: string,
+  model: string,
+  options: {
+    readonly gitBranch?: string;
+    readonly name?: string;
+    readonly waitMs?: number;
+    readonly beforeCommit?: () => void;
+  } = {}
+): Promise<SessionMeta> {
+  ensureConfigDir();
+  const deadline = Date.now() + (options.waitMs ?? 10_000);
+  options.beforeCommit?.();
+  const storageIdentity = await resolveProjectStorageIdentityAsync(projectPath);
+  const canonicalProjectPath = storageIdentity.canonicalPath;
+  await prepareSessionCatalogAsync(Math.max(0, deadline - Date.now()));
+  const now = Date.now();
+  const session: SessionMeta = {
+    id: randomUUID(),
+    projectPath: canonicalProjectPath,
+    projectKey: encodeProjectPath(canonicalProjectPath),
+    cwd: resolve(projectPath),
+    model,
+    startTime: now,
+    createdAt: new Date(now).toISOString(),
+    updatedAt: now,
+    updatedAtIso: new Date(now).toISOString(),
+    messageCount: 0,
+    historySizeBytes: 0,
+    gitBranch: options.gitBranch,
+    tokenCount: 0,
+    cost: 0,
+    ...(options.name?.trim() ? { name: options.name.trim() } : {}),
+  };
+  const sessionsDir = ensureResolvedProjectDir(storageIdentity);
+  const metaPath = join(sessionsDir, `${session.id}.json`);
+  const catalogPath = getSessionCatalogPath();
+  const lockTimeoutMessages = new Set(
+    [metaPath, catalogPath].map(path => `Timed out waiting for file lock ${path}.lock`)
+  );
+  while (true) {
+    options.beforeCommit?.();
+    assertProjectStorageIdentity(storageIdentity);
+    try {
+      return withFileLockSync(
+        metaPath,
+        () =>
+          withFileLockSync(
+            catalogPath,
+            () => {
+              options.beforeCommit?.();
+              assertProjectStorageIdentity(storageIdentity);
+              const catalog = readSessionCatalogFile(catalogPath);
+              if (!catalog) {
+                throw new Error('Session Catalog changed before creation. Retry.');
+              }
+              if (existsSync(metaPath)) throw new Error('Session identity already exists.');
+              atomicWriteFileSync(metaPath, JSON.stringify(session, null, 2), { mode: 0o600 });
+              try {
+                catalog.sessions[session.id] = session;
+                writeSessionCatalog(catalogPath, catalog);
+              } catch (error) {
+                // This identity was not exposed to a caller or Catalog yet.
+                // Roll back its metadata while both locks are still ours.
+                unlinkSync(metaPath);
+                throw error;
+              }
+              return session;
+            },
+            { waitMs: 0 }
+          ),
+        { waitMs: 0 }
+      );
+    } catch (error) {
+      if (
+        !(error instanceof Error) ||
+        !lockTimeoutMessages.has(error.message) ||
+        Date.now() >= deadline
+      ) {
+        throw error;
+      }
+      await new Promise<void>(resolveWait => setTimeout(resolveWait, 10));
+    }
+  }
 }
 
 /**

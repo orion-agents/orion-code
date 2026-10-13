@@ -20,7 +20,11 @@ import {
   saveComposerDraft,
 } from '../../state/composer-drafts';
 import { WebApiError } from '../../api';
-import { isActiveSessionSnapshotReady, type WorkbenchState } from '../../types';
+import {
+  isActiveSessionSnapshotReady,
+  isActiveSessionActionPending,
+  type WorkbenchState,
+} from '../../types';
 import type { WorkbenchActions } from '../../useWorkbench';
 import { Icon } from '../Icon';
 
@@ -61,7 +65,7 @@ export function ComposerControlCenter({ state, actions, insertion }: ComposerCon
     !state.bootstrap?.configured ||
     state.connection !== 'live' ||
     !isActiveSessionSnapshotReady(state);
-  const pending = Boolean(state.pendingAction);
+  const pending = isActiveSessionActionPending(state);
   const sessionTurnQueued = state.sessionSnapshot?.sessionRuntime.phase === 'queued';
   const controlsReady = !disabled && !pending;
   const composerReady = controlsReady && !sessionTurnQueued;
@@ -123,12 +127,13 @@ export function ComposerControlCenter({ state, actions, insertion }: ComposerCon
       if (kind === 'queue') await actions.queue(text, references);
       else await actions.submit(text, references);
       removeComposerDraft(workspaceId, sessionId);
-      setInvalidReferenceKeys(new Set());
       if (activeKeyRef.current === deliveredKey) {
+        setInvalidReferenceKeys(new Set());
         setDraftState({ workspaceId, sessionId, text: '', references: [] });
+        textareaRef.current?.focus();
       }
-      textareaRef.current?.focus();
     } catch (error) {
+      if (activeKeyRef.current !== deliveredKey) return;
       if (
         error instanceof WebApiError &&
         ['context_reference_stale', 'context_reference_forbidden'].includes(error.code ?? '')
@@ -862,7 +867,7 @@ function PlanReviewCard({
   const [continuing, setContinuing] = useState(false);
   const [feedback, setFeedback] = useState('');
   const disabled =
-    Boolean(state.pendingAction) ||
+    isActiveSessionActionPending(state) ||
     state.connection !== 'live' ||
     !isActiveSessionSnapshotReady(state);
   return (

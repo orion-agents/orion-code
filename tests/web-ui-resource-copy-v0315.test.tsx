@@ -71,7 +71,6 @@ function renderNavigator(state: WorkbenchState = initialWorkbenchState): string 
       collapsed: false,
       resizable: true,
       width: 300,
-      onCloseDrawer: noop,
       onExpand: noop,
       onCollapse: noop,
       onOpenWorkspaceDialog: noop,
@@ -106,6 +105,71 @@ function renderAgentPanel(state: WorkbenchState, tab: 'goal' | 'diagnostics'): s
 }
 
 describe('v0.3.15 T4 — thinned copy never returns to first paint', () => {
+  it('keeps another Workspace selectable during a running Session and Context transition', () => {
+    const state: WorkbenchState = {
+      ...initialWorkbenchState,
+      workspaceId: 'workspace-a',
+      activeSessionId: 'session-a',
+      processing: true,
+      pendingAction: '切换项目上下文',
+      navigationTarget: { workspaceId: 'workspace-b', sessionId: 'session-b' },
+      workspaces: [
+        {
+          id: 'workspace-b',
+          path: '/tmp/b',
+          label: 'Project B',
+          active: false,
+          available: true,
+          sessionCount: 1,
+          lastActivatedAt: new Date(0).toISOString(),
+        },
+      ],
+      workspaceSessions: {
+        'workspace-b': {
+          status: 'ready',
+          nextCursor: null,
+          items: [
+            {
+              id: 'session-b',
+              name: 'Session B',
+              projectPath: '/tmp/b',
+              model: 'test',
+              createdAt: new Date(0).toISOString(),
+              updatedAt: new Date(0).toISOString(),
+              messageCount: 0,
+              contextDigest: '',
+            },
+          ],
+        },
+      },
+    };
+    const html = renderNavigator(state);
+    const row = html.match(/<button[^>]*class="project-session-main"[^>]*>/u)?.[0];
+    expect(row).toBeDefined();
+    expect(row).not.toMatch(/\sdisabled=/u);
+    expect(row).toContain('aria-current="page"');
+  });
+
+  it('shows a provisional creation row without assigning a usable Session identity', () => {
+    const html = renderNavigator({
+      ...initialWorkbenchState,
+      workspaceId: 'a',
+      sessionCreationPending: true,
+      workspaces: [
+        {
+          id: 'a',
+          path: '/tmp/a',
+          label: 'A',
+          active: true,
+          available: true,
+          sessionCount: 0,
+          lastActivatedAt: new Date(0).toISOString(),
+        },
+      ],
+    });
+    expect(html).toContain('正在创建会话…');
+    expect(html).not.toContain('class="project-session-main"');
+  });
   it('FilesPanel: search scope is a title, not a hint paragraph', () => {
     const html = renderFiles();
     expect(html).toContain('title="搜索仅覆盖已加载的目录和文件"');
@@ -149,7 +213,9 @@ describe('v0.3.15 T4 — thinned copy never returns to first paint', () => {
     const html = renderAgentPanel(initialWorkbenchState, 'diagnostics');
     expect(html).toContain('>诊断载荷由 Host 脱敏。</p>');
     expect(html).toContain('title="API Key、认证 Header 和环境值不会返回浏览器。"');
-    expect(html).not.toContain('<p>诊断载荷由 Host 脱敏。API Key、认证 Header 和环境值不会返回浏览器。</p>');
+    expect(html).not.toContain(
+      '<p>诊断载荷由 Host 脱敏。API Key、认证 Header 和环境值不会返回浏览器。</p>'
+    );
   });
 });
 

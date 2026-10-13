@@ -1,5 +1,10 @@
 import { randomUUID } from 'crypto';
+import { execFile } from 'child_process';
 import { existsSync, realpathSync, statSync, watch, type FSWatcher } from 'fs';
+import {
+  ProjectStorageIdentityUnavailableError,
+  resolveProjectStoragePathAsync,
+} from '../product/paths';
 import { access, realpath, stat } from 'fs/promises';
 import { basename, join, resolve } from 'path';
 
@@ -48,7 +53,8 @@ import {
   SESSION_TAG_MAX_LENGTH,
   archiveSession,
   countSessionsByProject,
-  createSession,
+  createSessionAsync,
+  prepareSessionCatalogAsync,
   deleteSession,
   listProjectSessions,
   listSessions,
@@ -324,6 +330,8 @@ export class WebWorkbenchController {
 
   static async create(options: WebWorkbenchControllerOptions): Promise<WebWorkbenchController> {
     const workbench = new WebWorkbenchController(options);
+    await resolveProjectStoragePathAsync(workbench.workspaceValue);
+    await prepareSessionCatalogAsync();
     workbench.initializeWorkspaceRegistry();
     await workbench.installRuntime(workbench.workspaceValue);
     return workbench;
@@ -1685,12 +1693,35 @@ export class WebWorkbenchController {
     // A new Session inherits the durable default; an override on another
     // Session actor must never leak into it. Creation does not activate or
     // close any actor; foreground selection belongs to the browser tab.
-    const session = createSession(
-      this.workspaceValue,
-      this.settings().sections.defaults.model.effectiveValue
-    );
+    const workspace = this.workspaceValue;
+    const creationContext = context ?? {
+      workspaceId: this.activeWorkspaceEntry().id,
+      expectedContextRevision: this.contextRevisionValue,
+    };
+    const gitBranch = await probeSessionGitBranch(workspace);
+    // Git is optional metadata, but its asynchronous boundary must not allow a
+    // stale browser to create a Session in a newly selected Workspace.
+    this.assertContextGuard(creationContext);
+    let named: SessionMeta;
+    try {
+      await resolveProjectStoragePathAsync(workspace);
+      this.assertContextGuard(creationContext);
+      named = await createSessionAsync(
+        workspace,
+        this.settings().sections.defaults.model.effectiveValue,
+        {
+          gitBranch,
+          name,
+          beforeCommit: () => this.assertContextGuard(creationContext),
+        }
+      );
+    } catch (error) {
+      if (error instanceof ProjectStorageIdentityUnavailableError) {
+        throw new WebWorkbenchError(503, error.message, error.code);
+      }
+      throw error;
+    }
     incrementSessionCount();
-    const named = name?.trim() ? (renameSession(session.id, name.trim()) ?? session) : session;
     this.sessionRegistry.summary(this.sessionActorKey(named));
     return projectSessionSummary(named);
   }
@@ -2734,6 +2765,8 @@ export class WebWorkbenchController {
   }
 
   private async installRuntime(workspace: string, publishState = true): Promise<void> {
+    const storageRoot = await resolveProjectStoragePathAsync(workspace);
+    if (storageRoot !== workspace) await resolveProjectStoragePathAsync(storageRoot);
     // Every control-plane install reloads the Workspace catalog, provider
     // wiring, Skills and MCP adapters, so this counter proxies "catalog
     // reload" for the runtime-ownership diagnostics matrix.
@@ -3668,6 +3701,25 @@ function requireSession(sessionId: string): SessionMeta {
   const session = loadSessionMeta(sessionId);
   if (!session) throw new WebWorkbenchError(404, 'Session was not found.');
   return session;
+}
+
+/** Optional metadata must neither block the Host event loop nor delay creation indefinitely. */
+function probeSessionGitBranch(workspace: string): Promise<string | undefined> {
+  return new Promise(resolveBranch => {
+    execFile(
+      'git',
+      ['-C', workspace, 'rev-parse', '--abbrev-ref', 'HEAD'],
+      {
+        encoding: 'utf8',
+        timeout: 250,
+        killSignal: 'SIGKILL',
+        maxBuffer: 4_096,
+        env: process.env,
+        windowsHide: true,
+      },
+      (error, stdout) => resolveBranch(error ? undefined : stdout.trim() || undefined)
+    );
+  });
 }
 
 function mcpServerIds(config: ReturnType<typeof loadFirstPartyMcpConfigurationV1>): string[] {

@@ -633,6 +633,26 @@ describe('release-check script contract', () => {
     expect(() =>
       verifyEvidenceBundle(failing.manifestPath, failing.manifest, [failing.scenario])
     ).toThrow('web33.switch_snapshot_pages_max is missing or invalid');
+    for (const pages of [0, 1]) {
+      const withinBudget = createWebEvidenceBundle({
+        scenarioId: 'WEB33-P0-21',
+        factOverrides: { 'web33.switch_snapshot_pages_max': pages },
+      });
+      expect(() =>
+        verifyEvidenceBundle(withinBudget.manifestPath, withinBudget.manifest, [
+          withinBudget.scenario,
+        ])
+      ).not.toThrow();
+    }
+    const invalidCount = createWebEvidenceBundle({
+      scenarioId: 'WEB33-P0-21',
+      factOverrides: { 'web33.switch_snapshot_pages_max': -1 },
+    });
+    expect(() =>
+      verifyEvidenceBundle(invalidCount.manifestPath, invalidCount.manifest, [
+        invalidCount.scenario,
+      ])
+    ).toThrow('web33.switch_snapshot_pages_max is missing or invalid');
   });
 
   it('rejects missing, unsafe-path, symlinked, or malformed Settings screenshots', () => {

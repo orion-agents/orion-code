@@ -15,6 +15,8 @@ import { upsertSessionSummary } from './state/session-collection';
 import type { SettingsMirrorSnapshot } from './settings/settings-mirror';
 import {
   initialWorkbenchState,
+  canReuseSessionSnapshot,
+  type SessionDisplayState,
   type ConnectionPhase,
   type DiagnosticsSnapshot,
   type GoalActivity,
@@ -88,7 +90,11 @@ export type WorkbenchAction =
        */
       readonly advanceEventCursor?: boolean;
     }
-  | { readonly type: 'composer_loaded'; readonly composer: WebComposerControlStateV1 }
+  | {
+      readonly type: 'composer_loaded';
+      readonly composer: WebComposerControlStateV1;
+      readonly requestControlRevision?: string;
+    }
   | { readonly type: 'model_catalog_loaded'; readonly catalog: WebModelCatalogPageV1 }
   | {
       readonly type: 'durable_session_metadata_loaded';
@@ -162,6 +168,21 @@ export type WorkbenchAction =
       readonly append?: boolean;
     }
   | { readonly type: 'pending_action'; readonly label: string | null }
+  | { readonly type: 'navigation_target'; readonly target: WorkbenchState['navigationTarget'] }
+  | {
+      readonly type: 'pending_session_action';
+      readonly sessionId: string;
+      readonly operationId: number;
+      readonly label: string | null;
+      readonly workspaceId: string;
+      readonly contextRevision: string;
+    }
+  | {
+      readonly type: 'session_creation_pending';
+      readonly pending: boolean;
+      readonly workspaceId: string;
+      readonly contextRevision: string;
+    }
   | { readonly type: 'notice'; readonly notice: WorkbenchNotice | null }
   | { readonly type: 'approval_resolved'; readonly requestId: string; readonly approved: boolean }
   | {
@@ -181,6 +202,7 @@ export function workbenchReducer(
 ): WorkbenchState {
   switch (action.type) {
     case 'baseline_loaded': {
+      state = rememberSessionDisplay(state);
       const base =
         state.workspaceId !== action.bootstrap.workspaceId ||
         state.activeSessionId !== action.bootstrap.activeSessionId
@@ -194,6 +216,17 @@ export function workbenchReducer(
         bootstrap: action.bootstrap,
         contextRevision: action.bootstrap.contextRevision,
         workspaceId: action.bootstrap.workspaceId,
+        pendingSessionActions:
+          state.workspaceId === action.bootstrap.workspaceId &&
+          state.contextRevision === action.bootstrap.contextRevision
+            ? state.pendingSessionActions
+            : {},
+        sessionCreationPending:
+          state.workspaceId === action.bootstrap.workspaceId &&
+          state.contextRevision === action.bootstrap.contextRevision
+            ? state.sessionCreationPending
+            : false,
+        sessionCreationSelected: false,
         workspace: action.workspaces.activePath || action.bootstrap.workspace,
         workspaces: action.workspaces.workspaces,
         sessions: action.sessions,
@@ -249,6 +282,15 @@ export function workbenchReducer(
       return {
         ...state,
         connection: action.phase,
+        sessionSync:
+          action.phase === 'live'
+            ? state.sessionSync
+            : Object.fromEntries(
+                Object.entries(state.sessionSync).map(([id, sync]) => [
+                  id,
+                  { ...sync, dirty: true },
+                ])
+              ),
         connectionAttempt: action.attempt,
         announcement: connectionAnnouncement(action.phase, action.attempt),
       };
@@ -272,6 +314,15 @@ export function workbenchReducer(
       const sessionId = action.snapshot.session.id;
       if (!snapshotContextMatches(state, action.contextRevision, action.workspaceId)) return state;
       if (!snapshotRequestMatches(state, sessionId, action.requestId)) return state;
+      if (snapshotBehindSessionEvents(state, action.snapshot)) {
+        // An in-flight HTTP response may predate SSE already rendered. Keep
+        // the current display and request fresh authority instead of reverting.
+        return setSessionSnapshotSync(state, sessionId, {
+          status: 'refreshing',
+          requestId: action.requestId ?? null,
+          dirty: true,
+        });
+      }
       if (state.activeSessionId !== sessionId) {
         if (action.requestId === undefined) return state;
         return markSessionSnapshotReady(
@@ -280,7 +331,7 @@ export function workbenchReducer(
         );
       }
       return markSessionSnapshotReady(
-        applySessionSnapshot(state, action.snapshot, action.advanceEventCursor !== false),
+        applySessionSnapshot(state, action.snapshot, action.advanceEventCursor === true),
         sessionId
       );
     }
@@ -292,6 +343,13 @@ export function workbenchReducer(
       ) {
         return state;
       }
+      if (
+        action.requestControlRevision !== undefined &&
+        state.composer &&
+        state.composer.controlRevision !== action.requestControlRevision &&
+        state.composer.controlRevision !== action.composer.controlRevision
+      )
+        return state;
       return applyComposerState(state, action.composer);
     case 'model_catalog_loaded':
       return { ...state, modelCatalog: action.catalog };
@@ -302,31 +360,51 @@ export function workbenchReducer(
       ) {
         return state;
       }
+      if (snapshotBehindSessionEvents(state, action.snapshot)) return state;
       if (state.activeSessionId !== action.snapshot.session.id) {
         return cacheBackgroundSessionSnapshot(state, action.snapshot);
       }
       if (action.snapshot.runtime.active !== true) return state;
       return applyDurableSessionMetadata(state, action.snapshot);
     case 'older_transcript_loaded': {
-      if (state.activeSessionId !== action.snapshot.session.id || !state.sessionSnapshot) {
-        return state;
+      const sessionId = action.snapshot.session.id;
+      const active = state.activeSessionId === sessionId;
+      const projection = active ? state.sessionSnapshot : state.sessionProjectionById[sessionId];
+      const view = active ? state : state.sessionViewsById[sessionId]?.view;
+      if (!projection || !view) return state;
+      if (
+        projection.threadId !== action.snapshot.threadId ||
+        projection.threadCursor !== action.snapshot.threadCursor ||
+        projection.projectionDigest !== action.snapshot.projectionDigest
+      ) {
+        const sync = state.sessionSync[sessionId];
+        return sync ? setSessionSnapshotSync(state, sessionId, { ...sync, dirty: true }) : state;
       }
-      const existing = new Set(state.transcript.map(entry => entry.id));
+      const existing = new Set(view.transcript.map(entry => entry.id));
       const older = transcriptFromSnapshot(action.snapshot).filter(
         entry => !existing.has(entry.id)
       );
+      const transcript = [...older, ...view.transcript]
+        .sort((left, right) => left.order - right.order)
+        .slice(-MAX_TRANSCRIPT);
+      const sessionSnapshot = {
+        ...projection,
+        transcript: {
+          items: projection.transcript.items,
+          nextCursor: action.snapshot.transcript.nextCursor,
+        },
+      };
+      if (!active) {
+        return cacheSessionDisplay(state, sessionSnapshot, {
+          ...view,
+          transcript,
+          sessionSnapshot,
+        });
+      }
       return {
         ...state,
-        transcript: [...older, ...state.transcript]
-          .sort((left, right) => left.order - right.order)
-          .slice(-MAX_TRANSCRIPT),
-        sessionSnapshot: {
-          ...state.sessionSnapshot,
-          transcript: {
-            items: state.sessionSnapshot.transcript.items,
-            nextCursor: action.snapshot.transcript.nextCursor,
-          },
-        },
+        transcript,
+        sessionSnapshot,
         announcement: `已加载 ${older.length} 条更早记录`,
       };
     }
@@ -527,8 +605,6 @@ export function workbenchReducer(
       return {
         ...state,
         diagnostics: action.diagnostics,
-        processing: Boolean(action.diagnostics.processing ?? state.processing),
-        mode: modeFromDiagnostics(action.diagnostics, state.mode),
       };
     case 'capabilities_loaded':
       return {
@@ -556,6 +632,25 @@ export function workbenchReducer(
       };
     case 'pending_action':
       return { ...state, pendingAction: action.label };
+    case 'navigation_target':
+      return { ...state, navigationTarget: action.target, sessionCreationSelected: false };
+    case 'pending_session_action': {
+      if (!snapshotContextMatches(state, action.contextRevision, action.workspaceId)) return state;
+      const operations = { ...state.pendingSessionActions[action.sessionId] };
+      if (action.label === null) delete operations[action.operationId];
+      else operations[action.operationId] = action.label;
+      const pendingSessionActions = { ...state.pendingSessionActions };
+      if (Object.keys(operations).length) pendingSessionActions[action.sessionId] = operations;
+      else delete pendingSessionActions[action.sessionId];
+      return { ...state, pendingSessionActions };
+    }
+    case 'session_creation_pending':
+      if (!snapshotContextMatches(state, action.contextRevision, action.workspaceId)) return state;
+      return {
+        ...state,
+        sessionCreationPending: action.pending,
+        sessionCreationSelected: action.pending,
+      };
     case 'notice':
       return { ...state, notice: action.notice };
     case 'approval_resolved':
@@ -611,6 +706,8 @@ export function workbenchReducer(
       };
     }
     case 'reset_session_view': {
+      state = rememberSessionDisplay(state);
+      state = { ...state, sessionCreationSelected: false };
       const switching =
         Boolean(action.activeSessionId) && action.activeSessionId !== state.activeSessionId;
       const cached = Boolean(
@@ -622,23 +719,39 @@ export function workbenchReducer(
       };
       if (action.activeSessionId && state.sessionProjectionById[action.activeSessionId]) {
         const sessionId = action.activeSessionId;
-        const restored = applySessionSnapshot(
+        const reusable = canReuseSessionSnapshot(state, sessionId);
+        const projection = state.sessionProjectionById[sessionId];
+        // Catalog mutations (rename/tags) are newer than a display snapshot.
+        // A warm selection must never replay its old summary into the sidebar.
+        const selectedSnapshot = {
+          ...projection,
+          session: state.sessions.find(session => session.id === sessionId) ?? projection.session,
+        };
+        const snapshotRestored = applySessionSnapshot(
           { ...state, activeSessionId: sessionId },
-          state.sessionProjectionById[sessionId],
+          selectedSnapshot,
           false
         );
+        const restored = state.sessionViewsById[sessionId]
+          ? {
+              ...snapshotRestored,
+              ...state.sessionViewsById[sessionId].view,
+              sessionSnapshot: selectedSnapshot,
+            }
+          : snapshotRestored;
         return withTelemetry(
           {
             ...setSessionSnapshotSync(restored, sessionId, {
-              status: 'refreshing',
+              status: reusable ? 'ready' : 'refreshing',
               requestId: state.sessionSync[sessionId]?.requestId ?? null,
+              dirty: !reusable,
             }),
             notice:
               state.notice?.domain === 'session-snapshot' && state.notice.sessionId !== sessionId
                 ? null
                 : state.notice,
-            statusMessage: '已显示最近会话状态，正在同步…',
-            announcement: '已切换到缓存会话，正在同步最新状态',
+            statusMessage: reusable ? restored.statusMessage : '已显示最近会话状态，正在同步…',
+            announcement: reusable ? '已切换会话' : '已切换到缓存会话，正在同步最新状态',
           },
           telemetry
         );
@@ -677,6 +790,14 @@ function reduceEnvelope(state: WorkbenchState, envelope: WebEventEnvelopeV1): Wo
   if (envelope.type === 'replay_reset') {
     return {
       ...state,
+      sessionSync: Object.fromEntries(
+        Object.entries(state.sessionSync).map(([id, sync]) => {
+          const rest = { ...sync };
+          delete rest.lastEventCursor;
+          delete rest.snapshotEventCursor;
+          return [id, { ...rest, dirty: true }];
+        })
+      ),
       lastCursor: envelope.cursor,
       lastEventId: envelope.eventId,
       connection: 'replay-required',
@@ -694,11 +815,26 @@ function reduceEnvelope(state: WorkbenchState, envelope: WebEventEnvelopeV1): Wo
   if (state.connection === 'replay-required') return state;
   if (envelope.cursor <= state.lastCursor) return state;
 
-  const received: WorkbenchState = {
+  let received: WorkbenchState = {
     ...state,
     lastCursor: envelope.cursor,
     lastEventId: envelope.eventId,
   };
+  if (envelope.sessionId) {
+    const sync = state.sessionSync[envelope.sessionId];
+    if (sync)
+      received = setSessionSnapshotSync(received, envelope.sessionId, {
+        ...sync,
+        lastEventCursor: envelope.cursor,
+        dirty:
+          sync.dirty ||
+          (envelope.sessionId !== state.activeSessionId &&
+            envelope.cursor > (sync.snapshotEventCursor ?? 0)),
+      });
+    if (sync?.snapshotEventCursor !== undefined && envelope.cursor <= sync.snapshotEventCursor) {
+      return received;
+    }
+  }
 
   if (envelope.type === 'settings_invalidated') {
     return {
@@ -734,11 +870,31 @@ function reduceEnvelope(state: WorkbenchState, envelope: WebEventEnvelopeV1): Wo
     const workspaceChanged =
       (state.workspaceId !== '' && state.workspaceId !== envelope.payload.workspaceId) ||
       (state.workspace !== '' && state.workspace !== envelope.payload.workspace);
-    const next = workspaceChanged ? clearSessionProjection(received) : received;
+    const next = workspaceChanged
+      ? clearSessionProjection(rememberSessionDisplay(received))
+      : received;
     return {
       ...next,
       contextRevision: envelope.payload.contextRevision,
       workspaceId: envelope.payload.workspaceId,
+      sessionSync:
+        received.contextRevision === envelope.payload.contextRevision
+          ? next.sessionSync
+          : Object.fromEntries(
+              Object.entries(next.sessionSync).map(([id, sync]) => [id, { ...sync, dirty: true }])
+            ),
+      pendingSessionActions:
+        received.contextRevision === envelope.payload.contextRevision
+          ? next.pendingSessionActions
+          : {},
+      sessionCreationPending:
+        received.contextRevision === envelope.payload.contextRevision
+          ? next.sessionCreationPending
+          : false,
+      sessionCreationSelected:
+        received.contextRevision === envelope.payload.contextRevision
+          ? next.sessionCreationSelected
+          : false,
       workspace: envelope.payload.workspace,
       // Session foreground selection belongs to this browser tab. Host
       // workbench_state only moves the Workspace Context; a legacy/global
@@ -1170,7 +1326,48 @@ function applySessionSnapshot(
   snapshot: WebSessionSnapshotV1,
   advanceEventCursor = true
 ): WorkbenchState {
-  const transcript = transcriptFromSnapshot(snapshot).slice(-MAX_TRANSCRIPT);
+  const incoming = transcriptFromSnapshot(snapshot);
+  const display =
+    state.activeSessionId === snapshot.session.id &&
+    state.sessionSnapshot?.session.id === snapshot.session.id
+      ? sessionDisplayFromState(state)
+      : state.sessionViewsById[snapshot.session.id]?.view;
+  const previous = display?.sessionSnapshot;
+  const compatible =
+    previous &&
+    previous.threadId === snapshot.threadId &&
+    previous.threadCursor === snapshot.threadCursor &&
+    previous.projectionDigest === snapshot.projectionDigest;
+  // Preserve previously paged durable history only when its authority is unchanged.
+  // Live/control state always comes from the new snapshot, never from old display authority.
+  const firstOrder = incoming[0]?.order ?? -Infinity;
+  const earlier = compatible
+    ? display.transcript.filter(
+        entry => entry.eventId.startsWith('snapshot:') && entry.order < firstOrder
+      )
+    : [];
+  // A cross-Workspace refresh can snapshot a running turn after its streamed
+  // assistant entry was emitted but before that entry is durable. The snapshot
+  // cursor already represents that event, so SSE replay will not append it
+  // again. Keep the live entry until the completed authoritative snapshot
+  // replaces it, allowing subsequent deltas to find their original target.
+  // A new Session has no thread yet when its first Composer snapshot is
+  // captured. Its first turn creates the thread while the browser is away, so
+  // a null -> concrete thread identity is also the same running turn.
+  const sameRunningThread =
+    previous?.threadId === snapshot.threadId ||
+    (previous?.threadId === null && snapshot.threadId !== null && Boolean(snapshot.activeTurnId));
+  const livePending =
+    sameRunningThread && snapshot.runtime.processing
+      ? display.transcript.filter(entry => entry.live && !entry.eventId.startsWith('snapshot:'))
+      : [];
+  const transcript = [...earlier, ...incoming, ...livePending].slice(-MAX_TRANSCRIPT);
+  if (earlier.length && previous) {
+    snapshot = {
+      ...snapshot,
+      transcript: { ...snapshot.transcript, nextCursor: previous.transcript.nextCursor },
+    };
+  }
   const agentMode = isAgentMode(snapshot.runtime.agentMode)
     ? snapshot.runtime.agentMode
     : state.mode.baseMode;
@@ -1183,6 +1380,7 @@ function applySessionSnapshot(
       : state.lastCursor,
     activeSessionId: snapshot.session.id,
     sessionProjectionById: cacheSessionProjection(state.sessionProjectionById, snapshot),
+    sessionViewsById: dropSessionDisplay(state.sessionViewsById, snapshot.session.id),
     sessionRuntimeById: cacheRuntimeSummary(state.sessionRuntimeById, snapshot.sessionRuntime),
     sessions: upsertSessionSummary(state.sessions, snapshot.session),
     workspaceSessions: state.workspaceId
@@ -1253,13 +1451,17 @@ function cacheBackgroundSessionSnapshot(
         },
       }
     : state.workspaceSessions;
-  return {
+  const result = {
     ...state,
     sessionProjectionById: cacheSessionProjection(state.sessionProjectionById, snapshot),
+    sessionViewsById: dropSessionDisplay(state.sessionViewsById, snapshot.session.id),
     sessionRuntimeById: cacheRuntimeSummary(state.sessionRuntimeById, snapshot.sessionRuntime),
     sessions: upsertSessionSummary(state.sessions, snapshot.session),
     workspaceSessions,
   };
+  if (!state.sessionViewsById[snapshot.session.id]) return result;
+  const projected = applySessionSnapshot(state, snapshot, false);
+  return cacheSessionDisplay(result, snapshot, sessionDisplayFromState(projected));
 }
 
 function applyComposerState(
@@ -1686,13 +1888,129 @@ function cacheRuntimeSummary(
 }
 
 function estimateSessionProjectionBytes(snapshot: WebSessionSnapshotV1): number {
+  const known = projectionSizes.get(snapshot);
+  if (known !== undefined) return known;
   try {
     // UTF-16 code units provide a conservative serialized-size estimate for
     // the browser-owned cache budget across ASCII and CJK content.
-    return JSON.stringify(snapshot).length * 2;
+    const size = JSON.stringify(snapshot).length * 2;
+    projectionSizes.set(snapshot, size);
+    return size;
   } catch {
     return MAX_SESSION_PROJECTION_BYTES;
   }
+}
+
+const projectionSizes = new WeakMap<WebSessionSnapshotV1, number>();
+
+function dropSessionDisplay(
+  views: WorkbenchState['sessionViewsById'],
+  sessionId: string
+): WorkbenchState['sessionViewsById'] {
+  if (!views[sessionId]) return views;
+  const next = { ...views };
+  delete next[sessionId];
+  return next;
+}
+
+function rememberSessionDisplay(state: WorkbenchState): WorkbenchState {
+  const snapshot = state.sessionSnapshot;
+  if (!snapshot || snapshot.session.id !== state.activeSessionId) return state;
+  return cacheSessionDisplay(state, snapshot, sessionDisplayFromState(state));
+}
+
+function sessionDisplayFromState(state: WorkbenchState): SessionDisplayState {
+  return {
+    transcript: state.transcript,
+    tools: state.tools,
+    edits: state.edits,
+    subtasks: state.subtasks,
+    research: state.research,
+    permission: state.permission,
+    processing: state.processing,
+    statusMessage: state.statusMessage,
+    mode: state.mode,
+    effort: state.effort,
+    queue: state.queue,
+    goal: state.goal,
+    goalEvidence: state.goalEvidence,
+    goalActivity: state.goalActivity,
+    sessionSnapshot: state.sessionSnapshot,
+    composer: state.composer,
+    plan: state.plan,
+    loopStats: state.loopStats,
+    traces: state.traces,
+  };
+}
+
+const displayValueSizes = new WeakMap<object, number>();
+
+/** Reuse sizes of immutable arrays; navigation must not stringify all message bodies. */
+function estimateDisplayValueBytes(value: unknown): number {
+  if (value === null || value === undefined) return 0;
+  if (typeof value === 'string') return value.length * 2;
+  if (typeof value !== 'object') return 16;
+  const known = displayValueSizes.get(value);
+  if (known !== undefined) return known;
+  let bytes: number;
+  try {
+    bytes = JSON.stringify(value).length * 2;
+  } catch {
+    bytes = MAX_SESSION_PROJECTION_BYTES;
+  }
+  displayValueSizes.set(value, bytes);
+  return bytes;
+}
+
+function cacheSessionDisplay(
+  state: WorkbenchState,
+  snapshot: WebSessionSnapshotV1,
+  view: SessionDisplayState
+): WorkbenchState {
+  const projections = cacheSessionProjection(state.sessionProjectionById, snapshot);
+  const entries = Object.entries(state.sessionViewsById).filter(
+    ([id]) => id !== snapshot.session.id && projections[id]
+  );
+  // Text size is available without encoding every escaped byte. Other immutable
+  // values are counted once, including all tool arguments and cached snapshots.
+  let transcriptBytes = displayValueSizes.get(view.transcript);
+  if (transcriptBytes === undefined) {
+    transcriptBytes = view.transcript.reduce(
+      (bytes, entry) =>
+        bytes +
+        entry.content.length * 2 +
+        512 +
+        estimateDisplayValueBytes(entry.toolActivity) +
+        estimateDisplayValueBytes(entry.command),
+      0
+    );
+    displayValueSizes.set(view.transcript, transcriptBytes);
+  }
+  const estimatedBytes = Object.entries(view).reduce(
+    (bytes, [key, value]) =>
+      bytes + (key === 'transcript' ? transcriptBytes! : estimateDisplayValueBytes(value)),
+    512
+  );
+  entries.push([snapshot.session.id, { view, estimatedBytes }]);
+  let bytes = entries.reduce((total, [, cached]) => total + cached.estimatedBytes, 0);
+  const evicted: string[] = [];
+  while (entries.length > 0 && bytes > MAX_SESSION_PROJECTION_BYTES) {
+    const removed = entries.shift()!;
+    bytes -= removed[1].estimatedBytes;
+    evicted.push(removed[0]);
+  }
+  let cached: WorkbenchState = {
+    ...state,
+    sessionProjectionById: projections,
+    sessionViewsById: Object.fromEntries(entries),
+  };
+  // The HTTP tail alone cannot reproduce discarded live/history/tool state.
+  // Eviction must invalidate authority so returning does not silently revert.
+  for (const sessionId of evicted) {
+    const sync = cached.sessionSync[sessionId];
+    if (sync) cached = setSessionSnapshotSync(cached, sessionId, { ...sync, dirty: true });
+  }
+  return cached;
 }
 
 function clearSessionProjection(state: WorkbenchState): WorkbenchState {
@@ -1728,7 +2046,20 @@ function setSessionSnapshotSync(
     ...state.sessionSync,
   };
   delete sessionSync[sessionId];
-  sessionSync[sessionId] = sync;
+  const lastEventCursor = Math.max(
+    state.sessionSync[sessionId]?.lastEventCursor ?? 0,
+    sync.lastEventCursor ?? 0
+  );
+  const snapshotEventCursor = Math.max(
+    state.sessionSync[sessionId]?.snapshotEventCursor ?? 0,
+    sync.snapshotEventCursor ?? 0
+  );
+  const nextSync = { ...sync };
+  delete nextSync.lastEventCursor;
+  delete nextSync.snapshotEventCursor;
+  if (lastEventCursor > 0) nextSync.lastEventCursor = lastEventCursor;
+  if (snapshotEventCursor > 0) nextSync.snapshotEventCursor = snapshotEventCursor;
+  sessionSync[sessionId] = nextSync;
   const overflow = Object.keys(sessionSync).length - MAX_SESSION_SYNC_ENTRIES;
   if (overflow > 0) {
     Object.keys(sessionSync)
@@ -1755,10 +2086,18 @@ function withTelemetry(
   return { ...state, clientTelemetry };
 }
 
+function snapshotBehindSessionEvents(
+  state: WorkbenchState,
+  snapshot: WebSessionSnapshotV1
+): boolean {
+  return (state.sessionSync[snapshot.session.id]?.lastEventCursor ?? 0) > snapshot.eventCursor;
+}
+
 function markSessionSnapshotReady(state: WorkbenchState, sessionId: string): WorkbenchState {
   const ready = setSessionSnapshotSync(state, sessionId, {
     status: 'ready',
     requestId: state.sessionSync[sessionId]?.requestId ?? null,
+    snapshotEventCursor: state.sessionProjectionById[sessionId]?.eventCursor,
   });
   if (ready.notice?.domain !== 'session-snapshot' || ready.notice.sessionId !== sessionId) {
     return ready;

@@ -87,6 +87,21 @@ export const WEB_E2E_WEB33_SESSION_SCENARIOS_V1 = Object.freeze([
   'WEB33-P0-22',
   'WEB33-P0-23',
   'WEB33-P0-24',
+  // v0.3.24 — admission-window, creation and warm-switch regressions.
+  'WEB33-P0-44',
+  'WEB33-P0-45',
+  'WEB33-P0-46',
+  'WEB33-P0-47',
+  'WEB33-P0-48',
+  'WEB33-P0-49',
+  'WEB33-P0-50',
+  'WEB33-P0-51',
+  'WEB33-P0-52',
+  'WEB33-P0-53',
+  'WEB33-P0-54',
+  'WEB33-P0-55',
+  'WEB33-P0-56',
+  'WEB33-P0-57',
 ] as const);
 /**
  * v0.3.20 — the WEB33 scenarios whose specs shipped between v0.3.13 and
@@ -219,6 +234,20 @@ export const WEB_E2E_WEB33_CRITICAL_SCENARIOS_V1 = Object.freeze([
   'WEB33-P0-21',
   'WEB33-P0-23',
   'WEB33-P0-24',
+  'WEB33-P0-44',
+  'WEB33-P0-45',
+  'WEB33-P0-46',
+  'WEB33-P0-47',
+  'WEB33-P0-48',
+  'WEB33-P0-49',
+  'WEB33-P0-50',
+  'WEB33-P0-51',
+  'WEB33-P0-52',
+  'WEB33-P0-53',
+  'WEB33-P0-54',
+  'WEB33-P0-55',
+  'WEB33-P0-56',
+  'WEB33-P0-57',
 ] as const);
 export const WEB_E2E_CRITICAL_SCENARIOS_V1 = Object.freeze([
   ...WEB_E2E_LEGACY_SCENARIOS_V1.slice(0, 4),

@@ -68,6 +68,10 @@ function render(opts: {
       onSendToComposer: noop,
       resourceNavigatorWidths: { files: 300, git: 300, review: 300 },
       onResourceNavigatorWidthCommit: noop,
+      themePreference: 'system',
+      onCycleTheme: noop,
+      onToggleInspector: noop,
+      onShowShortcutHelp: noop,
     })
   );
 }
@@ -76,19 +80,20 @@ describe('WorkPanelDock vertical rail (v0.3.8)', () => {
   it('renders the vertical rail with five icons in canonical order in dock mode', () => {
     const html = render({});
     expect(html).toContain('class="work-panel-rail"');
-    expect(html).toContain('aria-orientation="vertical"');
+    expect(html).toContain('<nav class="work-panel-rail" aria-label="工作面板快捷入口"');
     const ids = [...html.matchAll(/data-work-panel-id="([^"]+)"/g)].map(match => match[1]);
     expect(ids).toEqual(['agent', 'review', 'terminal', 'files', 'git']);
   });
 
-  it('marks the active panel with aria-current and shows its content pane', () => {
+  it('marks the active panel with aria-current and mounts its lazy content container', () => {
     const html = render({ activePanel: 'git' });
     const gitButton = html.slice(html.indexOf('data-work-panel-id="git"'));
     expect(gitButton.slice(0, 260)).toContain('aria-current="page"');
     expect(html).toContain('id="work-panel-detail"');
     expect(html).toContain('aria-label="工作面板内容"');
-    expect(html).toContain('<h2>Git</h2>');
-    expect(html).toContain('PROJECT WORKSPACE');
+    // SSR renders a Suspense fallback before the lazy Git module resolves.
+    // Actual panel content is verified by the browser journey, not static markup.
+    expect(html).toContain('class="work-panel-content"');
   });
 
   it('applies a stored custom icon order', () => {
@@ -108,14 +113,14 @@ describe('WorkPanelDock vertical rail (v0.3.8)', () => {
 
   it('shows the collapse affordance with expanded=true on the active content', () => {
     const html = render({});
-    expect(html).toContain('aria-label="收起工作面板"');
+    expect(html).toContain('aria-label="关闭工作面板"');
     expect(html).toContain('aria-expanded="true"');
   });
 
-  it('renders the rail horizontally inside the overlay drawer', () => {
+  it('renders the navigation rail inside the overlay drawer', () => {
     const html = render({ mode: 'overlay', expanded: true });
     expect(html).toContain('class="work-panel-rail work-panel-rail-overlay"');
-    expect(html).toContain('aria-orientation="horizontal"');
+    expect(html).toContain('aria-label="工作面板快捷入口"');
     expect(html).toContain('aria-label="关闭工作面板"');
   });
 
