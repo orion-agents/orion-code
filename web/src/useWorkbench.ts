@@ -423,7 +423,13 @@ export function useWorkbench(): UseWorkbenchResult {
       ).catch(() => undefined);
     }, 250);
     return () => clearTimeout(timer);
-  }, [activeSnapshotStale, activeSessionId, activeSnapshotRequestId, activeContextRevision, loadSessionSnapshot]);
+  }, [
+    activeSnapshotStale,
+    activeSessionId,
+    activeSnapshotRequestId,
+    activeContextRevision,
+    loadSessionSnapshot,
+  ]);
 
   const loadBaselineOnce = useCallback(
     async (reusableWorkspaces?: WorkspaceListResponse) => {

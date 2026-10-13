@@ -221,7 +221,14 @@ function runReleaseCheck(cwd: string): { status: number | null; report: ReleaseR
   const result = spawnSync(
     process.execPath,
     [join(cwd, 'scripts', 'release', 'release-check.js'), '--skip-tests', '--skip-pack', '--json'],
-    { cwd, encoding: 'utf8' }
+    {
+      cwd,
+      encoding: 'utf8',
+      // Hermetic fixtures must not inherit the CI pull-request context: the
+      // script binds GITHUB_HEAD_REF (e.g. codex/v0.3.24) to a version
+      // expectation that a 1.2.3 fixture cannot satisfy.
+      env: { ...process.env, GITHUB_HEAD_REF: '', GITHUB_REF: '', GITHUB_REF_NAME: '' },
+    }
   );
   if (!result.stdout.trim()) {
     throw new Error(`release-check emitted no JSON: ${result.stderr}`);
