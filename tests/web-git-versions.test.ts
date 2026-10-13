@@ -5,7 +5,7 @@
  * diff, so the shape and the *absence* of a side are both asserted here rather than assumed.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -227,5 +227,54 @@ describe('v0.3.17 S5 file versions', () => {
     const opaque = await service.fileBlob({ path: 'opaque.bin', rev });
     expect(opaque.dataUrl).toBeNull();
     expect(opaque.binary).toBe(true);
+  });
+
+  // --- v0.3.25 #269 — the worktree version is read from the filesystem ---
+
+  test('an edited conflicted file still resolves every version (issue #269)', async () => {
+    seedModifyConflict();
+    // The user resolved the conflict in the editor BEFORE staging: the working
+    // file no longer matches any object git has stored. The previous
+    // hash-object→cat-file read failed the whole response here.
+    writeFileSync(join(repo, 'f.txt'), 'resolved in editor\n');
+
+    const conflict = await service.conflictVersions('f.txt');
+
+    expect(conflict.shape).toBe('both-modified');
+    expect(conflict.base.content).toBe('base\n');
+    expect(conflict.ours.content).toBe('ours\n');
+    expect(conflict.theirs.content).toBe('theirs\n');
+    expect(conflict.worktree.exists).toBe(true);
+    expect(conflict.worktree.content).toBe('resolved in editor\n');
+  });
+
+  test('a working file deleted before staging reads as an absent worktree version', async () => {
+    seedModifyConflict();
+    rmSync(join(repo, 'f.txt'));
+
+    const conflict = await service.conflictVersions('f.txt');
+
+    expect(conflict.ours.exists).toBe(true);
+    expect(conflict.worktree.exists).toBe(false);
+    expect(conflict.worktree.content).toBeNull();
+  });
+
+  test('the worktree read refuses to escape the repository root', async () => {
+    seedModifyConflict();
+    // A symlink inside the repository pointing outside must not be followed.
+    const outside = join(root, 'outside-secret.txt');
+    writeFileSync(outside, 'secret\n');
+    rmSync(join(repo, 'f.txt'));
+    try {
+      symlinkSync(outside, join(repo, 'f.txt'));
+    } catch {
+      // Filesystems without symlink support: the containment path is still covered
+      // by the realpath equality checks above.
+    }
+
+    const conflict = await service.conflictVersions('f.txt');
+
+    expect(conflict.worktree.exists).toBe(false);
+    expect(conflict.worktree.content).toBeNull();
   });
 });

@@ -94,6 +94,14 @@ export interface GitVersionReaderOptions {
   readonly runGit: (args: readonly string[]) => Promise<string>;
   /** Runs git and returns raw bytes, for content that may not be valid UTF-8. */
   readonly runGitBytes: (args: readonly string[]) => Promise<Buffer>;
+  /**
+   * v0.3.25 #269 — reads one working-tree file relative to the repository root,
+   * returning null when it does not exist or cannot be read safely. The
+   * `worktree` conflict version must come from the filesystem: `hash-object`
+   * without `-w` computes an OID that is not in the object database, so any
+   * edited working file made `cat-file` fail the whole conflict response.
+   */
+  readonly readWorktreeFile?: (relativePath: string) => Promise<Buffer | null>;
 }
 
 function assertRelativePath(value: string, name = 'path'): string {
@@ -171,32 +179,32 @@ function parseLfsPointer(
 }
 
 export function createGitVersionReader(options: GitVersionReaderOptions): GitVersionReader {
-  const { runGit, runGitBytes } = options;
+  const { runGit, runGitBytes, readWorktreeFile } = options;
+
+  /** Absent version — the label legitimately has no content for this shape. */
+  const absentVersion = (label: GitVersionLabelV1): GitFileVersionV1 =>
+    Object.freeze({
+      label,
+      oid: null,
+      exists: false,
+      binary: false,
+      byteSize: 0,
+      truncated: false,
+      content: null,
+      lfs: null,
+    });
 
   /**
-   * Reads one blob by OID, bounded, with binary and LFS detection.
-   *
-   * The size is read first so an enormous historical file is reported by its size instead of
-   * being pulled into memory just to be truncated.
+   * v0.3.25 #269 — decodes already-fetched bytes into a version, shared by the
+   * object-database reader and the working-tree reader so both apply the same
+   * size bound, binary probe and LFS-pointer detection.
    */
-  const readVersion = async (
+  const versionFromBytes = (
     label: GitVersionLabelV1,
-    oid: string | null
-  ): Promise<GitFileVersionV1> => {
-    if (oid === null) {
-      return Object.freeze({
-        label,
-        oid: null,
-        exists: false,
-        binary: false,
-        byteSize: 0,
-        truncated: false,
-        content: null,
-        lfs: null,
-      });
-    }
-    const sizeRaw = (await runGit(['cat-file', '-s', oid])).trim();
-    const byteSize = Number(sizeRaw) || 0;
+    oid: string | null,
+    bytes: Buffer
+  ): GitFileVersionV1 => {
+    const byteSize = bytes.length;
     if (byteSize > MAX_VERSION_BYTES) {
       return Object.freeze({
         label,
@@ -209,7 +217,6 @@ export function createGitVersionReader(options: GitVersionReaderOptions): GitVer
         lfs: null,
       });
     }
-    const bytes = await runGitBytes(['cat-file', 'blob', oid]);
     const probe = bytes.subarray(0, LFS_PROBE_BYTES).toString('utf8');
     const lfs = parseLfsPointer(probe);
     if (lfs) {
@@ -240,6 +247,34 @@ export function createGitVersionReader(options: GitVersionReaderOptions): GitVer
     });
   };
 
+  /**
+   * Reads one blob by OID, bounded, with binary and LFS detection.
+   *
+   * The size is read first so an enormous historical file is reported by its size instead of
+   * being pulled into memory just to be truncated.
+   */
+  const readVersion = async (
+    label: GitVersionLabelV1,
+    oid: string | null
+  ): Promise<GitFileVersionV1> => {
+    if (oid === null) return absentVersion(label);
+    const sizeRaw = (await runGit(['cat-file', '-s', oid])).trim();
+    const byteSize = Number(sizeRaw) || 0;
+    if (byteSize > MAX_VERSION_BYTES) {
+      return Object.freeze({
+        label,
+        oid,
+        exists: true,
+        binary: false,
+        byteSize,
+        truncated: true,
+        content: null,
+        lfs: null,
+      });
+    }
+    return versionFromBytes(label, oid, await runGitBytes(['cat-file', 'blob', oid]));
+  };
+
   return {
     async conflict(pathInput) {
       const path = assertRelativePath(pathInput);
@@ -261,18 +296,19 @@ export function createGitVersionReader(options: GitVersionReaderOptions): GitVer
         if (!mode || !oid || !stage) continue;
         stageOids.set(Number(stage), oid);
       }
-      const worktreeOid = (
-        await runGit(['hash-object', '--path=' + path, '--', path]).catch(() => '')
-      )
-        .toString()
-        .trim();
-      const worktreeExists = /^[0-9a-f]{7,64}$/iu.test(worktreeOid);
+      // v0.3.25 #269 — the working file is read from the filesystem. The previous
+      // `hash-object` (without -w) → `cat-file` chain only worked while the edited
+      // content happened to match an object git already stored; any real edit made
+      // `cat-file` fail the entire conflict response.
+      const worktreeBytes = await readWorktreeFile?.(path);
 
       const [base, ours, theirs, worktree] = await Promise.all([
         readVersion('base', stageOids.get(1) ?? null),
         readVersion('ours', stageOids.get(2) ?? null),
         readVersion('theirs', stageOids.get(3) ?? null),
-        worktreeExists ? readVersion('worktree', worktreeOid) : readVersion('worktree', null),
+        worktreeBytes
+          ? Promise.resolve(versionFromBytes('worktree', null, worktreeBytes))
+          : Promise.resolve(absentVersion('worktree')),
       ]);
 
       const hasBase = stageOids.has(1);
