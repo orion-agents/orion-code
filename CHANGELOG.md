@@ -22,11 +22,42 @@ which is **not** a pass.
 
 ## [Unreleased]
 
-## [0.3.24]
+## [0.3.25] — UNRELEASED
 
-> **Status: candidate.** Implementation on `codex/v0.3.24`, based on `main@6ed47fd`.
-> Plan: `docs/plan/v0.3.24-plan.md`. Registry and release status must be
-> verified from their own immutable receipts, not inferred from this changelog.
+> **Status: candidate.** Open. Four open-issue fixes: the Git conflict view reads the
+> edited working file from the filesystem instead of an unstored object (#269), file
+> history walks the requested revision instead of always HEAD (#270), model switching
+> gates the compact preflight on effective input budgets instead of raw context windows
+> (#271), and the left project navigation keeps a stable registration order when
+> sessions are activated (#272). Plan: `docs/plan/v0.3.25-plan.md`. Not merged, tagged
+> or published.
+
+### Fixed
+
+- #269: `GET /git/conflict` no longer fails with `git cat-file: could not get object
+  info` after editing a conflicted file before staging — the `worktree` version is read
+  from the filesystem (contained within the repository root) instead of an object
+  `hash-object` never wrote.
+- #270: `GET /git/file-history` with a `rev` now walks that revision; previously the
+  validated revision never reached the `git log` command and every query walked HEAD.
+- #271: switching to a model with the same or larger raw context window but a smaller
+  effective input budget (larger output reserve) now reports `compactRequired` and runs
+  the compact preflight instead of silently persisting a model the history cannot fit.
+
+### Changed
+
+- #272: the left project navigation keeps a stable registration order for unpinned
+  projects (`registeredAt`, persisted by the workspace registry and exposed additively
+  on `WebWorkspaceSummaryV1`); activating sessions no longer reshuffles the tree.
+  Pinned projects keep `pinnedOrder` first.
+
+## [0.3.24] — 2026-10-13
+
+> **Status: published.** Released as `@orion-agents/orion-code@0.3.24` from
+> `refs/tags/v0.3.24`, and merged to `main` as `85fadb4` (#268). Session
+> navigation & responsiveness for the Web Workbench. Plan:
+> `docs/plan/v0.3.24-plan.md`. GitHub Release:
+> https://github.com/orion-agents/orion-code/releases/tag/v0.3.24
 
 ### Fixed
 

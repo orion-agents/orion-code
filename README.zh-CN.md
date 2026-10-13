@@ -2,8 +2,10 @@
 
 面向终端与浏览器、本地优先的目标驱动 Coding Agent。
 
-> v0.3.24 开发重点：Web 会话响应性。发送按会话等待、有效缓存即时切换、保留实时显示内容，
-> 新建使用有界 Git 探测。基于已合并的 v0.3.23 源码（`6ed47fd`，#266）。
+> v0.3.25 候选版本：进行中。四个开放 issue 修复：Git 冲突视图从文件系统读取已编辑的
+> 工作区文件（#269）、文件历史按请求的 revision 遍历（#270）、模型切换按有效输入预算
+> 触发压缩预检（#271）、左侧项目导航保持稳定注册序（#272）。上一版 0.3.24 已发布 npm
+> （registry `latest`）、打 tag `v0.3.24`（`85fadb4`，#268）并发布 GitHub Release。
 
 [English](README.md) ·
 [v0.3.24 方案](docs/plan/v0.3.24-plan.md) ·
@@ -98,10 +100,10 @@ MCP 仍是用户可见的扩展边界。
 支持 Node.js 22.12+、24 和 26。生产环境建议使用 Node 24 LTS，当前开发环境也支持 Node 26
 Current。Node 20 已结束上游维护，不再属于 v0.3 Runtime 合同。
 
-v0.3.24 在 npm 可用后，可安装固定版本：
+v0.3.25 在 npm 可用后，可安装固定版本：
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.24
+npm install -g @orion-agents/orion-code@0.3.25
 orion --version
 orion doctor
 ```
