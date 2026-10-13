@@ -681,6 +681,12 @@ function compareProjects(left: WebWorkspaceSummaryV1, right: WebWorkspaceSummary
     if (right.pinnedOrder === undefined) return -1;
     return left.pinnedOrder - right.pinnedOrder;
   }
+  // v0.3.25 #272 — stable registration order: activating a session in another
+  // project must not promote it to the top. Summaries from an older Host
+  // without `registeredAt` keep the previous recency fallback.
+  if (left.registeredAt && right.registeredAt) {
+    return Date.parse(left.registeredAt) - Date.parse(right.registeredAt);
+  }
   return Date.parse(right.lastActivatedAt) - Date.parse(left.lastActivatedAt);
 }
 

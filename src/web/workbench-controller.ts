@@ -419,6 +419,7 @@ export class WebWorkbenchController {
           available,
           sessionCount: counts.get(entry.canonicalPath) ?? 0,
           lastActivatedAt: entry.lastActivatedAt,
+          registeredAt: entry.registeredAt,
           ...(entry.pinnedOrder !== undefined ? { pinnedOrder: entry.pinnedOrder } : {}),
         });
       })
