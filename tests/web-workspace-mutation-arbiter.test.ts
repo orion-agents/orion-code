@@ -144,7 +144,15 @@ describe('WorkspaceMutationArbiterV1', () => {
     const target = join(workspace, 'shared.txt');
     mkdirSync(workspace, { recursive: true });
     writeFileSync(target, 'original');
-    const arbiter = new WorkspaceMutationArbiterV1();
+    const firstEntered = deferred<void>();
+    const secondQueued = deferred<void>();
+    const arbiter = new WorkspaceMutationArbiterV1({
+      onStateChanged: state => {
+        if (state.invocationId === 'write-second' && state.phase === 'queued') {
+          secondQueued.resolve();
+        }
+      },
+    });
     const mutate = deferred<void>();
     const finish = deferred<void>();
     let staleSideEffects = 0;
@@ -157,13 +165,14 @@ describe('WorkspaceMutationArbiterV1', () => {
           args: { path: 'shared.txt', content: 'first' },
         },
         async () => {
+          firstEntered.resolve();
           await mutate.promise;
           writeFileSync(target, 'first');
           await finish.promise;
           return 'first';
         }
       );
-      await flushPromises();
+      await firstEntered.promise;
       const second = arbiter.runWorkspaceMutation(
         {
           workspaceId: workspace,
@@ -177,9 +186,8 @@ describe('WorkspaceMutationArbiterV1', () => {
           return 'second';
         }
       );
-      await flushPromises();
+      await secondQueued.promise;
       mutate.resolve();
-      await flushPromises();
       finish.resolve();
 
       await expect(first).resolves.toBe('first');
