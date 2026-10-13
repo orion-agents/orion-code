@@ -769,11 +769,14 @@ export function createGitHistoryReader(options: GitHistoryReaderOptions): GitHis
       // `--follow` only accepts a single path, which is exactly this case. It explains its own
       // limits for copies and complex merges (plan G6) — we surface `followed` rather than
       // pretending tracking is complete.
+      // v0.3.25 #270 — the validated revision must reach the log command: it was
+      // previously used only for the existence check, so every query walked HEAD.
       const raw = await runGit([
         'log',
         `--max-count=${limit + 1}`,
         `--format=${LIST_FORMAT}${RECORD_SEPARATOR}`,
         '--follow',
+        target,
         '--',
         path,
       ]);
