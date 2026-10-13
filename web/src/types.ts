@@ -500,6 +500,19 @@ export interface WorkbenchState {
   readonly pendingSessionActions: Readonly<Record<string, Readonly<Record<number, string>>>>;
   readonly sessionCreationPending: boolean;
   readonly sessionCreationSelected: boolean;
+  /**
+   * v0.3.24 — the foreground Session stashed when a Host `workbench_state`
+   * envelope moved this tab to another Workspace Context. The SSE replay
+   * re-delivers pre-baseline envelopes, so the move is often undone by the
+   * replay tail returning to the baselined Workspace; the stash lets the
+   * reducer restore the tab's own selection instead of dropping it.
+   */
+  readonly foregroundRestore: string | null;
+  /**
+   * v0.3.24 — the Host event cursor captured with the current baseline.
+   * Durable envelopes at or below it are historical replay for this tab.
+   */
+  readonly bootstrapEventCursor: number | null;
   readonly notice: WorkbenchNotice | null;
   readonly announcement: string;
 }
@@ -507,6 +520,8 @@ export interface WorkbenchState {
 export const initialWorkbenchState: WorkbenchState = {
   boot: 'loading',
   bootstrap: null,
+  foregroundRestore: null,
+  bootstrapEventCursor: null,
   connection: 'connecting',
   connectionAttempt: 0,
   lastCursor: 0,

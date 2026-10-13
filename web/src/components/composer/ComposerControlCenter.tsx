@@ -65,6 +65,7 @@ export function ComposerControlCenter({ state, actions, insertion }: ComposerCon
     !state.bootstrap?.configured ||
     state.connection !== 'live' ||
     !isActiveSessionSnapshotReady(state);
+
   const pending = isActiveSessionActionPending(state);
   const sessionTurnQueued = state.sessionSnapshot?.sessionRuntime.phase === 'queued';
   const controlsReady = !disabled && !pending;

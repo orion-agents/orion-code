@@ -227,6 +227,8 @@ export function workbenchReducer(
             ? state.sessionCreationPending
             : false,
         sessionCreationSelected: false,
+        foregroundRestore: null,
+        bootstrapEventCursor: action.bootstrap.eventCursor ?? null,
         workspace: action.workspaces.activePath || action.bootstrap.workspace,
         workspaces: action.workspaces.workspaces,
         sessions: action.sessions,
@@ -707,7 +709,7 @@ export function workbenchReducer(
     }
     case 'reset_session_view': {
       state = rememberSessionDisplay(state);
-      state = { ...state, sessionCreationSelected: false };
+      state = { ...state, sessionCreationSelected: false, foregroundRestore: null };
       const switching =
         Boolean(action.activeSessionId) && action.activeSessionId !== state.activeSessionId;
       const cached = Boolean(
@@ -867,39 +869,60 @@ function reduceEnvelope(state: WorkbenchState, envelope: WebEventEnvelopeV1): Wo
   }
 
   if (envelope.type === 'workbench_state') {
+    // v0.3.24 — the SSE replay re-delivers durable `workbench_state` envelopes
+    // that predate this tab's baseline (for example the Workspace switches made
+    // before a reload). With the bootstrap event-cursor anchor those replays
+    // are dropped outright: the baseline already reflects the Host state they
+    // describe, and re-applying one would clear the tab's restored foreground
+    // Session and regress the Context revision. Without the anchor (an older
+    // Host), fall back to an echo heuristic: an envelope describing the
+    // baselined Workspace is treated as history, and a foreign one stashes the
+    // foreground so a matching later echo can restore it.
+    if (state.bootstrapEventCursor !== null && envelope.cursor <= state.bootstrapEventCursor) {
+      return received;
+    }
+    const anchored = state.bootstrapEventCursor !== null;
+    const echoOfBaseline =
+      !anchored &&
+      state.bootstrap !== null &&
+      (envelope.payload.workspaceId === state.bootstrap.workspaceId ||
+        envelope.payload.workspace === state.bootstrap.workspace);
     const workspaceChanged =
-      (state.workspaceId !== '' && state.workspaceId !== envelope.payload.workspaceId) ||
-      (state.workspace !== '' && state.workspace !== envelope.payload.workspace);
+      !echoOfBaseline &&
+      ((state.workspaceId !== '' && state.workspaceId !== envelope.payload.workspaceId) ||
+        (state.workspace !== '' && state.workspace !== envelope.payload.workspace));
+    const restoreForeground =
+      !anchored && echoOfBaseline && !workspaceChanged ? state.foregroundRestore : null;
     const next = workspaceChanged
       ? clearSessionProjection(rememberSessionDisplay(received))
       : received;
+    const contextRevision =
+      !anchored && (echoOfBaseline || workspaceChanged)
+        ? state.contextRevision
+        : envelope.payload.contextRevision;
     return {
       ...next,
-      contextRevision: envelope.payload.contextRevision,
+      contextRevision,
       workspaceId: envelope.payload.workspaceId,
       sessionSync:
-        received.contextRevision === envelope.payload.contextRevision
+        received.contextRevision === contextRevision
           ? next.sessionSync
           : Object.fromEntries(
               Object.entries(next.sessionSync).map(([id, sync]) => [id, { ...sync, dirty: true }])
             ),
       pendingSessionActions:
-        received.contextRevision === envelope.payload.contextRevision
-          ? next.pendingSessionActions
-          : {},
+        received.contextRevision === contextRevision ? next.pendingSessionActions : {},
       sessionCreationPending:
-        received.contextRevision === envelope.payload.contextRevision
-          ? next.sessionCreationPending
-          : false,
+        received.contextRevision === contextRevision ? next.sessionCreationPending : false,
       sessionCreationSelected:
-        received.contextRevision === envelope.payload.contextRevision
-          ? next.sessionCreationSelected
-          : false,
-      workspace: envelope.payload.workspace,
+        received.contextRevision === contextRevision ? next.sessionCreationSelected : false,
+      workspace: !anchored && echoOfBaseline ? state.workspace : envelope.payload.workspace,
       // Session foreground selection belongs to this browser tab. Host
       // workbench_state only moves the Workspace Context; a legacy/global
-      // activeSessionId must never steal or clear another tab's selection.
-      activeSessionId: workspaceChanged ? null : state.activeSessionId,
+      // activeSessionId must never steal or clear another tab's selection. A
+      // genuine Context move stashes it for the matching echo to restore.
+      activeSessionId: workspaceChanged ? null : (restoreForeground ?? state.activeSessionId),
+      foregroundRestore: workspaceChanged ? state.activeSessionId : null,
     };
   }
 

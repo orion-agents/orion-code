@@ -363,6 +363,7 @@ export class WebWorkbenchController {
       workspace: this.workspaceValue,
       configured: this.runtimeValue.isConfigured,
       activeSessionId: this.runtimeValue.getSession()?.id ?? null,
+      eventCursor: this.eventHub.snapshot().latest,
       settings: this.settings(),
       capabilities: {
         goal: true as const,

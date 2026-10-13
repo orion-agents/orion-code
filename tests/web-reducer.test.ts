@@ -1697,3 +1697,138 @@ function workbenchEnvelope(activeSessionId: string | null, cursor: number): WebE
     },
   };
 }
+
+describe('v0.3.24 workbench_state replay safety', () => {
+  const baselinedBootstrap = {
+    apiVersion: 1,
+    productVersion: '0.0.0-test',
+    nonce: 'nonce-1',
+    contextRevision: 'rev-b',
+    workspaceId: 'ws-b',
+    workspace: '/ws-b',
+    configured: true,
+    activeSessionId: 'session-1',
+    settings: {},
+    capabilities: {
+      goal: true,
+      plan: true,
+      skills: true,
+      mcp: true,
+      diagnostics: true,
+      review: true,
+      files: true,
+      git: true,
+      terminal: false,
+    },
+  } as unknown as import('../web/src/types').WebBootstrapV1;
+
+  const replayEnvelope = (
+    workspaceId: string,
+    workspace: string,
+    contextRevision: string,
+    cursor: number
+  ): WebEventEnvelopeV1 => ({
+    apiVersion: 1,
+    eventId: `20000000-0000-4000-8000-${String(cursor).padStart(12, '0')}`,
+    cursor,
+    sessionId: null,
+    threadId: null,
+    durable: true,
+    timestamp: new Date(cursor).toISOString(),
+    type: 'workbench_state',
+    payload: {
+      contextRevision,
+      workspaceId,
+      workspace,
+      activeSessionId: null,
+    },
+  });
+
+  const baselined = (): import('../web/src/types').WorkbenchState => ({
+    ...initialWorkbenchState,
+    connection: 'live',
+    bootstrap: baselinedBootstrap,
+    workspaceId: 'ws-b',
+    workspace: '/ws-b',
+    contextRevision: 'rev-b',
+    activeSessionId: 'session-1',
+    sessionSnapshot: snapshotFor('session-1', 'hello'),
+    sessionSync: {
+      'session-1': { status: 'ready', requestId: null },
+    },
+  });
+
+  test('a pre-baseline foreign envelope stashes the foreground and the matching echo restores it', () => {
+    // The SSE replay re-delivers the pre-reload switch to Workspace A (cursor 2)
+    // and then the switch back to the baselined Workspace B (cursor 4).
+    const moved = workbenchReducer(baselined(), {
+      type: 'event_received',
+      envelope: replayEnvelope('ws-a', '/ws-a', 'rev-a-stale', 2),
+    });
+    expect(moved.activeSessionId).toBeNull();
+    expect(moved.foregroundRestore).toBe('session-1');
+    expect(moved.workspaceId).toBe('ws-a');
+
+    const restored = workbenchReducer(moved, {
+      type: 'event_received',
+      envelope: replayEnvelope('ws-b', '/ws-b', 'rev-b-stale-echo', 4),
+    });
+    expect(restored.activeSessionId).toBe('session-1');
+    expect(restored.foregroundRestore).toBeNull();
+    // The echo must not regress the Context revision the baseline established.
+    expect(restored.contextRevision).toBe('rev-b');
+    expect(restored.workspaceId).toBe('ws-b');
+  });
+
+  test('with the bootstrap event-cursor anchor, replayed pre-baseline broadcasts are dropped', () => {
+    const anchored: import('../web/src/types').WorkbenchState = {
+      ...baselined(),
+      bootstrapEventCursor: 5,
+    };
+    const state = workbenchReducer(anchored, {
+      type: 'event_received',
+      envelope: replayEnvelope('ws-a', '/ws-a', 'rev-a-stale', 2),
+    });
+    // The replayed envelope is historical: the foreground and the baselined
+    // Context are untouched.
+    expect(state.activeSessionId).toBe('session-1');
+    expect(state.foregroundRestore).toBeNull();
+    expect(state.workspaceId).toBe('ws-b');
+    expect(state.contextRevision).toBe('rev-b');
+    // A live envelope (cursor above the anchor) still moves the Context.
+    const live = workbenchReducer(state, {
+      type: 'event_received',
+      envelope: replayEnvelope('ws-c', '/ws-c', 'rev-c-live', 9),
+    });
+    expect(live.workspaceId).toBe('ws-c');
+    expect(live.contextRevision).toBe('rev-c-live');
+    expect(live.activeSessionId).toBeNull();
+    expect(live.foregroundRestore).toBe('session-1');
+  });
+
+  test('an echo of the baselined workspace alone never clears the foreground', () => {
+    const state = workbenchReducer(baselined(), {
+      type: 'event_received',
+      envelope: replayEnvelope('ws-b', '/ws-b', 'rev-b-live-advance', 7),
+    });
+    expect(state.activeSessionId).toBe('session-1');
+    expect(state.foregroundRestore).toBeNull();
+  });
+
+  test('an explicit session selection supersedes a pending foreground stash', () => {
+    const moved = workbenchReducer(baselined(), {
+      type: 'event_received',
+      envelope: replayEnvelope('ws-a', '/ws-a', 'rev-a-stale', 2),
+    });
+    const selected = workbenchReducer(moved, {
+      type: 'reset_session_view',
+      activeSessionId: 'session-2',
+    });
+    expect(selected.foregroundRestore).toBeNull();
+    const echoed = workbenchReducer(selected, {
+      type: 'event_received',
+      envelope: replayEnvelope('ws-b', '/ws-b', 'rev-b-stale-echo', 4),
+    });
+    expect(echoed.activeSessionId).toBe('session-2');
+  });
+});

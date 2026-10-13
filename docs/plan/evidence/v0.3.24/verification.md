@@ -125,3 +125,30 @@ PR #268（codex/v0.3.24 → main）首轮 CI（run 38334488330）暴露两类问
    下一步：reducer 层拒绝路径加诊断或改为「拒绝即调度当前 Context 重读」。
 
 全量 Jest（含上述改动）复跑：**4486 passed / 5 skipped / 0 failed（373 套件）**。
+
+
+## 2026-10-13 E2E-P0-07 根因修复：workbench_state 重放锚（最终修复）
+
+**根因（reducer 动作追踪 + envelope payload 诊断确证）**：reload 后 SSE 从 cursor 0 重放
+durable 历史，其中包括 reload 之前工作区切换时广播的 `workbench_state`（本例 cursor 2=A、
+cursor 4=B）。baseline 提速后（本版响应性工作的直接后果）`baseline_loaded` 先于重放落地，
+随后的重放 envelope 把客户端拽回 A（清空 foreground、contextRevision 回退到旧值），cursor 4
+再拽回 B——最终 workspace 正确但 `activeSessionId` 永久为 null，composer 呈
+「选择会话并配置模型后开始」且永不恢复。main 上该竞态被旧时序掩盖（baseline 慢、重放先到、
+baseline 最后恢复）。
+
+**修复（三层，向后兼容）**：
+1. `WebBootstrapV1` 新增可选 `eventCursor`（Host 在 bootstrap 响应携带当前 durable 游标）；
+2. reducer 记录 `bootstrapEventCursor`，`workbench_state` envelope 的
+   `cursor <= bootstrapEventCursor` 视为历史重放**整体忽略**（保留前台、不回退 revision）；
+3. 无锚点（旧 Host）时回退为 echo 启发式：与 baseline 同 workspace 的 envelope 视为历史
+   （不清前台、不回退 revision），真正的 Context 迁移则暂存 `foregroundRestore` 供后续
+   匹配回声恢复；显式 `reset_session_view` 与 `baseline_loaded` 清除暂存。
+
+**回归测试**：tests/web-reducer.test.ts 新增 4 例（锚点丢弃重放 / 锚点缺失时的暂存-恢复 /
+echo 不清前台 / 显式选择压过暂存）。
+
+**验证**：本地打包 E2E `E2E-P0-07` **GO（5.8s）**、`SET-P0-10` GO（3.2s）；
+web-reducer 50/50、web-server+protocol 28/28、全量 Jest 4487 passed（3 个环境性失败：
+2 个 PTY 沙箱限制 + settings watcher 并行竞争，单跑 10/10 通过）；lint / tsc（双配置）/
+build 通过。
