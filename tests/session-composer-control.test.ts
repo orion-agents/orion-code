@@ -91,6 +91,24 @@ describe('SessionComposerControlServiceV1', () => {
     });
   });
 
+  test('v0.3.25 #271 — defers with compactRequired when the reserve shrinks the input budget', async () => {
+    const fixture = createFixture(root);
+    fixture.setIdle(false);
+
+    // Same raw window as `large` (100k), so the old raw-window gate skipped the
+    // compact decision entirely; the budget gate (≈50k vs ≈94k) requires it.
+    await expect(
+      fixture.controls.selectModel({ modelId: 'wide-reserve', effort: 'auto' })
+    ).resolves.toMatchObject({
+      appliesFrom: 'next-logical-request',
+      compactRequired: true,
+      compactPreflight: 'deferred',
+    });
+    // Deferred selection is pending only: the durable Session model is unchanged
+    // until the logical boundary applies it (mirrors the existing deferral test).
+    expect(loadSessionMeta(fixture.session.id)).toMatchObject({ model: 'large' });
+  });
+
   test('keeps last-good metadata and exposes a deferred apply failure', async () => {
     const fixture = createFixture(root);
     fixture.setIdle(false);
@@ -119,7 +137,9 @@ describe('SessionComposerControlServiceV1', () => {
 
     const catalog = fixture.controls.catalog();
 
-    expect(catalog.models).toHaveLength(2);
+    // v0.3.25 #271 — the fixture gained  (same window as `large`,
+    // larger output reserve) for the deferred-budget test.
+    expect(catalog.models).toHaveLength(3);
     expect(catalog.unavailableProviders).toEqual([
       { id: 'fixture', reason: 'The configured credential slot is unavailable.' },
     ]);
@@ -222,6 +242,15 @@ function createFixture(
         model: 'small-api-model',
         contextWindow: 8_000,
         maxOutputTokens: 1_000,
+      },
+      {
+        // v0.3.25 #271 — same window as `large`, larger output reserve: the
+        // effective input budget is smaller even though the raw window is not.
+        id: 'wide-reserve',
+        provider: 'fixture',
+        model: 'wide-reserve-api-model',
+        contextWindow: 100_000,
+        maxOutputTokens: 48_000,
       },
     ],
     defaultModel: 'large',

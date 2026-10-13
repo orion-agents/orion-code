@@ -14,10 +14,18 @@ describe('ModelCoordinator', () => {
   beforeEach(() => {
     coordinator = new ModelCoordinator();
     const result = buildRegistry({
-      providers: [{ id: 'test-provider', baseUrl: 'https://test.example.com/v1', apiKey: 'sk-test', protocol: 'openai-completions' }],
+      providers: [
+        {
+          id: 'test-provider',
+          baseUrl: 'https://test.example.com/v1',
+          apiKey: 'sk-test',
+          protocol: 'openai-completions',
+        },
+      ],
       models: [{ id: 'test-model', provider: 'test-provider', model: 'test-model-v1' }],
     });
-    if (!result.registry) throw new Error('Failed to build registry: ' + result.errors.map(e => e.message).join(', '));
+    if (!result.registry)
+      throw new Error('Failed to build registry: ' + result.errors.map(e => e.message).join(', '));
     registry = result.registry;
     pool = new ModelClientPool();
     coordinator.bind(registry, pool);
@@ -46,7 +54,7 @@ describe('ModelCoordinator', () => {
 
   it('emits model_changed event on switch', () => {
     const events: any[] = [];
-    coordinator.on('model_changed', (e) => events.push(e));
+    coordinator.on('model_changed', e => events.push(e));
     coordinator.switchTo('test-model');
     expect(events.length).toBe(1);
     expect(events[0].toId).toBe('test-model');
@@ -56,12 +64,22 @@ describe('ModelCoordinator', () => {
   it('emits model_changed with from/to on second switch', () => {
     const events: any[] = [];
     coordinator.switchTo('test-model');
-    coordinator.on('model_changed', (e) => events.push(e));
+    coordinator.on('model_changed', e => events.push(e));
     // Build a second registry with two models.
     const result2 = buildRegistry({
       providers: [
-        { id: 'test-provider', baseUrl: 'https://test.example.com/v1', apiKey: 'sk-test', protocol: 'openai-completions' as const },
-        { id: 'provider-2', baseUrl: 'https://test2.example.com/v1', apiKey: 'sk-test2', protocol: 'openai-completions' as const },
+        {
+          id: 'test-provider',
+          baseUrl: 'https://test.example.com/v1',
+          apiKey: 'sk-test',
+          protocol: 'openai-completions' as const,
+        },
+        {
+          id: 'provider-2',
+          baseUrl: 'https://test2.example.com/v1',
+          apiKey: 'sk-test2',
+          protocol: 'openai-completions' as const,
+        },
       ],
       models: [
         { id: 'test-model', provider: 'test-provider', model: 'test-model-v1' },
@@ -86,7 +104,7 @@ describe('ModelCoordinator', () => {
 
   it('initModel emits model_changed', () => {
     const events: any[] = [];
-    coordinator.on('model_changed', (e) => events.push(e));
+    coordinator.on('model_changed', e => events.push(e));
     coordinator.initModel('test-model');
     expect(events.length).toBe(1);
   });
@@ -95,5 +113,82 @@ describe('ModelCoordinator', () => {
     expect(coordinator.isSwitching()).toBe(false);
     coordinator.switchTo('test-model');
     expect(coordinator.isSwitching()).toBe(false); // switch is synchronous
+  });
+
+  describe('v0.3.25 #271 — compact preflight gated on safe input budgets', () => {
+    function bindReserveFixture(): void {
+      const result = buildRegistry({
+        providers: [
+          {
+            id: 'test-provider',
+            baseUrl: 'https://test.example.com/v1',
+            apiKey: 'sk-test',
+            protocol: 'openai-completions' as const,
+          },
+        ],
+        models: [
+          // Same window; only the output reserve differs (the issue's scenario).
+          {
+            id: 'small-reserve',
+            provider: 'test-provider',
+            model: 'm1',
+            contextWindow: 100_000,
+            maxOutputTokens: 4_000,
+          },
+          {
+            id: 'large-reserve',
+            provider: 'test-provider',
+            model: 'm2',
+            contextWindow: 100_000,
+            maxOutputTokens: 48_000,
+          },
+          // Genuinely larger budget: window grows, reserve unchanged.
+          {
+            id: 'bigger-window',
+            provider: 'test-provider',
+            model: 'm3',
+            contextWindow: 200_000,
+            maxOutputTokens: 4_000,
+          },
+        ],
+      });
+      if (!result.registry) throw new Error('Failed to build registry');
+      coordinator.bind(result.registry, pool);
+    }
+
+    it('runs the preflight when the output reserve shrinks the input budget', async () => {
+      bindReserveFixture();
+      expect(coordinator.initModel('small-reserve').success).toBe(true);
+
+      const preflight = jest.fn(() => ({
+        status: 'committed' as const,
+        afterTokens: 20_000,
+        candidateFingerprint: 'fp-1',
+      }));
+      const result = await coordinator.switchToWithCompactPreflight('large-reserve', preflight);
+
+      expect(result.success).toBe(true);
+      expect(result.compactRequired).toBe(true);
+      expect(result.compactPreflight).toBe('committed');
+      expect(preflight).toHaveBeenCalledTimes(1);
+      expect(coordinator.getCurrent()?.id).toBe('large-reserve');
+    });
+
+    it('still skips the preflight when the target budget is genuinely larger', async () => {
+      bindReserveFixture();
+      expect(coordinator.initModel('small-reserve').success).toBe(true);
+
+      const preflight = jest.fn(() => ({
+        status: 'committed' as const,
+        afterTokens: 20_000,
+        candidateFingerprint: 'fp-1',
+      }));
+      const result = await coordinator.switchToWithCompactPreflight('bigger-window', preflight);
+
+      expect(result.success).toBe(true);
+      expect(result.compactRequired).toBe(false);
+      expect(result.compactPreflight).toBe('not_required');
+      expect(preflight).not.toHaveBeenCalled();
+    });
   });
 });
