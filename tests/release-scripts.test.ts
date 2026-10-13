@@ -226,7 +226,21 @@ function runReleaseCheck(cwd: string): { status: number | null; report: ReleaseR
   if (!result.stdout.trim()) {
     throw new Error(`release-check emitted no JSON: ${result.stderr}`);
   }
-  return { status: result.status, report: JSON.parse(result.stdout) as ReleaseReport };
+  const report = JSON.parse(result.stdout) as ReleaseReport;
+  // CI diagnostics: dump the failing checks so a contract regression is
+  // readable directly from the job log.
+  if (result.status !== 0) {
+    const failed = (report.results ?? [])
+      .filter(check => check.status === 'fail')
+      .map(check => `${check.id}: ${check.detail}`);
+    console.error(
+      '[release-check contract] exit',
+      result.status,
+      'failed checks:',
+      failed.join(' | ') || '(none recorded)'
+    );
+  }
+  return { status: result.status, report };
 }
 
 function runReleaseCheckWithArgs(
