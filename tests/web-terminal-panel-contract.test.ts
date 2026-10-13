@@ -48,7 +48,9 @@ describe('Web Terminal Playwright-facing DOM contract', () => {
 
   it('binds cwd to the active workspace and preserves Escape for the terminal surface', () => {
     expect(dockSource).toContain('workspacePath={state.workspace}');
-    expect(dockSource).toContain('\'[role="alertdialog"], .terminal-host\'');
+    expect(dockSource).toContain(
+      '\'[role="alertdialog"], .terminal-host, input, textarea, [contenteditable]\''
+    );
     expect(dockSource).toContain("!element.closest('[inert]')");
   });
 });

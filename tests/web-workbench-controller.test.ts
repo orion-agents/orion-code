@@ -1531,19 +1531,19 @@ describe('session tags / archive / delete (v0.3.7)', () => {
 
   test('setSessionTags rejects malformed tag sets before touching storage', async () => {
     const { controller, session, guard } = await freshController();
-    await expect(
+    expect(() =>
       controller.setSessionTags(session.id, ['ok', 42 as unknown as string], guard)
-    ).rejects.toMatchObject({ code: 'invalid_tags' });
-    await expect(
+    ).toThrow(expect.objectContaining({ code: 'invalid_tags' }));
+    expect(() =>
       controller.setSessionTags(
         session.id,
         Array.from({ length: 9 }, (_, index) => `tag-${index}`),
         guard
       )
-    ).rejects.toMatchObject({ code: 'invalid_tags' });
-    await expect(
-      controller.setSessionTags(session.id, ['x'.repeat(33)], guard)
-    ).rejects.toMatchObject({ code: 'invalid_tags' });
+    ).toThrow(expect.objectContaining({ code: 'invalid_tags' }));
+    expect(() => controller.setSessionTags(session.id, ['x'.repeat(33)], guard)).toThrow(
+      expect.objectContaining({ code: 'invalid_tags' })
+    );
     await controller.shutdown();
   });
 
@@ -1574,12 +1574,24 @@ describe('session tags / archive / delete (v0.3.7)', () => {
     await controller.shutdown();
   });
 
-  test('delete refuses a session with a resident actor, then succeeds when cold', async () => {
+  test('foreground selection stays cold; delete refuses an explicitly allocated resident actor', async () => {
     const { controller, session, guard } = await freshController();
     await controller.activateSession(session.id, guard);
-    await expect(controller.deleteSession(session.id, guard)).rejects.toMatchObject({
-      code: 'session_busy',
+    expect(controller.deleteSession(session.id, guard)).toEqual({ deleted: true });
+    const resident = await controller.createSession('resident lifecycle');
+    const composer = controller.composerState(resident.id, guard);
+    await controller.applyComposerAction({
+      requestId: randomUUID(),
+      ...guard,
+      expectedSessionId: resident.id,
+      expectedSessionRuntimeRevision: composer.sessionRuntime.runtimeRevision,
+      expectedControlRevision: composer.controlRevision,
+      type: 'set_agent_mode',
+      mode: 'plan',
     });
+    expect(() => controller.deleteSession(resident.id, guard)).toThrow(
+      expect.objectContaining({ code: 'session_busy' })
+    );
     await controller.shutdown();
   });
 
@@ -1589,23 +1601,23 @@ describe('session tags / archive / delete (v0.3.7)', () => {
       workspaceId: randomUUID(),
       expectedContextRevision: 'stale',
     };
-    await expect(controller.setSessionTags(session.id, ['x'], foreign)).rejects.toThrow();
-    await expect(controller.archiveSession(session.id, foreign)).rejects.toThrow();
-    await expect(controller.deleteSession(session.id, foreign)).rejects.toThrow();
+    expect(() => controller.setSessionTags(session.id, ['x'], foreign)).toThrow();
+    expect(() => controller.archiveSession(session.id, foreign)).toThrow();
+    expect(() => controller.deleteSession(session.id, foreign)).toThrow();
     await controller.shutdown();
   });
 
   test('lifecycle mutations 404 on unknown sessions', async () => {
     const { controller, guard } = await freshController();
-    await expect(controller.setSessionTags('missing', ['x'], guard)).rejects.toMatchObject({
-      code: 'session_not_found',
-    });
-    await expect(controller.archiveSession('missing', guard)).rejects.toMatchObject({
-      code: 'session_not_found',
-    });
-    await expect(controller.deleteSession('missing', guard)).rejects.toMatchObject({
-      code: 'session_not_found',
-    });
+    expect(() => controller.setSessionTags('missing', ['x'], guard)).toThrow(
+      expect.objectContaining({ status: 404 })
+    );
+    expect(() => controller.archiveSession('missing', guard)).toThrow(
+      expect.objectContaining({ status: 404 })
+    );
+    expect(() => controller.deleteSession('missing', guard)).toThrow(
+      expect.objectContaining({ status: 404 })
+    );
     await controller.shutdown();
   });
 });

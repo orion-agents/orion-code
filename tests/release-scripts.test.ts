@@ -221,12 +221,33 @@ function runReleaseCheck(cwd: string): { status: number | null; report: ReleaseR
   const result = spawnSync(
     process.execPath,
     [join(cwd, 'scripts', 'release', 'release-check.js'), '--skip-tests', '--skip-pack', '--json'],
-    { cwd, encoding: 'utf8' }
+    {
+      cwd,
+      encoding: 'utf8',
+      // Hermetic fixtures must not inherit the CI pull-request context: the
+      // script binds GITHUB_HEAD_REF (e.g. codex/v0.3.24) to a version
+      // expectation that a 1.2.3 fixture cannot satisfy.
+      env: { ...process.env, GITHUB_HEAD_REF: '', GITHUB_REF: '', GITHUB_REF_NAME: '' },
+    }
   );
   if (!result.stdout.trim()) {
     throw new Error(`release-check emitted no JSON: ${result.stderr}`);
   }
-  return { status: result.status, report: JSON.parse(result.stdout) as ReleaseReport };
+  const report = JSON.parse(result.stdout) as ReleaseReport;
+  // CI diagnostics: dump the failing checks so a contract regression is
+  // readable directly from the job log.
+  if (result.status !== 0) {
+    const failed = (report.results ?? [])
+      .filter(check => check.status === 'fail')
+      .map(check => `${check.id}: ${check.detail}`);
+    console.error(
+      '[release-check contract] exit',
+      result.status,
+      'failed checks:',
+      failed.join(' | ') || '(none recorded)'
+    );
+  }
+  return { status: result.status, report };
 }
 
 function runReleaseCheckWithArgs(
@@ -632,6 +653,26 @@ describe('release-check script contract', () => {
     });
     expect(() =>
       verifyEvidenceBundle(failing.manifestPath, failing.manifest, [failing.scenario])
+    ).toThrow('web33.switch_snapshot_pages_max is missing or invalid');
+    for (const pages of [0, 1]) {
+      const withinBudget = createWebEvidenceBundle({
+        scenarioId: 'WEB33-P0-21',
+        factOverrides: { 'web33.switch_snapshot_pages_max': pages },
+      });
+      expect(() =>
+        verifyEvidenceBundle(withinBudget.manifestPath, withinBudget.manifest, [
+          withinBudget.scenario,
+        ])
+      ).not.toThrow();
+    }
+    const invalidCount = createWebEvidenceBundle({
+      scenarioId: 'WEB33-P0-21',
+      factOverrides: { 'web33.switch_snapshot_pages_max': -1 },
+    });
+    expect(() =>
+      verifyEvidenceBundle(invalidCount.manifestPath, invalidCount.manifest, [
+        invalidCount.scenario,
+      ])
     ).toThrow('web33.switch_snapshot_pages_max is missing or invalid');
   });
 

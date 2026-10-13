@@ -818,6 +818,14 @@ test('SET-P0-10 an old page recovers a same-origin Host restart before saving wi
   workspace,
 }, testInfo) => {
   allowExpectedNetworkFailures(testInfo, 10);
+  // v0.3.24 — replayed queued operations may be rejected by the rotated-nonce
+  // admission as 409 during the deliberate restart window; the browser logs
+  // the failed resource at an unpredictable moment, so register the ceiling
+  // allowance up front (0–2 occurrences, exact text, v0.3.20 S4 mechanism).
+  evidence.allowConsoleError(
+    'Failed to load resource: the server responded with a status of 409 (Conflict)',
+    2
+  );
   await createSession(page, { name: 'Same-origin recovery session' });
   const oldBootstrap = await webBootstrap(page);
   const first = await updateSettings(page, oldBootstrap.settings.revision, [

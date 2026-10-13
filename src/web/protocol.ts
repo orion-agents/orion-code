@@ -612,6 +612,14 @@ export interface WebBootstrapV1 {
   readonly workspace: string;
   readonly configured: boolean;
   readonly activeSessionId: string | null;
+  /**
+   * v0.3.24 — the Host's latest durable event cursor at bootstrap time. Clients
+   * use it as the replay anchor: durable envelopes at or below this cursor are
+   * already reflected by the baseline and must not be re-applied (a reloaded
+   * tab otherwise replays pre-baseline `workbench_state` broadcasts that would
+   * clear its restored foreground Session). Older clients ignore it.
+   */
+  readonly eventCursor?: number;
   readonly settings: WebSettingsSnapshotV1;
   readonly capabilities: {
     readonly goal: true;

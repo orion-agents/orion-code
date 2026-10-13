@@ -2,12 +2,12 @@
 
 Local-first, goal-driven coding agent for the terminal and browser.
 
-> v0.3.23 candidate — open. Coding Intelligence & Verified Execution: live coding-task
-> evaluation, repo-intelligence recall, and bounded verified repair. The previous release
-> 0.3.22 is on npm (registry `latest`), tagged `v0.3.22` (`9f09e0a`, #265) and released on
-> GitHub.
+> v0.3.24 development focus — Web session responsiveness: Session-scoped request admission,
+> cached foreground switching, retained live views, and bounded Git probes during creation.
+> Built on the merged v0.3.23 source (`6ed47fd`, #266).
 
 [中文说明](README.zh-CN.md) ·
+[v0.3.24 plan](docs/plan/v0.3.24-plan.md) ·
 [v0.3.7 plan](docs/plan/v0.3.7-left-rail-improvement-plan.md) ·
 [v0.3.6 plan](docs/plan/v0.3.6-plan.md) ·
 [v0.3.5 plan](docs/plan/v0.3.5-plan.md) ·
@@ -167,10 +167,10 @@ user extension boundaries.
 Node.js 22.12+, 24, and 26 are supported. Use Node 24 LTS for production or Node 26 Current for
 current development environments. Node 20 is upstream EOL and is no longer a v0.3 runtime.
 
-After the immutable `0.3.5` npm receipt exists:
+To install the pinned v0.3.24 package when it is available on npm:
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.23
+npm install -g @orion-agents/orion-code@0.3.24
 orion --version
 orion doctor
 ```

@@ -5,9 +5,8 @@
  * All new code should import directly from src/product/paths.ts.
  */
 
-import { readFileSync, existsSync, realpathSync, mkdirSync } from 'fs';
-import { execFileSync } from 'child_process';
-import { join, resolve } from 'path';
+import { readFileSync, existsSync, mkdirSync } from 'fs';
+import { join } from 'path';
 import { atomicWriteFileSync } from './atomic-write';
 import { debugError } from '../utils/debug-log';
 
@@ -25,6 +24,7 @@ export {
   getGlobalEnvPath,
   encodeProjectPath,
   resolveProjectStoragePath,
+  resolveProjectStoragePathAsync,
   getCanonicalProjectKey,
   getProjectDir,
   getProjectMetadataPath,
@@ -67,6 +67,9 @@ import {
   getProjectDir as _getProjectDir,
   getProjectsDir as _getProjectsDir,
   encodeProjectPath as _encodeProjectPath,
+  resolveProjectStoragePath as _resolveProjectStoragePath,
+  assertProjectStorageIdentity,
+  type ProjectStorageIdentity,
 } from '../product/paths';
 
 export function readProjectMetadata(projectPath: string): ProjectMetadata | null {
@@ -92,31 +95,11 @@ export function readProjectMetadata(projectPath: string): ProjectMetadata | null
 
 export function updateProjectMetadata(
   projectPath: string,
-  now: Date = new Date()
+  now: Date = new Date(),
+  identity?: ProjectStorageIdentity
 ): ProjectMetadata {
-  const resolvedPath = (() => {
-    const absolute = resolve(projectPath);
-    if (existsSync(absolute)) {
-      try {
-        const root = execFileSync('git', ['-C', absolute, 'rev-parse', '--show-toplevel'], {
-          encoding: 'utf-8',
-          stdio: ['ignore', 'pipe', 'ignore'],
-        }).trim();
-        if (root) return realpathSync(root);
-      } catch (error) {
-        // Not a git worktree, or git is unavailable: fall back to the path.
-        debugError('config-dir.resolveGitRoot', error, absolute);
-      }
-      try {
-        return realpathSync(absolute);
-      } catch (error) {
-        // Broken symlink or a race with a deletion; the literal path is
-        // still a usable project key.
-        debugError('config-dir.realpath', error, absolute);
-      }
-    }
-    return absolute;
-  })();
+  if (identity) assertProjectStorageIdentity(identity);
+  const resolvedPath = identity?.canonicalPath ?? _resolveProjectStoragePath(projectPath);
 
   const projectKey = _encodeProjectPath(resolvedPath);
   const projectDir = join(_getProjectsDir(), projectKey);

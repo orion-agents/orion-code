@@ -22,6 +22,33 @@ which is **not** a pass.
 
 ## [Unreleased]
 
+## [0.3.24]
+
+> **Status: candidate.** Implementation on `codex/v0.3.24`, based on `main@6ed47fd`.
+> Plan: `docs/plan/v0.3.24-plan.md`. Registry and release status must be
+> verified from their own immutable receipts, not inferred from this changelog.
+
+### Fixed
+
+- Session command and Composer requests track only their originating Session;
+  sending no longer blocks another Session's Composer or session creation.
+- Same-Context snapshots across a live event stream are reused when unchanged;
+  warm selection does not re-fetch or disable input. Background changes and
+  disconnections still require synchronization before writes.
+- Foreground display caches retain streamed messages, tool cards and loaded
+  history instead of restoring an older HTTP tail when switching back.
+- Creation is single-flight and respects a later foreground selection. Late
+  send responses do not clear, focus or replace another Session's draft.
+- Web creation bounds asynchronous Git branch probes; project storage identity
+  resolution reuses an invalidatable bounded cache instead of repeatedly
+  spawning synchronous Git on every storage helper call.
+- Cross-Workspace navigation remains usable while another Session is running;
+  the most recent navigation intent wins when Context activation is in flight.
+- Per-Session scroll position and loaded history survive navigation, while
+  foreground Snapshot and SSE reconciliation no longer skips background events.
+- Web Session creation waits for file locks without freezing the Host event
+  loop, and cold Catalog scans yield to unrelated HTTP and SSE traffic.
+
 ## [0.3.23] — UNRELEASED
 
 > **Status: candidate.** Open. Coding Intelligence & Verified Execution — wires the live

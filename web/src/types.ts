@@ -401,9 +401,15 @@ export type ConnectionPhase =
 export type SessionSnapshotSyncPhase = 'idle' | 'loading' | 'refreshing' | 'ready' | 'failed';
 
 export interface SessionSnapshotSyncState {
+  /** Latest SSE cursor observed for this Session, never the Host-global cursor. */
+  readonly lastEventCursor?: number;
+  /** Same-Session replay already represented by its last authoritative snapshot. */
+  readonly snapshotEventCursor?: number;
   readonly status: SessionSnapshotSyncPhase;
   readonly requestId: number | null;
   readonly error?: string;
+  /** Background events or a stream interruption require a fresh authority snapshot. */
+  readonly dirty?: boolean;
 }
 
 export interface WorkbenchNotice {
@@ -454,6 +460,7 @@ export interface WorkbenchState {
     readonly snapshotFailures: number;
   };
   readonly sessionProjectionById: Readonly<Record<string, WebSessionSnapshotV1>>;
+  readonly sessionViewsById: Readonly<Record<string, SessionDisplayCache>>;
   readonly sessionRuntimeById: Readonly<Record<string, WebSessionRuntimeSummaryV1>>;
   readonly transcript: readonly WebTranscriptEntry[];
   readonly tools: readonly WebToolCall[];
@@ -485,6 +492,27 @@ export interface WorkbenchState {
   readonly loopStats: unknown;
   readonly traces: readonly unknown[];
   readonly pendingAction: string | null;
+  /** Browser intent while the Host confirms a Workspace Context transition. */
+  readonly navigationTarget: {
+    readonly workspaceId: string;
+    readonly sessionId: string | null;
+  } | null;
+  readonly pendingSessionActions: Readonly<Record<string, Readonly<Record<number, string>>>>;
+  readonly sessionCreationPending: boolean;
+  readonly sessionCreationSelected: boolean;
+  /**
+   * v0.3.24 — the foreground Session stashed when a Host `workbench_state`
+   * envelope moved this tab to another Workspace Context. The SSE replay
+   * re-delivers pre-baseline envelopes, so the move is often undone by the
+   * replay tail returning to the baselined Workspace; the stash lets the
+   * reducer restore the tab's own selection instead of dropping it.
+   */
+  readonly foregroundRestore: string | null;
+  /**
+   * v0.3.24 — the Host event cursor captured with the current baseline.
+   * Durable envelopes at or below it are historical replay for this tab.
+   */
+  readonly bootstrapEventCursor: number | null;
   readonly notice: WorkbenchNotice | null;
   readonly announcement: string;
 }
@@ -492,6 +520,8 @@ export interface WorkbenchState {
 export const initialWorkbenchState: WorkbenchState = {
   boot: 'loading',
   bootstrap: null,
+  foregroundRestore: null,
+  bootstrapEventCursor: null,
   connection: 'connecting',
   connectionAttempt: 0,
   lastCursor: 0,
@@ -516,6 +546,7 @@ export const initialWorkbenchState: WorkbenchState = {
     snapshotFailures: 0,
   },
   sessionProjectionById: {},
+  sessionViewsById: {},
   sessionRuntimeById: {},
   transcript: [],
   tools: [],
@@ -554,9 +585,68 @@ export const initialWorkbenchState: WorkbenchState = {
   loopStats: null,
   traces: [],
   pendingAction: null,
+  navigationTarget: null,
+  pendingSessionActions: {},
+  sessionCreationPending: false,
+  sessionCreationSelected: false,
   notice: null,
   announcement: '',
 };
+
+/** Display state includes live tool cards and loaded history absent from the HTTP tail. */
+export type SessionDisplayState = Pick<
+  WorkbenchState,
+  | 'transcript'
+  | 'tools'
+  | 'edits'
+  | 'subtasks'
+  | 'research'
+  | 'permission'
+  | 'processing'
+  | 'statusMessage'
+  | 'mode'
+  | 'effort'
+  | 'queue'
+  | 'goal'
+  | 'goalEvidence'
+  | 'goalActivity'
+  | 'sessionSnapshot'
+  | 'composer'
+  | 'plan'
+  | 'loopStats'
+  | 'traces'
+>;
+
+export interface SessionDisplayCache {
+  readonly view: SessionDisplayState;
+  readonly estimatedBytes: number;
+}
+
+/** Only the originating Session's controls wait for its in-flight writes. */
+export function isActiveSessionActionPending(state: WorkbenchState): boolean {
+  return isSessionActionPending(state, state.activeSessionId);
+}
+
+export function isSessionActionPending(state: WorkbenchState, sessionId: string | null): boolean {
+  return Boolean(
+    state.pendingAction ||
+    (sessionId && Object.keys(state.pendingSessionActions[sessionId] ?? {}).length)
+  );
+}
+
+/** Cached authority is reusable only across an uninterrupted, same-Context event stream. */
+export function canReuseSessionSnapshot(state: WorkbenchState, sessionId: string): boolean {
+  const snapshot = state.sessionProjectionById[sessionId];
+  const sync = state.sessionSync[sessionId];
+  return Boolean(
+    state.connection === 'live' &&
+    snapshot &&
+    snapshot.composer.workspaceId === state.workspaceId &&
+    snapshot.composer.contextRevision === state.contextRevision &&
+    sync?.status === 'ready' &&
+    !sync.dirty
+  );
+}
 
 const IDLE_SESSION_SNAPSHOT_SYNC: SessionSnapshotSyncState = Object.freeze({
   status: 'idle',
@@ -571,8 +661,10 @@ export function activeSessionSnapshotSync(state: WorkbenchState): SessionSnapsho
 
 export function isActiveSessionSnapshotReady(state: WorkbenchState): boolean {
   return Boolean(
+    !state.sessionCreationSelected &&
     state.activeSessionId &&
     state.sessionSnapshot?.session.id === state.activeSessionId &&
-    activeSessionSnapshotSync(state).status === 'ready'
+    activeSessionSnapshotSync(state).status === 'ready' &&
+    !activeSessionSnapshotSync(state).dirty
   );
 }

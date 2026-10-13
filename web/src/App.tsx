@@ -37,7 +37,12 @@ import {
   computeWideDesktopColumns,
   maxDockableDetailWidth,
 } from './layout/right-workspace-geometry';
-import { activeSessionSnapshotSync, type WebSessionSummaryV1, type WorkbenchNotice } from './types';
+import {
+  activeSessionSnapshotSync,
+  isSessionActionPending,
+  type WebSessionSummaryV1,
+  type WorkbenchNotice,
+} from './types';
 import { themeColorForAppearance } from './themes/theme-color';
 import { useWorkbench } from './useWorkbench';
 
@@ -800,21 +805,21 @@ export function App() {
         open={Boolean(renameTarget)}
         onClose={() => setRenameTarget(null)}
         session={renameTarget}
-        pending={Boolean(state.pendingAction)}
+        pending={isSessionActionPending(state, renameTarget?.id ?? null)}
         onRename={actions.renameSession}
       />
       <SessionTagsDialog
         open={Boolean(sessionTagsTarget)}
         onClose={() => setSessionTagsTarget(null)}
         session={sessionTagsTarget}
-        pending={Boolean(state.pendingAction)}
+        pending={isSessionActionPending(state, sessionTagsTarget?.id ?? null)}
         onSave={actions.updateSessionTags}
       />
       <ConfirmDeleteSessionDialog
         open={Boolean(sessionDeleteTarget)}
         onClose={() => setSessionDeleteTarget(null)}
         session={sessionDeleteTarget}
-        pending={Boolean(state.pendingAction)}
+        pending={isSessionActionPending(state, sessionDeleteTarget?.id ?? null)}
         onConfirm={actions.deleteSession}
       />
       <ShortcutHelpDialog open={shortcutHelpOpen} onClose={() => setShortcutHelpOpen(false)} />
