@@ -6,7 +6,11 @@ import { basename, isAbsolute, relative, resolve, sep } from 'path';
 
 import { isSensitiveFilePath, redactTraceText } from '../services/redaction';
 import { WebWorkbenchError } from './errors';
-import { parseGitDiffDocument, type GitDiffDocumentV2 } from './git-diff-document';
+import {
+  parseGitDiffDocument,
+  type GitDiffDocumentV2,
+  type GitDiffHunkResumeV1,
+} from './git-diff-document';
 import { buildSelectionPatch } from './git-patch-builder';
 import {
   createGitHistoryReader,
@@ -194,6 +198,8 @@ interface CursorPayload {
    * filter can never be reused against another (plan G1: counts and scope must stay
    * truthful across pages). */
   readonly scope?: string;
+  /** v0.3.26 #275 — hunk state for a page that continues a split hunk. */
+  readonly resumeHunk?: GitDiffHunkResumeV1;
 }
 
 /** v0.3.17 S1 — a Git file token resolves to a source-scoped (source, path) pair. */
@@ -512,7 +518,19 @@ export class GitReadModelServiceV1 {
     readonly wordDiff?: boolean;
   }): Promise<GitDiffDocumentV2> {
     const page = await this.diff(input);
-    return parseGitDiffDocument({
+    // v0.3.26 #275 — the incoming cursor may carry the hunk state this page
+    // continues; diff() already validated the cursor, so decoding it here only
+    // reads the resume state.
+    const resumeHunk = input.cursor
+      ? this.decodeCursor(
+          input.cursor,
+          'diff',
+          page.repositoryRevision,
+          page.fileId,
+          diffScope(input.ignoreWhitespace === true, input.wordDiff === true)
+        ).resumeHunk
+      : undefined;
+    const document = parseGitDiffDocument({
       fileToken: page.fileId,
       path: page.path,
       source: page.source,
@@ -520,7 +538,24 @@ export class GitReadModelServiceV1 {
       lines: page.lines,
       hasMore: page.nextCursor !== null,
       nextCursor: page.nextCursor,
+      ...(resumeHunk ? { resume: resumeHunk } : {}),
     });
+    // A page that ends inside a hunk re-mints the cursor with the hunk state so
+    // the next page resumes it instead of demoting the rows to meta.
+    if (page.nextCursor && document.pendingHunk) {
+      const decoded = this.decodeCursor(
+        page.nextCursor,
+        'diff',
+        page.repositoryRevision,
+        page.fileId,
+        diffScope(input.ignoreWhitespace === true, input.wordDiff === true)
+      );
+      return Object.freeze({
+        ...document,
+        nextCursor: this.encodeCursor({ ...decoded, resumeHunk: document.pendingHunk }),
+      });
+    }
+    return document;
   }
 
   /**
@@ -620,7 +655,8 @@ export class GitReadModelServiceV1 {
       .update(`compare-diff:${input.baseOid}:${input.headOid}:${path}:${snapshot.revision}`)
       .digest('hex')
       .slice(0, 24);
-    const offset = input.cursor ? decodeCommitDiffCursor(input.cursor, margin) : 0;
+    const cursorState = input.cursor ? decodeCommitDiffCursor(input.cursor, margin) : null;
+    const offset = cursorState?.offset ?? 0;
     const page = await streamDiffPage({
       cwd: root,
       commands: Object.freeze([
@@ -659,9 +695,20 @@ export class GitReadModelServiceV1 {
       nextCursor: page.hasMore
         ? encodeCommitDiffCursor({ margin, offset: offset + page.returnedLines })
         : null,
+      ...(cursorState?.resumeHunk ? { resume: cursorState.resumeHunk } : {}),
     });
+    // v0.3.26 #275 — re-mint the continuation cursor with the split hunk state.
+    const nextCursor =
+      page.hasMore && document.pendingHunk
+        ? encodeCommitDiffCursor({
+            margin,
+            offset: offset + page.returnedLines,
+            resumeHunk: document.pendingHunk,
+          })
+        : document.nextCursor;
     return Object.freeze({
       ...document,
+      nextCursor,
       baseOid: input.baseOid,
       baseLabel: `比较 ${input.baseOid.slice(0, 10)} → ${input.headOid.slice(0, 10)}`,
     });
@@ -809,7 +856,8 @@ export class GitReadModelServiceV1 {
       .update(`commit-diff:${detail.id}:${detail.baseOid}:${parentIndex}:${snapshot.revision}`)
       .digest('hex')
       .slice(0, 24);
-    const offset = input.cursor ? decodeCommitDiffCursor(input.cursor, margin) : 0;
+    const cursorState = input.cursor ? decodeCommitDiffCursor(input.cursor, margin) : null;
+    const offset = cursorState?.offset ?? 0;
 
     const page = await streamDiffPage({
       cwd: root,
@@ -850,8 +898,23 @@ export class GitReadModelServiceV1 {
       nextCursor: page.hasMore
         ? encodeCommitDiffCursor({ margin, offset: offset + page.returnedLines })
         : null,
+      ...(cursorState?.resumeHunk ? { resume: cursorState.resumeHunk } : {}),
     });
-    return Object.freeze({ ...document, baseLabel: detail.baseLabel, baseOid: detail.baseOid });
+    // v0.3.26 #275 — re-mint the continuation cursor with the split hunk state.
+    const nextCursor =
+      page.hasMore && document.pendingHunk
+        ? encodeCommitDiffCursor({
+            margin,
+            offset: offset + page.returnedLines,
+            resumeHunk: document.pendingHunk,
+          })
+        : document.nextCursor;
+    return Object.freeze({
+      ...document,
+      nextCursor,
+      baseLabel: detail.baseLabel,
+      baseOid: detail.baseOid,
+    });
   }
 
   private async capture(): Promise<RepositorySnapshot> {
@@ -1728,6 +1791,9 @@ export class GitReadModelServiceV1 {
       ) {
         return invalidCursor();
       }
+      if (parsed.resumeHunk !== undefined && !isDiffHunkResume(parsed.resumeHunk)) {
+        return invalidCursor();
+      }
       if (parsed.revision !== revision) {
         throw new WebWorkbenchError(409, 'Git cursor revision is stale.', 'git_revision_conflict');
       }
@@ -1737,6 +1803,25 @@ export class GitReadModelServiceV1 {
       return invalidCursor();
     }
   }
+}
+
+/** v0.3.26 #275 — the hunk header shape, mirrored for cursor validation. */
+const HUNK_HEADER_PATTERN = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/u;
+
+/** v0.3.26 #275 — validates a cursor-carried hunk resume state. */
+function isDiffHunkResume(value: unknown): value is GitDiffHunkResumeV1 {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.header === 'string' &&
+    HUNK_HEADER_PATTERN.test(candidate.header) &&
+    Number.isSafeInteger(candidate.index) &&
+    (candidate.index as number) >= 0 &&
+    Number.isSafeInteger(candidate.oldCursor) &&
+    (candidate.oldCursor as number) >= 1 &&
+    Number.isSafeInteger(candidate.newCursor) &&
+    (candidate.newCursor as number) >= 1
+  );
 }
 
 function parsePorcelainV1(output: string): GitStatusRecord[] {
@@ -2314,18 +2399,31 @@ export function assertRelativeGitPath(path: unknown): string {
 function encodeCommitDiffCursor(input: {
   readonly margin: string;
   readonly offset: number;
+  /** v0.3.26 #275 — hunk state for a page that continues a split hunk. */
+  readonly resumeHunk?: GitDiffHunkResumeV1;
 }): string {
   return Buffer.from(JSON.stringify({ v: 1, ...input }), 'utf8').toString('base64url');
 }
 
-function decodeCommitDiffCursor(cursor: string, margin: string): number {
+interface CommitDiffCursorV1 {
+  readonly margin: string;
+  readonly offset: number;
+  /** v0.3.26 #275 — hunk state for a page that continues a split hunk. */
+  readonly resumeHunk?: GitDiffHunkResumeV1;
+}
+
+function decodeCommitDiffCursor(cursor: string, margin: string): CommitDiffCursorV1 {
   let parsed: unknown;
   try {
     parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
   } catch {
     throw new WebWorkbenchError(400, 'Diff cursor is not valid.', 'git_cursor_invalid');
   }
-  const candidate = parsed as { readonly margin?: unknown; readonly offset?: unknown };
+  const candidate = parsed as {
+    readonly margin?: unknown;
+    readonly offset?: unknown;
+    readonly resumeHunk?: unknown;
+  };
   if (
     candidate.margin !== margin ||
     typeof candidate.offset !== 'number' ||
@@ -2338,7 +2436,16 @@ function decodeCommitDiffCursor(cursor: string, margin: string): number {
       'git_cursor_invalid'
     );
   }
-  return candidate.offset;
+  if (candidate.resumeHunk !== undefined && !isDiffHunkResume(candidate.resumeHunk)) {
+    throw new WebWorkbenchError(400, 'Diff cursor is not valid.', 'git_cursor_invalid');
+  }
+  return {
+    margin,
+    offset: candidate.offset,
+    ...(candidate.resumeHunk !== undefined
+      ? { resumeHunk: candidate.resumeHunk as GitDiffHunkResumeV1 }
+      : {}),
+  };
 }
 
 /**
