@@ -13,7 +13,10 @@ import { join } from 'path';
 import { parseGitDiffDocument } from '../src/web/git-diff-document';
 import { GitReadModelServiceV1 } from '../src/web/git-read-model-service';
 
-function parse(lines: readonly string[], overrides: Partial<Parameters<typeof parseGitDiffDocument>[0]> = {}) {
+function parse(
+  lines: readonly string[],
+  overrides: Partial<Parameters<typeof parseGitDiffDocument>[0]> = {}
+) {
   return parseGitDiffDocument({
     fileToken: 'git_token',
     path: 'src/example.ts',
@@ -120,10 +123,7 @@ describe('parseGitDiffDocument', () => {
 
   test('marks the trailing hunk incomplete when the page cut it', () => {
     // Header promises 2 new lines, body carries 1 → readonly consumers must not write it.
-    const doc = parse(
-      ['@@ -1,1 +1,2 @@', ' a', '+b'],
-      { hasMore: true, nextCursor: 'cursor-1' }
-    );
+    const doc = parse(['@@ -1,1 +1,2 @@', ' a', '+b'], { hasMore: true, nextCursor: 'cursor-1' });
     expect(doc.completeness).toBe('paged');
     expect(doc.hunks[0].complete).toBe(true);
     expect(doc.nextCursor).toBe('cursor-1');
@@ -134,17 +134,16 @@ describe('parseGitDiffDocument', () => {
   });
 
   test('reports binary and metadata documents without inventing hunks', () => {
-    const binary = parse(['diff --git a/logo.png b/logo.png', 'Binary files a/logo.png and b/logo.png differ']);
+    const binary = parse([
+      'diff --git a/logo.png b/logo.png',
+      'Binary files a/logo.png and b/logo.png differ',
+    ]);
     expect(binary.kind).toBe('binary');
     expect(binary.binary).toBe(true);
     expect(binary.hunks).toEqual([]);
     expect(binary.completeness).toBe('complete');
 
-    const modeOnly = parse([
-      'diff --git a/run.sh b/run.sh',
-      'old mode 100644',
-      'new mode 100755',
-    ]);
+    const modeOnly = parse(['diff --git a/run.sh b/run.sh', 'old mode 100644', 'new mode 100755']);
     expect(modeOnly.kind).toBe('metadata');
     expect(modeOnly.hunks).toEqual([]);
     expect(modeOnly.meta).toContain('old mode 100644');
@@ -238,7 +237,10 @@ describe('GitReadModelServiceV1.diffDocument', () => {
     execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo });
     execFileSync('git', ['config', 'user.email', 'doc@probe.local'], { cwd: repo });
     execFileSync('git', ['config', 'user.name', 'Doc Probe'], { cwd: repo });
-    writeFileSync(join(repo, 'src.ts'), ['line 1', 'line 2', 'line 3', 'line 4', 'line 5'].join('\n') + '\n');
+    writeFileSync(
+      join(repo, 'src.ts'),
+      ['line 1', 'line 2', 'line 3', 'line 4', 'line 5'].join('\n') + '\n'
+    );
     execFileSync('git', ['add', '.'], { cwd: repo });
     execFileSync('git', ['commit', '-q', '-m', 'baseline'], { cwd: repo });
   });
@@ -284,5 +286,102 @@ describe('GitReadModelServiceV1.diffDocument', () => {
     const addition = doc.hunks[0].lines.find(line => line.kind === 'addition');
     expect(addition?.newLineNumber).toBe(4);
     expect(addition?.oldLineNumber).toBeNull();
+  });
+
+  test('v0.3.26 #274 — SQL comment edits survive as structured rows', async () => {
+    writeFileSync(join(repo, 'query.sql'), '-- old comment\nSELECT 1;\n');
+    execFileSync('git', ['add', '.'], { cwd: repo });
+    execFileSync('git', ['commit', '-q', '-m', 'add query'], { cwd: repo });
+    writeFileSync(join(repo, 'query.sql'), '-- new comment\nSELECT 2;\n');
+
+    const service = new GitReadModelServiceV1(repo);
+    const status = await service.status();
+    const entry = status.unstaged.find(file => file.path === 'query.sql');
+    expect(entry).toBeTruthy();
+
+    const doc = await service.diffDocument({ fileId: entry?.fileId ?? '' });
+
+    expect(doc.additions).toBe(2);
+    expect(doc.deletions).toBe(2);
+    expect(doc.hunks).toHaveLength(1);
+    expect(doc.hunks[0].complete).toBe(true);
+    expect(doc.completeness).toBe('complete');
+    // git groups the deletions before the additions for this replacement.
+    expect(doc.hunks[0].lines.map(line => [line.kind, line.text])).toEqual([
+      ['deletion', '-- old comment'],
+      ['deletion', 'SELECT 1;'],
+      ['addition', '-- new comment'],
+      ['addition', 'SELECT 2;'],
+    ]);
+    // The document headers stay in meta; the previously-demoted body row
+    // ("--- old comment") must not.
+    expect(doc.meta).toContain('diff --git a/query.sql b/query.sql');
+    expect(doc.meta).not.toContain('--- old comment');
+    expect(doc.meta.join('\n')).not.toContain('SELECT 1;');
+  });
+
+  test('v0.3.26 #275 — every page of a split hunk keeps its rows and line numbers', async () => {
+    const total = 300;
+    writeFileSync(
+      join(repo, 'big.txt'),
+      Array.from({ length: total }, (_, index) => `old ${index + 1}`).join('\n') + '\n'
+    );
+    execFileSync('git', ['add', '.'], { cwd: repo });
+    execFileSync('git', ['commit', '-q', '-m', 'add big'], { cwd: repo });
+    writeFileSync(
+      join(repo, 'big.txt'),
+      Array.from({ length: total }, (_, index) => `new ${index + 1}`).join('\n') + '\n'
+    );
+
+    const service = new GitReadModelServiceV1(repo);
+    const status = await service.status();
+    const entry = status.unstaged.find(file => file.path === 'big.txt');
+    expect(entry).toBeTruthy();
+
+    // A small page limit splits the single hunk across several pages.
+    const additions: string[] = [];
+    const deletions: string[] = [];
+    const additionLines: number[] = [];
+    const deletionLines: number[] = [];
+    let cursor: string | undefined;
+    let pages = 0;
+    let lastDocument;
+    for (;;) {
+      const document = await service.diffDocument({
+        fileId: entry?.fileId ?? '',
+        lineLimit: 150,
+        ...(cursor ? { cursor } : {}),
+      });
+      pages += 1;
+      lastDocument = document;
+      for (const hunk of document.hunks) {
+        for (const line of hunk.lines) {
+          if (line.kind === 'addition') {
+            additions.push(line.text);
+            if (line.newLineNumber !== null) additionLines.push(line.newLineNumber);
+          } else if (line.kind === 'deletion') {
+            deletions.push(line.text);
+            if (line.oldLineNumber !== null) deletionLines.push(line.oldLineNumber);
+          }
+        }
+      }
+      if (!document.nextCursor) break;
+      cursor = document.nextCursor;
+      expect(pages).toBeLessThan(20);
+    }
+
+    expect(pages).toBeGreaterThan(2);
+    expect(additions).toHaveLength(total);
+    expect(deletions).toHaveLength(total);
+    expect(additions[0]).toBe('new 1');
+    expect(additions[total - 1]).toBe(`new ${total}`);
+    expect(deletions[0]).toBe('old 1');
+    expect(deletions[total - 1]).toBe(`old ${total}`);
+    // Line numbers are contiguous across the page boundary.
+    expect(additionLines).toEqual(Array.from({ length: total }, (_, index) => index + 1));
+    expect(deletionLines).toEqual(Array.from({ length: total }, (_, index) => index + 1));
+    // Every page contributed rows; none demoted them to meta.
+    expect(lastDocument?.completeness).toBe('complete');
+    expect(lastDocument?.meta).toEqual([]);
   });
 });
