@@ -18,6 +18,12 @@ import {
   resolveSessionStorageV1,
   type LegacyThreadMaterializationBoundaryV1,
 } from '../src/runtime/legacy-thread-materializer';
+import { loadThreadSessionViewV1 } from '../src/runtime/thread-session-view';
+import {
+  deleteSession,
+  loadSessionMeta,
+  updateSessionSummary,
+} from '../src/services/session-storage';
 import { ThreadEventStore } from '../src/runtime/thread-event-store';
 import { digestRuntimeValue } from '../src/runtime/protocol/canonical';
 import { threadProjectionDigestForVersionV1 } from '../src/runtime/thread-projection';
@@ -29,6 +35,7 @@ import {
   getProjectSessionMetaPath,
   getProjectSessionTracePath,
   getProjectSessionsDir,
+  getProjectThreadV2ImportReceiptPath,
   getProjectThreadsV2Dir,
   getProjectThreadsV2IndexPath,
 } from '../src/product/paths';
@@ -131,10 +138,8 @@ describe('legacy Thread materialization and atomic cutover', () => {
       sessions: Record<string, Record<string, unknown>>;
       digest: string;
     };
-    const {
-      projectionDigestVersion: _projectionDigestVersion,
-      ...legacyEntryContent
-    } = storedIndex.sessions[sessionId];
+    const { projectionDigestVersion: _projectionDigestVersion, ...legacyEntryContent } =
+      storedIndex.sessions[sessionId];
     void _projectionDigestVersion;
     const legacyEntry = {
       ...legacyEntryContent,
@@ -400,4 +405,100 @@ describe('legacy Thread materialization and atomic cutover', () => {
       'utf8'
     );
   }
+
+  // --- v0.3.26 #276 / #277 ---
+
+  test('permanent deletion removes the v2 records of a cutover Session', () => {
+    const deletedId = 'legacy-delete-target';
+    const keptId = 'legacy-delete-kept';
+    writeLegacySession(deletedId);
+    writeLegacySession(keptId);
+    const deletedCutover = materializeLegacyThreadV1({ projectPath, sessionId: deletedId });
+    const keptCutover = materializeLegacyThreadV1({ projectPath, sessionId: keptId });
+    const threadsDir = getProjectThreadsV2Dir(projectPath);
+    const deletedThreadId = deletedCutover.plan.receipt.threadId;
+    const keptThreadId = keptCutover.plan.receipt.threadId;
+    // Materialize the derived transcript index so the pages exist before deletion.
+    expect(loadThreadSessionViewV1(projectPath, deletedId)).toBeTruthy();
+    expect(loadThreadCutoverIndexV1(projectPath).sessions[deletedId]).toBeTruthy();
+    expect(existsSync(join(threadsDir, `${deletedThreadId}.events.v1.jsonl`))).toBe(true);
+    expect(existsSync(join(threadsDir, `${deletedThreadId}.transcript-pages.v1`))).toBe(true);
+
+    expect(deleteSession(deletedId)).toBe(true);
+
+    // The legacy files and the v2 records are gone for the deleted Session.
+    expect(existsSync(getProjectSessionMetaPath(projectPath, deletedId))).toBe(false);
+    expect(existsSync(join(threadsDir, `${deletedThreadId}.events.v1.jsonl`))).toBe(false);
+    expect(existsSync(join(threadsDir, `${deletedThreadId}.projection.v1.json`))).toBe(false);
+    expect(existsSync(join(threadsDir, `${deletedThreadId}.head.v1.json`))).toBe(false);
+    expect(existsSync(join(threadsDir, `${deletedThreadId}.session-index.v1.json`))).toBe(false);
+    expect(existsSync(join(threadsDir, `${deletedThreadId}.transcript-pages.v1`))).toBe(false);
+    expect(existsSync(getProjectThreadV2ImportReceiptPath(projectPath, deletedThreadId))).toBe(
+      false
+    );
+    expect(loadThreadCutoverIndexV1(projectPath).sessions[deletedId]).toBeUndefined();
+
+    // The unrelated Session keeps its v2 records and its listing entry.
+    expect(existsSync(join(threadsDir, `${keptThreadId}.events.v1.jsonl`))).toBe(true);
+    expect(loadThreadCutoverIndexV1(projectPath).sessions[keptId]).toBeTruthy();
+    expect(loadSessionMeta(keptId)).toBeTruthy();
+    expect(resolveSessionStorageV1(projectPath, keptId)).toMatchObject({ kind: 'thread' });
+  });
+
+  test('the exit-path summary refresh keeps the v2 message count', () => {
+    const sessionId = 'legacy-exit-summary';
+    writeLegacySession(sessionId);
+    materializeLegacyThreadV1({ projectPath, sessionId });
+    const resolution = resolveSessionStorageV1(projectPath, sessionId);
+    if (resolution.kind !== 'thread') throw new Error('cutover did not resolve');
+    const legacyMessages = JSON.parse(
+      readFileSync(getProjectSessionMessagesPath(projectPath, sessionId), 'utf8')
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .join(',')
+        .replace(/^/, '[')
+        .replace(/$/, ']')
+    ) as unknown[];
+    const viewBefore = loadThreadSessionViewV1(projectPath, sessionId);
+    expect(viewBefore).toBeTruthy();
+
+    // One more authoritative turn: the v2 log grows while the legacy JSONL stays
+    // frozen at cutover, which is exactly the /exit regression shape.
+    const store = new ThreadEventStore(getProjectThreadsV2Dir(projectPath), resolution.threadId);
+    const turnId = randomUUID();
+    const stepId = randomUUID();
+    const itemId = randomUUID();
+    store.appendDurable({
+      turnId,
+      payload: { type: 'turn.started', data: { input: 'v2 follow-up', mode: 'build' } },
+    });
+    store.appendDurable({
+      turnId,
+      stepId,
+      itemId,
+      payload: {
+        type: 'item.started',
+        data: { kind: 'message', role: 'user', inputDigest: 'digest-input' },
+      },
+    });
+    // item.delta is ephemeral by protocol; the completed event carries the content.
+    store.appendDurable({
+      turnId,
+      stepId,
+      itemId,
+      payload: { type: 'item.completed', data: { content: 'v2 follow-up' } },
+    });
+
+    const viewAfter = loadThreadSessionViewV1(projectPath, sessionId);
+    expect(viewAfter?.messageCount).toBe((viewBefore?.messageCount ?? 0) + 1);
+
+    // The exit path summarizes from the legacy transcript it just read; the
+    // authoritative count must survive that call.
+    updateSessionSummary(sessionId, legacyMessages as never);
+
+    const meta = loadSessionMeta(sessionId);
+    expect(meta?.messageCount).toBe(viewAfter?.messageCount);
+    expect(meta?.messageCount).not.toBe(legacyMessages.length);
+  });
 });
