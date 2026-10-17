@@ -22,15 +22,40 @@ which is **not** a pass.
 
 ## [Unreleased]
 
-## [0.3.25] — UNRELEASED
+## [0.3.26] — UNRELEASED
 
-> **Status: candidate.** Open. Four open-issue fixes: the Git conflict view reads the
-> edited working file from the filesystem instead of an unstored object (#269), file
-> history walks the requested revision instead of always HEAD (#270), model switching
-> gates the compact preflight on effective input budgets instead of raw context windows
-> (#271), and the left project navigation keeps a stable registration order when
-> sessions are activated (#272). Plan: `docs/plan/v0.3.25-plan.md`. Not merged, tagged
-> or published.
+> **Status: candidate.** Open. Structured-diff integrity and Session lifecycle: body
+> rows that look like file headers stay body rows (#274), a hunk split across
+> pagination keeps its rows, line numbers and identity (#275), permanent Session
+> deletion removes the v2 Thread records (#276), and exiting a cutover Session no
+> longer rewrites its summary from the frozen legacy JSONL (#277). Plan:
+> `docs/plan/v0.3.26-plan.md`. Not merged, tagged or published.
+
+### Fixed
+
+- #274: a deletion row whose text starts with `-- ` (`--- old comment`) is no longer
+  mistaken for the old-file header; the hunk stays open and the remaining body is
+  no longer demoted to document metadata.
+- #275: the structured diff continuation contract carries the split hunk's state
+  (header, index, running line cursors) in the cursor, so every page of a large
+  hunk keeps its rows with correct line numbers and the stable hunk identity, and
+  the last page reports the true completeness.
+- #276: permanently deleting a cutover Session removes its v2 records — cutover
+  index entry, event log, head, projection, compact state and checkpoints,
+  session-index manifest, transcript pages and import receipt — under the same
+  file-lock and atomic-write discipline as the cutover itself.
+- #277: `/exit` (and the shutdown path) no longer rewrites a cutover Session's
+  `messageCount`/`historySizeBytes` from the frozen legacy JSONL; the summary comes
+  from the authoritative v2 Thread.
+
+## [0.3.25] — 2026-10-13
+
+> **Status: published.** Released as `@orion-agents/orion-code@0.3.25` from
+> `refs/tags/v0.3.25`, and merged to `main` as `c356323` (#273). Four open-issue fixes
+> for the Git conflict view (#269), file-history revisions (#270), the model-switch
+> compact preflight (#271) and the stable project navigation order (#272). Plan:
+> `docs/plan/v0.3.25-plan.md`. GitHub Release:
+> https://github.com/orion-agents/orion-code/releases/tag/v0.3.25
 
 ### Fixed
 

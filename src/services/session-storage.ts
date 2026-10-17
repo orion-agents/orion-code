@@ -60,6 +60,7 @@ import {
   type ThreadSessionTranscriptMessageV1,
 } from '../runtime/thread-session-view';
 import {
+  deleteSessionThreadRecordsV1,
   loadThreadCutoverIndexV1,
   type ThreadCutoverIndexEntryV1,
 } from '../runtime/legacy-thread-materializer';
@@ -2673,6 +2674,21 @@ export function updateSessionSummary(sessionId: string, _messages: SessionMessag
   // Callers may hold a stale transcript snapshot. Re-read under the same lock
   // used by append/delete so reconciliation can never roll metadata backwards.
   withLockedSession(sessionId, session => {
+    // v0.3.26 #277 — a cutover Session's summary comes from the authoritative
+    // v2 Thread. Its legacy JSONL is frozen at cutover, so summarizing from it
+    // (as /exit and the shutdown path do) would move messageCount and
+    // historySizeBytes backwards while the Thread history is intact. Reopening
+    // the Session repairs the read model from v2; this makes the exit path
+    // agree instead of regressing it.
+    const threadView = loadThreadSessionViewV1(session.projectPath, session.id);
+    if (threadView) {
+      session.messageCount = threadView.messageCount;
+      session.historySizeBytes = threadView.historySizeBytes;
+      session.updatedAt = threadView.updatedAt;
+      session.updatedAtIso = new Date(session.updatedAt).toISOString();
+      writeSessionMetaUnlocked(session);
+      return;
+    }
     const summary = summarizeSessionMessages(readSessionMessagesForSession(session));
 
     session.toolsUsed = summary.toolsUsed;
@@ -3497,6 +3513,13 @@ export function deleteSession(sessionId: string): boolean {
       updateSessionCatalog(catalog => {
         delete catalog.sessions[sessionId];
       });
+
+      // v0.3.26 #276 — a cutover Session's v2 records are the authoritative
+      // history; permanent deletion must remove them with the legacy files.
+      // The Web deletion dialog promises exactly that.
+      if (deleteSessionThreadRecordsV1(session.projectPath, sessionId)) {
+        deleted = true;
+      }
 
       return deleted;
     }) ?? false

@@ -60,6 +60,7 @@ function document(overrides: Partial<GitDiffDocumentV2> = {}): GitDiffDocumentV2
       },
     ],
     meta: [],
+    pendingHunk: null,
     completeness: 'complete',
     additions: 1,
     deletions: 1,
@@ -193,7 +194,7 @@ describe('StructuredDiffViewer', () => {
     const staged = render({
       document: {
         source: 'staged',
-        capabilities: {
+      capabilities: {
           stageFile: false,
           unstageFile: true,
           stageHunk: false,

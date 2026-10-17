@@ -39,6 +39,7 @@ function doc(overrides: Partial<GitDiffDocumentV2> = {}): GitDiffDocumentV2 {
       },
     ],
     meta: [],
+    pendingHunk: null,
     completeness: 'complete',
     additions: 0,
     deletions: 1,

@@ -1,5 +1,14 @@
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync } from 'fs';
-import { basename, resolve } from 'path';
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+} from 'fs';
+import { basename, join, resolve } from 'path';
 
 import { atomicWriteFileSync } from '../services/atomic-write';
 import { withFileLockSync } from '../services/file-lock';
@@ -362,6 +371,77 @@ export function openSessionStorageV1(
 
 export function loadThreadCutoverIndexV1(projectPath: string): ThreadCutoverIndexV1 {
   return readThreadCutoverIndex(getProjectThreadsV2IndexPath(resolve(projectPath)));
+}
+
+/**
+ * v0.3.26 #276 — permanently removes one Session's durable v2 records: the
+ * cutover index entry plus every thread file the materializer and the event
+ * store publish (event log, projection, head, compact state and checkpoints,
+ * session-index manifest, transcript pages, import receipt). Returns the
+ * removed thread id, or null when the Session was never cut over.
+ *
+ * The index write takes the same file lock and atomic-write discipline as the
+ * cutover itself, with the generation bumped; an emptied index keeps its file
+ * with an empty session map so readers stay on the atomic authority instead of
+ * treating a missing file as "no v2 Sessions at all".
+ */
+export function deleteSessionThreadRecordsV1(
+  projectPathInput: string,
+  sessionId: string
+): string | null {
+  const projectPath = resolve(projectPathInput);
+  const indexPath = getProjectThreadsV2IndexPath(projectPath);
+  // A project that never cut a Session over has no index and no threads-v2
+  // directory; taking the lock would create one on a pure legacy deletion.
+  if (!existsSync(indexPath)) return null;
+  const threadsDir = getProjectThreadsV2Dir(projectPath);
+  return withFileLockSync(indexPath, () => {
+    const current = readThreadCutoverIndex(indexPath);
+    const entry = current.sessions[sessionId];
+    if (!entry) return null;
+    const sessions = { ...current.sessions };
+    delete sessions[sessionId];
+    const content = { version: 1 as const, generation: current.generation + 1, sessions };
+    const next = deepFreeze({ ...content, digest: digestRuntimeValue(content) });
+    atomicWriteFileSync(indexPath, `${canonicalRuntimeJson(next)}\n`, {
+      mode: 0o600,
+      fsync: true,
+    });
+    removeThreadFiles(threadsDir, projectPath, entry.threadId);
+    return entry.threadId;
+  });
+}
+
+/** v0.3.26 #276 — removes every durable file of one thread. Best effort per
+ *  file: a missing artifact is already deleted, and an unlink failure must not
+ *  resurrect the cutover entry that was just removed. */
+function removeThreadFiles(threadsDir: string, projectPath: string, threadId: string): void {
+  const files = [
+    join(threadsDir, `${threadId}.events.v1.jsonl`),
+    join(threadsDir, `${threadId}.projection.v1.json`),
+    join(threadsDir, `${threadId}.head.v1.json`),
+    join(threadsDir, `${threadId}.compact-state.v1.json`),
+    join(threadsDir, `${threadId}.session-index.v1.json`),
+    getProjectThreadV2ImportReceiptPath(projectPath, threadId),
+  ];
+  for (const file of files) {
+    try {
+      if (existsSync(file)) unlinkSync(file);
+    } catch {
+      // Durable leftovers are reported by the integrity checks, never by
+      // throwing here: the cutover entry removal is already committed.
+    }
+  }
+  for (const dir of [
+    join(threadsDir, `${threadId}.compact-checkpoints.v1`),
+    join(threadsDir, `${threadId}.transcript-pages.v1`),
+  ]) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // See above.
+    }
+  }
 }
 
 function buildMaterializedEvents(

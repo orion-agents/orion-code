@@ -46,6 +46,19 @@ export interface GitHunkV2 {
 
 export type GitDiffDocumentKindV2 = 'text' | 'binary' | 'symlink' | 'submodule' | 'metadata';
 
+/**
+ * v0.3.26 #275 — parser state for a hunk that a page boundary split. Carried in
+ * the continuation cursor so the next page re-opens the hunk with its stable
+ * identity (`index:oldStart:newStart`) and correct running line cursors instead
+ * of demoting the continuation rows to document meta.
+ */
+export interface GitDiffHunkResumeV1 {
+  readonly header: string;
+  readonly index: number;
+  readonly oldCursor: number;
+  readonly newCursor: number;
+}
+
 export interface GitDiffCapabilitiesV2 {
   readonly stageFile: boolean;
   readonly unstageFile: boolean;
@@ -69,6 +82,11 @@ export interface GitDiffDocumentV2 {
   readonly hunks: readonly GitHunkV2[];
   /** Metadata lines that are not part of any hunk (file headers, mode changes, …). */
   readonly meta: readonly string[];
+  /**
+   * v0.3.26 #275 — the hunk still open when this page ended, for the
+   * continuation cursor. Null when the page ends on a hunk boundary.
+   */
+  readonly pendingHunk: GitDiffHunkResumeV1 | null;
   readonly completeness: 'complete' | 'paged' | 'limited';
   readonly additions: number;
   readonly deletions: number;
@@ -157,6 +175,8 @@ export function parseGitDiffDocument(input: {
   readonly hasMore: boolean;
   /** Host-signed continuation cursor, or null. Never synthesised here. */
   readonly nextCursor: string | null;
+  /** v0.3.26 #275 — hunk state from the previous page's `pendingHunk`. */
+  readonly resume?: GitDiffHunkResumeV1 | null;
 }): GitDiffDocumentV2 {
   const kind = detectKind(input.lines);
   const binary = kind === 'binary';
@@ -179,6 +199,37 @@ export function parseGitDiffDocument(input: {
         index: number;
       }
     | undefined;
+
+  const openHunk = (header: string, index: number, oldCursor: number, newCursor: number): void => {
+    const headerMatch = HUNK_HEADER.exec(header);
+    if (!headerMatch) return;
+    const oldStart = Number(headerMatch[1]);
+    const newStart = Number(headerMatch[3]);
+    current = {
+      header,
+      oldStart,
+      oldLines: headerMatch[2] === undefined ? 1 : Number(headerMatch[2]),
+      newStart,
+      newLines: headerMatch[4] === undefined ? 1 : Number(headerMatch[4]),
+      contextLabel: (headerMatch[5] ?? '').trim(),
+      lines: [],
+      oldCursor,
+      newCursor,
+      index,
+    };
+  };
+
+  // v0.3.26 #275 — a continuation page starts mid-hunk: re-open it from the
+  // resume state before the first line is classified. A page that happens to
+  // start with its own `@@` header simply ignores the resume state.
+  if (input.resume && !HUNK_HEADER.test(input.lines[0] ?? '')) {
+    openHunk(
+      input.resume.header,
+      input.resume.index,
+      input.resume.oldCursor,
+      input.resume.newCursor
+    );
+  }
 
   const closeHunk = (): void => {
     if (!current) return;
@@ -245,14 +296,22 @@ export function parseGitDiffDocument(input: {
       continue;
     }
 
-    if (isMetaLine(raw)) {
+    // v0.3.26 #274 — the body marker decides first. A deletion of a line that
+    // itself starts with `-- ` produces the body row `--- old comment`, which a
+    // header-first check mistook for the old-file header, closing the hunk and
+    // demoting the remaining body to document meta. Genuine document-level lines
+    // carry no body marker by construction: context rows start with a space,
+    // additions with `+`, deletions with `-`, and file boundaries are announced
+    // by a markerless `diff --git` line.
+    const marker = raw[0];
+    const isBodyRow = marker === '+' || marker === '-' || marker === ' ' || raw === '';
+    if (!isBodyRow && isMetaLine(raw)) {
       // A file boundary inside one page (multi-command reads) closes the current hunk.
       closeHunk();
       if (raw) meta.push(raw);
       continue;
     }
 
-    const marker = raw[0];
     const text = raw.length > 0 ? raw.slice(1) : '';
     let lineKind: GitDiffLineKindV2;
     let oldLineNumber: number | null = null;
@@ -295,6 +354,17 @@ export function parseGitDiffDocument(input: {
       })
     );
   }
+  // v0.3.26 #275 — a page that ends inside a hunk publishes the hunk state for
+  // the continuation cursor; a page ending on a boundary has nothing to resume.
+  const pendingHunk: GitDiffHunkResumeV1 | null =
+    input.hasMore && current
+      ? Object.freeze({
+          header: current.header,
+          index: current.index,
+          oldCursor: current.oldCursor,
+          newCursor: current.newCursor,
+        })
+      : null;
   closeHunk();
 
   const frozenHunks = Object.freeze(hunks);
@@ -313,6 +383,7 @@ export function parseGitDiffDocument(input: {
     binary,
     hunks: frozenHunks,
     meta: Object.freeze(meta),
+    pendingHunk,
     completeness,
     additions,
     deletions,
