@@ -1,0 +1,356 @@
+{
+  "schemaVersion": 1,
+  "purpose": "v0.3.27 §9.3 人工标注审查质量基准集（PR0 冻结结构；运行前需人工复核签认）",
+  "counts": {
+    "defect": 12,
+    "clean": 8,
+    "total": 20
+  },
+  "languages": [
+    "typescript",
+    "javascript",
+    "python"
+  ],
+  "scoring": {
+    "rounds": 3,
+    "recall": "每轮 ≥ 9/12 个标注缺陷（重复不计 TP，错误位置不算命中）",
+    "precision": "每轮有效 finding precision ≥ 80%（分母含误报）",
+    "cleanFalsePositives": "每轮 ≤ 1/8 个干净样本出现缺陷误报",
+    "validTerminal": "每轮 ≥ 18/20 个样本在预算内产出有效终态"
+  },
+  "humanReview": "PENDING — 运行任何付费模型评测前需用户对本清单逐样本签认",
+  "samples": [
+    {
+      "id": "ts-01-cancel-unpropagated",
+      "language": "typescript",
+      "kind": "defect",
+      "file": "samples/ts-01-cancel-unpropagated.ts",
+      "category": "async-cancel",
+      "contentSha256": "0754dd76f38a8f28a53e04663e887ee1a20d7a5e0e1bf8a262d38bb7aee7f2cd",
+      "expectedFindings": [
+        {
+          "trigger": "调用方传入 AbortSignal 并在请求进行中取消",
+          "impact": "已取消的搜索继续执行，迟到的结果覆盖最新状态",
+          "priorityHint": "P1",
+          "allowedFile": "ts-01-cancel-unpropagated.ts",
+          "allowedLines": [
+            10,
+            16
+          ]
+        }
+      ],
+      "notes": "只接受命中 allowedLines 内、且与本 trigger 语义一致的问题；现存无关小问题不计入。"
+    },
+    {
+      "id": "ts-02-listener-leak",
+      "language": "typescript",
+      "kind": "defect",
+      "file": "samples/ts-02-listener-leak.ts",
+      "category": "resource-lifecycle",
+      "contentSha256": "60ca950aa0584340867560c31e51b664a7ba4a1677cc9421d2a971ff50330643",
+      "expectedFindings": [
+        {
+          "trigger": "同一 Dashboard 实例多次 refresh",
+          "impact": "监听器累积，一次数据事件触发多次渲染并泄漏内存",
+          "priorityHint": "P1",
+          "allowedFile": "ts-02-listener-leak.ts",
+          "allowedLines": [
+            12,
+            19
+          ]
+        }
+      ],
+      "notes": "只接受命中 allowedLines 内、且与本 trigger 语义一致的问题；现存无关小问题不计入。"
+    },
+    {
+      "id": "ts-03-path-traversal",
+      "language": "typescript",
+      "kind": "defect",
+      "file": "samples/ts-03-path-traversal.ts",
+      "category": "permission-path",
+      "contentSha256": "215870ec4dfd6e0942c62bb6f905dd75d8376c21062194acfc5a7b002792b8ac",
+      "expectedFindings": [
+        {
+          "trigger": "userPath 含 .. 或绝对路径成分",
+          "impact": "读取 PUBLIC_ROOT 之外的任意文件（路径穿越）",
+          "priorityHint": "P0",
+          "allowedFile": "ts-03-path-traversal.ts",
+          "allowedLines": [
+            9,
+            13
+          ]
+        }
+      ],
+      "notes": "只接受命中 allowedLines 内、且与本 trigger 语义一致的问题；现存无关小问题不计入。"
+    },
+    {
+      "id": "ts-04-cache-race",
+      "language": "typescript",
+      "kind": "defect",
+      "file": "samples/ts-04-cache-race.ts",
+      "category": "race",
+      "contentSha256": "92284fa879bb1a956c754780218f6cdbf406747d54f441dd614f61993d27c2c8",
+      "expectedFindings": [
+        {
+          "trigger": "同一 key 并发调用 loadConfig",
+          "impact": "重复网络请求且后写覆盖先写，缓存放大下游压力",
+          "priorityHint": "P2",
+          "allowedFile": "ts-04-cache-race.ts",
+          "allowedLines": [
+            7,
+            12
+          ]
+        }
+      ],
+      "notes": "只接受命中 allowedLines 内、且与本 trigger 语义一致的问题；现存无关小问题不计入。"
+    },
+    {
+      "id": "ts-05-pagination-offbyone",
+      "language": "typescript",
+      "kind": "defect",
+      "file": "samples/ts-05-pagination-offbyone.ts",
+      "category": "boundary",
+      "contentSha256": "3cbb4170c0c92cba609564509576f060b051209a164e098d85826d192c4cf86f",
+      "expectedFindings": [
+        {
+          "trigger": "任意 page/size 组合分页",
+          "impact": "第 1 页跳过首个元素，全部页整体偏移一项",
+          "priorityHint": "P1",
+          "allowedFile": "ts-05-pagination-offbyone.ts",
+          "allowedLines": [
+            4,
+            6
+          ]
+        }
+      ],
+      "notes": "只接受命中 allowedLines 内、且与本 trigger 语义一致的问题；现存无关小问题不计入。"
+    },
+    {
+      "id": "ts-06-swallowed-failure",
+      "language": "typescript",
+      "kind": "defect",
+      "file": "samples/ts-06-swallowed-failure.ts",
+      "category": "error-handling",
+      "contentSha256": "8b55b00870dd9ee43033319f425c818aa2170da69a7732ce9894015ca4b4dcf4",
+      "expectedFindings": [
+        {
+          "trigger": "runScript 抛错（如空脚本）",
+          "impact": "失败被报告为成功，审计与调用方均被误导",
+          "priorityHint": "P1",
+          "allowedFile": "ts-06-swallowed-failure.ts",
+          "allowedLines": [
+            8,
+            12
+          ]
+        }
+      ],
+      "notes": "只接受命中 allowedLines 内、且与本 trigger 语义一致的问题；现存无关小问题不计入。"
+    },
+    {
+      "id": "js-07-loop-boundary",
+      "language": "javascript",
+      "kind": "defect",
+      "file": "samples/js-07-loop-boundary.js",
+      "category": "boundary",
+      "contentSha256": "515ef73e75b174b29797b3197b878a72b1e0cd56184e85bfef23f1161562aabe",
+      "expectedFindings": [
+        {
+          "trigger": "items 非空时调用 cartTotal",
+          "impact": "读到越界 undefined，结果为 NaN",
+          "priorityHint": "P1",
+          "allowedFile": "js-07-loop-boundary.js",
+          "allowedLines": [
+            4,
+            6
+          ]
+        }
+      ],
+      "notes": "只接受命中 allowedLines 内、且与本 trigger 语义一致的问题；现存无关小问题不计入。"
+    },
+    {
+      "id": "js-08-timer-after-dispose",
+      "language": "javascript",
+      "kind": "defect",
+      "file": "samples/js-08-timer-after-dispose.js",
+      "category": "resource-lifecycle",
+      "contentSha256": "e0c307ad0890553ce855cfca37a5a544eb1a0a847d00682552f13274ebc565f8",
+      "expectedFindings": [
+        {
+          "trigger": "调用 dispose() 后等待心跳周期",
+          "impact": "定时器未清除，销毁后仍持续触发回调",
+          "priorityHint": "P2",
+          "allowedFile": "js-08-timer-after-dispose.js",
+          "allowedLines": [
+            16,
+            18
+          ]
+        }
+      ],
+      "notes": "只接受命中 allowedLines 内、且与本 trigger 语义一致的问题；现存无关小问题不计入。"
+    },
+    {
+      "id": "py-09-shell-injection",
+      "language": "python",
+      "kind": "defect",
+      "file": "samples/py-09-shell-injection.py",
+      "category": "permission-path",
+      "contentSha256": "525d1338e908461840504eb9a0106915e02a241f496fc3241756ce38f65b4216",
+      "expectedFindings": [
+        {
+          "trigger": "name 含 shell 元字符（如分号或反引号）",
+          "impact": "任意命令执行（shell 注入）",
+          "priorityHint": "P0",
+          "allowedFile": "py-09-shell-injection.py",
+          "allowedLines": [
+            9,
+            14
+          ]
+        }
+      ],
+      "notes": "只接受命中 allowedLines 内、且与本 trigger 语义一致的问题；现存无关小问题不计入。"
+    },
+    {
+      "id": "py-10-fd-leak",
+      "language": "python",
+      "kind": "defect",
+      "file": "samples/py-10-fd-leak.py",
+      "category": "resource-lifecycle",
+      "contentSha256": "b5aa9a23bd78ba51be069a962985f345e19aff6c162365509e57be26bbc3c052",
+      "expectedFindings": [
+        {
+          "trigger": "path 不以 .json 结尾时抛出 ValueError",
+          "impact": "文件句柄泄漏，长期运行耗尽 fd",
+          "priorityHint": "P2",
+          "allowedFile": "py-10-fd-leak.py",
+          "allowedLines": [
+            7,
+            10
+          ]
+        }
+      ],
+      "notes": "只接受命中 allowedLines 内、且与本 trigger 语义一致的问题；现存无关小问题不计入。"
+    },
+    {
+      "id": "py-11-mutating-iteration",
+      "language": "python",
+      "kind": "defect",
+      "file": "samples/py-11-mutating-iteration.py",
+      "category": "boundary",
+      "contentSha256": "195c0f9253d885e79965c3db1a4d822c8cf73103c085446d76913045f98cc762",
+      "expectedFindings": [
+        {
+          "trigger": "存在至少一个过期会话时执行 sweep",
+          "impact": "迭代中修改字典抛 RuntimeError，清扫任务整体失败",
+          "priorityHint": "P1",
+          "allowedFile": "py-11-mutating-iteration.py",
+          "allowedLines": [
+            7,
+            10
+          ]
+        }
+      ],
+      "notes": "只接受命中 allowedLines 内、且与本 trigger 语义一致的问题；现存无关小问题不计入。"
+    },
+    {
+      "id": "py-12-counter-interleave",
+      "language": "python",
+      "kind": "defect",
+      "file": "samples/py-12-counter-interleave.py",
+      "category": "race",
+      "contentSha256": "131b38b661f356d38e287ccef9c648e216ebe7833fe55f589db5abfe35d13ddc",
+      "expectedFindings": [
+        {
+          "trigger": "多个 handle 任务并发执行",
+          "impact": "await 交错导致计数丢失，统计偏低",
+          "priorityHint": "P2",
+          "allowedFile": "py-12-counter-interleave.py",
+          "allowedLines": [
+            8,
+            12
+          ]
+        }
+      ],
+      "notes": "只接受命中 allowedLines 内、且与本 trigger 语义一致的问题；现存无关小问题不计入。"
+    },
+    {
+      "id": "ts-c1-cancel-correct",
+      "language": "typescript",
+      "kind": "clean",
+      "file": "samples/ts-c1-cancel-correct.ts",
+      "category": "async-cancel",
+      "contentSha256": "55068e9f8327a2431e47cbf68837096263f0427291d6adb9d94e18cd73ca633a",
+      "expectation": "不得出现 P0/P1 级缺陷误报；风格建议不算命中。",
+      "notes": "干净对照：任何将其判为含 P0/P1 缺陷的结果都计为误报。"
+    },
+    {
+      "id": "ts-c2-listener-correct",
+      "language": "typescript",
+      "kind": "clean",
+      "file": "samples/ts-c2-listener-correct.ts",
+      "category": "resource-lifecycle",
+      "contentSha256": "d17e455256fff4452010b15830b996c50a999e0465dca0a957ce751efcc5c3d1",
+      "expectation": "不得出现 P0/P1 级缺陷误报；风格建议不算命中。",
+      "notes": "干净对照：任何将其判为含 P0/P1 缺陷的结果都计为误报。"
+    },
+    {
+      "id": "ts-c3-path-containment",
+      "language": "typescript",
+      "kind": "clean",
+      "file": "samples/ts-c3-path-containment.ts",
+      "category": "permission-path",
+      "contentSha256": "0f3da02359342e170cbcf4c5e7e9c7a75ba8be71f6b102471c35b611f562a8ef",
+      "expectation": "不得出现 P0/P1 级缺陷误报；风格建议不算命中。",
+      "notes": "干净对照：任何将其判为含 P0/P1 缺陷的结果都计为误报。"
+    },
+    {
+      "id": "ts-c4-pagination-correct",
+      "language": "typescript",
+      "kind": "clean",
+      "file": "samples/ts-c4-pagination-correct.ts",
+      "category": "boundary",
+      "contentSha256": "8177dc0f04c1d3fc2a0c9b1f596c418c8fcfb1ee82b9157a0f3d5ab89c771edd",
+      "expectation": "不得出现 P0/P1 级缺陷误报；风格建议不算命中。",
+      "notes": "干净对照：任何将其判为含 P0/P1 缺陷的结果都计为误报。"
+    },
+    {
+      "id": "js-c5-serialized-queue",
+      "language": "javascript",
+      "kind": "clean",
+      "file": "samples/js-c5-serialized-queue.js",
+      "category": "race",
+      "contentSha256": "046889b4e5bf0a06fdd867675201c0df494c7fe1d07386be849fd8c1a90a1ad5",
+      "expectation": "不得出现 P0/P1 级缺陷误报；风格建议不算命中。",
+      "notes": "干净对照：任何将其判为含 P0/P1 缺陷的结果都计为误报。"
+    },
+    {
+      "id": "js-c6-timer-cleared",
+      "language": "javascript",
+      "kind": "clean",
+      "file": "samples/js-c6-timer-cleared.js",
+      "category": "resource-lifecycle",
+      "contentSha256": "a5f3fb70a77932977d11646aff6326441a08f4c1ddd664bf4c96abb0c6f75846",
+      "expectation": "不得出现 P0/P1 级缺陷误报；风格建议不算命中。",
+      "notes": "干净对照：任何将其判为含 P0/P1 缺陷的结果都计为误报。"
+    },
+    {
+      "id": "py-c7-subprocess-list-args",
+      "language": "python",
+      "kind": "clean",
+      "file": "samples/py-c7-subprocess-list-args.py",
+      "category": "permission-path",
+      "contentSha256": "4a450426ca72243f6fedc39f3a4dc413acad18e30fdf45ac46e99c9d6474c9b6",
+      "expectation": "不得出现 P0/P1 级缺陷误报；风格建议不算命中。",
+      "notes": "干净对照：任何将其判为含 P0/P1 缺陷的结果都计为误报。"
+    },
+    {
+      "id": "py-c8-context-manager",
+      "language": "python",
+      "kind": "clean",
+      "file": "samples/py-c8-context-manager.py",
+      "category": "resource-lifecycle",
+      "contentSha256": "de6e2b7ab260854f28800f8a9ff8c57a355f122664abf8b3c2901e61a2821e5e",
+      "expectation": "不得出现 P0/P1 级缺陷误报；风格建议不算命中。",
+      "notes": "干净对照：任何将其判为含 P0/P1 缺陷的结果都计为误报。"
+    }
+  ]
+}
