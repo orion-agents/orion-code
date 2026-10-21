@@ -22,14 +22,54 @@ which is **not** a pass.
 
 ## [Unreleased]
 
-## [0.3.26] — UNRELEASED
+## [0.3.27] — UNRELEASED
 
-> **Status: candidate.** Open. Structured-diff integrity and Session lifecycle: body
-> rows that look like file headers stay body rows (#274), a hunk split across
-> pagination keeps its rows, line numbers and identity (#275), permanent Session
-> deletion removes the v2 Thread records (#276), and exiting a cutover Session no
-> longer rewrites its summary from the frozen legacy JSONL (#277). Plan:
-> `docs/plan/v0.3.26-plan.md`. Not merged, tagged or published.
+> **Status: candidate.** Open. First slice of the professional code review loop
+> (plan: `docs/plan/v0.3.27-plan.md`): the shared review contract (selectors,
+> states, conclusions, findings, tighten-only budgets, receipt digests,
+> stale-applicability) is frozen in `src/services/code-review` and bound by
+> contract tests; the shared Git snapshot reader captures worktree (staged /
+> unstaged / untracked, separate sources) and base (frozen merge-base..HEAD
+> OIDs, rename tracking) scopes with typed scope errors; and the read-only
+> workflow constraints deny every non-read tool by default with a dispatch-level
+> guard whose digest binds receipts. Runtime / CLI wiring (PR2), the Web loop
+> (PR3) and the qualification benchmark (PR4) are subsequent slices of the same
+> plan and are not part of this release. Not merged, tagged or published.
+
+### Added
+
+- #277-plan PR0: `src/services/code-review/contract.ts` — the shared review
+  contract with the plan §4.1 conclusion mapping (a partial, failed, cancelled
+  or untrustworthy review can never surface as a green "no findings"),
+  tighten-only budgets from plan §4.3, finding validation, receipt digests
+  verified by recomputation, and stale-applicability annotation that never
+  rewrites history. Twelve contract tests pin the semantics.
+- PR0: the human-annotation review-quality benchmark set (12 defect + 8 clean
+  samples across TypeScript/JavaScript/Python with content digests, expected
+  triggers, allowed locations and frozen scoring thresholds), awaiting
+  per-sample human sign-off before any paid model run (plan §9.3).
+- PR1: `src/services/code-review/snapshot.ts` — the shared Git snapshot reader:
+  worktree scope records staged (index OIDs), unstaged (working content with
+  before/after digest re-checks) and untracked changes as separate sources;
+  base scope freezes ref/HEAD/merge-base into immutable OIDs with rename
+  tracking and typed `ref_unresolved` / `no_merge_base` errors; sensitive and
+  binary entries are skipped without being read; tightened budgets skip the
+  excess with typed reasons; the contained worktree reader refuses to leave the
+  repository root.
+- PR1: `src/services/code-review/constraints.ts` — deny-by-default read-only
+  workflow constraints (only `read_file`, `list_files`, `glob`, `grep` pass the
+  dispatch-level guard) with a frozen digest that receipts bind.
+
+## [0.3.26] — 2026-10-17
+
+> **Status: published.** Released as `@orion-agents/orion-code@0.3.26` from
+> `refs/tags/v0.3.26`, and merged to `main` as `b810996` (#278). Structured-diff
+> integrity and Session lifecycle: header-lookalike body rows stay body rows
+> (#274), hunks split across pagination keep their rows, line numbers and
+> identity (#275), permanent Session deletion removes the v2 Thread records
+> (#276), and exiting a cutover Session no longer rewrites its summary from the
+> frozen legacy JSONL (#277). Plan: `docs/plan/v0.3.26-plan.md`. GitHub Release:
+> https://github.com/orion-agents/orion-code/releases/tag/v0.3.26
 
 ### Fixed
 

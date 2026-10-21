@@ -2,12 +2,14 @@
 
 Local-first, goal-driven coding agent for the terminal and browser.
 
-> v0.3.26 candidate — open. Structured-diff integrity and Session lifecycle: header-lookalike
-> body rows stay body rows (#274), hunks split across pagination keep their rows and line
-> numbers (#275), permanent Session deletion removes the v2 Thread records (#276), and
-> exiting a cutover Session no longer regresses its summary from the legacy JSONL (#277).
-> The previous release 0.3.25 is on npm (registry `latest`), tagged `v0.3.25` (`c356323`,
-> #273) and released on GitHub.
+> v0.3.27 candidate — open. First slice of the professional code review loop: the
+> shared review contract (selectors, states, conclusions, findings, tighten-only
+> budgets, receipt digests, stale-applicability) is frozen and contract-tested,
+> the shared Git snapshot reader captures worktree and frozen-base scopes with
+> typed errors, and the read-only workflow constraints deny every non-read tool
+> by default. Runtime/CLI wiring, the Web loop and the qualification benchmark
+> are subsequent slices of the same plan. The previous release 0.3.26 is on npm
+> (registry `latest`), tagged `v0.3.26` (`b810996`, #278) and released on GitHub.
 
 [中文说明](README.zh-CN.md) ·
 [v0.3.24 plan](docs/plan/v0.3.24-plan.md) ·
@@ -170,10 +172,10 @@ user extension boundaries.
 Node.js 22.12+, 24, and 26 are supported. Use Node 24 LTS for production or Node 26 Current for
 current development environments. Node 20 is upstream EOL and is no longer a v0.3 runtime.
 
-To install the pinned v0.3.26 package when it is available on npm:
+To install the pinned v0.3.27 package when it is available on npm:
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.26
+npm install -g @orion-agents/orion-code@0.3.27
 orion --version
 orion doctor
 ```
