@@ -5,6 +5,7 @@ import {
   handlePlan,
   handleDiff,
   handleCommitPlan,
+  handleReview,
   continueAsSlashChat,
 } from './workflow-command-handlers';
 import { handleTodos } from './context-tool-command-handlers';
@@ -59,14 +60,14 @@ export const WORKFLOW_COMMANDS: SlashCommand[] = [
   },
   {
     name: 'review',
-    description: 'Review the current change or requested files',
-    argumentHint: '[scope]',
+    description: 'Run a bounded read-only code review of the current change or a base comparison',
+    argumentHint: '[all | --base <ref>] [--path <path>]',
     category: 'workflow',
     priority: 10,
-    type: 'chat',
-    execution: 'agent-workflow',
+    type: 'builtin',
+    execution: 'builtin',
     risk: 'read-only',
-    execute: (_ctx, args) => continueAsSlashChat('review', args),
+    execute: (ctx, args) => handleReview(ctx, args),
   },
   {
     name: 'research',

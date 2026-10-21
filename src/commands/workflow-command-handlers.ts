@@ -4,6 +4,9 @@ import { type CommandContext, type CommandResult } from './types';
 import { collectWorkspaceDiff, formatWorkspaceDiff } from '../services/workspace-diff';
 import { createCommitPlan, formatCommitPlan } from '../services/commit-plan';
 import { setAgentMode } from '../framework/agent-mode';
+import { parseReviewSelector } from '../services/code-review/selector';
+import { runCodeReview } from '../services/code-review/runner';
+import { formatReviewReport } from '../services/code-review/format';
 
 async function handlePlan(ctx: CommandContext, args: string): Promise<CommandResult> {
   const task = args.trim();
@@ -94,4 +97,74 @@ function continueAsSlashChat(name: string, args: string): CommandResult {
   };
 }
 
-export { handlePlan, handleDiff, handleCommitPlan, continueAsSlashChat };
+/**
+ * v0.3.28 — the typed `/review` workflow (docs/plan/v0.3.28-plan.md S4).
+ * Arguments are parsed into a frozen selector; unrecognized input returns the
+ * usage text instead of silently continuing as an ordinary chat turn. The
+ * run goes through the bounded single-pass review runner against the frozen
+ * Git snapshot, and the receipt is rendered by the shared formatter.
+ */
+async function handleReview(ctx: CommandContext, args: string): Promise<CommandResult> {
+  const parsed = parseReviewSelector(args);
+  if (!parsed.ok) return { success: false, error: parsed.usage };
+  if (!ctx.llm) {
+    return {
+      success: false,
+      error: 'Code review needs a configured model. Run /model first, then retry /review.',
+    };
+  }
+  const llm = ctx.llm;
+  const outcome = await runCodeReview({
+    cwd: ctx.cwd,
+    selector: parsed.selector,
+    adapter: {
+      async complete(messages) {
+        const response = await llm.chat(
+          messages.map(message => ({ role: message.role, content: message.content }))
+        );
+        return {
+          content: response.content,
+          model: response.model,
+          usage: {
+            inputTokens: response.usage?.promptTokens ?? 0,
+            outputTokens: response.usage?.completionTokens ?? 0,
+          },
+        };
+      },
+    },
+    identity: {
+      workspaceIdentity: ctx.cwd,
+      sessionId: ctx.sessionId ?? 'pending-session',
+      threadId: ctx.sessionId ?? 'pending-session',
+      turnId: String(ctx.turnId ?? 'ad-hoc'),
+    },
+    ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
+  });
+
+  if (!outcome.ok) {
+    const failure = outcome.failure;
+    if (failure.kind === 'cancelled') return { success: false, error: 'Review cancelled.' };
+    if (failure.kind === 'budget') {
+      return { success: false, error: `Review budget rejected: ${failure.field}` };
+    }
+    if (failure.kind === 'snapshot') {
+      return {
+        success: false,
+        error: `Review scope error (${failure.code}): ${failure.message}`,
+      };
+    }
+    if (failure.kind === 'model_error') {
+      return { success: false, error: `Review model call failed: ${failure.message}` };
+    }
+    return { success: false, error: `Review output could not be parsed: ${failure.message}` };
+  }
+  return { success: true, output: formatReviewReport(outcome.result) };
+}
+
+export {
+  handlePlan,
+  handleDiff,
+  handleCommitPlan,
+  continueAsSlashChat,
+  handleReview,
+};

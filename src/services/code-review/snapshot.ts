@@ -200,6 +200,18 @@ function pathMatches(path: string, requestedPaths: readonly string[]): boolean {
   return requestedPaths.some(filter => path === filter || path.startsWith(`${filter}/`));
 }
 
+/** The read-only git arguments for the scope's unified diff. Exported so the
+ *  v0.3.28 runner captures the exact same diff the snapshot froze instead of
+ *  re-deriving OIDs after admission. */
+export function reviewUnifiedDiffArgs(
+  selector: ReviewSelectorV1,
+  oids: { readonly baseOid: string | null; readonly headOid: string | null }
+): string[] {
+  return selector.kind === 'base'
+    ? ['diff', '--no-ext-diff', '--no-textconv', oids.baseOid as string, oids.headOid as string]
+    : ['diff', '--no-ext-diff', '--no-textconv', 'HEAD'];
+}
+
 /** Resolves the selector to a frozen snapshot. Every OID and digest in the
  *  returned object was taken at admission time; callers persist the returned
  *  digest as the review's input identity. */
@@ -242,7 +254,7 @@ export async function captureReviewSnapshot(
       baseOid,
       headOid,
     ];
-    unifiedArgs = ['diff', '--no-ext-diff', '--no-textconv', baseOid, headOid];
+    unifiedArgs = reviewUnifiedDiffArgs(options.selector, { baseOid, headOid });
   } else {
     nameStatusArgs = [
       'diff',
@@ -253,7 +265,7 @@ export async function captureReviewSnapshot(
       '-z',
       'HEAD',
     ];
-    unifiedArgs = ['diff', '--no-ext-diff', '--no-textconv', 'HEAD'];
+    unifiedArgs = reviewUnifiedDiffArgs(options.selector, { baseOid, headOid });
   }
 
   const nameStatusRaw = await runGit(nameStatusArgs);

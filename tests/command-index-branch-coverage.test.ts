@@ -161,10 +161,11 @@ describe('command index branch coverage', () => {
     const ctx = makeContext(root);
 
     expect(findCommand('target')).toBeUndefined();
+    // v0.3.28: /review is a read-only builtin workflow; without a configured
+    // model it is an explicit error, never a chat fallback.
     await expect(execute(ctx, 'review', '')).resolves.toMatchObject({
-      success: true,
-      continueAsChat: true,
-      chatInput: '/review',
+      success: false,
+      error: 'Code review needs a configured model. Run /model first, then retry /review.',
     });
     await expect(execute(ctx, 'audit', ' src')).resolves.toMatchObject({
       chatInput: '/security src',

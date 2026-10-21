@@ -22,9 +22,70 @@ which is **not** a pass.
 
 ## [Unreleased]
 
-## [0.3.27] — UNRELEASED
+## [0.3.28] — UNRELEASED
 
-> **Status: candidate.** Open. First slice of the professional code review loop
+> **Status: candidate.** Open. The typed `/review` runtime & CLI slice
+> (plan: `docs/plan/v0.3.28-plan.md`, PR2 core of the v0.3.27 review loop):
+> `/review` arguments now parse into the frozen `ReviewSelectorV1` (worktree /
+> `--base` / repeatable `--path`, back-compat single-path filter) and unknown
+> input returns the usage text instead of silently continuing as an ordinary
+> chat turn. The review runs against the admission-time frozen Git snapshot
+> through a bounded single-pass model completion; the model's findings are
+> validated against the contract and anchored to the snapshot manifest, with
+> invalid or unanchored findings counted and surfaced rather than silently
+> dropped. Every run produces a digest-verifiable `CodeReviewResultV1` receipt
+> rendered by the shared formatter with honest state banners: an empty scope
+> reports "no changes under review" without calling the model, and partial,
+> failed, cancelled or inconclusive runs never render as a green pass.
+> Web wiring (PR3) and the qualification benchmark (PR4) remain subsequent
+> slices. Not merged, tagged or published.
+
+### Added
+
+- `src/services/code-review/selector.ts` — the typed `/review` argument
+  parser: empty / `all` → worktree scope, `--base <ref>` → base scope,
+  repeatable `--path <path>` filters, single bare relative path kept as a
+  back-compat worktree filter; unknown options, missing values, repeated
+  `--base`, absolute paths and traversal are typed usage errors. Fourteen
+  tests pin every accepted shape and rejection path.
+- `src/services/code-review/runner.ts` — the bounded single-pass review
+  runner: `resolveReviewBudgets` (tighten-only) → `captureReviewSnapshot`
+  (worktree contained reader) → frozen unified diff captured with the same
+  admission-time arguments → rules digest binding the read-only constraints
+  digest plus ancestor `AGENTS.md` contents → one model completion through an
+  injected adapter → contract validation + snapshot-membership anchoring +
+  `maxFindings` budget → `resolveReviewConclusion` → receipt digest
+  recomputation. Empty scope completes without a model call and is labeled
+  `empty_scope_no_changes`; cancellation, model errors and unparsable output
+  are typed failures, never green passes.
+- `src/services/code-review/format.ts` — the shared TUI formatter: scope and
+  resolved target header, findings grouped P0→P3 with side:line locations,
+  invalid-finding counts, coverage / skips / budget exhaustion footer and a
+  receipt digest line; partial / failed / cancelled banners never render as a
+  clean pass.
+- `/review` command wiring (`src/commands/workflow-commands.ts`,
+  `workflow-command-handlers.ts`): the command is now a read-only builtin
+  that runs the typed workflow; unrecognized arguments return usage, a
+  missing model returns an explicit error, and no path falls back to ordinary
+  chat.
+
+### Changed
+
+- `src/services/code-review/snapshot.ts` exports `reviewUnifiedDiffArgs` so
+  the runner reuses the exact frozen diff arguments instead of re-deriving
+  OIDs after admission; no frozen semantics changed.
+
+### Not run
+
+- Real-PTY CLI verification, Web E2E (no Web changes in this slice), and the
+  paid human-annotated review-quality benchmark remain `not_run`, matching
+  the v0.3.27 plan's PR3/PR4 sequencing.
+
+## [0.3.27] — 2026-10-22
+
+> **Status: published, 2026-10-22.** Tagged `v0.3.27` (`0be5b18`), merged via
+> #283, and visible on npm as registry `latest`. First slice of the
+> professional code review loop
 > (plan: `docs/plan/v0.3.27-plan.md`): the shared review contract (selectors,
 > states, conclusions, findings, tighten-only budgets, receipt digests,
 > stale-applicability) is frozen in `src/services/code-review` and bound by
@@ -34,7 +95,7 @@ which is **not** a pass.
 > workflow constraints deny every non-read tool by default with a dispatch-level
 > guard whose digest binds receipts. Runtime / CLI wiring (PR2), the Web loop
 > (PR3) and the qualification benchmark (PR4) are subsequent slices of the same
-> plan and are not part of this release. Not merged, tagged or published.
+> plan and are not part of this release; PR2's core CLI slice ships in 0.3.28.
 
 ### Added
 
