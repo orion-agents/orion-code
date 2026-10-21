@@ -2,10 +2,11 @@
 
 面向终端与浏览器、本地优先的目标驱动 Coding Agent。
 
-> v0.3.26 候选版本：进行中。结构化 diff 完整性与会话生命周期：形似文件头的 body 行保持为
-> body 行（#274）、跨页拆分的 hunk 保留行与行号（#275）、永久删除会话同时清除 v2 Thread
-> 记录（#276）、退出已切换会话不再从旧 JSONL 回退 summary（#277）。上一版 0.3.25 已发布
-> npm（registry `latest`）、打 tag `v0.3.25`（`c356323`，#273）并发布 GitHub Release。
+> v0.3.27 候选版本：进行中。专业代码审查闭环首切片：共享审查契约（selector、状态、结论、
+> finding、只收紧预算、receipt digest、stale 标注）已冻结并通过契约测试；共享 Git snapshot
+> reader 捕获 worktree 与冻结 base 两种范围并给出类型化错误；只读 workflow 约束默认拒绝一切
+> 非读取工具。Runtime/CLI 接线、Web 闭环与资格验证为同一计划的后续切片。上一版 0.3.26 已发布
+> npm（registry `latest`）、打 tag `v0.3.26`（`b810996`，#278）并发布 GitHub Release。
 
 [English](README.md) ·
 [v0.3.24 方案](docs/plan/v0.3.24-plan.md) ·
@@ -100,10 +101,10 @@ MCP 仍是用户可见的扩展边界。
 支持 Node.js 22.12+、24 和 26。生产环境建议使用 Node 24 LTS，当前开发环境也支持 Node 26
 Current。Node 20 已结束上游维护，不再属于 v0.3 Runtime 合同。
 
-v0.3.26 在 npm 可用后，可安装固定版本：
+v0.3.27 在 npm 可用后，可安装固定版本：
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.26
+npm install -g @orion-agents/orion-code@0.3.27
 orion --version
 orion doctor
 ```
