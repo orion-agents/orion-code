@@ -2,11 +2,11 @@
 
 面向终端与浏览器、本地优先的目标驱动 Coding Agent。
 
-> v0.3.29 候选版本：进行中。Web 共享审查闭环：Host 复用 CLI 同一有界审查运行器发起
-> 审查；审阅面板列出 digest 可验证的 receipt 与如实状态横幅（running / partial /
-> failed / cancelled / 过期永远不会显示为绿色）；finding 按 P0→P3 分组并可定位到既有
-> diff 视图；每个 finding 可作为类型化草稿送回对话。上一版 0.3.28 已发布 npm
-> （registry `latest`）、打 tag `v0.3.28`（`8a4722b`，#284）并发布 GitHub Release。
+> v0.3.30 候选版本：进行中。审查回路的资格验证与文档切片：README 能力概述与当前实现
+> 对齐（文件 CAS 冲突检测编辑、Git 暂存与本地提交、审阅共享运行器、有界 Session
+> actor 池），并新增 `docs/architecture/code-review-loop.md` 端到端说明共享审查回路。
+> 上一版 0.3.29 已发布 npm（registry `latest`）、打 tag `v0.3.29`（`86c20aa`，#285）
+> 并发布 GitHub Release。
 
 [English](README.md) ·
 [v0.3.24 方案](docs/plan/v0.3.24-plan.md) ·
@@ -101,10 +101,10 @@ MCP 仍是用户可见的扩展边界。
 支持 Node.js 22.12+、24 和 26。生产环境建议使用 Node 24 LTS，当前开发环境也支持 Node 26
 Current。Node 20 已结束上游维护，不再属于 v0.3 Runtime 合同。
 
-v0.3.29 在 npm 可用后，可安装固定版本：
+v0.3.30 在 npm 可用后，可安装固定版本：
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.29
+npm install -g @orion-agents/orion-code@0.3.30
 orion --version
 orion doctor
 ```
@@ -183,10 +183,14 @@ Host 时会 abort 并 fail-closed。
 携带反馈创建独立 PLAN request；取消不产生执行副作用。三种操作均绑定 exact digest，刷新或 Host restart
 后可恢复，stale review fail-closed。
 
-多项目导航不会创建多个 Runtime；跨项目 Session 选择是一次带 revision guard 的原子 Context 切换。
-桌面左栏可在 240–480px 调整或折叠为 48px rail，右栏为 320–720px；均采用 IDE 式鼠标拖动且不提供
-键盘精细调宽。窄屏自动使用 drawer，且不覆盖桌面宽度偏好。文件、Git 和审阅保持只读；创建终端需要
-显式 user gesture，短期 ticket 与输出均不进入 Workbench SSE。
+Host 以有界 Session actor 池承载并发（默认 3 个运行 / 4 个常驻），而不是单一全局 Runtime；项目导航
+不会把一个 Session 的写入应用到另一个 Session。跨项目 Session 选择是一次带 revision guard 的原子
+Context 切换。桌面左栏可在 240–480px 调整或折叠为 48px rail，右栏为 320–720px；均采用 IDE 式鼠标
+拖动且不提供键盘精细调宽。窄屏自动使用 drawer，且不覆盖桌面宽度偏好。文件区提供带 CAS 冲突检测的
+文本编辑（上限 512 KiB）；Git 区提供暂存、hunk/行反馈、本地提交与历史读取；审阅区可发起共享的有界
+审查运行并查看 digest 可验证的 findings。push、reset、discard、amend、force push 等远端与破坏性
+Git 操作仍未开放，作为独立能力另行设计；创建终端需要显式 user gesture，短期 ticket 与输出均不进入
+Workbench SSE。
 
 #### 后台运行与管理（v0.3.10）
 

@@ -22,10 +22,42 @@ which is **not** a pass.
 
 ## [Unreleased]
 
-## [0.3.29] — UNRELEASED
+## [0.3.30] — UNRELEASED
 
-> **Status: candidate.** Open. The Web shared review loop
-> (plan: `docs/plan/v0.3.29-plan.md`, PR3 core of the v0.3.27 review loop):
+> **Status: candidate.** Open. Qualification & documentation slice (PR4
+> automatable portion of the v0.3.27 review loop, plan:
+> `docs/plan/v0.3.30-plan.md`): the public README (English and 简体中文) no
+> longer claims that Files/Git/Review are read-only or that the project
+> navigator creates no other runtimes — Files offers CAS-guarded text editing
+> (512 KiB cap), Git offers staging, hunk/line feedback, local commits and
+> history reading, Review starts the shared bounded review runner, and the
+> Host runs a bounded Session actor pool (3 running / 4 resident by default);
+> remote or destructive Git operations remain unexposed by design. A new
+> `docs/architecture/code-review-loop.md` documents the shared loop end to
+> end (selectors, tighten-only budgets, receipt digests, staleness, state
+> banners, Web single-flight, host-restart history boundary). The v0.3.29
+> entry is corrected to `published` (tag `v0.3.29`, npm `latest`). The
+> human-labeled paid quality benchmark and real Host + Chrome full-chain E2E
+> remain honestly `not_run` (no model credentials in the automation
+> environment). Not merged, tagged or published.
+
+### Changed
+
+- README.md / README.zh-CN.md: aligned the Web workbench capability summary
+  with the current implementation (Files CAS editing, Git staging/commit/
+  history, Review shared runner, bounded Session actor pool) and kept the
+  explicit "remote/destructive Git operations not exposed" boundary.
+- docs: added `docs/architecture/code-review-loop.md` (shared review loop
+  usage & semantics) and indexed it in `docs/readme.md`.
+- CHANGELOG: corrected the 0.3.29 delivery status from `candidate` to
+  `published` (tagged `v0.3.29`, npm registry `latest`).
+
+## [0.3.29] — 2026-10-22
+
+> **Status: published.** Released as `@orion-agents/orion-code@0.3.29` from
+> tag `v0.3.29` (merge commit `86c20aa`, PR #285, 2026-10-22); npm registry
+> `latest` confirmed 0.3.29 via direct registry query. The Web shared review
+> loop (plan: `docs/plan/v0.3.29-plan.md`, PR3 core of the v0.3.27 review loop):
 > the Host now starts the same bounded single-pass review runner the CLI uses
 > (`runCodeReview`, v0.3.28) against the active Workspace. `POST /review/run`
 > performs fast admission (one in-flight run per Host, typed
@@ -40,7 +72,7 @@ which is **not** a pass.
 > hiding it, and can send each finding back to the Composer as a typed draft
 > the user still confirms. The fileKey→path mapping is captured through an
 > additive `onSnapshotCaptured` runner hook; the frozen receipt contract is
-> unchanged. Not merged, tagged or published.
+> unchanged.
 
 ### Added
 
@@ -212,7 +244,7 @@ which is **not** a pass.
 ### Fixed
 
 - #269: `GET /git/conflict` no longer fails with `git cat-file: could not get object
-  info` after editing a conflicted file before staging — the `worktree` version is read
+info` after editing a conflicted file before staging — the `worktree` version is read
   from the filesystem (contained within the repository root) instead of an object
   `hash-object` never wrote.
 - #270: `GET /git/file-history` with a `rev` now walks that revision; previously the
