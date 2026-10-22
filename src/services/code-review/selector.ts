@@ -44,7 +44,10 @@ function looksLikeRelativePath(value: string): boolean {
  * path (back-compat path filter). Anything else is a usage error.
  */
 export function parseReviewSelector(rawArgs: string): ReviewSelectorParseResult {
-  const tokens = rawArgs.trim().split(/\s+/).filter(token => token.length > 0);
+  const tokens = rawArgs
+    .trim()
+    .split(/\s+/)
+    .filter(token => token.length > 0);
   let base: string | null = null;
   const paths: string[] = [];
 
@@ -60,8 +63,7 @@ export function parseReviewSelector(rawArgs: string): ReviewSelectorParseResult 
 
     if (token === '--base' || token.startsWith('--base=')) {
       if (base !== null) return usageError('--base may only be given once.');
-      const value =
-        token.startsWith('--base=') ? token.slice('--base='.length) : tokens[index + 1];
+      const value = token.startsWith('--base=') ? token.slice('--base='.length) : tokens[index + 1];
       if (!value) return usageError('--base requires a ref argument.');
       if (token === '--base') index += 1;
       base = value;
@@ -69,8 +71,7 @@ export function parseReviewSelector(rawArgs: string): ReviewSelectorParseResult 
     }
 
     if (token === '--path' || token.startsWith('--path=')) {
-      const value =
-        token.startsWith('--path=') ? token.slice('--path='.length) : tokens[index + 1];
+      const value = token.startsWith('--path=') ? token.slice('--path='.length) : tokens[index + 1];
       if (!value) return usageError('--path requires a path argument.');
       if (token === '--path') index += 1;
       if (!looksLikeRelativePath(value)) {
