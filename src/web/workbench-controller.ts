@@ -127,6 +127,10 @@ import {
 } from './workspace-discovery';
 import { WorkspaceRootsRegistryV1 } from '../services/workspace-roots-registry';
 import { ReviewServiceV1 } from './review-service';
+import { WebCodeReviewRunServiceV1 } from './code-review-run-service';
+import type { ReviewModelAdapterV1 } from '../services/code-review/runner';
+import type { ReviewSelectorV1 } from '../services/code-review/contract';
+import type { LLMService } from '../services/llm';
 import {
   WebSessionRuntimeRegistryError,
   WebSessionRuntimeRegistryV1,
@@ -229,6 +233,15 @@ export class WebWorkbenchController {
   private fileWriteService!: FileWriteServiceV1;
   private gitService!: GitReadModelServiceV1;
   private reviewService!: ReviewServiceV1;
+  /** v0.3.29 — shared code-review run history for the Review panel. */
+  private readonly codeReviewRuns = new WebCodeReviewRunServiceV1({
+    adapterProvider: () => createReviewModelAdapter(this.runtimeValue?.llm ?? null),
+    cwdProvider: () => this.workspaceValue,
+    repositoryRevisionProvider: async () => {
+      const status = await this.gitService.status({ pageSize: 1 });
+      return status.repositoryRevision;
+    },
+  });
   private contextRevisionValue = randomUUID();
   private composerRevisionValue = randomUUID();
   private composerAuthorityDigest: string | undefined;
@@ -1681,6 +1694,41 @@ export class WebWorkbenchController {
     const result = await this.reviewService.snapshot();
     this.assertContextGuard(context);
     return result;
+  }
+
+  /** v0.3.29 — starts a shared code review run (fast admission, background run). */
+  async reviewRunStart(
+    selector: ReviewSelectorV1,
+    context: WebContextGuardV1
+  ): Promise<{ readonly runId: string; readonly status: 'running' }> {
+    this.assertContextGuard(context);
+    const started = await this.codeReviewRuns.start(selector);
+    this.assertContextGuard(context);
+    return started;
+  }
+
+  /** v0.3.29 — bounded list of review runs with freshness flags. */
+  async reviewRunList(context: WebContextGuardV1) {
+    this.assertContextGuard(context);
+    const runs = await this.codeReviewRuns.list();
+    this.assertContextGuard(context);
+    return runs;
+  }
+
+  /** v0.3.29 — one review run record with digest re-verification. */
+  async reviewRunGet(runId: string, context: WebContextGuardV1) {
+    this.assertContextGuard(context);
+    const run = await this.codeReviewRuns.get(runId);
+    this.assertContextGuard(context);
+    return run;
+  }
+
+  /** v0.3.29 — cancels a running review to release the single in-flight slot. */
+  reviewRunCancel(runId: string, context: WebContextGuardV1): { readonly cancelled: boolean } {
+    this.assertContextGuard(context);
+    this.codeReviewRuns.cancel(runId);
+    this.assertContextGuard(context);
+    return { cancelled: true };
   }
 
   listTerminals(context: WebContextGuardV1) {
@@ -3722,6 +3770,31 @@ function probeSessionGitBranch(workspace: string): Promise<string | undefined> {
       (error, stdout) => resolveBranch(error ? undefined : stdout.trim() || undefined)
     );
   });
+}
+
+/**
+ * v0.3.29 — adapts the control-plane Runtime's LLM service to the shared code
+ * review runner's bounded single-completion interface. Returns null when the
+ * Host has no configured model so the run service can answer with the typed
+ * `review_no_model` error instead of pretending to review.
+ */
+function createReviewModelAdapter(llm: LLMService | null): ReviewModelAdapterV1 | null {
+  if (!llm) return null;
+  return {
+    async complete(messages) {
+      const response = await llm.chat(
+        messages.map(message => ({ role: message.role, content: message.content }))
+      );
+      return {
+        content: response.content,
+        model: response.model,
+        usage: {
+          inputTokens: response.usage?.promptTokens ?? 0,
+          outputTokens: response.usage?.completionTokens ?? 0,
+        },
+      };
+    },
+  };
 }
 
 function mcpServerIds(config: ReturnType<typeof loadFirstPartyMcpConfigurationV1>): string[] {

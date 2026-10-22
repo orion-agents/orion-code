@@ -2,12 +2,11 @@
 
 面向终端与浏览器、本地优先的目标驱动 Coding Agent。
 
-> v0.3.28 候选版本：进行中。类型化 `/review` 审查工作流：slash 参数解析为冻结的审查
-> selector（worktree / `--base` / `--path`，未知参数返回用法而非静默转入普通聊天）；审查
-> 基于 admission 时冻结的 Git snapshot，经有界单轮模型补全执行；模型 finding 按契约与
-> snapshot manifest 校验；输出 digest 可验证的 receipt 与如实状态横幅（空范围 ≠ 审查通过；
-> partial / failed / cancelled 永远不会显示为绿色）。上一版 0.3.27 已发布 npm
-> （registry `latest`）、打 tag `v0.3.27`（`0be5b18`，#283）并发布 GitHub Release。
+> v0.3.29 候选版本：进行中。Web 共享审查闭环：Host 复用 CLI 同一有界审查运行器发起
+> 审查；审阅面板列出 digest 可验证的 receipt 与如实状态横幅（running / partial /
+> failed / cancelled / 过期永远不会显示为绿色）；finding 按 P0→P3 分组并可定位到既有
+> diff 视图；每个 finding 可作为类型化草稿送回对话。上一版 0.3.28 已发布 npm
+> （registry `latest`）、打 tag `v0.3.28`（`8a4722b`，#284）并发布 GitHub Release。
 
 [English](README.md) ·
 [v0.3.24 方案](docs/plan/v0.3.24-plan.md) ·
@@ -102,10 +101,10 @@ MCP 仍是用户可见的扩展边界。
 支持 Node.js 22.12+、24 和 26。生产环境建议使用 Node 24 LTS，当前开发环境也支持 Node 26
 Current。Node 20 已结束上游维护，不再属于 v0.3 Runtime 合同。
 
-v0.3.28 在 npm 可用后，可安装固定版本：
+v0.3.29 在 npm 可用后，可安装固定版本：
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.28
+npm install -g @orion-agents/orion-code@0.3.29
 orion --version
 orion doctor
 ```

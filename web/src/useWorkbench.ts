@@ -41,6 +41,7 @@ import type {
   WebTerminalMetadataV1,
   WebToolDetailPageV1,
 } from '../../src/web/protocol';
+import type { WebCodeReviewRunRecordV1 } from '../../src/web/code-review-run-service';
 
 import { OrionWebApi, WebApiError, requestId, type EventStreamHandle } from './api';
 import { workbenchReducer, type WorkbenchAction } from './reducer';
@@ -272,6 +273,10 @@ export interface WorkbenchActions {
     readonly warning?: string;
   }>;
   review(): Promise<WebReviewSnapshotV1>;
+  /** v0.3.29 — shared code-review runs surfaced in the Review panel. */
+  reviewRunStart(): Promise<{ readonly runId: string; readonly status: 'running' }>;
+  reviewRuns(): Promise<readonly WebCodeReviewRunRecordV1[]>;
+  reviewRunCancel(runId: string): Promise<void>;
   terminals(): Promise<readonly WebTerminalMetadataV1[]>;
   createTerminal(cols: number, rows: number): Promise<WebTerminalCreateResultV1>;
   terminalAttachTicket(terminalId: string): Promise<WebTerminalCreateResultV1>;
@@ -1873,6 +1878,20 @@ export function useWorkbench(): UseWorkbenchResult {
     [api]
   );
   const review = useCallback(() => api.review(requireContextGuard(stateRef.current)), [api]);
+  const reviewRunStart = useCallback(
+    () => api.reviewRunStart(requireContextGuard(stateRef.current)),
+    [api]
+  );
+  const reviewRuns = useCallback(
+    () => api.reviewRuns(requireContextGuard(stateRef.current)),
+    [api]
+  );
+  const reviewRunCancel = useCallback(
+    async (runId: string) => {
+      await api.reviewRunCancel(runId, requireContextGuard(stateRef.current));
+    },
+    [api]
+  );
   const terminals = useCallback(
     async () => (await api.terminals(requireContextGuard(stateRef.current))).terminals,
     [api]
@@ -2000,6 +2019,9 @@ export function useWorkbench(): UseWorkbenchResult {
       gitApplyPatch,
       gitCommit,
       review,
+      reviewRunStart,
+      reviewRuns,
+      reviewRunCancel,
       terminals,
       createTerminal,
       terminalAttachTicket,
@@ -2043,6 +2065,9 @@ export function useWorkbench(): UseWorkbenchResult {
       readFileContent,
       readToolDetail,
       review,
+      reviewRunStart,
+      reviewRuns,
+      reviewRunCancel,
       recoverSession,
       refreshDiagnostics,
       refreshSettings,

@@ -43,7 +43,9 @@ import {
 
 /** One bounded model completion. CLI wiring adapts `LLMService.chat`. */
 export interface ReviewModelAdapterV1 {
-  complete(messages: readonly { readonly role: 'system' | 'user'; readonly content: string }[]): Promise<{
+  complete(
+    messages: readonly { readonly role: 'system' | 'user'; readonly content: string }[]
+  ): Promise<{
     readonly content: string;
     readonly model: string;
     readonly usage?: { readonly inputTokens: number; readonly outputTokens: number };
@@ -66,6 +68,11 @@ export interface ReviewRunOptionsV1 {
   readonly abortSignal?: AbortSignal;
   readonly runGit?: ReviewGitRunner;
   readonly now?: () => number;
+  /** v0.3.29 — additive observation hook fired inside the admission window
+   *  right after the frozen snapshot is captured. Lets a host keep the
+   *  fileKey -> path mapping for diff anchoring without changing the frozen
+   *  receipt contract. */
+  readonly onSnapshotCaptured?: (snapshot: CodeReviewSnapshotV1) => void;
 }
 
 export type ReviewRunFailureV1 =
@@ -161,7 +168,9 @@ function buildSnapshotMaterial(
 ): SnapshotMaterial {
   const sections: string[] = [
     `Snapshot: ${snapshot.snapshotId} (kind=${snapshot.kind}`,
-    snapshot.kind === 'base' ? `base=${snapshot.baseOid} head=${snapshot.headOid})` : 'worktree scope)',
+    snapshot.kind === 'base'
+      ? `base=${snapshot.baseOid} head=${snapshot.headOid})`
+      : 'worktree scope)',
     `Input snapshot digest: ${snapshot.inputSnapshotDigest}`,
     'Changed files (fileKey -> path):',
     ...snapshot.files.map(file => {
@@ -202,10 +211,7 @@ function extractFindingsPayload(content: string): { findings: readonly unknown[]
   }
 }
 
-function snapshotAuthorizesFile(
-  snapshot: CodeReviewSnapshotV1,
-  finding: ReviewFindingV1
-): boolean {
+function snapshotAuthorizesFile(snapshot: CodeReviewSnapshotV1, finding: ReviewFindingV1): boolean {
   const file = snapshot.files.find(candidate => candidate.fileKey === finding.fileKey);
   if (!file) return false;
   if (finding.side === 'old' && !file.oldPath && file.hunks.every(hunk => hunk.oldLines === 0)) {
@@ -213,8 +219,12 @@ function snapshotAuthorizesFile(
   }
   const relevant = file.hunks.filter(hunk =>
     finding.side === 'old'
-      ? hunk.oldLines > 0 && finding.startLine <= hunk.oldStart + hunk.oldLines - 1 && finding.endLine >= hunk.oldStart
-      : hunk.newLines > 0 && finding.startLine <= hunk.newStart + hunk.newLines - 1 && finding.endLine >= hunk.newStart
+      ? hunk.oldLines > 0 &&
+        finding.startLine <= hunk.oldStart + hunk.oldLines - 1 &&
+        finding.endLine >= hunk.oldStart
+      : hunk.newLines > 0 &&
+        finding.startLine <= hunk.newStart + hunk.newLines - 1 &&
+        finding.endLine >= hunk.newStart
   );
   // A finding whose lines touch no diff hunk is not anchored in the frozen
   // material; the model must cite the changes under review.
@@ -245,6 +255,7 @@ export async function runCodeReview(options: ReviewRunOptionsV1): Promise<Review
       runGit,
       readWorktreeFile: createContainedWorktreeReader(options.cwd),
     });
+    options.onSnapshotCaptured?.(snapshot);
     if (aborted()) return { ok: false, failure: { kind: 'cancelled' } };
     // The exact same frozen diff arguments the snapshot used, against the
     // OIDs the snapshot resolved; captured once inside the admission window
@@ -259,7 +270,11 @@ export async function runCodeReview(options: ReviewRunOptionsV1): Promise<Review
     const code = error instanceof ReviewSnapshotError ? error.code : 'not_a_repository';
     return {
       ok: false,
-      failure: { kind: 'snapshot', code, message: error instanceof Error ? error.message : String(error) },
+      failure: {
+        kind: 'snapshot',
+        code,
+        message: error instanceof Error ? error.message : String(error),
+      },
     };
   }
 
@@ -305,7 +320,10 @@ export async function runCodeReview(options: ReviewRunOptionsV1): Promise<Review
       startedAt,
       endedAt,
     };
-    return { ok: true, result: Object.freeze({ ...base, receiptDigest: computeReceiptDigest(base) }) };
+    return {
+      ok: true,
+      result: Object.freeze({ ...base, receiptDigest: computeReceiptDigest(base) }),
+    };
   }
 
   const material = buildSnapshotMaterial(snapshot, diffText, budgets.budgets);

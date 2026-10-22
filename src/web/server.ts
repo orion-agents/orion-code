@@ -19,6 +19,7 @@ import {
   type WebWorkspaceCandidateSourceV1,
 } from './protocol';
 import { WebWorkbenchError } from './errors';
+import { parseWebReviewSelectorV1 } from './code-review-run-service';
 import { DEFAULT_WEB_PORT } from './cli-options';
 import { attachTerminalWebSocketServer } from './terminal-server';
 import { pageCollectionItems, WebWorkbenchController } from './workbench-controller';
@@ -1169,6 +1170,56 @@ async function handleRequest(context: RequestContext): Promise<void> {
   }
   if (method === 'GET' && path === '/review') {
     sendJson(response, 200, await context.workbench.review(requireContextGuardQuery(url)));
+    return;
+  }
+  // v0.3.29 — shared code-review runs. Start is a fast mutation (admission
+  // only; the model completion runs in the background and clients poll the
+  // read-only list/get endpoints below).
+  if (method === 'POST' && path === '/review/run') {
+    assertMutation(request, context.nonce, context.origin);
+    const body = requireRecord(await readJson(request), 'Review run request');
+    assertOnlyKeys(body, ['requestId', 'selector', 'expectedContextRevision', 'workspaceId']);
+    const requestId = requireUuid(body.requestId, 'requestId');
+    const contextGuard = requireContextGuardRecord(body);
+    const selector = parseWebReviewSelectorV1(body.selector);
+    const result = await context.workbench.executeMutation(
+      requestId,
+      'review.run',
+      { selector, ...contextGuard },
+      () => context.workbench.reviewRunStart(selector, contextGuard)
+    );
+    sendJson(response, 200, result);
+    return;
+  }
+  if (method === 'GET' && path === '/review/runs') {
+    sendJson(response, 200, await context.workbench.reviewRunList(requireContextGuardQuery(url)));
+    return;
+  }
+  const reviewRunMatch = path.match(/^\/review\/runs\/([^/]+)$/);
+  if (method === 'GET' && reviewRunMatch) {
+    const runId = requireUuid(safeDecodePathSegment(reviewRunMatch[1]), 'runId');
+    sendJson(
+      response,
+      200,
+      await context.workbench.reviewRunGet(runId, requireContextGuardQuery(url))
+    );
+    return;
+  }
+  const reviewRunCancelMatch = path.match(/^\/review\/runs\/([^/]+)\/cancel$/);
+  if (method === 'POST' && reviewRunCancelMatch) {
+    assertMutation(request, context.nonce, context.origin);
+    const body = requireRecord(await readJson(request), 'Review cancel request');
+    assertOnlyKeys(body, ['requestId', 'expectedContextRevision', 'workspaceId']);
+    const requestId = requireUuid(body.requestId, 'requestId');
+    const contextGuard = requireContextGuardRecord(body);
+    const runId = requireUuid(safeDecodePathSegment(reviewRunCancelMatch[1]), 'runId');
+    const result = await context.workbench.executeMutation(
+      requestId,
+      'review.run.cancel',
+      { runId, ...contextGuard },
+      () => context.workbench.reviewRunCancel(runId, contextGuard)
+    );
+    sendJson(response, 200, result);
     return;
   }
   if (method === 'GET' && path === '/terminals') {

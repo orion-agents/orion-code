@@ -161,10 +161,4 @@ async function handleReview(ctx: CommandContext, args: string): Promise<CommandR
   return { success: true, output: formatReviewReport(outcome.result) };
 }
 
-export {
-  handlePlan,
-  handleDiff,
-  handleCommitPlan,
-  continueAsSlashChat,
-  handleReview,
-};
+export { handlePlan, handleDiff, handleCommitPlan, continueAsSlashChat, handleReview };
