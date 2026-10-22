@@ -34,13 +34,18 @@
   `dependency-health`）为本机 better-sqlite3 `NODE_MODULE_VERSION 147 vs 127`
   环境问题（与 v0.3.29 轮结论一致），以 CI 同名 job 绿为准。
 
-## 发布链路（合并后回填）
+## 发布链路（2026-10-23 回填，事实以 git / registry 为准）
 
-- PR：待填
-- squash 合并提交：待填
-- tag：`v0.3.30`（指向 main 合并提交）
-- npm：`npm pack --ignore-scripts` 产出的精确 tgz 与字节数：待填
-- registry 确认：直连 curl（`Cache-Control: no-cache`）结果：待填
+- PR：https://github.com/orion-agents/orion-code/pull/286（squash 合并）。
+- squash 合并提交：`15887f5`（main，`docs: v0.3.30 — review loop qualification
+slice (PR4 automatable portion) (#286)`）。
+- tag：`v0.3.30`（指向 main 合并提交 `15887f5`）。
+- npm：本地 `npm pack --ignore-scripts` 产出的精确 tgz 791 files / packed
+  1.79 MB，tarball 文件 sha256 `7562962f711fe89377f88a294bb5bb8cb3ef4651a5b35860cb64ec1106ab5b56`；
+  registry 记录的 shasum（npm SHA-1 口径）为
+  `46af3dc53962fb06da15199a10abe7e77a2a2fa8`（两种口径并存，均为本版事实）。
+- registry 确认：直连 curl（`Cache-Control: no-cache`，2026-10-23）确认
+  0.3.30 存在且 `dist-tags.latest=0.3.30`。
 
 ## 明确 not_run
 

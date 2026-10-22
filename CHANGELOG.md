@@ -22,9 +22,37 @@ which is **not** a pass.
 
 ## [Unreleased]
 
-## [0.3.30] — UNRELEASED
+## [0.3.31] — UNRELEASED
 
-> **Status: candidate.** Open. Qualification & documentation slice (PR4
+> **Status: candidate.** Open. Receipt backfill & delivery-status audit slice
+> (PR4 automatable portion of the v0.3.27 review loop, plan:
+> `docs/plan/v0.3.31-plan.md`): the v0.3.30 qualification evidence's release
+> section is backfilled with the actual delivery facts (PR #286, squash merge
+> `15887f5`, tag `v0.3.30`, npm registry `latest=0.3.30`), the 0.3.30 entry is
+> corrected to `published`, and a new three-version delivery-status audit
+> (0.3.28–0.3.30: tag + registry + dist-tag latest) is recorded in
+> `docs/plan/evidence/v0.3.31/status-audit.md`. No production code changes.
+> The human-labeled paid quality benchmark and real Host + Chrome full-chain
+> E2E remain honestly `not_run` (no model credentials in the automation
+> environment). Not merged, tagged or published.
+
+### Changed
+
+- docs: backfilled the release section of
+  `docs/plan/evidence/v0.3.30/qualification.md` with the real delivery facts
+  (PR #286, merge commit `15887f5`, tag `v0.3.30`, npm registry `latest`).
+- CHANGELOG: corrected the 0.3.30 delivery status from `candidate` to
+  `published` (tagged `v0.3.30`, npm registry `latest`).
+- docs: added `docs/plan/evidence/v0.3.31/status-audit.md` — a three-version
+  (0.3.28–0.3.30) delivery-status audit cross-checking git tags, registry
+  versions and the `latest` dist-tag.
+
+## [0.3.30] — 2026-10-22
+
+> **Status: published.** Released as `@orion-agents/orion-code@0.3.30` from
+> tag `v0.3.30` (merge commit `15887f5`, PR #286, 2026-10-22); npm registry
+> `latest` confirmed 0.3.30 via direct registry query. Qualification &
+> documentation slice (PR4
 > automatable portion of the v0.3.27 review loop, plan:
 > `docs/plan/v0.3.30-plan.md`): the public README (English and 简体中文) no
 > longer claims that Files/Git/Review are read-only or that the project
@@ -39,7 +67,7 @@ which is **not** a pass.
 > entry is corrected to `published` (tag `v0.3.29`, npm `latest`). The
 > human-labeled paid quality benchmark and real Host + Chrome full-chain E2E
 > remain honestly `not_run` (no model credentials in the automation
-> environment). Not merged, tagged or published.
+> environment).
 
 ### Changed
 
