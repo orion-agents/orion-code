@@ -2,13 +2,14 @@
 
 Local-first, goal-driven coding agent for the terminal and browser.
 
-> v0.3.30 candidate — open. Qualification & documentation slice of the review
-> loop: the README capability summary now matches the implementation (Files
-> CAS-guarded editing, Git staging and local commits, Review shared runner,
-> bounded Session actor pool), and `docs/architecture/code-review-loop.md`
-> documents the shared review loop end to end. The previous release 0.3.29 is
-> on npm (registry `latest`), tagged `v0.3.29` (`86c20aa`, #285) and released
-> on GitHub.
+> v0.3.31 candidate — open. Receipt backfill & delivery-status audit slice of
+> the review loop: the v0.3.30 qualification evidence release section is
+> backfilled with the real delivery facts (PR #286, merge `15887f5`, tag
+> `v0.3.30`, npm `latest`), the 0.3.30 CHANGELOG entry is corrected to
+> `published`, and a three-version (0.3.28–0.3.30) delivery-status audit is
+> recorded in `docs/plan/evidence/v0.3.31/status-audit.md`. The previous
+> release 0.3.30 is on npm (registry `latest`), tagged `v0.3.30` (`15887f5`,
+> #286).
 
 [中文说明](README.zh-CN.md) ·
 [v0.3.24 plan](docs/plan/v0.3.24-plan.md) ·
@@ -171,10 +172,10 @@ user extension boundaries.
 Node.js 22.12+, 24, and 26 are supported. Use Node 24 LTS for production or Node 26 Current for
 current development environments. Node 20 is upstream EOL and is no longer a v0.3 runtime.
 
-To install the pinned v0.3.30 package when it is available on npm:
+To install the pinned v0.3.31 package when it is available on npm:
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.30
+npm install -g @orion-agents/orion-code@0.3.31
 orion --version
 orion doctor
 ```
