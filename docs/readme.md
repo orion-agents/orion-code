@@ -4,6 +4,8 @@
 
 - [`architecture/`](architecture/repository-layout.md) — current component ownership, dependency
   direction, and product/runtime contracts.
+- [`architecture/code-review-loop.md`](architecture/code-review-loop.md) — usage and semantics of
+  the shared professional code review loop (selectors, budgets, receipts, staleness, CLI and Web).
 - [`goals/`](goals/orion-code-项目级目标.md) — durable product goals and Goal evidence/recovery
   guidance.
 - [`plan/`](plan/v0.3.0-web-workbench-plan.md) — active execution plans, current release

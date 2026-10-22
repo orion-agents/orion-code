@@ -2,13 +2,13 @@
 
 Local-first, goal-driven coding agent for the terminal and browser.
 
-> v0.3.29 candidate — open. The Web shared review loop: the Host starts the same
-> bounded `/review` runner the CLI uses, the Review panel lists digest-verifiable
-> receipts with honest state banners (running / partial / failed / cancelled /
-> stale never green), findings are grouped P0→P3 and anchor to the existing diff
-> view, and each finding can be sent back to the Composer as a typed draft. The
-> previous release 0.3.28 is on npm (registry `latest`), tagged `v0.3.28`
-> (`8a4722b`, #284) and released on GitHub.
+> v0.3.30 candidate — open. Qualification & documentation slice of the review
+> loop: the README capability summary now matches the implementation (Files
+> CAS-guarded editing, Git staging and local commits, Review shared runner,
+> bounded Session actor pool), and `docs/architecture/code-review-loop.md`
+> documents the shared review loop end to end. The previous release 0.3.29 is
+> on npm (registry `latest`), tagged `v0.3.29` (`86c20aa`, #285) and released
+> on GitHub.
 
 [中文说明](README.zh-CN.md) ·
 [v0.3.24 plan](docs/plan/v0.3.24-plan.md) ·
@@ -171,10 +171,10 @@ user extension boundaries.
 Node.js 22.12+, 24, and 26 are supported. Use Node 24 LTS for production or Node 26 Current for
 current development environments. Node 20 is upstream EOL and is no longer a v0.3 runtime.
 
-To install the pinned v0.3.29 package when it is available on npm:
+To install the pinned v0.3.30 package when it is available on npm:
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.29
+npm install -g @orion-agents/orion-code@0.3.30
 orion --version
 orion doctor
 ```
@@ -256,11 +256,16 @@ state. Approve starts a separate BUILD logical request, Continue Planning starts
 request with feedback, and Cancel performs no execution. Each operation binds the exact plan digest
 and survives refresh or Host restart; stale review actions fail with no side effects.
 
-The project navigator does not create multiple runtimes. Cross-project Session selection is one
-atomic, revision-guarded Context transition. The left dock is 240–480px or a 48px rail; the right is
-320–720px. Both use IDE-style mouse drag where applicable and there is no keyboard fine resize.
-Narrow layouts use drawers without overwriting desktop widths. Files, Git and Review are read-only;
-terminal creation requires an explicit gesture and its ticket/output never enter Workbench SSE.
+The Host runs a bounded pool of Session actors (3 running / 4 resident by default) instead of one
+global runtime; the project navigator never applies one Session's writes to another. Cross-project
+Session selection is one atomic, revision-guarded Context transition. The left dock is 240–480px or
+a 48px rail; the right is 320–720px. Both use IDE-style mouse drag where applicable and there is no
+keyboard fine resize. Narrow layouts use drawers without overwriting desktop widths. Files offers
+CAS-guarded text editing (512 KiB cap); Git offers staging, hunk/line feedback, local commits and
+history reading; Review can start the shared bounded review runner and shows digest-verifiable
+findings. Remote or destructive Git operations (push, reset, discard, amend, force push) are not
+exposed and remain separate capability designs; terminal creation requires an explicit gesture and
+its ticket/output never enter Workbench SSE.
 
 #### Background host & lifecycle (v0.3.10)
 
