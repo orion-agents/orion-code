@@ -7536,3 +7536,107 @@ html[data-panel-resizing] .workbench-shell {
     display: none;
   }
 }
+
+/* v0.3.29 — shared code-review run results in the Review panel. */
+.review-runs {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.review-runs-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 7px;
+}
+
+.review-runs-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.review-runs .resource-error {
+  margin: 0;
+}
+
+.review-run {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.review-run-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 7px;
+}
+
+.review-run-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+}
+
+.review-run-state.tone-ok {
+  color: var(--success);
+}
+
+.review-run-state.tone-warn {
+  color: var(--warning);
+}
+
+.review-run-state.tone-error {
+  color: var(--danger);
+}
+
+.review-run-state.tone-info {
+  color: var(--muted);
+}
+
+.review-run-priority {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.review-run-finding {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 5px 0;
+  border-top: 1px solid var(--border);
+}
+
+.review-finding-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.review-finding-title:hover {
+  text-decoration: underline;
+}
+
+.review-finding-detail {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+}

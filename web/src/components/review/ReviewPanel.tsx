@@ -7,6 +7,7 @@ import { ResourceSplitLayout } from '../../layout/ResourceSplitLayout';
 import { Icon } from '../Icon';
 import { useAutoNotice } from '../useAutoNotice';
 import { DiffViewer } from '../git/DiffViewer';
+import { ReviewRunsSection } from './ReviewRunsSection';
 
 export function ReviewPanel({
   workspaceId,
@@ -176,6 +177,13 @@ export function ReviewPanel({
           {error}
         </p>
       ) : null}
+      {/* v0.3.29 — shared code-review runs (findings, honest state banners). */}
+      <ReviewRunsSection
+        actions={actions}
+        changedFiles={snapshot.changedFiles}
+        onOpenFileDiff={file => void openDiff(file)}
+        onSendToComposer={onSendToComposer}
+      />
       <ResourceSplitLayout
         panelId="review"
         navigatorWidthPx={navigatorWidthPx}

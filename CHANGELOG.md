@@ -22,9 +22,59 @@ which is **not** a pass.
 
 ## [Unreleased]
 
-## [0.3.28] — UNRELEASED
+## [0.3.29] — UNRELEASED
 
-> **Status: candidate.** Open. The typed `/review` runtime & CLI slice
+> **Status: candidate.** Open. The Web shared review loop
+> (plan: `docs/plan/v0.3.29-plan.md`, PR3 core of the v0.3.27 review loop):
+> the Host now starts the same bounded single-pass review runner the CLI uses
+> (`runCodeReview`, v0.3.28) against the active Workspace. `POST /review/run`
+> performs fast admission (one in-flight run per Host, typed
+> `review_run_in_progress` 409 and `review_no_model` 422) and the model
+> completion continues in the background; `GET /review/runs` and
+> `GET /review/runs/:runId` read a bounded in-memory history where every
+> receipt passes digest re-verification and is flagged `stale` when the
+> repository revision changed after admission. The Review panel lists the runs
+> with honest state banners (running / cancelled / failed / partial / stale
+> never render as a green pass), groups findings P0→P3 with file:line anchors
+> into the existing diff view, counts contract-invalid model output instead of
+> hiding it, and can send each finding back to the Composer as a typed draft
+> the user still confirms. The fileKey→path mapping is captured through an
+> additive `onSnapshotCaptured` runner hook; the frozen receipt contract is
+> unchanged. Not merged, tagged or published.
+
+### Added
+
+- `src/web/code-review-run-service.ts` — the Host-side review run service:
+  single-flight admission, background execution of the shared runner, bounded
+  receipt history (20 runs, oldest finished evicted first), digest
+  re-verification on read, repository-revision staleness flags, cancellation,
+  and the `parseWebReviewSelectorV1` request validation.
+- `src/web/workbench-controller.ts` — `reviewRunStart` / `reviewRunList` /
+  `reviewRunGet` / `reviewRunCancel`, with the review model adapter derived
+  from the control-plane Runtime's `llm` (typed 422 when the Host has no
+  configured model).
+- `src/web/server.ts` — `POST /review/run` and
+  `POST /review/runs/:runId/cancel` behind `assertMutation` +
+  `executeMutation`, plus read-only `GET /review/runs[/:runId]` with context
+  guards.
+- `web/src/components/review/ReviewRunsSection.tsx` and
+  `review-runs-view.ts` — the Review panel results section: run button,
+  polling while a run is in flight, priority-grouped findings, honest banners,
+  diff anchoring and typed Composer drafts.
+- Tests: `tests/web-code-review-run-service.test.ts` (10 unit tests),
+  `tests/web-review-run-endpoint.test.ts` (4 real-host tests on a temp Git
+  repository, including the 403 nonce guard and the 422 no-model path),
+  `tests/web-review-runs-view.test.tsx` (13 pure + SSR view tests).
+
+### Not run
+
+- Real Host + Chrome full-chain E2E and the human-labeled quality benchmark
+  (PR4) — the local automation sandbox has no model credentials; recorded
+  honestly as `not_run`, not silently skipped.
+
+## [0.3.28] — 2026-10-22
+
+> **Status: published.** The typed `/review` runtime & CLI slice
 > (plan: `docs/plan/v0.3.28-plan.md`, PR2 core of the v0.3.27 review loop):
 > `/review` arguments now parse into the frozen `ReviewSelectorV1` (worktree /
 > `--base` / repeatable `--path`, back-compat single-path filter) and unknown
@@ -38,7 +88,8 @@ which is **not** a pass.
 > reports "no changes under review" without calling the model, and partial,
 > failed, cancelled or inconclusive runs never render as a green pass.
 > Web wiring (PR3) and the qualification benchmark (PR4) remain subsequent
-> slices. Not merged, tagged or published.
+> slices. Merged as #284, tagged `v0.3.28` on main (`8a4722b`), published to
+> npm (registry `latest` = 0.3.28).
 
 ### Added
 

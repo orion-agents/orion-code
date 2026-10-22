@@ -67,6 +67,9 @@ import type {
 import type { SettingsMirrorSnapshot } from './settings/settings-mirror';
 import type { SettingsInvalidatedEventV1, WebSettingsDocumentV1 } from './settings/types';
 import type { WebSessionRuntimeSummaryV1 } from '../../src/web/session-runtime-registry';
+import type { WebCodeReviewRunRecordV1 } from '../../src/web/code-review-run-service';
+
+export type { WebCodeReviewRunRecordV1 };
 
 export type WebBootstrapV1 = Omit<ProtocolWebBootstrapV1, 'settings'> & {
   readonly settings: WebSettingsDocumentV1;

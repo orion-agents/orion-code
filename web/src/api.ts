@@ -46,6 +46,7 @@ import type {
   WebWorkspaceRootDiscoverOutcomeV1,
   WebDirectoryPickResultV1,
 } from '../../src/web/protocol';
+import type { WebCodeReviewRunRecordV1 } from '../../src/web/code-review-run-service';
 
 import {
   parseSettingsDocument,
@@ -377,6 +378,31 @@ export class OrionWebApi {
 
   review(context: WebContextGuardV1): Promise<WebReviewSnapshotV1> {
     return this.query(withContext('/review', context));
+  }
+
+  /** v0.3.29 — starts a shared code review run (fast admission, background run). */
+  reviewRunStart(context: WebContextGuardV1): Promise<{
+    readonly runId: string;
+    readonly status: 'running';
+  }> {
+    return this.mutate('/review/run', 'POST', {
+      selector: { kind: 'worktree' as const },
+      requestId: requestId(),
+      ...context,
+    });
+  }
+
+  /** v0.3.29 — bounded list of review runs with freshness flags. */
+  reviewRuns(context: WebContextGuardV1): Promise<readonly WebCodeReviewRunRecordV1[]> {
+    return this.query(withContext('/review/runs', context));
+  }
+
+  /** v0.3.29 — cancels a running review to release the single in-flight slot. */
+  reviewRunCancel(runId: string, context: WebContextGuardV1): Promise<{ cancelled: boolean }> {
+    return this.mutate(`/review/runs/${encodeURIComponent(runId)}/cancel`, 'POST', {
+      requestId: requestId(),
+      ...context,
+    });
   }
 
   async terminals(

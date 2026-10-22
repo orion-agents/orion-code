@@ -2,15 +2,13 @@
 
 Local-first, goal-driven coding agent for the terminal and browser.
 
-> v0.3.28 candidate — open. The typed `/review` workflow: slash arguments are
-> parsed into the frozen review selector (worktree / `--base` / `--path`, with
-> usage errors instead of silent chat fallback), the review runs against the
-> admission-time frozen Git snapshot through a bounded single-pass model call,
-> model findings are validated against the contract and the snapshot manifest,
-> and the run renders a digest-verifiable receipt with honest state banners
-> (empty scope ≠ review pass; partial / failed / cancelled never green). The
-> previous release 0.3.27 is on npm (registry `latest`), tagged `v0.3.27`
-> (`0be5b18`, #283) and released on GitHub.
+> v0.3.29 candidate — open. The Web shared review loop: the Host starts the same
+> bounded `/review` runner the CLI uses, the Review panel lists digest-verifiable
+> receipts with honest state banners (running / partial / failed / cancelled /
+> stale never green), findings are grouped P0→P3 and anchor to the existing diff
+> view, and each finding can be sent back to the Composer as a typed draft. The
+> previous release 0.3.28 is on npm (registry `latest`), tagged `v0.3.28`
+> (`8a4722b`, #284) and released on GitHub.
 
 [中文说明](README.zh-CN.md) ·
 [v0.3.24 plan](docs/plan/v0.3.24-plan.md) ·
@@ -173,10 +171,10 @@ user extension boundaries.
 Node.js 22.12+, 24, and 26 are supported. Use Node 24 LTS for production or Node 26 Current for
 current development environments. Node 20 is upstream EOL and is no longer a v0.3 runtime.
 
-To install the pinned v0.3.28 package when it is available on npm:
+To install the pinned v0.3.29 package when it is available on npm:
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.28
+npm install -g @orion-agents/orion-code@0.3.29
 orion --version
 orion doctor
 ```

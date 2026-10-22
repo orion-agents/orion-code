@@ -66,6 +66,11 @@ export interface ReviewRunOptionsV1 {
   readonly abortSignal?: AbortSignal;
   readonly runGit?: ReviewGitRunner;
   readonly now?: () => number;
+  /** v0.3.29 — additive observation hook fired inside the admission window
+   *  right after the frozen snapshot is captured. Lets a host keep the
+   *  fileKey -> path mapping for diff anchoring without changing the frozen
+   *  receipt contract. */
+  readonly onSnapshotCaptured?: (snapshot: CodeReviewSnapshotV1) => void;
 }
 
 export type ReviewRunFailureV1 =
@@ -245,6 +250,7 @@ export async function runCodeReview(options: ReviewRunOptionsV1): Promise<Review
       runGit,
       readWorktreeFile: createContainedWorktreeReader(options.cwd),
     });
+    options.onSnapshotCaptured?.(snapshot);
     if (aborted()) return { ok: false, failure: { kind: 'cancelled' } };
     // The exact same frozen diff arguments the snapshot used, against the
     // OIDs the snapshot resolved; captured once inside the admission window
