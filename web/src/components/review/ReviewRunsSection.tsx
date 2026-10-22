@@ -27,10 +27,7 @@ export function ReviewRunsSection({
   onOpenFileDiff,
   onSendToComposer,
 }: {
-  readonly actions: Pick<
-    WorkbenchActions,
-    'reviewRunStart' | 'reviewRuns' | 'reviewRunCancel'
-  >;
+  readonly actions: Pick<WorkbenchActions, 'reviewRunStart' | 'reviewRuns' | 'reviewRunCancel'>;
   readonly changedFiles: readonly WebGitFileV1[];
   readonly onOpenFileDiff: (file: WebGitFileV1) => void;
   readonly onSendToComposer: (text: string) => void;
@@ -162,7 +159,11 @@ function ReviewRunCard({
     <article className={`review-run banner-${banner.tone}`} data-run-id={record.runId}>
       <div className="review-run-head">
         <span className={`review-run-state tone-${banner.tone}`} role="status">
-          {banner.tone === 'ok' ? <Icon name="check" size={14} /> : <Icon name="warning" size={14} />}
+          {banner.tone === 'ok' ? (
+            <Icon name="check" size={14} />
+          ) : (
+            <Icon name="warning" size={14} />
+          )}
           {banner.text}
         </span>
         {running ? (

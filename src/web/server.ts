@@ -1198,7 +1198,11 @@ async function handleRequest(context: RequestContext): Promise<void> {
   const reviewRunMatch = path.match(/^\/review\/runs\/([^/]+)$/);
   if (method === 'GET' && reviewRunMatch) {
     const runId = requireUuid(safeDecodePathSegment(reviewRunMatch[1]), 'runId');
-    sendJson(response, 200, await context.workbench.reviewRunGet(runId, requireContextGuardQuery(url)));
+    sendJson(
+      response,
+      200,
+      await context.workbench.reviewRunGet(runId, requireContextGuardQuery(url))
+    );
     return;
   }
   const reviewRunCancelMatch = path.match(/^\/review\/runs\/([^/]+)\/cancel$/);

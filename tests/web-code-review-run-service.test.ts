@@ -21,9 +21,8 @@ const FINDING: ReviewFindingV1 = {
 
 /** A self-consistent receipt: the digest is computed over the full body. */
 function makeResult(overrides: Partial<CodeReviewResultV1> = {}): CodeReviewResultV1 {
-  const {
-    computeReceiptDigest,
-  } = require('../src/services/code-review/contract') as typeof import('../src/services/code-review/contract');
+  const { computeReceiptDigest } =
+    require('../src/services/code-review/contract') as typeof import('../src/services/code-review/contract');
   const base = {
     schemaVersion: 1 as const,
     reviewId: 'cr-test0000000000000000000000000000000001',
@@ -92,7 +91,8 @@ function makeHarness(options: HarnessOptions = {}) {
     if (options.runError) throw options.runError;
     return options.outcome ?? okOutcome(makeResult());
   });
-  const adapterValue = options.adapter === null ? null : options.adapter ?? { complete: () => {} };
+  const adapterValue =
+    options.adapter === null ? null : (options.adapter ?? { complete: () => {} });
   const revisionValue = options.revision ?? 'rev-1';
   const service = new WebCodeReviewRunServiceV1({
     adapterProvider: () => adapterValue as never,

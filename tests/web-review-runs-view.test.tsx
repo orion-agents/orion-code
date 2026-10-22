@@ -70,17 +70,14 @@ describe('groupFindingsByPriority', () => {
 
 describe('resolveFindingPath / findingComposerText', () => {
   it('resolves the file path via the run file index', () => {
-    expect(resolveFindingPath({ files: [{ fileKey: 'fk-1', path: 'src/a.ts' }] }, { fileKey: 'fk-1' })).toBe(
-      'src/a.ts'
-    );
+    expect(
+      resolveFindingPath({ files: [{ fileKey: 'fk-1', path: 'src/a.ts' }] }, { fileKey: 'fk-1' })
+    ).toBe('src/a.ts');
     expect(resolveFindingPath({ files: [] }, { fileKey: 'fk-1' })).toBeNull();
   });
 
   it('builds a typed composer draft with location, trigger, impact and evidence', () => {
-    const text = findingComposerText(
-      { files: [{ fileKey: 'fk-1', path: 'src/a.ts' }] },
-      finding()
-    );
+    const text = findingComposerText({ files: [{ fileKey: 'fk-1', path: 'src/a.ts' }] }, finding());
     expect(text).toContain('[审查问题 P1] Changed line breaks consumers');
     expect(text).toContain('位置：src/a.ts:2-2（当前侧）');
     expect(text).toContain('触发条件：When a consumer matches the literal');
@@ -103,7 +100,9 @@ describe('runStateBanner', () => {
     });
     expect(runStateBanner(record({ status: 'cancelled' })).tone).toBe('warn');
     expect(
-      runStateBanner(record({ status: 'failed', failure: { kind: 'model_error', message: 'boom' } })).tone
+      runStateBanner(
+        record({ status: 'failed', failure: { kind: 'model_error', message: 'boom' } })
+      ).tone
     ).toBe('error');
     const partial = record({
       result: {

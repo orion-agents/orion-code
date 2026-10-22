@@ -120,13 +120,20 @@ export class WebCodeReviewRunServiceV1 {
     const abort = new AbortController();
     this.inflight.set(runId, abort);
     const cwd = this.cwdProvider();
-    void this.execute({ runId, selector, cwd, adapter, abort, onSnapshot: snapshot => {
-      capturedFiles = Object.freeze(
-        snapshot.files.map(file => ({ fileKey: file.fileKey, path: file.path }))
-      );
-      const record = this.records.get(runId);
-      if (record) this.records.set(runId, { ...record, files: capturedFiles });
-    } });
+    void this.execute({
+      runId,
+      selector,
+      cwd,
+      adapter,
+      abort,
+      onSnapshot: snapshot => {
+        capturedFiles = Object.freeze(
+          snapshot.files.map(file => ({ fileKey: file.fileKey, path: file.path }))
+        );
+        const record = this.records.get(runId);
+        if (record) this.records.set(runId, { ...record, files: capturedFiles });
+      },
+    });
     return Object.freeze({ runId, status: 'running' as const });
   }
 
@@ -198,11 +205,7 @@ export class WebCodeReviewRunServiceV1 {
     if (!existing) return;
     const finished: WebCodeReviewRunRecordV1 = {
       ...existing,
-      status: result
-        ? result.state
-        : failure?.kind === 'cancelled'
-          ? 'cancelled'
-          : 'failed',
+      status: result ? result.state : failure?.kind === 'cancelled' ? 'cancelled' : 'failed',
       endedAt: this.now(),
       result,
       failure,
@@ -214,10 +217,7 @@ export class WebCodeReviewRunServiceV1 {
   private evictFinished(): void {
     const finished = [...this.records.values()]
       .filter(record => record.status !== 'running')
-      .sort(
-        (left, right) =>
-          (left.endedAt ?? left.startedAt) - (right.endedAt ?? right.startedAt)
-      );
+      .sort((left, right) => (left.endedAt ?? left.startedAt) - (right.endedAt ?? right.startedAt));
     let excess = this.records.size - this.maxRuns;
     for (const record of finished) {
       if (excess <= 0) break;
@@ -277,14 +277,15 @@ function failureMessage(failure: {
  *  path filters. Unknown shapes are typed 400s, never guesses. */
 export function parseWebReviewSelectorV1(value: unknown): ReviewSelectorV1 {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new WebWorkbenchError(400, 'Review selector must be an object.', 'review_selector_invalid');
+    throw new WebWorkbenchError(
+      400,
+      'Review selector must be an object.',
+      'review_selector_invalid'
+    );
   }
   const record = value as Record<string, unknown>;
   const keys = Object.keys(record).sort();
-  const allowed =
-    record.kind === 'base'
-      ? ['kind', 'paths', 'ref']
-      : ['kind', 'paths'];
+  const allowed = record.kind === 'base' ? ['kind', 'paths', 'ref'] : ['kind', 'paths'];
   if (keys.some(key => !allowed.includes(key))) {
     throw new WebWorkbenchError(
       400,
@@ -295,7 +296,11 @@ export function parseWebReviewSelectorV1(value: unknown): ReviewSelectorV1 {
   const paths = parseSelectorPaths(record.paths);
   if (record.kind === 'base') {
     if (typeof record.ref !== 'string' || record.ref.trim() === '') {
-      throw new WebWorkbenchError(400, 'Review selector base ref must be a non-empty string.', 'review_selector_invalid');
+      throw new WebWorkbenchError(
+        400,
+        'Review selector base ref must be a non-empty string.',
+        'review_selector_invalid'
+      );
     }
     return Object.freeze({ kind: 'base', ref: record.ref, ...(paths ? { paths } : {}) });
   }

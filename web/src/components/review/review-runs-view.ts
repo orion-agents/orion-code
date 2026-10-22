@@ -17,7 +17,12 @@ const PRIORITY_ORDER: readonly (keyof FindingGroups)[] = ['P0', 'P1', 'P2', 'P3'
 
 /** Groups findings by priority P0→P3, preserving receipt order inside a group. */
 export function groupFindingsByPriority(findings: readonly ReviewFindingV1[]): FindingGroups {
-  const groups: { P0: ReviewFindingV1[]; P1: ReviewFindingV1[]; P2: ReviewFindingV1[]; P3: ReviewFindingV1[] } = {
+  const groups: {
+    P0: ReviewFindingV1[];
+    P1: ReviewFindingV1[];
+    P2: ReviewFindingV1[];
+    P3: ReviewFindingV1[];
+  } = {
     P0: [],
     P1: [],
     P2: [],
