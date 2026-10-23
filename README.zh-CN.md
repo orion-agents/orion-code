@@ -2,11 +2,12 @@
 
 面向终端与浏览器、本地优先的目标驱动 Coding Agent。
 
-> v0.3.31 候选版本：进行中。审查回路的发布收据回填与交付状态审计切片：v0.3.30 资格
-> 证据的发布链路段按事实回填（PR #286、合并提交 `15887f5`、tag `v0.3.30`、npm
-> `latest`），CHANGELOG 0.3.30 条目修正为 `published`，并新增
-> `docs/plan/evidence/v0.3.31/status-audit.md` 记录 0.3.28–0.3.30 三版交付状态审计。
-> 上一版 0.3.30 已发布 npm（registry `latest`）、打 tag `v0.3.30`（`15887f5`，#286）。
+> v0.3.32 候选版本：进行中。审查回路的发布收据回填与交付状态审计切片：CHANGELOG
+> 0.3.31 条目修正为 `published`，并新增
+> `docs/plan/evidence/v0.3.32/status-audit.md` 记录 0.3.29–0.3.31 三版交付状态
+> 审计与 v0.3.31 发布事实（PR #287、合并提交 `10dfd8d`、tag `v0.3.31`、npm
+> `latest`）。上一版 0.3.31 已发布 npm（registry `latest`）、打 tag `v0.3.31`
+> （`10dfd8d`，#287）。
 
 [English](README.md) ·
 [v0.3.24 方案](docs/plan/v0.3.24-plan.md) ·
@@ -101,10 +102,10 @@ MCP 仍是用户可见的扩展边界。
 支持 Node.js 22.12+、24 和 26。生产环境建议使用 Node 24 LTS，当前开发环境也支持 Node 26
 Current。Node 20 已结束上游维护，不再属于 v0.3 Runtime 合同。
 
-v0.3.31 在 npm 可用后，可安装固定版本：
+v0.3.32 在 npm 可用后，可安装固定版本：
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.31
+npm install -g @orion-agents/orion-code@0.3.32
 orion --version
 orion doctor
 ```
