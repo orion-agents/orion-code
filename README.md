@@ -2,13 +2,13 @@
 
 Local-first, goal-driven coding agent for the terminal and browser.
 
-> v0.3.32 candidate — open. Receipt backfill & delivery-status audit slice of
-> the review loop: the 0.3.31 CHANGELOG entry is corrected to `published`,
-> and a three-version (0.3.29–0.3.31) delivery-status audit is recorded in
-> `docs/plan/evidence/v0.3.32/status-audit.md` together with the v0.3.31
-> release facts (PR #287, merge `10dfd8d`, tag `v0.3.31`, npm `latest`). The
-> previous release 0.3.31 is on npm (registry `latest`), tagged `v0.3.31`
-> (`10dfd8d`, #287).
+> v0.3.33 candidate — open. Receipt backfill & delivery-status audit slice of
+> the review loop: the 0.3.32 CHANGELOG entry is corrected to `published`,
+> and a three-version (0.3.30–0.3.32) delivery-status audit is recorded in
+> `docs/plan/evidence/v0.3.33/status-audit.md` together with the v0.3.32
+> release facts (PR #288, merge `d24f531`, tag `v0.3.32`, npm `latest`). The
+> previous release 0.3.32 is on npm (registry `latest`), tagged `v0.3.32`
+> (`d24f531`, #288).
 
 [中文说明](README.zh-CN.md) ·
 [v0.3.24 plan](docs/plan/v0.3.24-plan.md) ·
@@ -171,10 +171,10 @@ user extension boundaries.
 Node.js 22.12+, 24, and 26 are supported. Use Node 24 LTS for production or Node 26 Current for
 current development environments. Node 20 is upstream EOL and is no longer a v0.3 runtime.
 
-To install the pinned v0.3.32 package when it is available on npm:
+To install the pinned v0.3.33 package when it is available on npm:
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.32
+npm install -g @orion-agents/orion-code@0.3.33
 orion --version
 orion doctor
 ```
