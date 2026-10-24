@@ -1,12 +1,12 @@
 {
   "name": "@orion-agents/orion-code",
-  "version": "0.3.32",
+  "version": "0.3.33",
   "lockfileVersion": 3,
   "requires": true,
   "packages": {
     "": {
       "name": "@orion-agents/orion-code",
-      "version": "0.3.32",
+      "version": "0.3.33",
       "license": "MIT",
       "dependencies": {
         "@clack/prompts": "^0.7.0",
