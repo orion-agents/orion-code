@@ -22,9 +22,34 @@ which is **not** a pass.
 
 ## [Unreleased]
 
-## [0.3.33] — UNRELEASED
+## [0.3.34] — UNRELEASED
 
 > **Status: candidate.** Open. Receipt backfill & delivery-status audit slice
+> (PR4 automatable portion of the v0.3.27 review loop, plan:
+> `docs/plan/v0.3.34-plan.md`): the 0.3.33 entry is corrected to `published`,
+> a new three-version delivery-status audit (0.3.31–0.3.33: tag + registry +
+> dist-tag latest) is recorded in `docs/plan/evidence/v0.3.34/status-audit.md`
+> together with the v0.3.33 release facts (PR #289, squash merge `262e6e2`,
+> tag `v0.3.33`, npm registry `latest=0.3.33`). No production code changes.
+> The human-labeled paid quality benchmark and real Host + Chrome full-chain
+> E2E remain honestly `not_run` (no model credentials in the automation
+> environment). Not merged, tagged or published.
+
+### Changed
+
+- CHANGELOG: corrected the 0.3.33 delivery status from `candidate` to
+  `published` (tagged `v0.3.33`, npm registry `latest`).
+- docs: added `docs/plan/evidence/v0.3.34/status-audit.md` — a three-version
+  (0.3.31–0.3.33) delivery-status audit cross-checking git tags, registry
+  versions and the `latest` dist-tag, plus the v0.3.33 release facts
+  (PR #289, merge `262e6e2`, tag `v0.3.33`, registry `latest=0.3.33`).
+
+## [0.3.33] — 2026-10-24
+
+> **Status: published.** Released as `@orion-agents/orion-code@0.3.33` from
+> tag `v0.3.33` (merge commit `262e6e2`, PR #289, 2026-10-24); npm registry
+> `latest` confirmed 0.3.33 via direct registry query. Receipt backfill &
+> delivery-status audit slice
 > (PR4 automatable portion of the v0.3.27 review loop, plan:
 > `docs/plan/v0.3.33-plan.md`): the 0.3.32 entry is corrected to `published`,
 > a new three-version delivery-status audit (0.3.30–0.3.32: tag + registry +
@@ -33,7 +58,7 @@ which is **not** a pass.
 > tag `v0.3.32`, npm registry `latest=0.3.32`). No production code changes.
 > The human-labeled paid quality benchmark and real Host + Chrome full-chain
 > E2E remain honestly `not_run` (no model credentials in the automation
-> environment). Not merged, tagged or published.
+> environment).
 
 ### Changed
 
