@@ -62,7 +62,7 @@ describe('coding-task-eval (T22-04)', () => {
   test('records the source metadata required for A/B comparison', async () => {
     const receipt = await runCodingTaskEvalV1({ mode: 'fake', workspaceRoot: root });
     expect(receipt.source.gitSha).toBeTruthy();
-    expect(receipt.source.packageVersion).toBe('0.3.36');
+    expect(receipt.source.packageVersion).toBe('0.3.37');
     expect(receipt.fixtureVersion).toBe(1);
     expect(receipt.createdAt).toBeTruthy();
   });
