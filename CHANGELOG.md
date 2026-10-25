@@ -22,9 +22,9 @@ which is **not** a pass.
 
 ## [Unreleased]
 
-## [0.3.36] — UNRELEASED
+## [0.3.36] — 2026-10-25
 
-> **Status: candidate.** Open. Receipt backfill & delivery-status audit slice
+> **Status: published.** Open. Receipt backfill & delivery-status audit slice
 > (PR4 automatable portion of the v0.3.27 review loop, plan:
 > `docs/plan/v0.3.36-plan.md`): the 0.3.35 entry is corrected to `published`,
 > a new three-version delivery-status audit (0.3.33–0.3.35: tag + registry +
@@ -33,7 +33,7 @@ which is **not** a pass.
 > tag `v0.3.35`, npm registry `latest=0.3.35`). No production code changes.
 > The human-labeled paid quality benchmark and real Host + Chrome full-chain
 > E2E remain honestly `not_run` (no model credentials in the automation
-> environment). Not merged, tagged or published.
+> environment). Released as `@orion-agents/orion-code@0.3.36` from `refs/tags/v0.3.36`, merged to `main` as `6ea1d16` (#292). npm registry `latest=0.3.36` published `2026-10-25T01:59:21.552Z`. GitHub Release: https://github.com/orion-agents/orion-code/releases/tag/v0.3.36
 
 ### Changed
 
