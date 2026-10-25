@@ -22,9 +22,35 @@ which is **not** a pass.
 
 ## [Unreleased]
 
-## [0.3.35] — UNRELEASED
+## [0.3.36] — UNRELEASED
 
 > **Status: candidate.** Open. Receipt backfill & delivery-status audit slice
+> (PR4 automatable portion of the v0.3.27 review loop, plan:
+> `docs/plan/v0.3.36-plan.md`): the 0.3.35 entry is corrected to `published`,
+> a new three-version delivery-status audit (0.3.33–0.3.35: tag + registry +
+> dist-tag latest) is recorded in `docs/plan/evidence/v0.3.36/status-audit.md`
+> together with the v0.3.35 release facts (PR #291, squash merge `cfbb4e2`,
+> tag `v0.3.35`, npm registry `latest=0.3.35`). No production code changes.
+> The human-labeled paid quality benchmark and real Host + Chrome full-chain
+> E2E remain honestly `not_run` (no model credentials in the automation
+> environment). Not merged, tagged or published.
+
+### Changed
+
+- CHANGELOG: corrected the 0.3.35 delivery status from `candidate` to
+  `published` (tagged `v0.3.35`, npm registry `latest`).
+- docs: added `docs/plan/evidence/v0.3.36/status-audit.md` — a three-version
+  (0.3.33–0.3.35) delivery-status audit cross-checking git tags, registry
+  versions and the `latest` dist-tag, plus the v0.3.35 release facts
+  (PR #291, merge `cfbb4e2`, tag `v0.3.35`, registry `latest=0.3.35`).
+
+## [0.3.35] — 2026-10-25
+
+> **Status: published.** Released as `@orion-agents/orion-code@0.3.35` from
+> tag `v0.3.35` (merge commit `cfbb4e2`, PR #291, 2026-10-25); npm registry
+> `latest` confirmed 0.3.35 via direct registry query (registry shasum
+> `b54d87b2ade509af3479cbd19020b3df5a9f343b`, tarball ingested
+> 2026-10-24T20:06:04.738Z). Receipt backfill & delivery-status audit slice
 > (PR4 automatable portion of the v0.3.27 review loop, plan:
 > `docs/plan/v0.3.35-plan.md`): the 0.3.34 entry is corrected to `published`,
 > a new three-version delivery-status audit (0.3.32–0.3.34: tag + registry +
@@ -33,7 +59,7 @@ which is **not** a pass.
 > tag `v0.3.34`, npm registry `latest=0.3.34`). No production code changes.
 > The human-labeled paid quality benchmark and real Host + Chrome full-chain
 > E2E remain honestly `not_run` (no model credentials in the automation
-> environment). Not merged, tagged or published.
+> environment).
 
 ### Changed
 
