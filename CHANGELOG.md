@@ -51,9 +51,9 @@ which is **not** a pass.
   (PR #296, merge `5a51932`, tag `v0.3.39`, registry `latest=0.3.39`).
 - README / README.zh-CN: header summary and install pin updated to 0.3.40.
 
-## [0.3.41] — UNRELEASED
+## [0.3.41] — 2026-10-27
 
-> **Status: candidate.** Open. Receipt backfill & delivery-status audit slice
+> **Status: published.** Open. Receipt backfill & delivery-status audit slice
 > (PR4 automatable portion of the v0.3.27 review loop, plan:
 > `docs/plan/v0.3.41-plan.md`): the 0.3.40 entry is corrected to `published`
 > (with the real npm publish timestamp and the GitHub Release link), a new
@@ -63,7 +63,11 @@ which is **not** a pass.
 > tag `v0.3.40`, npm registry `latest=0.3.40`, GitHub Release v0.3.40).
 > No production code changes. The human-labeled paid quality benchmark and
 > real Host + Chrome full-chain E2E remain honestly `not_run` (no model
-> credentials in the automation environment). Not merged, tagged or published.
+> credentials in the automation environment). Released as
+> `@orion-agents/orion-code@0.3.41` from `refs/tags/v0.3.41`, merged to `main`
+> as `2abc8e3` (#298). npm registry `latest=0.3.41` published
+> `2026-10-27T00:30:30.123Z`. GitHub Release:
+> https://github.com/orion-agents/orion-code/releases/tag/v0.3.41
 
 ### Changed
 
@@ -75,6 +79,31 @@ which is **not** a pass.
   versions and the `latest` dist-tag, plus the v0.3.40 release facts
   (PR #297, merge `ef45214`, tag `v0.3.40`, registry `latest=0.3.40`).
 - README / README.zh-CN: header summary and install pin updated to 0.3.41.
+
+## [0.3.42] — UNRELEASED
+
+> **Status: candidate.** Open. Receipt backfill & delivery-status audit slice
+> (PR4 automatable portion of the v0.3.27 review loop, plan:
+> `docs/plan/v0.3.42-plan.md`): the 0.3.41 entry is corrected to `published`
+> (with the real npm publish timestamp and the GitHub Release link), a new
+> three-version delivery-status audit (0.3.39–0.3.41: tag + registry +
+> dist-tag latest) is recorded in `docs/plan/evidence/v0.3.42/status-audit.md`
+> together with the v0.3.41 release facts (PR #298, squash merge `2abc8e3`,
+> tag `v0.3.41`, npm registry `latest=0.3.41`, GitHub Release v0.3.41).
+> No production code changes. The human-labeled paid quality benchmark and
+> real Host + Chrome full-chain E2E remain honestly `not_run` (no model
+> credentials in the automation environment). Not merged, tagged or published.
+
+### Changed
+
+- CHANGELOG: corrected the 0.3.41 delivery status from `candidate` to
+  `published` (tagged `v0.3.41`, npm registry `latest`, npm publish timestamp
+  and GitHub Release link backfilled).
+- docs: added `docs/plan/evidence/v0.3.42/status-audit.md` — a three-version
+  (0.3.39–0.3.41) delivery-status audit cross-checking git tags, registry
+  versions and the `latest` dist-tag, plus the v0.3.41 release facts
+  (PR #298, merge `2abc8e3`, tag `v0.3.41`, registry `latest=0.3.41`).
+- README / README.zh-CN: header summary and install pin updated to 0.3.42.
 
 ## [0.3.39] — 2026-10-26
 
