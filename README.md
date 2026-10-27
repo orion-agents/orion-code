@@ -2,14 +2,14 @@
 
 Local-first, goal-driven coding agent for the terminal and browser.
 
-> v0.3.40 candidate — open. Receipt backfill & delivery-status audit slice of
-> the review loop: the 0.3.39 CHANGELOG entry is corrected to `published`
-> (with the real npm publish timestamp and the GitHub Release v0.3.39 link),
-> and a three-version (0.3.37–0.3.39) delivery-status audit is recorded in
-> `docs/plan/evidence/v0.3.40/status-audit.md` together with the v0.3.39
-> release facts (PR #296, merge `5a51932`, tag `v0.3.39`, npm `latest`). The
-> previous release 0.3.39 is on npm (registry `latest`), tagged `v0.3.39`
-> (`5a51932`, #296).
+> v0.3.41 candidate — open. Receipt backfill & delivery-status audit slice of
+> the review loop: the 0.3.40 CHANGELOG entry is corrected to `published`
+> (with the real npm publish timestamp and the GitHub Release v0.3.40 link),
+> and a three-version (0.3.38–0.3.40) delivery-status audit is recorded in
+> `docs/plan/evidence/v0.3.41/status-audit.md` together with the v0.3.40
+> release facts (PR #297, merge `ef45214`, tag `v0.3.40`, npm `latest`). The
+> previous release 0.3.40 is on npm (registry `latest`), tagged `v0.3.40`
+> (`ef45214`, #297).
 
 [中文说明](README.zh-CN.md) ·
 [v0.3.24 plan](docs/plan/v0.3.24-plan.md) ·
@@ -175,7 +175,7 @@ current development environments. Node 20 is upstream EOL and is no longer a v0.
 To install the pinned v0.3.33 package when it is available on npm:
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.40
+npm install -g @orion-agents/orion-code@0.3.41
 orion --version
 orion doctor
 ```
