@@ -2,12 +2,12 @@
 
 面向终端与浏览器、本地优先的目标驱动 Coding Agent。
 
-> v0.3.47 候选版本：进行中。审查回路的发布收据回填与交付状态审计切片：CHANGELOG
-> 0.3.46 条目修正为 `published`（含真实 npm 发布时间戳与 GitHub Release v0.3.46
-> 链接），并新增 `docs/plan/evidence/v0.3.47/status-audit.md` 记录
-> 0.3.44–0.3.46 三版交付状态审计与 v0.3.46 发布事实（PR #303、合并提交
-> `2bccc47`、tag `v0.3.46`、npm `latest`）。上一版 0.3.46 已发布 npm
-> （registry `latest`）、打 tag `v0.3.46`（`2bccc47`，#303）。
+> v0.3.48 候选版本：进行中。审查回路的发布收据回填与交付状态审计切片：CHANGELOG
+> 0.3.47 条目修正为 `published`（含真实 npm 发布时间戳与 GitHub Release v0.3.47
+> 链接），并新增 `docs/plan/evidence/v0.3.48/status-audit.md` 记录
+> 0.3.45–0.3.47 三版交付状态审计与 v0.3.47 发布事实（PR #304、合并提交
+> `17d85e6`、tag `v0.3.47`、npm `latest`）。上一版 0.3.47 已发布 npm
+> （registry `latest`）、打 tag `v0.3.47`（`17d85e6`，#304）。
 
 [English](README.md) ·
 [v0.3.24 方案](docs/plan/v0.3.24-plan.md) ·
@@ -105,7 +105,7 @@ Current。Node 20 已结束上游维护，不再属于 v0.3 Runtime 合同。
 v0.3.33 在 npm 可用后，可安装固定版本：
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.47
+npm install -g @orion-agents/orion-code@0.3.48
 orion --version
 orion doctor
 ```
