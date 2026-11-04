@@ -98,6 +98,14 @@ describe('FilesystemSkillProviderV1', () => {
       'user',
       'configured',
       'project',
+      'project',
+    ]);
+    expect(roots.map(item => item.path)).toEqual([
+      builtinRoot,
+      join(configHome, 'skills'),
+      configuredRoot,
+      join(cwd, '.orion-code', 'skills'),
+      join(cwd, '.agents', 'skills'),
     ]);
     expect(first.complete).toBe(true);
     expect(first.descriptors.map(item => [item.name, item.sourceScope])).toEqual([
@@ -121,6 +129,52 @@ describe('FilesystemSkillProviderV1', () => {
       resourceBytes: 0,
     });
     expect(provider.stats().frontmatterPrefixBytes).toBeLessThan(8 * 1_024);
+  });
+
+  test('observes project skills written under .agents/skills without loading bodies', async () => {
+    const root = temporaryRoot();
+    const cwd = join(root, 'project');
+    const configHome = join(root, 'config');
+    const builtinRoot = join(root, 'builtin');
+    const largeBody = `# Not catalog content\n${'body-sentinel '.repeat(2_000)}`;
+    writeSkill(join(cwd, '.agents', 'skills'), 'agent-dir-skill', {
+      name: 'agent-dir-skill',
+      description: 'discovered through the .agents project root',
+      body: largeBody,
+    });
+    // Same name in both project roots must stay observable (the lazy runtime,
+    // not the provider, settles which one wins) and must not destabilize the
+    // catalog digest across scans.
+    writeSkill(join(cwd, '.agents', 'skills'), 'shared-name', {
+      name: 'shared-name',
+      description: 'from .agents',
+      body: largeBody,
+    });
+    writeSkill(join(cwd, '.orion-code', 'skills'), 'shared-name', {
+      name: 'shared-name',
+      description: 'from .orion-code',
+      body: largeBody,
+    });
+    const provider = createProductionFilesystemSkillProviderV1({
+      cwd,
+      configHome,
+      builtinRoot,
+      watch: false,
+      maxFrontmatterBytes: 1_024,
+    });
+    const signal = new AbortController().signal;
+
+    const first = await provider.list({ id: 'project-scope' }, signal);
+    const second = await provider.list({ id: 'project-scope' }, signal);
+
+    expect(first.complete).toBe(true);
+    expect(new Set(first.descriptors.map(item => item.name))).toEqual(
+      new Set(['agent-dir-skill', 'shared-name'])
+    );
+    expect(first.descriptors.filter(item => item.name === 'shared-name')).toHaveLength(2);
+    expect(first.descriptors.every(item => item.sourceScope === 'project')).toBe(true);
+    expect(second.digest).toBe(first.digest);
+    expect(provider.stats()).toMatchObject({ definitionReads: 0, definitionBytes: 0 });
   });
 
   test('loads the selected definition then enforces manifest and realpath resource containment', async () => {

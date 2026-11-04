@@ -2,12 +2,13 @@
 
 面向终端与浏览器、本地优先的目标驱动 Coding Agent。
 
-> v0.3.50 候选版本：进行中。审查回路的发布收据回填与交付状态审计切片：CHANGELOG
+> v0.3.50 已发布。审查回路的发布收据回填与交付状态审计切片：PR #309、合并提交
+> `86af06a`、tag `v0.3.50`、npm 发布 `2026-11-02T03:52:07.285Z`（registry
+> `latest=0.3.50`）、GitHub Release `v0.3.50`。CHANGELOG
 > 0.3.49 条目修正为 `published`（含真实 npm 发布时间戳与 GitHub Release v0.3.49
 > 链接），并新增 `docs/plan/evidence/v0.3.50/status-audit.md` 记录
 > 0.3.47–0.3.49 三版交付状态审计与 v0.3.49 发布事实（PR #306、合并提交
-> `bb3c518`、tag `v0.3.49`、npm `latest`）。上一版 0.3.49 已发布 npm
-> （registry `latest`）、打 tag `v0.3.49`（`bb3c518`，#306）。
+> `bb3c518`、tag `v0.3.49`、npm `latest`）。
 
 [English](README.md) ·
 [v0.3.24 方案](docs/plan/v0.3.24-plan.md) ·
