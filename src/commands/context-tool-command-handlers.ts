@@ -587,7 +587,7 @@ async function handleSkills(ctx: CommandContext): Promise<CommandResult> {
       console.log();
       console.log(DIM('  No Skill descriptors found.'));
       console.log(
-        DIM('  Place SKILL.md files in ~/.orion-code/skills/<name>/ or .orion-code/skills/<name>/')
+        DIM('  Place SKILL.md files in ~/.orion-code/skills/<name>/ or .agents/skills/<name>/')
       );
       console.log();
       return { success: true };

@@ -2,14 +2,16 @@
 
 Local-first, goal-driven coding agent for the terminal and browser.
 
-> v0.3.51 candidate — open. Receipt backfill & delivery-status audit slice of
-> the review loop: the 0.3.50 CHANGELOG entry is corrected to `published`
-> (with the real npm publish timestamp and the GitHub Release v0.3.50 link),
-> and a three-version (0.3.48–0.3.50) delivery-status audit is recorded in
-> `docs/plan/evidence/v0.3.51/status-audit.md` together with the v0.3.50
-> release facts (PR #309, merge `86af06a`, tag `v0.3.50`, npm `latest`). The
-> previous release 0.3.50 is on npm (registry `latest`), tagged `v0.3.50`
-> (`86af06a`, #309).
+> v0.3.51 candidate — open. Receipt-backfill slice plus the Web E2E fixture
+> keep-alive fix that clears the chronic `WEB32-P0-08` failure
+> (`tests/e2e/fixtures/openai-provider.ts`: `keepAliveTimeout` 1000 → 0, closing
+> the stale-socket race that black-holed provider POSTs). A three-version
+> (0.3.48–0.3.50) delivery-status audit is recorded in
+> `docs/plan/evidence/v0.3.51/status-audit.md`. This release is also the first
+> installable build carrying the `.agents/skills` loading feature and the
+> self-eval / RSI skills merged on `main` as #311 (`0eaccff`). The previous
+> release 0.3.50 is on npm (registry `latest`), tagged `v0.3.50` (`86af06a`,
+> #309).
 
 [中文说明](README.zh-CN.md) ·
 [v0.3.24 plan](docs/plan/v0.3.24-plan.md) ·
