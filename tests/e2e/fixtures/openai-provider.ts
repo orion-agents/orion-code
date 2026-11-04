@@ -173,7 +173,11 @@ export async function startOpenAiProviderFixture(
   });
   server.requestTimeout = 15_000;
   server.headersTimeout = 10_000;
-  server.keepAliveTimeout = 1_000;
+  // 0 disables the idle keep-alive close. A short close timer raced the host's
+  // pooled HTTP agent: a POST dispatched onto a socket the server had just
+  // closed is silently lost (Node does not retry non-idempotent requests), so
+  // the provider request never reached this fixture and the scenario timed out.
+  server.keepAliveTimeout = 0;
 
   await new Promise<void>((resolve, reject) => {
     const onError = (error: Error) => {

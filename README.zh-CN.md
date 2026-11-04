@@ -2,13 +2,14 @@
 
 面向终端与浏览器、本地优先的目标驱动 Coding Agent。
 
-> v0.3.50 已发布。审查回路的发布收据回填与交付状态审计切片：PR #309、合并提交
-> `86af06a`、tag `v0.3.50`、npm 发布 `2026-11-02T03:52:07.285Z`（registry
-> `latest=0.3.50`）、GitHub Release `v0.3.50`。CHANGELOG
-> 0.3.49 条目修正为 `published`（含真实 npm 发布时间戳与 GitHub Release v0.3.49
-> 链接），并新增 `docs/plan/evidence/v0.3.50/status-audit.md` 记录
-> 0.3.47–0.3.49 三版交付状态审计与 v0.3.49 发布事实（PR #306、合并提交
-> `bb3c518`、tag `v0.3.49`、npm `latest`）。
+> v0.3.51 候选版本：进行中。发布收据回填切片，并附带清除慢性
+> `WEB32-P0-08` 失败的 Web E2E fixture keep-alive 修复
+> （`tests/e2e/fixtures/openai-provider.ts`：`keepAliveTimeout` 1000 → 0，消除
+> 陈旧 socket 竞态吞掉 provider POST 的问题）；新增
+> `docs/plan/evidence/v0.3.51/status-audit.md` 记录 0.3.48–0.3.50 三版交付状态
+> 审计。本版同时是 `.agents/skills` 加载能力与 self-eval / RSI 技能（已作为
+> #311 合并进 `main`，`0eaccff`）首个可安装的发布版本。上一版 0.3.50 已发布
+> npm（registry `latest`）、打 tag `v0.3.50`（`86af06a`，#309）。
 
 [English](README.md) ·
 [v0.3.24 方案](docs/plan/v0.3.24-plan.md) ·
@@ -106,7 +107,7 @@ Current。Node 20 已结束上游维护，不再属于 v0.3 Runtime 合同。
 v0.3.33 在 npm 可用后，可安装固定版本：
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.50
+npm install -g @orion-agents/orion-code@0.3.51
 orion --version
 orion doctor
 ```

@@ -311,6 +311,42 @@ which is **not** a pass.
   (PR #306, merge `bb3c518`, tag `v0.3.49`, registry `latest=0.3.49`).
 - README / README.zh-CN: header summary and install pin updated to 0.3.50.
 
+## [0.3.51] — 2026-11-04
+
+> **Status: candidate.** Open. Receipt-backfill slice plus the Web E2E fixture
+> keep-alive fix that clears the chronic `WEB32-P0-08` red (plan:
+> `docs/plan/v0.3.51-plan.md`). A new three-version delivery-status audit
+> (0.3.48–0.3.50: tag + registry + dist-tag latest) is recorded in
+> `docs/plan/evidence/v0.3.51/status-audit.md`. The 0.3.50 `published`
+> correction landed on `main` through #311, so this slice carries no duplicate
+> status flip. Because `main` advanced past tag `v0.3.50` while `package.json`
+> still read `0.3.50`, `main`'s release-gate job failed on the
+> `Release ref (refs/tags/v0.3.50)` check; this version bump to `0.3.51` is the
+> quality-clause-B remediation for that red. This release is also the first
+> installable build containing the `.agents/skills` loading feature and the
+> self-eval / RSI skills merged as #311 (`0eaccff`), which had not shipped under
+> any published version. The human-labeled paid quality benchmark and real Host
+> + Chrome full-chain E2E remain honestly `not_run` (no model credentials in
+> the automation environment). Not merged, tagged or published.
+
+### Changed
+
+- test(e2e): disabled the OpenAI fixture server's idle keep-alive close
+  (`keepAliveTimeout` 1000 → 0) in `tests/e2e/fixtures/openai-provider.ts`. The
+  1s close timer raced the host's pooled HTTP agent: a POST dispatched onto a
+  socket the server had just closed is silently lost (Node does not retry
+  non-idempotent requests), so the provider request never reached the fixture
+  and `WEB32-P0-08` timed out at 45s. This clears the failure that red-failed
+  the `Web E2E full suite three consecutive runs` job across five CI attempts
+  during v0.3.50 and v0.3.51.
+- feat: `main`'s `.agents/skills` filesystem-skill loading plus the
+  `orion-self-eval` / `orion-rsi-loop` skills (merged as #311) ship for the
+  first time in this release.
+- docs: added `docs/plan/evidence/v0.3.51/status-audit.md` — a three-version
+  (0.3.48–0.3.50) delivery-status audit cross-checking git tags, registry
+  versions and the `latest` dist-tag.
+- README / README.zh-CN: header summary and install pin updated to 0.3.51.
+
 ## [0.3.44] — 2026-10-28
 
 > **Status: published.** Open. Receipt backfill & delivery-status audit slice
