@@ -1,0 +1,215 @@
+{
+  "schemaVersion": 1,
+  "track": "orion-self-eval/tier2-conversation-loop",
+  "provider": "deterministic-mock (no paid model calls)",
+  "startedAt": "2026-11-04T08:52:00.632Z",
+  "finishedAt": "2026-11-04T08:52:06.396Z",
+  "repoRoot": "/Users/hope/ai-project/orion-code.worktrees/skills-eval-rsi",
+  "cliVersion": "0.3.50",
+  "tasks": [
+    {
+      "id": "T1-glob-workspace",
+      "title": "Enumerate TypeScript sources through the glob tool",
+      "checks": [
+        {
+          "id": "exit_zero:",
+          "status": "pass",
+          "detail": "exitCode=0"
+        },
+        {
+          "id": "content_nonempty:",
+          "status": "pass",
+          "detail": "contentLength=43"
+        },
+        {
+          "id": "content_matches:src/app\\.ts",
+          "status": "pass",
+          "detail": "pattern=src/app\\.ts"
+        },
+        {
+          "id": "tool_called:glob",
+          "status": "pass",
+          "detail": "tools=glob"
+        },
+        {
+          "id": "no_tool_failures:",
+          "status": "pass",
+          "detail": "toolFailures=0"
+        },
+        {
+          "id": "no_errors:",
+          "status": "pass",
+          "detail": "errors=0"
+        },
+        {
+          "id": "no_writes:",
+          "status": "pass",
+          "detail": "filesAdded="
+        },
+        {
+          "id": "session_persisted:",
+          "status": "pass",
+          "detail": "sessionId=present"
+        },
+        {
+          "id": "max_model_requests:4",
+          "status": "pass",
+          "detail": "modelRequests=2 limit=4"
+        }
+      ],
+      "observed": {
+        "exitCode": 0,
+        "parsedResult": true,
+        "contentLength": 43,
+        "toolEventCount": 2,
+        "toolNames": [
+          "glob"
+        ],
+        "toolFailures": 0,
+        "errorCount": 0,
+        "budgetStops": 0,
+        "sessionId": "present",
+        "model": "orion-eval-model",
+        "modelRequests": 2,
+        "filesAdded": []
+      },
+      "pass": true
+    },
+    {
+      "id": "T2-read-file-sentinel",
+      "title": "Read a workspace file and carry its sentinel into the answer",
+      "checks": [
+        {
+          "id": "exit_zero:",
+          "status": "pass",
+          "detail": "exitCode=0"
+        },
+        {
+          "id": "content_matches:WATERLINE-7731",
+          "status": "pass",
+          "detail": "pattern=WATERLINE-7731"
+        },
+        {
+          "id": "tool_called:read_file",
+          "status": "pass",
+          "detail": "tools=read_file"
+        },
+        {
+          "id": "no_tool_failures:",
+          "status": "pass",
+          "detail": "toolFailures=0"
+        },
+        {
+          "id": "no_errors:",
+          "status": "pass",
+          "detail": "errors=0"
+        },
+        {
+          "id": "no_writes:",
+          "status": "pass",
+          "detail": "filesAdded="
+        },
+        {
+          "id": "session_persisted:",
+          "status": "pass",
+          "detail": "sessionId=present"
+        },
+        {
+          "id": "max_model_requests:4",
+          "status": "pass",
+          "detail": "modelRequests=2 limit=4"
+        }
+      ],
+      "observed": {
+        "exitCode": 0,
+        "parsedResult": true,
+        "contentLength": 52,
+        "toolEventCount": 2,
+        "toolNames": [
+          "read_file"
+        ],
+        "toolFailures": 0,
+        "errorCount": 0,
+        "budgetStops": 0,
+        "sessionId": "present",
+        "model": "orion-eval-model",
+        "modelRequests": 2,
+        "filesAdded": []
+      },
+      "pass": true
+    },
+    {
+      "id": "T3-grep-pattern",
+      "title": "Search a pattern across the workspace with grep",
+      "checks": [
+        {
+          "id": "exit_zero:",
+          "status": "pass",
+          "detail": "exitCode=0"
+        },
+        {
+          "id": "content_matches:src/server\\.ts",
+          "status": "pass",
+          "detail": "pattern=src/server\\.ts"
+        },
+        {
+          "id": "tool_called:grep",
+          "status": "pass",
+          "detail": "tools=grep"
+        },
+        {
+          "id": "no_tool_failures:",
+          "status": "pass",
+          "detail": "toolFailures=0"
+        },
+        {
+          "id": "no_errors:",
+          "status": "pass",
+          "detail": "errors=0"
+        },
+        {
+          "id": "no_writes:",
+          "status": "pass",
+          "detail": "filesAdded="
+        },
+        {
+          "id": "session_persisted:",
+          "status": "pass",
+          "detail": "sessionId=present"
+        },
+        {
+          "id": "max_model_requests:4",
+          "status": "pass",
+          "detail": "modelRequests=2 limit=4"
+        }
+      ],
+      "observed": {
+        "exitCode": 0,
+        "parsedResult": true,
+        "contentLength": 26,
+        "toolEventCount": 2,
+        "toolNames": [
+          "grep"
+        ],
+        "toolFailures": 0,
+        "errorCount": 0,
+        "budgetStops": 0,
+        "sessionId": "present",
+        "model": "orion-eval-model",
+        "modelRequests": 2,
+        "filesAdded": []
+      },
+      "pass": true
+    }
+  ],
+  "summary": {
+    "total": 3,
+    "passed": 3,
+    "falseCompletes": 0,
+    "tierVerdict": "GO",
+    "notRunTiers": [
+      "tier3-live-model-quality (needs ORION_CODE_API_KEY + budget; annotation manifest HumanReview=PENDING)"
+    ]
+  },
+  "digest": "e18db8ef464dff29d724c8cf00c5c1638ec535cdcd51ae0cff589f0e6475eb1b"
+}
