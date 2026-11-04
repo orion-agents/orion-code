@@ -2,16 +2,17 @@
 
 Local-first, goal-driven coding agent for the terminal and browser.
 
-> v0.3.51 candidate — open. Receipt-backfill slice plus the Web E2E fixture
-> keep-alive fix that clears the chronic `WEB32-P0-08` failure
-> (`tests/e2e/fixtures/openai-provider.ts`: `keepAliveTimeout` 1000 → 0, closing
-> the stale-socket race that black-holed provider POSTs). A three-version
-> (0.3.48–0.3.50) delivery-status audit is recorded in
-> `docs/plan/evidence/v0.3.51/status-audit.md`. This release is also the first
-> installable build carrying the `.agents/skills` loading feature and the
-> self-eval / RSI skills merged on `main` as #311 (`0eaccff`). The previous
-> release 0.3.50 is on npm (registry `latest`), tagged `v0.3.50` (`86af06a`,
-> #309).
+> v0.3.52 candidate — open. Quality-clause-B remediation of the Web E2E red left
+> on `main` by v0.3.51: `WEB32-P0-09` no longer reads `planReview.status` in a
+> transitional state (it polls the settled `(status, revision)` pair), and the
+> OpenAI fixture now reports which requests had arrived when a wait times out, so
+> the remaining `WEB32-P0-08` timeouts can be told apart ("never sent" vs "sent
+> something else"). The v0.3.51 keep-alive change reduced that failure but did
+> not eliminate it. Receipt side: the 0.3.51 CHANGELOG entry is corrected to
+> `published` (with its keep-alive claim corrected from "clears" to "reduced"),
+> and a three-version (0.3.49–0.3.51) delivery-status audit is recorded in
+> `docs/plan/evidence/v0.3.52/status-audit.md`. The previous release 0.3.51 is on
+> npm (registry `latest`), tagged `v0.3.51` (`0702878`, #310).
 
 [中文说明](README.zh-CN.md) ·
 [v0.3.24 plan](docs/plan/v0.3.24-plan.md) ·
@@ -177,7 +178,7 @@ current development environments. Node 20 is upstream EOL and is no longer a v0.
 To install the pinned v0.3.33 package when it is available on npm:
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.51
+npm install -g @orion-agents/orion-code@0.3.52
 orion --version
 orion doctor
 ```

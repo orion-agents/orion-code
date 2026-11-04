@@ -204,7 +204,21 @@ export async function startOpenAiProviderFixture(
     return new Promise<OpenAiFixtureRequest>((resolve, reject) => {
       const onTimeout = () => {
         state.waiters.delete(waiter);
-        reject(new Error(`Timed out after ${timeoutMs}ms waiting for an OpenAI fixture request.`));
+        // Payload text stays out of the message: evidence is secret-scanned
+        // fail-closed. Sequence + scenario + length are enough to tell "the
+        // host never sent anything" from "it sent something else".
+        const recent = state.requests
+          .slice(-6)
+          .map(
+            request => `#${request.sequence} ${request.scenario} len=${request.lastUserText.length}`
+          )
+          .join(', ');
+        reject(
+          new Error(
+            `Timed out after ${timeoutMs}ms waiting for an OpenAI fixture request. ` +
+              `total=${state.requests.length} recent=[${recent || 'none'}]`
+          )
+        );
       };
       const waiter: RequestWaiter = {
         predicate,

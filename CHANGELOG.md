@@ -313,21 +313,34 @@ which is **not** a pass.
 
 ## [0.3.51] — 2026-11-04
 
-> **Status: candidate.** Open. Receipt-backfill slice plus the Web E2E fixture
-> keep-alive fix that clears the chronic `WEB32-P0-08` red (plan:
-> `docs/plan/v0.3.51-plan.md`). A new three-version delivery-status audit
+> **Status: published.** Receipt-backfill slice plus a Web E2E fixture
+> keep-alive fix aimed at the chronic `WEB32-P0-08` red (plan:
+> `docs/plan/v0.3.51-plan.md`). A three-version delivery-status audit
 > (0.3.48–0.3.50: tag + registry + dist-tag latest) is recorded in
 > `docs/plan/evidence/v0.3.51/status-audit.md`. The 0.3.50 `published`
 > correction landed on `main` through #311, so this slice carries no duplicate
 > status flip. Because `main` advanced past tag `v0.3.50` while `package.json`
 > still read `0.3.50`, `main`'s release-gate job failed on the
 > `Release ref (refs/tags/v0.3.50)` check; this version bump to `0.3.51` is the
-> quality-clause-B remediation for that red. This release is also the first
-> installable build containing the `.agents/skills` loading feature and the
-> self-eval / RSI skills merged as #311 (`0eaccff`), which had not shipped under
-> any published version. The human-labeled paid quality benchmark and real Host
-> + Chrome full-chain E2E remain honestly `not_run` (no model credentials in
-> the automation environment). Not merged, tagged or published.
+> quality-clause-B remediation for that red (verified: `release:check` is green
+> on the post-release run). This release is also the first installable build
+> containing the `.agents/skills` loading feature and the self-eval / RSI skills
+> merged as #311 (`0eaccff`), which had not shipped under any published version.
+> The human-labeled paid quality benchmark and real Host + Chrome full-chain E2E
+> remain honestly `not_run` (no model credentials in the automation
+> environment).
+>
+> **Correction added in v0.3.52:** this entry originally claimed the keep-alive
+> fix *clears* the `WEB32-P0-08` red. That was overstated — the fix reduced its
+> frequency (the v0.3.51 PR run passed 18/18) but `WEB32-P0-08` timed out again
+> in one run of the post-release `Web E2E full suite` job, so the stale-socket
+> race is not a confirmed sole root cause. Diagnosis and the remaining
+> clause-B remediation continue in v0.3.52.
+>
+> Released as `@orion-agents/orion-code@0.3.51` from `refs/tags/v0.3.51`, merged
+> to `main` as `0702878` (#310). npm registry `latest=0.3.51` published
+> `2026-11-04T18:11:26.062Z`. GitHub Release:
+> https://github.com/orion-agents/orion-code/releases/tag/v0.3.51
 
 ### Changed
 
@@ -336,9 +349,10 @@ which is **not** a pass.
   1s close timer raced the host's pooled HTTP agent: a POST dispatched onto a
   socket the server had just closed is silently lost (Node does not retry
   non-idempotent requests), so the provider request never reached the fixture
-  and `WEB32-P0-08` timed out at 45s. This clears the failure that red-failed
-  the `Web E2E full suite three consecutive runs` job across five CI attempts
-  during v0.3.50 and v0.3.51.
+  and `WEB32-P0-08` timed out at 45s. This reduced the failure that had
+  red-failed the `Web E2E full suite three consecutive runs` job across five CI
+  attempts during v0.3.50 and v0.3.51; it did not eliminate it (see the v0.3.52
+  correction).
 - feat: `main`'s `.agents/skills` filesystem-skill loading plus the
   `orion-self-eval` / `orion-rsi-loop` skills (merged as #311) ship for the
   first time in this release.
@@ -346,6 +360,43 @@ which is **not** a pass.
   (0.3.48–0.3.50) delivery-status audit cross-checking git tags, registry
   versions and the `latest` dist-tag.
 - README / README.zh-CN: header summary and install pin updated to 0.3.51.
+
+## [0.3.52] — 2026-11-05
+
+> **Status: candidate.** Open. Quality-clause-B remediation of the Web E2E red
+> left on `main` by v0.3.51, plus the standing receipt-backfill slice (plan:
+> `docs/plan/v0.3.52-plan.md`): the 0.3.51 entry is corrected to `published`
+> (with the real npm publish timestamp, the GitHub Release link, and a
+> correction to its overstated keep-alive claim), and a three-version
+> delivery-status audit (0.3.49–0.3.51: tag + registry + dist-tag latest) is
+> recorded in `docs/plan/evidence/v0.3.52/status-audit.md`. No `src/` or `web/`
+> product code changes. The human-labeled paid quality benchmark and real Host +
+> Chrome full-chain E2E remain honestly `not_run` (no model credentials in the
+> automation environment). Not merged, tagged or published.
+
+### Changed
+
+- test(e2e): `WEB32-P0-09` no longer reads `composer.planReview.status` once
+  after the revision changes. The revision lands before the status returns from
+  `continued` to `awaiting_review`, so the single read hit a transitional state
+  and red-failed `Web E2E critical journey on Node 22.12.0 floor` on `main`. The
+  test now polls the settled `(status, revision-changed)` pair with the same 60s
+  budget; a plan review that never returns to `awaiting_review` still fails.
+- test(e2e): the OpenAI fixture's `waitForRequest` timeout message now reports
+  how many requests had arrived and the last six `(sequence, scenario,
+  lastUserText length)`, without payload text (evidence is secret-scanned
+  fail-closed). This distinguishes "the host never issued the request" from "it
+  issued something else" for the remaining `WEB32-P0-08` timeouts, which the
+  v0.3.51 keep-alive change reduced but did not eliminate.
+- CHANGELOG: corrected the 0.3.51 delivery status from `candidate` to
+  `published` (tagged `v0.3.51`, npm registry `latest`, publish timestamp and
+  GitHub Release link backfilled) and corrected its keep-alive claim from
+  "clears" to "reduced, not eliminated".
+- docs: added `docs/plan/evidence/v0.3.52/status-audit.md` — a three-version
+  (0.3.49–0.3.51) delivery-status audit cross-checking git tags, registry
+  versions and the `latest` dist-tag, plus the v0.3.51 release facts and the
+  post-release CI red carried into this slice.
+- README / README.zh-CN: header summary and install pin updated to 0.3.52.
 
 ## [0.3.44] — 2026-10-28
 
