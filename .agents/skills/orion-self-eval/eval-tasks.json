@@ -1,0 +1,94 @@
+{
+  "schemaVersion": 1,
+  "track": "orion-self-eval/tier2-conversation-loop",
+  "rubric": {
+    "min_valid_turns": 3,
+    "max_false_completes": 0,
+    "note": "Tier 2 asserts the conversation loop itself: a real turn reaches a valid terminal state, the scripted tool call actually executes inside the production tool scheduler, nothing errors, nothing writes when it should not, and the session persists. Model judgment quality is Tier 3 and must be recorded not_run without a key."
+  },
+  "tasks": [
+    {
+      "id": "T1-glob-workspace",
+      "title": "Enumerate TypeScript sources through the glob tool",
+      "prompt": "List every TypeScript source file in this workspace and report their paths.",
+      "fixtures": {
+        "src/app.ts": "export const app = 1;\n",
+        "src/util.ts": "export const util = 2;\n",
+        "docs/notes.txt": "not typescript\n"
+      },
+      "script": [
+        {
+          "tool_calls": [{ "id": "t1c1", "name": "glob", "arguments": { "pattern": "**/*.ts" } }]
+        },
+        { "content": "TypeScript sources: src/app.ts, src/util.ts" }
+      ],
+      "checks": [
+        { "check": "exit_zero" },
+        { "check": "content_nonempty" },
+        { "check": "content_matches", "value": "src/app\\.ts" },
+        { "check": "tool_called", "value": "glob" },
+        { "check": "no_tool_failures" },
+        { "check": "no_errors" },
+        { "check": "no_writes" },
+        { "check": "session_persisted" },
+        { "check": "max_model_requests", "value": 4 }
+      ],
+      "timeoutMs": 120000
+    },
+    {
+      "id": "T2-read-file-sentinel",
+      "title": "Read a workspace file and carry its sentinel into the answer",
+      "prompt": "Open notes/plan.txt and tell me the marker token it contains.",
+      "fixtures": {
+        "notes/plan.txt": "release marker: WATERLINE-7731\nnext: tier3 eval\n"
+      },
+      "script": [
+        {
+          "tool_calls": [
+            { "id": "t2c1", "name": "read_file", "arguments": { "path": "notes/plan.txt" } }
+          ]
+        },
+        { "content": "The file contains the release marker WATERLINE-7731." }
+      ],
+      "checks": [
+        { "check": "exit_zero" },
+        { "check": "content_matches", "value": "WATERLINE-7731" },
+        { "check": "tool_called", "value": "read_file" },
+        { "check": "no_tool_failures" },
+        { "check": "no_errors" },
+        { "check": "no_writes" },
+        { "check": "session_persisted" },
+        { "check": "max_model_requests", "value": 4 }
+      ],
+      "timeoutMs": 120000
+    },
+    {
+      "id": "T3-grep-pattern",
+      "title": "Search a pattern across the workspace with grep",
+      "prompt": "Find where `export function handler` is defined in this workspace.",
+      "fixtures": {
+        "src/server.ts": "export function handler(req: unknown) {\n  return req;\n}\n",
+        "src/other.ts": "export const other = 1;\n"
+      },
+      "script": [
+        {
+          "tool_calls": [
+            { "id": "t3c1", "name": "grep", "arguments": { "pattern": "export function handler" } }
+          ]
+        },
+        { "content": "Defined in src/server.ts:1" }
+      ],
+      "checks": [
+        { "check": "exit_zero" },
+        { "check": "content_matches", "value": "src/server\\.ts" },
+        { "check": "tool_called", "value": "grep" },
+        { "check": "no_tool_failures" },
+        { "check": "no_errors" },
+        { "check": "no_writes" },
+        { "check": "session_persisted" },
+        { "check": "max_model_requests", "value": 4 }
+      ],
+      "timeoutMs": 120000
+    }
+  ]
+}

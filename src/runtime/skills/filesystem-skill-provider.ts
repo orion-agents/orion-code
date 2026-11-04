@@ -680,6 +680,10 @@ export function createFilesystemSkillRootsV1(
       sourceScope: 'configured' as const,
     })),
     { path: join(cwd, '.orion-code', 'skills'), sourceScope: 'project' },
+    // Editor/agent-agnostic project skills directory. Same `project` scope as
+    // `.orion-code/skills`, so a name collision is settled by the runtime's
+    // deterministic same-scope tie-break instead of a priority rule.
+    { path: join(cwd, '.agents', 'skills'), sourceScope: 'project' },
   ]);
 }
 
