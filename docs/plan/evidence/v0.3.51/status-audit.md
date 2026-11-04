@@ -6,9 +6,10 @@
 > 方法：每版核对 ① git tag 存在且注释 tag 解引用（`^{}`）指向 main 合并提交；
 > ② npm registry 同版本存在（`versions[ver]`）；③ `dist-tags.latest` 指向最新
 > 已发布版本。
-> 本轮开版欠账清偿依据：main 上 CHANGELOG 的 0.3.50 条目由 `candidate` 翻为
-> `published`，回填真实 npm 发布时间戳 2026-11-02T03:52:07.285Z 与
-> GitHub Release v0.3.50 链接。
+> 本轮开版欠账状态修正：main 上 CHANGELOG 的 0.3.50 条目已由 #311（`0eaccff`，
+> 2026-11-04）翻转为 `published` 并回填真实 npm 发布时间戳
+> 2026-11-02T03:52:07.285Z 与 GitHub Release v0.3.50 链接，故 v0.3.51 切片不再
+> 重复该状态翻转，仅新增 0.3.51 条目与本三版审计。
 
 ## 审计结论表
 
@@ -39,9 +40,9 @@
   flake 经规程内 rerun 转绿），聚合收据 decision=GO；tarball sha256
   `5f263575e7a614b15ffe5e2107f735d25f96c4b60f698c96de76b9909694c2e9` 与本地
   Node 22 pack 逐字节一致。
-- CHANGELOG 0.3.50 条目：本轮（v0.3.51 开版提交）由 `## [0.3.50] — 2026-11-02`
-  （`Status: candidate`）翻转为 `Status: published`，并回填上述真实发布时间戳与
-  Release 链接。
+- CHANGELOG 0.3.50 条目：已由 #311（`0eaccff`，2026-11-04）在 main 上翻转为
+  `Status: published` 并回填上述真实发布时间戳与 Release 链接；v0.3.51 冲突解决
+  时以 main 文本为权威，不重复翻转。
 
 ## 明确 not_run（沿用历轮口径）
 
