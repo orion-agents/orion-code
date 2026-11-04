@@ -2,14 +2,15 @@
 
 面向终端与浏览器、本地优先的目标驱动 Coding Agent。
 
-> v0.3.51 候选版本：进行中。发布收据回填切片，并附带清除慢性
-> `WEB32-P0-08` 失败的 Web E2E fixture keep-alive 修复
-> （`tests/e2e/fixtures/openai-provider.ts`：`keepAliveTimeout` 1000 → 0，消除
-> 陈旧 socket 竞态吞掉 provider POST 的问题）；新增
-> `docs/plan/evidence/v0.3.51/status-audit.md` 记录 0.3.48–0.3.50 三版交付状态
-> 审计。本版同时是 `.agents/skills` 加载能力与 self-eval / RSI 技能（已作为
-> #311 合并进 `main`，`0eaccff`）首个可安装的发布版本。上一版 0.3.50 已发布
-> npm（registry `latest`）、打 tag `v0.3.50`（`86af06a`，#309）。
+> v0.3.52 候选版本：进行中。按质量条款 B 清偿 v0.3.51 遗留在 `main` 的 Web E2E
+> 红灯：`WEB32-P0-09` 不再在状态迁移中途单次读取 `planReview.status`（改为轮询
+> `(status, revision)` 的稳定态）；OpenAI fixture 等待超时时会报告已到达的请求
+> 摘要，以便区分剩余 `WEB32-P0-08` 超时是「从未发出」还是「发出但内容不同」。
+> v0.3.51 的 keep-alive 改动只降低了该失败频率、并未根除。收据侧：CHANGELOG
+> 0.3.51 条目修正为 `published`（其 keep-alive 表述由「清除」改为「降低」），并
+> 新增 `docs/plan/evidence/v0.3.52/status-audit.md` 记录 0.3.49–0.3.51 三版交付
+> 状态审计。上一版 0.3.51 已发布 npm（registry `latest`）、打 tag `v0.3.51`
+> （`0702878`，#310）。
 
 [English](README.md) ·
 [v0.3.24 方案](docs/plan/v0.3.24-plan.md) ·
@@ -107,7 +108,7 @@ Current。Node 20 已结束上游维护，不再属于 v0.3 Runtime 合同。
 v0.3.33 在 npm 可用后，可安装固定版本：
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.51
+npm install -g @orion-agents/orion-code@0.3.52
 orion --version
 orion doctor
 ```
