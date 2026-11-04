@@ -286,13 +286,19 @@ test('WEB32-P0-09 durable Plan review blocks execution and resolves approve, con
     await page.getByRole('button', { name: '继续规划' }).click();
     await page.getByRole('textbox', { name: '继续规划反馈' }).fill('Add one verification step.');
     await page.getByRole('button', { name: '提交反馈' }).click();
+    // The new revision lands before the review status returns to
+    // `awaiting_review`, so polling only on the revision used to read `status`
+    // mid-transition and see `continued`. Poll the settled pair instead; a plan
+    // that never returns to review still fails the poll on timeout.
     await expect
-      .poll(async () => (await activeSessionSnapshot(page)).composer.planReview?.revision, {
-        timeout: 60_000,
-      })
-      .not.toBe(continuingRevision);
-    const continued = await activeSessionSnapshot(page);
-    expect(continued.composer.planReview?.status).toBe('awaiting_review');
+      .poll(
+        async () => {
+          const review = (await activeSessionSnapshot(page)).composer.planReview;
+          return `${review?.status ?? 'missing'}:${review?.revision !== continuingRevision}`;
+        },
+        { timeout: 60_000 }
+      )
+      .toBe('awaiting_review:true');
     await expect(workbenchUi(page).modeButton).toContainText('PLAN');
     expect(await orionMessage(page, OPENAI_FIXTURE_MARKERS.planExecutionDone).count()).toBe(
       executionMarkersBeforeContinue
