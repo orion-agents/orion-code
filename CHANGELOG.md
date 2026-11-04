@@ -285,22 +285,25 @@ which is **not** a pass.
 
 ## [0.3.50] — 2026-11-02
 
-> **Status: candidate.** Open. Receipt backfill & delivery-status audit slice
+> **Status: published.** Receipt backfill & delivery-status audit slice
 > (PR4 automatable portion of the v0.3.27 review loop, plan:
-> `docs/plan/v0.3.50-plan.md`): the 0.3.49 entry is corrected to `published`
-> (with the real npm publish timestamp and the GitHub Release link), a new
-> three-version delivery-status audit (0.3.47–0.3.49: tag + registry +
-> dist-tag latest) is recorded in `docs/plan/evidence/v0.3.50/status-audit.md`
-> together with the v0.3.49 release facts (PR #306, squash merge `bb3c518`,
-> tag `v0.3.49`, npm registry `latest=0.3.49`, GitHub Release v0.3.49).
+> `docs/plan/v0.3.50-plan.md`): PR #309, squash merge `86af06a`, tag `v0.3.50`,
+> npm publish `2026-11-02T03:52:07.285Z` (registry `latest=0.3.50`), GitHub
+> Release `v0.3.50`. In this slice the 0.3.49 entry was corrected to
+> `published` (with the real npm publish timestamp and the GitHub Release
+> link), and a three-version delivery-status audit (0.3.47–0.3.49: tag +
+> registry + dist-tag latest) was recorded in
+> `docs/plan/evidence/v0.3.50/status-audit.md` together with the v0.3.49
+> release facts (PR #306, squash merge `bb3c518`, tag `v0.3.49`, npm registry
+> `latest=0.3.49`, GitHub Release v0.3.49).
 > No production code changes. The human-labeled paid quality benchmark and
-> real Host + Chrome full-chain E2E remain honestly `not_run` (no model
-> credentials in the automation environment). Not merged, tagged or published.
+> real Host + Chrome full-chain E2E are recorded `not_run` (no model
+> credentials in the automation environment).
 
 ### Changed
 
-- CHANGELOG: corrected the 0.3.49 delivery status from `candidate` to
-  `published` (tagged `v0.3.49`, npm registry `latest`, npm publish timestamp
+- CHANGELOG: corrected the 0.3.49 delivery status to `published` (tagged
+  `v0.3.49`, npm registry `latest`, npm publish timestamp
   and GitHub Release link backfilled).
 - docs: added `docs/plan/evidence/v0.3.50/status-audit.md` — a three-version
   (0.3.47–0.3.49) delivery-status audit cross-checking git tags, registry

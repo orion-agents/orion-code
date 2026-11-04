@@ -2,14 +2,14 @@
 
 Local-first, goal-driven coding agent for the terminal and browser.
 
-> v0.3.50 candidate — open. Receipt backfill & delivery-status audit slice of
-> the review loop: the 0.3.49 CHANGELOG entry is corrected to `published`
+> v0.3.50 published. Receipt backfill & delivery-status audit slice of
+> the review loop: PR #309, squash merge `86af06a`, tag `v0.3.50`, npm publish
+> `2026-11-02T03:52:07.285Z` (registry `latest=0.3.50`), GitHub Release
+> `v0.3.50`. The 0.3.49 CHANGELOG entry was corrected to `published`
 > (with the real npm publish timestamp and the GitHub Release v0.3.49 link),
 > and a three-version (0.3.47–0.3.49) delivery-status audit is recorded in
 > `docs/plan/evidence/v0.3.50/status-audit.md` together with the v0.3.49
-> release facts (PR #306, merge `bb3c518`, tag `v0.3.49`, npm `latest`). The
-> previous release 0.3.49 is on npm (registry `latest`), tagged `v0.3.49`
-> (`bb3c518`, #306).
+> release facts (PR #306, merge `bb3c518`, tag `v0.3.49`, npm `latest`).
 
 [中文说明](README.zh-CN.md) ·
 [v0.3.24 plan](docs/plan/v0.3.24-plan.md) ·
