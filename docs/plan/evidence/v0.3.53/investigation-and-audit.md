@@ -9,11 +9,11 @@
 
 ## 1. 三版交付状态审计
 
-| 版本    | git tag（注释 tag 解引用）    | tag 指向 main 合并提交   | npm 存在 | registry 入库时间         | registry shasum（sha1）                    | dist-tag latest   | 结论      |
-| ------- | ----------------------------- | ------------------------ | -------- | ------------------------- | ------------------------------------------ | ----------------- | --------- |
-| 0.3.50  | `v0.3.50` → `86af06a…757f`    | 是（merge `86af06a`）    | 是       | 2026-11-02T03:52:07.285Z  | `a1165b7d33ae55499774f69fd16fa0fc0b54fccd` | 否（已被覆盖）    | published |
-| 0.3.51  | `v0.3.51` → `0702878…a0cc05`  | 是（merge `0702878`）    | 是       | 2026-11-04T18:11:26.062Z  | `c60c4f7650d7bd208deaa7402ab57e11db3e7a9d` | 否（已被覆盖）    | published |
-| 0.3.52  | `v0.3.52` → `a054c44…821ce`   | 是（merge `a054c44`）    | 是       | 2026-11-04T23:09:25.161Z  | `507ba5b79fc1fdf2d575c0b2a1b1a16efbebdd68` | **是（=0.3.52）** | published |
+| 版本   | git tag（注释 tag 解引用）   | tag 指向 main 合并提交 | npm 存在 | registry 入库时间        | registry shasum（sha1）                    | dist-tag latest   | 结论      |
+| ------ | ---------------------------- | ---------------------- | -------- | ------------------------ | ------------------------------------------ | ----------------- | --------- |
+| 0.3.50 | `v0.3.50` → `86af06a…757f`   | 是（merge `86af06a`）  | 是       | 2026-11-02T03:52:07.285Z | `a1165b7d33ae55499774f69fd16fa0fc0b54fccd` | 否（已被覆盖）    | published |
+| 0.3.51 | `v0.3.51` → `0702878…a0cc05` | 是（merge `0702878`）  | 是       | 2026-11-04T18:11:26.062Z | `c60c4f7650d7bd208deaa7402ab57e11db3e7a9d` | 否（已被覆盖）    | published |
+| 0.3.52 | `v0.3.52` → `a054c44…821ce`  | 是（merge `a054c44`）  | 是       | 2026-11-04T23:09:25.161Z | `507ba5b79fc1fdf2d575c0b2a1b1a16efbebdd68` | **是（=0.3.52）** | published |
 
 - 三版 `dist-tags.latest` 序列 0.3.50 → 0.3.51 → 0.3.52，连续推进无回退。
 - 本地 `git rev-parse v0.3.X^{}` 与远端 `refs/tags/v0.3.X^{}` 完全吻合，且三版 tag 均为
@@ -46,13 +46,13 @@
 
 ## 4. 静态排查（逐条对代码验证）
 
-| 假设 | 判据 | 结论 |
-| ---- | ---- | ---- |
-| 队列出队静默吞掉启动失败 | `src/web/session-runtime-registry.ts:560` 外层 `.catch(() => undefined)` | **证伪**：`startTurn` 在 `:527-529` 已 `finishTurn(record, error)`，`:533-544` 写入 `record.failure`、转 `failed` 并重新 `drainQueue()`；外层 catch 仅防未处理拒绝 |
-| `hasActiveTurn()` 跨 session 误命中 | `src/runtime/agent-runtime-controller.ts:165`、`:194`（每 actor 私有 `TurnController`）、`:703` | **弱化**：控制器按 session actor 各自实例化，新建 session 应为空闲 |
-| `requestIsCurrent()` 在重绑窗口失败 | `:704`、`:1007-1010`、`:540` 捕获点 | **未证实**：纯文本 prompt 路径上捕获与检查之间未见 `await`；`:545-705` 区间内 3 处 `await` 分属非只读斜杠命令与修订分支 |
-| `beginTurn` 后、HTTP 前的无界 settings 同步 | `:791 await synchronizeSettingsAtLogicalBoundary()`、`src/runtime/product-bootstrap.ts:430-434`、同一 workspace 共享 kernel（`src/web/workbench-controller.ts:2581-2591`） | **候选**：可解释「turn 已开始但请求不发出」；尚不能解释「只在后段 run」 |
-| provider 闸门冷却过期后不再派发 waiter | `src/services/provider-resilience/request-gate.ts:55-56`（存在 `cooldownTimer`/`cooldownTimerDue`）、`:109-117`、`:154-159` | **弱化**：存在到期定时器；仍需运行时证据 |
+| 假设                                        | 判据                                                                                                                                                                       | 结论                                                                                                                                                               |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 队列出队静默吞掉启动失败                    | `src/web/session-runtime-registry.ts:560` 外层 `.catch(() => undefined)`                                                                                                   | **证伪**：`startTurn` 在 `:527-529` 已 `finishTurn(record, error)`，`:533-544` 写入 `record.failure`、转 `failed` 并重新 `drainQueue()`；外层 catch 仅防未处理拒绝 |
+| `hasActiveTurn()` 跨 session 误命中         | `src/runtime/agent-runtime-controller.ts:165`、`:194`（每 actor 私有 `TurnController`）、`:703`                                                                            | **弱化**：控制器按 session actor 各自实例化，新建 session 应为空闲                                                                                                 |
+| `requestIsCurrent()` 在重绑窗口失败         | `:704`、`:1007-1010`、`:540` 捕获点                                                                                                                                        | **未证实**：纯文本 prompt 路径上捕获与检查之间未见 `await`；`:545-705` 区间内 3 处 `await` 分属非只读斜杠命令与修订分支                                            |
+| `beginTurn` 后、HTTP 前的无界 settings 同步 | `:791 await synchronizeSettingsAtLogicalBoundary()`、`src/runtime/product-bootstrap.ts:430-434`、同一 workspace 共享 kernel（`src/web/workbench-controller.ts:2581-2591`） | **候选**：可解释「turn 已开始但请求不发出」；尚不能解释「只在后段 run」                                                                                            |
+| provider 闸门冷却过期后不再派发 waiter      | `src/services/provider-resilience/request-gate.ts:55-56`（存在 `cooldownTimer`/`cooldownTimerDue`）、`:109-117`、`:154-159`                                                | **弱化**：存在到期定时器；仍需运行时证据                                                                                                                           |
 
 **判定**：没有一条假设达到可负责任修改 `src/` 并发代码的证据强度，故本轮不猜改产品代码，
 改为让机制在 CI 中自我声明。

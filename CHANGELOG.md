@@ -409,6 +409,52 @@ which is **not** a pass.
   post-release CI red carried into this slice.
 - README / README.zh-CN: header summary and install pin updated to 0.3.52.
 
+## [0.3.53] — 2026-11-05
+
+> **Status: candidate — release withheld.** Investigation round for the
+> `WEB32-P0-08` Web E2E red that is still on `main`. Quality clause B forbids
+> publishing over a critical-journey red, and the root cause is **not yet
+> established**, so this version is deliberately **not tagged, not published to
+> npm, and has no GitHub Release**; the next round completes the release of
+> 0.3.53 once the failure is fixed and CI proves it. (The release gate pins
+> `package.json` to the `codex/vX.Y.Z` branch name, so the candidate number
+> cannot be avoided here; being `merged` without a tag/npm entry is exactly the
+> `Merged` state in the delivery-status legend above.)
+>
+> What this slice changes: `WEB32-P0-08` now asserts the host's submit
+> disposition instead of silently waiting 45s. `POST /api/v1/commands` returns
+> 202 with a `contextReceipt` even when the runtime declines the turn
+> (`command_ignored` at `src/runtime/agent-runtime-controller.ts:703-704`,
+> surfaced as `result` at `src/web/workbench-controller.ts:2119-2125`), so a
+> declined turn previously looked identical to a slow provider. The 0.3.52
+> CHANGELOG entry is corrected to `published` with a scope correction (v0.3.52
+> fixed `WEB32-P0-09`, not `WEB32-P0-08`), and
+> `docs/plan/evidence/v0.3.53/investigation-and-audit.md` records the runtime
+> facts, four static hypotheses with the code evidence that refutes two of them,
+> and the three-version (0.3.50–0.3.52) delivery-status audit. No `src/` or
+> `web/` changes. The paid human-labeled quality benchmark and real Host + Chrome
+> full-chain E2E remain `not_run` (no model credentials), and local Playwright
+> reproduction is additionally `not_run` because the E2E global setup's
+> `git rev-parse` hits the Xcode license gate (needs a human
+> `sudo xcodebuild -license`).
+
+### Changed
+
+- test(e2e): `WEB32-P0-08` asserts `command.result` is one of `started` /
+  `session_turn_queued` right after the `contextReceipt` assertion, so a silently
+  declined turn fails fast and names the disposition (with `detail`) instead of
+  surfacing as a 45s provider timeout.
+- CHANGELOG: corrected the 0.3.52 delivery status from `candidate` to
+  `published` (tagged `v0.3.52`, npm `latest`, publish timestamp
+  `2026-11-04T23:09:25.161Z`, GitHub Release link) and added the scope correction
+  that its clause-B remediation covered `WEB32-P0-09` only.
+- docs: added `docs/plan/evidence/v0.3.53/investigation-and-audit.md` and
+  `docs/plan/v0.3.53-plan.md` — the evidence base for the next round's product
+  fix (including why a blind change to the runtime's concurrency path would be
+  unjustified).
+- README / README.zh-CN: header summary and install pin updated to 0.3.53
+  (candidate, release withheld).
+
 ## [0.3.44] — 2026-10-28
 
 > **Status: published.** Open. Receipt backfill & delivery-status audit slice
