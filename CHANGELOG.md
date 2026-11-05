@@ -444,6 +444,14 @@ which is **not** a pass.
   `session_turn_queued` right after the `contextReceipt` assertion, so a silently
   declined turn fails fast and names the disposition (with `detail`) instead of
   surfacing as a 45s provider timeout.
+- test(e2e): the Web E2E release receipt now **names the dirty evidence** instead
+  of only reporting a boolean. `assemble-web-e2e-receipt.ts` records up to six
+  `scenarioId/status/counter=value` summaries and `browser_evidence_clean` appends
+  them to its failure detail (the counter values otherwise live only in per-run
+  scenario manifests inside a ~184 MB artifact). A run that is GO but not clean had
+  blocked v0.3.49 and this PR's first CI attempt with no diagnosable detail. The
+  dirtiness predicate itself is unchanged (`cleanEvidence` is now derived from the
+  same condition), so no check became more or less strict.
 - CHANGELOG: corrected the 0.3.52 delivery status from `candidate` to
   `published` (tagged `v0.3.52`, npm `latest`, publish timestamp
   `2026-11-04T23:09:25.161Z`, GitHub Release link) and added the scope correction
