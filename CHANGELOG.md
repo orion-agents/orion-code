@@ -363,7 +363,7 @@ which is **not** a pass.
 
 ## [0.3.52] — 2026-11-05
 
-> **Status: candidate.** Open. Quality-clause-B remediation of the Web E2E red
+> **Status: published.** Quality-clause-B remediation of the Web E2E red
 > left on `main` by v0.3.51, plus the standing receipt-backfill slice (plan:
 > `docs/plan/v0.3.52-plan.md`): the 0.3.51 entry is corrected to `published`
 > (with the real npm publish timestamp, the GitHub Release link, and a
@@ -372,7 +372,18 @@ which is **not** a pass.
 > recorded in `docs/plan/evidence/v0.3.52/status-audit.md`. No `src/` or `web/`
 > product code changes. The human-labeled paid quality benchmark and real Host +
 > Chrome full-chain E2E remain honestly `not_run` (no model credentials in the
-> automation environment). Not merged, tagged or published.
+> automation environment). Released as
+> `@orion-agents/orion-code@0.3.52` from `refs/tags/v0.3.52`, merged to `main` as
+> `a054c44` (#312). npm registry `latest=0.3.52` published
+> `2026-11-04T23:09:25.161Z`. GitHub Release:
+> https://github.com/orion-agents/orion-code/releases/tag/v0.3.52
+>
+> **Scope correction (v0.3.53):** the "clause-B remediation" of this release
+> covered `WEB32-P0-09` only (confirmed green on the post-release run).
+> `WEB32-P0-08` still failed in run-3 of
+> [41930947053](https://github.com/orion-agents/orion-code/actions/runs/41930947053),
+> so a Web E2E critical-journey red remains on `main` and the root cause is not
+> yet established.
 
 ### Changed
 

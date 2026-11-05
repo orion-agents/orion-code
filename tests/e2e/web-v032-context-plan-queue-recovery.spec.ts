@@ -111,6 +111,15 @@ test('WEB32-P0-08 structured Context references are exact, removable, stale-safe
     manifestDigest: expect.stringMatching(/^[a-f0-9]{64}$/u),
     referenceCount: 5,
   });
+  // The host answers 202 with a contextReceipt even when it silently declines to
+  // start the turn (`agent-runtime-controller.ts submitTurnRequest` returns
+  // `command_ignored`), so waiting for a provider request would then time out
+  // with no hint of the real cause. `result` carries the actual disposition.
+  // `session_turn_queued` stays allowed: a queued turn does reach the provider.
+  expect(
+    ['started', 'session_turn_queued'],
+    `result=${command.result} detail=${command.detail ?? ''}`
+  ).toContain(command.result);
   const resolvedRequest = await provider.waitForRequest(
     request =>
       request.sequence > providerSequence && request.lastUserText.includes('context-manifest'),
