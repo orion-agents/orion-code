@@ -440,6 +440,10 @@ which is **not** a pass.
 
 ### Changed
 
+- test(e2e): the `WEB32-P0-08` provider-wait failure now carries the command
+  disposition (`disposition=started` vs `session_turn_queued`), so a timeout states
+  whether the turn was started and stalled before the HTTP call, or queued and
+  never drained. Those two shapes need different host fixes.
 - test(e2e): `WEB32-P0-08` asserts `command.result` is one of `started` /
   `session_turn_queued` right after the `contextReceipt` assertion, so a silently
   declined turn fails fast and names the disposition (with `detail`) instead of

@@ -120,11 +120,21 @@ test('WEB32-P0-08 structured Context references are exact, removable, stale-safe
     ['started', 'session_turn_queued'],
     `result=${command.result} detail=${command.detail ?? ''}`
   ).toContain(command.result);
-  const resolvedRequest = await provider.waitForRequest(
-    request =>
-      request.sequence > providerSequence && request.lastUserText.includes('context-manifest'),
-    45_000
-  );
+  let resolvedRequest: Awaited<ReturnType<typeof provider.waitForRequest>>;
+  try {
+    resolvedRequest = await provider.waitForRequest(
+      request =>
+        request.sequence > providerSequence && request.lastUserText.includes('context-manifest'),
+      45_000
+    );
+  } catch (error) {
+    // Carry the disposition into the timeout so a failure states whether the turn
+    // was started at all (`started`) or queued and never drained
+    // (`session_turn_queued`), which pick different fixes in the host.
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)} (disposition=${command.result})`
+    );
+  }
   const manifest = parseContextManifest(resolvedRequest.lastUserText);
   expect(manifest.manifestDigest).toBe(command.contextReceipt?.manifestDigest);
   expect(manifest.references.map(reference => reference.kind).sort()).toEqual([
