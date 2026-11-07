@@ -363,7 +363,7 @@ which is **not** a pass.
 
 ## [0.3.52] — 2026-11-05
 
-> **Status: candidate.** Open. Quality-clause-B remediation of the Web E2E red
+> **Status: published.** Quality-clause-B remediation of the Web E2E red
 > left on `main` by v0.3.51, plus the standing receipt-backfill slice (plan:
 > `docs/plan/v0.3.52-plan.md`): the 0.3.51 entry is corrected to `published`
 > (with the real npm publish timestamp, the GitHub Release link, and a
@@ -372,7 +372,18 @@ which is **not** a pass.
 > recorded in `docs/plan/evidence/v0.3.52/status-audit.md`. No `src/` or `web/`
 > product code changes. The human-labeled paid quality benchmark and real Host +
 > Chrome full-chain E2E remain honestly `not_run` (no model credentials in the
-> automation environment). Not merged, tagged or published.
+> automation environment). Released as
+> `@orion-agents/orion-code@0.3.52` from `refs/tags/v0.3.52`, merged to `main` as
+> `a054c44` (#312). npm registry `latest=0.3.52` published
+> `2026-11-04T23:09:25.161Z`. GitHub Release:
+> https://github.com/orion-agents/orion-code/releases/tag/v0.3.52
+>
+> **Scope correction (v0.3.53):** the "clause-B remediation" of this release
+> covered `WEB32-P0-09` only (confirmed green on the post-release run).
+> `WEB32-P0-08` still failed in run-3 of
+> [41930947053](https://github.com/orion-agents/orion-code/actions/runs/41930947053),
+> so a Web E2E critical-journey red remains on `main` and the root cause is not
+> yet established.
 
 ### Changed
 
@@ -397,6 +408,64 @@ which is **not** a pass.
   versions and the `latest` dist-tag, plus the v0.3.51 release facts and the
   post-release CI red carried into this slice.
 - README / README.zh-CN: header summary and install pin updated to 0.3.52.
+
+## [0.3.53] — 2026-11-05
+
+> **Status: candidate — release withheld.** Investigation round for the
+> `WEB32-P0-08` Web E2E red that is still on `main`. Quality clause B forbids
+> publishing over a critical-journey red, and the root cause is **not yet
+> established**, so this version is deliberately **not tagged, not published to
+> npm, and has no GitHub Release**; the next round completes the release of
+> 0.3.53 once the failure is fixed and CI proves it. (The release gate pins
+> `package.json` to the `codex/vX.Y.Z` branch name, so the candidate number
+> cannot be avoided here; being `merged` without a tag/npm entry is exactly the
+> `Merged` state in the delivery-status legend above.)
+>
+> What this slice changes: `WEB32-P0-08` now asserts the host's submit
+> disposition instead of silently waiting 45s. `POST /api/v1/commands` returns
+> 202 with a `contextReceipt` even when the runtime declines the turn
+> (`command_ignored` at `src/runtime/agent-runtime-controller.ts:703-704`,
+> surfaced as `result` at `src/web/workbench-controller.ts:2119-2125`), so a
+> declined turn previously looked identical to a slow provider. The 0.3.52
+> CHANGELOG entry is corrected to `published` with a scope correction (v0.3.52
+> fixed `WEB32-P0-09`, not `WEB32-P0-08`), and
+> `docs/plan/evidence/v0.3.53/investigation-and-audit.md` records the runtime
+> facts, four static hypotheses with the code evidence that refutes two of them,
+> and the three-version (0.3.50–0.3.52) delivery-status audit. No `src/` or
+> `web/` changes. The paid human-labeled quality benchmark and real Host + Chrome
+> full-chain E2E remain `not_run` (no model credentials), and local Playwright
+> reproduction is additionally `not_run` because the E2E global setup's
+> `git rev-parse` hits the Xcode license gate (needs a human
+> `sudo xcodebuild -license`).
+
+### Changed
+
+- test(e2e): the `WEB32-P0-08` provider-wait failure now carries the command
+  disposition (`disposition=started` vs `session_turn_queued`), so a timeout states
+  whether the turn was started and stalled before the HTTP call, or queued and
+  never drained. Those two shapes need different host fixes.
+- test(e2e): `WEB32-P0-08` asserts `command.result` is one of `started` /
+  `session_turn_queued` right after the `contextReceipt` assertion, so a silently
+  declined turn fails fast and names the disposition (with `detail`) instead of
+  surfacing as a 45s provider timeout.
+- test(e2e): the Web E2E release receipt now **names the dirty evidence** instead
+  of only reporting a boolean. `assemble-web-e2e-receipt.ts` records up to six
+  `scenarioId/status/counter=value` summaries and `browser_evidence_clean` appends
+  them to its failure detail (the counter values otherwise live only in per-run
+  scenario manifests inside a ~184 MB artifact). A run that is GO but not clean had
+  blocked v0.3.49 and this PR's first CI attempt with no diagnosable detail. The
+  dirtiness predicate itself is unchanged (`cleanEvidence` is now derived from the
+  same condition), so no check became more or less strict.
+- CHANGELOG: corrected the 0.3.52 delivery status from `candidate` to
+  `published` (tagged `v0.3.52`, npm `latest`, publish timestamp
+  `2026-11-04T23:09:25.161Z`, GitHub Release link) and added the scope correction
+  that its clause-B remediation covered `WEB32-P0-09` only.
+- docs: added `docs/plan/evidence/v0.3.53/investigation-and-audit.md` and
+  `docs/plan/v0.3.53-plan.md` — the evidence base for the next round's product
+  fix (including why a blind change to the runtime's concurrency path would be
+  unjustified).
+- README / README.zh-CN: header summary and install pin updated to 0.3.53
+  (candidate, release withheld).
 
 ## [0.3.44] — 2026-10-28
 

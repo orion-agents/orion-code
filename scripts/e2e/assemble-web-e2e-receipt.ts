@@ -179,20 +179,34 @@ function toRunEvidence(
     }
     return sum + Number(findings);
   }, 0);
-  const cleanEvidence = scenarios.every(scenario => {
+  const dirtyCounterKeys = [
+    'consoleErrors',
+    'consoleWarnings',
+    'pageErrors',
+    'http5xx',
+    'secretFindings',
+    'droppedEvents',
+  ];
+  const isCleanScenario = (scenario: WebE2EScenarioManifest): boolean => {
     const counters = scenario.counters ?? {};
-    return (
-      scenario.status === 'pass' &&
-      [
-        'consoleErrors',
-        'consoleWarnings',
-        'pageErrors',
-        'http5xx',
-        'secretFindings',
-        'droppedEvents',
-      ].every(key => counters[key] === 0)
-    );
-  });
+    return scenario.status === 'pass' && dirtyCounterKeys.every(key => counters[key] === 0);
+  };
+  // Name the offending scenario instead of reporting only "dirty": the counters
+  // live in per-scenario manifests inside a 184 MB artifact, so without this the
+  // gate cannot be diagnosed from CI output.
+  const uncleanEvidence = scenarios
+    .filter(scenario => !isCleanScenario(scenario))
+    .slice(0, 6)
+    .map(scenario => {
+      const counters = scenario.counters ?? {};
+      const dirty = dirtyCounterKeys
+        .filter(key => counters[key] !== 0)
+        .map(key => `${key}=${counters[key]}`);
+      return `${scenario.scenarioId ?? 'unknown'}/${scenario.status ?? '?'}/${
+        dirty.join(',') || 'no-counter-detail'
+      }`;
+    });
+  const cleanEvidence = uncleanEvidence.length === 0;
   const browser = [...browserIdentities.values()][0];
   const startedAt = boundaryTimestamp(scenarios, 'startedAt', 'minimum', path);
   const completedAt = boundaryTimestamp(scenarios, 'completedAt', 'maximum', path);
@@ -224,6 +238,7 @@ function toRunEvidence(
     manifestDigest,
     secretScanFindings,
     cleanEvidence,
+    uncleanEvidence,
     decision: normalizeDecision(manifest.decision),
   };
 }
