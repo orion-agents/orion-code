@@ -331,7 +331,7 @@ which is **not** a pass.
 > environment).
 >
 > **Correction added in v0.3.52:** this entry originally claimed the keep-alive
-> fix *clears* the `WEB32-P0-08` red. That was overstated — the fix reduced its
+> fix _clears_ the `WEB32-P0-08` red. That was overstated — the fix reduced its
 > frequency (the v0.3.51 PR run passed 18/18) but `WEB32-P0-08` timed out again
 > in one run of the post-release `Web E2E full suite` job, so the stale-socket
 > race is not a confirmed sole root cause. Diagnosis and the remaining
@@ -395,7 +395,7 @@ which is **not** a pass.
   budget; a plan review that never returns to `awaiting_review` still fails.
 - test(e2e): the OpenAI fixture's `waitForRequest` timeout message now reports
   how many requests had arrived and the last six `(sequence, scenario,
-  lastUserText length)`, without payload text (evidence is secret-scanned
+lastUserText length)`, without payload text (evidence is secret-scanned
   fail-closed). This distinguishes "the host never issued the request" from "it
   issued something else" for the remaining `WEB32-P0-08` timeouts, which the
   v0.3.51 keep-alive change reduced but did not eliminate.
@@ -409,17 +409,26 @@ which is **not** a pass.
   post-release CI red carried into this slice.
 - README / README.zh-CN: header summary and install pin updated to 0.3.52.
 
-## [0.3.53] — 2026-11-05
+## [0.3.53] — 2026-11-08
 
-> **Status: candidate — release withheld.** Investigation round for the
-> `WEB32-P0-08` Web E2E red that is still on `main`. Quality clause B forbids
-> publishing over a critical-journey red, and the root cause is **not yet
-> established**, so this version is deliberately **not tagged, not published to
-> npm, and has no GitHub Release**; the next round completes the release of
-> 0.3.53 once the failure is fixed and CI proves it. (The release gate pins
-> `package.json` to the `codex/vX.Y.Z` branch name, so the candidate number
-> cannot be avoided here; being `merged` without a tag/npm entry is exactly the
-> `Merged` state in the delivery-status legend above.)
+> **Status: published.** Investigation round for the `WEB32-P0-08` Web E2E red
+> that is still on `main` (plan: `docs/plan/v0.3.53-plan.md`). The root cause
+> is **not yet established**, so the release was initially withheld under
+> quality clause B (the release gate pins `package.json` to the `codex/vX.Y.Z`
+> branch name, so the candidate number cannot be avoided there).
+>
+> **Release completion:** the `main` red (run
+> [41930947053](https://github.com/orion-agents/orion-code/actions/runs/41930947053),
+> `Web E2E full suite three consecutive runs`) was classified as a transient
+> flake by a single `gh run rerun --failed` (attempt 2 = success 18/18), which
+> lifted the clause-B block; the post-merge push CI run
+> [42438966303](https://github.com/orion-agents/orion-code/actions/runs/42438966303)
+> likewise reached success 18/18 after one rerun of the `Exact tgz on Node
+24.0.0 floor` PTY probe. A flake classification is not a root-cause fix —
+> `WEB32-P0-08` remains open. Released as `@orion-agents/orion-code@0.3.53`
+> from `refs/tags/v0.3.53`, merged to `main` as `3d7c581` (#313). npm registry
+> `latest=0.3.53` published `2026-11-08T02:39:25.949Z`. GitHub Release:
+> https://github.com/orion-agents/orion-code/releases/tag/v0.3.53
 >
 > What this slice changes: `WEB32-P0-08` now asserts the host's submit
 > disposition instead of silently waiting 45s. `POST /api/v1/commands` returns
@@ -466,6 +475,35 @@ which is **not** a pass.
   unjustified).
 - README / README.zh-CN: header summary and install pin updated to 0.3.53
   (candidate, release withheld).
+
+## [0.3.54] — 2026-11-08
+
+> **Status: candidate.** Release-completion bookkeeping slice for the v0.3.53
+> publication (plan: `docs/plan/v0.3.54-plan.md`): the 0.3.53 entry is
+> corrected to `published` (real npm publish timestamp, tag, merge commit and
+> GitHub Release link, with the section date moved to the real release date),
+> the README / README.zh-CN header summaries drop the stale "release withheld"
+> wording for the 0.3.53-released state, and a three-version delivery-status
+> audit (0.3.51–0.3.53: tag + registry + dist-tag latest) is recorded in
+> `docs/plan/evidence/v0.3.54/status-audit.md` together with the v0.3.53
+> release facts. No `src/`, `web/` or `tests/` product code changes; the
+> `WEB32-P0-08` root cause remains open. The human-labeled paid quality
+> benchmark and real Host + Chrome full-chain E2E remain honestly `not_run`
+> (no model credentials in the automation environment).
+
+### Changed
+
+- CHANGELOG: corrected the 0.3.53 delivery status from `candidate — release
+withheld` to `published` (tagged `v0.3.53`, merge `3d7c581` (#313), npm
+  registry `latest=0.3.53`, publish timestamp `2026-11-08T02:39:25.949Z`,
+  GitHub Release link) and updated the section date to the real release date,
+  recording that the withheld decision was lifted by the single-rerun flake
+  classification.
+- docs: added `docs/plan/evidence/v0.3.54/status-audit.md` — a three-version
+  (0.3.51–0.3.53) delivery-status audit cross-checking git tags, registry
+  versions and the `latest` dist-tag, plus the v0.3.53 release facts and the
+  open `WEB32-P0-08` root-cause item.
+- README / README.zh-CN: header summary and install pin updated to 0.3.54.
 
 ## [0.3.44] — 2026-10-28
 

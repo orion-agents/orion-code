@@ -2,20 +2,15 @@
 
 Local-first, goal-driven coding agent for the terminal and browser.
 
-> v0.3.53 candidate — open, **release withheld**. `WEB32-P0-08` still fails
-> intermittently on `main`, so quality clause B blocks publishing this version:
-> no tag, no npm publish, no GitHub Release until the root cause is fixed. This
-> slice only makes the failure name itself: `POST /api/v1/commands` answers 202
-> with a `contextReceipt` even when the host silently declines to start the turn
-> (`command_ignored`), so the scenario now asserts the response `result` before
-> waiting 45s for a provider request that may never be issued. The 0.3.52
-> CHANGELOG entry is corrected to `published` (with a scope correction: v0.3.52
-> fixed `WEB32-P0-09`, not `WEB32-P0-08`), and
-> `docs/plan/evidence/v0.3.53/investigation-and-audit.md` records the runtime
-> facts, the four static hypotheses with the code evidence that refutes two of
-> them, and the three-version (0.3.50–0.3.52) delivery-status audit. The
-> previous release 0.3.52 is on npm (registry `latest`), tagged `v0.3.52`
-> (`a054c44`, #312).
+> v0.3.54 candidate — open. Bookkeeping slice completing the v0.3.53 release:
+> the 0.3.53 CHANGELOG entry is corrected to `published` (real npm publish
+> timestamp `2026-11-08T02:39:25.949Z`, tag `v0.3.53`, merge `3d7c581` (#313),
+> GitHub Release), the README header summaries drop the stale "release
+> withheld" wording, and `docs/plan/evidence/v0.3.54/status-audit.md` adds the
+> three-version (0.3.51–0.3.53) delivery-status audit. No product code changes;
+> the `WEB32-P0-08` root cause remains open
+> (`docs/plan/evidence/v0.3.53/investigation-and-audit.md`). The previous
+> release 0.3.53 is on npm (registry `latest`), tagged `v0.3.53`.
 
 [中文说明](README.zh-CN.md) ·
 [v0.3.24 plan](docs/plan/v0.3.24-plan.md) ·
@@ -181,7 +176,7 @@ current development environments. Node 20 is upstream EOL and is no longer a v0.
 To install the pinned v0.3.33 package when it is available on npm:
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.53
+npm install -g @orion-agents/orion-code@0.3.54
 orion --version
 orion doctor
 ```
