@@ -2,15 +2,14 @@
 
 面向终端与浏览器、本地优先的目标驱动 Coding Agent。
 
-> v0.3.53 候选版本：进行中，**本轮暂缓发布**。`WEB32-P0-08` 在 `main` 上仍间歇失败，
-> 按质量条款 B 本版本不打 tag、不发布 npm、不建 GitHub Release，待根因修好为止。
-> 本轮只让失败自我具名：host 即使静默拒绝启动轮次（`command_ignored`）也会返回
-> 202 + `contextReceipt`，因此场景现在会先校验响应的 `result`，再等那条可能永不会
-> 发出的 provider 请求。CHANGELOG 0.3.52 条目修正为 `published`（附范围纠正：
-> v0.3.52 修的是 `WEB32-P0-09`，不是 `WEB32-P0-08`），并在
-> `docs/plan/evidence/v0.3.53/investigation-and-audit.md` 记录运行时事实、四个静态
-> 假设与其中两个被代码证据证伪的判据，以及 0.3.50–0.3.52 三版交付状态审计。
-> 上一版 0.3.52 已发布 npm（registry `latest`）、打 tag `v0.3.52`（`a054c44`，#312）。
+> v0.3.54 候选版本：进行中。本轮为 v0.3.53 发布完成的簿记切片：CHANGELOG 0.3.53
+> 条目修正为 `published`（回填真实 npm 发布时间戳 `2026-11-08T02:39:25.949Z`、
+> tag `v0.3.53`、合并提交 `3d7c581`（#313）与 GitHub Release 链接），README
+> 首部摘要移除已过时的「暂缓发布」表述，并在
+> `docs/plan/evidence/v0.3.54/status-audit.md` 记录 0.3.51–0.3.53 三版交付状态
+> 审计。本轮无产品代码改动；`WEB32-P0-08` 根因仍开放
+> （`docs/plan/evidence/v0.3.53/investigation-and-audit.md`）。上一版 0.3.53 已
+> 发布 npm（registry `latest`）、打 tag `v0.3.53`。
 
 [English](README.md) ·
 [v0.3.24 方案](docs/plan/v0.3.24-plan.md) ·
@@ -108,7 +107,7 @@ Current。Node 20 已结束上游维护，不再属于 v0.3 Runtime 合同。
 v0.3.33 在 npm 可用后，可安装固定版本：
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.53
+npm install -g @orion-agents/orion-code@0.3.54
 orion --version
 orion doctor
 ```
