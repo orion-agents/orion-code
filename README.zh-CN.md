@@ -2,15 +2,15 @@
 
 面向终端与浏览器、本地优先的目标驱动 Coding Agent。
 
-> v0.3.52 候选版本：进行中。按质量条款 B 清偿 v0.3.51 遗留在 `main` 的 Web E2E
-> 红灯：`WEB32-P0-09` 不再在状态迁移中途单次读取 `planReview.status`（改为轮询
-> `(status, revision)` 的稳定态）；OpenAI fixture 等待超时时会报告已到达的请求
-> 摘要，以便区分剩余 `WEB32-P0-08` 超时是「从未发出」还是「发出但内容不同」。
-> v0.3.51 的 keep-alive 改动只降低了该失败频率、并未根除。收据侧：CHANGELOG
-> 0.3.51 条目修正为 `published`（其 keep-alive 表述由「清除」改为「降低」），并
-> 新增 `docs/plan/evidence/v0.3.52/status-audit.md` 记录 0.3.49–0.3.51 三版交付
-> 状态审计。上一版 0.3.51 已发布 npm（registry `latest`）、打 tag `v0.3.51`
-> （`0702878`，#310）。
+> v0.3.53 候选版本：进行中，**本轮暂缓发布**。`WEB32-P0-08` 在 `main` 上仍间歇失败，
+> 按质量条款 B 本版本不打 tag、不发布 npm、不建 GitHub Release，待根因修好为止。
+> 本轮只让失败自我具名：host 即使静默拒绝启动轮次（`command_ignored`）也会返回
+> 202 + `contextReceipt`，因此场景现在会先校验响应的 `result`，再等那条可能永不会
+> 发出的 provider 请求。CHANGELOG 0.3.52 条目修正为 `published`（附范围纠正：
+> v0.3.52 修的是 `WEB32-P0-09`，不是 `WEB32-P0-08`），并在
+> `docs/plan/evidence/v0.3.53/investigation-and-audit.md` 记录运行时事实、四个静态
+> 假设与其中两个被代码证据证伪的判据，以及 0.3.50–0.3.52 三版交付状态审计。
+> 上一版 0.3.52 已发布 npm（registry `latest`）、打 tag `v0.3.52`（`a054c44`，#312）。
 
 [English](README.md) ·
 [v0.3.24 方案](docs/plan/v0.3.24-plan.md) ·
@@ -108,7 +108,7 @@ Current。Node 20 已结束上游维护，不再属于 v0.3 Runtime 合同。
 v0.3.33 在 npm 可用后，可安装固定版本：
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.52
+npm install -g @orion-agents/orion-code@0.3.53
 orion --version
 orion doctor
 ```

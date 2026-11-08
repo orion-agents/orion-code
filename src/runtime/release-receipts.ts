@@ -355,6 +355,8 @@ export interface WebE2ERunEvidenceV1 {
   readonly manifestDigest: string;
   readonly secretScanFindings: number;
   readonly cleanEvidence: boolean;
+  /** Scenario/counter summaries explaining why `cleanEvidence` is false. */
+  readonly uncleanEvidence?: readonly string[];
   readonly decision: ReleaseGateDecisionV1;
 }
 
@@ -689,10 +691,15 @@ export function createWebE2EReleaseReceiptV1(
   const runEvidenceClean = allRuns.every(
     run => run.decision === 'GO' && run.cleanEvidence && run.browser.version.trim()
   );
+  const dirtyRuns = allRuns
+    .filter(run => !run.cleanEvidence)
+    .map(run => `${run.role}${run.ordinal}[${(run.uncleanEvidence ?? []).join('|')}]`);
   checks.push({
     id: 'browser_evidence_clean',
     status: runEvidenceClean ? 'pass' : 'fail',
-    detail: allRuns.map(run => `${run.role}${run.ordinal}=${run.decision}`).join(' '),
+    detail:
+      allRuns.map(run => `${run.role}${run.ordinal}=${run.decision}`).join(' ') +
+      (dirtyRuns.length ? ` unclean: ${dirtyRuns.join(' ')}`.slice(0, 500) : ''),
   });
   const settingsMatrixComplete =
     runtimeRuns.length === SUPPORTED_RELEASE_NODE_MAJORS_V1.length &&
