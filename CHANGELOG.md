@@ -22,6 +22,33 @@ which is **not** a pass.
 
 ## [Unreleased]
 
+## [0.3.55] — 2026-11-08
+
+> **Status: candidate.** Release-completion bookkeeping slice for the v0.3.54
+> publication (plan: `docs/plan/v0.3.55-plan.md`): the 0.3.54 entry is
+> corrected to `published` (real npm publish timestamp, tag, merge commit and
+> GitHub Release link), a three-version delivery-status audit (0.3.52–0.3.54:
+> tag + registry + dist-tag latest) is recorded in
+> `docs/plan/evidence/v0.3.55/status-audit.md` together with the v0.3.54
+> release facts, and the README / README.zh-CN header summaries are updated to
+> the 0.3.54-released + 0.3.55-candidate state. No `src/`, `web/` or `tests/`
+> product code changes; the `WEB32-P0-08` root cause remains open. The
+> human-labeled paid quality benchmark and real Host + Chrome full-chain E2E
+> remain honestly `not_run` (no model credentials in the automation
+> environment).
+
+### Changed
+
+- CHANGELOG: corrected the 0.3.54 delivery status from `candidate` to
+  `published` (tagged `v0.3.54`, merge `f55ddc7` (#314), npm registry
+  `latest=0.3.54`, publish timestamp `2026-11-08T07:39:20.165Z`, GitHub
+  Release link).
+- docs: added `docs/plan/evidence/v0.3.55/status-audit.md` — a three-version
+  (0.3.52–0.3.54) delivery-status audit cross-checking git tags, registry
+  versions and the `latest` dist-tag, plus the v0.3.54 release facts and the
+  open `WEB32-P0-08` root-cause item.
+- README / README.zh-CN: header summary and install pin updated to 0.3.55.
+
 ## [0.3.40] — 2026-10-26
 
 > **Status: published.** Open. Receipt backfill & delivery-status audit slice
@@ -478,7 +505,7 @@ lastUserText length)`, without payload text (evidence is secret-scanned
 
 ## [0.3.54] — 2026-11-08
 
-> **Status: candidate.** Release-completion bookkeeping slice for the v0.3.53
+> **Status: published.** Release-completion bookkeeping slice for the v0.3.53
 > publication (plan: `docs/plan/v0.3.54-plan.md`): the 0.3.53 entry is
 > corrected to `published` (real npm publish timestamp, tag, merge commit and
 > GitHub Release link, with the section date moved to the real release date),
@@ -489,7 +516,11 @@ lastUserText length)`, without payload text (evidence is secret-scanned
 > release facts. No `src/`, `web/` or `tests/` product code changes; the
 > `WEB32-P0-08` root cause remains open. The human-labeled paid quality
 > benchmark and real Host + Chrome full-chain E2E remain honestly `not_run`
-> (no model credentials in the automation environment).
+> (no model credentials in the automation environment). Released as
+> `@orion-agents/orion-code@0.3.54` from `refs/tags/v0.3.54`, merged to `main`
+> as `f55ddc7` (#314). npm registry `latest=0.3.54` published
+> `2026-11-08T07:39:20.165Z`. GitHub Release:
+> https://github.com/orion-agents/orion-code/releases/tag/v0.3.54
 
 ### Changed
 
