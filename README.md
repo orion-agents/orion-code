@@ -2,14 +2,14 @@
 
 Local-first, goal-driven coding agent for the terminal and browser.
 
-> v0.3.56 candidate — open. Bookkeeping slice completing the v0.3.55 release:
-> the 0.3.55 CHANGELOG entry is corrected to `published` (real npm publish
-> timestamp `2026-11-08T19:05:26.012Z`, tag `v0.3.55`, merge `213676c` (#315),
-> GitHub Release), and `docs/plan/evidence/v0.3.56/status-audit.md` adds the
-> three-version (0.3.53–0.3.55) delivery-status audit. No product code changes;
+> v0.3.57 candidate — open. Bookkeeping slice completing the v0.3.56 release:
+> the 0.3.56 CHANGELOG entry is corrected to `published` (real npm publish
+> timestamp `2026-11-09T01:01:32.301Z`, tag `v0.3.56`, merge `7787da7` (#316),
+> GitHub Release), and `docs/plan/evidence/v0.3.57/status-audit.md` adds the
+> three-version (0.3.54–0.3.56) delivery-status audit. No product code changes;
 > the `WEB32-P0-08` root cause remains open
 > (`docs/plan/evidence/v0.3.53/investigation-and-audit.md`). The previous
-> release 0.3.55 is on npm (registry `latest`), tagged `v0.3.55`.
+> release 0.3.56 is on npm (registry `latest`), tagged `v0.3.56`.
 
 [中文说明](README.zh-CN.md) ·
 [v0.3.24 plan](docs/plan/v0.3.24-plan.md) ·
@@ -175,7 +175,7 @@ current development environments. Node 20 is upstream EOL and is no longer a v0.
 To install the pinned v0.3.33 package when it is available on npm:
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.56
+npm install -g @orion-agents/orion-code@0.3.57
 orion --version
 orion doctor
 ```
