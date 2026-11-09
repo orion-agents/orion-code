@@ -22,9 +22,36 @@ which is **not** a pass.
 
 ## [Unreleased]
 
+## [0.3.58] — 2026-11-10
+
+> **Status: candidate.** Release-completion bookkeeping slice for the v0.3.57
+> publication (plan: `docs/plan/v0.3.58-plan.md`): the 0.3.57 entry is
+> corrected to `published` (real npm publish timestamp, tag, merge commit and
+> GitHub Release link), a three-version delivery-status audit (0.3.55–0.3.57:
+> tag + registry + dist-tag latest) is recorded in
+> `docs/plan/evidence/v0.3.58/status-audit.md` together with the v0.3.57
+> release facts, and the README / README.zh-CN header summaries are updated to
+> the 0.3.57-released + 0.3.58-candidate state. No `src/`, `web/` or `tests/`
+> product code changes; the `WEB32-P0-08` root cause remains open. The
+> human-labeled paid quality benchmark and real Host + Chrome full-chain E2E
+> remain honestly `not_run` (no model credentials in the automation
+> environment).
+
+### Changed
+
+- CHANGELOG: corrected the 0.3.57 delivery status from `candidate` to
+  `published` (tagged `v0.3.57`, merge `10d0ce0` (#317), npm registry
+  `latest=0.3.57`, publish timestamp `2026-11-09T13:06:47.415Z`, GitHub
+  Release link).
+- docs: added `docs/plan/evidence/v0.3.58/status-audit.md` — a three-version
+  (0.3.55–0.3.57) delivery-status audit cross-checking git tags, registry
+  versions and the `latest` dist-tag, plus the v0.3.57 release facts and the
+  open `WEB32-P0-08` root-cause item.
+- README / README.zh-CN: header summary and install pin updated to 0.3.58.
+
 ## [0.3.57] — 2026-11-09
 
-> **Status: candidate.** Release-completion bookkeeping slice for the v0.3.56
+> **Status: published.** Release-completion bookkeeping slice for the v0.3.56
 > publication (plan: `docs/plan/v0.3.57-plan.md`): the 0.3.56 entry is
 > corrected to `published` (real npm publish timestamp, tag, merge commit and
 > GitHub Release link), a three-version delivery-status audit (0.3.54–0.3.56:
@@ -35,7 +62,11 @@ which is **not** a pass.
 > product code changes; the `WEB32-P0-08` root cause remains open. The
 > human-labeled paid quality benchmark and real Host + Chrome full-chain E2E
 > remain honestly `not_run` (no model credentials in the automation
-> environment).
+> environment). Released as `@orion-agents/orion-code@0.3.57` from
+> `refs/tags/v0.3.57`, merged to `main` as `10d0ce0` (#317). npm registry
+> `latest=0.3.57` published `2026-11-09T13:06:47.415Z` (registry shasum
+> `687077b3249deccf397dc238d56e5bde9234c4ab`). GitHub Release:
+> https://github.com/orion-agents/orion-code/releases/tag/v0.3.57
 
 ### Changed
 
