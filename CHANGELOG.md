@@ -22,9 +22,37 @@ which is **not** a pass.
 
 ## [Unreleased]
 
+## [0.3.63] — 2026-11-11
+
+> **Status: candidate.** Release-completion bookkeeping slice for the v0.3.62
+> publication (plan: `docs/plan/v0.3.63-plan.md`): the 0.3.62 entry is
+> corrected to `published` (real npm publish timestamp
+> `2026-11-11T01:36:46.634Z`, tag `v0.3.62`, merge commit `39282ef` (#322) and
+> GitHub Release https://github.com/orion-agents/orion-code/releases/tag/v0.3.62),
+> a three-version delivery-status audit (0.3.60–0.3.62: tag + registry +
+> dist-tag latest) is recorded in `docs/plan/evidence/v0.3.63/status-audit.md`
+> together with the v0.3.62 release facts, and the README / README.zh-CN
+> header summaries are updated to the 0.3.62-released + 0.3.63-candidate
+> state. No `src/`, `web/` or `tests/` product code changes; the `WEB32-P0-08`
+> root cause remains open. The human-labeled paid quality benchmark and real
+> Host + Chrome full-chain E2E remain honestly `not_run` (no model credentials
+> in the automation environment).
+
+### Changed
+
+- CHANGELOG: corrected the 0.3.62 delivery status from `candidate` to
+  `published` (tagged `v0.3.62`, merge `39282ef` (#322), npm registry
+  `latest=0.3.62`, publish timestamp `2026-11-11T01:36:46.634Z`, GitHub
+  Release link).
+- docs: added `docs/plan/evidence/v0.3.63/status-audit.md` — a three-version
+  (0.3.60–0.3.62) delivery-status audit cross-checking git tags, registry
+  versions and the `latest` dist-tag, plus the v0.3.62 release facts and the
+  open `WEB32-P0-08` / `terminal_journey` PTY-probe root-cause items.
+- README / README.zh-CN: header summary and install pin updated to 0.3.63.
+
 ## [0.3.62] — 2026-11-11
 
-> **Status: candidate.** Release-completion bookkeeping slice for the v0.3.61
+> **Status: published.** Release-completion bookkeeping slice for the v0.3.61
 > publication (plan: `docs/plan/v0.3.62-plan.md`): the 0.3.61 entry is
 > corrected to `published` (real npm publish timestamp
 > `2026-11-10T14:32:12.700Z`, tag `v0.3.61`, merge commit `fb51d0e` (#321) and
@@ -36,7 +64,9 @@ which is **not** a pass.
 > state. No `src/`, `web/` or `tests/` product code changes; the `WEB32-P0-08`
 > root cause remains open. The human-labeled paid quality benchmark and real
 > Host + Chrome full-chain E2E remain honestly `not_run` (no model credentials
-> in the automation environment).
+> in the automation environment). Published as npm `latest=0.3.62` on
+> `2026-11-11T01:36:46.634Z` (tag `v0.3.62`, merge `39282ef` (#322), GitHub
+> Release https://github.com/orion-agents/orion-code/releases/tag/v0.3.62).
 
 ### Changed
 
