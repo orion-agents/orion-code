@@ -22,12 +22,42 @@ which is **not** a pass.
 
 ## [Unreleased]
 
+## [0.3.62] — 2026-11-11
+
+> **Status: candidate.** Release-completion bookkeeping slice for the v0.3.61
+> publication (plan: `docs/plan/v0.3.62-plan.md`): the 0.3.61 entry is
+> corrected to `published` (real npm publish timestamp
+> `2026-11-10T14:32:12.700Z`, tag `v0.3.61`, merge commit `fb51d0e` (#321) and
+> GitHub Release https://github.com/orion-agents/orion-code/releases/tag/v0.3.61),
+> a three-version delivery-status audit (0.3.59–0.3.61: tag + registry +
+> dist-tag latest) is recorded in `docs/plan/evidence/v0.3.62/status-audit.md`
+> together with the v0.3.61 release facts, and the README / README.zh-CN
+> header summaries are updated to the 0.3.61-released + 0.3.62-candidate
+> state. No `src/`, `web/` or `tests/` product code changes; the `WEB32-P0-08`
+> root cause remains open. The human-labeled paid quality benchmark and real
+> Host + Chrome full-chain E2E remain honestly `not_run` (no model credentials
+> in the automation environment).
+
+### Changed
+
+- CHANGELOG: corrected the 0.3.61 delivery status from `candidate` to
+  `published` (tagged `v0.3.61`, merge `fb51d0e` (#321), npm registry
+  `latest=0.3.61`, publish timestamp `2026-11-10T14:32:12.700Z`, GitHub
+  Release link).
+- docs: added `docs/plan/evidence/v0.3.62/status-audit.md` — a three-version
+  (0.3.59–0.3.61) delivery-status audit cross-checking git tags, registry
+  versions and the `latest` dist-tag, plus the v0.3.61 release facts and the
+  open `WEB32-P0-08` / `terminal_journey` PTY-probe root-cause items.
+- README / README.zh-CN: header summary and install pin updated to 0.3.62.
+
 ## [0.3.61] — 2026-11-10
 
-> **Status: candidate.** Release-completion bookkeeping slice for the v0.3.60
+> **Status: published.** Release-completion bookkeeping slice for the v0.3.60
 > publication (plan: `docs/plan/v0.3.61-plan.md`): the 0.3.60 entry is
-> corrected to `published` (real npm publish timestamp, tag, merge commit and
-> GitHub Release link), a three-version delivery-status audit (0.3.58–0.3.60:
+> corrected to `published` (real npm publish timestamp
+> `2026-11-10T08:03:40.499Z`, tag `v0.3.60`, merge commit `256b808` (#320) and
+> GitHub Release https://github.com/orion-agents/orion-code/releases/tag/v0.3.60),
+> a three-version delivery-status audit (0.3.58–0.3.60:
 > tag + registry + dist-tag latest) is recorded in
 > `docs/plan/evidence/v0.3.61/status-audit.md` together with the v0.3.60
 > release facts, and the README / README.zh-CN header summaries are updated to
