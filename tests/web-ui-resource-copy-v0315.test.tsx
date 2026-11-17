@@ -303,3 +303,67 @@ describe('v0.3.15 T4 — icon tier stays inside 12/16/20 in resource panels', ()
     expect(renderNavigator()).not.toContain('width="17"');
   });
 });
+
+// v0.3.66 — every non-active project row carries a removal entry; the active
+// row disables it (the Host rejects `workspace_active`). SSR contracts only;
+// the confirm-dialog flow is exercised by the browser E2E layer.
+describe('v0.3.66 — workspace removal entry on every non-active project row', () => {
+  function workspaceFixture(
+    overrides: Partial<{
+      id: string;
+      label: string;
+      active: boolean;
+      available: boolean;
+    }> = {}
+  ): WorkbenchState {
+    return {
+      ...initialWorkbenchState,
+      workspaceId: 'workspace-active',
+      workspaces: [
+        {
+          id: 'workspace-active',
+          path: '/tmp/active',
+          label: 'Active Project',
+          active: true,
+          available: true,
+          sessionCount: 0,
+          lastActivatedAt: new Date(0).toISOString(),
+        },
+        {
+          id: overrides.id ?? 'workspace-extra',
+          path: overrides.id ? '/tmp/extra' : '/tmp/extra',
+          label: overrides.label ?? 'Extra Project',
+          active: overrides.active ?? false,
+          available: overrides.available ?? true,
+          sessionCount: 1,
+          lastActivatedAt: new Date(0).toISOString(),
+        },
+      ],
+    };
+  }
+
+  it('an available non-active project shows the 移除项目 entry next to 新建会话', () => {
+    const html = renderNavigator(workspaceFixture());
+    expect(html).toContain('aria-label="移除项目 Extra Project"');
+    expect(html).toContain('aria-label="在 Extra Project 新建会话"');
+    // The removal affordance is enabled (not disabled) for removable rows.
+    expect(html).toContain(
+      'aria-label="移除项目 Extra Project" title="从项目列表移除（不会删除磁盘上的会话记录）"><svg'
+    );
+    expect(html).toContain('从项目列表移除');
+  });
+
+  it('the active project disables its removal entry and explains why', () => {
+    const html = renderNavigator(workspaceFixture());
+    expect(html).toContain(
+      'aria-label="移除项目 Active Project" title="激活中的项目不能移除；请先切换到其他项目" disabled=""'
+    );
+    expect(html).toContain('激活中的项目不能移除');
+  });
+
+  it('an unavailable non-active project keeps the immediate removal entry', () => {
+    const html = renderNavigator(workspaceFixture({ available: false }));
+    expect(html).toContain('aria-label="移除不可用项目 Extra Project"');
+    expect(html).not.toContain('aria-label="移除不可用项目 Extra Project" title="移除不可用项目" disabled');
+  });
+});

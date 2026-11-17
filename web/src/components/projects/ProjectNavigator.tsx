@@ -44,7 +44,14 @@ export interface ProjectNavigatorProps {
   readonly onLoadWorkspaceSessions: (workspaceId: string, append?: boolean) => void;
   readonly onActivateContext: (workspaceId: string, sessionId: string | null) => void;
   readonly onSetPinned: (workspaceId: string, pinned: boolean) => void;
-  readonly onRemoveWorkspace: (workspaceId: string) => void;
+  /**
+   * v0.3.66 — removal entry for every non-active project row. The navigator
+   * hands over the whole summary: App decides between the immediate removal
+   * (unavailable projects) and the destructive-action confirmation dialog
+   * (available projects). The active project is rejected server-side
+   * (`workspace_active`), so the button is disabled there.
+   */
+  readonly onRemoveWorkspace: (project: WebWorkspaceSummaryV1) => void;
   readonly onRefreshSummary: (workspaceId: string) => void;
   readonly onRenameSession: (session: WebSessionSummaryV1) => void;
   /** v0.3.7 — Open the tag editor for a Session. */
@@ -352,33 +359,39 @@ export function ProjectNavigator({
                   >
                     <span aria-hidden="true">{project.pinnedOrder === undefined ? '○' : '●'}</span>
                   </button>
-                  {!project.available && !project.active ? (
-                    <button
-                      type="button"
-                      className="icon-button project-remove"
-                      aria-label={`移除不可用项目 ${project.label}`}
-                      onClick={() => onRemoveWorkspace(project.id)}
-                      disabled={operationLocked}
-                    >
-                      <Icon name="close" size={13} />
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      className="icon-button project-add-session"
-                      aria-label={`在 ${project.label} 新建会话`}
-                      disabled={
-                        operationLocked ||
-                        state.sessionCreationPending ||
-                        !project.available ||
-                        !project.active
-                      }
-                      onClick={onCreateSession}
-                      title={project.active ? '新建会话' : '先激活项目后新建会话'}
-                    >
-                      <Icon name="add" size={14} />
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    className="icon-button project-add-session"
+                    aria-label={`在 ${project.label} 新建会话`}
+                    disabled={
+                      operationLocked ||
+                      state.sessionCreationPending ||
+                      !project.available ||
+                      !project.active
+                    }
+                    onClick={onCreateSession}
+                    title={project.active ? '新建会话' : '先激活项目后新建会话'}
+                  >
+                    <Icon name="add" size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button project-remove"
+                    aria-label={
+                      project.available
+                        ? `移除项目 ${project.label}`
+                        : `移除不可用项目 ${project.label}`
+                    }
+                    title={
+                      project.active
+                        ? '激活中的项目不能移除；请先切换到其他项目'
+                        : '从项目列表移除（不会删除磁盘上的会话记录）'
+                    }
+                    disabled={operationLocked || project.active}
+                    onClick={() => onRemoveWorkspace(project)}
+                  >
+                    <Icon name="close" size={13} />
+                  </button>
                 </div>
 
                 {open ? (

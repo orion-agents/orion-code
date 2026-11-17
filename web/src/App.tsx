@@ -10,6 +10,7 @@ import {
 import { Conversation } from './components/Conversation';
 import {
   ConfirmDeleteSessionDialog,
+  ConfirmDialog,
   RenameDialog,
   SessionTagsDialog,
   WorkspaceDialog,
@@ -41,6 +42,7 @@ import {
   activeSessionSnapshotSync,
   isSessionActionPending,
   type WebSessionSummaryV1,
+  type WebWorkspaceSummaryV1,
   type WorkbenchNotice,
 } from './types';
 import { themeColorForAppearance } from './themes/theme-color';
@@ -171,6 +173,9 @@ export function App() {
   const [renameTarget, setRenameTarget] = useState<WebSessionSummaryV1 | null>(null);
   const [sessionTagsTarget, setSessionTagsTarget] = useState<WebSessionSummaryV1 | null>(null);
   const [sessionDeleteTarget, setSessionDeleteTarget] = useState<WebSessionSummaryV1 | null>(null);
+  /** v0.3.66 — available workspace pending removal confirmation. */
+  const [workspaceRemoveTarget, setWorkspaceRemoveTarget] =
+    useState<WebWorkspaceSummaryV1 | null>(null);
   const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
   const [noticeQueue, setNoticeQueue] = useState<readonly QueuedNotice[]>([]);
   const noticeSeq = useRef(0);
@@ -594,7 +599,13 @@ export function App() {
           onSetPinned={(workspaceId, pinned) =>
             void actions.setWorkspacePinned(workspaceId, pinned)
           }
-          onRemoveWorkspace={workspaceId => void actions.removeWorkspace(workspaceId)}
+          onRemoveWorkspace={project => {
+            // v0.3.66 — every non-active row has a removal entry. Unavailable
+            // projects keep the immediate removal; available ones get the
+            // destructive-action confirmation dialog first.
+            if (project.available) setWorkspaceRemoveTarget(project);
+            else void actions.removeWorkspace(project.id);
+          }}
           onRefreshSummary={workspaceId => void actions.refreshWorkspaceProjectSummary(workspaceId)}
           onRenameSession={setRenameTarget}
           onSessionTags={setSessionTagsTarget}
@@ -821,6 +832,19 @@ export function App() {
         session={sessionDeleteTarget}
         pending={isSessionActionPending(state, sessionDeleteTarget?.id ?? null)}
         onConfirm={actions.deleteSession}
+      />
+      <ConfirmDialog
+        open={Boolean(workspaceRemoveTarget)}
+        onClose={() => setWorkspaceRemoveTarget(null)}
+        title={`移除项目 ${workspaceRemoveTarget?.label ?? ''}`}
+        body="将从项目列表移除该项目并关闭其终端；磁盘上的会话记录不会被删除，重新添加项目后可再次看到它们。"
+        confirmLabel="移除"
+        danger
+        onConfirm={async () => {
+          const target = workspaceRemoveTarget;
+          if (!target) return;
+          await actions.removeWorkspace(target.id);
+        }}
       />
       <ShortcutHelpDialog open={shortcutHelpOpen} onClose={() => setShortcutHelpOpen(false)} />
     </>

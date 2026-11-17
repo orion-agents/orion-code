@@ -2,14 +2,14 @@
 
 Local-first, goal-driven coding agent for the terminal and browser.
 
-> v0.3.65 candidate — open. Bookkeeping slice completing the v0.3.64 release:
-> the 0.3.64 CHANGELOG entry is corrected to `published` (real npm publish
-> timestamp `2026-11-11T19:23:45.375Z`, tag `v0.3.64`, merge `e707312` (#324),
-> GitHub Release), and `docs/plan/evidence/v0.3.65/status-audit.md` adds the
-> three-version (0.3.62–0.3.64) delivery-status audit. No product code changes;
-> the `WEB32-P0-08` root cause remains open
-> (`docs/plan/evidence/v0.3.53/investigation-and-audit.md`). The previous
-> release 0.3.64 is on npm (registry `latest`), tagged `v0.3.64`.
+> v0.3.66 candidate — open. Product-fix slice: every non-active project row in
+> the Web project navigator now carries a workspace removal entry (unavailable
+> projects remove immediately; available ones go through a confirmation dialog
+> that preserves disk-side sessions; the active row stays disabled per the
+> Host `workspace_active` contract). Previously workspaces added through the
+> dialog had no delete or archive entry. The previous release 0.3.65 is on npm
+> (registry `latest`), tagged `v0.3.65`; the `WEB32-P0-08` root cause remains
+> open (`docs/plan/evidence/v0.3.53/investigation-and-audit.md`).
 
 [中文说明](README.zh-CN.md) ·
 [v0.3.24 plan](docs/plan/v0.3.24-plan.md) ·
@@ -175,7 +175,7 @@ current development environments. Node 20 is upstream EOL and is no longer a v0.
 To install the pinned v0.3.33 package when it is available on npm:
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.65
+npm install -g @orion-agents/orion-code@0.3.66
 orion --version
 orion doctor
 ```
