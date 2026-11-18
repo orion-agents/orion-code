@@ -5,13 +5,18 @@
  * its entry disabled because the Host rejects `workspace_active`. A removal of
  * an available workspace goes through the shared destructive-action confirm
  * dialog, and confirming drops the row plus the registry entry while the
- * disk-side sessions stay untouched. The second workspace is registered via
- * the `/workspaces/activate` API so the journey exercises removal, not the
- * picker flow (already covered by the WEB38 specs).
+ * disk-side sessions stay untouched.
+ *
+ * The journey drives the shipped open path end to end (scripted Finder pick →
+ * inspect → confirm card → 打开项目) so the client completes the activation
+ * itself and the rail updates without a page reload — a reload would abort the
+ * SSE stream and trip the evidence watchdog. The removed directory's sessions
+ * are fixture-owned and stay on disk (the fixture cleans them up).
  */
-import { randomUUID } from 'crypto';
+import { realpathSync } from 'fs';
+import { writeFileSync } from 'fs';
 
-import { browserMutation, guardedBrowserGet, webBootstrap } from './fixtures/api';
+import { guardedBrowserGet } from './fixtures/api';
 import { expect, test } from './fixtures/test';
 import { waitForWorkbenchReady, workbenchUi } from './fixtures/ui';
 
@@ -27,12 +32,18 @@ interface WorkspacesPageShape {
   readonly items: readonly WorkspaceSummaryShape[];
 }
 
+type PickerScript = { path?: string; outcome?: 'cancelled' | 'unavailable' };
+
+/** The fixture reads this file fresh on every picker invocation. */
+function armPicker(workspaceRoot: string, script: PickerScript): void {
+  writeFileSync(`${workspaceRoot}/picker-script.json`, JSON.stringify(script));
+}
+
 test('WEB39-P0-06 removing a non-active workspace confirms and drops the row, the active entry stays disabled', async ({
   page,
   workspace,
 }) => {
   const ui = await waitForWorkbenchReady(page);
-  const bootstrap = await webBootstrap(page);
 
   // The bootstrapped primary workspace is the active one: its removal entry is
   // disabled and explains that the Host rejects removal of the active project.
@@ -42,29 +53,21 @@ test('WEB39-P0-06 removing a non-active workspace confirms and drops the row, th
   await expect(activeRemove).toBeDisabled();
   await expect(activeRemove).toHaveAttribute('title', /激活中的项目不能移除/u);
 
-  // Register + activate the fixture's secondary workspace through the same
-  // endpoint the workspace dialog drives, so primary becomes non-active.
-  // The in-page fetch helper carries the loopback Origin + nonce contract.
-  const activate = await browserMutation<{ readonly requestId: string }>(
-    page,
-    '/api/v1/workspaces/activate',
-    {
-      body: {
-        requestId: randomUUID(),
-        path: workspace.secondaryWorkspace,
-        workspaceId: bootstrap.workspaceId,
-        expectedContextRevision: bootstrap.contextRevision,
-      },
-    }
-  );
-  expect(activate.status).toBe(200);
+  // Open the secondary workspace through the shipped confirm flow so the
+  // client updates its own state (no reload): picker → card → 打开项目.
+  armPicker(workspace.rootDirectory, { path: workspace.secondaryWorkspace });
+  await ui.workspaceRail.getByRole('button', { name: '选择其他工作区' }).click();
+  const dialog = ui.workspaceDialog;
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('button', { name: '从 Finder 选择文件夹…' }).click();
+  const card = dialog.getByRole('region', { name: '已选择本地项目' });
+  await expect(card).toBeVisible();
+  await card.getByRole('button', { name: '打开项目' }).click();
+  await expect(dialog).toBeHidden({ timeout: 30_000 });
 
-  await page.reload();
-  const reloaded = await waitForWorkbenchReady(page);
-
-  // The now non-active primary row is removable; the entry next to it explains
-  // that removal never touches disk-side sessions.
-  const primaryRemove = reloaded.workspaceRail.getByRole('button', {
+  // The now non-active primary row is removable; the entry explains that
+  // removal never touches disk-side sessions.
+  const primaryRemove = ui.workspaceRail.getByRole('button', {
     name: '移除项目 workspace-primary',
   });
   await expect(primaryRemove).toBeEnabled();
@@ -79,21 +82,23 @@ test('WEB39-P0-06 removing a non-active workspace confirms and drops the row, th
   await expect(confirm).toBeHidden();
   await expect(primaryRemove).toBeVisible();
 
-  // Confirmed removal drops the row.
+  // Confirmed removal drops the row; the active (secondary) row stays disabled.
   await primaryRemove.click();
   await expect(confirm).toBeVisible();
   await confirm.getByRole('button', { name: '移除', exact: true }).click();
   await expect(confirm).toBeHidden();
   await expect(
-    reloaded.workspaceRail.getByRole('button', { name: '移除项目 workspace-primary' })
+    ui.workspaceRail.getByRole('button', { name: '移除项目 workspace-primary' })
   ).toBeHidden();
   await expect(
-    reloaded.workspaceRail.getByRole('button', { name: '移除项目 workspace-secondary' })
+    ui.workspaceRail.getByRole('button', { name: '移除项目 workspace-secondary' })
   ).toBeDisabled();
 
-  // The durable registry no longer serves the removed workspace.
+  // The durable registry no longer serves the removed workspace; paths are
+  // canonical (macOS /var → /private/var), so compare via realpath.
   const after = await guardedBrowserGet<WorkspacesPageShape>(page, '/api/v1/workspaces');
   expect(after.status).toBe(200);
-  expect(after.body.items.map(item => item.path)).not.toContain(workspace.primaryWorkspace);
-  expect(after.body.items.map(item => item.path)).toContain(workspace.secondaryWorkspace);
+  const paths = after.body.items.map(item => item.path);
+  expect(paths).not.toContain(realpathSync(workspace.primaryWorkspace));
+  expect(paths).toContain(realpathSync(workspace.secondaryWorkspace));
 });
