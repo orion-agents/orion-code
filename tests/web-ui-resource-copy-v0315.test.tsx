@@ -364,6 +364,8 @@ describe('v0.3.66 — workspace removal entry on every non-active project row', 
   it('an unavailable non-active project keeps the immediate removal entry', () => {
     const html = renderNavigator(workspaceFixture({ available: false }));
     expect(html).toContain('aria-label="移除不可用项目 Extra Project"');
-    expect(html).not.toContain('aria-label="移除不可用项目 Extra Project" title="移除不可用项目" disabled');
+    expect(html).not.toContain(
+      'aria-label="移除不可用项目 Extra Project" title="移除不可用项目" disabled'
+    );
   });
 });

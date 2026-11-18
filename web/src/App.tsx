@@ -174,8 +174,9 @@ export function App() {
   const [sessionTagsTarget, setSessionTagsTarget] = useState<WebSessionSummaryV1 | null>(null);
   const [sessionDeleteTarget, setSessionDeleteTarget] = useState<WebSessionSummaryV1 | null>(null);
   /** v0.3.66 — available workspace pending removal confirmation. */
-  const [workspaceRemoveTarget, setWorkspaceRemoveTarget] =
-    useState<WebWorkspaceSummaryV1 | null>(null);
+  const [workspaceRemoveTarget, setWorkspaceRemoveTarget] = useState<WebWorkspaceSummaryV1 | null>(
+    null
+  );
   const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
   const [noticeQueue, setNoticeQueue] = useState<readonly QueuedNotice[]>([]);
   const noticeSeq = useRef(0);

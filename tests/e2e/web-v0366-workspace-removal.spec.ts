@@ -16,7 +16,7 @@
 import { realpathSync, writeFileSync } from 'fs';
 
 import { guardedBrowserGet } from './fixtures/api';
-import { expect, test } from './fixtures/test';
+import { allowExpectedNetworkFailures, expect, test } from './fixtures/test';
 import { waitForWorkbenchReady } from './fixtures/ui';
 
 interface WorkspaceSummaryShape {
@@ -41,7 +41,13 @@ function armPicker(workspaceRoot: string, script: PickerScript): void {
 test('WEB39-P0-06 removing a non-active workspace confirms and drops the row, the active entry stays disabled', async ({
   page,
   workspace,
-}) => {
+}, testInfo) => {
+  // The shipped activation flow pauses the event stream while the
+  // /workspaces/activate mutation is in flight (`switchWorkspace` →
+  // `pauseEventStream`), and the aborted EventSource is recorded as exactly
+  // one network failure — the same deliberate failure class the recovery
+  // journeys allow for.
+  allowExpectedNetworkFailures(testInfo, 1);
   const ui = await waitForWorkbenchReady(page);
 
   // The bootstrapped primary workspace is the active one: its removal entry is
