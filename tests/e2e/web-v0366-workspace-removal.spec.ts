@@ -13,12 +13,11 @@
  * SSE stream and trip the evidence watchdog. The removed directory's sessions
  * are fixture-owned and stay on disk (the fixture cleans them up).
  */
-import { realpathSync } from 'fs';
-import { writeFileSync } from 'fs';
+import { realpathSync, writeFileSync } from 'fs';
 
 import { guardedBrowserGet } from './fixtures/api';
 import { expect, test } from './fixtures/test';
-import { waitForWorkbenchReady, workbenchUi } from './fixtures/ui';
+import { waitForWorkbenchReady } from './fixtures/ui';
 
 interface WorkspaceSummaryShape {
   readonly id: string;
