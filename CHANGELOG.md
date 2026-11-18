@@ -22,9 +22,52 @@ which is **not** a pass.
 
 ## [Unreleased]
 
+## [0.3.66] — 2026-11-18
+
+> **Status: candidate.** Product-fix slice for the Web project navigator
+> (plan: `docs/plan/v0.3.66-plan.md`): every non-active project row now
+> carries a removal entry — unavailable projects keep the immediate removal,
+> available projects go through a destructive-action confirmation dialog
+> (explaining that terminals close but disk-side sessions are preserved), and
+> the active row disables its entry because the Host rejects `workspace_active`.
+> Previously the remove affordance only rendered for unavailable projects, so
+> workspaces added through the dialog had no delete/archive entry at all. The
+> journey is pinned by a new browser E2E scenario `WEB39-P0-06` (registered in
+> `WEB_E2E_FULL_SCENARIOS_V1` as group `WEB318`) plus SSR contracts. The 0.3.65
+> entry below is corrected to `published` (real npm publish timestamp
+> `2026-11-17T22:23:35.074Z`, tag `v0.3.65`, merge commit `00c735d` (#325) and
+> GitHub Release link) with the 0.3.63–0.3.65 delivery-status audit in
+> `docs/plan/evidence/v0.3.66/status-audit.md`; the `WEB32-P0-08` root cause
+> remains open. The human-labeled paid quality benchmark and real Host + Chrome
+> manual E2E remain honestly `not_run`.
+
+### Fixed
+
+- Web: workspaces added through the dialog can now be removed again — every
+  non-active project row in the project navigator has a removal entry;
+  available workspaces require a confirmation dialog and the removal only
+  drops the registry entry (terminal sessions are closed, disk-side session
+  records are preserved), while the active workspace's entry stays disabled
+  with an explanatory tooltip (Host contract: `workspace_active`).
+- Web: the row action grid gained a dedicated fourth column for the
+  always-available remove affordance, keeping the hover-reveal rules intact.
+
+### Changed
+
+- CHANGELOG: corrected the 0.3.65 delivery status from `candidate` to
+  `published` (tagged `v0.3.65`, merge `00c735d` (#325), npm registry
+  `latest=0.3.65`, publish timestamp `2026-11-17T22:23:35.074Z`, GitHub
+  Release link).
+- docs: added `docs/plan/evidence/v0.3.66/status-audit.md` — a three-version
+  (0.3.63–0.3.65) delivery-status audit cross-checking git tags, registry
+  versions and the `latest` dist-tag, plus the v0.3.65 release facts.
+- e2e: registered browser journey `WEB39-P0-06` (workspace removal through the
+  confirm dialog; active-row entry disabled) as `WEB_E2E_WEB318_SCENARIOS_V1`.
+- README / README.zh-CN: header summary and install pin updated to 0.3.66.
+
 ## [0.3.65] — 2026-11-18
 
-> **Status: candidate.** Release-completion bookkeeping slice for the v0.3.64
+> **Status: published.** Release-completion bookkeeping slice for the v0.3.64
 > publication (plan: `docs/plan/v0.3.65-plan.md`): the 0.3.64 entry is
 > corrected to `published` (real npm publish timestamp
 > `2026-11-11T19:23:45.375Z`, tag `v0.3.64`, merge commit `e707312` (#324) and
@@ -36,7 +79,9 @@ which is **not** a pass.
 > state. No `src/`, `web/` or `tests/` product code changes; the `WEB32-P0-08`
 > root cause remains open. The human-labeled paid quality benchmark and real
 > Host + Chrome full-chain E2E remain honestly `not_run` (no model credentials
-> in the automation environment).
+> in the automation environment). Published as npm `latest=0.3.65` on
+> `2026-11-17T22:23:35.074Z` (tag `v0.3.65`, merge `00c735d` (#325), GitHub
+> Release https://github.com/orion-agents/orion-code/releases/tag/v0.3.65).
 
 ### Changed
 

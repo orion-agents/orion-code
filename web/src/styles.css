@@ -4409,7 +4409,8 @@ html[data-history-scrubbing] * {
 
 .project-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 26px 30px;
+  /* v0.3.66 — fourth column hosts the always-available remove entry. */
+  grid-template-columns: minmax(0, 1fr) 26px 30px 30px;
   align-items: center;
 }
 

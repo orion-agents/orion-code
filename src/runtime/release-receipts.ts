@@ -190,6 +190,15 @@ export const WEB_E2E_WEB34_SCENARIOS_V1 = Object.freeze([
   'WEB34-P0-04',
   'WEB34-P0-05',
 ]);
+/**
+ * v0.3.66 — workspace removal journey (`docs/plan/v0.3.66-plan.md`).
+ *
+ * The id stays in the single-digit `WEB3[1-9]` receipt namespace; the 318
+ * group name marks the introducing round. One browser journey: a non-active
+ * workspace is removed from the rail through the destructive-action confirm
+ * dialog, while the active row's entry stays disabled (Host `workspace_active`).
+ */
+export const WEB_E2E_WEB318_SCENARIOS_V1 = Object.freeze(['WEB39-P0-06']);
 export const WEB_E2E_FULL_SCENARIOS_V1 = Object.freeze([
   ...WEB_E2E_LEGACY_SCENARIOS_V1,
   ...WEB_E2E_WEB31_SCENARIOS_V1,
@@ -200,6 +209,7 @@ export const WEB_E2E_FULL_SCENARIOS_V1 = Object.freeze([
   ...WEB_E2E_WEB38_SCENARIOS_V1,
   ...WEB_E2E_WEB317_SCENARIOS_V1,
   ...WEB_E2E_WEB34_SCENARIOS_V1,
+  ...WEB_E2E_WEB318_SCENARIOS_V1,
 ]);
 export const WEB_E2E_SETTINGS_SCENARIOS_V1 = Object.freeze(
   WEB_E2E_FULL_SCENARIOS_V1.filter(id => id.startsWith('SET-P0-'))
