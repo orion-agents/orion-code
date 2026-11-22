@@ -22,6 +22,28 @@ which is **not** a pass.
 
 ## [Unreleased]
 
+## [0.3.67] — UNRELEASED
+
+> **Status: candidate.** Open. Three user-reported bug fixes verified against the
+> current main: a mode change no longer hides a real text hunk in the Git viewer
+> (#279), Git history message search is now literal substring matching (#280),
+> and TypeScript hover synchronises the document with the language server before
+> querying it (#281). #282 (v2 compact restore) is deliberately out of scope: it
+> requires a dedicated change to the authoritative restore chain. Not merged,
+> tagged or published.
+
+### Fixed
+
+- #279: classify a diff with both `old mode`/`new mode` and a real `@@` hunk as
+  `text`; the production viewer renders both mode metadata and text changes.
+  Pure mode changes remain metadata-only.
+- #280: Git history message filtering now passes `--fixed-strings` to Git, so
+  punctuation such as `[` and `[ui]` is matched literally instead of as a
+  regex (or an unbalanced-bracket error).
+- #281: `lsp_get_hover` sends `textDocument/didOpen` once per URI with the
+  target file content before querying, eliminating `success: true` with empty
+  output on a freshly started language server.
+
 ## [0.3.66] — 2026-11-18
 
 > **Status: candidate.** Product-fix slice for the Web project navigator

@@ -2,13 +2,11 @@
 
 Local-first, goal-driven coding agent for the terminal and browser.
 
-> v0.3.66 candidate — open. Product-fix slice: every non-active project row in
-> the Web project navigator now carries a workspace removal entry (unavailable
-> projects remove immediately; available ones go through a confirmation dialog
-> that preserves disk-side sessions; the active row stays disabled per the
-> Host `workspace_active` contract). Previously workspaces added through the
-> dialog had no delete or archive entry. The previous release 0.3.65 is on npm
-> (registry `latest`), tagged `v0.3.65`; the `WEB32-P0-08` root cause remains
+> v0.3.67 candidate — open. Three confirmed bug fixes: a Git mode change no longer
+> hides a real text hunk (#279), Git history message search is literal substring
+> matching (#280), and TypeScript hover synchronises the document with the
+> language server before querying (#281). The previous release 0.3.66 is on npm
+> (registry `latest`), tagged `v0.3.66` (`0c04f5a`, #326) and released on GitHub.
 > open (`docs/plan/evidence/v0.3.53/investigation-and-audit.md`).
 
 [中文说明](README.zh-CN.md) ·
@@ -175,7 +173,7 @@ current development environments. Node 20 is upstream EOL and is no longer a v0.
 To install the pinned v0.3.33 package when it is available on npm:
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.66
+npm install -g @orion-agents/orion-code@0.3.67
 orion --version
 orion doctor
 ```
