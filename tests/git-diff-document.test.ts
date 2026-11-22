@@ -385,3 +385,38 @@ describe('GitReadModelServiceV1.diffDocument', () => {
     expect(lastDocument?.meta).toEqual([]);
   });
 });
+
+describe('v0.3.67 #279 — a mode change must not hide text hunks', () => {
+  const raw = [
+    '## Working tree',
+    'diff --git a/run.sh b/run.sh',
+    'old mode 100644',
+    'new mode 100755',
+    'index 8fb24a9..7e80e7c',
+    '--- a/run.sh',
+    '+++ b/run.sh',
+    '@@ -1,2 +1,2 @@',
+    ' #!/bin/sh',
+    '-echo BEFORE_MARKER',
+    '+echo AFTER_MARKER',
+  ];
+
+  test('classifies a combined mode+content edit as text with its hunk intact', () => {
+    const doc = parse(raw);
+    expect(doc.kind).toBe('text');
+    expect(doc.hunks).toHaveLength(1);
+    expect(doc.additions).toBe(1);
+    expect(doc.deletions).toBe(1);
+    expect(doc.hunks[0].lines.map(line => line.text)).toEqual([
+      '#!/bin/sh',
+      'echo BEFORE_MARKER',
+      'echo AFTER_MARKER',
+    ]);
+  });
+
+  test('keeps a pure mode change metadata-only', () => {
+    const doc = parse(['diff --git a/run.sh b/run.sh', 'old mode 100644', 'new mode 100755']);
+    expect(doc.kind).toBe('metadata');
+    expect(doc.hunks).toHaveLength(0);
+  });
+});

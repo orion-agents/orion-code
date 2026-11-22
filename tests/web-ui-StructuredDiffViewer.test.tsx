@@ -194,7 +194,7 @@ describe('StructuredDiffViewer', () => {
     const staged = render({
       document: {
         source: 'staged',
-      capabilities: {
+        capabilities: {
           stageFile: false,
           unstageFile: true,
           stageHunk: false,
@@ -222,9 +222,46 @@ describe('StructuredDiffViewer', () => {
 
   test('shows a binary document without rendering lines', () => {
     const html = render({
-      document: { kind: 'binary', binary: true, hunks: [], additions: 0, deletions: 0, meta: ['Binary files a/logo.png and b/logo.png differ'] },
+      document: {
+        kind: 'binary',
+        binary: true,
+        hunks: [],
+        additions: 0,
+        deletions: 0,
+        meta: ['Binary files a/logo.png and b/logo.png differ'],
+      },
     });
     expect(html).toContain('二进制差异');
     expect(html).not.toContain('diff-body');
   });
+});
+
+test('v0.3.67 #279 — renders the text hunk of a mode+content edit', () => {
+  const parseGitDiffDocument = (
+    require('../src/web/git-diff-document') as typeof import('../src/web/git-diff-document')
+  ).parseGitDiffDocument;
+  const parsed = parseGitDiffDocument({
+    fileToken: 'git_token',
+    path: 'run.sh',
+    source: 'unstaged',
+    repositoryRevision: 'rev-1',
+    lines: [
+      'diff --git a/run.sh b/run.sh',
+      'old mode 100644',
+      'new mode 100755',
+      '--- a/run.sh',
+      '+++ b/run.sh',
+      '@@ -1,2 +1,2 @@',
+      ' #!/bin/sh',
+      '-echo BEFORE_MARKER',
+      '+echo AFTER_MARKER',
+    ],
+    hasMore: false,
+    nextCursor: null,
+  });
+  const html = render({ document: parsed });
+  expect(parsed.kind).toBe('text');
+  expect(html).toContain('AFTER_MARKER');
+  expect(html).toContain('BEFORE_MARKER');
+  expect(html).not.toContain('仅有元数据变化');
 });

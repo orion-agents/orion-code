@@ -599,7 +599,11 @@ export function createGitHistoryReader(options: GitHistoryReaderOptions): GitHis
         `--max-count=${pageSize + 1}`,
         `--format=${LIST_FORMAT}${RECORD_SEPARATOR}`,
       ];
-      if (message) args.push(`--grep=${message}`, '--regexp-ignore-case');
+      // v0.3.67 #280 — the Web exposes a literal substring filter; Git's
+      // --grep is a regex by default. --fixed-strings keeps punctuation such
+      // as  and  literal instead of changing the search meaning or
+      // failing with an unbalanced-bracket error.
+      if (message) args.push(`--grep=${message}`, '--fixed-strings', '--regexp-ignore-case');
       if (author) args.push(`--author=${author}`, '--regexp-ignore-case');
       if (since) args.push(`--since=${since}`);
       if (until) args.push(`--until=${until}`);

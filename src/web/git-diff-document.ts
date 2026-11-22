@@ -127,7 +127,14 @@ function detectKind(lines: readonly string[]): GitDiffDocumentKindV2 {
     return 'binary';
   }
   if (lines.some(line => line.startsWith('Submodule '))) return 'submodule';
-  if (lines.some(line => line.startsWith('old mode ') || line.startsWith('new mode '))) {
+  // v0.3.67 #279 — a mode change is metadata ONLY when there is no text hunk.
+  // Git emits `old mode`/`new mode` before the body of a combined mode+content
+  // edit; classifying that document as metadata hid real additions/deletions
+  // from the viewer even though the parser produced a valid hunk.
+  if (
+    lines.some(line => line.startsWith('old mode ') || line.startsWith('new mode ')) &&
+    !lines.some(line => line.startsWith('@@ '))
+  ) {
     return 'metadata';
   }
   return 'text';

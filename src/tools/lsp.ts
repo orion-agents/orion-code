@@ -17,6 +17,7 @@ import {
   type ToolContext,
 } from '../framework/tool';
 import { spawn, spawnSync, ChildProcess } from 'child_process';
+import { readFileSync } from 'fs';
 import { EventEmitter } from 'events';
 
 // ============================================================================
@@ -63,6 +64,8 @@ export class LspClient extends EventEmitter {
   private buffer: string = '';
   private initialized: boolean = false;
   private lspCommand: { cmd: string; args: string[] } | null = null;
+  /** v0.3.67 #281 — URIs already announced with textDocument/didOpen. */
+  private readonly openedDocuments = new Set<string>();
 
   constructor(
     private language: string,
@@ -218,6 +221,20 @@ export class LspClient extends EventEmitter {
       context: { includeDeclaration },
     });
     return result as LspLocation[] | null;
+  }
+
+  /**
+   * v0.3.67 #281 — a language server cannot answer semantic queries for a
+   * document it has never seen. Announce the on-disk text before the first
+   * hover for a URI; a second didOpen for the same URI is a protocol error,
+   * so the set keeps this idempotent per client.
+   */
+  openDocument(uri: string, languageId: string, text: string): void {
+    if (this.openedDocuments.has(uri)) return;
+    this.sendNotification('textDocument/didOpen', {
+      textDocument: { uri, languageId, version: 1, text },
+    });
+    this.openedDocuments.add(uri);
   }
 
   async getHover(uri: string, position: LspPosition): Promise<LspHover | null> {
@@ -615,6 +632,11 @@ export const lspGetHoverTool: OrionCodeTool = buildTool({
 
     try {
       const client = await lspManager.getClient(language, context.cwd);
+      // v0.3.67 #281 — synchronise the target document before querying it.
+      // Without didOpen the server initializes fine but has no document to
+      // inspect, so hover returns success:true with an empty output.
+      const text = readFileSync(file_path, 'utf8');
+      client.openDocument(uri, language, text);
       const result = await client.getHover(uri, position);
       return { success: true, output: formatHoverResult(result) };
     } catch (err) {

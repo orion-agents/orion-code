@@ -2,12 +2,10 @@
 
 面向终端与浏览器、本地优先的目标驱动 Coding Agent。
 
-> v0.3.66 候选版本：进行中。产品修复切片：Web 项目导航中每个非激活项目行现在
-> 都有工作区移除入口（不可用项目立即移除；可用项目经确认弹窗移除且保留磁盘
-> 会话；激活中的行按 Host `workspace_active` 契约保持禁用）。此前经对话框添加
-> 的工作空间没有任何删除或归档入口。上一版 0.3.65 已发布 npm（registry
-> `latest`）、打 tag `v0.3.65`；`WEB32-P0-08` 根因仍开放
-> （`docs/plan/evidence/v0.3.53/investigation-and-audit.md`）。
+> v0.3.67 候选版本：进行中。三个已确认 bug 修复：Git 权限位变化不再遮蔽真实文本 hunk
+> （#279）、Git 历史消息搜索改为字面子串匹配（#280）、TypeScript hover 在查询前先与语言
+> 服务器同步文档（#281）。上一版 0.3.66 已发布 npm（registry `latest`），tag `v0.3.66`
+> （`0c04f5a`，#326）并发布 GitHub Release。
 
 [English](README.md) ·
 [v0.3.24 方案](docs/plan/v0.3.24-plan.md) ·
@@ -105,7 +103,7 @@ Current。Node 20 已结束上游维护，不再属于 v0.3 Runtime 合同。
 v0.3.33 在 npm 可用后，可安装固定版本：
 
 ```bash
-npm install -g @orion-agents/orion-code@0.3.66
+npm install -g @orion-agents/orion-code@0.3.67
 orion --version
 orion doctor
 ```
