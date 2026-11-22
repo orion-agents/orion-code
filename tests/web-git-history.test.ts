@@ -279,6 +279,15 @@ describe('v0.3.17 S4 history reading', () => {
       }
     }
 
+    test('v0.3.67 #280 — message search treats punctuation literally', async () => {
+      seedHistory();
+      rawGit(repo, ['commit', '-q', '--allow-empty', '-m', 'fix [ui]: button rendering']);
+      const bracketed = await service.history({ pageSize: 10, message: '[ui]' });
+      expect(bracketed.items.map(item => item.subject)).toEqual(['fix [ui]: button rendering']);
+      const loneBracket = await service.history({ pageSize: 10, message: '[' });
+      expect(loneBracket.items.map(item => item.subject)).toEqual(['fix [ui]: button rendering']);
+    });
+
     test('finds a commit far outside the first page', async () => {
       seedLongHistory();
       const page = await service.history({ pageSize: 5, message: 'needle' });
